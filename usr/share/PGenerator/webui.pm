@@ -10684,7 +10684,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" id="meterSeriesTabRow" style="margin:0">
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
-     <button class="btn btn-sm btn-secondary" data-series-tab="cube" onclick="meterSetSeriesTab('cube')">3D Cube</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesManagerBtn" onclick="meterOpenCustomSeriesManager()" style="margin-left:auto" title="Create, edit, delete, import and export custom patch series">Custom Series&hellip;</button>
      <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" title="Preview .cube LUT files and download solved 3D LUTs">LUT Tools&hellip;</button>
@@ -10703,11 +10702,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
      <span id="meterCustomSeriesColorSlot" style="display:contents"></span>
-     </div>
-     <div id="meterSeriesGroupCube" style="display:none;gap:4px;flex-wrap:wrap">
-      <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="Built-in 5x5x5 RGB cube lattice (125 patches)">Cube 5&sup3;</button>
-      <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="Built-in 9x9x9 RGB cube lattice (729 patches)">Cube 9&sup3;</button>
-      <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="Built-in 17x17x17 RGB cube lattice (4913 patches)">Cube 17&sup3;</button>
+      <!-- 3D LUT profiling lattices: measured like any colour series (CIE
+           charts only — no target grading; profiling data feeds the LUT
+           solve). The LUT cube visual lives in LUT Tools, not here. -->
+      <button class="btn btn-sm btn-secondary" data-series="colors-905" onclick="meterSelectSeries('colors',905)" title="3D LUT profiling lattice: 5x5x5 RGB cube (125 patches)">Cube 5&sup3;</button>
+      <button class="btn btn-sm btn-secondary" data-series="colors-909" onclick="meterSelectSeries('colors',909)" title="3D LUT profiling lattice: 9x9x9 RGB cube (729 patches)">Cube 9&sup3;</button>
+      <button class="btn btn-sm btn-secondary" data-series="colors-917" onclick="meterSelectSeries('colors',917)" title="3D LUT profiling lattice: 17x17x17 RGB cube (4913 patches)">Cube 17&sup3;</button>
       <span id="meterCustomSeriesCubeSlot" style="display:contents"></span>
       <button class="btn btn-sm btn-secondary" onclick="meterOpenLatticeGenerator()" title="Generate a new lattice cube series for the current signal mode">+ Generate</button>
      </div>
@@ -11229,10 +11229,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <div id="meterCubeViewWrap" style="display:none;margin-bottom:10px">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">RGB Cube (signal space)
        <span class="meter-help-tip" title="Lattice nodes at their signal RGB positions. Hollow = not measured yet, filled = measured. Drag = rotate, wheel = zoom." aria-label="RGB cube view help">?</span>
-       <select id="meterCubeReference" class="inline-select" onchange="meterCubeReferenceChanged()" style="text-transform:none" title="Display: judge the panel against what it can do (BT.2390 roll-off to the measured peak plus additive colour ceilings from the cube's own 100% corners). Mastering: raw absolute PQ stimulus targets, for mastering-monitor QC.">
-        <option value="display" selected>Ref: Display (tone-mapped)</option>
-        <option value="mastering">Ref: Mastering (absolute)</option>
-       </select>
       </div>
       <div id="chartCubeViewBox" style="position:relative;display:inline-block;max-width:100%">
        <canvas id="chartCubeView" width="640" height="480" style="width:600px;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
@@ -17222,20 +17218,6 @@ function meterLatticeDisplayTargetY(rawY,reading){
   }
  }
  return y;
-}
-
-// Redraw everything under the newly-selected target reference. Cached per-
-// reading dE values key on target context, but they are invalidated here so
-// the dE chart recomputes against the new reference rather than a stale one.
-function meterCubeReferenceChanged(){
- try{
-  if(Array.isArray(meterReadings)&&meterReadings.length){
-   meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; } });
-   drawAllCharts([...meterReadings]);
-  } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
-   drawAllChartsPreset([...meterSeriesSteps]);
-  }
- }catch(e){}
 }
 
 function meterBlackReadingY(){
@@ -23807,22 +23789,15 @@ function meterSeriesTabForType(type){
  return (type==='colors'||type==='saturations')?'color':'greyscale';
 }
 
-function meterCubeSeriesAvailable(){
- // "Connected" == the status bar shows a live meter (green dot / not "No
- // Meter"), which is meterDetected. meterInventory is only populated after an
- // explicit inventory fetch, so it read empty even with a meter attached and
- // wrongly hid the 3D Cube tab.
- return !!meterDetected;
-}
-
 function meterSeriesTabForSeries(type,points){
- const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
- if(series&&series.kind==='lattice') return 'cube';
+ // Lattice (3D LUT profiling) series live under the Color tab like any other
+ // colour series; the LUT cube visual lives in LUT Tools.
  return meterSeriesTabForType(type);
 }
 
 function meterNormalizeSeriesTab(tab){
- return tab==='autocal'?'autocal':(tab==='cube'?'cube':(tab==='color'?'color':'greyscale'));
+ // 'cube' is a legacy stored value from the retired 3D Cube tab.
+ return tab==='autocal'?'autocal':((tab==='color'||tab==='cube')?'color':'greyscale');
 }
 
 function meterTwoPointValues(){
@@ -23906,17 +23881,12 @@ function meterUpdateSeriesTabUi(){
  let tab=meterNormalizeSeriesTab(meterSeriesTab);
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
  const autoCalSeriesAvailable=meterAutoCalSeriesAvailable();
- if(tab==='cube'&&!meterCubeSeriesAvailable()){
-  tab='greyscale';
-  meterSeriesTab=tab;
- }
  if(tab==='autocal'&&!(autoCalSignalAllowed&&autoCalSeriesAvailable)){
   tab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
   meterSeriesTab=tab;
  }
  const greyGroup=document.getElementById('meterSeriesGroupGreyscale');
  const colorGroup=document.getElementById('meterSeriesGroupColor');
- const cubeGroup=document.getElementById('meterSeriesGroupCube');
  const autoCalGroup=document.getElementById('meterSeriesGroupAutoCal');
 	 const greyBar=document.getElementById('meterGreyProfileBar');
 	 const twoPointControls=document.getElementById('meterTwoPointControls');
@@ -23926,7 +23896,6 @@ function meterUpdateSeriesTabUi(){
   const tabKey=btn.dataset.seriesTab||'';
   let visible=true;
   if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
-  else if(tabKey==='cube') visible=meterCubeSeriesAvailable();
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -23938,7 +23907,6 @@ function meterUpdateSeriesTabUi(){
  meterRenderCustomSeriesButtons();
  if(greyGroup) greyGroup.style.display=tab==='greyscale'?'flex':'none';
  if(colorGroup) colorGroup.style.display=tab==='color'?'flex':'none';
- if(cubeGroup) cubeGroup.style.display=tab==='cube'?'flex':'none';
  if(autoCalGroup) autoCalGroup.style.display=(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable)?'flex':'none';
  if(tab==='autocal'&&autoCalSignalAllowed&&autoCalSeriesAvailable) meterSetAutoCalSeriesChoice(meterAutoCalSeriesChoice);
  meterGreySyncUi();
@@ -23976,7 +23944,7 @@ function meterShow3dLutAutoCalContext(){
 }
 
 function meterDefaultSeriesButtonForTab(tab){
- const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':(tab==='cube'?'meterSeriesGroupCube':'meterSeriesGroupGreyscale'));
+ const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':'meterSeriesGroupGreyscale');
  if(!group) return null;
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
@@ -26002,16 +25970,21 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
-// Lattice series default the CIE chart to the 3D xyY view when they become
-// active: neutral-ratio cube nodes share chromaticity and stack in 2D, but
-// separate vertically by luminance in 3D (one-shot default per activation;
-// the operator can uncheck). Called from series selection AND recovery.
+// Lattice (3D LUT profiling) chart defaults when a lattice series becomes
+// active (one-shot per activation; the operator can toggle back):
+//  - 3D xyY view ON — neutral-ratio cube nodes share chromaticity and stack
+//    in 2D, but separate vertically by luminance in 3D (gamut cloud).
+//  - Target boxes OFF — profiling is characterization, not verification;
+//    above-peak mixes have no reachable reference to draw a box for.
+// Called from series selection AND recovery.
 function meterLatticeDefault3dView(points){
  try{
   const cubeSeries=meterCustomSeriesById(points);
   if(!cubeSeries||cubeSeries.kind!=='lattice') return;
   const view3d=document.getElementById('meterCie3dView');
   if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
+  const targets=document.getElementById('meterCieOptTargets');
+  if(targets&&targets.checked){ targets.checked=false; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
  }catch(e){}
 }
 
@@ -33941,7 +33914,7 @@ function drawTwoPointCharts(gs,allSteps){
 }
 
 function drawAllChartsPreset(sortedSteps){
- try{ if(typeof meterDrawCubeView==='function') meterDrawCubeView(sortedSteps,true); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(sortedSteps));
   if(gsSteps.length===0) return;
@@ -34256,7 +34229,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
- try{ if(typeof meterDrawCubeView==='function') meterDrawCubeView(readings,false); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
  if(!readings||readings.length===0) return;
  meterUpdateHdrConfigVisibility();
  meterEnsureDeltaECache(readings);
@@ -35708,25 +35681,30 @@ function cubeViewBindHandlers(canvas){
  canvas.addEventListener('dblclick',()=>{ _cube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterRedrawCubeView(); });
 }
 
-// Lattice (cube) series plot MEASUREMENTS on the CIE charts + ΔE table like
-// every other colour series (industry model: measurements live in perceptual
-// space; same-chromaticity neutral-ratio nodes separate by luminance in the
-// 3D xyY view, which lattice series default to on selection). The RGB cube is
-// a signal-space lattice preview / read-progress view (and the LUT display).
-// All colour-chart sections therefore stay visible for lattice series.
+// Lattice (3D LUT profiling) series are CHARACTERIZATION, not verification:
+// measurements plot on the CIE charts as a gamut cloud (3D xyY view defaults
+// on so neutral-ratio nodes separate by luminance), and there is NO target
+// grading — a node whose signal encodes more light than the panel can make
+// (e.g. 100/75/25 requests ~10:1 R:G in linear light) has no reachable
+// reference, so ΔE bars/averages against one are meaningless and alarming.
+// The ΔE chart + series averages are therefore hidden for lattice series;
+// the RGB cube never renders measurements (LUT Tools owns the cube visual).
 function meterUpdateColorChartMode(isLattice){
  // Restore each element's ORIGINAL inline display value — colorTopLayout is
  // an inline flex row and the option labels are inline-flex; clearing to ''
  // dropped them to block and stacked the colour charts vertically.
- const set=(id,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=shown; };
- set('colorTopLayout','flex');
- set('meterColorDeltaESection','');
- set('chartCIELabel','');
- set('meterCie3dViewLabel','inline-flex');
- set('meterCieOptDropLinesLabel','inline-flex');
- set('meterCieOptGamutLabel','inline-flex');
- set('meterCieOptLocusLabel','inline-flex');
- set('meterCieOptLumRingsLabel','inline-flex');
+ const set=(id,vis,shown)=>{ const el=document.getElementById(id); if(el) el.style.display=vis?shown:'none'; };
+ set('colorTopLayout',true,'flex');
+ set('meterColorDeltaESection',!isLattice,'');
+ // Averages are ΔE-based: force-hide for lattice; for other series the
+ // averages renderer manages visibility (it only shows when rows exist).
+ if(isLattice){ const avg=document.getElementById('colorSeriesAveragesWrap'); if(avg) avg.style.display='none'; }
+ set('chartCIELabel',true,'');
+ set('meterCie3dViewLabel',true,'inline-flex');
+ set('meterCieOptDropLinesLabel',true,'inline-flex');
+ set('meterCieOptGamutLabel',true,'inline-flex');
+ set('meterCieOptLocusLabel',true,'inline-flex');
+ set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
 }
 
 function meterRedrawCubeView(){
