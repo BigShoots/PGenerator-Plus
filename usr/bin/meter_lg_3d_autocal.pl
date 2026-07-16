@@ -1203,6 +1203,7 @@ sub generate_lut_cube {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
     }
+    $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if(!$neutral_identity && $model->{"residual_grid"});
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
@@ -1250,12 +1251,229 @@ sub generate_lut_lg_payload {
      my $target=target_xyz_for_node($model,$r,$g,$b,$size);
      $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
     }
+    $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if(!$neutral_identity && $model->{"residual_grid"});
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
    }
   }
  }
  return \@u16;
+}
+
+# ---- Lattice-cube solve (generic measure -> solve -> export path) ----
+# The baseline model comes from the lattice's OWN corners (W/R/G/B/K are
+# always measured first) through the proven matrix-method model builder --
+# white-preserving gamut matrix, WRGB chromatic-white handling, the lot. The
+# residual grid adds bounded, smoothed per-node corrections where the panel's
+# measured response deviates from that additive corner model. Residuals are
+# signal-domain deltas applied on top of the baseline output at generation
+# time via trilinear interpolation over the measured lattice grid.
+
+sub _trl_slope {
+ # Numerical d(relative luminance)/d(signal) of the target curve at a signal
+ # fraction; floored so near-black residuals cannot explode into huge
+ # signal-domain moves (they are noise-dominated anyway).
+ my ($f,$gamma,$white_y,$black_y)=@_;
+ my $h=0.01;
+ my $lo=$f-$h; $lo=0 if($lo < 0);
+ my $hi=$f+$h; $hi=1 if($hi > 1);
+ my $span=$hi-$lo;
+ return 0.05 if($span <= 0);
+ my $slope=(target_relative_luminance($hi,$gamma,$white_y,$black_y)
+           -target_relative_luminance($lo,$gamma,$white_y,$black_y))/$span;
+ return ($slope > 0.05) ? $slope : 0.05;
+}
+
+sub build_residual_grid {
+ my ($model,$nodes,$config)=@_;
+ return (undef,{reason=>"no interior nodes"}) if(ref($nodes) ne "ARRAY" || !@{$nodes});
+ my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0) ? $config->{"solve_residual_cap"}+0 : 0.06;
+ my $gamma=$model->{"target_gamma"};
+ my $white_y=$model->{"white_y"}||100;
+ my $black_y=$model->{"black_y"}||0;
+ my $black=$model->{"black"}||[0,0,0];
+ my $contrib=$model->{"contrib"};
+ my $peak_inverse=$model->{"peak_inverse"};
+ return (undef,{reason=>"no peak inverse"}) if(ref($peak_inverse) ne "ARRAY");
+ # Shared frac axis from the measured node positions.
+ my %fs;
+ foreach my $n (@{$nodes}) { $fs{sprintf("%.4f",$n->{"fr"})}=1; $fs{sprintf("%.4f",$n->{"fg"})}=1; $fs{sprintf("%.4f",$n->{"fb"})}=1; }
+ my @fracs=sort { $a <=> $b } map { $_+0 } keys %fs;
+ return (undef,{reason=>"lattice too small (".scalar(@fracs)." axis levels)"}) if(scalar(@fracs) < 3);
+ my %fidx; for(my $i=0;$i<@fracs;$i++){ $fidx{sprintf("%.4f",$fracs[$i])}=$i; }
+ my %corr; my %raw;
+ my ($used,$skipped,$capped)=(0,0,0);
+ my ($rms_sum,$rms_n,$max_abs)=(0,0,0);
+ foreach my $n (@{$nodes}) {
+  my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
+  # Corners built the model; exact-neutral nodes ride the identity/greyscale
+  # path -- both get zero correction (and anchor the interpolation).
+  my $is_corner=(($fr>=0.999&&$fg>=0.999&&$fb>=0.999)||($fr>=0.999&&$fg<=0.001&&$fb<=0.001)
+   ||($fr<=0.001&&$fg>=0.999&&$fb<=0.001)||($fr<=0.001&&$fg<=0.001&&$fb>=0.999)
+   ||($fr<=0.001&&$fg<=0.001&&$fb<=0.001));
+  my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
+  if($is_corner || $is_neutral) { $corr{$key}=[0,0,0]; next; }
+  my @lin=map { target_relative_luminance($_,$gamma,$white_y,$black_y) } ($fr,$fg,$fb);
+  my $predicted=[ @{$black} ];
+  my $ci=0;
+  foreach my $kind (qw(red green blue)) {
+   my $c=$contrib->{$kind}{100};
+   next if(ref($c) ne "ARRAY");
+   $predicted=vec_add($predicted,vec_scale($c,$lin[$ci]));
+   $ci++;
+  }
+  if(($predicted->[1]||0) < 0.5) { $skipped++; next; }  # noise-dominated
+  my $delta=vec_sub($n->{"xyz"},$predicted);
+  my $dlin=matrix_mul_vec($peak_inverse,$delta);
+  my @c;
+  my @f=($fr,$fg,$fb);
+  for(my $ch=0;$ch<3;$ch++) {
+   my $slope=_trl_slope($f[$ch],$gamma,$white_y,$black_y);
+   my $dsig=$dlin->[$ch]/$slope;
+   my $a=abs($dsig);
+   $rms_sum+=$dsig*$dsig; $rms_n++;
+   $max_abs=$a if($a > $max_abs);
+   if($a > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
+   push @c,-$dsig;
+  }
+  $corr{$key}=\@c;
+  $raw{$key}=1;
+  $used++;
+ }
+ return (undef,{reason=>"no usable interior nodes"}) if(!$used);
+ # One smoothing pass: blend each corrected node halfway toward the mean of
+ # its available 6-neighbours so single-read noise cannot punch spikes into
+ # the LUT. Zero-anchored corner/neutral nodes participate as neighbours.
+ my %smoothed;
+ foreach my $key (keys %corr) {
+  next if(!$raw{$key});
+  my ($i,$j,$k)=split(/:/,$key);
+  my @sum=(0,0,0); my $cnt=0;
+  foreach my $d ([1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]) {
+   my $nk=($i+$d->[0]).":".($j+$d->[1]).":".($k+$d->[2]);
+   next if(!exists $corr{$nk});
+   for(my $ch=0;$ch<3;$ch++){ $sum[$ch]+=$corr{$nk}[$ch]; }
+   $cnt++;
+  }
+  if($cnt) {
+   my $c=$corr{$key};
+   $smoothed{$key}=[ map { 0.5*$c->[$_]+0.5*($sum[$_]/$cnt) } (0..2) ];
+  }
+ }
+ foreach my $key (keys %smoothed) { $corr{$key}=$smoothed{$key}; }
+ my $report={
+  nodes_used => $used,
+  nodes_skipped_dark => $skipped,
+  channels_capped => $capped,
+  residual_cap => $cap,
+  residual_signal_rms => $rms_n ? sqrt($rms_sum/$rms_n) : 0,
+  residual_signal_max => $max_abs,
+  axis_levels => scalar(@fracs),
+ };
+ return ({ fracs=>\@fracs, corr=>\%corr },$report);
+}
+
+sub apply_residual_correction {
+ my ($model,$out,$r,$g,$b,$size)=@_;
+ my $grid=$model->{"residual_grid"};
+ return $out if(ref($grid) ne "HASH");
+ my $fracs=$grid->{"fracs"};
+ my $corr=$grid->{"corr"};
+ my $n=scalar(@{$fracs});
+ return $out if($n < 2);
+ my @f=($r/($size-1),$g/($size-1),$b/($size-1));
+ my (@lo,@t);
+ for(my $ch=0;$ch<3;$ch++) {
+  my $f=$f[$ch];
+  my $c=0;
+  $c++ while($c < $n-2 && $fracs->[$c+1] <= $f);
+  my $span=$fracs->[$c+1]-$fracs->[$c];
+  my $t=($span > 0) ? (($f-$fracs->[$c])/$span) : 0;
+  $t=0 if($t < 0); $t=1 if($t > 1);
+  push @lo,$c; push @t,$t;
+ }
+ my @add=(0,0,0);
+ foreach my $di (0,1) { foreach my $dj (0,1) { foreach my $dk (0,1) {
+  my $w=($di ? $t[0] : 1-$t[0])*($dj ? $t[1] : 1-$t[1])*($dk ? $t[2] : 1-$t[2]);
+  next if($w <= 0);
+  my $c=$corr->{($lo[0]+$di).":".($lo[1]+$dj).":".($lo[2]+$dk)};
+  next if(ref($c) ne "ARRAY");
+  for(my $ch=0;$ch<3;$ch++){ $add[$ch]+=$w*$c->[$ch]; }
+ }}}
+ return [ map { $out->[$_]+100*$add[$_] } (0..2) ];
+}
+
+sub run_solve_only {
+ my ($config)=@_;
+ my $state={ status=>"running", solve_only=>json_true(), method=>"cube",
+  current_name=>"Solving 3D LUT from lattice readings", message=>"Building model",
+  started_at=>int(time()*1000) };
+ write_state($state);
+ my $lattice=$config->{"lattice_readings"};
+ $lattice=[] if(ref($lattice) ne "ARRAY");
+ my %corner_kind=( "1,1,1"=>"white", "1,0,0"=>"red", "0,1,0"=>"green", "0,0,1"=>"blue", "0,0,0"=>"black" );
+ my %corners; my @nodes;
+ foreach my $rd (@{$lattice}) {
+  next if(ref($rd) ne "HASH");
+  my $name=$rd->{"name"}||"";
+  next unless($name =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
+  my ($fr,$fg,$fb)=($1/100,$2/100,$3/100);
+  my $xyz=reading_xyz($rd);
+  next if(!$xyz && $fr+$fg+$fb > 0.001);
+  $xyz ||= [0,0,0];
+  my $ck=join(",",map { $_ >= 0.999 ? 1 : ($_ <= 0.001 ? 0 : "x") } ($fr,$fg,$fb));
+  $corners{$corner_kind{$ck}}=$xyz if(exists $corner_kind{$ck});
+  push @nodes,{ fr=>$fr, fg=>$fg, fb=>$fb, xyz=>$xyz };
+ }
+ foreach my $need (qw(white red green blue)) {
+  if(!$corners{$need}) {
+   $state->{"status"}="error";
+   $state->{"message"}="Lattice readings are missing the 100% $need corner - measure the full lattice first";
+   write_state($state);
+   exit 1;
+  }
+ }
+ my @profile;
+ foreach my $kind (qw(white red green blue)) {
+  push @profile,{ step=>{kind=>$kind,level=>100,phase=>"profile"}, reading=>{X=>$corners{$kind}[0],Y=>$corners{$kind}[1],Z=>$corners{$kind}[2]}, read_time=>time() };
+ }
+ my $blackc=$corners{"black"}||[0,0,0];
+ push @profile,{ step=>{kind=>"black",level=>0,phase=>"profile"}, reading=>{X=>$blackc->[0],Y=>$blackc->[1],Z=>$blackc->[2]}, read_time=>time() };
+ my $model=model_from_readings("matrix",\@profile,$config);
+ my $solve_report={ mode=>"matrix_only" };
+ if(!$config->{"solve_matrix_only"}) {
+  my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+  if($grid) {
+   $model->{"residual_grid"}=$grid;
+   $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+  } else {
+   $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+  }
+ }
+ $state->{"message"}="Generating LUT";
+ $state->{"current_name"}="Generating 3D LUT";
+ write_state($state);
+ my $cube_size=int($config->{"solve_cube_size"}||33);
+ $cube_size=33 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
+ my $payload_u16=generate_lut_lg_payload($model,33);
+ $model->{"method"}="cube";
+ my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
+ $state->{"status"}="complete";
+ $state->{"message"}="3D LUT solved";
+ $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." lattice readings";
+ $state->{"export"}=$export;
+ $state->{"solve_report"}=$solve_report;
+ $state->{"cube_lut_size"}=$cube_size;
+ $state->{"payload_lut_size"}=33;
+ $state->{"lattice_nodes"}=scalar(@nodes);
+ $state->{"signal_mode"}=$model->{"signal_mode"};
+ $state->{"target_gamut"}=$model->{"target_gamut"};
+ $state->{"target_gamma"}=$model->{"signal_gamma"}||$model->{"target_gamma"};
+ write_state($state);
+ log_line("solve_only complete: nodes=".scalar(@nodes)." cube=$cube_size mode=".($solve_report->{"mode"}||""));
+ return 1;
 }
 
 sub cube_text {
@@ -1279,7 +1497,8 @@ sub cube_text {
 }
 
 sub export_lut {
- my ($cube_u16,$payload_u16,$model,$config)=@_;
+ my ($cube_u16,$payload_u16,$model,$config,$cube_size)=@_;
+ $cube_size=17 if(!defined($cube_size) || $cube_size !~ /^\d+$/ || $cube_size < 2);
  my $dir=$config->{"lut_dir"}||"/var/lib/PGenerator/lg/luts";
  my $stamp=strftime("%Y%m%d_%H%M%S",localtime());
  my $method=sanitize_name($model->{"method"}||"ramp");
@@ -1291,7 +1510,7 @@ sub export_lut {
  my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
  my $binary=pack("v*",@{$payload_u16});
  write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
- write_file("$base.cube",cube_text($cube_u16,17,$title),0) or die "Unable to write cube export\n";
+ write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
  write_file("$base.json",$json->encode({
   status => "ok",
   method => $method,
@@ -1300,8 +1519,8 @@ sub export_lut {
   target_gamut => $gamut,
   target_gamma => $gamma,
   title => $title,
-  lut_size => 17,
-  cube_lut_size => 17,
+  lut_size => $cube_size,
+  cube_lut_size => $cube_size,
   payload_lut_size => 33,
   payload_bits => 12,
   payload_endianness => "little-endian uint16",
@@ -2984,6 +3203,20 @@ sub _normalize_signal_range_field {
  $config->{"transport_signal_range"}=$eff;
  log_line("LG 3D LUT AutoCal quant range: signal_range=$eff (1=Limited 2=Full) method=$method signal_mode=".($config->{"signal_mode"}||""));
 }
+# Solve-only mode (generic measure -> solve -> export path): no meter, no TV,
+# no upload -- build the model from POSTed lattice readings, generate + export
+# the LUT, write the state file and exit. Uses its own state/stop paths so it
+# can never collide with a real AutoCal run's UI state.
+if($config->{"solve_only"}) {
+ eval { run_solve_only($config); };
+ if($@) {
+  my $err=$@; $err =~ s/\s+$//;
+  write_state({ status=>"error", solve_only=>json_true(), message=>"LUT solve failed: $err" });
+  exit 1;
+ }
+ exit 0;
+}
+
 my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
 my $started_at=int(time()*1000);
 

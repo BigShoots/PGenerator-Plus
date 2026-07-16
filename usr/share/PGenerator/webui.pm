@@ -1117,6 +1117,16 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/3d-lut/solve" && $method eq "POST") {
+    my $result=&webui_3d_lut_solve($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/3d-lut/solve/status") {
+    my $result=&webui_3d_lut_solve_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/3d-lut/cube") {
     my ($fname,$content)=&webui_lg_lut_download(undef,$request_query);
     my $len=length($content);
@@ -5060,6 +5070,46 @@ sub webui_meter_settings_save (@) {
 # Solved 3D-LUT listing/download for the WebUI (files written by
 # meter_lg_3d_autocal.pl's export_lut). Name whitelist keeps this endpoint
 # from serving anything outside the luts directory.
+# Generic lattice-cube solve (measure -> solve -> export, any display): runs
+# meter_lg_3d_autocal.pl in solve_only mode with its OWN config/state/stop
+# paths -- no meter, no TV, no upload, no collision with a real AutoCal run.
+# The exported .cube/.bin/.json land in the standard solved-LUT dir so LUT
+# Tools lists them immediately.
+my $_lut_solve_config_file="/tmp/lut_solve_config.json";
+my $_lut_solve_state_file="/tmp/lut_solve_state.json";
+my $_lut_solve_stop_file="/tmp/lut_solve_stop.signal";
+sub webui_3d_lut_solve (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Solve payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ return '{"status":"error","message":"lattice_readings required"}' if($body!~/"lattice_readings"\s*:\s*\[/);
+ if(-f $_lut_solve_state_file) {
+  my $age=time()-(stat($_lut_solve_state_file))[9];
+  my $prev="";
+  if(open(my $fh,'<',$_lut_solve_state_file)) { local $/; $prev=<$fh>; close($fh); }
+  return '{"status":"error","message":"A LUT solve is already running"}' if($age < 120 && $prev=~/"status"\s*:\s*"running"/);
+ }
+ my $cfg=$body;
+ $cfg=~s/\}\s*\z/,"solve_only":1}/ unless($cfg=~/"solve_only"/);
+ if(open(my $fh,'>',$_lut_solve_config_file)) { print $fh $cfg; close($fh); }
+ else { return '{"status":"error","message":"Unable to write solve config"}'; }
+ if(open(my $fh,'>',$_lut_solve_state_file)) { print $fh '{"status":"running","solve_only":true,"message":"Starting LUT solve..."}'; close($fh); }
+ unlink($_lut_solve_stop_file);
+ my $log_file="/tmp/lut_solve.log";
+ my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_3d_autocal.pl '$_lut_solve_config_file' '$_lut_solve_state_file' '$_lut_solve_stop_file' </dev/null >'$log_file' 2>&1 &";
+ system($cmd);
+ return '{"status":"started","message":"LUT solve started"}';
+}
+
+sub webui_3d_lut_solve_status (@) {
+ if(open(my $fh,'<',$_lut_solve_state_file)) {
+  local $/;
+  my $json=<$fh>;
+  close($fh);
+  return $json if(defined($json) && $json=~/^\s*\{/);
+ }
+ return '{"status":"idle"}';
+}
+
 sub webui_lg_lut_list (@) {
  my ($dir)=@_;
  $dir="/var/lib/PGenerator/lg/luts" if(!defined($dir) || $dir eq "");
@@ -11331,6 +11381,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div class="btn-row" id="meterExportRow" style="display:none">
    <button class="btn btn-sm btn-secondary" onclick="meterExportCSV()">&#128190; Export CSV</button>
    <button class="btn btn-sm btn-secondary" onclick="meterOpenReportDialog()">&#128196; Generate Report</button>
+   <button class="btn btn-sm btn-primary" id="meterGenerateLutBtn" onclick="meterGenerateLutFromLattice()" style="display:none" title="Solve a corrective 3D LUT from the measured lattice patches (white-preserving matrix baseline + per-node residuals) and export it to LUT Tools">&#9881; Generate 3D LUT</button>
   </div>
 
   <div id="meterReportOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:16px">
@@ -25563,6 +25614,75 @@ function meterLutCubeDraw(){
  ctx.fillText(N+'³ LUT'+(shown<N?(' · showing '+shown+'³ subset'):'')+' · hollow = input node, filled = LUT output',8,ctx.h-8);
 }
 
+// ---- Generate 3D LUT from a measured lattice (measure -> solve -> export) ----
+// POSTs the completed lattice read's XYZ data to /api/3d-lut/solve; the worker
+// (solve_only mode) builds the baseline model from the lattice's own corners,
+// adds bounded per-node residual corrections, and exports .cube/.bin/.json to
+// the solved-LUT dir. Works for ANY display — nothing is uploaded to a TV.
+let meterLutSolvePolling=null;
+
+function meterGenerateLutFromLattice(){
+ const series=meterActiveLatticeSeries();
+ if(!series){ toast('Select a lattice series first',true); return; }
+ const readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
+ if(readings.length<5){ toast('Measure the lattice first (the W/R/G/B/K corners at minimum)',true); return; }
+ const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
+ const missing=corners.filter(n=>!readings.some(rd=>rd.name===n));
+ if(missing.length){ toast('Lattice read is missing corner patches: '+missing.join(', '),true); return; }
+ meterLutSolveStart(series,readings);
+}
+
+async function meterLutSolveStart(series,readings){
+ const payload=readings.map(rd=>{ const xyz=meterReadingXYZ(rd)||{X:0,Y:0,Z:0}; return {name:rd.name,X:xyz.X,Y:xyz.Y,Z:xyz.Z}; });
+ const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toLowerCase();
+ const gamut=String(((document.getElementById('meterTargetGamut')||{}).value)||'auto');
+ const gamma=(typeof meterAutoCalTargetGammaValue==='function')?String(meterAutoCalTargetGammaValue()||''):'';
+ const body={
+  signal_mode:signalMode, requested_signal_mode:signalMode, ui_signal_mode:signalMode,
+  target_gamut:gamut, target_gamma:gamma,
+  display_type:(typeof getEffectiveDisplayType==='function')?getEffectiveDisplayType():'',
+  solve_cube_size:33,
+  lattice_readings:payload
+ };
+ const ok=await meterShowChoiceModal({
+  title:'Generate 3D LUT?',
+  body:'Solve a corrective 3D LUT from '+payload.length+' measured lattice patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nBaseline: white-preserving matrix from the lattice corners. Interior nodes add bounded residual corrections. The result lands in LUT Tools for 3D viewing and .cube/.3dl export — nothing is uploaded to the display.',
+  acceptLabel:'Generate',cancelLabel:'Cancel'});
+ if(!ok) return;
+ let r=null;
+ try{ r=await fetchJSON('/api/3d-lut/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:15000}); }catch(e){}
+ if(!r||r.status!=='started'){ toast((r&&r.message)||'LUT solve failed to start',true); return; }
+ toast('Solving 3D LUT…');
+ if(meterLutSolvePolling) clearInterval(meterLutSolvePolling);
+ meterLutSolvePolling=setInterval(meterLutSolvePoll,1500);
+}
+
+async function meterLutSolvePoll(){
+ let s=null;
+ try{ s=await fetchJSON('/api/3d-lut/solve/status',{_quiet:true,_timeoutMs:5000}); }catch(e){ return; }
+ if(!s) return;
+ if(s.status==='complete'){
+  if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
+  const rep=s.solve_report||{};
+  const how=(rep.mode==='matrix_plus_residuals')
+   ?('matrix + residuals from '+(rep.nodes_used||0)+' nodes'
+     +((rep.residual_signal_rms!=null)?(', residual RMS '+(Math.round(rep.residual_signal_rms*1000)/10)+'% signal'):''))
+   :'matrix only'+(rep.residual_skip_reason?(' ('+rep.residual_skip_reason+')'):'');
+  toast('3D LUT solved: '+how);
+  try{
+   meterOpenLutTools();
+   await meterLoadSolvedLutList();
+   const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
+   if(nm) meterViewSolvedLutIn3d(nm);
+  }catch(e){}
+  return;
+ }
+ if(s.status==='error'){
+  if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
+  toast(s.message||'LUT solve failed',true);
+ }
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  // Explicit per-patch target chromaticity (operator-entered) is authoritative;
@@ -35939,6 +36059,8 @@ function meterUpdateColorChartMode(isLattice){
  // Averages are ΔE-based: force-hide for lattice; for other series the
  // averages renderer manages visibility (it only shows when rows exist).
  if(isLattice){ const avg=document.getElementById('colorSeriesAveragesWrap'); if(avg) avg.style.display='none'; }
+ // The measure -> solve -> export entry point lives with the lattice charts.
+ set('meterGenerateLutBtn',isLattice,'');
  set('chartCIELabel',true,'');
  set('meterCie3dViewLabel',true,'inline-flex');
  set('meterCieOptDropLinesLabel',true,'inline-flex');
