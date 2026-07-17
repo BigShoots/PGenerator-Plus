@@ -422,6 +422,63 @@ sub build_ramp_steps {
  return @steps;
 }
 
+# Lattice profiling (method=lattice): the client expands the chosen lattice
+# series (meterLatticeExpandPatches — corners W,R,G,B,K lead) and posts the
+# nodes as percent triplets in lattice_patches. Wire codes are computed HERE
+# from this run's range/bit-depth (same rule as patch_step) so the profile
+# always matches the live link, exactly like the matrix path. Corner nodes
+# get their matrix kinds (white/red/green/blue/black) so model_from_readings'
+# corner extraction works unchanged; interior nodes are kind "node" — the
+# matrix baseline ignores them and build_residual_grid consumes them, the
+# same split run_solve_only uses for the offline lattice solve.
+sub build_lattice_steps {
+ my ($config)=@_;
+ my $patches=$config->{"lattice_patches"};
+ return () if(ref($patches) ne "ARRAY" || !@{$patches});
+ my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
+ my $max_bpc=$config->{"max_bpc"}||"";
+ my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
+ my @steps;
+ foreach my $p (@{$patches}) {
+  next if(ref($p) ne "HASH");
+  my ($pr,$pg,$pb);
+  if(defined($p->{"name"}) && $p->{"name"} =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$}) {
+   ($pr,$pg,$pb)=($1,$2,$3);
+  } elsif(defined($p->{"r_pct"}) && defined($p->{"g_pct"}) && defined($p->{"b_pct"})) {
+   ($pr,$pg,$pb)=($p->{"r_pct"},$p->{"g_pct"},$p->{"b_pct"});
+  } else {
+   next;
+  }
+  ($pr,$pg,$pb)=map { clamp($_+0,0,100) } ($pr,$pg,$pb);
+  last if(@steps >= 2000);
+  my $name=format_percent($pr)."/".format_percent($pg)."/".format_percent($pb);
+  my $kind="node"; my $level=($pr+$pg+$pb)/3;
+  if($pr>=99.9 && $pg>=99.9 && $pb>=99.9) { $kind="white"; $level=100; }
+  elsif($pr<=0.1 && $pg<=0.1 && $pb<=0.1) { $kind="black"; $level=0; }
+  elsif($pr>=99.9 && $pg<=0.1 && $pb<=0.1) { $kind="red"; $level=100; }
+  elsif($pg>=99.9 && $pr<=0.1 && $pb<=0.1) { $kind="green"; $level=100; }
+  elsif($pb>=99.9 && $pr<=0.1 && $pg<=0.1) { $kind="blue"; $level=100; }
+  push @steps,{
+   kind => $kind,
+   level => $level+0,
+   phase => "profile",
+   name => $name,
+   ire => int($level+0.5),
+   stimulus => $level+0,
+   signal_r_pct => $pr+0,
+   signal_g_pct => $pg+0,
+   signal_b_pct => $pb+0,
+   r => patch_code_for_percent($pr,$signal_range,$max_bpc),
+   g => patch_code_for_percent($pg,$signal_range,$max_bpc),
+   b => patch_code_for_percent($pb,$signal_range,$max_bpc),
+   input_max => $input_max,
+   pattern_signal_range => "$signal_range",
+   signal_range => "$signal_range",
+  };
+ }
+ return @steps;
+}
+
 sub reading_xyz {
  my ($reading)=@_;
  return undef if(ref($reading) ne "HASH");
@@ -1828,7 +1885,15 @@ sub fixture_reading_for_step {
  my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  my $xyz;
- if($kind eq "black") { $xyz=$black; }
+ if($kind eq "node") {
+  # Lattice interior node: ideal additive display in the target gamut —
+  # per-channel gamma-decoded drives. Makes the lattice-profiled solve's
+  # residual grid ~zero in fixture mode (identity gate, like solve_only's).
+  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
+  $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
+   $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
+ }
+ elsif($kind eq "black") { $xyz=$black; }
  elsif($kind eq "white") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,$gamma,$gamma,$range_y)); }
  elsif($kind eq "red") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,0,0,$range_y)); }
  elsif($kind eq "green") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,$gamma,0,$range_y)); }
@@ -3179,7 +3244,10 @@ if(ref($config) eq "HASH") {
 }
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
-$method="matrix" unless($method eq "matrix" || $method eq "ramp");
+$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice");
+# Lattice profiling needs the client-expanded node list; without it fall back
+# to the classic 5-point matrix rather than dying mid-wizard.
+$method="matrix" if($method eq "lattice" && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}}));
 my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_signal_mode"},$config->{"ui_signal_mode"},$config->{"signal_mode"});
 $config->{"signal_mode"}=$signal_mode;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
@@ -3221,7 +3289,9 @@ if($config->{"solve_only"}) {
  exit 0;
 }
 
-my @steps=($method eq "matrix") ? build_matrix_steps($config) : build_ramp_steps($config);
+my @steps=($method eq "matrix") ? build_matrix_steps($config)
+ : ($method eq "lattice") ? build_lattice_steps($config)
+ : build_ramp_steps($config);
 my $started_at=int(time()*1000);
 
 my $state={
@@ -3231,7 +3301,7 @@ my $state={
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
- profile_patch_count => ($method eq "ramp" ? 65 : 5),
+ profile_patch_count => ($method eq "ramp" ? 65 : ($method eq "lattice" ? scalar(@steps) : 5)),
  current_name => "Preparing LG 3D LUT Auto Cal...",
  message => "Starting",
  readings => [],
@@ -3252,7 +3322,7 @@ my $upload_requested=upload_requested($config);
 
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
- die "LG 3D LUT Auto Cal HDR10 runs are matrix-only in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix");
+ die "LG 3D LUT Auto Cal HDR10 runs are matrix- or lattice-profiled in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "lattice");
  # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
  # tone-map commit (operator-approved reorder, 2026-07-03). Running it
  # here (before profiling) made the trim converge against a mid-workflow
@@ -3286,10 +3356,42 @@ eval {
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
   ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
-  : "Solving matrix 17-point cube plus 33-point LG payload";
+  : ($method eq "lattice")
+   ? "Solving lattice matrix + per-node residuals, 17-point cube plus 33-point LG payload"
+   : "Solving matrix 17-point cube plus 33-point LG payload";
  write_state($state);
 
- my $model=model_from_readings($method,\@profile_readings,$config);
+ # Lattice profiling solves the SAME model as the offline lattice solve
+ # (run_solve_only): white-preserving matrix baseline from the corner reads,
+ # then bounded per-node residual corrections from the interior nodes. The
+ # matrix baseline reads only the white/red/green/blue/black corner kinds,
+ # so passing "matrix" here is exact — interior "node" entries are inert.
+ my $model=model_from_readings(($method eq "lattice") ? "matrix" : $method,\@profile_readings,$config);
+ if($method eq "lattice") {
+  my @nodes;
+  foreach my $entry (@profile_readings) {
+   next if(ref($entry) ne "HASH");
+   my $nm=(ref($entry->{"step"}) eq "HASH" ? $entry->{"step"}{"name"} : "")||"";
+   next unless($nm =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
+   my $xyz=reading_xyz($entry->{"reading"});
+   next if(!$xyz);
+   push @nodes,{ fr=>$1/100, fg=>$2/100, fb=>$3/100, xyz=>$xyz };
+  }
+  $state->{"lattice_nodes"}=scalar(@nodes);
+  if(!$config->{"solve_matrix_only"}) {
+   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+   if($grid) {
+    $model->{"residual_grid"}=$grid;
+    $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+   } else {
+    $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   }
+  } else {
+   $state->{"lattice_solve"}={ mode=>"matrix_only" };
+  }
+  $model->{"method"}="lattice";
+  log_line("lattice profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
+ }
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
  my $payload_u16=generate_lut_lg_payload($model,33);
  my $export=export_lut($cube_u16,$payload_u16,$model,$config);
