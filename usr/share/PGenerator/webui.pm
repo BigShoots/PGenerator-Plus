@@ -10767,7 +10767,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
-     <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap">
+     <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap;flex:1 1 auto">
       <!-- 3D LUT profiling lattices: measured like any colour series (CIE
            charts only — no target grading; profiling data feeds the LUT
            solve). The LUT cube visual lives in LUT Tools. -->
@@ -10977,7 +10977,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
 
   <div id="meterLutToolsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
-   <div style="width:min(720px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(720px,100%);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div style="font-size:.95rem;font-weight:700;color:#eee">3D LUT Tools</div>
      <button class="btn btn-sm btn-secondary" onclick="meterCloseLutTools()">Close</button>
@@ -25638,7 +25638,12 @@ function meterLutCubeShow(parsed,name){
  const wrap=document.getElementById('lutCubeViewWrap');
  const label=document.getElementById('lutCubeViewName');
  if(label) label.textContent=meterLutCubeState.name+' ('+parsed.size+'³)';
- if(wrap) wrap.style.display='';
+ if(wrap){
+  wrap.style.display='';
+  // Bring the viewer into view — clicking 3D on a row far down the solved
+  // list otherwise renders the cube off-screen above the scroll position.
+  try{ wrap.scrollIntoView({block:'start',behavior:'smooth'}); }catch(e){ wrap.scrollIntoView(); }
+ }
  meterLutCubeBindHandlers();
  requestAnimationFrame(meterLutCubeDraw);
 }
