@@ -11839,6 +11839,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	    LG Tone Mapping Shadow Fix
 	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re-apply lift)</span>
 	   </label>
+	   <label id="meterFullAutoCalProfilingRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px;flex-wrap:wrap">
+	    3D LUT profiling
+	    <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
+	     <option value="matrix" selected>Matrix (5-point, fastest)</option>
+	     <option value="lattice">Lattice series</option>
+	    </select>
+	    <select id="meterFullAutoCalLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px"></select>
+	    <span style="font-size:.68rem;color:var(--text2)">(a lattice also measures interior nodes for per-node corrections &mdash; more reads, longer run)</span>
+	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -22908,11 +22917,21 @@ function meterFullAutoCalStageWeights(){
  try{
   if(meterFullAutoCalShadowFixEnabled()&&String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'')==='hdr10') shadowReads=95;
  }catch(e){ shadowReads=0; }
+ // Lattice profiling replaces the 5-point matrix profile with the chosen
+ // series' full patch count — weight the 3D phase by the extra reads so the
+ // bar does not crawl through a long lattice at matrix pacing.
+ let latticeReads=0;
+ try{
+  if(String((meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||'')==='lattice'){
+   const series=meterCustomSeriesById(meterFullAutoCalConfig.latticeSeriesId);
+   if(series) latticeReads=Math.max(0,meterLg3dLatticePatchesForStart(series).length-5);
+  }
+ }catch(e){ latticeReads=0; }
  return {
   'precal-report':reportReads,
   'first-greyscale':80,
   'touchup-greyscale':20,
-  '3d-lut':15+shadowReads,
+  '3d-lut':15+latticeReads+shadowReads,
   'post-3d-polish':20,
   'magic-wand':15,
   'postcal-report':reportReads,
@@ -30661,6 +30680,26 @@ function meterFullAutoCalMethodValue(){
  return 'matrix';
 }
 
+// Wizard "3D LUT profiling" choice: matrix (default) or a lattice series.
+// The wizard NEVER offers the imported upload-only source — a full workflow
+// always profiles and solves.
+function meterFullAutoCalProfilingMethodChanged(){
+ const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+ const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
+ const lattice=!!(methodSel&&String(methodSel.value)==='lattice');
+ if(!latSel) return;
+ latSel.style.display=lattice?'':'none';
+ if(!lattice) return;
+ const prev=String(latSel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ latSel.innerHTML=list.map(s=>{
+  let count=0;
+  try{ count=(s.kind==='lattice'&&s.params)?meterLatticeCountForParams(s.params):(Array.isArray(s.patches)?s.patches.length:0); }catch(e){}
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) latSel.value=prev;
+}
+
 function meterFullAutoCalUploadValue(){
  return true;
 }
@@ -30684,13 +30723,19 @@ function meterFullAutoCalResolveConfirm(accepted){
 	   magicWandEnabled:meterFullAutoCalMagicWandChoiceValue()
 	  };
 	  if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
+	  if(opts.showProfilingChoice){
+	   const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+	   const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
+	   result.method=(methodSel&&String(methodSel.value)==='lattice')?'lattice':'matrix';
+	   result.latticeSeriesId=(result.method==='lattice'&&latSel&&latSel.value)?Math.round(Number(latSel.value)):null;
+	  }
 	 }
  meterFullAutoCalConfirmResolver=null;
  meterFullAutoCalConfirmOptions=null;
  const overlay=document.getElementById('meterAutoCalOverlay');
  if(overlay) overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-autocal-active');
- ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalShadowFixRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
+ ['meterFullAutoCalConfirmBox','meterFullAutoCalTouchupChoiceRow','meterFullAutoCalShadowFixRow','meterFullAutoCalProfilingRow','meterFullAutoCalCancelBtn','meterFullAutoCalSkipBtn','meterFullAutoCalContinueBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });
@@ -30726,6 +30771,15 @@ function meterFullAutoCalConfirmDialog(options){
 	 if(touchupChoiceRow){
 	  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
 	  if(magicChoice) magicChoice.checked=meterFullAutoCalMagicWandEnabled();
+	 }
+	 const profilingRow=document.getElementById('meterFullAutoCalProfilingRow');
+	 if(profilingRow){
+	  profilingRow.style.display=opts.showProfilingChoice?'flex':'none';
+	  if(opts.showProfilingChoice){
+	   const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
+	   if(methodSel) methodSel.value='matrix';
+	   try{ meterFullAutoCalProfilingMethodChanged(); }catch(e){}
+	  }
 	 }
 	 const shadowFixRow=document.getElementById('meterFullAutoCalShadowFixRow');
 	 const shadowFixChoice=document.getElementById('meterFullAutoCalShadowFixEnabled');
@@ -31228,7 +31282,7 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const signalMode=meterLgAutoCalRequestedSignalMode();
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:signalMode==='hdr10',shadowFixDefault:true});
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:signalMode==='hdr10',shadowFixDefault:true,showProfilingChoice:true});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
@@ -31239,6 +31293,8 @@ async function meterStartFullAutoCal(){
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
 		  ? accepted.shadowFixEnabled!==false
 		  : true;
+		 const profilingMethod=(accepted&&typeof accepted==='object'&&accepted.method==='lattice')?'lattice':'matrix';
+		 const profilingLatticeSeriesId=(profilingMethod==='lattice'&&accepted&&Number.isFinite(Number(accepted.latticeSeriesId)))?Math.round(Number(accepted.latticeSeriesId)):null;
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -31261,7 +31317,9 @@ async function meterStartFullAutoCal(){
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
 		  magicWandEnabled:magicWandEnabled,
-		  shadowFixEnabled:shadowFixEnabled
+		  shadowFixEnabled:shadowFixEnabled,
+		  method:profilingMethod,
+		  latticeSeriesId:profilingLatticeSeriesId
 		 };
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
@@ -31308,6 +31366,7 @@ async function meterFullAutoCalStart3d(firstStatus){
   fullWorkflow:true,
   skipConfirm:true,
   method:(meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||meterFullAutoCalMethodValue(),
+  latticeSeriesId:(meterFullAutoCalConfig&&meterFullAutoCalConfig.latticeSeriesId)||undefined,
   upload:meterFullAutoCalConfig?!!meterFullAutoCalConfig.upload:meterFullAutoCalUploadValue(),
   postCommitPolishEnabled:postCommitPolishEnabled,
   magicWandEnabled:magicWandEnabled
