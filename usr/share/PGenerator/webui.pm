@@ -9744,6 +9744,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
 #meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-gutter:stable both-edges}
+.meter-modal-scroll{scrollbar-color:#3a4152 #111723;scrollbar-width:thin}
+.meter-modal-scroll::-webkit-scrollbar{width:10px}
+.meter-modal-scroll::-webkit-scrollbar-track{background:#111723;border-radius:999px}
+.meter-modal-scroll::-webkit-scrollbar-thumb{background:#3a4152;border-radius:999px;border:2px solid #111723}
+.meter-modal-scroll::-webkit-scrollbar-thumb:hover{background:#4a5468}
 #meterThumbsRow{scrollbar-color:#525264 #232330;scrollbar-width:auto}
 .meter-scroll-sync{scrollbar-color:#7287a8 #161a25;scrollbar-width:thin}
 #meterThumbsRow::-webkit-scrollbar{height:14px}
@@ -10906,7 +10911,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
 
   <div id="meterCustomSeriesModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
-   <div style="width:min(880px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(1120px,96vw);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div style="min-width:0">
       <div id="meterCustomSeriesModalTitle" style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
@@ -10952,7 +10957,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div class="btn-row" style="margin:0 0 12px 0">
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
      <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
-     <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">Generate Lattice&hellip;</button>
+     <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
     </div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
@@ -25184,7 +25189,7 @@ function meterRenderCustomSeriesManager(){
  const modeKey=meterCustomSeriesModeKey();
  const listed=state.series.filter(series=>series.mode===modeKey);
  if(!listed.length){
-  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series for the current display mode ('+modeKey.toUpperCase()+') yet. Use New Greyscale, New Color or Generate Lattice to create one.</td></tr>';
+  body.innerHTML='<tr><td colspan="5" style="padding:10px;color:var(--text2)">No custom series for the current display mode ('+modeKey.toUpperCase()+') yet. Use New Greyscale, New Color or New 3D LUT Lattice to create one.</td></tr>';
   return;
  }
  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -37101,9 +37106,12 @@ function drawCIETargetInset(ctx,readings,geom){
  // Nudge left/down a touch so it sits clear of the gamut legend labels.
  const ix=pad.l+g.w-insetSize-margin-18;
  // Autoscale the zoom to fit the target + measured point of the focused
- // reading. Enforce a minimum half-range so close measurements stay readable.
+ // reading. Enforce a minimum half-range so close measurements stay readable
+ // AND a maximum so the inset is always a real zoom over the main chart —
+ // a large miss used to zoom the inset out to ±0.19 (barely 2x). Beyond the
+ // cap the measured dot pins to the inset edge, connector showing direction.
  const span=Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y));
- const halfRange=Math.max(0.004,span*1.6);
+ const halfRange=Math.max(0.004,Math.min(0.05,span*1.6));
  const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
  // Caption: measure text first so the box hugs the words (width + height).
  const focusLumInfo=meterColorLuminanceInfo(focus);
@@ -37169,10 +37177,12 @@ function drawCIETargetInset(ctx,readings,geom){
   const mColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
   const tInside=rt.x>=xMn&&rt.x<=xMx&&rt.y>=yMn&&rt.y<=yMx;
   const mInside=rd.x>=xMn&&rd.x<=xMx&&rd.y>=yMn&&rd.y<=yMx;
-  if(!tInside&&!mInside) return;
-  if(isFocus&&tInside&&mInside){
+  if(!tInside&&!mInside&&!isFocus) return;
+  const clampX=v=>Math.max(ix+plotPad,Math.min(ix+plotPad+pw,v));
+  const clampY=v=>Math.max(iy+plotPad,Math.min(iy+plotPad+ph,v));
+  if(isFocus&&tInside){
    ctx.strokeStyle=meterColorWithAlpha(tColor,0.85);ctx.lineWidth=1.3;
-   ctx.beginPath();ctx.moveTo(ZtoX(rt.x),ZtoY(rt.y));ctx.lineTo(ZtoX(rd.x),ZtoY(rd.y));ctx.stroke();
+   ctx.beginPath();ctx.moveTo(ZtoX(rt.x),ZtoY(rt.y));ctx.lineTo(clampX(ZtoX(rd.x)),clampY(ZtoY(rd.y)));ctx.stroke();
   }
   if(isFocus&&tInside){
    const sq=5;
@@ -37183,11 +37193,18 @@ function drawCIETargetInset(ctx,readings,geom){
   if(meterCieViewOpts.lumRings&&isFocus&&colorInclLum&&mInside){
    meterCieDrawLumErrorHalo(ctx,ZtoX(rd.x),ZtoY(rd.y),lumInfo.deltaPct,0.85);
   }
-  if(mInside){
+  if(mInside||isFocus){
+   // Focused reading beyond the zoom window pins to the inset edge so the
+   // miss direction stays visible at full zoom.
+   const mx=clampX(ZtoX(rd.x)), my=clampY(ZtoY(rd.y));
    ctx.save();
    ctx.fillStyle=isFocus?mColor:meterColorWithAlpha(mColor,0.7);
    ctx.beginPath();
-   ctx.arc(ZtoX(rd.x),ZtoY(rd.y),isFocus?4.4:3.2,0,Math.PI*2);ctx.fill();
+   ctx.arc(mx,my,isFocus?4.4:3.2,0,Math.PI*2);ctx.fill();
+   if(isFocus&&!mInside){
+    ctx.strokeStyle='rgba(255,255,255,0.8)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(mx,my,6,0,Math.PI*2);ctx.stroke();
+   }
    ctx.restore();
   }
  });
