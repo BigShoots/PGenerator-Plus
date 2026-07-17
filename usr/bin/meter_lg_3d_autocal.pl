@@ -47,6 +47,14 @@ sub is_volume_profile_method {
  $method=lc($method||"");
  return ($method eq "lattice" || $method eq "skeleton" || $method eq "hybrid") ? 1 : 0;
 }
+# Methods that carry multi-level primary ramps and therefore solve via the
+# measured-response INVERSE (build_measured_forward_model + fm_invert) instead
+# of the matrix-baseline + residual grid. Lattice stays on the residual path.
+sub forward_model_method {
+ my ($method)=@_;
+ $method=lc($method||"");
+ return ($method eq "skeleton" || $method eq "hybrid") ? 1 : 0;
+}
 
 sub describe_and_exit {
  print $json->encode({
@@ -1415,6 +1423,224 @@ sub gamut_matrix_output {
  return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
 }
 
+# ---- Measured-response forward model + inverse (skeleton / hybrid) ----
+# The residual-on-matrix path cannot USE the multi-level primary ramps the
+# skeleton measures: the white-preserving matrix assumes each primary follows
+# the target gamma (R@25% == 0.25^g * R@100%), but a real panel deviates
+# (measured Blue@25% was ~19% off target-gamma luminance on the C2). So hybrid
+# scored like matrix. Instead, build a forward model DIRECTLY from the
+# measurements -- per-channel primary XYZ interpolated over the measured drive
+# levels (no gamma assumption) + the measured volume non-additivity -- and
+# INVERT it per LUT node to the target. Neutral axis stays identity (DPG owns
+# greyscale). Needs multi-level mono ramps, so it engages for skeleton/hybrid.
+
+sub _fm_ramp_interp {
+ my ($arr,$f)=@_;                 # arr: [ [level,xyz], ... ] sorted by level
+ my $n=scalar(@{$arr});
+ return [0,0,0] if(!$n);
+ $f=0 if($f < 0); $f=1 if($f > 1);
+ return $arr->[0][1] if($f <= $arr->[0][0]);
+ for(my $i=0;$i<$n-1;$i++) {
+  my ($l0,$x0)=@{$arr->[$i]}; my ($l1,$x1)=@{$arr->[$i+1]};
+  if($f <= $l1) {
+   my $t=($l1 > $l0) ? ($f-$l0)/($l1-$l0) : 0;
+   return [ map { $x0->[$_]*(1-$t)+$x1->[$_]*$t } (0..2) ];
+  }
+ }
+ return $arr->[$n-1][1];
+}
+sub fm_additive {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $R=_fm_ramp_interp($fm->{"ramp"}[0],$dr);
+ my $G=_fm_ramp_interp($fm->{"ramp"}[1],$dg);
+ my $B=_fm_ramp_interp($fm->{"ramp"}[2],$db);
+ my $bl=$fm->{"black"};
+ return [ map { $R->[$_]+$G->[$_]+$B->[$_]-2*($bl->[$_]||0) } (0..2) ];
+}
+sub _fm_vol_axis {
+ my ($vlv,$v)=@_;                 # -> (i0,t) over sorted vol levels
+ my $n=scalar(@{$vlv});
+ $v=0 if($v < 0); $v=1 if($v > 1);
+ return (0,0) if($n < 2 || $v <= $vlv->[0]);
+ for(my $i=0;$i<$n-1;$i++) {
+  if($v <= $vlv->[$i+1]) {
+   my $sp=$vlv->[$i+1]-$vlv->[$i];
+   return ($i, ($sp > 0) ? ($v-$vlv->[$i])/$sp : 0);
+  }
+ }
+ return ($n-2,1);
+}
+sub fm_forward {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $add=fm_additive($fm,$dr,$dg,$db);
+ my $vlv=$fm->{"vol_levels"}; my $na=$fm->{"nonadd"};
+ my $n=scalar(@{$vlv});
+ return $add if($n < 2 || !%{$na});
+ my ($i0,$ti)=_fm_vol_axis($vlv,$dr);
+ my ($j0,$tj)=_fm_vol_axis($vlv,$dg);
+ my ($k0,$tk)=_fm_vol_axis($vlv,$db);
+ my @corr=(0,0,0);
+ foreach my $di (0,1) { foreach my $dj (0,1) { foreach my $dk (0,1) {
+  my $w=($di?$ti:1-$ti)*($dj?$tj:1-$tj)*($dk?$tk:1-$tk);
+  next if($w <= 0);
+  my $ii=$i0+$di; $ii=$n-1 if($ii > $n-1);
+  my $jj=$j0+$dj; $jj=$n-1 if($jj > $n-1);
+  my $kk=$k0+$dk; $kk=$n-1 if($kk > $n-1);
+  my $c=$na->{"$ii:$jj:$kk"};
+  next if(ref($c) ne "ARRAY");
+  for my $ch (0..2) { $corr[$ch]+=$w*$c->[$ch]; }
+ }}}
+ return [ $add->[0]+$corr[0], $add->[1]+$corr[1], $add->[2]+$corr[2] ];
+}
+sub build_measured_forward_model {
+ my ($model,$nodes,$config)=@_;
+ return undef if(ref($nodes) ne "ARRAY" || !@{$nodes});
+ my $black=$model->{"black"}||[0,0,0];
+ my $mono_thr=0.08;
+ my @ramp_h=({},{},{});           # ch -> { level(frac) => xyz }
+ my %vol_lvl;
+ foreach my $n (@{$nodes}) {
+  my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
+  my ($hot,$dom)=(0,-1);
+  for my $ch (0..2) { if($f[$ch] > $mono_thr) { $hot++; $dom=$ch; } }
+  $ramp_h[$dom]{sprintf("%.4f",$f[$dom])}=$xyz if($hot==1);
+  $vol_lvl{sprintf("%.4f",$f[0])}=1; $vol_lvl{sprintf("%.4f",$f[1])}=1; $vol_lvl{sprintf("%.4f",$f[2])}=1;
+ }
+ my @ramp;
+ for my $ch (0..2) {
+  $ramp_h[$ch]{"0.0000"}=$black unless(exists $ramp_h[$ch]{"0.0000"});
+  return undef if(scalar(keys %{$ramp_h[$ch]}) < 4);   # need a real ramp
+  my @lv=sort { $a <=> $b } map { $_+0 } keys %{$ramp_h[$ch]};
+  $ramp[$ch]=[ map { [ $_, $ramp_h[$ch]{sprintf("%.4f",$_)} ] } @lv ];
+ }
+ my @vlv=sort { $a <=> $b } map { $_+0 } keys %vol_lvl;
+ my %vidx; for(my $i=0;$i<@vlv;$i++) { $vidx{sprintf("%.4f",$vlv[$i])}=$i; }
+ my $fm={ black=>$black, ramp=>\@ramp, vol_levels=>\@vlv, nonadd=>{}, ramp_levels=>scalar(@{$ramp[0]}) };
+ # Volume non-additivity: residual = measured - additive at each measured node.
+ my ($na_sum,$na_n)=(0,0);
+ foreach my $n (@{$nodes}) {
+  my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
+  my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
+  my $add=fm_additive($fm,@f);
+  my $key=join(":",$vidx{sprintf("%.4f",$f[0])},$vidx{sprintf("%.4f",$f[1])},$vidx{sprintf("%.4f",$f[2])});
+  my $d=vec_sub($xyz,$add);
+  $fm->{"nonadd"}{$key}=$d;
+  $na_sum += ($d->[0]**2+$d->[1]**2+$d->[2]**2); $na_n++;
+ }
+ $fm->{"nonadd_rms"}=$na_n ? sqrt($na_sum/$na_n) : 0;
+ $fm->{"vol_axis_levels"}=scalar(@vlv);
+ return $fm;
+}
+# Invert the measured forward model to hit $target, seeded from the matrix
+# baseline drive. Gauss-Newton with step-cap + backtracking + keep-best. The
+# seed IS the matrix drive and we only ever keep a drive that reduces the
+# forward-model error below the seed, so the result is never worse than matrix
+# (critical at pure primaries, where off-channels sit at 0 and their Jacobian
+# columns vanish -> an undamped Newton step diverges and desaturates). Returns
+# per-channel drive percent (0..100).
+sub _fm_err {
+ my ($fm,$target,$d)=@_;
+ my $f=fm_forward($fm,$d->[0],$d->[1],$d->[2]);
+ my $e=vec_sub($target,$f);
+ return ($e, sqrt($e->[0]**2+$e->[1]**2+$e->[2]**2));
+}
+sub fm_invert {
+ my ($fm,$model,$target,$seed_pct)=@_;
+ my @best=map { my $v=($seed_pct->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
+ my $h=0.02;
+ my ($best_err,$best_e)=_fm_err($fm,$target,\@best);
+ my $lambda=1e-2;
+ # Levenberg-Marquardt: interpolates between Gauss-Newton (fast, small lambda)
+ # and gradient descent (stable, large lambda). Adaptive lambda keeps it
+ # converging to the true minimum even where the Jacobian is singular (pure
+ # primaries: off-channels at 0 have vanishing columns). Keep-best so the
+ # result is never worse than the matrix seed.
+ for(my $iter=0;$iter<10;$iter++) {
+  last if($best_e < 5e-4);
+  my @cols;
+  for my $ch (0..2) {
+   my @dp=@best; my @dm=@best;
+   $dp[$ch]=$best[$ch]+$h; $dp[$ch]=1 if($dp[$ch] > 1);
+   $dm[$ch]=$best[$ch]-$h; $dm[$ch]=0 if($dm[$ch] < 0);
+   my $span=$dp[$ch]-$dm[$ch]; $span=$h if($span <= 0);
+   my $fp=fm_forward($fm,$dp[0],$dp[1],$dp[2]);
+   my $fn=fm_forward($fm,$dm[0],$dm[1],$dm[2]);
+   $cols[$ch]=[ ($fp->[0]-$fn->[0])/$span, ($fp->[1]-$fn->[1])/$span, ($fp->[2]-$fn->[2])/$span ];
+  }
+  # JtJ (3x3) and Jt*err (3).
+  my @JtJ; my @Jte=(0,0,0);
+  for my $a (0..2) {
+   for my $bcol (0..2) {
+    my $s=0; for my $row (0..2) { $s+=$cols[$a][$row]*$cols[$bcol][$row]; }
+    $JtJ[$a][$bcol]=$s;
+   }
+   my $s=0; for my $row (0..2) { $s+=$cols[$a][$row]*$best_err->[$row]; }
+   $Jte[$a]=$s;
+  }
+  my $improved=0;
+  for(my $try=0;$try<5;$try++) {
+   my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
+   my $inv=matrix_inverse($M);
+   if($inv) {
+    my $step=matrix_mul_vec($inv,\@Jte);
+    my @trial=map { my $v=$best[$_]+$step->[$_]; $v<0?0:($v>1?1:$v) } (0..2);
+    my ($te,$tn)=_fm_err($fm,$target,\@trial);
+    if($tn < $best_e) {
+     @best=@trial; $best_err=$te; $best_e=$tn;
+     $lambda*=0.5; $lambda=1e-6 if($lambda < 1e-6); $improved=1; last;
+    }
+   }
+   $lambda*=4;
+  }
+  last if(!$improved);
+ }
+ return [ $best[0]*100, $best[1]*100, $best[2]*100 ];
+}
+
+# Per-node cube output (percent). One place, shared by both generators:
+# neutral -> identity; else measured-response inverse (forward_model) or the
+# matrix baseline + residual fallback.
+# Target for the measured-response inverse. Unlike target_xyz_for_node (which
+# scales chromatic nodes to the WRGB additive-white ceiling chromatic_white_y),
+# this references the FULL display white for every node. The additive-white cap
+# exists because a WRGB panel can't make saturated colour as bright as white --
+# but the inverse enforces that physically: an unreachable target clamps at
+# 100% drive (chroma preserved), while a REACHABLE dim colour (e.g. red 25%,
+# which has ample headroom) is hit exactly instead of being needlessly dimmed.
+# Dimming reachable low-saturation colours to the additive ceiling was pulling
+# their chroma off (red/green 25% over-saturated) with no benefit.
+sub fm_target_for_node {
+ my ($model,$ri,$gi,$bi,$size)=@_;
+ my $r=$ri/($size-1); my $g=$gi/($size-1); my $b=$bi/($size-1);
+ if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
+  return interpolate_vec_by_level($model->{"white_axis"},$r*100);
+ }
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"},$model->{"target_gamut"});
+}
+sub node_output_pct {
+ my ($model,$r,$g,$b,$size)=@_;
+ my $neutral=neutral_identity_output($model,$r,$g,$b,$size);
+ return $neutral if($neutral);
+ my $fm=$model->{"forward_model"};
+ if(ref($fm) eq "HASH") {
+  my $target=fm_target_for_node($model,$r,$g,$b,$size);
+  my $seed=$model->{"gamut_drive_matrix"}
+   ? gamut_matrix_output($model,$r,$g,$b,$size)
+   : solve_output_rgb($model,$target,$r,$g,$b,$size);
+  return fm_invert($fm,$model,$target,$seed);
+ }
+ my $out;
+ if($model->{"gamut_drive_matrix"}) {
+  $out=gamut_matrix_output($model,$r,$g,$b,$size);
+ } else {
+  my $target=target_xyz_for_node($model,$r,$g,$b,$size);
+  $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
+ }
+ $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if($model->{"residual_grid"});
+ return $out;
+}
+
 sub generate_lut_cube {
  my ($model,$size)=@_;
  $size ||= 17;
@@ -1423,17 +1649,7 @@ sub generate_lut_cube {
  for(my $r=0;$r<$size;$r++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
-    my $out;
-    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
-    } elsif($model->{"gamut_drive_matrix"}) {
-     $out=gamut_matrix_output($model,$r,$g,$b,$size);
-    } else {
-     my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-     $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
-    }
-    $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if(!$neutral_identity && $model->{"residual_grid"});
+    my $out=node_output_pct($model,$r,$g,$b,$size);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
@@ -1471,17 +1687,7 @@ sub generate_lut_lg_payload {
  for(my $b=0;$b<$size;$b++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
-    my $out;
-    my $neutral_identity=neutral_identity_output($model,$r,$g,$b,$size);
-    if($neutral_identity) {
-     $out=$neutral_identity;
-    } elsif($model->{"gamut_drive_matrix"}) {
-     $out=gamut_matrix_output($model,$r,$g,$b,$size);
-    } else {
-     my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-     $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
-    }
-    $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if(!$neutral_identity && $model->{"residual_grid"});
+    my $out=node_output_pct($model,$r,$g,$b,$size);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
    }
@@ -1805,12 +2011,21 @@ sub run_solve_only {
  my $model=model_from_readings("matrix",\@profile,$config);
  my $solve_report={ mode=>"matrix_only" };
  if(!$config->{"solve_matrix_only"}) {
-  my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-  if($grid) {
-   $model->{"residual_grid"}=$grid;
-   $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+  my $fm=(forward_model_method($config->{"method"}) && !$config->{"solve_disable_forward_model"})
+   ? build_measured_forward_model($model,\@nodes,$config) : undef;
+  if(ref($fm) eq "HASH") {
+   $model->{"forward_model"}=$fm;
+   $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+    forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+    nodes_used=>scalar(@nodes) };
   } else {
-   $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+   if($grid) {
+    $model->{"residual_grid"}=$grid;
+    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+   } else {
+    $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   }
   }
  }
  $state->{"message"}="Generating LUT";
@@ -3880,12 +4095,20 @@ eval {
   }
   $state->{"lattice_nodes"}=scalar(@nodes);
   if(!$config->{"solve_matrix_only"}) {
-   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-   if($grid) {
-    $model->{"residual_grid"}=$grid;
-    $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+   my $fm=(forward_model_method($method) && !$config->{"solve_disable_forward_model"})
+    ? build_measured_forward_model($model,\@nodes,$config) : undef;
+   if(ref($fm) eq "HASH") {
+    $model->{"forward_model"}=$fm;
+    $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"} };
    } else {
-    $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+    if($grid) {
+     $model->{"residual_grid"}=$grid;
+     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+    } else {
+     $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    }
    }
   } else {
    $state->{"lattice_solve"}={ mode=>"matrix_only" };
