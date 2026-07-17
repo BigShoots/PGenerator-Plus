@@ -24840,6 +24840,39 @@ function meterSaveGreyProfileEditor(){
 // built-in points values (2,11,21,24,26,30,100,256).
 let meterCustomSeriesState={format:'pgenerator-custom-series-v1',next_id:1001,series:[]};
 
+// Durability backup: every custom-series mutation is mirrored to localStorage
+// (marked unsynced) and the mark clears once the settings save that carried
+// the blob lands on the Pi. At boot, unsynced backup series missing from the
+// server blob are merged back and re-saved — so a failed save (daemon
+// restart, network blip) followed by a page refresh can no longer lose work.
+const METER_CUSTOM_SERIES_BACKUP_KEY='pgen.meter.customSeries.backup';
+function meterCustomSeriesBackupWrite(unsynced){
+ try{ localStorage.setItem(METER_CUSTOM_SERIES_BACKUP_KEY,JSON.stringify({unsynced:!!unsynced,state:meterCustomSeriesState})); }catch(e){}
+}
+function meterCustomSeriesBackupRead(){
+ try{
+  const raw=localStorage.getItem(METER_CUSTOM_SERIES_BACKUP_KEY);
+  if(raw){ const p=JSON.parse(raw); if(p&&typeof p==='object') return p; }
+ }catch(e){}
+ return null;
+}
+function meterCustomSeriesRecoverFromBackup(){
+ const backup=meterCustomSeriesBackupRead();
+ if(!backup||!backup.unsynced||!backup.state||!Array.isArray(backup.state.series)) return false;
+ const have={};
+ (meterCustomSeriesState.series||[]).forEach(sr=>{ if(sr) have[String(sr.name||'')+'|'+String(sr.mode||'')]=1; });
+ let recovered=0;
+ backup.state.series.forEach(sr=>{
+  if(!sr||have[String(sr.name||'')+'|'+String(sr.mode||'')]) return;
+  meterCustomSeriesState.series.push(sr);
+  recovered++;
+ });
+ if(!recovered) return false;
+ meterCustomSeriesNormalizeState();
+ meterCustomSeriesDirty=true;
+ return true;
+}
+
 function meterCustomSeriesModeKey(mode){
  const m=String(mode!=null?mode:((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')).toLowerCase();
  if(m==='hdr10'||m==='hlg'||m==='hdr') return 'hdr';
@@ -25907,6 +25940,7 @@ function meterRenderCustomSeriesButtons(){
 }
 
 function meterOpenCustomSeriesEditor(category,id){
+ meterCustomSeriesEditorUnsaved=false;
  meterCustomSeriesNormalizeState();
  const existing=(id!=null)?meterCustomSeriesById(id):null;
  meterCustomSeriesEditor=existing
@@ -25927,7 +25961,16 @@ function meterOpenCustomSeriesEditor(category,id){
  uiSyncBodyScrollLock();
 }
 
-function meterCloseCustomSeriesEditor(){
+let meterCustomSeriesEditorUnsaved=false;
+async function meterCloseCustomSeriesEditor(){
+ if(meterCustomSeriesEditorUnsaved){
+  const ok=await meterShowChoiceModal({title:'Discard changes?',body:'This series has unsaved changes (imported or edited patches). Close without saving?',acceptLabel:'Discard',cancelLabel:'Keep editing'});
+  if(!ok) return;
+ }
+ meterCustomSeriesEditorUnsaved=false;
+ return meterCloseCustomSeriesEditorNow();
+}
+function meterCloseCustomSeriesEditorNow(){
  meterCustomSeriesEditor=null;
  const modal=document.getElementById('meterCustomSeriesModal');
  if(modal) modal.style.display='none';
@@ -25980,6 +26023,7 @@ function meterCustomSeriesEditorSetInput(row,field,value){
 function meterCustomSeriesEditorSync(input){
  const editor=meterCustomSeriesEditor;
  if(!editor||!input||!input.dataset) return;
+ meterCustomSeriesEditorUnsaved=true;
  const row=parseInt(input.dataset.csRow,10);
  const field=String(input.dataset.csField||'');
  const patch=editor.patches[row];
@@ -26052,6 +26096,7 @@ function meterSaveCustomSeriesEditor(){
  meterCustomSeriesNormalizeState();
  const seriesType=(series.category==='color')?'colors':'greyscale';
  const seriesId=series.id;
+ meterCustomSeriesEditorUnsaved=false;
  meterCloseCustomSeriesEditor();
  saveMeterSettings();
  meterRenderCustomSeriesButtons();
@@ -26063,6 +26108,7 @@ async function meterDeleteCustomSeries(){
  const editor=meterCustomSeriesEditor;
  if(!editor||editor.id==null) return;
  const id=editor.id;
+ meterCustomSeriesEditorUnsaved=false;
  meterCloseCustomSeriesEditor();
  await meterDeleteCustomSeriesById(id);
 }
@@ -26162,6 +26208,7 @@ function meterImportCustomSeriesCsv(evt){
    const parsed=meterCustomSeriesParseCsv(String(reader.result||''));
    if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
    meterCustomSeriesEditor.patches=parsed.patches;
+   meterCustomSeriesEditorUnsaved=true;
    meterRenderCustomSeriesEditor();
    toast('Imported '+parsed.patches.length+' patches ('+parsed.bits+'-bit) — review and Save');
   }catch(e){
@@ -38934,9 +38981,15 @@ function saveMeterSettings(){
   hdr_bt2390:chk('meterHdrApplyBT2390')
  };
  const carriedCustomSeries=!!meterCustomSeriesDirty;
+ if(carriedCustomSeries) meterCustomSeriesBackupWrite(true);
  const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
- request.then(r=>{ if(r&&carriedCustomSeries) meterCustomSeriesDirty=false; }).catch(()=>{});
+ request.then(r=>{
+  if(r&&carriedCustomSeries){
+   meterCustomSeriesDirty=false;
+   meterCustomSeriesBackupWrite(false);
+  }
+ }).catch(()=>{});
  meterSettingsSavePromise=request.catch(()=>null);
  try{ meterSaveColorPrefs(); }catch(e){}
  return meterSettingsSavePromise;
@@ -38966,6 +39019,9 @@ async function loadMeterSettings(){
   try{ meterCustomSeriesState=JSON.parse(s.custom_series_json); }catch(e){}
  }
  meterCustomSeriesNormalizeState();
+ // Recover any locally-backed-up series whose carrying save never landed
+ // (daemon restart / network blip before a refresh) and re-save them.
+ try{ if(meterCustomSeriesRecoverFromBackup()){ saveMeterSettings(); toast('Recovered unsaved custom series'); } }catch(e){}
  meterRenderCustomSeriesButtons();
  meterMeasurementPort=meterNormalizePortValue(s.measurement_meter_port);
  // Distinct copy of the server-saved value that survives meterPopulateRoleSelects
