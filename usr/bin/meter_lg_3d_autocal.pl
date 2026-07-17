@@ -1443,7 +1443,16 @@ sub apply_residual_correction {
  my $corr=$grid->{"corr"};
  my $n=scalar(@{$fracs});
  return $out if($n < 2);
- my @f=($r/($size-1),$g/($size-1),$b/($size-1));
+ # The grid lives in DRIVE space: each correction was measured by driving
+ # the panel at that lattice node's drives. Interpolate at the drives the
+ # baseline solve is about to command ($out, percent) — NOT at the LUT
+ # node's input coords. On a near-identity solve the two coincide (which is
+ # why the original warp fixture passed); on a real panel the solve moves
+ # drives (C2 SDR: input 0.25 -> red drive 0.41) and the input-indexed
+ # lookup landed every correction displaced, painting a systematic
+ # undersaturation/hue bias across the whole interior. ($r,$g,$b,$size stay
+ # in the signature for the call sites; the lookup no longer uses them.)
+ my @f=map { my $v=($out->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
  my (@lo,@t);
  for(my $ch=0;$ch<3;$ch++) {
   my $f=$f[$ch];
