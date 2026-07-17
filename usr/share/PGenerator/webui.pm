@@ -2410,6 +2410,11 @@ sub webui_lattice_series_steps_from_body (@) {
   my ($i,$div)=@_;
   my $t=$i/$div;
   return $t if($spacing ne "light");
+  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): pqe(0) is
+  # ~7e-7, not 0, and a non-zero black frac breaks frac-exact corner
+  # detection in the client ordering parity.
+  return 0 if($i==0);
+  return 1 if($i==$div);
   if($lat_pq) {
    my $top=$pq_encode->($peak_nits);
    return $top>0 ? $pq_encode->($t*$peak_nits)/$top : $t;
@@ -25183,6 +25188,11 @@ function meterLatticeAxisFracs(N,params){
  for(let i=0;i<N;i++){
   const t=i/div;
   if(!light){ out.push(t); continue; }
+  // Endpoints pinned EXACTLY: pqe(0) is ~7e-7, not 0, and a black frac of
+  // 9.7e-7 breaks the frac-exact corner detection (corners-first ordering,
+  // display-referenced ceilings) even though the percent name rounds to 0.
+  if(i===0){ out.push(0); continue; }
+  if(i===div){ out.push(1); continue; }
   if(params.pq){ out.push(top>0?(pqe(t*peak)/top):t); }
   else { out.push(Math.pow(t,1/2.4)); }
  }
@@ -33214,6 +33224,49 @@ function meterLg3dApplyLatticeProfileStatus(status){
  return true;
 }
 
+// ---- Standalone run target-context switch ----
+// A standalone 3D LUT AutoCal pins the Target Colorspace / Target Gamma
+// dropdowns to the run's actual solve domain so the live charts grade
+// against what the worker is solving — HDR10 cal mode linearizes the panel
+// to gamma 2.2 in the BT.2020 container (identity 3x3 uploaded), so PQ/P3
+// chart targets would mis-grade every profile read. The operator's own
+// selections are snapshotted (localStorage, so a mid-run refresh still
+// restores) and put back when the run reaches any terminal state. Full
+// AutoCal manages its own context and never triggers this.
+const METER_LG3D_TARGET_RESTORE_KEY='pgen.meter.lg3dTargetRestore';
+
+function meterLg3dApplyTargetDropdowns(gamut,gamma){
+ const gEl=document.getElementById('meterTargetGamut');
+ const mEl=document.getElementById('meterTargetGamma');
+ let changed=false;
+ if(gEl&&gamut&&String(gEl.value)!==String(gamut)){ gEl.value=gamut; changed=true; }
+ if(mEl&&gamma&&String(mEl.value)!==String(gamma)){ mEl.value=gamma; changed=true; }
+ if(changed){ try{ meterOnGreyRefChange(); }catch(e){} }
+ return changed;
+}
+
+function meterLg3dSwitchTargetsForRun(signalMode,targetGamut,targetGamma){
+ const gEl=document.getElementById('meterTargetGamut');
+ const mEl=document.getElementById('meterTargetGamma');
+ if(!gEl||!mEl) return;
+ const want=(String(signalMode).toLowerCase()==='hdr10')
+  ? {gamut:'bt2020',gamma:'2.2'}
+  : {gamut:targetGamut,gamma:targetGamma};
+ const prev={gamut:String(gEl.value||''),gamma:String(mEl.value||'')};
+ if(prev.gamut===String(want.gamut||'')&&prev.gamma===String(want.gamma||'')) return;
+ try{ localStorage.setItem(METER_LG3D_TARGET_RESTORE_KEY,JSON.stringify(prev)); }catch(e){}
+ meterLg3dApplyTargetDropdowns(want.gamut,want.gamma);
+ try{ toast('Targets switched to '+(want.gamut||'')+' / '+(want.gamma||'')+' for the 3D LUT AutoCal (restored when it finishes)'); }catch(e){}
+}
+
+function meterLg3dRestoreTargetsAfterRun(){
+ let prev=null;
+ try{ prev=JSON.parse(localStorage.getItem(METER_LG3D_TARGET_RESTORE_KEY)||'null'); }catch(e){ prev=null; }
+ if(!prev) return;
+ try{ localStorage.removeItem(METER_LG3D_TARGET_RESTORE_KEY); }catch(e){}
+ meterLg3dApplyTargetDropdowns(prev.gamut,prev.gamma);
+}
+
 function meterLg3dMatrixProfileReadings(status){
  const list=(status&&Array.isArray(status.readings))?status.readings:[];
  return list.filter(rd=>rd&&String(rd.phase||'')!=='post_check'&&meterReadingHasLuminance(rd));
@@ -33357,6 +33410,9 @@ async function meterPollLg3dAutoCal(options){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
    meterActionPending=false;
    meterLg3dAutoCalRunning=false;
+   // Put the operator's Target Colorspace / Target Gamma back (no-op when
+   // no standalone run switched them — full workflow never snapshots).
+   try{ meterLg3dRestoreTargetsAfterRun(); }catch(_e){}
 	   if(r.status==='complete'){
 	    if(meterFullAutoCalEnsureStatusPhase(r,'3d-lut')){
 	     await meterFullAutoCalStartTouchup(r);
@@ -33644,6 +33700,12 @@ refresh_rate:getMeterRefreshRate()||undefined,
     if(typeof checkSettingsChanged==='function') checkSettingsChanged();
    }
   }catch(_e){}
+ }
+ // Standalone runs pin the Target dropdowns to the run's solve domain
+ // (restored at any terminal status in meterPollLg3dAutoCal). Imported
+ // uploads read nothing, so there is nothing to chart or switch.
+ if(!fullWorkflow&&method!=='imported'){
+  try{ meterLg3dSwitchTargetsForRun(signalMode,targetGamut,targetGamma); }catch(_e){}
  }
  meterActionPending=false;
   meterLg3dAutoCalPollErrors=0;
