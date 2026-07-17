@@ -33270,6 +33270,7 @@ function meterLg3dApplyProfileStatus(status){
  meterSetActiveSeriesChartContext(status);
  meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  meterSeriesSteps=readings.map(meterLg3dMatrixProfileStep);
  meterReadings=readings;
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
