@@ -25082,10 +25082,28 @@ const METER_BUILTIN_CUBE_SERIES=[
  {id:917,name:'Cube 17³',category:'color',mode:'any',kind:'lattice',params:{size:17,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]}
 ];
 
+// Built-in cube lattices pick node spacing from the CURRENT signal mode:
+// SDR stays signal-uniform (the display gamma already spreads decoded light),
+// HDR switches to light-uniform PQ spacing up to the mastering peak so the
+// same patch count fills the chroma interior instead of crowding the gamut
+// edge (see the spacing note in meterLatticeSanitizeParams). Returns a copy —
+// the METER_BUILTIN_CUBE_SERIES constants stay untouched.
+function meterBuiltinCubeSeriesForMode(builtin){
+ if(!builtin||builtin.kind!=='lattice') return builtin;
+ const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+ const hdr=(modeKey==='hdr');
+ const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
+ const params=Object.assign({},builtin.params,
+  hdr?{spacing:'light',pq:true,peak_nits:peak}:{spacing:'signal',pq:false});
+ return Object.assign({},builtin,{params:params});
+}
+
 function meterCustomSeriesById(id){
  const numeric=Math.round(Number(id));
  if(Number.isFinite(numeric)&&numeric>=900&&numeric<1000){
-  return METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+  const builtin=METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+  if(builtin&&typeof meterBuiltinCubeSeriesForMode==='function') return meterBuiltinCubeSeriesForMode(builtin);
+  return builtin;
  }
  if(!Number.isFinite(numeric)||numeric<1001) return null;
  const state=meterCustomSeriesNormalizeState();
@@ -25790,6 +25808,15 @@ function meterLutCubeShow(parsed,name){
  requestAnimationFrame(meterLutCubeDraw);
 }
 
+// Coalesce drag/wheel repaints onto animation frames — a full-lattice 17-cube
+// paints ~5k markers per frame, and one synchronous repaint per mousemove
+// event stalls the drag on high-rate mice.
+function meterLutCubeDrawSoon(){
+ if(meterLutCubeDrawSoon._raf) return;
+ meterLutCubeDrawSoon._raf=true;
+ requestAnimationFrame(()=>{ meterLutCubeDrawSoon._raf=false; meterLutCubeDraw(); });
+}
+
 function meterLutCubeBindHandlers(){
  const canvas=document.getElementById('lutCubeView');
  if(!canvas||canvas._lutCubeBound) return;
@@ -25806,14 +25833,14 @@ function meterLutCubeBindHandlers(){
   _lutCube3d.yaw+=(e.clientX-drag.x)*0.01;
   _lutCube3d.pitch=Math.max(-1.2,Math.min(1.2,_lutCube3d.pitch+(e.clientY-drag.y)*0.01));
   drag={x:e.clientX,y:e.clientY};
-  meterLutCubeDraw();
+  meterLutCubeDrawSoon();
  });
  window.addEventListener('mouseup',()=>{ drag=null; canvas.style.cursor='grab'; });
  canvas.addEventListener('wheel',e=>{
   if(!meterLutCubeState) return;
   e.preventDefault();
   _lutCube3d.scale=Math.max(0.3,Math.min(4,_lutCube3d.scale*(e.deltaY<0?1.1:0.9)));
-  meterLutCubeDraw();
+  meterLutCubeDrawSoon();
  },{passive:false});
  canvas.addEventListener('dblclick',()=>{ _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2}; meterLutCubeDraw(); });
 }
@@ -37183,6 +37210,17 @@ function cie3dFindHit(mx,my){
  });
  return best;
 }
+// Drag/wheel redraws coalesce onto animation frames: drawCIEChart3D rebuilds
+// and depth-sorts the whole primitive list per paint (thousands of nodes on a
+// 17-cube lattice), and one synchronous repaint per pointermove event floods
+// the main thread on high-rate mice. One repaint per frame is all the screen
+// can show anyway.
+function cie3dRedrawSoon(){
+ if(cie3dRedrawSoon._raf) return;
+ cie3dRedrawSoon._raf=true;
+ requestAnimationFrame(()=>{ cie3dRedrawSoon._raf=false; cie3dRedraw(); });
+}
+
 function cie3dRedraw(){
  if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return;
  if(meterReadings&&meterReadings.length){
@@ -37224,7 +37262,7 @@ function cie3dOnPointerMove(e){
    _cie3d.pitch-=dy*0.01;
    _cie3d.pitch=Math.max(CIE3D_PITCH_MIN,Math.min(CIE3D_PITCH_MAX,_cie3d.pitch));
   }
-  cie3dRedraw();
+  cie3dRedrawSoon();
   const tip=document.getElementById('chartTooltip');
   if(tip) tip.style.display='none';
   e.preventDefault();
@@ -37281,7 +37319,7 @@ function cie3dOnWheel(e){
  e.preventDefault();
  const factor=e.deltaY>0?0.92:1.08;
  _cie3d.scale=Math.max(0.35,Math.min(4.5,_cie3d.scale*factor));
- cie3dRedraw();
+ cie3dRedrawSoon();
 }
 function cie3dOnDblClick(e){
  if(!meterCie3dViewEnabled()) return;
@@ -37611,23 +37649,30 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
  ctx.fillText('x',pad.l+w/2,ctx.h-2);
  ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
- // Locus
- ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
- CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
- ctx.closePath();ctx.stroke();
+ // Locus / gamut honor the same view options as the live 2D chart — the
+ // pre-read preset used to ignore them, leaving the checkboxes dead until
+ // the first measurement arrived.
+ if(meterCieViewOpts.locus){
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
+  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  ctx.closePath();ctx.stroke();
+ }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
- ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
- ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
- ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
- ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ if(meterCieViewOpts.gamut){
+  ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+ }
  // D65
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
- // Target placeholders (hollow squares)
- steps.forEach(s=>{
+ // Target placeholders (hollow squares) — hidden when Targets is unchecked,
+ // matching the 3D preset path.
+ if(meterCieViewOpts.targets) steps.forEach(s=>{
   const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
    ? meterTargetChromaticityForReading(s)
    : targetChromaticityXY(s.r,s.g,s.b);
