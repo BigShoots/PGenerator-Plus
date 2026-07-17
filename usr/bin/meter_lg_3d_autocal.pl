@@ -1491,13 +1491,15 @@ sub generate_lut_lg_payload {
 }
 
 # ---- Lattice-cube solve (generic measure -> solve -> export path) ----
-# The baseline model comes from the lattice's OWN corners (W/R/G/B/K are
-# always measured first) through the proven matrix-method model builder --
-# white-preserving gamut matrix, WRGB chromatic-white handling, the lot. The
-# residual grid adds bounded, smoothed per-node corrections where the panel's
-# measured response deviates from that additive corner model. Residuals are
-# signal-domain deltas applied on top of the baseline output at generation
-# time via trilinear interpolation over the measured lattice grid.
+# Baseline: white-preserving gamut matrix from W/R/G/B/K + neutral identity.
+# Residual v2 (target-relative): under unity LUT, each measured node s yields
+# XYZ_m = panel(s). We want panel(drive) = XYZ_target(s). Convert
+# (XYZ_t - XYZ_m) through peak_inverse and local EOTF slope into a signal-
+# domain drive delta, stored on the lattice and applied on top of the matrix
+# baseline at generate time (drive-space trilinear). This replaces the old
+# residual that compared meas to a peak-only additive prediction -- a
+# different model from the matrix baseline, so volume profiles collapsed to
+# matrix-like results.
 
 sub _trl_slope {
  # Numerical d(relative luminance)/d(signal) of the target curve at a signal
@@ -1514,61 +1516,90 @@ sub _trl_slope {
  return ($slope > 0.05) ? $slope : 0.05;
 }
 
+# Continuous-percent form of the matrix baseline drive (same domain as
+# gamut_matrix_output / neutral identity). Used only as documentation of the
+# residual's partner path; residual values are absolute drive deltas that
+# apply on top of this baseline at generate time.
+sub baseline_drive_pct {
+ my ($model,$fr,$fg,$fb)=@_;
+ $fr=clamp($fr,0,1); $fg=clamp($fg,0,1); $fb=clamp($fb,0,1);
+ if(abs($fr-$fg) < 1e-6 && abs($fg-$fb) < 1e-6) {
+  return [ $fr*100, $fg*100, $fb*100 ];
+ }
+ my $M=$model->{"gamut_drive_matrix"};
+ if(ref($M) eq "ARRAY") {
+  my $gamma=$model->{"target_gamma"};
+  my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
+  # Match gamut_matrix_output linearisation (power / srgb / pq via target_gamma_linear).
+  my $lin=[
+   target_gamma_linear($fr,$gamma),
+   target_gamma_linear($fg,$gamma),
+   target_gamma_linear($fb,$gamma),
+  ];
+  my $out=matrix_mul_vec($M,$lin);
+  return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
+ }
+ return [ $fr*100, $fg*100, $fb*100 ];
+}
+
 sub build_residual_grid {
  my ($model,$nodes,$config)=@_;
  return (undef,{reason=>"no interior nodes"}) if(ref($nodes) ne "ARRAY" || !@{$nodes});
- my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0) ? $config->{"solve_residual_cap"}+0 : 0.06;
+ # v2 default cap 0.12 (was 0.06) -- mid-sat WRGB often needs >6% drive.
+ my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0) ? $config->{"solve_residual_cap"}+0 : 0.12;
  my $gamma=$model->{"target_gamma"};
  my $white_y=$model->{"white_y"}||100;
  my $black_y=$model->{"black_y"}||0;
  my $black=$model->{"black"}||[0,0,0];
- my $contrib=$model->{"contrib"};
  my $peak_inverse=$model->{"peak_inverse"};
  return (undef,{reason=>"no peak inverse"}) if(ref($peak_inverse) ne "ARRAY");
- # Shared frac axis from the measured node positions.
  my %fs;
  foreach my $n (@{$nodes}) { $fs{sprintf("%.4f",$n->{"fr"})}=1; $fs{sprintf("%.4f",$n->{"fg"})}=1; $fs{sprintf("%.4f",$n->{"fb"})}=1; }
  my @fracs=sort { $a <=> $b } map { $_+0 } keys %fs;
  return (undef,{reason=>"lattice too small (".scalar(@fracs)." axis levels)"}) if(scalar(@fracs) < 3);
  my %fidx; for(my $i=0;$i<@fracs;$i++){ $fidx{sprintf("%.4f",$fracs[$i])}=$i; }
- # OPTIONAL noise-floor soft-threshold, default OFF (0). When
- # solve_residual_noise_floor > 0, each drive-delta is shrunk toward zero by a
- # shot-noise-scaled floor (noise_floor * sqrt(white_y/node_y)) so sub-floor
- # deltas vanish. Default 0 applies NO suppression -- every measured per-node
- # correction is used, which is the whole point of a lattice profile. A prior
- # default of 0.020 zeroed the residual on a near-additive panel (lattice
- # collapsed to matrix); that DEFEATED the feature and is reverted.
  my $noise_floor=(ref($config) eq "HASH" && defined($config->{"solve_residual_noise_floor"}) && ($config->{"solve_residual_noise_floor"}+0) >= 0)
   ? $config->{"solve_residual_noise_floor"}+0 : 0.0;
+ # Neighbour smooth weight toward mean (0..1). Lower preserves sparse hybrid
+ # 3³ face-centre corrections. Default 0.25 (was 0.5).
+ my $smooth=(ref($config) eq "HASH" && defined($config->{"solve_residual_smooth"}) && ($config->{"solve_residual_smooth"}+0) >= 0)
+  ? ($config->{"solve_residual_smooth"}+0) : 0.25;
+ $smooth=1 if($smooth > 1);
  my %corr; my %raw;
  my ($used,$skipped,$capped,$shrunk)=(0,0,0,0);
  my ($rms_sum,$rms_n,$max_abs,$applied_sum,$applied_n)=(0,0,0,0,0);
+ my ($err_y_sum,$err_y_n)=(0,0);
  foreach my $n (@{$nodes}) {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
-  # Corners built the model; exact-neutral nodes ride the identity/greyscale
-  # path -- both get zero correction (and anchor the interpolation).
-  my $is_corner=(($fr>=0.999&&$fg>=0.999&&$fb>=0.999)||($fr>=0.999&&$fg<=0.001&&$fb<=0.001)
-   ||($fr<=0.001&&$fg>=0.999&&$fb<=0.001)||($fr<=0.001&&$fg<=0.001&&$fb>=0.999)
-   ||($fr<=0.001&&$fg<=0.001&&$fb<=0.001));
+  # Exact neutrals stay zero -- DPG owns greyscale. Extreme pure W/R/G/B/K
+  # corners also stay zero (matrix owns them). Pure secondaries, mid primaries,
+  # and face centres DO get residual.
   my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
-  if($is_corner || $is_neutral) { $corr{$key}=[0,0,0]; next; }
-  my @lin=map { target_relative_luminance($_,$gamma,$white_y,$black_y) } ($fr,$fg,$fb);
-  my $predicted=[ @{$black} ];
-  my $ci=0;
-  foreach my $kind (qw(red green blue)) {
-   my $c=$contrib->{$kind}{100};
-   next if(ref($c) ne "ARRAY");
-   $predicted=vec_add($predicted,vec_scale($c,$lin[$ci]));
-   $ci++;
+  my $is_peak_corner=(
+   ($fr>=0.999&&$fg>=0.999&&$fb>=0.999) ||
+   ($fr>=0.999&&$fg<=0.001&&$fb<=0.001) ||
+   ($fr<=0.001&&$fg>=0.999&&$fb<=0.001) ||
+   ($fr<=0.001&&$fg<=0.001&&$fb>=0.999) ||
+   ($fr<=0.001&&$fg<=0.001&&$fb<=0.001)
+  );
+  if($is_neutral || $is_peak_corner) { $corr{$key}=[0,0,0]; next; }
+  my $xyz_m=$n->{"xyz"};
+  if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < 0.5) { $skipped++; next; }
+  # Target appearance for this continuous signal (same rules as generate).
+  my $cw=$model->{"chromatic_white_y"} || $white_y;
+  my $xyz_t;
+  if(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001 && ref($model->{"white_axis"}) eq "HASH") {
+   $xyz_t=interpolate_vec_by_level($model->{"white_axis"},$fr*100);
+  } else {
+   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,$model->{"target_gamut"});
   }
-  if(($predicted->[1]||0) < 0.5) { $skipped++; next; }  # noise-dominated
-  my $delta=vec_sub($n->{"xyz"},$predicted);
+  if(ref($xyz_t) ne "ARRAY") { $skipped++; next; }
+  # err = target - measured: too bright => negative => reduce drive.
+  my $delta=vec_sub($xyz_t,$xyz_m);
+  $err_y_sum += ($delta->[1]||0)*($delta->[1]||0); $err_y_n++;
   my $dlin=matrix_mul_vec($peak_inverse,$delta);
-  # Per-node floor scaled by shot noise: dimmer node -> larger floor. node_y is
-  # the MEASURED luminance; floored at 1 nit so it cannot explode (dark nodes
-  # were already dropped at <0.5 nit above).
-  my $node_y=($n->{"xyz"}[1]||0); $node_y=1 if($node_y < 1);
+  my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
   my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
   my @c;
   my @f=($fr,$fg,$fb);
@@ -1578,24 +1609,21 @@ sub build_residual_grid {
    my $a=abs($dsig);
    $rms_sum+=$dsig*$dsig; $rms_n++;
    $max_abs=$a if($a > $max_abs);
-   # Soft-threshold toward zero by the per-node floor: kill sub-floor
-   # (untrustworthy) deltas outright, keep the excess of larger ones.
    if($floor > 0) {
     if($a <= $floor) { $dsig=0; $shrunk++; }
     else { $dsig=($dsig > 0) ? ($dsig-$floor) : ($dsig+$floor); }
    }
    if(abs($dsig) > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
    $applied_sum+=$dsig*$dsig; $applied_n++;
-   push @c,-$dsig;
+   # Store +dsig: positive residual increases baseline drive percent.
+   push @c,$dsig;
   }
   $corr{$key}=\@c;
   $raw{$key}=1;
   $used++;
  }
  return (undef,{reason=>"no usable interior nodes"}) if(!$used);
- # One smoothing pass: blend each corrected node halfway toward the mean of
- # its available 6-neighbours so single-read noise cannot punch spikes into
- # the LUT. Zero-anchored corner/neutral nodes participate as neighbours.
+ # Light smoothing so sparse hybrid faces keep signal; corners/neutrals zero-anchor.
  my %smoothed;
  foreach my $key (keys %corr) {
   next if(!$raw{$key});
@@ -1607,22 +1635,26 @@ sub build_residual_grid {
    for(my $ch=0;$ch<3;$ch++){ $sum[$ch]+=$corr{$nk}[$ch]; }
    $cnt++;
   }
-  if($cnt) {
+  if($cnt && $smooth > 0) {
    my $c=$corr{$key};
-   $smoothed{$key}=[ map { 0.5*$c->[$_]+0.5*($sum[$_]/$cnt) } (0..2) ];
+   my $keep=1-$smooth;
+   $smoothed{$key}=[ map { $keep*$c->[$_]+$smooth*($sum[$_]/$cnt) } (0..2) ];
   }
  }
  foreach my $key (keys %smoothed) { $corr{$key}=$smoothed{$key}; }
  my $report={
+  residual_definition => "target_relative_v2",
   nodes_used => $used,
   nodes_skipped_dark => $skipped,
   channels_capped => $capped,
   channels_shrunk_to_zero => $shrunk,
   residual_cap => $cap,
   residual_noise_floor => $noise_floor,
+  residual_smooth => $smooth,
   residual_signal_rms => $rms_n ? sqrt($rms_sum/$rms_n) : 0,
   residual_signal_max => $max_abs,
   residual_applied_rms => $applied_n ? sqrt($applied_sum/$applied_n) : 0,
+  residual_target_err_y_rms => $err_y_n ? sqrt($err_y_sum/$err_y_n) : 0,
   axis_levels => scalar(@fracs),
  };
  return ({ fracs=>\@fracs, corr=>\%corr },$report);
