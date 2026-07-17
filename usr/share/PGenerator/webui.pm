@@ -15263,12 +15263,19 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  const parsed=meterParseSeriesKey(key)||null;
  const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||'greyscale';
  const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||21;
- const signalMode=meterSeriesSnapshotSignalMode(exact,(opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr'));
- if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode) return null;
+ // The eligibility gate must compare the snapshot's mode against the LIVE
+ // (requested) chart mode — resolving signalMode from the snapshot first and
+ // then comparing the snapshot against it was a tautology (always true), so
+ // e.g. an SDR-cached cube snapshot restored into an HDR10 session and
+ // stamped signal_mode 'sdr' onto the active series, silently collapsing the
+ // whole PQ pipeline (BT.2390 control, PQ target decode, chart law).
+ const requestedMode=String((opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()||'sdr';
+ const signalMode=meterSeriesSnapshotSignalMode(exact,requestedMode);
+ if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,requestedMode)===requestedMode) return null;
  let steps=clone((Array.isArray(opts.steps)&&opts.steps.length)?opts.steps:((exact&&Array.isArray(exact.steps)&&exact.steps.length)?exact.steps:meterBuildStepsJS(type,points)));
  steps=meterCanonicalRecoveredSteps(type,points,steps,(exact&&exact.status)||'complete');
  const requestedLg26=type==='greyscale'&&(Number(points)===26||meterSeriesStepsHaveLgAutoCal26Markers(steps));
- const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,signalMode)===signalMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
+ const exactEligible=exact&&Array.isArray(exact.readings)&&exact.readings.length>0&&meterSeriesSnapshotSignalMode(exact,requestedMode)===requestedMode&&(requestedLg26===(meterSeriesSnapshotHasLgAutoCal26Markers(exact)||Number((exact&&exact.points)||0)===26))?exact:null;
  if(type!=='greyscale'){
   if(!exactEligible) return null;
 	  return {
@@ -17436,6 +17443,11 @@ function meterTargetSignalToLinear(v){
  }
  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
+ // An st2084 target selection means PQ decode regardless of how the chart
+ // classified the wire — parseFloat('st2084') is NaN and silently fell back
+ // to gamma 2.2, which quietly mis-decoded every target when a stale series
+ // context dropped the chart out of PQ mode.
+ if(sel==='st2084') return meterChartPqDecodeNormalized(c);
  const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
  return Math.pow(c,g);
 }
