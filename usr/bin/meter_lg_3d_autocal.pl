@@ -1362,9 +1362,18 @@ sub build_residual_grid {
  my @fracs=sort { $a <=> $b } map { $_+0 } keys %fs;
  return (undef,{reason=>"lattice too small (".scalar(@fracs)." axis levels)"}) if(scalar(@fracs) < 3);
  my %fidx; for(my $i=0;$i<@fracs;$i++){ $fidx{sprintf("%.4f",$fracs[$i])}=$i; }
+ # OPTIONAL noise-floor soft-threshold, default OFF (0). When
+ # solve_residual_noise_floor > 0, each drive-delta is shrunk toward zero by a
+ # shot-noise-scaled floor (noise_floor * sqrt(white_y/node_y)) so sub-floor
+ # deltas vanish. Default 0 applies NO suppression -- every measured per-node
+ # correction is used, which is the whole point of a lattice profile. A prior
+ # default of 0.020 zeroed the residual on a near-additive panel (lattice
+ # collapsed to matrix); that DEFEATED the feature and is reverted.
+ my $noise_floor=(ref($config) eq "HASH" && defined($config->{"solve_residual_noise_floor"}) && ($config->{"solve_residual_noise_floor"}+0) >= 0)
+  ? $config->{"solve_residual_noise_floor"}+0 : 0.0;
  my %corr; my %raw;
- my ($used,$skipped,$capped)=(0,0,0);
- my ($rms_sum,$rms_n,$max_abs)=(0,0,0);
+ my ($used,$skipped,$capped,$shrunk)=(0,0,0,0);
+ my ($rms_sum,$rms_n,$max_abs,$applied_sum,$applied_n)=(0,0,0,0,0);
  foreach my $n (@{$nodes}) {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
@@ -1387,6 +1396,11 @@ sub build_residual_grid {
   if(($predicted->[1]||0) < 0.5) { $skipped++; next; }  # noise-dominated
   my $delta=vec_sub($n->{"xyz"},$predicted);
   my $dlin=matrix_mul_vec($peak_inverse,$delta);
+  # Per-node floor scaled by shot noise: dimmer node -> larger floor. node_y is
+  # the MEASURED luminance; floored at 1 nit so it cannot explode (dark nodes
+  # were already dropped at <0.5 nit above).
+  my $node_y=($n->{"xyz"}[1]||0); $node_y=1 if($node_y < 1);
+  my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
   my @c;
   my @f=($fr,$fg,$fb);
   for(my $ch=0;$ch<3;$ch++) {
@@ -1395,7 +1409,14 @@ sub build_residual_grid {
    my $a=abs($dsig);
    $rms_sum+=$dsig*$dsig; $rms_n++;
    $max_abs=$a if($a > $max_abs);
-   if($a > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
+   # Soft-threshold toward zero by the per-node floor: kill sub-floor
+   # (untrustworthy) deltas outright, keep the excess of larger ones.
+   if($floor > 0) {
+    if($a <= $floor) { $dsig=0; $shrunk++; }
+    else { $dsig=($dsig > 0) ? ($dsig-$floor) : ($dsig+$floor); }
+   }
+   if(abs($dsig) > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
+   $applied_sum+=$dsig*$dsig; $applied_n++;
    push @c,-$dsig;
   }
   $corr{$key}=\@c;
@@ -1427,9 +1448,12 @@ sub build_residual_grid {
   nodes_used => $used,
   nodes_skipped_dark => $skipped,
   channels_capped => $capped,
+  channels_shrunk_to_zero => $shrunk,
   residual_cap => $cap,
+  residual_noise_floor => $noise_floor,
   residual_signal_rms => $rms_n ? sqrt($rms_sum/$rms_n) : 0,
   residual_signal_max => $max_abs,
+  residual_applied_rms => $applied_n ? sqrt($applied_sum/$applied_n) : 0,
   axis_levels => scalar(@fracs),
  };
  return ({ fracs=>\@fracs, corr=>\%corr },$report);
@@ -3450,6 +3474,49 @@ eval {
  }
 
  die "cancelled\n" if(cancelled());
+
+ # Drift diagnostic (lattice only): the lattice path applies NO drift correction
+ # (unlike ramp), yet its read is long (corners first, then the dim interior over
+ # minutes). Re-read the white corner now and compare to the START white: a
+ # meaningful start->end shift means the interior deviations feeding the residual
+ # carry panel thermal/ABL drift, not real non-additivity -- the leading
+ # explanation for lattice trailing matrix while the solve math itself is sound.
+ if($method eq "lattice" && !$config->{"fixture_mode"}) {
+  eval {
+   my $white_step;
+   foreach my $s (@steps) { if(($s->{"kind"}||"") eq "white") { $white_step=$s; last; } }
+   my ($start_white,$start_t);
+   foreach my $e (@profile_readings) {
+    next unless(ref($e->{"step"}) eq "HASH" && ($e->{"step"}{"kind"}||"") eq "white");
+    my $x=reading_xyz($e->{"reading"}); if($x){ $start_white=$x; $start_t=$e->{"read_time"}; last; }
+   }
+   if($white_step && $start_white) {
+    $state->{"phase"}="drift_check";
+    $state->{"current_name"}="Drift check (re-reading white)";
+    $state->{"message"}="Re-reading white to measure panel drift across the profile";
+    write_state($state);
+    my ($rw,$rerr)=read_step($config,$white_step,$state);
+    my $end_white=$rerr ? undef : reading_xyz($rw);
+    if($end_white) {
+     my $ss=($start_white->[0]+$start_white->[1]+$start_white->[2])||1;
+     my $es=($end_white->[0]+$end_white->[1]+$end_white->[2])||1;
+     my $sy=$start_white->[1]||1; my $ey=$end_white->[1]||0;
+     my $drift={
+      start_y=>$sy, end_y=>$ey,
+      dy_pct=>(($ey-$sy)/$sy*100),
+      dx=>($end_white->[0]/$es - $start_white->[0]/$ss),
+      dy_chroma=>($end_white->[1]/$es - $start_white->[1]/$ss),
+      elapsed_s=>(time()-($start_t||time())),
+     };
+     $state->{"lattice_drift"}=$drift;
+     log_line(sprintf("lattice drift: white Y %.3f->%.3f (%.2f%%) dxy (%.4f,%.4f) over %ds",
+      $sy,$ey,$drift->{"dy_pct"},$drift->{"dx"},$drift->{"dy_chroma"},$drift->{"elapsed_s"}));
+    }
+   }
+  };
+  log_line("lattice drift check error: $@") if($@);
+ }
+
  $state->{"phase"}="building";
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
@@ -3495,6 +3562,26 @@ eval {
   }
   $model->{"method"}="lattice";
   log_line("lattice profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
+  # Persist a diagnostic dump (raw node readings + residual grid + drift +
+  # corner model) so a lattice run can be analysed offline without re-running
+  # hardware -- pinpoints whether the interior deviations are real or drift.
+  eval {
+   my $dbgdir=$config->{"lut_dir"}||"/var/lib/PGenerator/lg/luts";
+   my $dbg="$dbgdir/lattice_debug_".time().".json";
+   my %dump=(
+    method=>"lattice", signal_mode=>$config->{"signal_mode"},
+    target_gamut=>$model->{"target_gamut"}, target_gamma=>$model->{"target_gamma"},
+    solve_matrix_only=>($config->{"solve_matrix_only"}?1:0),
+    white_y=>$model->{"white_y"}, black=>$model->{"black"},
+    contrib_100=>{ map { ($_ => $model->{"contrib"}{$_}{100}) } qw(red green blue) },
+    drift=>$state->{"lattice_drift"},
+    residual_report=>$state->{"lattice_solve"},
+    residual_grid=>$model->{"residual_grid"},
+    nodes=>\@nodes,
+   );
+   if(open(my $df,">",$dbg)) { print $df $json->encode(\%dump); close($df); log_line("lattice debug dump: $dbg"); }
+  };
+  log_line("lattice debug dump error: $@") if($@);
  }
  ($cube_u16,$preview_nodes)=generate_lut_cube($model,17);
  $payload_u16=generate_lut_lg_payload($model,33);
