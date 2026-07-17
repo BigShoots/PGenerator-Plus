@@ -34,10 +34,25 @@ sub json_bool {
 
 sub ramp_levels { return (0,2,5,8,12,16,20,30,40,50,60,70,80,88,94,98,100); }
 
+# Multi-level WRGB skeleton levels (percent). Used by method=skeleton/hybrid when
+# the client does not send an expanded lattice_patches list.
+sub skeleton_levels {
+ return (0,5,10,20,30,40,50,60,70,80,90,100);
+}
+
+# Volume-profile methods measure more than the 5-point matrix corners and feed
+# residual construction (lattice / skeleton / hybrid).
+sub is_volume_profile_method {
+ my ($method)=@_;
+ $method=lc($method||"");
+ return ($method eq "lattice" || $method eq "skeleton" || $method eq "hybrid") ? 1 : 0;
+}
+
 sub describe_and_exit {
  print $json->encode({
   status => "ok",
   default_method => "matrix",
+  methods => ["matrix","ramp","lattice","skeleton","hybrid","imported"],
   lut_size => 17,
   cube_lut_size => 17,
   payload_lut_size => 33,
@@ -47,10 +62,11 @@ sub describe_and_exit {
   payload_channel_order => "RGB values per node",
   cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   signal_modes => ["sdr","hdr10"],
-  hdr10_methods => ["matrix"],
+  hdr10_methods => ["matrix","lattice","skeleton","hybrid","imported"],
   target_gamuts => ["bt709","p3d65","p3dci","bt2020"],
   target_gammas => ["bt1886","2.2","2.4","srgb","st2084"],
   ramp_levels => [ramp_levels()],
+  skeleton_levels => [skeleton_levels()],
   ramp_profile_patch_count => 65,
   ramp_drift => "start/end WRGB anchors with time-interpolated 3x3 correction",
   model => "per-luminance-level additive XYZ contributions",
@@ -431,14 +447,17 @@ sub build_ramp_steps {
 # corner extraction works unchanged; interior nodes are kind "node" — the
 # matrix baseline ignores them and build_residual_grid consumes them, the
 # same split run_solve_only uses for the offline lattice solve.
-sub build_lattice_steps {
- my ($config)=@_;
- my $patches=$config->{"lattice_patches"};
+# Shared percent-triplet -> profile step builder for lattice / skeleton / hybrid.
+# Pure primaries at 100% and black/white are tagged for matrix_from_readings;
+# all other nodes are kind "node" and feed residual construction.
+sub _volume_steps_from_percent_patches {
+ my ($config,$patches)=@_;
  return () if(ref($patches) ne "ARRAY" || !@{$patches});
  my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
  my $max_bpc=$config->{"max_bpc"}||"";
  my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
  my @steps;
+ my %seen;
  foreach my $p (@{$patches}) {
   next if(ref($p) ne "HASH");
   my ($pr,$pg,$pb);
@@ -450,8 +469,9 @@ sub build_lattice_steps {
    next;
   }
   ($pr,$pg,$pb)=map { clamp($_+0,0,100) } ($pr,$pg,$pb);
-  last if(@steps >= 2000);
   my $name=format_percent($pr)."/".format_percent($pg)."/".format_percent($pb);
+  next if($seen{$name}++);
+  last if(@steps >= 2000);
   my $kind="node"; my $level=($pr+$pg+$pb)/3;
   if($pr>=99.9 && $pg>=99.9 && $pb>=99.9) { $kind="white"; $level=100; }
   elsif($pr<=0.1 && $pg<=0.1 && $pb<=0.1) { $kind="black"; $level=0; }
@@ -477,6 +497,46 @@ sub build_lattice_steps {
   };
  }
  return @steps;
+}
+
+sub build_lattice_steps {
+ my ($config)=@_;
+ return _volume_steps_from_percent_patches($config,$config->{"lattice_patches"});
+}
+
+# Multi-level WRGB skeleton (edges only). Prefer client-expanded lattice_patches;
+# otherwise expand skeleton_levels server-side.
+sub build_skeleton_steps {
+ my ($config)=@_;
+ my $patches=$config->{"lattice_patches"};
+ if(ref($patches) eq "ARRAY" && @{$patches}) {
+  return _volume_steps_from_percent_patches($config,$patches);
+ }
+ my @levels=skeleton_levels();
+ if(ref($config->{"skeleton_levels"}) eq "ARRAY" && @{$config->{"skeleton_levels"}}) {
+  @levels=map { clamp($_+0,0,100) } @{$config->{"skeleton_levels"}};
+ }
+ my @patches;
+ push @patches,{ name=>"0/0/0", r_pct=>0, g_pct=>0, b_pct=>0 };
+ foreach my $L (@levels) {
+  next if($L <= 0);
+  push @patches,{ name=>format_percent($L)."/".format_percent($L)."/".format_percent($L), r_pct=>$L, g_pct=>$L, b_pct=>$L };
+  push @patches,{ name=>format_percent($L)."/0/0", r_pct=>$L, g_pct=>0, b_pct=>0 };
+  push @patches,{ name=>"0/".format_percent($L)."/0", r_pct=>0, g_pct=>$L, b_pct=>0 };
+  push @patches,{ name=>"0/0/".format_percent($L), r_pct=>0, g_pct=>0, b_pct=>$L };
+ }
+ return _volume_steps_from_percent_patches($config,\@patches);
+}
+
+# Hybrid = skeleton edges + lattice interiors (client usually merges already).
+sub build_hybrid_steps {
+ my ($config)=@_;
+ my $patches=$config->{"lattice_patches"};
+ if(ref($patches) eq "ARRAY" && @{$patches}) {
+  return _volume_steps_from_percent_patches($config,$patches);
+ }
+ # Fallback: skeleton only if no client patches.
+ return build_skeleton_steps($config);
 }
 
 sub reading_xyz {
@@ -3360,10 +3420,14 @@ if(ref($config) eq "HASH") {
 }
 unlink($stop_file);
 my $method=lc($config->{"method"}||"matrix");
-$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice" || $method eq "imported");
-# Lattice profiling needs the client-expanded node list; without it fall back
-# to the classic 5-point matrix rather than dying mid-wizard.
-$method="matrix" if($method eq "lattice" && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}}));
+$method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "lattice"
+ || $method eq "skeleton" || $method eq "hybrid" || $method eq "imported");
+# Volume profiling needs the client-expanded node list (except skeleton, which
+# can expand server-side). Without patches, fall back to 5-point matrix.
+if(($method eq "lattice" || $method eq "hybrid")
+ && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}})) {
+ $method="matrix";
+}
 my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_signal_mode"},$config->{"ui_signal_mode"},$config->{"signal_mode"});
 $config->{"signal_mode"}=$signal_mode;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
@@ -3407,9 +3471,14 @@ if($config->{"solve_only"}) {
 
 my @steps=($method eq "matrix") ? build_matrix_steps($config)
  : ($method eq "lattice") ? build_lattice_steps($config)
+ : ($method eq "skeleton") ? build_skeleton_steps($config)
+ : ($method eq "hybrid") ? build_hybrid_steps($config)
  : ($method eq "imported") ? ()
  : build_ramp_steps($config);
 my $started_at=int(time()*1000);
+my $profile_patch_count=($method eq "ramp") ? 65
+ : (is_volume_profile_method($method) ? scalar(@steps)
+ : ($method eq "imported" ? 0 : 5));
 
 my $state={
  status => "running",
@@ -3418,7 +3487,7 @@ my $state={
  method => $method,
  current_step => 0,
  total_steps => scalar(@steps),
- profile_patch_count => ($method eq "ramp" ? 65 : ($method eq "lattice" ? scalar(@steps) : ($method eq "imported" ? 0 : 5))),
+ profile_patch_count => $profile_patch_count,
  current_name => "Preparing LG 3D LUT Auto Cal...",
  message => "Starting",
  readings => [],
@@ -3439,7 +3508,8 @@ my $upload_requested=upload_requested($config);
 
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
- die "LG 3D LUT Auto Cal HDR10 runs are matrix- or lattice-profiled in this version\n" if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "lattice" && $method ne "imported");
+ die "LG 3D LUT Auto Cal HDR10 runs are matrix/lattice/skeleton/hybrid-profiled in this version\n"
+  if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && !is_volume_profile_method($method) && $method ne "imported");
  # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
  # tone-map commit (operator-approved reorder, 2026-07-03). Running it
  # here (before profiling) made the trim converge against a mid-workflow
@@ -3475,13 +3545,10 @@ eval {
 
  die "cancelled\n" if(cancelled());
 
- # Drift diagnostic (lattice only): the lattice path applies NO drift correction
- # (unlike ramp), yet its read is long (corners first, then the dim interior over
- # minutes). Re-read the white corner now and compare to the START white: a
- # meaningful start->end shift means the interior deviations feeding the residual
- # carry panel thermal/ABL drift, not real non-additivity -- the leading
- # explanation for lattice trailing matrix while the solve math itself is sound.
- if($method eq "lattice" && !$config->{"fixture_mode"}) {
+ # Drift diagnostic (volume profiles): residual paths apply no mid-run drift
+ # correction (unlike ramp). Re-read white and log start->end shift so long
+ # hybrid/lattice runs can be diagnosed when residual trails matrix.
+ if(is_volume_profile_method($method) && !$config->{"fixture_mode"}) {
   eval {
    my $white_step;
    foreach my $s (@steps) { if(($s->{"kind"}||"") eq "white") { $white_step=$s; last; } }
@@ -3521,8 +3588,8 @@ eval {
  $state->{"current_name"}="Building 3D LUT";
  $state->{"message"}=($method eq "ramp")
   ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
-  : ($method eq "lattice")
-   ? "Solving lattice matrix + per-node residuals, 17-point cube plus 33-point LG payload"
+  : (is_volume_profile_method($method))
+   ? "Solving $method matrix + per-node residuals, 17-point cube plus 33-point LG payload"
    : ($method eq "imported")
     ? "Resampling imported .cube to 17-point cube plus 33-point LG payload"
     : "Solving matrix 17-point cube plus 33-point LG payload";
@@ -3532,13 +3599,12 @@ eval {
  if($method eq "imported") {
   ($model,$cube_u16,$payload_u16)=build_imported_lut($config,$state);
  } else {
- # Lattice profiling solves the SAME model as the offline lattice solve
- # (run_solve_only): white-preserving matrix baseline from the corner reads,
- # then bounded per-node residual corrections from the interior nodes. The
- # matrix baseline reads only the white/red/green/blue/black corner kinds,
- # so passing "matrix" here is exact — interior "node" entries are inert.
- $model=model_from_readings(($method eq "lattice") ? "matrix" : $method,\@profile_readings,$config);
- if($method eq "lattice") {
+ # Volume profiling (lattice / skeleton / hybrid) uses the same solve as the
+ # offline lattice path: white-preserving matrix baseline from W/R/G/B/K
+ # corner kinds, then bounded residuals from all percent-named nodes.
+ # model_from_readings("matrix") ignores interior "node" kinds for the 3x3.
+ $model=model_from_readings(is_volume_profile_method($method) ? "matrix" : $method,\@profile_readings,$config);
+ if(is_volume_profile_method($method)) {
   my @nodes;
   foreach my $entry (@profile_readings) {
    next if(ref($entry) ne "HASH");
@@ -3560,16 +3626,13 @@ eval {
   } else {
    $state->{"lattice_solve"}={ mode=>"matrix_only" };
   }
-  $model->{"method"}="lattice";
-  log_line("lattice profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
-  # Persist a diagnostic dump (raw node readings + residual grid + drift +
-  # corner model) so a lattice run can be analysed offline without re-running
-  # hardware -- pinpoints whether the interior deviations are real or drift.
+  $model->{"method"}=$method;
+  log_line("$method profile solve: nodes=".scalar(@nodes)." mode=".(($state->{"lattice_solve"}||{})->{"mode"}||""));
   eval {
    my $dbgdir=$config->{"lut_dir"}||"/var/lib/PGenerator/lg/luts";
    my $dbg="$dbgdir/lattice_debug_".time().".json";
    my %dump=(
-    method=>"lattice", signal_mode=>$config->{"signal_mode"},
+    method=>$method, signal_mode=>$config->{"signal_mode"},
     target_gamut=>$model->{"target_gamut"}, target_gamma=>$model->{"target_gamma"},
     solve_matrix_only=>($config->{"solve_matrix_only"}?1:0),
     white_y=>$model->{"white_y"}, black=>$model->{"black"},

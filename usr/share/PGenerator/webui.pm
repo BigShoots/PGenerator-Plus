@@ -10885,15 +10885,19 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
-     <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px" title="How the display is profiled before the 3D LUT is solved. Matrix reads the 5 W/R/G/B/K corners; a lattice series also measures interior nodes for per-node corrections.">Profiling source
+     <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px" title="How the display is profiled before the 3D LUT is solved. Matrix = 5 corners. Skeleton = multi-level white/red/green/blue ramps (fast full-cube solve). Hybrid = skeleton + a small volume cube. Lattice = full N³ volume only.">Profiling source
       <select id="meterLg3dProfileSource" onchange="meterLg3dProfileSourceChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
-       <option value="matrix" selected>Matrix (5-point)</option>
-       <option value="lattice">Lattice series</option>
+       <option value="matrix">Matrix (5-point)</option>
+       <option value="skeleton">Skeleton (multi-level WRGB)</option>
+       <option value="hybrid3" selected>Hybrid 3³ (recommended)</option>
+       <option value="hybrid5">Hybrid 5³</option>
+       <option value="hybrid9">Hybrid 9³</option>
+       <option value="lattice">Lattice series…</option>
        <option value="imported">Imported .cube (upload only)</option>
       </select>
      </label>
      <select id="meterLg3dLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px" title="Lattice series to measure for profiling"></select>
-     <label id="meterLg3dLatticeResidualsWrap" style="display:none;font-size:.72rem;color:var(--text2);align-items:center;gap:6px" title="On: interior lattice reads add bounded per-node corrections on top of the corner matrix model. Off: the lattice is measured but the LUT is solved from the corner matrix only (same solve as the 5-point matrix profile) - useful to A/B whether the per-node layer helps this panel.">
+     <label id="meterLg3dLatticeResidualsWrap" style="display:none;font-size:.72rem;color:var(--text2);align-items:center;gap:6px" title="On: measured nodes add bounded per-node corrections on top of the corner matrix model. Off: solve from the corner matrix only (same as 5-point matrix) — A/B lever for the residual layer.">
       <input type="checkbox" id="meterLg3dLatticeResiduals" checked style="accent-color:var(--accent)"> Per-node corrections
      </label>
      <select id="meterLg3dImportedLut" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;max-width:260px" title="The .cube to resample to the LG 33-point payload and upload — no measurement, no solve"></select>
@@ -11850,11 +11854,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <label id="meterFullAutoCalProfilingRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px;flex-wrap:wrap">
 	    3D LUT profiling
 	    <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
-	     <option value="matrix" selected>Matrix (5-point, fastest)</option>
-	     <option value="lattice">Lattice series</option>
+	     <option value="matrix">Matrix (5-point, fastest)</option>
+	     <option value="skeleton">Skeleton (multi-level WRGB)</option>
+	     <option value="hybrid3" selected>Hybrid 3³ (recommended)</option>
+	     <option value="hybrid5">Hybrid 5³</option>
+	     <option value="hybrid9">Hybrid 9³</option>
+	     <option value="lattice">Lattice series…</option>
 	    </select>
 	    <select id="meterFullAutoCalLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px"></select>
-	    <span style="font-size:.68rem;color:var(--text2)">(a lattice also measures interior nodes for per-node corrections &mdash; more reads, longer run)</span>
+	    <span style="font-size:.68rem;color:var(--text2)">(skeleton/hybrid measure multi-level WRGB edges; hybrid also samples a small volume cube)</span>
 	   </label>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
@@ -22919,10 +22927,15 @@ function meterFullAutoCalStageWeights(){
  // bar does not crawl through a long lattice at matrix pacing.
  let latticeReads=0;
  try{
-  if(String((meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||'')==='lattice'){
-   const series=meterCustomSeriesById(meterFullAutoCalConfig.latticeSeriesId);
+  {
+  const fm=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.method)||'');
+  if(fm==='lattice'||fm==='skeleton'||fm==='hybrid'){
+   let series=meterCustomSeriesById(meterFullAutoCalConfig.latticeSeriesId);
+   if(!series&&fm==='skeleton') series=meterCustomSeriesById(920);
+   if(!series&&fm==='hybrid') series=meterCustomSeriesById(923);
    if(series) latticeReads=Math.max(0,meterLg3dLatticePatchesForStart(series).length-5);
   }
+ }
  }catch(e){ latticeReads=0; }
  return {
   'precal-report':reportReads,
@@ -25079,6 +25092,16 @@ const METER_BUILTIN_CUBE_SERIES=[
  {id:917,name:'Cube 17³',category:'color',mode:'any',kind:'lattice',params:{size:17,grey_points:0,threshold_pct:0,order:'spread',reverse:false},patches:[]}
 ];
 
+// Built-in 3D LUT AutoCal profiling series (reserved ids 920-939). Skeleton =
+// multi-level WRGB ramps only; hybrid = skeleton + lattice volume (deduped).
+// Not listed on the 3D Cube chart tab as pure lattices; used by profiling selects.
+const METER_BUILTIN_3D_PROFILE_SERIES=[
+ {id:920,name:'Skeleton WRGB',category:'color',mode:'any',kind:'skeleton',params:{levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:923,name:'Hybrid 3³',category:'color',mode:'any',kind:'hybrid',params:{size:3,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:925,name:'Hybrid 5³',category:'color',mode:'any',kind:'hybrid',params:{size:5,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]},
+ {id:929,name:'Hybrid 9³',category:'color',mode:'any',kind:'hybrid',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]}
+];
+
 // Built-in cube lattices pick node spacing from the CURRENT signal mode:
 // SDR stays signal-uniform (the display gamma already spreads decoded light),
 // HDR switches to light-uniform PQ spacing up to the mastering peak so the
@@ -25086,7 +25109,16 @@ const METER_BUILTIN_CUBE_SERIES=[
 // edge (see the spacing note in meterLatticeSanitizeParams). Returns a copy —
 // the METER_BUILTIN_CUBE_SERIES constants stay untouched.
 function meterBuiltinCubeSeriesForMode(builtin){
- if(!builtin||builtin.kind!=='lattice') return builtin;
+ if(!builtin||(builtin.kind!=='lattice'&&builtin.kind!=='hybrid')) return builtin;
+ if(builtin.kind==='hybrid'){
+  // Hybrid volume half follows lattice spacing rules; skeleton levels stay as-is.
+  const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
+  const hdr=(modeKey==='hdr');
+  const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
+  const params=Object.assign({},builtin.params,
+   hdr?{spacing:'light',pq:true,peak_nits:peak}:{spacing:'signal',pq:false});
+  return Object.assign({},builtin,{params:params});
+ }
  const modeKey=(typeof meterCustomSeriesModeKey==='function')?meterCustomSeriesModeKey():'sdr';
  const hdr=(modeKey==='hdr');
  const peak=Number((typeof getVal==='function'?getVal('max_luma'):0)||0)||1000;
@@ -25098,7 +25130,9 @@ function meterBuiltinCubeSeriesForMode(builtin){
 function meterCustomSeriesById(id){
  const numeric=Math.round(Number(id));
  if(Number.isFinite(numeric)&&numeric>=900&&numeric<1000){
-  const builtin=METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+  let builtin=METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
+  if(!builtin&&typeof METER_BUILTIN_3D_PROFILE_SERIES!=='undefined')
+   builtin=METER_BUILTIN_3D_PROFILE_SERIES.find(s=>s.id===numeric)||null;
   if(builtin&&typeof meterBuiltinCubeSeriesForMode==='function') return meterBuiltinCubeSeriesForMode(builtin);
   return builtin;
  }
@@ -25261,9 +25295,89 @@ function meterLatticeCountForParams(rawParams){
  return count;
 }
 
+// Default multi-level WRGB skeleton levels (percent). Matches worker skeleton_levels.
+function meterSkeletonDefaultLevels(){
+ return [0,5,10,20,30,40,50,60,70,80,90,100];
+}
+
+function meterSkeletonSanitizeParams(raw){
+ const src=(raw&&typeof raw==='object')?raw:{};
+ let levels=Array.isArray(src.levels)?src.levels.map(v=>Math.round(Number(v))).filter(n=>Number.isFinite(n)&&n>=0&&n<=100):meterSkeletonDefaultLevels();
+ if(!levels.length) levels=meterSkeletonDefaultLevels();
+ // unique sorted
+ levels=Array.from(new Set(levels)).sort((a,b)=>a-b);
+ return {levels:levels};
+}
+
+function meterSkeletonExpandPatches(rawParams){
+ const params=meterSkeletonSanitizeParams(rawParams);
+ const makePatch=(name,fr,fg,fb)=>({
+  name:name,frac_r:fr,frac_g:fg,frac_b:fb,
+  r8:Math.round(fr*255),g8:Math.round(fg*255),b8:Math.round(fb*255),
+  r10:Math.round(fr*1023),g10:Math.round(fg*1023),b10:Math.round(fb*1023),
+  target_nits:null
+ });
+ const pct=f=>meterLatticePct(f);
+ const patches=[];
+ const seen=new Set();
+ const push=(fr,fg,fb)=>{
+  const name=pct(fr)+'/'+pct(fg)+'/'+pct(fb);
+  if(seen.has(name)) return;
+  seen.add(name);
+  patches.push(makePatch(name,fr,fg,fb));
+ };
+ push(0,0,0);
+ for(const L of params.levels){
+  if(!(L>0)) continue;
+  const f=L/100;
+  push(f,f,f); // white at level
+  push(f,0,0); // red
+  push(0,f,0); // green
+  push(0,0,f); // blue
+ }
+ return patches;
+}
+
+function meterSkeletonCountForParams(rawParams){
+ return meterSkeletonExpandPatches(rawParams).length;
+}
+
+// Hybrid = skeleton edges + lattice volume (dedupe by name). Skeleton leads so
+// multi-level WRGB is measured first; volume interiors follow.
+function meterHybridExpandPatches(rawParams){
+ const src=(rawParams&&typeof rawParams==='object')?rawParams:{};
+ const sk=meterSkeletonExpandPatches(src);
+ const lat=meterLatticeExpandPatches(src);
+ const seen=new Set(sk.map(p=>p.name));
+ const out=sk.slice();
+ for(const p of lat){
+  if(!p||!p.name||seen.has(p.name)) continue;
+  seen.add(p.name);
+  out.push(p);
+ }
+ return out;
+}
+
+function meterHybridCountForParams(rawParams){
+ return meterHybridExpandPatches(rawParams).length;
+}
+
 function meterCustomSeriesPatches(series){
- if(series&&series.kind==='lattice') return meterLatticeExpandPatches(series.params);
- return (series&&Array.isArray(series.patches))?series.patches:[];
+ if(!series) return [];
+ if(series.kind==='lattice') return meterLatticeExpandPatches(series.params);
+ if(series.kind==='skeleton') return meterSkeletonExpandPatches(series.params);
+ if(series.kind==='hybrid') return meterHybridExpandPatches(series.params);
+ return Array.isArray(series.patches)?series.patches:[];
+}
+
+function meterProfilingSeriesPatchCount(series){
+ if(!series) return 0;
+ try{
+  if(series.kind==='lattice') return meterLatticeCountForParams(series.params);
+  if(series.kind==='skeleton') return meterSkeletonCountForParams(series.params);
+  if(series.kind==='hybrid') return meterHybridCountForParams(series.params);
+  return Array.isArray(series.patches)?series.patches.length:0;
+ }catch(e){ return 0; }
 }
 
 function meterLatticeWireRange(){
@@ -30750,13 +30864,14 @@ function meterFullAutoCalMethodValue(){
  return 'matrix';
 }
 
-// Wizard "3D LUT profiling" choice: matrix (default) or a lattice series.
+// Wizard "3D LUT profiling" choice: matrix / skeleton / hybrid / lattice.
 // The wizard NEVER offers the imported upload-only source — a full workflow
 // always profiles and solves.
 function meterFullAutoCalProfilingMethodChanged(){
  const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
  const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
- const lattice=!!(methodSel&&String(methodSel.value)==='lattice');
+ const v=methodSel?String(methodSel.value||'hybrid3').toLowerCase():'hybrid3';
+ const lattice=v==='lattice';
  if(!latSel) return;
  latSel.style.display=lattice?'':'none';
  if(!lattice) return;
@@ -30764,8 +30879,7 @@ function meterFullAutoCalProfilingMethodChanged(){
  const prev=String(latSel.value||'');
  const list=meterLg3dLatticeSeriesChoices();
  latSel.innerHTML=list.map(s=>{
-  let count=0;
-  try{ count=(s.kind==='lattice'&&s.params)?meterLatticeCountForParams(s.params):(Array.isArray(s.patches)?s.patches.length:0); }catch(e){}
+  const count=meterProfilingSeriesPatchCount(s);
   return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
  }).join('');
  if(prev&&list.some(s=>String(s.id)===prev)) latSel.value=prev;
@@ -30796,8 +30910,11 @@ function meterFullAutoCalResolveConfirm(accepted){
 	  if(opts.showProfilingChoice){
 	   const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
 	   const latSel=document.getElementById('meterFullAutoCalLatticeSeries');
-	   result.method=(methodSel&&String(methodSel.value)==='lattice')?'lattice':'matrix';
-	   result.latticeSeriesId=(result.method==='lattice'&&latSel&&latSel.value)?Math.round(Number(latSel.value)):null;
+	   const src=methodSel?String(methodSel.value||'hybrid3').toLowerCase():'hybrid3';
+	   const resolved=meterLg3dResolveProfilingChoice(src,latSel&&latSel.value);
+	   result.method=resolved.method||'matrix';
+	   result.profileSource=src;
+	   result.latticeSeriesId=(resolved.series&&resolved.series.id!=null)?Math.round(Number(resolved.series.id)):null;
 	  }
 	 }
  meterFullAutoCalConfirmResolver=null;
@@ -31243,8 +31360,12 @@ async function meterStartFullAutoCal(){
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
 		  ? accepted.shadowFixEnabled!==false
 		  : true;
-		 const profilingMethod=(accepted&&typeof accepted==='object'&&accepted.method==='lattice')?'lattice':'matrix';
-		 const profilingLatticeSeriesId=(profilingMethod==='lattice'&&accepted&&Number.isFinite(Number(accepted.latticeSeriesId)))?Math.round(Number(accepted.latticeSeriesId)):null;
+		 const profilingMethod=(accepted&&typeof accepted==='object'&&accepted.method
+		  &&(accepted.method==='lattice'||accepted.method==='skeleton'||accepted.method==='hybrid'||accepted.method==='matrix'))
+		  ?accepted.method:'hybrid';
+		 const profilingLatticeSeriesId=(typeof meterLg3dIsVolumeMethod==='function'&&meterLg3dIsVolumeMethod(profilingMethod)&&accepted&&Number.isFinite(Number(accepted.latticeSeriesId)))
+		  ?Math.round(Number(accepted.latticeSeriesId))
+		  :(profilingMethod==='skeleton'?920:(profilingMethod==='hybrid'?923:null));
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
   message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
@@ -32623,10 +32744,40 @@ function meterLg3dApplyPostCheckStatus(status){
 // options.method; this select only drives the standalone button.
 let meterLg3dActiveLatticeSeriesId=0;
 
+// Standalone 3D AutoCal profiling source values.
+// matrix | skeleton | hybrid3 | hybrid5 | hybrid9 | lattice | imported
 function meterLg3dProfileSourceValue(){
  const el=document.getElementById('meterLg3dProfileSource');
- const v=el?String(el.value||'matrix').toLowerCase():'matrix';
- return (v==='lattice'||v==='imported')?v:'matrix';
+ const v=el?String(el.value||'hybrid3').toLowerCase():'hybrid3';
+ if(v==='matrix'||v==='skeleton'||v==='hybrid3'||v==='hybrid5'||v==='hybrid9'||v==='lattice'||v==='imported') return v;
+ return 'hybrid3';
+}
+
+// Map UI source -> worker method + optional builtin series id.
+function meterLg3dResolveProfilingChoice(source,latticeSeriesId){
+ const src=String(source||'hybrid3').toLowerCase();
+ if(src==='imported') return {method:'imported',series:null};
+ if(src==='matrix') return {method:'matrix',series:null};
+ if(src==='skeleton') return {method:'skeleton',series:meterCustomSeriesById(920)};
+ if(src==='hybrid3') return {method:'hybrid',series:meterCustomSeriesById(923)};
+ if(src==='hybrid5') return {method:'hybrid',series:meterCustomSeriesById(925)};
+ if(src==='hybrid9') return {method:'hybrid',series:meterCustomSeriesById(929)};
+ if(src==='lattice'){
+  const series=meterCustomSeriesById(latticeSeriesId!=null?latticeSeriesId:(document.getElementById('meterLg3dLatticeSeries')||{}).value||905)
+   ||meterCustomSeriesById(905);
+  return {method:'lattice',series:series};
+ }
+ // Full-auto may pass method directly
+ if(src==='hybrid'||src==='skeleton'||src==='lattice'){
+  const series=meterCustomSeriesById(latticeSeriesId);
+  return {method:src,series:series};
+ }
+ return {method:'matrix',series:null};
+}
+
+function meterLg3dIsVolumeMethod(method){
+ const m=String(method||'').toLowerCase();
+ return m==='lattice'||m==='skeleton'||m==='hybrid';
 }
 
 function meterLg3dLatticeSeriesChoices(){
@@ -32641,8 +32792,7 @@ function meterLg3dPopulateLatticeSeries(){
  const prev=String(sel.value||'');
  const list=meterLg3dLatticeSeriesChoices();
  sel.innerHTML=list.map(s=>{
-  let count=0;
-  try{ count=(s.kind==='lattice'&&s.params)?meterLatticeCountForParams(s.params):(Array.isArray(s.patches)?s.patches.length:0); }catch(e){}
+  const count=meterProfilingSeriesPatchCount(s);
   return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
  }).join('');
  if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
@@ -32661,7 +32811,8 @@ function meterLg3dProfileSourceChanged(){
   if(src==='lattice') meterLg3dPopulateLatticeSeries();
  }
  const residWrap=document.getElementById('meterLg3dLatticeResidualsWrap');
- if(residWrap) residWrap.style.display=(src==='lattice')?'flex':'none';
+ // Residuals apply to lattice/skeleton/hybrid volume solves
+ if(residWrap) residWrap.style.display=(src==='lattice'||src==='skeleton'||src.indexOf('hybrid')===0)?'flex':'none';
  const impSel=document.getElementById('meterLg3dImportedLut');
  if(impSel){
   impSel.style.display=(src==='imported')?'':'none';
@@ -32697,10 +32848,9 @@ function meterLg3dSelectedLatticeSeries(){
  return meterCustomSeriesById(sel&&sel.value?sel.value:905)||METER_BUILTIN_CUBE_SERIES[0];
 }
 
-// Percent triplets for the worker's build_lattice_steps: cube nodes only
-// (grey-ramp "G n%" entries add nothing the matrix corners don't already
-// provide). The worker computes wire codes itself from the run's live
-// range/bit-depth, so only names travel.
+// Percent triplets for the worker volume-step builders (lattice/skeleton/hybrid).
+// Grey-ramp "G n%" entries are skipped. Worker computes wire codes from the
+// live range/bit-depth, so only names travel.
 function meterLg3dLatticePatchesForStart(series){
  let patches=[];
  try{ patches=meterCustomSeriesPatches(series)||[]; }catch(e){ patches=[]; }
@@ -32709,11 +32859,10 @@ function meterLg3dLatticePatchesForStart(series){
   .map(p=>({name:p.name}));
 }
 
-// Chart the live lattice profile exactly like a lattice series read: same
-// client-expanded steps (display-referenced CIE targets, 3D routing, view
-// prefs) with the worker's readings paired by patch name.
+// Chart the live volume profile (lattice / skeleton / hybrid) like a series read.
 function meterLg3dApplyLatticeProfileStatus(status){
- if(String((status&&status.method)||'').toLowerCase()!=='lattice') return false;
+ const m=String((status&&status.method)||'').toLowerCase();
+ if(m!=='lattice'&&m!=='skeleton'&&m!=='hybrid') return false;
  const raw=meterLg3dMatrixProfileReadings(status);
  if(!raw.length) return false;
  const series=meterCustomSeriesById(meterLg3dActiveLatticeSeriesId)||meterLg3dSelectedLatticeSeries();
@@ -33008,27 +33157,37 @@ async function meterStartLg3dAutoCal(options){
   return false;
  };
  if(meterActionPending||meterLg3dAutoCalRunning||(!fullWorkflow&&(meterAutoCalRunning||meterFullAutoCalRunning))) return fail('Meter operation already in progress');
- // Profiling method: the wizard passes options.method explicitly; the
- // standalone button reads the Profiling source select (matrix | lattice |
- // imported). Resolved before the meter check — the imported path uploads a
- // .cube as-is and needs no meter at all.
- const requestedMethod=String((options&&options.method)||meterLg3dProfileSourceValue()||'matrix').toLowerCase();
- let method=(requestedMethod==='ramp'||requestedMethod==='lattice'||requestedMethod==='imported')?requestedMethod:'matrix';
+ // Profiling method: full workflow passes options.method (+ latticeSeriesId);
+ // standalone button reads the Profiling source select. Imported needs no meter.
+ let method='matrix';
+ let latticeSeries=null;
+ if(options&&options.method){
+  const m=String(options.method).toLowerCase();
+  if(m==='matrix'||m==='ramp'||m==='lattice'||m==='skeleton'||m==='hybrid'||m==='imported') method=m;
+  if(meterLg3dIsVolumeMethod(method)){
+   latticeSeries=(options.latticeSeriesId!=null)?meterCustomSeriesById(options.latticeSeriesId):null;
+   if(!latticeSeries&&method==='skeleton') latticeSeries=meterCustomSeriesById(920);
+   if(!latticeSeries&&method==='hybrid') latticeSeries=meterCustomSeriesById(923);
+   if(!latticeSeries&&method==='lattice') latticeSeries=meterLg3dSelectedLatticeSeries();
+  }
+ } else {
+  const resolved=meterLg3dResolveProfilingChoice(meterLg3dProfileSourceValue(),null);
+  method=resolved.method||'matrix';
+  latticeSeries=resolved.series||null;
+ }
+ if(!(method==='matrix'||method==='ramp'||method==='lattice'||method==='skeleton'||method==='hybrid'||method==='imported')) method='matrix';
  if(method!=='imported'&&!(await meterEnsureDetected())) return fail('No meter detected');
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
  if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
- if(signalMode==='hdr10'&&method==='ramp') return fail('HDR10 3D LUT AutoCal is matrix- or lattice-profiled in this version');
- // Lattice profiling: expand the chosen series to percent triplets now so a
- // bad selection fails before the worker starts.
+ if(signalMode==='hdr10'&&method==='ramp') return fail('HDR10 3D LUT AutoCal is matrix/lattice/skeleton/hybrid-profiled in this version');
+ // Volume profiling: expand the chosen series to percent triplets now.
  let latticePatches=null;
- let latticeSeries=null;
- if(method==='lattice'){
-  latticeSeries=(options&&options.latticeSeriesId!=null)?meterCustomSeriesById(options.latticeSeriesId):meterLg3dSelectedLatticeSeries();
-  if(!latticeSeries) return fail('Select a lattice series to profile with');
+ if(meterLg3dIsVolumeMethod(method)){
+  if(!latticeSeries) return fail('Select a profiling series');
   latticePatches=meterLg3dLatticePatchesForStart(latticeSeries);
-  if(!latticePatches.length) return fail('Selected lattice series has no cube patches');
+  if(!latticePatches.length) return fail('Selected profiling series has no patches');
   meterLg3dActiveLatticeSeriesId=latticeSeries.id;
  }
  // Imported upload: validate the choice before confirming; the file is only
@@ -33048,7 +33207,7 @@ async function meterStartLg3dAutoCal(options){
   const message=method==='imported'
    ? 'Upload the selected .cube to the TV as-is? It is resampled to the LG 33-point payload — no measurement, no solve. This replaces the current 3D LUT for the active picture mode.'
    : (signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '
-     +(method==='lattice'?'profiles '+latticePatches.length+' lattice patches ('+String(latticeSeries.name||'')+') and ':'')
+     +(meterLg3dIsVolumeMethod(method)?'profiles '+latticePatches.length+' patches ('+String(latticeSeries&&latticeSeries.name||method)+') and ':'')
      +'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?';
   const accepted=window.confirm(message);
   if(!accepted) return false;
@@ -33123,12 +33282,12 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // which on a 10-bit link land at ~23% of full signal and crush the
   // stimulus range (same bug the greyscale worker fixed in 79b2c2c9).
   max_bpc:getVal('max_bpc'),
-  // Lattice profiling: percent triplets only — the worker computes wire
-  // codes from the run's live range/bit-depth (build_lattice_steps).
-  lattice_patches:method==='lattice'?latticePatches:undefined,
-  // Per-node corrections OFF -> the lattice is measured but solved from the
+  // Volume profiling: percent triplets only — the worker computes wire codes
+  // from the run's live range/bit-depth (build_*_steps).
+  lattice_patches:meterLg3dIsVolumeMethod(method)?latticePatches:undefined,
+  // Per-node corrections OFF -> volume is measured but solved from the
   // corner matrix only (A/B lever for the residual layer).
-  solve_matrix_only:(method==='lattice'&&!meterLg3dLatticeResidualsEnabled())?true:undefined,
+  solve_matrix_only:(meterLg3dIsVolumeMethod(method)&&!meterLg3dLatticeResidualsEnabled())?true:undefined,
   // Imported upload: the .cube saved on the generator; the worker resamples
   // it to the 33-point payload and skips profiling entirely.
   imported_cube_path:method==='imported'?importedCubePath:undefined,
@@ -33176,7 +33335,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
  }
  meterActionPending=true;
  meterLg3dAutoCalRunning=true;
- meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(method==='lattice'?latticePatches.length:(method==='imported'?1:5))),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(meterLg3dIsVolumeMethod(method)?(latticePatches?latticePatches.length:1):(method==='imported'?1:5))),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
  meterUpdateReadButtons();
  try{
   await meterStopContinuous();
