@@ -26331,16 +26331,24 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 }
 // Select a series: load thumbnails + display first patch, no reading
 // Lattice (3D LUT profiling) chart defaults when a lattice series becomes
-// active (one-shot per activation; the operator can toggle back):
+// active:
 //  - 3D xyY view ON — neutral-ratio cube nodes share chromaticity and stack
 //    in 2D, but separate vertically by luminance in 3D (gamut cloud).
 //  - Target boxes OFF — profiling is characterization, not verification;
 //    above-peak mixes have no reachable reference to draw a box for.
-// Called from series selection AND recovery.
+// Called from series selection AND recovery — which re-fire during a live
+// read (shared-series sync re-activates the same series every few polls), so
+// the default is memoized PER SERIES KEY: it applies once when the lattice
+// becomes active and never again for that key. The operator's subsequent
+// manual toggles (e.g. unchecking 3D View mid-read) always stick.
+let meterLattice3dDefaultedKey=null;
 function meterLatticeDefault3dView(points){
  try{
   const cubeSeries=meterCustomSeriesById(points);
   if(!cubeSeries||cubeSeries.kind!=='lattice') return;
+  const key='colors-'+points;
+  if(meterLattice3dDefaultedKey===key) return;
+  meterLattice3dDefaultedKey=key;
   const view3d=document.getElementById('meterCie3dView');
   if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
   const targets=document.getElementById('meterCieOptTargets');
