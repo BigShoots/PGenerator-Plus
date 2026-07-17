@@ -30690,6 +30690,7 @@ function meterFullAutoCalProfilingMethodChanged(){
  if(!latSel) return;
  latSel.style.display=lattice?'':'none';
  if(!lattice) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  const prev=String(latSel.value||'');
  const list=meterLg3dLatticeSeriesChoices();
  latSel.innerHTML=list.map(s=>{
@@ -33084,6 +33085,7 @@ function meterLg3dLatticeSeriesChoices(){
 function meterLg3dPopulateLatticeSeries(){
  const sel=document.getElementById('meterLg3dLatticeSeries');
  if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  const prev=String(sel.value||'');
  const list=meterLg3dLatticeSeriesChoices();
  sel.innerHTML=list.map(s=>{
@@ -33114,6 +33116,7 @@ function meterLg3dProfileSourceChanged(){
 async function meterLg3dPopulateImportedLuts(){
  const sel=document.getElementById('meterLg3dImportedLut');
  if(!sel) return;
+ const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  const prev=String(sel.value||'');
  const opts=[];
  const pv=meterLastCubePreview;
@@ -33444,7 +33447,7 @@ async function meterStartLg3dAutoCal(options){
   const message=method==='imported'
    ? 'Upload the selected .cube to the TV as-is? It is resampled to the LG 33-point payload — no measurement, no solve. This replaces the current 3D LUT for the active picture mode.'
    : (signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '
-     +(method==='lattice'?'profiles '+latticePatches.length+' lattice patches ('+esc(latticeSeries.name)+') and ':'')
+     +(method==='lattice'?'profiles '+latticePatches.length+' lattice patches ('+String(latticeSeries.name||'')+') and ':'')
      +'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?';
   const accepted=window.confirm(message);
   if(!accepted) return false;
