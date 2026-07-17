@@ -1,0 +1,406 @@
+capturing to data/3d-lut-profiles/hybrid3-20260717-144945
+2026-07-17T14:50:35-05:00 running profile 12 63 11
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=11/63
+solve_readings=11
+2026-07-17T14:50:44-05:00 running profile 12 63 11
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=11/63
+solve_readings=11
+2026-07-17T14:50:53-05:00 running profile 13 63 12
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=12/63
+solve_readings=12
+2026-07-17T14:51:01-05:00 running profile 13 63 12
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=12/63
+solve_readings=12
+2026-07-17T14:51:10-05:00 running profile 14 63 13
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=13/63
+solve_readings=13
+2026-07-17T14:51:19-05:00 running profile 15 63 14
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=14/63
+solve_readings=14
+2026-07-17T14:51:28-05:00 running profile 15 63 14
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=14/63
+solve_readings=14
+2026-07-17T14:51:36-05:00 running profile 16 63 15
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=15/63
+solve_readings=15
+2026-07-17T14:51:45-05:00 running profile 16 63 15
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=15/63
+solve_readings=15
+2026-07-17T14:51:54-05:00 running profile 17 63 16
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=16/63
+solve_readings=16
+2026-07-17T14:52:02-05:00 running profile 17 63 16
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=16/63
+solve_readings=16
+2026-07-17T14:52:11-05:00 running profile 18 63 17
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=17/63
+solve_readings=17
+2026-07-17T14:52:20-05:00 running profile 19 63 18
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=18/63
+solve_readings=18
+2026-07-17T14:52:28-05:00 running profile 19 63 18
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=18/63
+solve_readings=18
+2026-07-17T14:52:37-05:00 running profile 20 63 19
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=19/63
+solve_readings=19
+2026-07-17T14:52:46-05:00 running profile 20 63 19
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=19/63
+solve_readings=19
+2026-07-17T14:52:55-05:00 running profile 21 63 20
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=20/63
+solve_readings=20
+2026-07-17T14:53:04-05:00 running profile 22 63 21
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=21/63
+solve_readings=21
+2026-07-17T14:53:12-05:00 running profile 22 63 21
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=21/63
+solve_readings=21
+2026-07-17T14:53:21-05:00 running profile 23 63 22
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=22/63
+solve_readings=22
+2026-07-17T14:53:30-05:00 running profile 23 63 22
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=22/63
+solve_readings=22
+2026-07-17T14:53:39-05:00 running profile 24 63 23
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=23/63
+solve_readings=23
+2026-07-17T14:53:47-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:53:56-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:05-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:14-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:22-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:31-05:00 running drift_anchor 24 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:39-05:00 running profile 25 63 24
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=24/63
+solve_readings=24
+2026-07-17T14:54:48-05:00 running profile 26 63 25
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=25/63
+solve_readings=25
+2026-07-17T14:54:57-05:00 running profile 26 63 25
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=25/63
+solve_readings=25
+2026-07-17T14:55:06-05:00 running profile 27 63 26
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=26/63
+solve_readings=26
+2026-07-17T14:55:15-05:00 running profile 28 63 27
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=27/63
+solve_readings=27
+2026-07-17T14:55:23-05:00 running profile 28 63 27
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=27/63
+solve_readings=27
+2026-07-17T14:55:32-05:00 running profile 29 63 28
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=28/63
+solve_readings=28
+2026-07-17T14:55:41-05:00 running profile 30 63 29
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=29/63
+solve_readings=29
+2026-07-17T14:55:49-05:00 running profile 30 63 29
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=29/63
+solve_readings=29
+2026-07-17T14:55:59-05:00 running profile 31 63 30
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=30/63
+solve_readings=30
+2026-07-17T14:56:07-05:00 running profile 32 63 31
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=31/63
+solve_readings=31
+2026-07-17T14:56:16-05:00 running profile 32 63 31
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=31/63
+solve_readings=31
+2026-07-17T14:56:25-05:00 running profile 33 63 32
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=32/63
+solve_readings=32
+2026-07-17T14:56:33-05:00 running profile 34 63 33
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=33/63
+solve_readings=33
+2026-07-17T14:56:42-05:00 running profile 34 63 33
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=33/63
+solve_readings=33
+2026-07-17T14:56:51-05:00 running profile 35 63 34
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=34/63
+solve_readings=34
+2026-07-17T14:56:59-05:00 running profile 36 63 35
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=35/63
+solve_readings=35
+2026-07-17T14:57:09-05:00 running profile 36 63 35
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=35/63
+solve_readings=35
+2026-07-17T14:57:17-05:00 running profile 37 63 36
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=36/63
+solve_readings=36
+2026-07-17T14:57:26-05:00 running profile 38 63 37
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=37/63
+solve_readings=37
+2026-07-17T14:57:35-05:00 running profile 39 63 38
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=38/63
+solve_readings=38
+2026-07-17T14:57:43-05:00 running profile 39 63 38
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=38/63
+solve_readings=38
+2026-07-17T14:57:52-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:01-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:10-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:18-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:27-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:36-05:00 running drift_anchor 39 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:45-05:00 running profile 40 63 39
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=39/63
+solve_readings=39
+2026-07-17T14:58:53-05:00 running profile 41 63 40
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=40/63
+solve_readings=40
+2026-07-17T14:59:02-05:00 running profile 42 63 41
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=41/63
+solve_readings=41
+2026-07-17T14:59:11-05:00 running profile 43 63 42
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=42/63
+solve_readings=42
+2026-07-17T14:59:20-05:00 running profile 43 63 42
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=42/63
+solve_readings=42
+2026-07-17T14:59:29-05:00 running profile 44 63 43
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=43/63
+solve_readings=43
+2026-07-17T14:59:37-05:00 running profile 45 63 44
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=44/63
+solve_readings=44
+2026-07-17T14:59:46-05:00 running profile 45 63 44
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=44/63
+solve_readings=44
+2026-07-17T14:59:55-05:00 running profile 46 63 45
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=45/63
+solve_readings=45
+2026-07-17T15:00:03-05:00 running profile 47 63 46
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=46/63
+solve_readings=46
+2026-07-17T15:00:12-05:00 running profile 48 63 47
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=47/63
+solve_readings=47
+2026-07-17T15:00:21-05:00 running profile 48 63 47
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=47/63
+solve_readings=47
+2026-07-17T15:00:30-05:00 running profile 49 63 48
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=48/63
+solve_readings=48
+2026-07-17T15:00:38-05:00 running profile 50 63 49
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=49/63
+solve_readings=49
+2026-07-17T15:00:47-05:00 running profile 51 63 50
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=50/63
+solve_readings=50
+2026-07-17T15:00:56-05:00 running profile 52 63 51
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=51/63
+solve_readings=51
+2026-07-17T15:01:04-05:00 running profile 52 63 51
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=51/63
+solve_readings=51
+2026-07-17T15:01:13-05:00 running profile 53 63 52
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=52/63
+solve_readings=52
+2026-07-17T15:01:22-05:00 running profile 54 63 53
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=53/63
+solve_readings=53
+2026-07-17T15:01:30-05:00 running profile 55 63 54
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=54/63
+solve_readings=54
+2026-07-17T15:01:39-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:01:48-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:01:57-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:02:05-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:02:14-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:02:23-05:00 running drift_anchor 55 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:02:32-05:00 running profile 56 63 55
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=55/63
+solve_readings=55
+2026-07-17T15:02:41-05:00 running profile 57 63 56
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=56/63
+solve_readings=56
+2026-07-17T15:02:50-05:00 running profile 57 63 56
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=56/63
+solve_readings=56
+2026-07-17T15:02:58-05:00 running profile 58 63 57
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=57/63
+solve_readings=57
+2026-07-17T15:03:07-05:00 running profile 59 63 58
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=58/63
+solve_readings=58
+2026-07-17T15:03:15-05:00 running profile 60 63 59
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=59/63
+solve_readings=59
+2026-07-17T15:03:24-05:00 running profile 60 63 59
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=59/63
+solve_readings=59
+2026-07-17T15:03:33-05:00 running profile 61 63 60
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=60/63
+solve_readings=60
+2026-07-17T15:03:42-05:00 running profile 62 63 61
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=61/63
+solve_readings=61
+2026-07-17T15:03:51-05:00 running profile 63 63 62
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=62/63
+solve_readings=62
+2026-07-17T15:04:00-05:00 running profile 63 63 62
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=62/63
+solve_readings=62
+2026-07-17T15:04:08-05:00 running drift_anchor 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:04:17-05:00 running drift_anchor 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:04:26-05:00 running drift_anchor 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:04:34-05:00 running drift_anchor 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:04:43-05:00 running drift_anchor 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:04:52-05:00 running building 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=running nodes=63/63
+solve_readings=63
+2026-07-17T15:05:01-05:00 complete complete 63 63 63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=complete nodes=63/63
+solve_readings=63
+FINAL data/3d-lut-profiles/hybrid3-20260717-144945
+status=complete nodes=63/63
+solve_readings=63
+DONE
+data/3d-lut-profiles/hybrid3-20260717-144945
