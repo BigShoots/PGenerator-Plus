@@ -885,10 +885,14 @@ sub model_from_readings {
  my ($method,$readings,$config)=@_;
  my $signal_mode=$config->{"signal_mode"}||"sdr";
  my $signal_gamma=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
- # Solve/encode the cube in the DPG calibration domain (HDR: ~2.2), not the
- # PQ signal EOTF -- see dpg_calibration_gamma(). signal_gamma (st2084 for HDR)
- # is retained only for reporting and the post-cal series reads.
- my $target_gamma=dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
+ # LG AutoCal solves (matrix/ramp destined for TV upload) run in the LG
+ # cal-mode domain: gamma ~2.2 (dpg_calibration_gamma) with the BT.2020
+ # container forced below -- the TV linearizes to 2.2 in cal mode and the
+ # uploaded identity 3x3 makes the cube's inputs BT.2020. The GENERIC lattice
+ # solve (solve_only, any display, export-only) honours the operator's Target
+ # Gamma and Target Colorspace selections verbatim instead.
+ my $solve_only=(ref($config) eq "HASH" && $config->{"solve_only"}) ? 1 : 0;
+ my $target_gamma=$solve_only ? $signal_gamma : dpg_calibration_gamma($config,$signal_mode,$signal_gamma);
  my $target_gamut=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
  # The LG BT2020_3D_LUT operates on the BT.2020-decoded signal: we upload an
  # IDENTITY 3x3 gamut matrix (lg_bt2020_identity_3x3_payload in pgenerator-lg),
@@ -897,7 +901,7 @@ sub model_from_readings {
  # P3-in-BT.2020 content (~72% of BT.2020) down into P3 -> ~Rec.709 sized
  # (undersaturated, per the reference relay capture). P3 is the panel's achievable gamut and the
  # series SCORING target -- NOT the cube's solve domain.
- $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10");
+ $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10" && !$solve_only);
  my %by;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
