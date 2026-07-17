@@ -1585,25 +1585,27 @@ sub build_residual_grid {
  foreach my $n (@{$nodes}) {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
-  # Exact neutrals stay zero -- DPG owns greyscale.
+  # Exact neutrals stay zero -- 1D greyscale / DPG owns the grey ramp.
+  # Everything else (pure primaries, secondaries, interiors) uses residual so
+  # hybrid/skeleton/lattice measurements actually shape the cube. Matrix is
+  # only the baseline; volume residual is not "matrix owns primaries".
   my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
-  # Pure primary-like nodes (only one channel meaningfully on) stay zero --
-  # the matrix owns monochromatic ramps. IMPORTANT: limited-range "100% red"
-  # is not (1,0,0) in full-scale 3D-LUT coords -- it is ~ (0.92, 0.06, 0.06)
-  # (legal pedestal on G/B). If mid-red residual (huge +G/+B adds from a
-  # naive peak_inverse) is allowed on the pure-red axis, trilinear hits those
-  # cells for legal pure primaries and blows Red/Green 100% (ΔE teens).
-  # Threshold 0.08 > limited pedestal (~0.063) so legal pure primaries count
-  # as monochromatic. Secondaries (yellow/cyan/magenta) and multi-channel
-  # face centres (n_hot>=2) still receive residual.
+  if($is_neutral) { $corr{$key}=[0,0,0]; next; }
+  # Limited-range pure primary: ~ (0.92, 0.06, 0.06). Count channels above
+  # legal pedestal so monochromatic ramps are detected even with pedestal.
   my $mono_thr=0.08;
   my $n_hot=0;
   $n_hot++ if($fr > $mono_thr);
   $n_hot++ if($fg > $mono_thr);
   $n_hot++ if($fb > $mono_thr);
-  my $is_mono_primary=($n_hot <= 1); # black, pure R/G/B ramps (any level)
-  my $is_peak_white=($fr>=0.999&&$fg>=0.999&&$fb>=0.999);
-  if($is_neutral || $is_mono_primary || $is_peak_white) { $corr{$key}=[0,0,0]; next; }
+  my $is_mono=($n_hot <= 1); # black or pure R/G/B ramp (incl. legal pedestal)
+  my $dom_ch=-1;
+  if($is_mono && $n_hot == 1) {
+   $dom_ch=0 if($fr >= $fg && $fr >= $fb);
+   $dom_ch=1 if($fg > $fr && $fg >= $fb);
+   $dom_ch=2 if($fb > $fr && $fb > $fg);
+  }
+  if($n_hot == 0) { $corr{$key}=[0,0,0]; next; } # black
   my $xyz_m=$n->{"xyz"};
   if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < $min_y) { $skipped++; next; }
   # Target appearance for this continuous signal (same rules as generate).
@@ -1624,8 +1626,33 @@ sub build_residual_grid {
   my @c;
   my @f=($fr,$fg,$fb);
   for(my $ch=0;$ch<3;$ch++) {
-   my $slope=_trl_slope($f[$ch],$gamma,$white_y,$black_y);
-   my $dsig=$dlin->[$ch]/$slope;
+   # Monochrome ramps: residual ONLY on the dominant channel. Full peak_inverse
+   # on pure red invents huge +G/+B "desat" that wrecks limited 100% R/G once
+   # those codes land at (0.92, 0.06, 0.06). Axis reads still fix primary
+   # luminance/tracking via the dominant-channel delta.
+   my $dsig=0;
+   if(!$is_mono || $ch == $dom_ch) {
+    my $slope=_trl_slope($f[$ch],$gamma,$white_y,$black_y);
+    # For mono, use dominant channel signal for slope even if pedestal.
+    my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
+    $slope=_trl_slope($sf,$gamma,$white_y,$black_y) if($is_mono && $dom_ch >= 0);
+    $dsig=$dlin->[$ch]/$slope;
+    # Mono: prefer Y-error projected on dominant primary (more stable on WRGB
+    # than full 3x3 inverse which dumps chroma into off-axis channels).
+    if($is_mono && $dom_ch == $ch) {
+     my $peak_y=0;
+     if(ref($model->{"peak_y"}) eq "HASH") {
+      my $pk=$model->{"peak_y"}{($ch==0?"red":($ch==1?"green":"blue"))};
+      $peak_y=$pk+0 if(defined($pk) && $pk+0 > 0);
+     }
+     if($peak_y > 0) {
+      my $dY=($xyz_t->[1]||0)-($xyz_m->[1]||0);
+      # relative linear error -> signal via local slope of Y~s^g * peak
+      my $dlin_y=$dY/$peak_y;
+      $dsig=$dlin_y/$slope;
+     }
+    }
+   }
    my $a=abs($dsig);
    $rms_sum+=$dsig*$dsig; $rms_n++;
    $max_abs=$a if($a > $max_abs);
