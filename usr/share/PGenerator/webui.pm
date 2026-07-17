@@ -26330,17 +26330,35 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  return [...(includeWhiteReference?[white]:[]),zero,...bodyAsc,...passthrough];
 }
 // Select a series: load thumbnails + display first patch, no reading
-// Lattice (3D LUT profiling) chart defaults when a lattice series becomes
-// active:
-//  - 3D xyY view ON — neutral-ratio cube nodes share chromaticity and stack
-//    in 2D, but separate vertically by luminance in 3D (gamut cloud).
-//  - Target boxes OFF — profiling is characterization, not verification;
-//    above-peak mixes have no reachable reference to draw a box for.
-// Called from series selection AND recovery — which re-fire during a live
-// read (shared-series sync re-activates the same series every few polls), so
-// the default is memoized PER SERIES KEY: it applies once when the lattice
-// becomes active and never again for that key. The operator's subsequent
-// manual toggles (e.g. unchecking 3D View mid-read) always stick.
+// Remembered operator preference for the lattice profiling charts. Whenever
+// the operator toggles 3D View or Targets while a lattice series is active,
+// the choice is stored and re-applied on every future lattice activation —
+// across page reloads — instead of the built-in defaults.
+function meterLatticeViewPrefs(){
+ try{
+  const raw=localStorage.getItem('pgen.meter.latticeViewPrefs');
+  if(raw){ const p=JSON.parse(raw); if(p&&typeof p==='object') return p; }
+ }catch(e){}
+ return {};
+}
+
+function meterLatticeViewPrefSave(field,value){
+ if(!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())) return;
+ try{
+  const p=meterLatticeViewPrefs();
+  p[String(field)]=value?'1':'0';
+  localStorage.setItem('pgen.meter.latticeViewPrefs',JSON.stringify(p));
+ }catch(e){}
+}
+
+// Lattice (3D LUT profiling) chart view when a lattice series becomes active:
+// the operator's LAST REMEMBERED choice wins (meterLatticeViewPrefs); the
+// built-in defaults (3D xyY ON — neutral-ratio nodes separate by luminance;
+// target boxes OFF — profiling patches have no gradable reference) apply only
+// before any choice has been made. Selection AND recovery re-fire during a
+// live read (shared-series sync), so application is memoized PER SERIES KEY —
+// and the toggle handlers update the stored preference immediately, so even a
+// re-fire can only ever re-apply what the operator last chose.
 let meterLattice3dDefaultedKey=null;
 function meterLatticeDefault3dView(points){
  try{
@@ -26349,10 +26367,13 @@ function meterLatticeDefault3dView(points){
   const key='colors-'+points;
   if(meterLattice3dDefaultedKey===key) return;
   meterLattice3dDefaultedKey=key;
+  const prefs=meterLatticeViewPrefs();
+  const want3d=(prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true;
+  const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
   const view3d=document.getElementById('meterCie3dView');
-  if(view3d&&!view3d.checked){ view3d.checked=true; meterOnCie3dViewChange(); }
+  if(view3d&&view3d.checked!==want3d){ view3d.checked=want3d; meterOnCie3dViewChange(); }
   const targets=document.getElementById('meterCieOptTargets');
-  if(targets&&targets.checked){ targets.checked=false; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
+  if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
  }catch(e){}
 }
 
@@ -35937,6 +35958,7 @@ function meterApplyCie3dLayout(){
 }
 function meterOnCie3dViewChange(){
  try{ meterSaveColorPrefs(); }catch(e){}
+ try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('cie_3d',meterCie3dViewEnabled()); }catch(e){}
  meterUpdateCie3dLabel();
  meterApplyCie3dLayout();
  const canvas=document.getElementById('chartCIE');
@@ -35990,6 +36012,7 @@ function meterCieViewOptChange(){
   if(el) meterCieViewOpts[key]=!!el.checked;
  });
  try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
+ try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('targets',!!meterCieViewOpts.targets); }catch(e){}
  const isColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  if(Array.isArray(meterReadings)&&meterReadings.length){
   drawAllCharts(isColorSeries?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
