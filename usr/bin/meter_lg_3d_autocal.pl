@@ -998,6 +998,115 @@ sub apply_drift_correction {
  return vec_add($black,$corrected);
 }
 
+# Multi-anchor WRGB drift (volume profiles: lattice / skeleton / hybrid).
+# Anchors are black-subtracted primary columns {time, red, green, blue, white}
+# taken periodically during profiling. Each profile XYZ is mapped back to the
+# first-anchor epoch via the first-anchor matrix times inv(interpolated matrix
+# at the sample's read time). Mirrors the ramp start/end path, with multiple
+# mid-run re-anchors so long cube profiles stay referenced to t0.
+sub volume_drift_primary_hash {
+ my ($anchor)=@_;
+ return undef if(ref($anchor) ne "HASH");
+ return {
+  red => $anchor->{"red"}||[0,0,0],
+  green => $anchor->{"green"}||[0,0,0],
+  blue => $anchor->{"blue"}||[0,0,0],
+ };
+}
+
+sub volume_drift_bracketing {
+ my ($anchors,$read_time)=@_;
+ return (undef,undef,0) if(ref($anchors) ne "ARRAY" || !@{$anchors});
+ my @a=sort { ($a->{"time"}||0) <=> ($b->{"time"}||0) } @{$anchors};
+ return ($a[0],$a[0],0) if(@a == 1);
+ return ($a[0],$a[0],0) if($read_time <= ($a[0]{"time"}||0));
+ return ($a[$#a],$a[$#a],0) if($read_time >= ($a[$#a]{"time"}||0));
+ for(my $i=0;$i<@a-1;$i++) {
+  my $t0=$a[$i]{"time"}||0;
+  my $t1=$a[$i+1]{"time"}||0;
+  next if($read_time > $t1);
+  my $span=$t1-$t0;
+  my $f=($span > 1e-9) ? (($read_time-$t0)/$span) : 0;
+  $f=0 if($f < 0); $f=1 if($f > 1);
+  return ($a[$i],$a[$i+1],$f);
+ }
+ return ($a[$#a],$a[$#a],0);
+}
+
+sub apply_volume_drift_correction {
+ my ($xyz,$black,$read_time,$anchors)=@_;
+ return $xyz if(ref($xyz) ne "ARRAY");
+ return $xyz if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my $ref=volume_drift_primary_hash($anchors->[0]);
+ my ($a,$b,$f)=volume_drift_bracketing($anchors,$read_time);
+ return $xyz if(!$ref || !$a || !$b);
+ my $current=drift_matrix_at(volume_drift_primary_hash($a),volume_drift_primary_hash($b),$f);
+ my $start=drift_matrix_at($ref,$ref,0);
+ my $inv_current=matrix_inverse($current);
+ return $xyz if(!$inv_current || !$start);
+ my $relative=vec_sub($xyz,$black);
+ my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ return vec_add($black,$corrected);
+}
+
+sub reading_set_xyz {
+ my ($reading,$xyz)=@_;
+ return if(ref($reading) ne "HASH" || ref($xyz) ne "ARRAY");
+ $reading->{"X"}=$xyz->[0]+0;
+ $reading->{"Y"}=$xyz->[1]+0;
+ $reading->{"Z"}=$xyz->[2]+0;
+ $reading->{"luminance"}=$xyz->[1]+0 if(exists $reading->{"luminance"} || defined($reading->{"Y"}));
+}
+
+# Capture one WRGB 100% drift anchor (black-subtracted primaries).
+sub capture_volume_drift_anchor {
+ my ($config,$state,$black,$label)=@_;
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my %raw;
+ foreach my $kind (qw(white red green blue)) {
+  die "cancelled\n" if(cancelled());
+  my $step=patch_step($kind,100,"drift_anchor",$config);
+  $state->{"phase"}="drift_anchor";
+  $state->{"current_name"}=($label||"Drift anchor")." ".uc(substr($kind,0,1));
+  $state->{"message"}="WRGB drift re-anchor - reading ".$kind;
+  write_state($state);
+  my ($reading,$error)=read_step($config,$step,$state);
+  die "Drift anchor $kind failed: $error\n" if($error);
+  my $xyz=reading_xyz($reading);
+  die "Drift anchor $kind returned no XYZ\n" if(!$xyz);
+  $raw{$kind}=$xyz;
+ }
+ my $t=time();
+ return {
+  time => $t,
+  white => $raw{"white"},
+  red => vec_sub($raw{"red"},$black),
+  green => vec_sub($raw{"green"},$black),
+  blue => vec_sub($raw{"blue"},$black),
+  white_y => ($raw{"white"}[1]||0)+0,
+ };
+}
+
+sub apply_volume_drift_to_profile_readings {
+ my ($profile_readings,$black,$anchors)=@_;
+ return { corrected=>0, anchors=>0 } if(ref($profile_readings) ne "ARRAY");
+ return { corrected=>0, anchors=>scalar(@{$anchors||[]}) } if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
+ $black=[0,0,0] if(ref($black) ne "ARRAY");
+ my $n=0;
+ foreach my $entry (@{$profile_readings}) {
+  next if(ref($entry) ne "HASH");
+  my $xyz=reading_xyz($entry->{"reading"});
+  next if(!$xyz);
+  my $t=$entry->{"read_time"}||time();
+  my $c=apply_volume_drift_correction($xyz,$black,$t,$anchors);
+  reading_set_xyz($entry->{"reading"},$c);
+  $entry->{"drift_corrected"}=1;
+  $n++;
+ }
+ return { corrected=>$n, anchors=>scalar(@{$anchors}) };
+}
+
 sub model_from_readings {
  my ($method,$readings,$config)=@_;
  my $signal_mode=$config->{"signal_mode"}||"sdr";
@@ -3522,6 +3631,49 @@ eval {
  # to protect and the upload itself replaces whatever cube is loaded.
  my $unity_reset=($method eq "imported") ? undef : reset_3d_lut_to_unity_before_profile($config,$state);
  my @profile_readings;
+ # Volume multi-anchor WRGB drift: re-sample W/R/G/B periodically and map every
+ # profile XYZ back to the first-anchor epoch before residual/matrix solve.
+ my $volume_drift_on=is_volume_profile_method($method) && !$config->{"fixture_mode"}
+  && !($config->{"volume_drift_disable"}+0);
+ my $drift_interval_s=(defined($config->{"drift_interval_s"}) && ($config->{"drift_interval_s"}+0) > 0)
+  ? ($config->{"drift_interval_s"}+0) : 180;
+ my $drift_interval_patches=(defined($config->{"drift_interval_patches"}) && ($config->{"drift_interval_patches"}+0) > 0)
+  ? int($config->{"drift_interval_patches"}+0) : 40;
+ my @volume_drift_anchors;
+ my $last_anchor_t=0;
+ my $last_anchor_i=-9999;
+ my $volume_black=[0,0,0];
+
+ my $take_volume_anchor=sub {
+  my ($label,$step_index)=@_;
+  return unless($volume_drift_on);
+  eval {
+   my $a=capture_volume_drift_anchor($config,$state,$volume_black,$label);
+   push @volume_drift_anchors,$a;
+   $last_anchor_t=$a->{"time"}||time();
+   $last_anchor_i=defined($step_index) ? $step_index : $last_anchor_i;
+   log_line(sprintf("volume drift anchor #%d %s white_y=%.3f",
+    scalar(@volume_drift_anchors),$label||"",$a->{"white_y"}||0));
+  };
+  if($@) {
+   my $err=$@; $err=~s/\s+$//;
+   log_line("volume drift anchor failed ($label): $err");
+   die "$err\n" if($err =~ /cancelled/i);
+  }
+ };
+
+ # Seed black from a pure black profile step if present (for primary subtract).
+ foreach my $s (@steps) {
+  if(($s->{"kind"}||"") eq "black") {
+   # will refresh after first black read in the loop
+   last;
+  }
+ }
+
+ if($volume_drift_on && @steps) {
+  $take_volume_anchor->("start",-1);
+ }
+
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
   my $step=$steps[$i];
@@ -3540,48 +3692,58 @@ eval {
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
   push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
+  # Refresh black reference once we measure a black patch.
+  if(($step->{"kind"}||"") eq "black") {
+   my $bx=reading_xyz($reading);
+   $volume_black=$bx if($bx);
+  }
   write_state($state);
+
+  if($volume_drift_on) {
+   my $need=0;
+   $need=1 if((time()-$last_anchor_t) >= $drift_interval_s);
+   $need=1 if(($i-$last_anchor_i) >= $drift_interval_patches);
+   $take_volume_anchor->("mid",$i) if($need && $i < $#steps);
+  }
  }
 
  die "cancelled\n" if(cancelled());
 
- # Drift diagnostic (volume profiles): residual paths apply no mid-run drift
- # correction (unlike ramp). Re-read white and log start->end shift so long
- # hybrid/lattice runs can be diagnosed when residual trails matrix.
- if(is_volume_profile_method($method) && !$config->{"fixture_mode"}) {
-  eval {
-   my $white_step;
-   foreach my $s (@steps) { if(($s->{"kind"}||"") eq "white") { $white_step=$s; last; } }
-   my ($start_white,$start_t);
+ if($volume_drift_on) {
+  $take_volume_anchor->("end",scalar(@steps));
+  # Prefer black from measured black step for subtract; fall back to first anchor white floor.
+  if(($volume_black->[0]+$volume_black->[1]+$volume_black->[2]) <= 0) {
    foreach my $e (@profile_readings) {
-    next unless(ref($e->{"step"}) eq "HASH" && ($e->{"step"}{"kind"}||"") eq "white");
-    my $x=reading_xyz($e->{"reading"}); if($x){ $start_white=$x; $start_t=$e->{"read_time"}; last; }
+    next unless(ref($e->{"step"}) eq "HASH" && ($e->{"step"}{"kind"}||"") eq "black");
+    my $bx=reading_xyz($e->{"reading"});
+    if($bx){ $volume_black=$bx; last; }
    }
-   if($white_step && $start_white) {
-    $state->{"phase"}="drift_check";
-    $state->{"current_name"}="Drift check (re-reading white)";
-    $state->{"message"}="Re-reading white to measure panel drift across the profile";
-    write_state($state);
-    my ($rw,$rerr)=read_step($config,$white_step,$state);
-    my $end_white=$rerr ? undef : reading_xyz($rw);
-    if($end_white) {
-     my $ss=($start_white->[0]+$start_white->[1]+$start_white->[2])||1;
-     my $es=($end_white->[0]+$end_white->[1]+$end_white->[2])||1;
-     my $sy=$start_white->[1]||1; my $ey=$end_white->[1]||0;
-     my $drift={
-      start_y=>$sy, end_y=>$ey,
-      dy_pct=>(($ey-$sy)/$sy*100),
-      dx=>($end_white->[0]/$es - $start_white->[0]/$ss),
-      dy_chroma=>($end_white->[1]/$es - $start_white->[1]/$ss),
-      elapsed_s=>(time()-($start_t||time())),
-     };
-     $state->{"lattice_drift"}=$drift;
-     log_line(sprintf("lattice drift: white Y %.3f->%.3f (%.2f%%) dxy (%.4f,%.4f) over %ds",
-      $sy,$ey,$drift->{"dy_pct"},$drift->{"dx"},$drift->{"dy_chroma"},$drift->{"elapsed_s"}));
-    }
-   }
+  }
+  # Re-black-subtract primaries if first anchors used [0,0,0] before black was known.
+  # Anchors store already-subtracted columns; if black was zero initially, leave as-is
+  # (black is usually ~0 on OLED). Apply correction to all profile XYZ.
+  my $rep=apply_volume_drift_to_profile_readings(\@profile_readings,$volume_black,\@volume_drift_anchors);
+  my $a0=$volume_drift_anchors[0];
+  my $aN=$volume_drift_anchors[$#volume_drift_anchors];
+  my $sy=($a0 && $a0->{"white_y"}) ? $a0->{"white_y"} : 0;
+  my $ey=($aN && $aN->{"white_y"}) ? $aN->{"white_y"} : 0;
+  my $drift_summary={
+   enabled => ($rep->{"corrected"} > 0 && $rep->{"anchors"} >= 2) ? 1 : 0,
+   anchors => $rep->{"anchors"}+0,
+   readings_corrected => $rep->{"corrected"}+0,
+   interval_s => $drift_interval_s,
+   interval_patches => $drift_interval_patches,
+   start_y => $sy,
+   end_y => $ey,
+   dy_pct => ($sy > 0) ? (($ey-$sy)/$sy*100) : 0,
+   elapsed_s => (($aN->{"time"}||0)-($a0->{"time"}||0)),
   };
-  log_line("lattice drift check error: $@") if($@);
+  $state->{"lattice_drift"}=$drift_summary;
+  $state->{"volume_drift"}=$drift_summary;
+  log_line(sprintf(
+   "volume drift: anchors=%d corrected=%d white_y %.3f->%.3f (%.2f%%) over %ds (every %ds / %d patches)",
+   $rep->{"anchors"}||0,$rep->{"corrected"}||0,$sy,$ey,$drift_summary->{"dy_pct"}||0,
+   $drift_summary->{"elapsed_s"}||0,$drift_interval_s,$drift_interval_patches));
  }
 
  $state->{"phase"}="building";
@@ -3589,7 +3751,7 @@ eval {
  $state->{"message"}=($method eq "ramp")
   ? "Applying drift correction and solving 17-point cube plus 33-point LG payload"
   : (is_volume_profile_method($method))
-   ? "Solving $method matrix + per-node residuals, 17-point cube plus 33-point LG payload"
+   ? "Solving $method matrix + per-node residuals".($volume_drift_on?" (drift-corrected)":"").", 17-point cube plus 33-point LG payload"
    : ($method eq "imported")
     ? "Resampling imported .cube to 17-point cube plus 33-point LG payload"
     : "Solving matrix 17-point cube plus 33-point LG payload";
