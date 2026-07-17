@@ -10842,7 +10842,14 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
-    <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
+    <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
+     <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px" title="How the display is profiled before the 3D LUT is solved. Matrix reads the 5 W/R/G/B/K corners; a lattice series also measures interior nodes for per-node corrections.">Profiling source
+      <select id="meterLg3dProfileSource" onchange="meterLg3dProfileSourceChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
+       <option value="matrix" selected>Matrix (5-point)</option>
+       <option value="lattice">Lattice series</option>
+      </select>
+     </label>
+     <select id="meterLg3dLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px" title="Lattice series to measure for profiling"></select>
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
     <button class="btn btn-sm btn-primary" id="meterToneMapMeasureUploadBtn" onclick="meterStartToneMapMeasureUpload()" style="display:none" title="Measure 100% white peak and upload the HDR tone map">&#9654; Measure &amp; Upload</button>
@@ -24183,6 +24190,9 @@ function meterSelectAutoCal3dLut(){
  meterSetAutoCalSeriesChoice('3d-lut');
  meterUpdateSeriesTabUi();
  meterSelectSeries('colors',30,{preserveTab:true});
+ // Refresh the profiling-source lattice picker for the current display mode
+ // (custom lattice series are mode-scoped).
+ try{ meterLg3dPopulateLatticeSeries(); meterLg3dProfileSourceChanged(); }catch(e){}
 }
 
 function meterSelectAutoCalToneMap(){
@@ -32953,6 +32963,98 @@ function meterLg3dApplyPostCheckStatus(status){
 // plotting them the chart just leaves the previous colour/ColorChecker run on
 // screen during the whole profile phase; plot the matrix series being read
 // (measured native primaries vs the target-gamut primary targets) instead.
+// ---- Profiling source (standalone 3D LUT AutoCal) ----
+// matrix = classic 5-point W/R/G/B/K profile. lattice = measure a lattice
+// series live and solve matrix + bounded per-node residuals in the worker
+// (same model as the offline lattice solve). The wizard passes its own
+// options.method; this select only drives the standalone button.
+let meterLg3dActiveLatticeSeriesId=0;
+
+function meterLg3dProfileSourceValue(){
+ const el=document.getElementById('meterLg3dProfileSource');
+ const v=el?String(el.value||'matrix').toLowerCase():'matrix';
+ return (v==='lattice')?'lattice':'matrix';
+}
+
+function meterLg3dLatticeSeriesChoices(){
+ const customs=meterCustomSeriesForMode('color').filter(s=>s&&s.kind==='lattice');
+ return METER_BUILTIN_CUBE_SERIES.concat(customs);
+}
+
+function meterLg3dPopulateLatticeSeries(){
+ const sel=document.getElementById('meterLg3dLatticeSeries');
+ if(!sel) return;
+ const prev=String(sel.value||'');
+ const list=meterLg3dLatticeSeriesChoices();
+ sel.innerHTML=list.map(s=>{
+  let count=0;
+  try{ count=(s.kind==='lattice'&&s.params)?meterLatticeCountForParams(s.params):(Array.isArray(s.patches)?s.patches.length:0); }catch(e){}
+  return '<option value="'+s.id+'">'+esc(s.name)+(count?' ('+count+' patches)':'')+'</option>';
+ }).join('');
+ if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
+}
+
+function meterLg3dProfileSourceChanged(){
+ const latSel=document.getElementById('meterLg3dLatticeSeries');
+ const lattice=meterLg3dProfileSourceValue()==='lattice';
+ if(latSel){
+  latSel.style.display=lattice?'':'none';
+  if(lattice) meterLg3dPopulateLatticeSeries();
+ }
+}
+
+function meterLg3dSelectedLatticeSeries(){
+ const sel=document.getElementById('meterLg3dLatticeSeries');
+ return meterCustomSeriesById(sel&&sel.value?sel.value:905)||METER_BUILTIN_CUBE_SERIES[0];
+}
+
+// Percent triplets for the worker's build_lattice_steps: cube nodes only
+// (grey-ramp "G n%" entries add nothing the matrix corners don't already
+// provide). The worker computes wire codes itself from the run's live
+// range/bit-depth, so only names travel.
+function meterLg3dLatticePatchesForStart(series){
+ let patches=[];
+ try{ patches=meterCustomSeriesPatches(series)||[]; }catch(e){ patches=[]; }
+ return patches
+  .filter(p=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((p&&p.name)||'')))
+  .map(p=>({name:p.name}));
+}
+
+// Chart the live lattice profile exactly like a lattice series read: same
+// client-expanded steps (display-referenced CIE targets, 3D routing, view
+// prefs) with the worker's readings paired by patch name.
+function meterLg3dApplyLatticeProfileStatus(status){
+ if(String((status&&status.method)||'').toLowerCase()!=='lattice') return false;
+ const raw=meterLg3dMatrixProfileReadings(status);
+ if(!raw.length) return false;
+ const series=meterCustomSeriesById(meterLg3dActiveLatticeSeriesId)||meterLg3dSelectedLatticeSeries();
+ if(!series) return false;
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints=series.id;
+ meterActiveSeriesKey='lg-3d-lattice-profile-'+series.id;
+ meterSetActiveSeriesChartContext(status);
+ meterShow3dLutAutoCalContext();
+ meterResetSeriesButtons();
+ let steps=[];
+ try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
+ steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
+ if(!steps.length) return false;
+ meterSeriesSteps=steps;
+ meterReadings=raw;
+ const whiteRd=raw.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
+ if(whiteRd) meterWhiteReading=whiteRd;
+ document.getElementById('chartsGreyscaleWrap').style.display='none';
+ document.getElementById('chartsColorWrap').style.display='';
+ document.getElementById('meterCharts').style.display='';
+ document.getElementById('meterExportRow').style.display='';
+ meterSetThumbsVisible(true);
+ const completed=new Set(raw.map(rd=>meterStepNameKey(rd)));
+ meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(raw[raw.length-1]));
+ drawAllCharts(raw);
+ meterUpdateDeltaEFormControl();
+ return true;
+}
+
 function meterLg3dMatrixProfileReadings(status){
  const list=(status&&Array.isArray(status.readings))?status.readings:[];
  return list.filter(rd=>rd&&String(rd.phase||'')!=='post_check'&&meterReadingHasLuminance(rd));
@@ -33024,9 +33126,9 @@ function meterLg3dApplyProfileStatus(status){
 function meterLg3dApplyStatus(status){
  if(!status) return;
  // Post-check readings take over once they exist; before that, plot the live
- // 5-point matrix profile (W/R/G/B/K) series being read instead of leaving the
- // previous colour/ColorChecker run on the chart.
- if(!meterLg3dApplyPostCheckStatus(status)) meterLg3dApplyProfileStatus(status);
+ // profile being read (lattice series or 5-point matrix W/R/G/B/K) instead of
+ // leaving the previous colour/ColorChecker run on the chart.
+ if(!meterLg3dApplyPostCheckStatus(status)&&!meterLg3dApplyLatticeProfileStatus(status)) meterLg3dApplyProfileStatus(status);
  const summary=meterLg3dAutoCalSummary(status);
  const labelText=(status.current_name||status.message||'LG 3D LUT AutoCal')+(summary?' | '+summary:'');
  if(status.status==='running') meterSetWorkflowProgress(status,{workflow:meterFullAutoCalRunning?'full':'3d-lut',label:labelText});
@@ -33179,11 +33281,28 @@ async function meterStartLg3dAutoCal(options){
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
- const method=signalMode==='hdr10'?'matrix':(String((options&&options.method)||'matrix').toLowerCase()==='ramp'?'ramp':'matrix');
+ // Profiling method: the wizard passes options.method explicitly; the
+ // standalone button reads the Profiling source select (matrix | lattice).
+ const requestedMethod=String((options&&options.method)||meterLg3dProfileSourceValue()||'matrix').toLowerCase();
+ let method=(requestedMethod==='ramp'||requestedMethod==='lattice')?requestedMethod:'matrix';
  if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
- if(signalMode==='hdr10'&&String((options&&options.method)||'matrix').toLowerCase()==='ramp') return fail('HDR10 3D LUT AutoCal is matrix-only in this version');
+ if(signalMode==='hdr10'&&method==='ramp') return fail('HDR10 3D LUT AutoCal is matrix- or lattice-profiled in this version');
+ // Lattice profiling: expand the chosen series to percent triplets now so a
+ // bad selection fails before the worker starts.
+ let latticePatches=null;
+ let latticeSeries=null;
+ if(method==='lattice'){
+  latticeSeries=(options&&options.latticeSeriesId!=null)?meterCustomSeriesById(options.latticeSeriesId):meterLg3dSelectedLatticeSeries();
+  if(!latticeSeries) return fail('Select a lattice series to profile with');
+  latticePatches=meterLg3dLatticePatchesForStart(latticeSeries);
+  if(!latticePatches.length) return fail('Selected lattice series has no cube patches');
+  meterLg3dActiveLatticeSeriesId=latticeSeries.id;
+ }
  if(!(options&&options.skipConfirm)){
-  const accepted=window.confirm((signalMode==='hdr10'?'HDR10 matrix':'LG 3D LUT')+' AutoCal assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
+  const profileLabel=method==='lattice'
+   ? 'profiles '+latticePatches.length+' lattice patches ('+esc(latticeSeries.name)+') and'
+   : '';
+  const accepted=window.confirm((signalMode==='hdr10'?'HDR10':'LG')+' 3D LUT AutoCal '+(profileLabel?profileLabel+' ':'')+'assumes the greyscale AutoCal has already been completed. Continue with color-only 3D LUT calibration from the current TV state?');
   if(!accepted) return false;
  }
  const upload=(options&&Object.prototype.hasOwnProperty.call(options,'upload'))?!!options.upload:true;
@@ -33239,6 +33358,9 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // which on a 10-bit link land at ~23% of full signal and crush the
   // stimulus range (same bug the greyscale worker fixed in 79b2c2c9).
   max_bpc:getVal('max_bpc'),
+  // Lattice profiling: percent triplets only — the worker computes wire
+  // codes from the run's live range/bit-depth (build_lattice_steps).
+  lattice_patches:method==='lattice'?latticePatches:undefined,
   upload:upload,
   full_workflow:fullWorkflow?true:undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
@@ -33284,7 +33406,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
  }
  meterActionPending=true;
  meterLg3dAutoCalRunning=true;
- meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:5),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:(method==='ramp'?65:(method==='lattice'?latticePatches.length:5)),current_name:'Starting LG 3D LUT AutoCal...'},{workflow:fullWorkflow?'full':'3d-lut',label:'Starting LG 3D LUT AutoCal...'});
  meterUpdateReadButtons();
  try{
   await meterStopContinuous();
