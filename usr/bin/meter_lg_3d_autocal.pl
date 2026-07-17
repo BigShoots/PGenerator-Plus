@@ -1545,8 +1545,14 @@ sub baseline_drive_pct {
 sub build_residual_grid {
  my ($model,$nodes,$config)=@_;
  return (undef,{reason=>"no interior nodes"}) if(ref($nodes) ne "ARRAY" || !@{$nodes});
- # v2 default cap 0.12 (was 0.06) -- mid-sat WRGB often needs >6% drive.
- my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0) ? $config->{"solve_residual_cap"}+0 : 0.12;
+ # Method-aware defaults: sparse hybrid/skeleton profiles need a STRONGER residual
+ # layer than dense lattices or they collapse to matrix-like verification scores.
+ # Cap is signal-domain drive fraction (0.30 = +-30% drive). Was 0.12 global.
+ my $method_l=lc((ref($config) eq "HASH" ? ($config->{"method"}||$model->{"method"}||"") : "")||"");
+ my $sparse_volume=($method_l eq "hybrid" || $method_l eq "skeleton") ? 1 : 0;
+ my $default_cap=$sparse_volume ? 0.30 : 0.18;
+ my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0)
+  ? $config->{"solve_residual_cap"}+0 : $default_cap;
  my $gamma=$model->{"target_gamma"};
  my $white_y=$model->{"white_y"}||100;
  my $black_y=$model->{"black_y"}||0;
@@ -1560,11 +1566,18 @@ sub build_residual_grid {
  my %fidx; for(my $i=0;$i<@fracs;$i++){ $fidx{sprintf("%.4f",$fracs[$i])}=$i; }
  my $noise_floor=(ref($config) eq "HASH" && defined($config->{"solve_residual_noise_floor"}) && ($config->{"solve_residual_noise_floor"}+0) >= 0)
   ? $config->{"solve_residual_noise_floor"}+0 : 0.0;
- # Neighbour smooth weight toward mean (0..1). Lower preserves sparse hybrid
- # 3³ face-centre corrections. Default 0.25 (was 0.5).
+ # Neighbour smooth weight toward mean (0..1). Only average against OTHER
+ # residual-bearing nodes -- never against zero-anchored corners/neutrals
+ # (that was diluting every hybrid face centre toward matrix-like zero).
+ # Sparse volume default 0.05; dense lattice 0.20.
+ my $default_smooth=$sparse_volume ? 0.05 : 0.20;
  my $smooth=(ref($config) eq "HASH" && defined($config->{"solve_residual_smooth"}) && ($config->{"solve_residual_smooth"}+0) >= 0)
-  ? ($config->{"solve_residual_smooth"}+0) : 0.25;
+  ? ($config->{"solve_residual_smooth"}+0) : $default_smooth;
  $smooth=1 if($smooth > 1);
+ # Soft dark floor: skip only near-black noise, but keep mid-dark primaries
+ # that sat-sweep scores care about (was hard Y<0.5 nits -> lost low ramps).
+ my $min_y=(ref($config) eq "HASH" && defined($config->{"solve_residual_min_y"}) && ($config->{"solve_residual_min_y"}+0) >= 0)
+  ? $config->{"solve_residual_min_y"}+0 : 0.15;
  my %corr; my %raw;
  my ($used,$skipped,$capped,$shrunk)=(0,0,0,0);
  my ($rms_sum,$rms_n,$max_abs,$applied_sum,$applied_n)=(0,0,0,0,0);
@@ -1573,8 +1586,8 @@ sub build_residual_grid {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
   # Exact neutrals stay zero -- DPG owns greyscale. Extreme pure W/R/G/B/K
-  # corners also stay zero (matrix owns them). Pure secondaries, mid primaries,
-  # and face centres DO get residual.
+  # peak corners also stay zero (matrix owns them). Pure secondaries, mid
+  # primaries, and face centres DO get residual.
   my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
   my $is_peak_corner=(
    ($fr>=0.999&&$fg>=0.999&&$fb>=0.999) ||
@@ -1585,7 +1598,7 @@ sub build_residual_grid {
   );
   if($is_neutral || $is_peak_corner) { $corr{$key}=[0,0,0]; next; }
   my $xyz_m=$n->{"xyz"};
-  if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < 0.5) { $skipped++; next; }
+  if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < $min_y) { $skipped++; next; }
   # Target appearance for this continuous signal (same rules as generate).
   my $cw=$model->{"chromatic_white_y"} || $white_y;
   my $xyz_t;
@@ -1623,7 +1636,10 @@ sub build_residual_grid {
   $used++;
  }
  return (undef,{reason=>"no usable interior nodes"}) if(!$used);
- # Light smoothing so sparse hybrid faces keep signal; corners/neutrals zero-anchor.
+ # Light smoothing ONLY against residual-bearing neighbours. Averaging with
+ # zero-anchored peak corners / neutrals (which always exist in %corr) used
+ # to pull every hybrid edge residual toward zero -- making hybrid score
+ # like matrix despite measuring 63 patches.
  my %smoothed;
  foreach my $key (keys %corr) {
   next if(!$raw{$key});
@@ -1631,7 +1647,8 @@ sub build_residual_grid {
   my @sum=(0,0,0); my $cnt=0;
   foreach my $d ([1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]) {
    my $nk=($i+$d->[0]).":".($j+$d->[1]).":".($k+$d->[2]);
-   next if(!exists $corr{$nk});
+   next if(!$raw{$nk});
+   next if(ref($corr{$nk}) ne "ARRAY");
    for(my $ch=0;$ch<3;$ch++){ $sum[$ch]+=$corr{$nk}[$ch]; }
    $cnt++;
   }
@@ -1642,6 +1659,16 @@ sub build_residual_grid {
   }
  }
  foreach my $key (keys %smoothed) { $corr{$key}=$smoothed{$key}; }
+ # Recompute applied RMS AFTER smooth so the report matches what generates.
+ my ($post_sum,$post_n,$post_max)=(0,0,0);
+ foreach my $key (keys %raw) {
+  my $c=$corr{$key}; next if(ref($c) ne "ARRAY");
+  for(my $ch=0;$ch<3;$ch++){
+   my $v=$c->[$ch]||0;
+   $post_sum+=$v*$v; $post_n++;
+   my $a=abs($v); $post_max=$a if($a > $post_max);
+  }
+ }
  my $report={
   residual_definition => "target_relative_v2",
   nodes_used => $used,
@@ -1651,11 +1678,14 @@ sub build_residual_grid {
   residual_cap => $cap,
   residual_noise_floor => $noise_floor,
   residual_smooth => $smooth,
+  residual_min_y => $min_y,
   residual_signal_rms => $rms_n ? sqrt($rms_sum/$rms_n) : 0,
   residual_signal_max => $max_abs,
-  residual_applied_rms => $applied_n ? sqrt($applied_sum/$applied_n) : 0,
+  residual_applied_rms => $post_n ? sqrt($post_sum/$post_n) : ($applied_n ? sqrt($applied_sum/$applied_n) : 0),
+  residual_applied_max => $post_max,
   residual_target_err_y_rms => $err_y_n ? sqrt($err_y_sum/$err_y_n) : 0,
   axis_levels => scalar(@fracs),
+  residual_profile => $sparse_volume ? "sparse_volume" : "dense",
  };
  return ({ fracs=>\@fracs, corr=>\%corr },$report);
 }
@@ -1667,17 +1697,20 @@ sub apply_residual_correction {
  my $fracs=$grid->{"fracs"};
  my $corr=$grid->{"corr"};
  my $n=scalar(@{$fracs});
- return $out if($n < 2);
- # The grid lives in DRIVE space: each correction was measured by driving
- # the panel at that lattice node's drives. Interpolate at the drives the
- # baseline solve is about to command ($out, percent) — NOT at the LUT
- # node's input coords. On a near-identity solve the two coincide (which is
- # why the original warp fixture passed); on a real panel the solve moves
- # drives (C2 SDR: input 0.25 -> red drive 0.41) and the input-indexed
- # lookup landed every correction displaced, painting a systematic
- # undersaturation/hue bias across the whole interior. ($r,$g,$b,$size stay
- # in the signature for the call sites; the lookup no longer uses them.)
- my @f=map { my $v=($out->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
+ return $out if($n < 2 || $size < 2);
+ # Residual is measured under a UNITY 3D LUT where input == drive. Each node
+ # residual is therefore "when this signal is requested, add this drive delta".
+ # Lookup MUST use LUT INPUT coords (r,g,b), then ADD onto the matrix baseline
+ # drives. Looking up at matrix output drives (previous behaviour) missed the
+ # residual almost everywhere once the gamut matrix remapped secondaries
+ # (e.g. yellow input -> matrix drives ~ (99%,99%,35%) which is nowhere near
+ # the measured 100/100/0 residual node) -- hybrid scored like matrix.
+ my $den=$size-1; $den=1 if($den < 1);
+ my @f=(
+  clamp(($r+0)/$den,0,1),
+  clamp(($g+0)/$den,0,1),
+  clamp(($b+0)/$den,0,1),
+ );
  my (@lo,@t);
  for(my $ch=0;$ch<3;$ch++) {
   my $f=$f[$ch];
@@ -3565,7 +3598,10 @@ $method="matrix" unless($method eq "matrix" || $method eq "ramp" || $method eq "
  || $method eq "skeleton" || $method eq "hybrid" || $method eq "imported");
 # Volume profiling needs the client-expanded node list (except skeleton, which
 # can expand server-side). Without patches, fall back to 5-point matrix.
-if(($method eq "lattice" || $method eq "hybrid")
+# solve_only re-solves from lattice_readings and must KEEP method=hybrid so
+# residual defaults stay sparse-volume strength (do not demote to matrix).
+if(!$config->{"solve_only"}
+ && ($method eq "lattice" || $method eq "hybrid")
  && (ref($config->{"lattice_patches"}) ne "ARRAY" || !@{$config->{"lattice_patches"}})) {
  $method="matrix";
 }
