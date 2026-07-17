@@ -24211,7 +24211,10 @@ function meterUpdateSeriesTabUi(){
 
 function meterAutoCalChoiceForSeries(type,points){
  if(type==='greyscale'&&Number(points)===26) return 'greyscale';
- if(type==='colors'&&Number(points)===30) return '3d-lut';
+ // Volume cube series ids (900-999) belong to 3D LUT AutoCal — never ColorChecker (30).
+ if(type==='colors'&&Number(points)>=900&&Number(points)<1000) return '3d-lut';
+ const key=String(meterActiveSeriesKey||'');
+ if(key.indexOf('lg-3d-')===0) return '3d-lut';
  return '';
 }
 
@@ -24233,9 +24236,100 @@ function meterShowGreyscaleAutoCalContext(){
  meterSetSeriesTab('greyscale',true);
 }
 
+// True while charts are owned by a 3D LUT AutoCal profile (volume or matrix).
+// Post-check uses lg-3d-post-check and is verification — keep Delta-E there.
+function meterIs3dLutProfileChartContext(){
+ const key=String(meterActiveSeriesKey||'');
+ if(key.indexOf('lg-3d-lattice-profile-')===0) return true;
+ if(key==='lg-3d-matrix-profile') return true;
+ if(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries()) return true;
+ return false;
+}
+
+// Install a clean 3D LUT chart context: no ColorChecker readings, no Delta-E
+// bars, hybrid/lattice/skeleton thumbs (or empty matrix shell). Call when the
+// operator opens the 3D LUT AutoCal sub-tab or starts a run.
+function meterLg3dPrepareChartContext(opts){
+ const o=opts||{};
+ const method=String(o.method||'').toLowerCase();
+ let series=o.series||null;
+ if(!series&&meterLg3dIsVolumeMethod(method)){
+  if(method==='skeleton') series=meterCustomSeriesById(920);
+  else if(method==='hybrid') series=meterCustomSeriesById(923);
+  else series=meterLg3dSelectedLatticeSeries();
+ }
+ if(!series&&!method){
+  // Tab open / default preview: last modal source or Hybrid 3³.
+  const src=(typeof meterLg3dProfileSourceValue==='function')?meterLg3dProfileSourceValue():'hybrid3';
+  const resolved=(typeof meterLg3dResolveProfilingChoice==='function')?meterLg3dResolveProfilingChoice(src,null):null;
+  series=(resolved&&resolved.series)||meterCustomSeriesById(923);
+ }
+ meterSeriesTab='autocal';
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ try{ meterUpdateSeriesTabUi(); }catch(e){}
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ meterSharedSeriesId=null;
+ if(o.clearReadings!==false){
+  meterReadings=[];
+  meterWhiteReading=null;
+ }
+ meterActiveSeriesType='colors';
+ let steps=[];
+ if(series&&series.id!=null){
+  meterActiveSeriesPoints=series.id;
+  meterActiveSeriesKey='lg-3d-lattice-profile-'+series.id;
+  meterLg3dActiveLatticeSeriesId=series.id;
+  try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
+  steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
+ } else {
+  meterActiveSeriesPoints=5;
+  meterActiveSeriesKey='lg-3d-matrix-profile';
+  steps=[];
+ }
+ meterSeriesSteps=steps;
+ try{ meterSetActiveSeriesChartContext(); }catch(e){}
+ try{ meterResetSeriesButtons(); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ try{
+  document.getElementById('chartsGreyscaleWrap').style.display='none';
+  document.getElementById('chartsColorWrap').style.display='';
+  document.getElementById('meterCharts').style.display='';
+ }catch(e){}
+ // Force-hide ColorChecker-style Delta-E + averages for every 3D LUT profile.
+ try{
+  const deSec=document.getElementById('meterColorDeltaESection');
+  if(deSec) deSec.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  const tableWrap=document.getElementById('colorReadingsTableWrap');
+  if(tableWrap) tableWrap.style.display='none';
+ }catch(e){}
+ if(steps.length){
+  try{ meterBuildPatchThumbs(steps,new Set(),null); }catch(e){}
+  try{ meterSetThumbsVisible(true); }catch(e){}
+  try{ drawAllChartsPreset(steps); }catch(e){}
+ } else {
+  try{ meterSetThumbsVisible(false); }catch(e){}
+  try{ drawAllChartsPreset([]); }catch(e){}
+ }
+ try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+ try{ meterClearLiveReading(); }catch(e){}
+ try{ meterResetLiveReadingDisplay(); }catch(e){}
+ try{ meterUpdateDeltaEFormControl(); }catch(e){}
+ return true;
+}
+
 function meterShow3dLutAutoCalContext(){
- if(meterPreserveAutoCalTabForSeries('colors',30)) return;
- meterSetSeriesTab('color',true);
+ // Keep AutoCal tab on 3D LUT — never fall through to ColorChecker (colors-30).
+ meterSeriesTab='autocal';
+ try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
+ try{ meterUpdateSeriesTabUi(); }catch(e){}
+ if(String(meterActiveSeriesKey||'').indexOf('lg-3d-')===0) return;
+ // First entry with no profile context yet: install a clean volume shell.
+ try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
 }
 
 function meterDefaultSeriesButtonForTab(tab){
@@ -24270,10 +24364,9 @@ function meterSelectAutoCal3dLut(){
  meterSeriesTab='autocal';
  meterSetAutoCalSeriesChoice('3d-lut');
  meterUpdateSeriesTabUi();
- meterSelectSeries('colors',30,{preserveTab:true});
- // Refresh the profiling-source lattice picker for the current display mode
- // (custom lattice series are mode-scoped).
- try{ /* standalone profiling UI is modal-only; full-auto uses its own select */ }catch(e){}
+ // 3D LUT charts are independent of ColorChecker — install the default
+ // hybrid/volume shell (or last modal source) with empty readings.
+ try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
 }
 
 function meterSelectAutoCalToneMap(){
@@ -33135,7 +33228,7 @@ function meterLg3dApplyProfileStatus(status){
  if(String((status&&status.method)||'').toLowerCase()!=='matrix') return false;
  const raw=meterLg3dMatrixProfileReadings(status);
  if(!raw.length) return false;
- // Enrich each reading with its target so the colour ΔE / CIE charts resolve
+ // Enrich each reading with its target so the colour CIE charts resolve
  // reading.target_x/y/Yn directly (matches the post-check reading shape).
  const readings=raw.map(rd=>Object.assign({},rd,meterLg3dMatrixProfileTarget(rd)));
  meterActiveSeriesType='colors';
@@ -33146,6 +33239,7 @@ function meterLg3dApplyProfileStatus(status){
  meterResetSeriesButtons();
  meterSeriesSteps=readings.map(meterLg3dMatrixProfileStep);
  meterReadings=readings;
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
  const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
  if(whiteRd) meterWhiteReading=whiteRd;
  document.getElementById('chartsGreyscaleWrap').style.display='none';
@@ -33345,6 +33439,12 @@ async function meterStartLg3dAutoCal(options){
   if(!latticePatches.length) return fail('Selected profiling series has no patches');
   meterLg3dActiveLatticeSeriesId=latticeSeries.id;
  }
+ // Wipe ColorChecker (or any prior series) off the charts before the worker
+ // starts — 3D LUT profile UI is a separate chart context with no Delta-E.
+ try{
+  if(meterLg3dIsVolumeMethod(method)&&latticeSeries) meterLg3dPrepareChartContext({series:latticeSeries,method:method,clearReadings:true});
+  else if(method==='matrix'||method==='ramp') meterLg3dPrepareChartContext({method:'matrix',clearReadings:true});
+ }catch(_e){}
  // Imported upload: validate the choice before confirming; the file is only
  // saved to the generator after the operator accepts.
  let importedChoice='';
@@ -34872,7 +34972,12 @@ function drawTwoPointCharts(gs,allSteps){
 }
 
 function drawAllChartsPreset(sortedSteps){
- try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())); }catch(e){}
+ try{
+  const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
+   ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+   ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries());
+  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!is3dLut);
+ }catch(e){}
  try{ meterUpdateHdrConfigVisibility(); }catch(e){}
  if(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType){
   const gsSteps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(sortedSteps));
@@ -34891,7 +34996,13 @@ function drawAllChartsPreset(sortedSteps){
   drawGammaPreset(gsSteps);
  } else {
   drawCIEChartPreset(sortedSteps);
-  drawColorDeltaE2000Preset(sortedSteps);
+  // 3D LUT volume/matrix profile is characterization — no Delta-E chart.
+  const hideDe=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext());
+  if(!hideDe) drawColorDeltaE2000Preset(sortedSteps);
+  else {
+   const deSec=document.getElementById('meterColorDeltaESection');
+   if(deSec) deSec.style.display='none';
+  }
   const wrap=document.getElementById('colorReadingsTableWrap');
   if(wrap) wrap.style.display='none';
   const avgWrap=document.getElementById('colorSeriesAveragesWrap');
@@ -35189,21 +35300,33 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
  try{
-  const isVolume=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+  const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
+   ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
    ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries());
-  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!isVolume);
+  if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!is3dLut);
  }catch(e){}
  meterUpdateHdrConfigVisibility();
  if(!readings||readings.length===0) return;
  meterEnsureDeltaECache(readings);
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
-  // Color/saturation series — CIE chromaticity + color ΔE + readings table
+  // Color/saturation series — CIE chromaticity + color ΔE + readings table.
+  // 3D LUT volume/matrix profile: CIE cloud only (no Delta-E / no ColorChecker table).
   const cr=readings.filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r));
+  const is3dProfile=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext());
   if(cr.length>0){
    drawCIEChart(cr);
-   drawColorDeltaE2000Chart(cr);
-   drawColorReadingsTable(cr);
+   if(!is3dProfile){
+    drawColorDeltaE2000Chart(cr);
+    drawColorReadingsTable(cr);
+   } else {
+    const deSec=document.getElementById('meterColorDeltaESection');
+    if(deSec) deSec.style.display='none';
+    const wrap=document.getElementById('colorReadingsTableWrap');
+    if(wrap) wrap.style.display='none';
+    const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+    if(avgWrap) avgWrap.style.display='none';
+   }
    colorChartRegisterInteraction(cr);
    if(_colorDetailPinned&&_selectedColorReadingName){
     const sel=cr.find(r=>r.name===_selectedColorReadingName);
