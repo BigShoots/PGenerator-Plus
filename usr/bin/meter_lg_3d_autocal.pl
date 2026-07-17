@@ -1585,18 +1585,25 @@ sub build_residual_grid {
  foreach my $n (@{$nodes}) {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
-  # Exact neutrals stay zero -- DPG owns greyscale. Extreme pure W/R/G/B/K
-  # peak corners also stay zero (matrix owns them). Pure secondaries, mid
-  # primaries, and face centres DO get residual.
+  # Exact neutrals stay zero -- DPG owns greyscale.
   my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
-  my $is_peak_corner=(
-   ($fr>=0.999&&$fg>=0.999&&$fb>=0.999) ||
-   ($fr>=0.999&&$fg<=0.001&&$fb<=0.001) ||
-   ($fr<=0.001&&$fg>=0.999&&$fb<=0.001) ||
-   ($fr<=0.001&&$fg<=0.001&&$fb>=0.999) ||
-   ($fr<=0.001&&$fg<=0.001&&$fb<=0.001)
-  );
-  if($is_neutral || $is_peak_corner) { $corr{$key}=[0,0,0]; next; }
+  # Pure primary-like nodes (only one channel meaningfully on) stay zero --
+  # the matrix owns monochromatic ramps. IMPORTANT: limited-range "100% red"
+  # is not (1,0,0) in full-scale 3D-LUT coords -- it is ~ (0.92, 0.06, 0.06)
+  # (legal pedestal on G/B). If mid-red residual (huge +G/+B adds from a
+  # naive peak_inverse) is allowed on the pure-red axis, trilinear hits those
+  # cells for legal pure primaries and blows Red/Green 100% (ΔE teens).
+  # Threshold 0.08 > limited pedestal (~0.063) so legal pure primaries count
+  # as monochromatic. Secondaries (yellow/cyan/magenta) and multi-channel
+  # face centres (n_hot>=2) still receive residual.
+  my $mono_thr=0.08;
+  my $n_hot=0;
+  $n_hot++ if($fr > $mono_thr);
+  $n_hot++ if($fg > $mono_thr);
+  $n_hot++ if($fb > $mono_thr);
+  my $is_mono_primary=($n_hot <= 1); # black, pure R/G/B ramps (any level)
+  my $is_peak_white=($fr>=0.999&&$fg>=0.999&&$fb>=0.999);
+  if($is_neutral || $is_mono_primary || $is_peak_white) { $corr{$key}=[0,0,0]; next; }
   my $xyz_m=$n->{"xyz"};
   if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < $min_y) { $skipped++; next; }
   # Target appearance for this continuous signal (same rules as generate).
