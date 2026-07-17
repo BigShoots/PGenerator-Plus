@@ -32595,7 +32595,18 @@ function meterLg3dAutoCalSummary(status){
  if(!status) return '';
  const bits=[];
  if(status.method) bits.push(String(status.method).toUpperCase());
- if(status.phase) bits.push(String(status.phase).replace(/_/g,' '));
+ const phase=String(status.phase||'').replace(/_/g,' ');
+ if(phase){
+  if(String(status.phase||'').toLowerCase()==='drift_anchor'){
+   bits.push('WRGB drift re-anchor (not a profile patch)');
+  } else {
+   bits.push(phase);
+  }
+ }
+ const pc=Number(status.profile_current), pt=Number(status.profile_total);
+ if(Number.isFinite(pc)&&Number.isFinite(pt)&&pt>0&&String(status.phase||'').toLowerCase()==='profile'){
+  bits.push(pc+'/'+pt+' patches');
+ }
  if(status.export&&status.export.cube_path) bits.push('export ready');
  if(status.upload_verified) bits.push('upload verified');
  else if(status.upload_supported===false) bits.push('upload unavailable');
@@ -32859,36 +32870,145 @@ function meterLg3dLatticePatchesForStart(series){
   .map(p=>({name:p.name}));
 }
 
+// Resolve the lattice/skeleton/hybrid step the worker is currently measuring.
+// Prefer status.current_name (exact percent triplet), then profile_current index.
+// Drift-anchor WRGB re-reads are not series steps — return null so thumbs do
+// not keep the last black/dark patch highlighted while full-code WRGB is on screen.
+function meterLg3dLatticeCurrentStep(status,steps){
+ if(!status||!Array.isArray(steps)||!steps.length) return null;
+ const phase=String(status.phase||'').toLowerCase();
+ if(phase==='drift_anchor'||phase==='unity_reset'||phase==='building'||phase==='solving'||phase==='uploading') return null;
+ const curName=String(status.current_name||'').trim();
+ if(curName&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(curName)){
+  const byName=steps.find(s=>String((s&&s.name)||'')===curName);
+  if(byName) return byName;
+ }
+ // profile_current is 1-based index into the worker step list (same order as UI steps).
+ const idx=Number(status.profile_current);
+ if(Number.isFinite(idx)&&idx>=1&&idx<=steps.length) return steps[idx-1];
+ const stepIdx=Number(status.current_step);
+ if(Number.isFinite(stepIdx)&&stepIdx>=1&&stepIdx<=steps.length) return steps[stepIdx-1];
+ return null;
+}
+
 // Chart the live volume profile (lattice / skeleton / hybrid) like a series read.
+// Pair each reading to its series step by name so targets / codes / detail panel
+// match the patch actually measured — not a lagging "last completed" guess.
 function meterLg3dApplyLatticeProfileStatus(status){
  const m=String((status&&status.method)||'').toLowerCase();
  if(m!=='lattice'&&m!=='skeleton'&&m!=='hybrid') return false;
+ const phase=String((status&&status.phase)||'').toLowerCase();
+ // Show the series once profiling (or drift re-anchor around it) is underway —
+ // even with zero completed readings yet (start WRGB anchors, first black).
+ if(phase&&phase!=='profile'&&phase!=='drift_anchor'&&phase!=='building'&&phase!=='solving'){
+  // Keep thumbs/charts for terminal-adjacent phases that still carry profile readings.
+  if(phase!=='uploading'&&phase!=='complete'&&phase!=='post_check') return false;
+ }
  const raw=meterLg3dMatrixProfileReadings(status);
- if(!raw.length) return false;
  const series=meterCustomSeriesById(meterLg3dActiveLatticeSeriesId)||meterLg3dSelectedLatticeSeries();
  if(!series) return false;
+ let steps=[];
+ try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
+ steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
+ if(!steps.length) return false;
+ // Allow empty readings only during early drift/profile so thumbs appear before
+ // the first lattice node is stored.
+ if(!raw.length&&phase!=='profile'&&phase!=='drift_anchor') return false;
  meterActiveSeriesType='colors';
  meterActiveSeriesPoints=series.id;
  meterActiveSeriesKey='lg-3d-lattice-profile-'+series.id;
  meterSetActiveSeriesChartContext(status);
  meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
- let steps=[];
- try{ steps=meterBuildCustomSeriesSteps(series)||[]; }catch(e){ steps=[]; }
- steps=steps.filter(s=>/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String((s&&s.name)||'')));
- if(!steps.length) return false;
  meterSeriesSteps=steps;
- meterReadings=raw;
- const whiteRd=raw.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
+ // Stamp target_x/y/Yn + wire codes from the matching series step so CIE/ΔE/
+ // detail "Target" swatches and live RGB bars grade the right patch.
+ const readings=typeof meterAttachSeriesMeta==='function'
+  ? meterAttachSeriesMeta(raw.map(rd=>Object.assign({},rd)))
+  : raw.map(rd=>{
+   const step=steps.find(s=>String((s&&s.name)||'')===String((rd&&rd.name)||''));
+   return step&&typeof meterStampReadingStepMeta==='function'
+    ? meterStampReadingStepMeta(Object.assign({},rd),step)
+    : Object.assign({},rd);
+  });
+ meterReadings=readings;
+ const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd))
+  ||readings.find(rd=>String(rd.name||'')==='100/100/100'&&meterReadingHasLuminance(rd));
  if(whiteRd) meterWhiteReading=whiteRd;
  document.getElementById('chartsGreyscaleWrap').style.display='none';
  document.getElementById('chartsColorWrap').style.display='';
  document.getElementById('meterCharts').style.display='';
  document.getElementById('meterExportRow').style.display='';
  meterSetThumbsVisible(true);
- const completed=new Set(raw.map(rd=>meterStepNameKey(rd)));
- meterBuildPatchThumbs(meterSeriesSteps,completed,meterStepNameKey(raw[raw.length-1]));
- drawAllCharts(raw);
+ const stepKeys=new Set(steps.map(s=>meterStepNameKey(s)));
+ const completed=new Set(readings.map(rd=>meterStepNameKey(rd)).filter(k=>k&&stepKeys.has(k)));
+ const currentStep=meterLg3dLatticeCurrentStep(status,steps);
+ const currentKey=currentStep?meterStepNameKey(currentStep):null;
+ if(currentStep){
+  meterCurrentPatchStep=currentStep;
+  try{ meterSelectedThumbIre=currentKey; }catch(e){}
+ } else if(phase==='drift_anchor'){
+  // WRGB drift is not a lattice node — clear selection so black thumbs are not
+  // left pulsing while full-code W/R/G/B is on the panel.
+  meterCurrentPatchStep=null;
+  try{ meterSelectedThumbIre=null; }catch(e){}
+ }
+ meterBuildPatchThumbs(meterSeriesSteps,completed,currentKey);
+ const restoreLiveThumb=()=>{
+  // drawAllCharts / showColorReadingDetail re-highlight the focused reading's
+  // thumb; put the pulse back on the node the worker is measuring.
+  if(!currentKey) return;
+  const container=document.getElementById('meterPatchThumbs');
+  if(container) meterUpdateThumbStyles(container,completed,currentKey);
+ };
+ if(readings.length){
+  // Draw charts from completed nodes first (drawAllCharts focuses last reading).
+  drawAllCharts(readings);
+  const curRd=currentStep?meterFindReadingForStep(currentStep):null;
+  if(curRd){
+   // Just finished this node (or re-polling after it landed).
+   showColorReadingDetail(curRd,{pin:false});
+   updateLiveReading(curRd);
+  } else if(currentStep){
+   // Mid-read: worker has advanced current_name to the next node but the
+   // reading is not in status yet. Detail/label must follow current_name so
+   // the operator does not see "0/5/0" while the bar says "10/10/10".
+   const pending={
+    name:currentStep.name,
+    ire:currentStep.ire,
+    r:currentStep.r,g:currentStep.g,b:currentStep.b,
+    r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
+    target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn,
+    signal_r_pct:currentStep.signal_r_pct,signal_g_pct:currentStep.signal_g_pct,signal_b_pct:currentStep.signal_b_pct
+   };
+   showColorReadingDetail(pending,{pin:false});
+   meterClearLiveReading(currentStep);
+  } else {
+   const liveRd=readings[readings.length-1];
+   if(liveRd){
+    showColorReadingDetail(liveRd,{pin:false});
+    updateLiveReading(liveRd);
+   }
+  }
+  restoreLiveThumb();
+ } else if(currentStep){
+  const pending={
+   name:currentStep.name,
+   ire:currentStep.ire,
+   r:currentStep.r,g:currentStep.g,b:currentStep.b,
+   r_code:currentStep.r,g_code:currentStep.g,b_code:currentStep.b,
+   target_x:currentStep.target_x,target_y:currentStep.target_y,target_Yn:currentStep.target_Yn
+  };
+  showColorReadingDetail(pending,{pin:false});
+  meterClearLiveReading(currentStep);
+  restoreLiveThumb();
+ } else if(phase==='drift_anchor'){
+  // No lattice reading yet — still show progress context without lying about blacks.
+  const liveLabel=document.getElementById('meterLiveReadingLabel');
+  if(liveLabel) liveLabel.textContent=String(status.current_name||status.message||'WRGB drift anchor');
+  document.getElementById('meterLiveReading').style.display='';
+  restoreLiveThumb();
+ }
  meterUpdateDeltaEFormControl();
  return true;
 }
