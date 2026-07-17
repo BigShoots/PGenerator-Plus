@@ -28522,6 +28522,13 @@ function meterShowAutoCalCompleteModal(status){
   try{ meterAutoCalCompleteModalEl.remove(); }catch(e){}
   meterAutoCalCompleteModalEl=null;
  }
+ // This modal is the sole completion popup. The standalone completion
+ // paths also call meterAutoCalSetOverlay(true,...) (the wizard results
+ // box + Close), which would stack a second popup under this one. Hide
+ // the wizard overlay first -- meterAutoCalSetOverlay(false,...) still
+ // runs the showComplete state work (measurement-port restore, results
+ // render) but leaves the mask hidden, so only this modal is visible.
+ try{ meterAutoCalSetOverlay(false,status||null); }catch(e){}
  const s=status||{};
  const is3d=!!s.autocal3d;
  const root=document.createElement('div');
