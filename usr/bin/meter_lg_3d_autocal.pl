@@ -3422,6 +3422,9 @@ eval {
  for(my $i=0;$i<@steps;$i++) {
   die "cancelled\n" if(cancelled());
   my $step=$steps[$i];
+  # The unity reset set phase=unity_reset; without this the UI's summary
+  # line keeps saying "unity reset" for the entire profiling read.
+  $state->{"phase"}="profile";
   $state->{"current_step"}=$i+1;
   $state->{"current_name"}=$step->{"name"};
   my $profile_total=scalar(@steps);

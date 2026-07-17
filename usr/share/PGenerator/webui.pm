@@ -10894,6 +10894,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       </select>
      </label>
      <select id="meterLg3dLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px" title="Lattice series to measure for profiling"></select>
+     <label id="meterLg3dLatticeResidualsWrap" style="display:none;font-size:.72rem;color:var(--text2);align-items:center;gap:6px" title="On: interior lattice reads add bounded per-node corrections on top of the corner matrix model. Off: the lattice is measured but the LUT is solved from the corner matrix only (same solve as the 5-point matrix profile) - useful to A/B whether the per-node layer helps this panel.">
+      <input type="checkbox" id="meterLg3dLatticeResiduals" checked style="accent-color:var(--accent)"> Per-node corrections
+     </label>
      <select id="meterLg3dImportedLut" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;max-width:260px" title="The .cube to resample to the LG 33-point payload and upload — no measurement, no solve"></select>
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterStartLg3dAutoCal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
@@ -33135,6 +33138,11 @@ function meterLg3dPopulateLatticeSeries(){
  if(prev&&list.some(s=>String(s.id)===prev)) sel.value=prev;
 }
 
+function meterLg3dLatticeResidualsEnabled(){
+ const el=document.getElementById('meterLg3dLatticeResiduals');
+ return el?!!el.checked:true;
+}
+
 function meterLg3dProfileSourceChanged(){
  const src=meterLg3dProfileSourceValue();
  const latSel=document.getElementById('meterLg3dLatticeSeries');
@@ -33142,6 +33150,8 @@ function meterLg3dProfileSourceChanged(){
   latSel.style.display=(src==='lattice')?'':'none';
   if(src==='lattice') meterLg3dPopulateLatticeSeries();
  }
+ const residWrap=document.getElementById('meterLg3dLatticeResidualsWrap');
+ if(residWrap) residWrap.style.display=(src==='lattice')?'flex':'none';
  const impSel=document.getElementById('meterLg3dImportedLut');
  if(impSel){
   impSel.style.display=(src==='imported')?'':'none';
@@ -33611,6 +33621,9 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // Lattice profiling: percent triplets only — the worker computes wire
   // codes from the run's live range/bit-depth (build_lattice_steps).
   lattice_patches:method==='lattice'?latticePatches:undefined,
+  // Per-node corrections OFF -> the lattice is measured but solved from the
+  // corner matrix only (A/B lever for the residual layer).
+  solve_matrix_only:(method==='lattice'&&!meterLg3dLatticeResidualsEnabled())?true:undefined,
   // Imported upload: the .cube saved on the generator; the worker resamples
   // it to the 33-point payload and skips profiling entirely.
   imported_cube_path:method==='imported'?importedCubePath:undefined,
