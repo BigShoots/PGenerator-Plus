@@ -32728,10 +32728,9 @@ function meterLg3dAutoCalSummary(status){
    bits.push(phase);
   }
  }
- const pc=Number(status.profile_current), pt=Number(status.profile_total);
- if(Number.isFinite(pc)&&Number.isFinite(pt)&&pt>0&&String(status.phase||'').toLowerCase()==='profile'){
-  bits.push(pc+'/'+pt+' patches');
- }
+ // NOTE: the patch counter (current_step/total_steps) is already appended to
+ // the progress label by meterWorkflowStepText() in meterSetWorkflowProgress,
+ // so do NOT repeat it here -- that produced "... | 4/63 patches 4/63".
  if(status.export&&status.export.cube_path) bits.push('export ready');
  if(status.upload_verified) bits.push('upload verified');
  else if(status.upload_supported===false) bits.push('upload unavailable');
