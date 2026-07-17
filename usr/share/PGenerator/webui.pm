@@ -33777,17 +33777,33 @@ refresh_rate:getMeterRefreshRate()||undefined,
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r&&r.message)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
-  }
-  if(!r||r.status!=='started'){
-   meterLg3dAutoCalRunning=false;
-   meterActionPending=false;
-   meterHideWorkflowProgress();
-   if(meterLg3dAutoCalSpectroSetupActive){
-    meterLg3dAutoCalSpectroSetupActive=false;
-    meterSpectroSetupApply(null);
    }
-   return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
-  }
+   if(!r||r.status!=='started'){
+    // The start handler always spawns the worker before returning 'started',
+    // but the handler runs meter-stop / conf-reload work and (for SDR with
+    // max_bpc<10) a full renderer restart (webui_meter_lg_autocal_ensure_10b)
+    // BEFORE spawning. That work can outlive a transient fetch abort/timeout,
+    // so the POST can come back null/error while the worker is in fact
+    // running -- the operator then sees "unable to start" followed by
+    // "already running" on the next click for the same run. Probe the live
+    // status once: if a 3D autocal is running, adopt it and fall through into
+    // the normal polling path instead of erroring.
+    let _probe=null;
+    try{ _probe=await fetchJSON('/api/meter/lg-3d-autocal/status',{_quiet:true,_timeoutMs:8000}); }catch(_e){}
+    if(_probe&&_probe.status==='running'){
+     r={status:'started',message:_probe.current_name||'LG 3D LUT AutoCal already running',max_bpc_promoted:false};
+    }
+   }
+   if(!r||r.status!=='started'){
+    meterLg3dAutoCalRunning=false;
+    meterActionPending=false;
+    meterHideWorkflowProgress();
+    if(meterLg3dAutoCalSpectroSetupActive){
+     meterLg3dAutoCalSpectroSetupActive=false;
+     meterSpectroSetupApply(null);
+    }
+    return fail(r&&r.message?r.message:'Unable to start LG 3D LUT AutoCal');
+   }
  // Reflect a server-side max_bpc auto-promotion in the UI dropdown
  // (see webui_meter_lg_autocal_ensure_10b in webui.pm). Without this
  // refresh the dropdown keeps showing 8 even though the patches and
