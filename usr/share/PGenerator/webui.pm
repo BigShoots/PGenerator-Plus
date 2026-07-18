@@ -532,6 +532,36 @@ sub resolve_display_type (@) {
  return ($y_flag,$ccss_file);
 }
 
+# Map a CCSS override token (ccss_<file> | custom_<file>) to an absolute path.
+# Empty / whitespace token -> "" (caller falls back to the technology default).
+# Missing / unreadable file -> "" (do NOT silently fall through to a different
+# CCSS — the worker would print a confusing "no such file" error instead).
+# Validated suffix is .ccss; basename only (no traversal). Used in tandem with
+# the panel-technology parse so the meter session can use a real tech key for
+# the spotread -y flag AND a separate CCSS file for the correction matrix.
+sub resolve_ccss_override (@) {
+ my ($token)=@_;
+ $token="" if(!defined($token));
+ $token=~s/^\s+|\s+$//g;
+ return "" if($token eq "");
+ # Accept either "ccss_<file>" / "custom_<file>" / bare "<file>" tokens so
+ # legacy callers that already stripped the prefix keep working.
+ my $fname=$token;
+ $fname=$1 if($token=~/^(?:ccss|custom)_(.+)$/);
+ $fname=~s{\\}{/}g;
+ $fname=~s{^.*\/}{}; # basename only; discard nested path / traversal attempts
+ $fname=~s/[^a-zA-Z0-9._\-()\[\] ]//g;
+ return "" if($fname eq "");
+ return "" if($fname !~ /\.ccss$/i);
+ my $sys="$_ccss_dir/$fname";
+ my $cust="$_custom_ccss_dir/$fname";
+ my $legacy="$_custom_ccss_legacy_dir/$fname";
+ if(-f $sys)    { return $sys; }
+ if(-f $cust)   { &_webui_ccss_repair_file($cust); return (-f $cust) ? $cust : ""; }
+ if(-f $legacy) { &_webui_ccss_repair_file($legacy); return (-f $legacy) ? $legacy : ""; }
+ return "";
+}
+
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
  my $http_port=80;
@@ -1951,6 +1981,17 @@ sub webui_meter_read (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ # ccss_override: an explicit CCSS token (ccss_<file>/custom_<file>) the
+ # operator picked instead of the technology default. Maps to an absolute path
+ # via resolve_ccss_override(); empty token => fall back to the technology's
+ # $_dtype_info CCSS. Keeps the WRGB/y-flag side driven by display_type while
+ # the correction matrix / -X file can be a custom profile.
+ my $ccss_override_token="";
+ $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
+ if($ccss_override_token ne "") {
+  my $override_path=&resolve_ccss_override($ccss_override_token);
+  $ccss_file=$override_path if($override_path ne "");
+ }
  my $refresh_rate="";
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $measurement_meter_port="";
@@ -2549,6 +2590,16 @@ sub webui_meter_series_start (@) {
  my $display_type_key="lcd";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,160})"/);
  my ($display_type,$ccss_file)=&resolve_display_type($display_type_key);
+ # ccss_override: same parsing rule as webui_meter_read. The single-read and
+ # series paths now share the same override-token contract so the worker can
+ # always derive y_flag from display_type and the correction matrix from the
+ # (override or technology default) CCSS path.
+ my $ccss_override_token="";
+ $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
+ if($ccss_override_token ne "") {
+  my $override_path=&resolve_ccss_override($ccss_override_token);
+  $ccss_file=$override_path if($override_path ne "");
+ }
  my $delay_ms=1000;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
  my $patch_size=10;
@@ -5067,7 +5118,7 @@ sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
+	 display_type ccss_override target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
@@ -10650,6 +10701,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
+    <label>Panel technology</label>
     <select id="meterDisplayType">
      <optgroup label="Generic" id="meterDtGeneric">
       <option value="oled_generic">WRGB OLED</option>
@@ -10662,10 +10714,15 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <option value="projector_ccss">Projector</option>
       <option value="crt">CRT</option>
       <option value="lcd">None (no correction)</option>
-      <option value="custom_editor">CCSS Editor...</option>
      </optgroup>
-     <optgroup label="Display-specific CCSS" id="meterDtCcss"></optgroup>
     </select>
+    <div class="meter-ccss-profile-row" style="display:flex;gap:6px;align-items:flex-end;margin-top:6px">
+     <div style="flex:1 1 auto">
+      <label>Meter profile (CCSS)</label>
+      <select id="meterCcssProfile"><option value="">Auto (technology default)</option></select>
+     </div>
+     <button type="button" id="meterCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile" style="flex:0 0 auto">Profile my TV&hellip;</button>
+    </div>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
         <div class="custom-ccss-panel-copy">
@@ -11894,10 +11951,17 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  </div>
 	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
-	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the meter profile (CCSS) that matches this panel. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from this choice.</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
 	   <div class="field" style="max-width:420px">
-	    <label>Display Type / Meter Profile</label>
+	    <label>Panel technology</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
+	   </div>
+	   <div class="field" style="max-width:420px;display:flex;gap:6px;align-items:flex-end">
+	    <div style="flex:1 1 auto">
+	     <label>Meter profile (CCSS)</label>
+	     <select id="meterAutoCalCcssProfile"><option value="">Auto (technology default)</option></select>
+	    </div>
+	    <button type="button" id="meterAutoCalCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile" style="flex:0 0 auto">Profile my TV&hellip;</button>
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
@@ -22543,6 +22607,10 @@ function meterBuildManualReadPayload(step,ctx){
   display_type:opts.dtype,
   refresh_rate:opts.rr||undefined,
   delay_ms:opts.delay,
+  // Mirror the wizard/CCSS override split into the manual-read payload so
+  // step-level manual reads (used by autocal inner loops, chart reads, and
+  // single-step tools) carry the operator's chosen CCSS, not just the tech.
+  ccss_override:(opts&&typeof opts.ccss_override==='string')?opts.ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
   target_gamma:meterAutoCalTargetGammaValue()
  });
@@ -22574,6 +22642,12 @@ function meterRelocateProfileControls(){
  if(!displayField||!slot) return;
  const dt=document.getElementById('meterDisplayType');
  if(dt&&dt.parentElement!==displayField) displayField.appendChild(dt);
+ // Post-split: the technology dropdown lives next to its CCSS-profile row
+ // inside the `.meter-ccss-profile-row` wrapper. Move the whole row so the
+ // "Meter profile (CCSS)" label + dropdown + "Profile my TV…" button travel
+ // with the technology select into the popover.
+ const ccssRow=document.querySelector('.meter-ccss-profile-row');
+ if(ccssRow&&ccssRow.parentElement!==displayField) displayField.appendChild(ccssRow);
  const ccss=document.getElementById('customCcssPanel');
  if(ccss&&ccss.parentElement!==displayField) displayField.appendChild(ccss);
  const delay=document.getElementById('meterDelay');
@@ -23486,7 +23560,7 @@ async function meterContinuousLoop(){
   const delay=meterDelayMs();
 	  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
   const patternSignalRange=meterMeasurementPatchSignalRange();
-	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
+	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
 	  if(requestedStep){
 	   meterApplyReadStepPayload(readPayload,requestedStep);
 	   readPayload.patch_size=getMeterPatchSize();
@@ -27573,6 +27647,17 @@ function meterMeasurementSignalContext(payload){
  if(body.color_format==null) body.color_format=getVal('color_format')||((config&&config.color_format)||'0');
  if(body.colorimetry==null) body.colorimetry=getVal('colorimetry')||((config&&config.colorimetry)||'0');
  if(body.primaries==null) body.primaries=getVal('primaries')||((config&&config.primaries)||'0');
+  // CCSS override: only inject when the caller didn't already pass one.
+  // The wizard / meterRunSeries pass `ccss_override` explicitly via the
+  // pendingConfig snapshot; single reads / autocal reads fall through to
+  // the current main-control value. Empty token => server uses the
+  // technology default. The display_type token is whatever the caller set
+  // (tech key, since we redirected getEffectiveDisplayType() to the tech
+  // dropdown). ccss_override is independent — it's the CCSS file.
+  if(body.ccss_override==null){
+   const override=(typeof getCcssOverride==='function')?getCcssOverride():'';
+   if(override) body.ccss_override=override;
+  }
    if(meterTargetWhitePointEnabled()){
     body.custom_d65_enabled=true;
     body.target_white_x=(document.getElementById('meterTargetWhiteX')||{}).value||'';
@@ -29457,6 +29542,9 @@ async function meterAutoCalReadCodePatch(code,label,range,dtype){
   display_type:dtype,
   refresh_rate:getMeterRefreshRate()||undefined,
   delay_ms:Math.max(meterDelayMs(),1200),
+  // The autocal inner-loop single reads also need the operator's CCSS
+  // override so a custom profile survives every patch probe.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   patch_r:numeric,
   patch_g:numeric,
   patch_b:numeric,
@@ -30121,6 +30209,10 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
 	   display_type:getEffectiveDisplayType(),
 	   refresh_rate:getMeterRefreshRate()||undefined,
 	   delay_ms:settleMs,
+	   // HDR peak probe (auto-cal luminance setup): same CCSS override
+	   // contract as the inner-loop reads so a custom profile survives
+	   // the white patch probes.
+	   ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
 	   patch_r:whiteStep.r,
 	   patch_g:whiteStep.g,
 	   patch_b:whiteStep.b,
@@ -31182,6 +31274,9 @@ function meterFullAutoCalMergeConfigFromGreyscaleStatus(status){
  const headroomY=Number(status.headroom_target_luminance);
  if(Number.isFinite(headroomY)&&headroomY>0) next.headroomY=headroomY;
  if(status.display_type) next.dtype=status.display_type;
+ // Track the CCSS override echo from the worker state so later 3D LUT /
+ // polish stages (and the in-progress screen) read the same value.
+ if(status.ccss_override!=null) next.ccss_override=String(status.ccss_override);
  // Track the live HDMI quant range for later 3D LUT / polish stages.
  // Never default to limited ("1") -- that made Full-range Full AutoCal
  // hand a limited patternSignalRange into 3D LUT profiling.
@@ -32006,10 +32101,11 @@ function meterFullAutoCalTouchupTargetY(){
   const setupY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.setupY);
   const headroomY=Number(meterFullAutoCalConfig&&meterFullAutoCalConfig.headroomY);
   const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+  const ccssOverride=(typeof getCcssOverride==='function')?getCcssOverride():'';
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-  meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
+  meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
   meterReadings=[];
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
@@ -32024,6 +32120,9 @@ function meterFullAutoCalTouchupTargetY(){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Pass the active CCSS override through to the committed-polish worker
+    // so a custom profile survives the post-3D pass unchanged.
+    ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -32161,10 +32260,11 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 	  const touchupPostCommitPolishEnabled=meterFullAutoCalPostCommitPolishEnabled();
 	  const touchupPostCommitVerifyEnabled=meterFullAutoCalPostCommitVerifyEnabled();
 	  const dtype=(meterFullAutoCalConfig&&meterFullAutoCalConfig.dtype)||getEffectiveDisplayType();
+  const ccssOverride=(typeof getCcssOverride==='function')?getCcssOverride():'';
   const patternSignalRange=(meterFullAutoCalConfig&&meterFullAutoCalConfig.patternSignalRange)||(meterLgAutoCalUsesExtendedSdr()?String(getVal('rgb_quant_range')||'1'):meterMeasurementPatchSignalRange());
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
-  meterAutoCalPendingConfig={dtype,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
+  meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
   meterReadings=[];
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
@@ -32179,6 +32279,9 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Full AutoCal touchup pass: same CCSS override contract as the
+    // committed-polish pass — the wizard's tech+CCSS choices carry over.
+    ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -32632,6 +32735,11 @@ async function meterStartAutoCal(options){
  const wp=meterTargetWhitePoint();
  meterAutoCalPendingConfig={
   dtype,
+  // Snapshot the CCSS override at run start. The wizard's Display Type step
+  // may overwrite this (meterAutoCalDisplayTypeContinue stamps both fields
+  // onto the pending config), but a normal / non-wizard start uses the
+  // current main-control value as the source of truth.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():'',
   patternSignalRange,
 	  wp,
 	  adjustable,
@@ -32739,23 +32847,37 @@ function meterAutoCalDisplayTypeIsOled(value,label){
  const s=(String(value||'')+' '+String(label||'')).toLowerCase();
  return /oled|wrgb/.test(s);
 }
-// The Display Type select is cloned from the operator-facing meterDisplayType
-// at phase entry so the wizard copy includes the latest display-specific CCSS
-// entries that may have been populated asynchronously after page load.
+// The wizard Display Type step now mirrors the split main settings:
+// a #meterAutoCalDisplayTypeSelect (panel technology) and a
+// #meterAutoCalCcssProfile (meter CCSS, may be on "Auto"). Both clone from
+// the main controls at phase entry, and the previous bug where the wizard's
+// choice never reached the run config is fixed by writing both into
+// meterAutoCalPendingConfig in Continue.
 function meterAutoCalDisplayTypePopulate(){
  const src=document.getElementById('meterDisplayType');
  const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
  if(!src||!dst) return;
+ // Clone the technology dropdown's children (generic optgroup only — CCSS
+ // entries moved out of this select in the spec).
  dst.innerHTML='';
  for(const node of src.children){
-  // cloneNode preserves optgroup + option nodes; setting dst.value after
-  // appending children resolves the option regardless of which optgroup it
-  // lives in (select.value matches against any <option> descendant).
   dst.appendChild(node.cloneNode(true));
  }
  dst.value=src.value;
  if(dst.selectedIndex<0) dst.selectedIndex=0;
  dst.onchange=meterAutoCalDisplayTypeUpdateSummary;
+ // Make sure the wizard CCSS dropdown has the latest options + mirrors the
+ // persisted ccss_override from the main control (so a refresh / page
+ // reload is the source of truth, not a hardcoded "Auto").
+ populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+ const mainCcss=document.getElementById('meterCcssProfile');
+ const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+ if(mainCcss&&wizardCcss){
+  wizardCcss.dataset.pendingValue=String(mainCcss.value||'');
+  wizardCcss.value=String(mainCcss.value||'');
+  if(wizardCcss.value===String(mainCcss.value||'')) delete wizardCcss.dataset.pendingValue;
+ }
+ meterBindWizardDisplayTypeHandlers();
  meterAutoCalDisplayTypeUpdateSummary();
 }
 function meterAutoCalDisplayTypeUpdateSummary(){
@@ -32769,15 +32891,22 @@ function meterAutoCalDisplayTypeUpdateSummary(){
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
 }
 function meterAutoCalDisplayTypeContinue(){
- const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
- if(dst&&dst.value){
-  // Mirror the wizard selection back to the main meterDisplayType dropdown
-  // so the rest of the wizard / worker / chart pipeline reads from a single
-  // source of truth.
+ const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
+ const ccssSel=document.getElementById('meterAutoCalCcssProfile');
+ if(techSel&&techSel.value){
+  // Mirror BOTH wizard selections back to the main controls. This is the
+  // single source-of-truth update: meterSave() / saveMeterSettings() picks
+  // up the new values, the autocal start payload reads from them, and the
+  // pendingConfig snapshot is taken immediately so the worker's tech/CCSS
+  // survives even if the main controls drift before the run starts.
   const src=document.getElementById('meterDisplayType');
-  if(src) src.value=dst.value;
-  const opt=dst.options[dst.selectedIndex];
-  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
+  if(src) src.value=techSel.value;
+  const mainCcss=document.getElementById('meterCcssProfile');
+  if(mainCcss&&ccssSel) mainCcss.value=String(ccssSel.value||'');
+  // The OLED-vs-LCD patch/insertion heuristics only key off the TECHNOLOGY,
+  // not the CCSS override. The CCSS is independent of patch geometry.
+  const opt=techSel.options[techSel.selectedIndex];
+  const oled=meterAutoCalDisplayTypeIsOled(techSel.value,opt?opt.textContent:'');
   const ps=document.getElementById('meterPatchSize');
   if(ps&&ps.value!==(oled?'10':'apl_10')){
    ps.value=oled?'10':'apl_10';
@@ -32789,6 +32918,14 @@ function meterAutoCalDisplayTypeContinue(){
   if(ins&&ins.checked!==oled){
    ins.checked=oled;
    try{ ins.dispatchEvent(new Event('change')); }catch(e){}
+  }
+  // Stamp BOTH fields onto the run config. Without ccss_override here the
+  // start payload would lose the operator's chosen CCSS as soon as the main
+  // settings got re-saved before the run, because the snapshot below reads
+  // from these two attributes (and falls back to the DOM if unset).
+  if(typeof meterAutoCalPendingConfig==='object'&&meterAutoCalPendingConfig){
+   meterAutoCalPendingConfig.dtype=techSel.value;
+   meterAutoCalPendingConfig.ccss_override=ccssSel?String(ccssSel.value||''):'';
   }
   if(typeof saveMeterSettings==='function') saveMeterSettings();
  }
@@ -32994,6 +33131,13 @@ async function meterAutoCalConfirmAndStart(){
     type:'greyscale',
     points:26,
     display_type:dtype,
+    // Stamp the wizard-captured CCSS override (set in
+    // meterAutoCalDisplayTypeContinue) onto the run payload. Empty string
+    // => server uses the technology default. Passing the explicit value
+    // (rather than letting meterMeasurementSignalContext re-read the live
+    // control) keeps the worker pinned to the wizard choice even if the
+    // operator flips the dropdown AFTER clicking Continue.
+    ccss_override:(meterAutoCalPendingConfig&&typeof meterAutoCalPendingConfig.ccss_override==='string')?meterAutoCalPendingConfig.ccss_override:undefined,
     delay_ms:meterDelayMs(),
     patch_size:getMeterPatchSize(),
     signal_range:getVal('rgb_quant_range'),
@@ -34059,6 +34203,11 @@ async function meterStartLg3dAutoCal(options){
   method:method,
   type:'lg-3d-lut',
   display_type:dtype,
+  // 3D LUT AutoCal: the WRGB gate (driven by display_type) and the CCSS
+  // matrix file are independent. Send the override explicitly so a custom
+  // profile the operator picked survives the upload even if the dropdown
+  // drifts after the snapshot.
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   delay_ms:meterDelayMs(),
   patch_size:getMeterPatchSize(),
   signal_range:transportRange,
@@ -34367,7 +34516,7 @@ async function meterRunSeries(){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
 		  if(meterActiveSeriesIsCustom()&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
@@ -39309,9 +39458,20 @@ function meterSelectCustomCcssValue(filename){
  meterApplyDisplayTypeSelection('custom');
 }
 
+// Snapshot the custom-CCSS library size BEFORE the editor opens so close-time
+// can detect whether a new profile got uploaded (mtime-based check below
+// also handles the case where the operator replaced an existing file with
+// the same name).
+let _ccssEditorBaseline='';
+function _ccssEditorBaselineKey(){
+ const lib=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const customs=lib.filter(f=>f&&f.source==='custom').map(f=>String(f.name||'')+':'+String(f.mtime||'')).sort().join('|');
+ return customs;
+}
 function meterOpenCustomCcssEditor(){
  const modal=document.getElementById('customCcssEditorModal');
  if(!modal) return;
+ _ccssEditorBaseline=_ccssEditorBaselineKey();
  loadCustomCcssList();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -39322,14 +39482,53 @@ function meterOpenCustomCcssEditor(){
  });
 }
 
-function meterCloseCustomCcssEditor(){
+async function meterCloseCustomCcssEditor(){
  const modal=document.getElementById('customCcssEditorModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
+ // Refresh BOTH the main and wizard CCSS-profile dropdowns so the operator's
+ // newly uploaded/imported profile is selectable from the wizard step too.
+ // The spec says: "on editor close, refresh the CCSS dropdown(s) and select
+ // the newest custom profile."
+ try{ await refreshMeterCcssCatalog(); }catch(e){}
+ // Detect whether anything in the custom library changed during the edit
+ // session (upload, delete, or replace). The spec only asks to auto-select
+ // when something changed; if the operator only inspected, leave the
+ // existing selection untouched.
+ const after=_ccssEditorBaselineKey();
+ const changed=(after!==_ccssEditorBaseline);
+ const newestCustom=changed?meterSelectNewestCustomCcss():'';
+ if(newestCustom){
+  meterSetCcssProfileSelection(newestCustom);
+  // Persist immediately so a reload keeps the new selection.
+  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
+ }
+ // Always re-populate the wizard clone (in case the operator opened the
+ // editor from the wizard step). Idempotent if the wizard select doesn't
+ // exist yet (page-init case).
+ const wizardInOverlay=(document.getElementById('meterAutoCalDisplayTypeBox')||{}).style&&
+  (document.getElementById('meterAutoCalDisplayTypeBox').style.display!=='none');
+ try{
+  if(wizardInOverlay){
+   meterAutoCalDisplayTypePopulate();
+   // Force the wizard's CCSS dropdown to mirror the new selection.
+   const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+   const mainCcss=document.getElementById('meterCcssProfile');
+   if(wizardCcss&&mainCcss){
+    wizardCcss.dataset.pendingValue=String(mainCcss.value||'');
+    wizardCcss.value=String(mainCcss.value||'');
+    if(wizardCcss.value===String(mainCcss.value||'')) delete wizardCcss.dataset.pendingValue;
+   }
+  }
+ }catch(e){}
 }
 
 const meterDisplayTypeEl=document.getElementById('meterDisplayType');
 meterDisplayTypeEl.dataset.lastStableValue=meterDisplayTypeEl.value||'lcd';
+// The "Profile my TV…" button (#meterCcssProfileBtn) is the new entry point
+// for the CCSS editor; the legacy "CCSS Editor..." option has been moved out
+// of the dropdown. If a future caller still sends a `custom_editor` token,
+// fall back to the last stable value instead of opening the editor.
 meterDisplayTypeEl.addEventListener('change',function(){
  const v=this.value;
  if(v==='custom_editor'){
@@ -39341,7 +39540,31 @@ meterDisplayTypeEl.addEventListener('change',function(){
  }
  this.dataset.lastStableValue=v;
  meterApplyDisplayTypeSelection(v,{patchSizeDefault:true});
+ // Technology change re-labels the "Auto" option on the CCSS profile
+ // dropdown so the user can see what default they're tracking. The selection
+ // itself stays at whatever the operator chose (no auto-reset; the spec is
+ // explicit that "" follows the technology default only when it's on "").
+ meterRefreshCcssAutoLabel();
 });
+
+// Mirror the technology change handler on the wizard clone. The wizard builds
+// the clone at phase entry via meterAutoCalDisplayTypePopulate(); bind the
+// handler there so the clone's "Auto" label tracks the clone's technology.
+function meterBindWizardDisplayTypeHandlers(){
+ const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
+ const ccssSel=document.getElementById('meterAutoCalCcssProfile');
+ if(techSel&&!techSel.dataset.boundRefresh){
+  techSel.addEventListener('change',function(){
+   meterRefreshCcssAutoLabel('meterAutoCalCcssProfile');
+  });
+  techSel.dataset.boundRefresh='1';
+ }
+ if(ccssSel&&!ccssSel.dataset.bound){
+  // Selecting a non-empty CCSS profile in the wizard does NOT auto-flip
+  // the technology; the operator may want a custom CCSS on a generic tech.
+  ccssSel.dataset.bound='1';
+ }
+}
 
 // Custom CCSS file input
 document.getElementById('ccssFileInput').addEventListener('change',function(){
@@ -39380,7 +39603,12 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
    document.getElementById('ccssName').value='';
     await refreshMeterCcssCatalog();
     await loadCustomCcssList();
-    meterSelectCustomCcssValue(r.filename);
+    // Post-split: selecting a custom CCSS goes through the new
+    // #meterCcssProfile dropdown (NOT the legacy combined display_type
+    // select). The technology dropdown stays on whatever the operator
+    // already had selected; the custom profile attaches to the new CCSS
+    // profile control without affecting WRGB / y-flag.
+    meterSetCcssProfileSelection('custom_'+r.filename);
     await ccssPreviewLoadByValue('custom\t'+r.filename,false);
     meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
     saveMeterSettings();
@@ -39427,7 +39655,9 @@ async function selectCustomCcss(filename){
   else if(v && v.ok && v.description){ toast('CCSS: '+v.description); }
  }catch(e){}
  customCcssFile=filename;
-   meterSelectCustomCcssValue(filename);
+   // Post-split: select the custom profile on the new meter-profile
+   // dropdown, not the legacy combined display_type.
+   meterSetCcssProfileSelection('custom_'+filename);
  ccssPreviewLoadByValue('custom\t'+filename,true);
  loadCustomCcssList();
  saveMeterSettings();
@@ -39850,17 +40080,166 @@ async function refreshMeterCcssCatalog(){
  await meterCcssOptionsPromise;
 }
 
+// --- Panel technology / CCSS split helpers -----------------------------------
+// The single dropdown was split so that WRGB compensation (driven by display_type)
+// and the CCSS profile (the correction matrix) can be picked independently.
+// `getDisplayTechnology()` returns the current tech key (always one of the
+// generic keys: oled_generic/qdoled/lcd_wled/...). `getCcssOverride()` returns
+// the operator-selected CCSS token (ccss_<file> or custom_<file>), or "" when
+// they're tracking the technology's built-in default. These are the source of
+// truth for everything downstream — single reads, series, autocal, 3D LUT,
+// wizard — and replace the old `getEffectiveDisplayType()` which conflated the
+// two into one token (the previous behavior dropped WRGB force whenever a
+// specific CCSS was picked).
+
+// Resolve the panel-technology dropdown value to a real tech key. Falls back
+// to `oled_generic` only when the dropdown is missing (page init race).
+function getDisplayTechnology(){
+ const sel=document.getElementById('meterDisplayType');
+ return sel?String(sel.value||'oled_generic'):'oled_generic';
+}
+
+// Resolve the meter-profile (CCSS) dropdown value. The "" option means "track
+// the technology default"; the server falls back to $_dtype_info's CCSS
+// whenever this token is empty.
+function getCcssOverride(){
+ const sel=document.getElementById('meterCcssProfile');
+ if(!sel) return '';
+ const v=String(sel.value||'');
+ return v;
+}
+
+// Backwards-compat alias used by every existing call site. Now ALWAYS returns
+// the technology key (a real tech token), never a ccss_<file> / custom_<file>
+// token. The CCSS path is sent separately via the new ccss_override field.
+function getEffectiveDisplayType(){
+ return getDisplayTechnology();
+}
+
+// Resolve the technology's built-in CCSS profile label (e.g. "WRGB_OLED_LG").
+// Used to re-label the "" option on the meterCcssProfile dropdown so the
+// operator can see what "Auto" will pick without inspecting $_dtype_info.
+function meterTechnologyDefaultCcssLabel(){
+ const tech=getDisplayTechnology();
+ if(tech==='oled_generic') return 'WRGB OLED (built-in)';
+ if(tech==='qdoled') return 'QD-OLED (built-in)';
+ if(tech==='lcd_wled') return 'W-LED family (built-in)';
+ if(tech==='lcd_ccfl') return 'CCFL family (built-in)';
+ if(tech==='lcd_wgccfl') return 'Wide gamut CCFL (built-in)';
+ if(tech==='lcd_rgbled') return 'RGB LED family (built-in)';
+ if(tech==='plasma') return 'Plasma (built-in)';
+ if(tech==='projector_ccss') return 'Projector family (built-in)';
+ if(tech==='crt') return 'CRT (built-in)';
+ if(tech==='lcd') return 'None (no correction)';
+ return 'technology default';
+}
+
+// Re-label the "" option on the CCSS profile dropdown(s) to reflect the
+// current technology's built-in default. The wizard clone uses a separate
+// dropdown id; pass it in to update that one too.
+function meterRefreshCcssAutoLabel(wizardId){
+ const label=meterTechnologyDefaultCcssLabel();
+ const ids=['meterCcssProfile'];
+ if(wizardId) ids.push(wizardId);
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  const autoOpt=sel.querySelector('option[value=""]');
+  if(autoOpt) autoOpt.textContent='Auto ('+label+')';
+ }
+}
+
+// Populate the new #meterCcssProfile dropdown (and the wizard clone's
+// #meterAutoCalCcssProfile) from the cached meterCcssLibrary. Skips the
+// generic/system entries — those are the technology defaults and the
+// operator already has them via the "Auto" option. The "value" matches the
+// existing ccss_<file> / custom_<file> token contract so the backend's
+// resolve_ccss_override() resolves it without further translation.
+function populateMeterCcssProfileSelect(wizardId){
+ const ids=wizardId?['meterCcssProfile',wizardId]:['meterCcssProfile'];
+ const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const seen=new Set();
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  const prev=String(sel.dataset.pendingValue||sel.value||'');
+  // Preserve the leading "Auto" option; the rest is rebuilt from the library.
+  const autoOpt=sel.querySelector('option[value=""]');
+  sel.innerHTML='';
+  if(autoOpt) sel.appendChild(autoOpt);
+  else{
+   const o=document.createElement('option');
+   o.value='';
+   sel.appendChild(o);
+  }
+  for(const entry of library){
+   if(!entry||!entry.name) continue;
+   const name=String(entry.name);
+   if(!/\.ccss$/i.test(name)) continue;
+   const value=(entry.source==='custom'?'custom_':'ccss_')+name;
+   if(seen.has(value+':'+id)) continue;
+   seen.add(value+':'+id);
+   const opt=document.createElement('option');
+   opt.value=value;
+   opt.textContent=ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
+   sel.appendChild(opt);
+  }
+  sel.value=prev;
+  if(sel.value===prev) delete sel.dataset.pendingValue;
+ }
+ meterRefreshCcssAutoLabel(wizardId);
+}
+
+// Wire the meter-profile dropdown to the persisted state: when a custom CCSS
+// gets uploaded/deleted, refresh BOTH the main and wizard selects. The
+// "newest custom profile wins" rule from the spec lives here.
+function meterSelectNewestCustomCcss(){
+ const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const customs=library.filter(f=>f&&f.source==='custom'&&/\.ccss$/i.test(String(f.name||'')));
+ if(!customs.length) return '';
+ // Most recently created (mtime descending) wins; fall back to last in the list.
+ customs.sort((a,b)=>{
+  const ta=Number(a&&a.mtime)||0;
+  const tb=Number(b&&b.mtime)||0;
+  if(tb!==ta) return tb-ta;
+  return String(b.name||'').localeCompare(String(a.name||''));
+ });
+ return customs[0]?(('custom_'+String(customs[0].name||''))):'';
+}
+
+// Force a particular option into the main + wizard CCSS selects. Used by
+// ccss-upload success handlers and by meterOpenCustomCcssEditor's auto-select
+// on close (the spec's "select the newest custom profile").
+function meterSetCcssProfileSelection(token){
+ if(!token) return;
+ const ids=['meterCcssProfile','meterAutoCalCcssProfile'];
+ for(const id of ids){
+  const sel=document.getElementById(id);
+  if(!sel) continue;
+  sel.dataset.pendingValue=token;
+  sel.value=token;
+  if(sel.value===token) delete sel.dataset.pendingValue;
+ }
+}
+
+// --- /end Panel technology / CCSS split helpers -----------------------------
+
 // Populate the display-specific CCSS optgroup with all .ccss files on the device,
 // sorted alphabetically. Option value is "ccss_FILENAME" (for system) or
 // "custom_FILENAME" (for user-uploaded). The backend's resolve_display_type()
 // handles both prefixes identically.
 async function loadMeterCcssOptions(){
  const r=await fetchJSON('/api/ccss/all',{_quiet:true,_timeoutMs:5000});
+ // The legacy #meterDtCcss optgroup is intentionally empty now that the
+ // spec split display_type and CCSS into two controls; populate the new
+ // #meterCcssProfile dropdown (and any wizard clone) instead. The optgroup
+ // remains in the DOM only as an anchor point — existing code that
+ // queries it (`getElementById('meterDtCcss')`) keeps working.
  const grp=document.getElementById('meterDtCcss');
- if(!grp) return;
- grp.innerHTML='';
+ if(grp) grp.innerHTML='';
  meterCcssLibrary=(r&&Array.isArray(r.files))?r.files:[];
  ccssPreviewPopulateOptions(meterCcssLibrary);
+ populateMeterCcssProfileSelect();
  if(!meterCcssLibrary.length) return;
  const sel=document.getElementById('meterDisplayType');
  const prev=sel.value;
@@ -40097,6 +40476,11 @@ function saveMeterSettings(){
  const displayTypeValue=val('meterDisplayType');
  const s={
   display_type:(displayTypeValue==='custom_editor')?((document.getElementById('meterDisplayType')||{}).dataset.lastStableValue||'lcd'):displayTypeValue,
+  // The technology dropdown no longer carries a CCSS token; the CCSS
+  // override is in its own dropdown. Send the operator's selection (empty
+  // string when on the "Auto" option, which the server resolves to the
+  // $_dtype_info default for the chosen display_type).
+  ccss_override:val('meterCcssProfile'),
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
@@ -40217,14 +40601,65 @@ async function loadMeterSettings(){
  }
  if(s.ccss_file) customCcssFile=s.ccss_file;
  setChk('meterSimulateSpectro', s.simulate_spectro);
+ // Migration: the legacy `display_type` setting held either a tech key
+ // (`oled_generic`) or a CCSS token (`ccss_<file>` / `custom_<file>` /
+ // bare `custom`). Post-split the technology and CCSS live in two
+ // separate fields. Split the legacy value here so a reload from an
+ // older /api/meter/settings blob doesn't silently drop the CCSS or
+ // silently swap WRGB OLED for a custom profile with auto WRGB.
+ let _migratedDisplayType='';
+ let _migratedCcssOverride='';
  if(s.display_type){
-  const normalizedDisplayType=meterNormalizeStoredDisplayType(s.display_type,s.ccss_file);
-  const sel=document.getElementById('meterDisplayType');
-  sel.dataset.pendingValue=normalizedDisplayType;
-  sel.value=normalizedDisplayType;
-  sel.dataset.lastStableValue=normalizedDisplayType;
-  if(sel.value===normalizedDisplayType) delete sel.dataset.pendingValue;
+  const legacyValue=String(s.display_type);
+  if(/^(?:ccss_|custom_)/.test(legacyValue)||legacyValue==='custom'){
+   // Was a CCSS token. Map the filename to the technology it implies and
+   // keep the token as the CCSS override. Else infer technology from
+   // filename tokens (woled/wrgb -> oled_generic, qd[-_]oled/qdoled ->
+   // qdoled, lcd/wled -> lcd_wled); unknown tech leaves display_type
+   // unset so we preserve today's WRGB state instead of silently changing.
+   const token=(legacyValue==='custom'&&s.ccss_file)?('custom_'+s.ccss_file):legacyValue;
+   const fname=String(token).replace(/^(?:ccss_|custom_)/,'').toLowerCase();
+   let inferred='';
+   if(/woled|wrgb/.test(fname)) inferred='oled_generic';
+   else if(/qd[-_]?oled|qdoled/.test(fname)) inferred='qdoled';
+   else if(/lcd|wled/.test(fname)) inferred='lcd_wled';
+   _migratedDisplayType=inferred;
+   _migratedCcssOverride=token;
+  } else {
+   // Was already a tech key — drop it into the technology slot, leave
+   // the CCSS override on "Auto" (matches pre-split behavior of an empty
+   // override).
+   _migratedDisplayType=legacyValue;
+  }
  }
+ if(_migratedDisplayType){
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=_migratedDisplayType;
+  sel.value=_migratedDisplayType;
+  sel.dataset.lastStableValue=_migratedDisplayType;
+  if(sel.value===_migratedDisplayType) delete sel.dataset.pendingValue;
+ } else if(s.display_type){
+  // Token didn't parse to a known tech. Preserve the legacy behavior
+  // (worker receives the raw token) — better than silently dropping WRGB.
+  const sel=document.getElementById('meterDisplayType');
+  sel.dataset.pendingValue=String(s.display_type);
+  sel.value=String(s.display_type);
+  sel.dataset.lastStableValue=String(s.display_type);
+  if(sel.value===String(s.display_type)) delete sel.dataset.pendingValue;
+ }
+ // CCSS override: prefer the explicit new field when the server sent one,
+ // else fall back to the migrated token from the legacy display_type.
+ const _ccssOverride=(s.ccss_override!=null)?String(s.ccss_override):_migratedCcssOverride;
+ if(_ccssOverride){
+  const ccssSel=document.getElementById('meterCcssProfile');
+  if(ccssSel){
+   ccssSel.dataset.pendingValue=_ccssOverride;
+   ccssSel.value=_ccssOverride;
+   if(ccssSel.value===_ccssOverride) delete ccssSel.dataset.pendingValue;
+  }
+ }
+ // Refresh the "Auto" label now that the technology dropdown is populated.
+ meterRefreshCcssAutoLabel();
  if(s.target_gamut!=null){
   const savedTargetGamut=String(s.target_gamut||'auto').toLowerCase();
   document.getElementById('meterTargetGamut').value=(savedTargetGamut==='customd65')?'bt709':savedTargetGamut;

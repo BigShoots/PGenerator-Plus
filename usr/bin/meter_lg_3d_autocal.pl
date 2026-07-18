@@ -2388,6 +2388,12 @@ sub read_step_once {
  my $request_id=read_request_id($step);
  my $payload={
   display_type => $config->{"display_type"}||"lcd",
+  # Forward the operator's CCSS override to the per-step payload so the
+  # WebUI's meter session keeps the custom CCSS active through every patch.
+  # The display_type token is now a tech key (post-split); the override
+  # token is independently resolved on the server side via
+  # resolve_ccss_override().
+  ccss_override => $config->{"ccss_override"}||"",
   patch_r => int($step->{"r"}||0),
   patch_g => int($step->{"g"}||0),
   patch_b => int($step->{"b"}||0),

@@ -21074,6 +21074,12 @@ sub read_step_once {
 	 my $request_id=read_request_id($step);
 	 my $payload={
 	  display_type => $config->{"display_type"}||"lcd",
+	  # Forward the operator's CCSS override to the per-step payload so the
+	  # WebUI's meter session keeps the custom CCSS active through every
+	  # patch read. The display_type token is now always a tech key
+	  # (post-split); ccss_override is independently resolved server-side
+	  # via resolve_ccss_override().
+	  ccss_override => $config->{"ccss_override"}||"",
 	  patch_r => int($step->{"r"}||0),
 	  patch_g => int($step->{"g"}||0),
 	  patch_b => int($step->{"b"}||0),
@@ -21278,6 +21284,10 @@ my $state={
 			 requested_signal_mode=>$signal_mode,
 			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
 			 display_type=>$config->{"display_type"}||"lcd",
+			 # Echo the CCSS override into the run state so the WebUI can
+			 # display it on the in-progress screen (and verify it survived
+			 # the wizard snapshot path).
+			 ccss_override=>$config->{"ccss_override"}||"",
 		 configured_delay_ms=>int($config->{"delay_ms"}||1000),
 		 patch_insert=>$config->{"patch_insert"} ? JSON::PP::true : JSON::PP::false,
 		 full_workflow=>$full_workflow ? JSON::PP::true : JSON::PP::false,
