@@ -30489,6 +30489,36 @@ function meterFullAutoCalBeginReportData(skipPreCal){
  meterFullAutoCalArchiveReportData('started');
 }
 
+// Re-anchor the persisted report object to the run that is actually finishing.
+// A full run that reaches completion/report WITHOUT going through the
+// interactive start (resumed/adopted after a page reload, or otherwise driven
+// outside the wizard) never calls meterFullAutoCalBeginReportData(), so it
+// reuses whatever report object is left in localStorage. Observed failure: a
+// run reused a PRIOR run's object -- started_at frozen ~12h before the actual
+// calibration, pre_cal_skipped still null -- so the post-cal report showed no
+// valid "before" and was stamped with the wrong run's timing. Detect that
+// staleness (report predates this run's start, or has no start) and re-anchor a
+// fresh object to THIS run. Guarded on "no pre captured" so a run that DID run
+// the wizard Pre-Cal step never loses its before charts. Idempotent: after
+// anchoring, started_at == the run start, so it will not fire again.
+function meterFullAutoCalEnsureReportRun(runId,runStartedAt){
+ var d=meterFullAutoCalLoadReportData();
+ if(!d) return;
+ var runStart=Number(runStartedAt)||Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults&&meterFullAutoCalResults.first||{}).started_at)||0;
+ var reportStart=Number(d.started_at)||0;
+ var stale=(runStart>0&&reportStart>0&&reportStart<runStart-1000)||(!reportStart);
+ if(stale&&!meterFullAutoCalReportSetAnyData('pre')){
+  var fresh=meterFullAutoCalDefaultReportData();
+  fresh.run_id=runId||meterFullAutoCalRunId||d.run_id||null;
+  fresh.started_at=runStart||Date.now();
+  fresh.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||d.signal_mode||meterLgAutoCalRequestedSignalMode();
+  if(d.post) fresh.post=d.post;
+  if(d.stages&&typeof d.stages==='object') fresh.stages=d.stages;
+  meterFullAutoCalReportData=fresh;
+  meterFullAutoCalSaveReportData();
+ }
+}
+
 function meterFullAutoCalArchiveReportData(stage,extra){
  let payload=null;
  try{
@@ -31623,7 +31653,7 @@ function meterFullAutoCalReportEntries(){
    entries.push({title:'Pre-Cal '+item.label,snapshot:data&&data.pre?data.pre[item.key]:null});
   });
  }else if(hasPost){
-  entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal measurements were saved for this run. This usually means the Pre-Cal step was skipped or the page was running an older workflow before the report-state tracking was added.'});
+  entries.push({title:'Pre-Cal Measurements',notice:'No Pre-Cal (“before”) measurements were captured for this run. Pre-Cal charts are only recorded by the Full AutoCal wizard’s Pre-Cal step at the start of a run — a run that was resumed or adopted after a page reload, or standalone/manual series reads, are not captured into this report.'});
  }
  series.forEach(item=>{
   if(hasPost||!hasPre&&!anyPre) entries.push({title:'Post-Cal '+item.label,snapshot:data&&data.post?data.post[item.key]:null});
@@ -31700,6 +31730,9 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
 
 async function meterFullAutoCalGeneratePostReport(){
  meterFullAutoCalLoadReportData();
+ // Defensive: if this run reached the report without a fresh begin (resume/
+ // adopt path), don't let it capture post into a stale/foreign report object.
+ meterFullAutoCalEnsureReportRun(meterFullAutoCalRunId);
  const filename=meterDefaultExportFilename('report','pgenerator_full_autocal_report','html');
  const series=meterFullAutoCalReportSeries();
  const btn=document.getElementById('meterFullAutoCalPostReportBtn');
@@ -32237,6 +32270,9 @@ function meterFullAutoCalComplete(touchupStatus,options){
  const startedAt=Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults.first||{}).started_at)||Number(touchupStatus&&touchupStatus.started_at)||null;
  const runId=(touchupStatus&&(touchupStatus.full_autocal_run_id||touchupStatus.run_id))||meterFullAutoCalRunId||meterFullAutoCalNewRunId();
  meterFullAutoCalRunId=runId;
+ // Guard against reusing a stale/foreign report object (resume/adopt path that
+ // never ran beginReportData) before we stamp+archive the completion.
+ meterFullAutoCalEnsureReportRun(runId,startedAt);
  const status={
   ...(touchupStatus||{}),
   full_autocal:true,
@@ -32267,6 +32303,12 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterAutoCalPhase='complete';
  meterAutoCalRunning=true;
  meterAutoCalSetOverlay(true,status);
+ // The last profiling/touch-up patch (often a saturated node, e.g. blue) used
+ // to linger on the TV until the operator closed this complete modal (only
+ // meterAutoCalCloseCompleteAction posted a pattern stop). The standalone 3D
+ // path clears on its terminal branch; the full workflow returns before that,
+ // so clear here too the moment the completion modal appears.
+ meterClearDisplayPattern();
  toast('Full Auto Cal complete');
  // The greyscale autocal calibrates the 1D DPG against a 2.2 curve, so the
  // Target Gamma control sits at 2.2 during the run. Once the full workflow is
