@@ -2513,7 +2513,7 @@ sub webui_custom_series_steps_from_body (@) {
    $num{$ch}=$input_max if($num{$ch}>$input_max);
   }
   my $name="";
-  $name=$1 if($obj=~/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  $name=$1 if($obj=~/"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
   $name=~s/\\(.)/$1/g;
   $name=~s/[^A-Za-z0-9 ._%#()+-]//g;
   $name=substr($name,0,40);
@@ -5049,7 +5049,7 @@ sub webui_meter_settings_save (@) {
   hdr_bt2390 incl_lum sep_lum color_incl_lum simulate_spectro
  );
  my @parts;
- while($body=~/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
+ while($body=~/"(\w+)"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
   push @parts, "\"$1\":$2" if($allowed{$1});
  }
  my $safe="{".join(",",@parts)."}";
@@ -5068,7 +5068,7 @@ sub webui_meter_settings_save (@) {
  # preserve the stored value.
  foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
   my $posted="";
-  $posted=$1 if($safe=~/"$sticky"\s*:\s*("(?:[^"\\]|\\.)*")/);
+  $posted=$1 if($safe=~/"$sticky"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*")/);
   # A stale tab (older JS build) posts the custom-series blob EMPTY without
   # the dirty marker newer builds send. An empty blob only wins when the
   # session explicitly touched custom series; otherwise fall through to the
@@ -5084,11 +5084,11 @@ sub webui_meter_settings_save (@) {
    $existing=$candidate;
    last;
   }
-  if($existing=~/"$sticky"\s*:\s*("(?:[^"\\]|\\.)*")/) {
+  if($existing=~/"$sticky"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*")/) {
    my $val=$1;
    next if($posted_empty_stale && $val!~/\\"series\\":\[\{/);
    if($posted ne "") {
-    $safe=~s/"$sticky"\s*:\s*"(?:[^"\\]|\\.)*"/"$sticky":$val/;
+    $safe=~s/"$sticky"\s*:\s*"[^"\\]*(?:\\.[^"\\]*)*"/"$sticky":$val/;
    } else {
     $safe=~s/\}\s*$//;
     $safe.="," if($safe!~/\{\s*$/);
