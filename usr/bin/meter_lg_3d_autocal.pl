@@ -1734,9 +1734,9 @@ sub _trl_slope {
 }
 
 # Continuous-percent form of the matrix baseline drive (same domain as
-# gamut_matrix_output / neutral identity). Used only as documentation of the
-# residual's partner path; residual values are absolute drive deltas that
-# apply on top of this baseline at generate time.
+# gamut_matrix_output / neutral identity). Residuals are absolute drive
+# deltas applied ON TOP of this baseline at generate time, so they must be
+# computed relative to this baseline (not to the unity-LUT input signal).
 sub baseline_drive_pct {
  my ($model,$fr,$fg,$fb)=@_;
  $fr=clamp($fr,0,1); $fg=clamp($fg,0,1); $fb=clamp($fb,0,1);
@@ -1759,15 +1759,34 @@ sub baseline_drive_pct {
  return [ $fr*100, $fg*100, $fb*100 ];
 }
 
+# Saturation weight for residual / near-grey protection.
+# sat = (max-min)/max of input channels. Near greys stay matrix/identity so
+# residual trilinear leakage cannot destroy greyscale or push +x CIE.
+sub residual_sat_weight {
+ my ($sat)=@_;
+ $sat=0 if(!defined($sat) || $sat < 0);
+ return 0 if($sat <= 0.05);
+ return 1 if($sat >= 0.22);
+ return ($sat-0.05)/(0.22-0.05);
+}
+sub residual_node_sat {
+ my ($fr,$fg,$fb)=@_;
+ my $mx=$fr; $mx=$fg if($fg > $mx); $mx=$fb if($fb > $mx);
+ my $mn=$fr; $mn=$fg if($fg < $mn); $mn=$fb if($fb < $mn);
+ return ($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+}
+
 sub build_residual_grid {
  my ($model,$nodes,$config)=@_;
  return (undef,{reason=>"no interior nodes"}) if(ref($nodes) ne "ARRAY" || !@{$nodes});
- # Method-aware defaults: sparse hybrid/skeleton profiles need a STRONGER residual
- # layer than dense lattices or they collapse to matrix-like verification scores.
- # Cap is signal-domain drive fraction (0.30 = +-30% drive). Was 0.12 global.
+ # Method-aware defaults. Caps are drive-fraction deltas ON TOP of the matrix
+ # baseline (baseline-relative v3). Sparse hybrid/skeleton used to use 0.30
+ # with unity-relative residuals that then stacked on M(s) and overshot; with
+ # baseline-relative math a milder cap is correct.
  my $method_l=lc((ref($config) eq "HASH" ? ($config->{"method"}||$model->{"method"}||"") : "")||"");
  my $sparse_volume=($method_l eq "hybrid" || $method_l eq "skeleton") ? 1 : 0;
- my $default_cap=$sparse_volume ? 0.30 : 0.18;
+ my $has_fm=(ref($model->{"forward_model"}) eq "HASH") ? 1 : 0;
+ my $default_cap=$has_fm ? 0.15 : ($sparse_volume ? 0.18 : 0.12);
  my $cap=(ref($config) eq "HASH" && ($config->{"solve_residual_cap"}||0) > 0)
   ? $config->{"solve_residual_cap"}+0 : $default_cap;
  my $gamma=$model->{"target_gamma"};
@@ -1796,16 +1815,13 @@ sub build_residual_grid {
  my $min_y=(ref($config) eq "HASH" && defined($config->{"solve_residual_min_y"}) && ($config->{"solve_residual_min_y"}+0) >= 0)
   ? $config->{"solve_residual_min_y"}+0 : 0.15;
  my %corr; my %raw;
- my ($used,$skipped,$capped,$shrunk)=(0,0,0,0);
+ my ($used,$skipped,$capped,$shrunk,$fm_nodes)=(0,0,0,0,0);
  my ($rms_sum,$rms_n,$max_abs,$applied_sum,$applied_n)=(0,0,0,0,0);
  my ($err_y_sum,$err_y_n)=(0,0);
  foreach my $n (@{$nodes}) {
   my ($fr,$fg,$fb)=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $key=join(":",$fidx{sprintf("%.4f",$fr)},$fidx{sprintf("%.4f",$fg)},$fidx{sprintf("%.4f",$fb)});
   # Exact neutrals stay zero -- 1D greyscale / DPG owns the grey ramp.
-  # Everything else (pure primaries, secondaries, interiors) uses residual so
-  # hybrid/skeleton/lattice measurements actually shape the cube. Matrix is
-  # only the baseline; volume residual is not "matrix owns primaries".
   my $is_neutral=(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001);
   if($is_neutral) { $corr{$key}=[0,0,0]; next; }
   # Limited-range pure primary: ~ (0.92, 0.06, 0.06). Count channels above
@@ -1825,7 +1841,12 @@ sub build_residual_grid {
   if($n_hot == 0) { $corr{$key}=[0,0,0]; next; } # black
   my $xyz_m=$n->{"xyz"};
   if(ref($xyz_m) ne "ARRAY" || ($xyz_m->[1]||0) < $min_y) { $skipped++; next; }
-  # Target appearance for this continuous signal (same rules as generate).
+  my $sat=residual_node_sat($fr,$fg,$fb);
+  my $sat_w=residual_sat_weight($sat);
+  # Near-greys: force zero residual so pure greyscale and low-sat neutrals
+  # stay on the white-preserving matrix / identity (greyscale ownership).
+  if($sat_w <= 0) { $corr{$key}=[0,0,0]; next; }
+  # Target appearance for this continuous signal (same rules as post-check).
   my $cw=$model->{"chromatic_white_y"} || $white_y;
   my $xyz_t;
   if(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001 && ref($model->{"white_axis"}) eq "HASH") {
@@ -1834,52 +1855,64 @@ sub build_residual_grid {
    $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,$model->{"target_gamut"});
   }
   if(ref($xyz_t) ne "ARRAY") { $skipped++; next; }
-  # err = target - measured: too bright => negative => reduce drive.
   my $delta=vec_sub($xyz_t,$xyz_m);
   $err_y_sum += ($delta->[1]||0)*($delta->[1]||0); $err_y_n++;
-  my $dlin=matrix_mul_vec($peak_inverse,$delta);
-  my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
-  my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
-  my @c;
+  my $seed=baseline_drive_pct($model,$fr,$fg,$fb);
   my @f=($fr,$fg,$fb);
-  for(my $ch=0;$ch<3;$ch++) {
-   # Monochrome ramps: residual ONLY on the dominant channel. Full peak_inverse
-   # on pure red invents huge +G/+B "desat" that wrecks limited 100% R/G once
-   # those codes land at (0.92, 0.06, 0.06). Axis reads still fix primary
-   # luminance/tracking via the dominant-channel delta.
-   my $dsig=0;
-   if(!$is_mono || $ch == $dom_ch) {
-    my $slope=_trl_slope($f[$ch],$gamma,$white_y,$black_y);
-    # For mono, use dominant channel signal for slope even if pedestal.
-    my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
-    $slope=_trl_slope($sf,$gamma,$white_y,$black_y) if($is_mono && $dom_ch >= 0);
-    $dsig=$dlin->[$ch]/$slope;
-    # Mono: prefer Y-error projected on dominant primary (more stable on WRGB
-    # than full 3x3 inverse which dumps chroma into off-axis channels).
-    if($is_mono && $dom_ch == $ch) {
-     my $peak_y=0;
-     if(ref($model->{"peak_y"}) eq "HASH") {
-      my $pk=$model->{"peak_y"}{($ch==0?"red":($ch==1?"green":"blue"))};
-      $peak_y=$pk+0 if(defined($pk) && $pk+0 > 0);
-     }
-     if($peak_y > 0) {
-      my $dY=($xyz_t->[1]||0)-($xyz_m->[1]||0);
-      # relative linear error -> signal via local slope of Y~s^g * peak
-      my $dlin_y=$dY/$peak_y;
-      $dsig=$dlin_y/$slope;
+  my @ideal_pct;
+  # Preferred: invert the measured multi-level forward model to the target,
+  # seeded at the matrix baseline. Residual = ideal - baseline (baseline-
+  # consistent). Fallback: unity-signal peak_inverse residual, then rebased
+  # onto the matrix baseline so generate (M(s)+res) matches the intent.
+  if($has_fm) {
+   my $ideal=fm_invert($model->{"forward_model"},$model,$xyz_t,$seed);
+   @ideal_pct=map { clamp($ideal->[$_],0,100) } (0..2);
+   $fm_nodes++;
+  } else {
+   my $dlin=matrix_mul_vec($peak_inverse,$delta);
+   my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
+   my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
+   for(my $ch=0;$ch<3;$ch++) {
+    my $dsig=0;
+    if(!$is_mono || $ch == $dom_ch) {
+     my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
+     my $slope=_trl_slope($sf,$gamma,$white_y,$black_y);
+     $dsig=$dlin->[$ch]/$slope;
+     if($is_mono && $dom_ch == $ch) {
+      my $peak_y=0;
+      if(ref($model->{"peak_y"}) eq "HASH") {
+       my $pk=$model->{"peak_y"}{($ch==0?"red":($ch==1?"green":"blue"))};
+       $peak_y=$pk+0 if(defined($pk) && $pk+0 > 0);
+      }
+      if($peak_y > 0) {
+       my $dY=($xyz_t->[1]||0)-($xyz_m->[1]||0);
+       $dsig=($dY/$peak_y)/$slope;
+      }
      }
     }
+    if($floor > 0) {
+     my $a=abs($dsig);
+     if($a <= $floor) { $dsig=0; $shrunk++; }
+     else { $dsig=($dsig > 0) ? ($dsig-$floor) : ($dsig+$floor); }
+    }
+    # Unity-domain ideal drive, then rebased to matrix baseline below.
+    $ideal_pct[$ch]=clamp($f[$ch]*100 + $dsig*100,0,100);
    }
+  }
+  # Mono: residual only on the dominant channel (no off-axis desat floods).
+  if($is_mono && $dom_ch >= 0) {
+   for(my $ch=0;$ch<3;$ch++) {
+    $ideal_pct[$ch]=$seed->[$ch] if($ch != $dom_ch);
+   }
+  }
+  my @c;
+  for(my $ch=0;$ch<3;$ch++) {
+   my $dsig=(($ideal_pct[$ch]-$seed->[$ch])/100.0) * $sat_w;
    my $a=abs($dsig);
    $rms_sum+=$dsig*$dsig; $rms_n++;
    $max_abs=$a if($a > $max_abs);
-   if($floor > 0) {
-    if($a <= $floor) { $dsig=0; $shrunk++; }
-    else { $dsig=($dsig > 0) ? ($dsig-$floor) : ($dsig+$floor); }
-   }
    if(abs($dsig) > $cap) { $dsig=($dsig > 0) ? $cap : -$cap; $capped++; }
    $applied_sum+=$dsig*$dsig; $applied_n++;
-   # Store +dsig: positive residual increases baseline drive percent.
    push @c,$dsig;
   }
   $corr{$key}=\@c;
@@ -1921,7 +1954,7 @@ sub build_residual_grid {
   }
  }
  my $report={
-  residual_definition => "target_relative_v2",
+  residual_definition => $has_fm ? "measured_inverse_baseline_v3" : "target_relative_baseline_v3",
   nodes_used => $used,
   nodes_skipped_dark => $skipped,
   channels_capped => $capped,
@@ -1935,6 +1968,9 @@ sub build_residual_grid {
   residual_applied_rms => $post_n ? sqrt($post_sum/$post_n) : ($applied_n ? sqrt($applied_sum/$applied_n) : 0),
   residual_applied_max => $post_max,
   residual_target_err_y_rms => $err_y_n ? sqrt($err_y_sum/$err_y_n) : 0,
+  residual_fm_nodes => $fm_nodes,
+  residual_baseline => "matrix",
+  residual_sat_taper => 1,
   axis_levels => scalar(@fracs),
   residual_profile => $sparse_volume ? "sparse_volume" : "dense",
  };
@@ -1949,13 +1985,11 @@ sub apply_residual_correction {
  my $corr=$grid->{"corr"};
  my $n=scalar(@{$fracs});
  return $out if($n < 2 || $size < 2);
- # Residual is measured under a UNITY 3D LUT where input == drive. Each node
- # residual is therefore "when this signal is requested, add this drive delta".
- # Lookup MUST use LUT INPUT coords (r,g,b), then ADD onto the matrix baseline
- # drives. Looking up at matrix output drives (previous behaviour) missed the
- # residual almost everywhere once the gamut matrix remapped secondaries
- # (e.g. yellow input -> matrix drives ~ (99%,99%,35%) which is nowhere near
- # the measured 100/100/0 residual node) -- hybrid scored like matrix.
+ # Residuals are baseline-relative drive deltas (ideal - matrix_baseline) and
+ # are looked up at LUT INPUT coords so secondaries hit the measured nodes
+ # after the gamut matrix remaps drives. A second saturation taper at apply
+ # time kills trilinear leakage of pure-primary residuals onto near-greys
+ # (which was destroying greyscale / pushing CIE +x between measured nodes).
  my $den=$size-1; $den=1 if($den < 1);
  my @f=(
   clamp(($r+0)/$den,0,1),
@@ -1980,7 +2014,14 @@ sub apply_residual_correction {
   next if(ref($c) ne "ARRAY");
   for(my $ch=0;$ch<3;$ch++){ $add[$ch]+=$w*$c->[$ch]; }
  }}}
- return [ map { $out->[$_]+100*$add[$_] } (0..2) ];
+ # Inline sat taper (no helper calls) so regression tests that extract this
+ # sub alone still parse, and near-greys cannot inherit primary residuals.
+ my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
+ my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
+ my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+ my $sat_w=($sat <= 0.05) ? 0 : (($sat >= 0.22) ? 1 : (($sat-0.05)/(0.22-0.05)));
+ return $out if($sat_w <= 0);
+ return [ map { $out->[$_]+100*$add[$_]*$sat_w } (0..2) ];
 }
 
 sub run_solve_only {
@@ -2022,21 +2063,26 @@ sub run_solve_only {
  my $model=model_from_readings("matrix",\@profile,$config);
  my $solve_report={ mode=>"matrix_only" };
  if(!$config->{"solve_matrix_only"}) {
+  # Hybrid/skeleton: build multi-level forward model ONLY to derive residual
+  # deltas at measured nodes (ideal_drive - matrix_baseline). Do NOT leave
+  # forward_model on the generate path -- per-node fm_invert over the whole
+  # 33^3 cube over-corrected mid-sats / near-greys and lost to matrix on-panel.
   my $fm=(forward_model_method($config->{"method"}) && !$config->{"solve_disable_forward_model"})
    ? build_measured_forward_model($model,\@nodes,$config) : undef;
-  if(ref($fm) eq "HASH") {
-   $model->{"forward_model"}=$fm;
-   $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
-    forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
-    nodes_used=>scalar(@nodes) };
-  } else {
-   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-   if($grid) {
-    $model->{"residual_grid"}=$grid;
-    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+  $model->{"forward_model"}=$fm if(ref($fm) eq "HASH");
+  my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+  delete $model->{"forward_model"}; # generate uses matrix + residual only
+  if($grid) {
+   $model->{"residual_grid"}=$grid;
+   if(ref($fm) eq "HASH") {
+    $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+     nodes_used=>scalar(@nodes), %{$report} };
    } else {
-    $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
    }
+  } else {
+   $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
   }
  }
  $state->{"message"}="Generating LUT";
@@ -4112,20 +4158,24 @@ eval {
   }
   $state->{"lattice_nodes"}=scalar(@nodes);
   if(!$config->{"solve_matrix_only"}) {
+   # Hybrid/skeleton: FM used only to seed baseline-relative residuals; generate
+   # is always white-preserving matrix + residual (no per-node fm_invert).
    my $fm=(forward_model_method($method) && !$config->{"solve_disable_forward_model"})
     ? build_measured_forward_model($model,\@nodes,$config) : undef;
-   if(ref($fm) eq "HASH") {
-    $model->{"forward_model"}=$fm;
-    $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
-     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"} };
-   } else {
-    my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-    if($grid) {
-     $model->{"residual_grid"}=$grid;
-     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+   $model->{"forward_model"}=$fm if(ref($fm) eq "HASH");
+   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+   delete $model->{"forward_model"};
+   if($grid) {
+    $model->{"residual_grid"}=$grid;
+    if(ref($fm) eq "HASH") {
+     $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+      forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+      (ref($report) eq "HASH" ? %{$report} : ()) };
     } else {
-     $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
     }
+   } else {
+    $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
    }
   } else {
    $state->{"lattice_solve"}={ mode=>"matrix_only" };
