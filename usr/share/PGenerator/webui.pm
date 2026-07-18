@@ -10030,7 +10030,16 @@ body.ui-offline .offline-mask{display:flex}
 .meter-autocal-mask{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 body.meter-autocal-active .dashboard,body.meter-autocal-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 body.meter-autocal-active .meter-autocal-mask{display:flex}
-.meter-autocal-card{width:min(440px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px}
+.meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box;overflow-x:hidden}
+/* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
+#meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+#meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row{display:flex;flex-direction:column;align-items:stretch;gap:8px;width:100%;max-width:100%;min-width:0}
+#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row > div{min-width:0;width:100%}
+#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row > button{align-self:flex-start}
+/* CCSS editor/create must sit above the AutoCal mask (z 9000) and outside
+   the .dashboard filter/opacity stacking context while AutoCal is active. */
+#meterCcssCreateModal,#customCcssEditorModal{z-index:10050!important}
 .meter-autocal-title{font-size:1rem;font-weight:700;margin-bottom:8px;color:var(--text)}
 .meter-autocal-status{font-size:.82rem;color:var(--text2);line-height:1.4;margin-bottom:12px}
 .meter-autocal-progress{height:8px;border-radius:999px;background:#0d0d15;border:1px solid var(--border);overflow:hidden;margin-bottom:12px}
@@ -11313,7 +11322,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <!-- CCSS create/editor: reparented to document.body on open so they beat the AutoCal mask (same trap as spectro setup when nested under .dashboard). -->
+  <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(520px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div>
@@ -11355,7 +11365,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
@@ -11952,16 +11962,16 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
-	   <div class="field" style="max-width:420px">
+	   <div class="field">
 	    <label>Panel technology</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
 	   </div>
-	   <div class="field" style="max-width:420px;display:flex;gap:6px;align-items:flex-end">
-	    <div style="flex:1 1 auto">
+	   <div class="field meter-autocal-ccss-row">
+	    <div>
 	     <label>Meter profile (CCSS)</label>
 	     <select id="meterAutoCalCcssProfile"><option value="">Auto (technology default)</option></select>
 	    </div>
-	    <button type="button" id="meterAutoCalCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile" style="flex:0 0 auto">Profile my TV&hellip;</button>
+	    <button type="button" id="meterAutoCalCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile">Profile my TV&hellip;</button>
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
@@ -21361,9 +21371,18 @@ function meterRenderCcssCreateChoices(){
  if(startBtn) startBtn.disabled=!meterCcssCreateCanStart();
 }
 
+// Fixed modals that live under .dashboard get trapped under the AutoCal mask
+// because body.meter-autocal-active dims/filters the whole dashboard (stacking
+// context). Reparent to document.body before show so z-index can win.
+function meterEnsureModalOnBody(modal){
+ if(!modal||!document.body) return modal;
+ if(modal.parentElement!==document.body) document.body.appendChild(modal);
+ return modal;
+}
+
 function meterOpenCcssCreateModal(){
  meterCloseCustomCcssEditor();
- const modal=document.getElementById('meterCcssCreateModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterCcssCreateModal'));
  if(!modal) return;
  const createSel=document.getElementById('meterCcssCreateDisplayType');
  if(createSel){
@@ -39477,7 +39496,7 @@ function _ccssEditorBaselineKey(){
  return customs;
 }
 function meterOpenCustomCcssEditor(){
- const modal=document.getElementById('customCcssEditorModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('customCcssEditorModal'));
  if(!modal) return;
  _ccssEditorBaseline=_ccssEditorBaselineKey();
  loadCustomCcssList();
