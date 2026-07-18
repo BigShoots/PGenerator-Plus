@@ -26597,7 +26597,7 @@ function meterExportCustomSeries(format){
 // index column; CalMAN/generic files are bare "R,G,B" 8-bit triplets. Bit depth
 // comes from the header when present, else is inferred from the value magnitude
 // (any code > 255 => 10-bit). Returns {patches, bits}.
-function meterCustomSeriesParseCsv(text){
+function meterCustomSeriesParseCsv(text,bitsHint){
  const lines=String(text||'').split(/\r\n|\r|\n/);
  let headerBits=0;
  const rows=[];
@@ -26628,15 +26628,22 @@ function meterCustomSeriesParseCsv(text){
   if(stimMatch) name=stimMatch[1].trim();
   rows.push({rgb:rgb,name:name});
  });
+ // Bit-depth precedence: a "# Bitdepth" header wins; then the caller's hint
+ // (derived from the filename, e.g. "..._10bit_10b_legal.csv"); then
+ // auto-detect from the max code. The hint is ESSENTIAL for low-stimulus
+ // 10-bit files whose codes all fall <=255 (e.g. a 10% grid) -- auto-detect
+ // would wrongly call them 8-bit and quadruple every code.
  let bits=headerBits;
+ if(!bits && (bitsHint===8||bitsHint===10||bitsHint===12)) bits=bitsHint;
  if(!bits){
   const maxCode=rows.reduce((m,r)=>Math.max(m,r.rgb[0],r.rgb[1],r.rgb[2]),0);
   bits=(maxCode>255)?10:8;
  }
- const tenBit=(bits===10);
+ const tenBit=(bits>=10);
+ const scale=(bits===12)?0.25:1;   // store is 10-bit; scale 12-bit codes down
  const patches=rows.slice(0,200).map((r,idx)=>{
   const raw=tenBit
-   ?{name:r.name,r10:r.rgb[0],g10:r.rgb[1],b10:r.rgb[2]}
+   ?{name:r.name,r10:Math.round(r.rgb[0]*scale),g10:Math.round(r.rgb[1]*scale),b10:Math.round(r.rgb[2]*scale)}
    :{name:r.name,r8:r.rgb[0],g8:r.rgb[1],b8:r.rgb[2]};
   return meterCustomSeriesSanitizePatch(raw,idx);
  });
@@ -26657,7 +26664,15 @@ function meterImportCustomSeriesCsv(evt){
  const reader=new FileReader();
  reader.onload=()=>{
   try{
-   const parsed=meterCustomSeriesParseCsv(String(reader.result||''));
+   // Filename bit-depth hint (e.g. "..._10bit_10b_legal.csv") — the CSVs carry
+   // no "# Bitdepth" header, and low-stimulus 10-bit files would otherwise
+   // auto-detect as 8-bit and quadruple every code.
+   const _bn=String((file&&file.name)||'').toLowerCase();
+   let _bitsHint=0;
+   if(/12\s*-?\s*bit/.test(_bn)||/\b12b(it)?[_\-. ]/.test(_bn)) _bitsHint=12;
+   else if(/10\s*-?\s*bit/.test(_bn)||/\b10b(it)?[_\-. ]/.test(_bn)) _bitsHint=10;
+   else if(/8\s*-?\s*bit/.test(_bn)||/\b8b(it)?[_\-. ]/.test(_bn)) _bitsHint=8;
+   const parsed=meterCustomSeriesParseCsv(String(reader.result||''),_bitsHint);
    if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
    meterCustomSeriesEditor.patches=parsed.patches;
    meterCustomSeriesEditorUnsaved=true;
