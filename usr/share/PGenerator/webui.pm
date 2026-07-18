@@ -26695,8 +26695,11 @@ function meterImportDetectBits(name){
  return 10;
 }
 function meterImportDetectMode(name){
+ // Names delimit tokens with underscores (e.g. "..._limited_HDR_10bit"), and
+ // "_" is a \w char so \bhdr\b never matches there. Treat any non-letter
+ // (start/end/underscore/space/digit) as a token boundary.
  const n=String(name||'').toLowerCase();
- if(/\bhdr\b|hdr10|pq\b|st\.?2084|\b2084\b|hlg\b|smpte2084/.test(n)) return 'hdr';
+ if(/(^|[^a-z])(hdr|pq|hlg|st2084|smpte2084|2084)([^a-z]|$)/.test(n)) return 'hdr';
  return 'sdr';
 }
 function meterImportDetectRange(name){
