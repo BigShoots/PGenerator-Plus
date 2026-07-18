@@ -5034,6 +5034,35 @@ sub _webui_meter_settings_boot_id (@) {
  return $boot_id;
 }
 
+# Linear (non-regex) extractor for a JSON string value. The generic key/value
+# regex in webui_meter_settings_save uses a repeated group that hits Perl's
+# "Complex regular subexpression recursion limit (32766) exceeded" on large
+# escaped strings (a multi-series custom_series_json blob has tens of thousands
+# of escaped quotes), silently dropping the value. Scan for the closing quote
+# by hand instead so blobs of any size round-trip. Returns the quoted value
+# (including the surrounding quotes) or undef.
+sub _webui_json_str_value (@) {
+ my ($src,$key)=@_;
+ return undef if(!defined($src) || $src eq "");
+ my $anchor="\"$key\"";
+ my $ki=index($src,$anchor);
+ return undef if($ki < 0);
+ my $ci=index($src,":",$ki+length($anchor));
+ return undef if($ci < 0);
+ my $len=length($src);
+ my $i=$ci+1;
+ $i++ while($i < $len && substr($src,$i,1)=~/\s/);
+ return undef unless($i < $len && substr($src,$i,1) eq '"');
+ my $start=$i; $i++;
+ while($i < $len) {
+  my $c=substr($src,$i,1);
+  if($c eq "\\") { $i+=2; next; }
+  if($c eq '"') { return substr($src,$start,$i-$start+1); }
+  $i++;
+ }
+ return undef;
+}
+
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
@@ -5041,7 +5070,7 @@ sub webui_meter_settings_save (@) {
 	 display_type target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port grey_patch_profiles_json custom_series_json custom_series_dirty
+    refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
@@ -5066,35 +5095,37 @@ sub webui_meter_settings_save (@) {
  # running old JS silently dropped custom_series_json on every save. If the
  # incoming body omits one of these keys but the stored settings carry it,
  # preserve the stored value.
+ # Big JSON-blob keys (custom_series_json, grey_patch_profiles_json) are handled
+ # OUTSIDE the generic regex above (removed from %allowed) because that regex
+ # dies on large escaped strings (Perl 32766 recursion limit) -- the cause of
+ # large/many custom series silently "disappearing". Extract + preserve them by
+ # linear scan, then append to $safe.
  foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
-  my $posted="";
-  $posted=$1 if($safe=~/"$sticky"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*")/);
-  # A stale tab (older JS build) posts the custom-series blob EMPTY without
-  # the dirty marker newer builds send. An empty blob only wins when the
-  # session explicitly touched custom series; otherwise fall through to the
-  # stored-value preservation below so open old tabs can't wipe user data.
-  my $posted_empty_stale=($sticky eq "custom_series_json" && $posted ne "" && $posted=~/\\"series\\":\[\]/ && $body!~/"custom_series_dirty"\s*:\s*true/) ? 1 : 0;
-  next if($posted ne "" && !$posted_empty_stale);
-  my $existing="";
-  foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
-   next unless(-f $path);
-   my $candidate="";
-   if(open(my $fh,"<",$path)) { local $/; $candidate=<$fh>; close($fh); }
-   next unless($candidate=~/"$sticky"\s*:/);
-   $existing=$candidate;
-   last;
-  }
-  if($existing=~/"$sticky"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*")/) {
-   my $val=$1;
-   next if($posted_empty_stale && $val!~/\\"series\\":\[\{/);
-   if($posted ne "") {
-    $safe=~s/"$sticky"\s*:\s*"[^"\\]*(?:\\.[^"\\]*)*"/"$sticky":$val/;
-   } else {
-    $safe=~s/\}\s*$//;
-    $safe.="," if($safe!~/\{\s*$/);
-    $safe.="\"$sticky\":$val}";
+  my $posted=_webui_json_str_value($body,$sticky);
+  $posted="" if(!defined($posted));
+  # A stale tab (older JS build) posts the custom-series blob EMPTY without the
+  # dirty marker newer builds send. An empty blob only wins when the session
+  # explicitly touched custom series; otherwise preserve the stored value so an
+  # open old tab can't wipe user data.
+  my $posted_empty_stale=($sticky eq "custom_series_json" && $posted ne "" && index($posted,'\\"series\\":[]')>=0 && $body!~/"custom_series_dirty"\s*:\s*true/) ? 1 : 0;
+  my $value_to_write="";
+  if($posted ne "" && !$posted_empty_stale) {
+   $value_to_write=$posted;
+  } else {
+   foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
+    next unless(-f $path);
+    my $candidate="";
+    if(open(my $fh,"<",$path)) { local $/; $candidate=<$fh>; close($fh); }
+    my $sv=_webui_json_str_value($candidate,$sticky);
+    next unless(defined($sv) && $sv ne "");
+    next if($posted_empty_stale && index($sv,'\\"series\\":[{')<0);
+    $value_to_write=$sv; last;
    }
   }
+  next if($value_to_write eq "");
+  $safe=~s/\}\s*$//;
+  $safe.="," if($safe!~/\{\s*$/);
+  $safe.="\"$sticky\":$value_to_write}";
  }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
  my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
