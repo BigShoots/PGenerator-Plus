@@ -26883,6 +26883,19 @@ function meterImportCcfxPatch(p,bits,range,idx){
  }
  return meterCustomSeriesSanitizePatch(raw,idx);
 }
+// Most CCFX ColorDefinitions are DataType="RGB" (Data1/2/3 = RGB percentages),
+// but some sets (e.g. "SG Fleshtones") are DataType="XnYnZn" — normalized XYZ
+// tristimulus (Y=1 at reference white, D65). Convert those to Rec.709/sRGB
+// gamma-encoded RGB percentages so they import as real colours; treating XYZ as
+// RGB% made every fleshtone patch read as near-black. Chromaticity is preserved
+// by the inverse matrix; luminance rides the sRGB OETF.
+function meterCcfxXyzToRgbPct(X,Y,Z){
+ const r= 3.2406*X - 1.5372*Y - 0.4986*Z;
+ const g=-0.9689*X + 1.8758*Y + 0.0415*Z;
+ const b= 0.0557*X - 0.2040*Y + 1.0570*Z;
+ const enc=(v)=>{ v=Math.max(0,Math.min(1,v)); return (v<=0.0031308?12.92*v:1.055*Math.pow(v,1/2.4)-0.055)*100; };
+ return [enc(r),enc(g),enc(b)];
+}
 function meterImportParseCcfx(text){
  let xml=String(text||'').replace(/^﻿/,'').replace(/<\?xml[\s\S]*?\?>/i,'');
  const doc=new DOMParser().parseFromString(xml,'application/xml');
@@ -26896,10 +26909,12 @@ function meterImportParseCcfx(text){
   const patches=[];
   for(let j=0;j<defs.length;j++){
    const d=defs[j];
-   patches.push({name:d.getAttribute('Name')||('#'+(j+1)),
-    r:parseFloat(d.getAttribute('Data1'))||0,
-    g:parseFloat(d.getAttribute('Data2'))||0,
-    b:parseFloat(d.getAttribute('Data3'))||0});
+   const dt=String(d.getAttribute('DataType')||'RGB').toUpperCase();
+   const d1=parseFloat(d.getAttribute('Data1'))||0;
+   const d2=parseFloat(d.getAttribute('Data2'))||0;
+   const d3=parseFloat(d.getAttribute('Data3'))||0;
+   const rgb=(dt==='XNYNZN'||dt==='XYZ')?meterCcfxXyzToRgbPct(d1,d2,d3):[d1,d2,d3];
+   patches.push({name:d.getAttribute('Name')||('#'+(j+1)),r:rgb[0],g:rgb[1],b:rgb[2]});
   }
   if(patches.length) sets.push({name:nm,patches:patches});
  }
