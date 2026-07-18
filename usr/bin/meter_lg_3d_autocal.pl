@@ -1470,27 +1470,39 @@ sub _fm_vol_axis {
  }
  return ($n-2,1);
 }
+# Non-additivity correction at an arbitrary drive. Sparse grid trilinear used
+# to DROP missing cell corners without renormalising, which under-reported
+# volume non-additivity almost everywhere off the measured lattice and made
+# the inverse invent bogus chroma (CIE +x / 25% sat blow-ups). Inverse-distance
+# weighting over the actual measured non-additive samples uses every volume
+# read and degrades gracefully off-grid.
+sub fm_nonadd_corr {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $pts=$fm->{"nonadd_samples"};
+ return [0,0,0] if(ref($pts) ne "ARRAY" || !@{$pts});
+ my ($sw,@acc)=(0,0,0,0);
+ foreach my $p (@{$pts}) {
+  my $f=$p->{"f"}; my $d=$p->{"d"};
+  next if(ref($f) ne "ARRAY" || ref($d) ne "ARRAY");
+  my $d2=0;
+  for my $ch (0..2) {
+   my $df=($f->[$ch]||0)-($ch==0?$dr:($ch==1?$dg:$db));
+   $d2+=$df*$df;
+  }
+  if($d2 < 1e-12) { return [ $d->[0], $d->[1], $d->[2] ]; }
+  # Power-2 IDW; soft radius keeps far skeleton greys from dominating a local mix.
+  my $w=1.0/($d2*$d2 + 1e-8);
+  $sw+=$w;
+  for my $ch (0..2) { $acc[$ch]+=$w*($d->[$ch]||0); }
+ }
+ return [0,0,0] if($sw <= 0);
+ return [ $acc[0]/$sw, $acc[1]/$sw, $acc[2]/$sw ];
+}
 sub fm_forward {
  my ($fm,$dr,$dg,$db)=@_;
  my $add=fm_additive($fm,$dr,$dg,$db);
- my $vlv=$fm->{"vol_levels"}; my $na=$fm->{"nonadd"};
- my $n=scalar(@{$vlv});
- return $add if($n < 2 || !%{$na});
- my ($i0,$ti)=_fm_vol_axis($vlv,$dr);
- my ($j0,$tj)=_fm_vol_axis($vlv,$dg);
- my ($k0,$tk)=_fm_vol_axis($vlv,$db);
- my @corr=(0,0,0);
- foreach my $di (0,1) { foreach my $dj (0,1) { foreach my $dk (0,1) {
-  my $w=($di?$ti:1-$ti)*($dj?$tj:1-$tj)*($dk?$tk:1-$tk);
-  next if($w <= 0);
-  my $ii=$i0+$di; $ii=$n-1 if($ii > $n-1);
-  my $jj=$j0+$dj; $jj=$n-1 if($jj > $n-1);
-  my $kk=$k0+$dk; $kk=$n-1 if($kk > $n-1);
-  my $c=$na->{"$ii:$jj:$kk"};
-  next if(ref($c) ne "ARRAY");
-  for my $ch (0..2) { $corr[$ch]+=$w*$c->[$ch]; }
- }}}
- return [ $add->[0]+$corr[0], $add->[1]+$corr[1], $add->[2]+$corr[2] ];
+ my $corr=fm_nonadd_corr($fm,$dr,$dg,$db);
+ return [ $add->[0]+$corr->[0], $add->[1]+$corr->[1], $add->[2]+$corr->[2] ];
 }
 sub build_measured_forward_model {
  my ($model,$nodes,$config)=@_;
@@ -1498,14 +1510,12 @@ sub build_measured_forward_model {
  my $black=$model->{"black"}||[0,0,0];
  my $mono_thr=0.08;
  my @ramp_h=({},{},{});           # ch -> { level(frac) => xyz }
- my %vol_lvl;
  foreach my $n (@{$nodes}) {
   my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
   my ($hot,$dom)=(0,-1);
   for my $ch (0..2) { if($f[$ch] > $mono_thr) { $hot++; $dom=$ch; } }
   $ramp_h[$dom]{sprintf("%.4f",$f[$dom])}=$xyz if($hot==1);
-  $vol_lvl{sprintf("%.4f",$f[0])}=1; $vol_lvl{sprintf("%.4f",$f[1])}=1; $vol_lvl{sprintf("%.4f",$f[2])}=1;
  }
  my @ramp;
  for my $ch (0..2) {
@@ -1514,31 +1524,32 @@ sub build_measured_forward_model {
   my @lv=sort { $a <=> $b } map { $_+0 } keys %{$ramp_h[$ch]};
   $ramp[$ch]=[ map { [ $_, $ramp_h[$ch]{sprintf("%.4f",$_)} ] } @lv ];
  }
- my @vlv=sort { $a <=> $b } map { $_+0 } keys %vol_lvl;
- my %vidx; for(my $i=0;$i<@vlv;$i++) { $vidx{sprintf("%.4f",$vlv[$i])}=$i; }
- my $fm={ black=>$black, ramp=>\@ramp, vol_levels=>\@vlv, nonadd=>{}, ramp_levels=>scalar(@{$ramp[0]}) };
- # Volume non-additivity: residual = measured - additive at each measured node.
+ my $fm={ black=>$black, ramp=>\@ramp, nonadd_samples=>[], ramp_levels=>scalar(@{$ramp[0]}) };
+ # Volume non-additivity samples: measured - additive at every profiled node.
+ # Pure mono ramps are already in the additive model (nonadd ~0); still store
+ # mixed / grey / secondary nodes so volume reads actually shape the inverse.
  my ($na_sum,$na_n)=(0,0);
  foreach my $n (@{$nodes}) {
   my @f=($n->{"fr"},$n->{"fg"},$n->{"fb"});
   my $xyz=$n->{"xyz"}; next if(ref($xyz) ne "ARRAY");
   my $add=fm_additive($fm,@f);
-  my $key=join(":",$vidx{sprintf("%.4f",$f[0])},$vidx{sprintf("%.4f",$f[1])},$vidx{sprintf("%.4f",$f[2])});
   my $d=vec_sub($xyz,$add);
-  $fm->{"nonadd"}{$key}=$d;
-  $na_sum += ($d->[0]**2+$d->[1]**2+$d->[2]**2); $na_n++;
+  my $mag2=($d->[0]**2+$d->[1]**2+$d->[2]**2);
+  # Skip pure mono (already in ramps) unless residual is material (noise).
+  my ($hot)=(0);
+  for my $ch (0..2) { $hot++ if($f[$ch] > $mono_thr); }
+  next if($hot <= 1 && $mag2 < 0.05);
+  push @{$fm->{"nonadd_samples"}},{ f=>[$f[0],$f[1],$f[2]], d=>$d };
+  $na_sum+=$mag2; $na_n++;
  }
  $fm->{"nonadd_rms"}=$na_n ? sqrt($na_sum/$na_n) : 0;
- $fm->{"vol_axis_levels"}=scalar(@vlv);
+ $fm->{"vol_axis_levels"}=$na_n;
+ $fm->{"nonadd_count"}=$na_n;
  return $fm;
 }
 # Invert the measured forward model to hit $target, seeded from the matrix
-# baseline drive. Gauss-Newton with step-cap + backtracking + keep-best. The
-# seed IS the matrix drive and we only ever keep a drive that reduces the
-# forward-model error below the seed, so the result is never worse than matrix
-# (critical at pure primaries, where off-channels sit at 0 and their Jacobian
-# columns vanish -> an undamped Newton step diverges and desaturates). Returns
-# per-channel drive percent (0..100).
+# baseline drive. Levenberg-Marquardt + keep-best: never worse (under the
+# model) than the matrix seed. Returns per-channel drive percent (0..100).
 sub _fm_err {
  my ($fm,$target,$d)=@_;
  my $f=fm_forward($fm,$d->[0],$d->[1],$d->[2]);
@@ -1548,16 +1559,13 @@ sub _fm_err {
 sub fm_invert {
  my ($fm,$model,$target,$seed_pct)=@_;
  my @best=map { my $v=($seed_pct->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
- my $h=0.02;
+ my $h=0.015;
  my ($best_err,$best_e)=_fm_err($fm,$target,\@best);
  my $lambda=1e-2;
- # Levenberg-Marquardt: interpolates between Gauss-Newton (fast, small lambda)
- # and gradient descent (stable, large lambda). Adaptive lambda keeps it
- # converging to the true minimum even where the Jacobian is singular (pure
- # primaries: off-channels at 0 have vanishing columns). Keep-best so the
- # result is never worse than the matrix seed.
- for(my $iter=0;$iter<10;$iter++) {
-  last if($best_e < 5e-4);
+ # More iterations than the original 10: multi-level ramps are smooth but the
+ # non-add IDW field is not perfectly quadratic; LM needs room to settle.
+ for(my $iter=0;$iter<18;$iter++) {
+  last if($best_e < 2e-4);
   my @cols;
   for my $ch (0..2) {
    my @dp=@best; my @dm=@best;
@@ -1568,7 +1576,6 @@ sub fm_invert {
    my $fn=fm_forward($fm,$dm[0],$dm[1],$dm[2]);
    $cols[$ch]=[ ($fp->[0]-$fn->[0])/$span, ($fp->[1]-$fn->[1])/$span, ($fp->[2]-$fn->[2])/$span ];
   }
-  # JtJ (3x3) and Jt*err (3).
   my @JtJ; my @Jte=(0,0,0);
   for my $a (0..2) {
    for my $bcol (0..2) {
@@ -1579,11 +1586,14 @@ sub fm_invert {
    $Jte[$a]=$s;
   }
   my $improved=0;
-  for(my $try=0;$try<5;$try++) {
+  for(my $try=0;$try<6;$try++) {
    my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
    my $inv=matrix_inverse($M);
    if($inv) {
     my $step=matrix_mul_vec($inv,\@Jte);
+    # Cap single-step size so a singular Jacobian cannot leap to a desat corner.
+    my $sn=sqrt(($step->[0]||0)**2+($step->[1]||0)**2+($step->[2]||0)**2);
+    if($sn > 0.25) { my $s=0.25/$sn; $step=[ map { $_*$s } @{$step} ]; }
     my @trial=map { my $v=$best[$_]+$step->[$_]; $v<0?0:($v>1?1:$v) } (0..2);
     my ($te,$tn)=_fm_err($fm,$target,\@trial);
     if($tn < $best_e) {
@@ -1598,25 +1608,14 @@ sub fm_invert {
  return [ $best[0]*100, $best[1]*100, $best[2]*100 ];
 }
 
-# Per-node cube output (percent). One place, shared by both generators:
-# neutral -> identity; else measured-response inverse (forward_model) or the
-# matrix baseline + residual fallback.
-# Target for the measured-response inverse. Unlike target_xyz_for_node (which
-# scales chromatic nodes to the WRGB additive-white ceiling chromatic_white_y),
-# this references the FULL display white for every node. The additive-white cap
-# exists because a WRGB panel can't make saturated colour as bright as white --
-# but the inverse enforces that physically: an unreachable target clamps at
-# 100% drive (chroma preserved), while a REACHABLE dim colour (e.g. red 25%,
-# which has ample headroom) is hit exactly instead of being needlessly dimmed.
-# Dimming reachable low-saturation colours to the additive ceiling was pulling
-# their chroma off (red/green 25% over-saturated) with no benefit.
+# Target for the measured-response inverse. MUST match post-check /
+# residual targets (target_xyz_for_node): neutrals use white_y / white_axis,
+# chromatic nodes use chromatic_white_y (WRGB additive ceiling). Chasing a
+# different white than verification is how hybrid "won" offline on the wrong
+# target and lost on-panel sat sweeps.
 sub fm_target_for_node {
  my ($model,$ri,$gi,$bi,$size)=@_;
- my $r=$ri/($size-1); my $g=$gi/($size-1); my $b=$bi/($size-1);
- if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
-  return interpolate_vec_by_level($model->{"white_axis"},$r*100);
- }
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$model->{"white_y"},$model->{"black"},$model->{"target_gamut"});
+ return target_xyz_for_node($model,$ri,$gi,$bi,$size);
 }
 sub node_output_pct {
  my ($model,$r,$g,$b,$size)=@_;
@@ -1628,7 +1627,21 @@ sub node_output_pct {
   my $seed=$model->{"gamut_drive_matrix"}
    ? gamut_matrix_output($model,$r,$g,$b,$size)
    : solve_output_rgb($model,$target,$r,$g,$b,$size);
-  return fm_invert($fm,$model,$target,$seed);
+  my $inv=fm_invert($fm,$model,$target,$seed);
+  # Near-grey ONLY: soft-blend matrix seed -> inverse by saturation so pure
+  # greyscale stays DPG-owned and low-chroma codes cannot get a full chroma
+  # remap. Above sat~0.12 the inverse owns the node completely -- multi-level
+  # ramps and volume samples actually shape the cube (not a matrix clone).
+  my $den=$size-1; $den=1 if($den < 1);
+  my @f=($r/$den,$g/$den,$b/$den);
+  my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
+  my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
+  my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
+  if($sat < 0.12) {
+   my $w=($sat <= 0.03) ? 0 : (($sat-0.03)/(0.12-0.03));
+   return [ map { $seed->[$_]*(1-$w)+$inv->[$_]*$w } (0..2) ];
+  }
+  return $inv;
  }
  my $out;
  if($model->{"gamut_drive_matrix"}) {
@@ -1667,19 +1680,12 @@ sub neutral_identity_output {
  my $max=$r; $max=$g if($g > $max); $max=$b if($b > $max);
  my $span=$max-$min;
  my $frac_span=$span/$den;
- # Exact diagonal always identity (DPG owns greyscale).
- # Hybrid/skeleton measured-response cubes: protect a THICKER grey tube.
- # DPG 1D can leave slight R/G/B imbalance on "grey" codes; those land off
- # the exact diagonal and used to hit fm_invert, which remapped them toward
- # chromatic targets and destroyed greyscale luminance (and pushed CIE +x).
- # Matrix-only cubes never had this because they stay near identity off-axis.
- # Allow ~8% channel imbalance (~2-3 lattice steps on 33) for forward-model
- # solves; legacy LG generations keep the old 1-step neighborhood guard.
+ # Exact diagonal always identity (DPG owns greyscale). Near-grey handling for
+ # measured-inverse cubes is a SOFT sat blend in node_output_pct (not a hard
+ # tube that left a discontinuity at the wall). Legacy LG generations keep the
+ # old 1-step neighborhood guard when enabled.
  my $adjacent=(ref($model) eq "HASH" && $model->{"neutral_neighborhood_identity_enabled"}) ? 1 : 0;
- my $has_fm=(ref($model) eq "HASH" && ref($model->{"forward_model"}) eq "HASH") ? 1 : 0;
- if($has_fm) {
-  return undef if($frac_span > 0.08 && $span > 2);
- } elsif(!$adjacent) {
+ if(!$adjacent) {
   return undef if(!($r==$g && $g==$b));
  } else {
   return undef if($span > 1);
@@ -2063,26 +2069,25 @@ sub run_solve_only {
  my $model=model_from_readings("matrix",\@profile,$config);
  my $solve_report={ mode=>"matrix_only" };
  if(!$config->{"solve_matrix_only"}) {
-  # Hybrid/skeleton: build multi-level forward model ONLY to derive residual
-  # deltas at measured nodes (ideal_drive - matrix_baseline). Do NOT leave
-  # forward_model on the generate path -- per-node fm_invert over the whole
-  # 33^3 cube over-corrected mid-sats / near-greys and lost to matrix on-panel.
+  # Hybrid/skeleton: measured multi-level forward model STAYS on the generate
+  # path (node_output_pct -> fm_invert). That is the whole point of the extra
+  # reads -- matrix is only the Newton seed / near-grey blend, not the answer.
+  # Lattice (no multi-level ramps) keeps baseline-relative residual on matrix.
   my $fm=(forward_model_method($config->{"method"}) && !$config->{"solve_disable_forward_model"})
    ? build_measured_forward_model($model,\@nodes,$config) : undef;
-  $model->{"forward_model"}=$fm if(ref($fm) eq "HASH");
-  my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-  delete $model->{"forward_model"}; # generate uses matrix + residual only
-  if($grid) {
-   $model->{"residual_grid"}=$grid;
-   if(ref($fm) eq "HASH") {
-    $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
-     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
-     nodes_used=>scalar(@nodes), %{$report} };
-   } else {
-    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
-   }
+  if(ref($fm) eq "HASH") {
+   $model->{"forward_model"}=$fm;
+   $solve_report={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+    forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+    forward_nonadd_count=>$fm->{"nonadd_count"}, nodes_used=>scalar(@nodes) };
   } else {
-   $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+   if($grid) {
+    $model->{"residual_grid"}=$grid;
+    $solve_report={ mode=>"matrix_plus_residuals", %{$report} };
+   } else {
+    $solve_report={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+   }
   }
  }
  $state->{"message"}="Generating LUT";
@@ -4158,24 +4163,23 @@ eval {
   }
   $state->{"lattice_nodes"}=scalar(@nodes);
   if(!$config->{"solve_matrix_only"}) {
-   # Hybrid/skeleton: FM used only to seed baseline-relative residuals; generate
-   # is always white-preserving matrix + residual (no per-node fm_invert).
+   # Hybrid/skeleton: keep forward_model for generate (full measured inverse).
+   # Lattice without multi-level ramps: matrix + baseline-relative residual.
    my $fm=(forward_model_method($method) && !$config->{"solve_disable_forward_model"})
     ? build_measured_forward_model($model,\@nodes,$config) : undef;
-   $model->{"forward_model"}=$fm if(ref($fm) eq "HASH");
-   my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
-   delete $model->{"forward_model"};
-   if($grid) {
-    $model->{"residual_grid"}=$grid;
-    if(ref($fm) eq "HASH") {
-     $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
-      forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
-      (ref($report) eq "HASH" ? %{$report} : ()) };
-    } else {
-     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
-    }
+   if(ref($fm) eq "HASH") {
+    $model->{"forward_model"}=$fm;
+    $state->{"lattice_solve"}={ mode=>"measured_inverse", forward_ramp_levels=>$fm->{"ramp_levels"},
+     forward_vol_levels=>$fm->{"vol_axis_levels"}, forward_nonadd_rms=>$fm->{"nonadd_rms"},
+     forward_nonadd_count=>$fm->{"nonadd_count"} };
    } else {
-    $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    my ($grid,$report)=build_residual_grid($model,\@nodes,$config);
+    if($grid) {
+     $model->{"residual_grid"}=$grid;
+     $state->{"lattice_solve"}={ mode=>"matrix_plus_residuals", (ref($report) eq "HASH" ? %{$report} : ()) };
+    } else {
+     $state->{"lattice_solve"}={ mode=>"matrix_only", residual_skip_reason=>(ref($report) eq "HASH" ? $report->{"reason"} : "unavailable") };
+    }
    }
   } else {
    $state->{"lattice_solve"}={ mode=>"matrix_only" };
