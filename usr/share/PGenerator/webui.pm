@@ -11004,6 +11004,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
      <div class="btn-row" id="meterCustomSeriesExportRow" style="margin:0">
       <button class="btn btn-sm btn-danger" id="meterCustomSeriesDeleteBtn" onclick="meterDeleteCustomSeries()" style="display:none">Delete Series</button>
+      <select id="meterCustomSeriesImportBits" style="background:#0d0d15;border:1px solid #2a3140;border-radius:4px;color:#eee;padding:5px;font-size:.74rem" title="Bit depth of the codes in the CSV you import. Auto uses a '# Bitdepth' header, then a filename hint (e.g. '10bit'), then the largest code. Set it explicitly when the filename does not say.">
+       <option value="auto" selected>Auto bit depth</option>
+       <option value="8">8-bit codes</option>
+       <option value="10">10-bit codes</option>
+       <option value="12">12-bit codes</option>
+      </select>
       <button class="btn btn-sm btn-secondary" onclick="meterOpenCustomSeriesImport()" title="Import a CalMAN or ColourSpace patch list CSV into this editor">Import CSV</button>
       <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('calman')" title="Export the patch list as 8-bit RGB triplets (CalMAN import)">Export CalMAN CSV</button>
       <button class="btn btn-sm btn-secondary" onclick="meterExportCustomSeries('colourspace')" title="Export the patch list as a ColourSpace CSV (10-bit, # Bitdepth/# Range header)">Export ColourSpace CSV</button>
@@ -26620,12 +26626,10 @@ function meterCustomSeriesParseCsv(text,bitsHint){
   if(nums.length>=4){ rgb=[nums[1],nums[2],nums[3]]; nameIdx=4; }
   else if(nums.length===3){ rgb=[nums[0],nums[1],nums[2]]; nameIdx=3; }
   if(!rgb) return;
-  let name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
-  // ColourSpace grid CSVs pack "<stimulus>% <name>" into the trailing field
-  // (e.g. "10.0% #1"): keep only the descriptive name and drop the redundant
-  // stimulus prefix (the stimulus is already implied by the code values).
-  const stimMatch=name.match(/^[\d.]+%\s+(.+)$/);
-  if(stimMatch) name=stimMatch[1].trim();
+  // Keep the trailing label verbatim (e.g. "10.0% #1"): the stimulus prefix is
+  // redundant for the measurement (the RGB codes define the patch) but useful
+  // as a human-readable level label, so preserve it in the patch name.
+  const name=(fields.length>nameIdx)?fields.slice(nameIdx).join(' ').trim():'';
   rows.push({rgb:rgb,name:name});
  });
  // Bit-depth precedence: a "# Bitdepth" header wins; then the caller's hint
@@ -26664,14 +26668,21 @@ function meterImportCustomSeriesCsv(evt){
  const reader=new FileReader();
  reader.onload=()=>{
   try{
-   // Filename bit-depth hint (e.g. "..._10bit_10b_legal.csv") — the CSVs carry
-   // no "# Bitdepth" header, and low-stimulus 10-bit files would otherwise
-   // auto-detect as 8-bit and quadruple every code.
-   const _bn=String((file&&file.name)||'').toLowerCase();
+   // Bit-depth hint precedence: an explicit selector choice wins; otherwise a
+   // filename hint (e.g. "..._10bit_10b_legal.csv"). The CSVs carry no
+   // "# Bitdepth" header, and low-stimulus 10-bit files would otherwise
+   // auto-detect as 8-bit and quadruple every code. When both are Auto/absent
+   // the parser falls back to max-code detection.
    let _bitsHint=0;
-   if(/12\s*-?\s*bit/.test(_bn)||/\b12b(it)?[_\-. ]/.test(_bn)) _bitsHint=12;
-   else if(/10\s*-?\s*bit/.test(_bn)||/\b10b(it)?[_\-. ]/.test(_bn)) _bitsHint=10;
-   else if(/8\s*-?\s*bit/.test(_bn)||/\b8b(it)?[_\-. ]/.test(_bn)) _bitsHint=8;
+   const _sel=String((document.getElementById('meterCustomSeriesImportBits')||{}).value||'auto');
+   if(_sel==='8'||_sel==='10'||_sel==='12'){
+    _bitsHint=parseInt(_sel,10);
+   } else {
+    const _bn=String((file&&file.name)||'').toLowerCase();
+    if(/12\s*-?\s*bit/.test(_bn)||/\b12b(it)?[_\-. ]/.test(_bn)) _bitsHint=12;
+    else if(/10\s*-?\s*bit/.test(_bn)||/\b10b(it)?[_\-. ]/.test(_bn)) _bitsHint=10;
+    else if(/8\s*-?\s*bit/.test(_bn)||/\b8b(it)?[_\-. ]/.test(_bn)) _bitsHint=8;
+   }
    const parsed=meterCustomSeriesParseCsv(String(reader.result||''),_bitsHint);
    if(!parsed.patches.length){ toast('No patches found in that CSV',true); return; }
    meterCustomSeriesEditor.patches=parsed.patches;
