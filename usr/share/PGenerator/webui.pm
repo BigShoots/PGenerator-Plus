@@ -10093,6 +10093,15 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
 .meter-card-header-select{width:100%;max-width:100%;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 30px 6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
 .meter-card-header-select:focus{border-color:var(--accent)}
+.meter-card-header-select option,.meter-card-header-select optgroup{background:#0d0d15;color:var(--text)}
+#meterDisplayType.meter-card-header-select{min-height:34px;box-sizing:border-box}
+#meterMeasurementPort.meter-card-header-select{min-height:34px;box-sizing:border-box}
+.meter-ccss-profile-row{display:flex;flex-direction:column;gap:8px;width:100%}
+.meter-ccss-profile-main{display:flex;flex-direction:column;gap:3px;width:100%;min-width:0}
+.meter-ccss-profile-main > select{width:100%;box-sizing:border-box}
+#meterProfileGearPopover .meter-ccss-profile-row{margin:0}
+#meterProfileGearPopover #meterCcssProfileBtn{align-self:stretch;width:100%}
+#meterProfileGearPopover #meterProfileDisplayField > label{display:none}
 #meterCard.meter-patterns-only .meter-card-header-row{display:none}
 .meter-header-label{display:block;font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:0 0 2px}
 #meterCard.meter-patterns-only .meter-header-label{display:none}
@@ -10709,11 +10718,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div class="meter-card-header-row">
    <div class="meter-card-header-col meter-card-header-col-meter">
     <label class="meter-header-label">Meter</label>
-    <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"><label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override." aria-label="Meter profile CCSS help">?</span></label></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
+    <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-display">
     <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation, pattern insertion defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in generic profile; you can override with a custom CCSS." aria-label="Display type help">?</span></label>
-    <select id="meterDisplayType">
+    <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
      <optgroup label="Generic" id="meterDtGeneric">
       <option value="oled_generic">WRGB OLED</option>
       <option value="qdoled">QD-OLED</option>
@@ -10735,12 +10744,12 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
-    <div class="meter-ccss-profile-row" style="display:flex;gap:6px;align-items:flex-end;margin-top:6px">
-     <div style="flex:1 1 auto">
-      <label>Meter profile (CCSS)</label>
+    <div class="meter-ccss-profile-row">
+     <div class="meter-ccss-profile-main">
+      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override." aria-label="Meter profile CCSS help">?</span></label>
       <select id="meterCcssProfile"><option value="">Auto (technology default)</option></select>
      </div>
-     <button type="button" id="meterCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile" style="flex:0 0 auto">Profile my TV&hellip;</button>
+     <button type="button" id="meterCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile">Profile my TV&hellip;</button>
     </div>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
@@ -22669,10 +22678,15 @@ function meterRelocateProfileControls(){
  const slot=document.getElementById('meterProfileRelocSlot');
  if(!displayField||!slot) return;
  // Keep #meterDisplayType in the header (do not move it into the popover).
+ // Strip any leftover static label left from the pre-relocate layout.
+ Array.from(displayField.children).forEach(function(ch){
+  if(ch&&ch.tagName==='LABEL') ch.remove();
+ });
  const ccssRow=document.querySelector('.meter-ccss-profile-row');
  if(ccssRow&&ccssRow.parentElement!==displayField) displayField.appendChild(ccssRow);
+ // Editor panel is opened via Profile my TV / Open Editor — do not park it in the popover.
  const ccss=document.getElementById('customCcssPanel');
- if(ccss&&ccss.parentElement!==displayField) displayField.appendChild(ccss);
+ if(ccss&&displayField.contains(ccss)) displayField.removeChild(ccss);
  const delay=document.getElementById('meterDelay');
  const delayField=delay?delay.closest('.field'):null;
  if(delayField&&delayField.parentElement!==slot) slot.appendChild(delayField);
