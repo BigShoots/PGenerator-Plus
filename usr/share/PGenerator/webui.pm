@@ -34707,9 +34707,7 @@ async function meterBuild3dLutSeries(){
  const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
  const ok=await meterShowChoiceModal({
   title:'Build 3D LUT',
-  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.
-
-Nothing is uploaded to the TV — the LUT is exported for host apps (Resolve, madVR, etc.).',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the TV — the LUT is exported for host apps (Resolve, madVR, etc.).',
   acceptLabel:'Start measurement',
   cancelLabel:'Cancel',
   radios:[{
