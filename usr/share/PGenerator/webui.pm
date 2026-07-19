@@ -15531,14 +15531,27 @@ function meterCanonicalRecoveredSteps(type,points,steps,status){
 
 function meterFilterReadingsForCurrentSteps(readings,type){
  const list=Array.isArray(readings)?readings:[];
- if(type!=='greyscale'||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return list;
- return meterFilterReadingsForSteps(list,type,meterSeriesSteps,{dropStaleBlackOnly:true});
+ if(!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return list;
+ // Greyscale and colour/sat: drop leftovers from a previous series (e.g.
+ // ColorChecker dots still plotting after loading a custom grid).
+ if(type==='greyscale') return meterFilterReadingsForSteps(list,type,meterSeriesSteps,{dropStaleBlackOnly:true});
+ if(type==='colors'||type==='saturations') return meterFilterReadingsForSteps(list,type,meterSeriesSteps);
+ return list;
+}
+
+function meterColorReadingMatchesStep(reading,step){
+ if(!reading||!step) return false;
+ const rk=meterStepNameKey(reading), sk=meterStepNameKey(step);
+ if(rk&&sk&&rk===sk) return true;
+ const rn=String(reading.name||''), sn=String(step.name||'');
+ return !!(rn&&sn&&rn===sn);
 }
 
 function meterReadingMatchesStepList(reading,type,steps){
- if(type!=='greyscale') return true;
  if(!Array.isArray(steps)||!steps.length) return true;
- return steps.some(step=>meterGreyscaleReadingMatchesStep(reading,step));
+ if(type==='greyscale') return steps.some(step=>meterGreyscaleReadingMatchesStep(reading,step));
+ if(type==='colors'||type==='saturations') return steps.some(step=>meterColorReadingMatchesStep(reading,step));
+ return true;
 }
 
 function meterReadingIsBlackStep(reading){
@@ -15563,9 +15576,40 @@ function meterReadingsWouldRecoverAsBlackOnly(readings,type,steps){
 
 function meterFilterReadingsForSteps(readings,type,steps,options){
  const list=Array.isArray(readings)?readings:[];
- if(type!=='greyscale'||!Array.isArray(steps)||!steps.length) return list;
- if(options&&options.dropStaleBlackOnly&&meterReadingsWouldRecoverAsBlackOnly(list,type,steps)) return [];
- return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ if(!Array.isArray(steps)||!steps.length) return list;
+ if(type==='greyscale'){
+  if(options&&options.dropStaleBlackOnly&&meterReadingsWouldRecoverAsBlackOnly(list,type,steps)) return [];
+  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ }
+ if(type==='colors'||type==='saturations'){
+  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+ }
+ return list;
+}
+
+// True only for a real meter sample (XYZ/Y from a read), not a series step shell
+// or a target-only placeholder used for unread patch UI.
+function meterReadingIsRealMeasurement(rd){
+ if(!rd||typeof rd!=='object') return false;
+ if(rd._unreadStep||rd._presetStep||rd.synthetic_target) return false;
+ try{ return !!meterReadingHasLuminance(rd); }catch(e){ return false; }
+}
+
+// Detail/live context for an unread colour patch: targets only, no measured fields.
+function meterColorUnreadDetailFromStep(step){
+ if(!step) return null;
+ return {
+  name:step.name,ire:step.ire,
+  r:step.r,g:step.g,b:step.b,
+  r_code:(step.r_code!=null?step.r_code:step.r),
+  g_code:(step.g_code!=null?step.g_code:step.g),
+  b_code:(step.b_code!=null?step.b_code:step.b),
+  target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,
+  custom_target_nits:step.custom_target_nits,
+  signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct,
+  series_color:step.series_color,sat_pct:step.sat_pct,
+  _unreadStep:true
+ };
 }
 
 function meterResolveSeriesSnapshotFromCache(key,options){
@@ -23994,17 +24038,29 @@ function meterSelectPatchFromInteraction(step,reading,opts){
 	 if(!step) return;
 	 const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const resolvedStep=meterCanonicalSeriesStep(step)||step;
-	 const resolvedReading=reading||meterFindReadingForStep(resolvedStep);
+	 // Only a real meter sample for THIS step counts as measured. Never treat
+	 // the series step (or a leftover ColorChecker reading) as the measurement.
+	 let resolvedReading=meterFindReadingForStep(resolvedStep);
+	 if(!resolvedReading&&reading&&meterReadingIsRealMeasurement(reading)
+	    &&meterColorReadingMatchesStep(reading,resolvedStep)){
+	  resolvedReading=reading;
+	 }
+	 if(resolvedReading&&!meterReadingIsRealMeasurement(resolvedReading)) resolvedReading=null;
 	 meterCurrentPatchStep=resolvedStep;
  meterLgGreySyncForCurrentStep(false);
  if(isColorSeries){
   const pin=!(opts&&opts.pin===false);
   if(resolvedReading) meterFocusColorReading(resolvedReading,{pin:pin});
-  else if(resolvedStep.name){
-   _selectedColorReadingName=resolvedStep.name||null;
-   _colorDetailPinned=pin&&!!_selectedColorReadingName;
-   colorHighlightThumb(resolvedStep.name);
-   colorHighlightTableRow(resolvedStep.name);
+  else {
+   // Unread node: targets only, measured = --
+   const unread=meterColorUnreadDetailFromStep(resolvedStep);
+   if(unread) showColorReadingDetail(unread,{pin:pin});
+   else if(resolvedStep.name){
+    _selectedColorReadingName=resolvedStep.name||null;
+    _colorDetailPinned=pin&&!!_selectedColorReadingName;
+    colorHighlightThumb(resolvedStep.name);
+    colorHighlightTableRow(resolvedStep.name);
+   }
   }
  } else {
   meterSelectedThumbIre=meterStepNameKey(resolvedStep);
@@ -27802,7 +27858,11 @@ async function meterSelectSeries(type,points,opts){
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
+ // Drop any leftover readings that do not belong to this series (e.g. ColorChecker
+ // samples still in memory after loading a custom grid).
+ try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
  if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+  try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
   // Lattice cache snapshots can carry server-shaped steps (the server
   // expansion computes no chart targets). The freshly built client steps are
   // name-identical (parity-locked) and DO carry target_x/y/Yn — prefer them,
@@ -36515,7 +36575,17 @@ function drawAllCharts(readings){
   if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(!!is3dLut);
  }catch(e){}
  meterUpdateHdrConfigVisibility();
- if(!readings||readings.length===0) return;
+ // Only chart samples that belong to the active series steps.
+ if(Array.isArray(readings)&&readings.length&&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'||meterActiveSeriesType==='greyscale')){
+  try{ readings=meterFilterReadingsForCurrentSteps(readings,meterActiveSeriesType); }catch(e){}
+ }
+ if(!readings||readings.length===0){
+  // No in-series measurements: still draw colour presets when steps exist.
+  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+   drawAllChartsPreset(meterSeriesSteps);
+  }
+  return;
+ }
  meterEnsureDeltaECache(readings);
  meterEnsureChannelGammaCache(readings);
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
@@ -36544,20 +36614,12 @@ function drawAllCharts(readings){
    colorChartRegisterInteraction(cr);
    if(is3dProfile&&meterCurrentPatchStep){
     const curRd=typeof meterFindReadingForStep==='function'?meterFindReadingForStep(meterCurrentPatchStep):null;
-    if(curRd) showColorReadingDetail(curRd,{pin:false});
-    else {
-     const st=meterCurrentPatchStep;
-     showColorReadingDetail({
-      name:st.name,ire:st.ire,
-      r:st.r,g:st.g,b:st.b,
-      r_code:st.r,g_code:st.g,b_code:st.b,
-      target_x:st.target_x,target_y:st.target_y,target_Yn:st.target_Yn,
-      signal_r_pct:st.signal_r_pct,signal_g_pct:st.signal_g_pct,signal_b_pct:st.signal_b_pct
-     },{pin:false});
-    }
+    if(curRd&&meterReadingIsRealMeasurement(curRd)) showColorReadingDetail(curRd,{pin:false});
+    else showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
    } else if(_colorDetailPinned&&_selectedColorReadingName){
     const sel=cr.find(r=>r.name===_selectedColorReadingName);
-    if(sel) showColorReadingDetail(sel,{pin:true});
+    if(sel&&meterReadingIsRealMeasurement(sel)) showColorReadingDetail(sel,{pin:true});
+    else if(meterCurrentPatchStep) showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:true});
     else showColorReadingDetail(cr[cr.length-1],{pin:false});
    } else {
     showColorReadingDetail(cr[cr.length-1],{pin:false});
@@ -36565,13 +36627,7 @@ function drawAllCharts(readings){
   } else if(is3dProfile&&meterCurrentPatchStep){
    // Profile running but first reading not in yet — still draw empty CIE with inset target.
    try{ drawCIEChart([]); }catch(e){}
-   const st=meterCurrentPatchStep;
-   showColorReadingDetail({
-    name:st.name,ire:st.ire,
-    r:st.r,g:st.g,b:st.b,
-    r_code:st.r,g_code:st.g,b_code:st.b,
-    target_x:st.target_x,target_y:st.target_y,target_Yn:st.target_Yn
-   },{pin:false});
+   showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
   }
   return;
  }
@@ -37616,7 +37672,11 @@ let _colorDetailPinned=false;
 function meterFocusColorReading(rd,opts){
  showColorReadingDetail(rd,opts);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterReadings)&&meterReadings.length){
-  drawAllCharts(meterReadings);
+  const filtered=(typeof meterFilterReadingsForCurrentSteps==='function')
+   ?meterFilterReadingsForCurrentSteps(meterReadings,meterActiveSeriesType)
+   :meterReadings;
+  if(filtered&&filtered.length) drawAllCharts(filtered);
+  else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
  }
 }
 function showColorReadingDetail(rd,opts){
@@ -37631,22 +37691,32 @@ function showColorReadingDetail(rd,opts){
  const pin=!(opts&&opts.pin===false);
  _selectedColorReadingName=rd.name||null;
  _colorDetailPinned=pin&&!!_selectedColorReadingName;
- updateLiveReading(rd);
+ // Unread step shells: targets only — never invent measured from codes.
+ const isUnread=!!(rd._unreadStep||rd._presetStep||!meterReadingIsRealMeasurement(rd));
+ if(isUnread) meterClearLiveReading(rd);
+ else updateLiveReading(rd);
  const colorRefMode=meterColorRefMode();
  const colorInclLum=(colorRefMode==='eotf');
- const colorForm=meterColorDeltaEForm();
- const deLabel=meterDeltaEFormLabel(colorForm);
- const hasMeasuredXYZ=!!meterReadingXYZ(rd);
- const hasChroma=hasMeasuredXYZ&&meterReadingHasChromaticity(rd);
+ const deLabel=meterDeltaEFormLabel(meterColorDeltaEForm());
  const targetXYZ=meterTargetXYZForReading(rd);
- const lumInfo=meterColorLuminanceInfo(rd);
- const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
+ const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterTargetChromaticityForReading(rd):null;
+ let hasMeasuredXYZ=false, hasChroma=false;
+ let lumInfo={measuredY:null,targetY:null,deltaY:null,deltaPct:null};
+ if(!isUnread){
+  hasMeasuredXYZ=!!meterReadingXYZ(rd);
+  hasChroma=hasMeasuredXYZ&&meterReadingHasChromaticity(rd);
+  lumInfo=meterColorLuminanceInfo(rd);
+ } else {
+  // Target Y only (from codes / target_Yn); measured stays null.
+  if(targetXYZ&&targetXYZ.Y>0) lumInfo.targetY=targetXYZ.Y;
+  else if(meterXyzIsBlack(targetXYZ)) lumInfo.targetY=0;
+ }
  const targetColor=meterPreviewColorForReading(rd,'target');
- const measuredColor=meterPreviewColorForReading(rd,'measured');
+ const measuredColor=hasMeasuredXYZ?meterPreviewColorForReading(rd,'measured'):'#14141c';
  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
- const de=meterColorDeltaE2000(rd,colorRefMode);
+ const de=(!isUnread&&hasMeasuredXYZ)?meterColorDeltaE2000(rd,colorRefMode):NaN;
  const hasDe=Number.isFinite(de);
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
@@ -37656,16 +37726,16 @@ function showColorReadingDetail(rd,opts){
  h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(rd.name||'')+'</span></div>';
  h+='<div style="display:flex;gap:8px;margin-bottom:10px;justify-content:center">';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
- h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured</div></div></div>';
+ h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394y</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
@@ -37782,19 +37852,22 @@ function colorChartHandleHover(e,canvasId){
  const tip=document.getElementById('chartTooltip');
  if(!hit){tip.style.display='none';return;}
  const rd=hit.reading;
- const hasChroma=meterReadingHasChromaticity(rd);
+ const unread=!!(rd&&(rd._presetStep||rd._unreadStep||!meterReadingIsRealMeasurement(rd)));
+ const hasChroma=!unread&&meterReadingHasChromaticity(rd);
  const targetXYZ=meterTargetXYZForReading(rd);
  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
- const lumInfo=meterColorLuminanceInfo(rd);
+ const lumInfo=unread
+  ?{measuredY:null,targetY:(targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y:null,deltaY:null,deltaPct:null}
+  :meterColorLuminanceInfo(rd);
  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  let html='<b>'+(rd.name||'')+'</b><br>';
  html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
  html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
  html+='\u0394x: '+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+' &nbsp;\u0394y: '+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'<br>';
- html+='Target Y: '+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='Measured Y: '+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%)');
+ html+='Target Y: '+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='Measured Y: '+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%)');
  tip.innerHTML=html;
  tip.style.display='block';
  const tx=e.clientX+14, ty=e.clientY-10;
@@ -37805,10 +37878,12 @@ function colorChartHandleClick(e,canvasId){
  const hit=colorChartFindHit(e,canvasId);
  if(!hit||meterSeriesRunning) return;
  document.getElementById('chartTooltip').style.display='none';
- const step=meterCanonicalSeriesStep(hit.reading);
- if(step) meterSelectPatchFromInteraction(step,hit.reading,{pin:true});
- else {
-  meterFocusColorReading(hit.reading,{pin:true});
+ const rd=hit.reading;
+ const step=meterCanonicalSeriesStep(rd);
+ const measured=(rd&&meterReadingIsRealMeasurement(rd))?rd:null;
+ if(step) meterSelectPatchFromInteraction(step,measured,{pin:true});
+ else if(measured){
+  meterFocusColorReading(measured,{pin:true});
   meterUpdateReadButtons();
  }
 }
@@ -38706,19 +38781,22 @@ function cie3dOnPointerMove(e){
  if(!hit||!hit.reading){ tip.style.display='none'; canvas.style.cursor='grab'; return; }
  canvas.style.cursor='pointer';
  const rd=hit.reading;
- const hasChroma=meterReadingHasChromaticity(rd);
+ const unread=!!(rd&&(rd._presetStep||rd._unreadStep||!meterReadingIsRealMeasurement(rd)));
+ const hasChroma=!unread&&meterReadingHasChromaticity(rd);
  const targetXYZ=meterTargetXYZForReading(rd);
  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
- const lumInfo=meterColorLuminanceInfo(rd);
+ const lumInfo=unread
+  ?{measuredY:null,targetY:(targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y:null,deltaY:null,deltaPct:null}
+  :meterColorLuminanceInfo(rd);
  const dxv=(hasChroma&&tgt)?(rd.x-tgt.x):null;
  const dyv=(hasChroma&&tgt)?(rd.y-tgt.y):null;
  let html='<b>'+(rd.name||'')+'</b><br>';
  html+='Target: '+(tgt?'('+tgt.x.toFixed(4)+', '+tgt.y.toFixed(4)+')':'--')+'<br>';
  html+='Measured: '+(hasChroma?'('+rd.x.toFixed(4)+', '+rd.y.toFixed(4)+')':'--')+'<br>';
  html+='\u0394x: '+(dxv==null?'--':(dxv>=0?'+':'')+dxv.toFixed(4))+' &nbsp;\u0394y: '+(dyv==null?'--':(dyv>=0?'+':'')+dyv.toFixed(4))+'<br>';
- html+='Target Y: '+(lumInfo.targetY!=null?lumInfo.targetY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='Measured Y: '+(lumInfo.measuredY!=null?lumInfo.measuredY.toFixed(1):'--')+' cd/m\u00B2<br>';
- html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+lumInfo.deltaY.toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+lumInfo.deltaPct.toFixed(1)+'%)');
+ html+='Target Y: '+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='Measured Y: '+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1):'--')+' cd/m\u00B2<br>';
+ html+='\u0394Y: '+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+(lumInfo.deltaPct==null?'':' &nbsp;('+(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%)');
  tip.innerHTML=html;
  tip.style.display='block';
  const tx=e.clientX+14, ty=e.clientY-10;
@@ -38738,10 +38816,13 @@ function cie3dOnPointerUp(e){
  const hit=cie3dFindHit(e.clientX-rect.left,e.clientY-rect.top);
  if(!hit||!hit.reading) return;
  document.getElementById('chartTooltip').style.display='none';
- const step=meterCanonicalSeriesStep(hit.reading);
- if(step) meterSelectPatchFromInteraction(step,hit.reading,{pin:true});
- else {
-  meterFocusColorReading(hit.reading,{pin:true});
+ const rd=hit.reading;
+ const step=meterCanonicalSeriesStep(rd)||rd;
+ // Preset / unread target boxes are not measurements — never pass them as readings.
+ const measured=(rd&&!rd._presetStep&&meterReadingIsRealMeasurement(rd))?rd:null;
+ if(step) meterSelectPatchFromInteraction(step,measured,{pin:true});
+ else if(measured){
+  meterFocusColorReading(measured,{pin:true});
   meterUpdateReadButtons();
  }
 }
