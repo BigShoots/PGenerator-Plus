@@ -1478,15 +1478,13 @@ sub _fm_vol_axis {
  }
  return ($n-2,1);
 }
-# Non-additivity correction at an arbitrary drive. Sparse grid trilinear used
-# to DROP missing cell corners without renormalising, which under-reported
-# volume non-additivity almost everywhere off the measured lattice and made
-# the inverse invent bogus chroma (CIE +x / 25% sat blow-ups). Inverse-distance
-# weighting over the actual measured non-additive samples uses every volume
-# read and degrades gracefully off-grid.
-sub fm_nonadd_corr {
- my ($fm,$dr,$dg,$db)=@_;
- my $pts=$fm->{"nonadd_samples"};
+# Non-additivity correction at an arbitrary drive. Inverse-distance weighting
+# over measured non-additive samples. For dense hybrid profiles (100+ samples)
+# a coarse spatial grid restricts IDW to neighbouring bins so generate stays
+# O(k) per query instead of O(N) over every profile node. Exact-hit short-
+# circuit preserved. Full-list fallback if the local bin neighbourhood is empty.
+sub _fm_nonadd_idw {
+ my ($pts,$dr,$dg,$db)=@_;
  return [0,0,0] if(ref($pts) ne "ARRAY" || !@{$pts});
  my ($sw,@acc)=(0,0,0,0);
  foreach my $p (@{$pts}) {
@@ -1505,6 +1503,53 @@ sub fm_nonadd_corr {
  }
  return [0,0,0] if($sw <= 0);
  return [ $acc[0]/$sw, $acc[1]/$sw, $acc[2]/$sw ];
+}
+sub _fm_nonadd_grid_build {
+ my ($pts,$bins)=@_;
+ $bins=8 if(!defined($bins) || $bins < 2);
+ my $cells={};
+ foreach my $p (@{$pts||[]}) {
+  my $f=$p->{"f"}; next if(ref($f) ne "ARRAY");
+  my @ix;
+  for my $ch (0..2) {
+   my $v=$f->[$ch]||0; $v=0 if($v < 0); $v=1 if($v > 1);
+   my $i=int($v*$bins); $i=$bins-1 if($i >= $bins);
+   push @ix,$i;
+  }
+  my $key="$ix[0],$ix[1],$ix[2]";
+  push @{$cells->{$key}},$p;
+ }
+ return { bins=>$bins, cells=>$cells };
+}
+sub fm_nonadd_corr {
+ my ($fm,$dr,$dg,$db)=@_;
+ my $pts=$fm->{"nonadd_samples"};
+ return [0,0,0] if(ref($pts) ne "ARRAY" || !@{$pts});
+ # Sparse: full IDW is cheap. Dense hybrid/skeleton: local neighbourhood only.
+ if(@{$pts} > 36 && ref($fm->{"nonadd_grid"}) eq "HASH") {
+  my $bins=$fm->{"nonadd_grid"}{"bins"}||8;
+  my $cells=$fm->{"nonadd_grid"}{"cells"}||{};
+  my @ix;
+  for my $v ($dr,$dg,$db) {
+   my $vv=$v; $vv=0 if($vv < 0); $vv=1 if($vv > 1);
+   my $i=int($vv*$bins); $i=$bins-1 if($i >= $bins);
+   push @ix,$i;
+  }
+  my @local;
+  for my $dx (-1..1) {
+   for my $dy (-1..1) {
+    for my $dz (-1..1) {
+     my $x=$ix[0]+$dx; my $y=$ix[1]+$dy; my $z=$ix[2]+$dz;
+     next if($x < 0 || $y < 0 || $z < 0 || $x >= $bins || $y >= $bins || $z >= $bins);
+     my $bucket=$cells->{"$x,$y,$z"};
+     push @local,@{$bucket} if(ref($bucket) eq "ARRAY");
+    }
+   }
+  }
+  return _fm_nonadd_idw(\@local,$dr,$dg,$db) if(@local);
+  # Empty neighbourhood (rare edge) — fall through to full list.
+ }
+ return _fm_nonadd_idw($pts,$dr,$dg,$db);
 }
 sub fm_forward {
  my ($fm,$dr,$dg,$db)=@_;
@@ -1553,6 +1598,8 @@ sub build_measured_forward_model {
  $fm->{"nonadd_rms"}=$na_n ? sqrt($na_sum/$na_n) : 0;
  $fm->{"vol_axis_levels"}=$na_n;
  $fm->{"nonadd_count"}=$na_n;
+ # Spatial index for dense profiles (Hybrid 5³ etc.) — generate-time IDW.
+ $fm->{"nonadd_grid"}=_fm_nonadd_grid_build($fm->{"nonadd_samples"},8) if($na_n > 36);
  return $fm;
 }
 # Invert the measured forward model to hit $target, seeded from the matrix
@@ -1569,10 +1616,11 @@ sub fm_invert {
  my @best=map { my $v=($seed_pct->[$_]||0)/100; $v<0?0:($v>1?1:$v) } (0..2);
  my $h=0.015;
  my ($best_err,$best_e)=_fm_err($fm,$target,\@best);
+ return [ $best[0]*100, $best[1]*100, $best[2]*100 ] if($best_e < 2e-4);
  my $lambda=1e-2;
- # More iterations than the original 10: multi-level ramps are smooth but the
- # non-add IDW field is not perfectly quadratic; LM needs room to settle.
- for(my $iter=0;$iter<18;$iter++) {
+ # Cap at 12 iters (was 18): seed is matrix/gamut and usually lands in <8.
+ # Early exit on no-improvement keeps dense cubes from thrashing IDW.
+ for(my $iter=0;$iter<12;$iter++) {
   last if($best_e < 2e-4);
   my @cols;
   for my $ch (0..2) {
@@ -1594,7 +1642,7 @@ sub fm_invert {
    $Jte[$a]=$s;
   }
   my $improved=0;
-  for(my $try=0;$try<6;$try++) {
+  for(my $try=0;$try<5;$try++) {
    my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
    my $inv=matrix_inverse($M);
    if($inv) {
@@ -1631,19 +1679,22 @@ sub node_output_pct {
  return $neutral if($neutral);
  my $fm=$model->{"forward_model"};
  if(ref($fm) eq "HASH") {
-  my $target=fm_target_for_node($model,$r,$g,$b,$size);
-  my $seed=$model->{"gamut_drive_matrix"}
-   ? gamut_matrix_output($model,$r,$g,$b,$size)
-   : solve_output_rgb($model,$target,$r,$g,$b,$size);
-  my $inv=fm_invert($fm,$model,$target,$seed);
   my $den=$size-1; $den=1 if($den < 1);
   my @f=($r/$den,$g/$den,$b/$den);
   my $mx=$f[0]; $mx=$f[1] if($f[1] > $mx); $mx=$f[2] if($f[2] > $mx);
   my $mn=$f[0]; $mn=$f[1] if($f[1] < $mn); $mn=$f[2] if($f[2] < $mn);
   my $sat=($mx > 1e-9) ? (($mx-$mn)/$mx) : 0;
-  # Near-grey: soft-blend matrix seed -> inverse (DPG greys / low-chroma).
+  my $target=fm_target_for_node($model,$r,$g,$b,$size);
+  my $seed=$model->{"gamut_drive_matrix"}
+   ? gamut_matrix_output($model,$r,$g,$b,$size)
+   : solve_output_rgb($model,$target,$r,$g,$b,$size);
+  # Near-neutral: matrix seed only — skip Newton invert (was the bulk of
+  # near-grey generate time and the inverse is blended away anyway).
+  if($sat <= 0.03) { return $seed; }
+  my $inv=fm_invert($fm,$model,$target,$seed);
+  # Near-grey soft blend matrix seed -> inverse (DPG greys / low-chroma).
   if($sat < 0.12) {
-   my $w=($sat <= 0.03) ? 0 : (($sat-0.03)/(0.12-0.03));
+   my $w=($sat-0.03)/(0.12-0.03);
    return [ map { $seed->[$_]*(1-$w)+$inv->[$_]*$w } (0..2) ];
   }
   # Mid-sat WRGB damp: pure inverse oversaturates mid-sats on WOLED (W
@@ -1674,20 +1725,140 @@ sub node_output_pct {
  return $out;
 }
 
+# Worker count for parallel cube/payload generate. Each node is independent,
+# so we fork range-sliced children (Perl ithreads are awkward with deep model
+# hashes; fork + COW is the right fit on the Pi). Cap at 4; leave headroom
+# when the renderer is busy.
+sub _lut_gen_workers {
+ my ($size)=@_;
+ $size=2 if(!defined($size) || $size < 2);
+ my $n=1;
+ if(open(my $fh,'<',"/proc/cpuinfo")) {
+  $n=()= map { 1 } grep { /^processor\s*:/ } <$fh>;
+  close($fh);
+ }
+ $n=1 if($n < 1);
+ $n=4 if($n > 4);
+ # Tiny cubes are not worth the fork overhead.
+ return 1 if($size < 9);
+ return $n;
+}
+sub _lut_node_u16 {
+ my ($model,$r,$g,$b,$size)=@_;
+ my $out=node_output_pct($model,$r,$g,$b,$size);
+ return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+}
+
 sub generate_lut_cube {
  my ($model,$size)=@_;
  $size ||= 17;
- my @nodes;
- my @u16;
- for(my $r=0;$r<$size;$r++) {
-  for(my $g=0;$g<$size;$g++) {
-   for(my $b=0;$b<$size;$b++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
-    my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
-    push @u16,@v;
-    push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
+ my $workers=_lut_gen_workers($size);
+ if($workers <= 1) {
+  my @nodes; my @u16;
+  for(my $r=0;$r<$size;$r++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $b=0;$b<$size;$b++) {
+     my $out=node_output_pct($model,$r,$g,$b,$size);
+     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+     push @u16,@v;
+     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
+    }
    }
   }
+  return (\@u16,\@nodes);
+ }
+ # Outer axis is R — split contiguous R slabs across workers.
+ my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut generate: mkdir $tmpdir failed ($!), serial cube");
+  my @nodes; my @u16;
+  for(my $r=0;$r<$size;$r++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $b=0;$b<$size;$b++) {
+     my $out=node_output_pct($model,$r,$g,$b,$size);
+     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+     push @u16,@v;
+     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
+    }
+   }
+  }
+  return (\@u16,\@nodes);
+ }
+ my $per=int(($size+$workers-1)/$workers);
+ my @pids;
+ for(my $w=0;$w<$workers;$w++) {
+  my $r0=$w*$per; my $r1=$r0+$per; $r1=$size if($r1 > $size);
+  next if($r0 >= $size);
+  my $pid=fork();
+  if(!defined $pid) {
+   log_line("lut generate: fork failed, waiting and serial-finishing remaining");
+   last;
+  }
+  if($pid == 0) {
+   my @u16;
+   for(my $r=$r0;$r<$r1;$r++) {
+    for(my $g=0;$g<$size;$g++) {
+     for(my $b=0;$b<$size;$b++) {
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+     }
+    }
+   }
+   if(open(my $fh,'>',"$tmpdir/w$w.raw")) {
+    binmode($fh);
+    print $fh pack('S*',@u16);
+    close($fh);
+   }
+   exit 0;
+  }
+  push @pids,[$w,$pid,$r0,$r1];
+ }
+ my $ok=1;
+ foreach my $job (@pids) {
+  my $cpid=waitpid($job->[1],0);
+  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
+ }
+ my @u16;
+ if($ok) {
+  for(my $w=0;$w<$workers;$w++) {
+   my $path="$tmpdir/w$w.raw";
+   next unless(-f $path);
+   if(open(my $fh,'<',$path)) {
+    binmode($fh); local $/; my $blob=<$fh>; close($fh);
+    push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
+   }
+  }
+ }
+ # cleanup
+ foreach my $job (@pids) { unlink("$tmpdir/w$job->[0].raw"); }
+ rmdir($tmpdir);
+ if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  log_line("lut generate: parallel cube failed (ok=$ok n=".scalar(@u16)."), serial fallback");
+  my @nodes; my @su16;
+  for(my $r=0;$r<$size;$r++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $b=0;$b<$size;$b++) {
+     my $out=node_output_pct($model,$r,$g,$b,$size);
+     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+     push @su16,@v;
+     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
+    }
+   }
+  }
+  return (\@su16,\@nodes);
+ }
+ log_line("lut generate: cube ${size}^3 via $workers workers");
+ # Preview nodes only (corners / first few) — avoid re-solving whole cube.
+ my @nodes;
+ for my $idx (0..15) {
+  my $r=int($idx % $size); my $g=int(($idx/ $size) % $size); my $b=int($idx/($size*$size)) % $size;
+  # sample identity diagonal + a few corners instead
+ }
+ @nodes=();
+ for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
+  my ($r,$g,$b)=@{$pt};
+  my $out=node_output_pct($model,$r,$g,$b,$size);
+  my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+  push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
  }
  return (\@u16,\@nodes);
 }
@@ -1720,16 +1891,86 @@ sub neutral_identity_output {
 sub generate_lut_lg_payload {
  my ($model,$size)=@_;
  $size ||= 33;
- my @u16;
- for(my $b=0;$b<$size;$b++) {
-  for(my $g=0;$g<$size;$g++) {
-   for(my $r=0;$r<$size;$r++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
-    my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
-    push @u16,@v;
+ my $workers=_lut_gen_workers($size);
+ if($workers <= 1) {
+  my @u16;
+  for(my $b=0;$b<$size;$b++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $r=0;$r<$size;$r++) {
+     push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+    }
    }
   }
+  return \@u16;
  }
+ # Outer axis is B for the LG payload — split contiguous B slabs.
+ my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut generate: mkdir $tmpdir failed ($!), serial payload");
+  my @u16;
+  for(my $b=0;$b<$size;$b++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $r=0;$r<$size;$r++) {
+     push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+    }
+   }
+  }
+  return \@u16;
+ }
+ my $per=int(($size+$workers-1)/$workers);
+ my @pids;
+ for(my $w=0;$w<$workers;$w++) {
+  my $b0=$w*$per; my $b1=$b0+$per; $b1=$size if($b1 > $size);
+  next if($b0 >= $size);
+  my $pid=fork();
+  if(!defined $pid) { log_line("lut generate: fork failed on worker $w"); last; }
+  if($pid == 0) {
+   my @u16;
+   for(my $b=$b0;$b<$b1;$b++) {
+    for(my $g=0;$g<$size;$g++) {
+     for(my $r=0;$r<$size;$r++) {
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+     }
+    }
+   }
+   if(open(my $fh,'>',"$tmpdir/w$w.raw")) {
+    binmode($fh); print $fh pack('S*',@u16); close($fh);
+   }
+   exit 0;
+  }
+  push @pids,[$w,$pid];
+ }
+ my $ok=1;
+ foreach my $job (@pids) {
+  my $cpid=waitpid($job->[1],0);
+  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
+ }
+ my @u16;
+ if($ok) {
+  for(my $w=0;$w<$workers;$w++) {
+   my $path="$tmpdir/w$w.raw";
+   next unless(-f $path);
+   if(open(my $fh,'<',$path)) {
+    binmode($fh); local $/; my $blob=<$fh>; close($fh);
+    push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
+   }
+   unlink($path);
+  }
+ }
+ rmdir($tmpdir);
+ if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  log_line("lut generate: parallel payload failed (ok=$ok n=".scalar(@u16)."), serial fallback");
+  my @su16;
+  for(my $b=0;$b<$size;$b++) {
+   for(my $g=0;$g<$size;$g++) {
+    for(my $r=0;$r<$size;$r++) {
+     push @su16,_lut_node_u16($model,$r,$g,$b,$size);
+    }
+   }
+  }
+  return \@su16;
+ }
+ log_line("lut generate: payload ${size}^3 via $workers workers");
  return \@u16;
 }
 
@@ -2113,8 +2354,10 @@ sub run_solve_only {
  $state->{"message"}="Generating LUT";
  $state->{"current_name"}="Generating 3D LUT";
  write_state($state);
- my $cube_size=int($config->{"solve_cube_size"}||33);
- $cube_size=33 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
+ # Match AutoCal: 17^3 export cube + 33^3 LG payload. Calling 33 for both
+ # roughly doubles generate time with no upload benefit.
+ my $cube_size=int($config->{"solve_cube_size"}||17);
+ $cube_size=17 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
  my $payload_u16=generate_lut_lg_payload($model,33);
  $model->{"method"}="cube";
