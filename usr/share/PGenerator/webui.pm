@@ -26629,7 +26629,7 @@ async function meterLutSolveStart(series,readings,opts){
    title:'Generate 3D LUT?',
    body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
    acceptLabel:'Generate',cancelLabel:'Cancel',
-   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT (recommended for Resolve)',checked:true}]
+   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
   });
   if(!ok) return;
   if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
@@ -34869,11 +34869,11 @@ async function meterBuild3dLutSeries(){
    id:'lut_format',
    label:'Output format',
    options:[
-    {value:'cube',label:'.cube — Resolve, madVR, LUT boxes (recommended)',checked:true},
+    {value:'cube',label:'.cube — Resolve, madVR, LUT boxes',checked:true},
     {value:'3dl',label:'.3dl — Autodesk Lustre / Flame'}
    ]
   }],
-  checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT (recommended for Resolve)',checked:true}]
+  checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
  });
  if(!ok) return false;
  const fmt=(ok&&typeof ok==='object'&&ok.lut_format)?String(ok.lut_format):'cube';
