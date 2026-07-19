@@ -15587,15 +15587,26 @@ function meterFilterReadingsForSteps(readings,type,steps,options){
  return list;
 }
 
-// True only for a real meter sample (XYZ/Y from a read), not a series step shell
-// or a target-only placeholder used for unread patch UI.
+// True only for a real meter sample. Series steps, target-only placeholders, and
+// synthetic whites must never count — otherwise unread nodes show fabricated
+// "Measured" values (from codes, stale series, or target_Y mistaken for Y).
 function meterReadingIsRealMeasurement(rd){
  if(!rd||typeof rd!=='object') return false;
  if(rd._unreadStep||rd._presetStep||rd.synthetic_target) return false;
- try{ return !!meterReadingHasLuminance(rd); }catch(e){ return false; }
+ // Instrument path always leaves raw_* (or CIE xy + luminance) from a read.
+ if(rd.raw_Y!=null||rd.raw_luminance!=null||rd.raw_X!=null||rd.raw_Z!=null) return true;
+ if(rd.raw_x!=null&&rd.raw_y!=null) return true;
+ const hasXY=rd.x!=null&&rd.y!=null&&Number(rd.x)>0&&Number(rd.y)>0;
+ const hasLum=(rd.luminance!=null&&Number(rd.luminance)>=0)||(rd.Y!=null&&Number(rd.Y)>=0);
+ // Require both chroma + luminance so a step shell with only codes never passes.
+ if(hasXY&&hasLum) return true;
+ // Absolute XYZ from the meter (not target_X/Y/Z alone).
+ if(rd.X!=null&&rd.Y!=null&&rd.Z!=null&&hasLum&&(rd.x!=null||rd.raw_Y!=null)) return true;
+ return false;
 }
 
 // Detail/live context for an unread colour patch: targets only, no measured fields.
+// Intentionally omits x/y/X/Y/Z/luminance so nothing can treat it as a sample.
 function meterColorUnreadDetailFromStep(step){
  if(!step) return null;
  return {
@@ -22206,9 +22217,16 @@ function meterUpdateLiveReadingTargets(src){
 }
 
 function updateLiveReading(reading){
+ // Unread step shells: never invent live measured values from patch codes.
+ if(!reading||reading._unreadStep||reading._presetStep||!meterReadingIsRealMeasurement(reading)){
+  meterClearLiveReading(reading||meterCurrentPatchStep);
+  return;
+ }
  meterNormalizeMeasuredReading(reading);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&_colorDetailPinned&&_selectedColorReadingName&&Array.isArray(meterReadings)){
-  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName);
+  // Only pin-override to a REAL sample for the selected name — not a stale
+  // leftover or a different series.
+  const selected=meterReadings.find(r=>r&&r.name===_selectedColorReadingName&&meterReadingIsRealMeasurement(r));
   if(selected) reading=selected;
  }
  const measured=meterReadingXYZ(reading);
@@ -22221,8 +22239,8 @@ function updateLiveReading(reading){
  // is a nonsense number, so suppress it rather than mislead the operator.
  const cctEl=document.getElementById('meterCCT');
  if(cctEl) cctEl.textContent=(reading.cct&&meterReadingIsGreyscale(reading))?reading.cct:'--';
- document.getElementById('meterCIEx').textContent=reading.x!=null?reading.x.toFixed(4):'--';
- document.getElementById('meterCIEy').textContent=reading.y!=null?reading.y.toFixed(4):'--';
+ document.getElementById('meterCIEx').textContent=(measured&&reading.x!=null)?reading.x.toFixed(4):'--';
+ document.getElementById('meterCIEy').textContent=(measured&&reading.y!=null)?reading.y.toFixed(4):'--';
  meterUpdateLiveReadingTargets(reading);
 
  const liveRgb=meterLiveRgbData(reading);
@@ -27889,6 +27907,10 @@ async function meterSelectSeries(type,points,opts){
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
   }
   meterUpdateDeltaEFormControl();
+  try{
+   const hasReal=(Array.isArray(meterReadings)&&meterReadings.some(r=>meterReadingIsRealMeasurement(r)));
+   if(!hasReal) showColorReadingDetail(null);
+  }catch(e){}
   toast(meterSeriesLabelFromKey(key)+' loaded');
  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
   return;
@@ -27916,6 +27938,12 @@ async function meterSelectSeries(type,points,opts){
  meterUpdateThumbStyles(document.getElementById('meterPatchThumbs'),null,null);
  meterUpdateReadButtons();
  meterUpdateDeltaEFormControl();
+ // Fresh series load with no readings for this series: clear stale detail
+ // (e.g. ColorChecker Light Skin still sitting in the panel).
+ try{
+  const hasReal=(Array.isArray(meterReadings)&&meterReadings.some(r=>meterReadingIsRealMeasurement(r)));
+  if(!hasReal) showColorReadingDetail(null);
+ }catch(e){}
  toast(meterSeriesLabelFromKey(key)+' loaded');
  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 }
@@ -36617,11 +36645,11 @@ function drawAllCharts(readings){
     if(curRd&&meterReadingIsRealMeasurement(curRd)) showColorReadingDetail(curRd,{pin:false});
     else showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
    } else if(_colorDetailPinned&&_selectedColorReadingName){
-    const sel=cr.find(r=>r.name===_selectedColorReadingName);
-    if(sel&&meterReadingIsRealMeasurement(sel)) showColorReadingDetail(sel,{pin:true});
+    const sel=cr.find(r=>r&&r.name===_selectedColorReadingName&&meterReadingIsRealMeasurement(r));
+    if(sel) showColorReadingDetail(sel,{pin:true});
     else if(meterCurrentPatchStep) showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:true});
-    else showColorReadingDetail(cr[cr.length-1],{pin:false});
-   } else {
+    // Do NOT fall back to cr[last] — that re-shows a previous patch's measured values.
+   } else if(cr.length&&meterReadingIsRealMeasurement(cr[cr.length-1])){
     showColorReadingDetail(cr[cr.length-1],{pin:false});
    }
   } else if(is3dProfile&&meterCurrentPatchStep){
@@ -37689,49 +37717,61 @@ function showColorReadingDetail(rd,opts){
   return;
  }
  const pin=!(opts&&opts.pin===false);
- _selectedColorReadingName=rd.name||null;
- _colorDetailPinned=pin&&!!_selectedColorReadingName;
- // Unread step shells: targets only — never invent measured from codes.
+ // If a step shell was passed (or a non-sample object), force the unread
+ // target-only view so Measured can never be filled from codes / stale data.
  const isUnread=!!(rd._unreadStep||rd._presetStep||!meterReadingIsRealMeasurement(rd));
- if(isUnread) meterClearLiveReading(rd);
- else updateLiveReading(rd);
- const colorRefMode=meterColorRefMode();
- const colorInclLum=(colorRefMode==='eotf');
+ const view=isUnread?(meterColorUnreadDetailFromStep(rd)||rd):rd;
+ _selectedColorReadingName=view.name||null;
+ _colorDetailPinned=pin&&!!_selectedColorReadingName;
+ if(isUnread){
+  meterClearLiveReading(view);
+  // Force side charts empty (clear can race with a redraw).
+  try{
+   drawDeltaBarsVertical('meterRGBCanvasColor',null);
+   drawDeltaBarsVertical('meterXYYCanvasColor',null);
+   drawRGBBars(null);
+  }catch(e){}
+ } else {
+  updateLiveReading(view);
+ }
+ const colorInclLum=(meterColorRefMode()==='eotf');
  const deLabel=meterDeltaEFormLabel(meterColorDeltaEForm());
- const targetXYZ=meterTargetXYZForReading(rd);
- const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterTargetChromaticityForReading(rd):null;
- let hasMeasuredXYZ=false, hasChroma=false;
+ const targetXYZ=meterTargetXYZForReading(view);
+ const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterTargetChromaticityForReading(view):null;
+ // Measured fields: ONLY from a real sample. Never fall through to targets.
+ const hasMeasuredXYZ=!isUnread&&!!meterReadingXYZ(view);
+ const hasChroma=!isUnread&&hasMeasuredXYZ&&meterReadingHasChromaticity(view);
  let lumInfo={measuredY:null,targetY:null,deltaY:null,deltaPct:null};
  if(!isUnread){
-  hasMeasuredXYZ=!!meterReadingXYZ(rd);
-  hasChroma=hasMeasuredXYZ&&meterReadingHasChromaticity(rd);
-  lumInfo=meterColorLuminanceInfo(rd);
- } else {
-  // Target Y only (from codes / target_Yn); measured stays null.
-  if(targetXYZ&&targetXYZ.Y>0) lumInfo.targetY=targetXYZ.Y;
-  else if(meterXyzIsBlack(targetXYZ)) lumInfo.targetY=0;
+  lumInfo=meterColorLuminanceInfo(view);
+ } else if(targetXYZ&&targetXYZ.Y>0){
+  lumInfo.targetY=targetXYZ.Y;
+ } else if(meterXyzIsBlack(targetXYZ)){
+  lumInfo.targetY=0;
  }
- const targetColor=meterPreviewColorForReading(rd,'target');
- const measuredColor=hasMeasuredXYZ?meterPreviewColorForReading(rd,'measured'):'#14141c';
- const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
- const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+ const targetColor=meterPreviewColorForReading(view,'target');
+ const measuredColor=hasMeasuredXYZ?meterPreviewColorForReading(view,'measured'):'#14141c';
+ const mx=hasChroma?Number(view.x):null;
+ const my=hasChroma?Number(view.y):null;
+ const dx=(mx!=null&&tgt)?(mx-tgt.x):null;
+ const dy=(my!=null&&tgt)?(my-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
- const de=(!isUnread&&hasMeasuredXYZ)?meterColorDeltaE2000(rd,colorRefMode):NaN;
+ const de=(!isUnread&&hasMeasuredXYZ)?meterColorDeltaE2000(view,meterColorRefMode()):NaN;
  const hasDe=Number.isFinite(de);
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
  let h='<div style="margin-bottom:10px;text-align:center">';
  h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
- h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(rd.name||'')+'</span></div>';
+ h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(view.name||'')+'</span></div>';
  h+='<div style="display:flex;gap:8px;margin-bottom:10px;justify-content:center">';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(hasChroma?rd.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(my!=null?my.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+'</td></tr>';
@@ -37741,9 +37781,8 @@ function showColorReadingDetail(rd,opts){
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
- // Highlight corresponding thumb and table row by name
- colorHighlightThumb(rd.name);
- colorHighlightTableRow(rd.name);
+ colorHighlightThumb(view.name);
+ colorHighlightTableRow(view.name);
 }
 function colorHighlightThumb(name){
  const container=document.getElementById('meterPatchThumbs');
