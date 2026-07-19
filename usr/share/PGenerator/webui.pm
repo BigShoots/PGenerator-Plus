@@ -24562,34 +24562,57 @@ function meterDefaultSeriesButtonForTab(tab){
 // 3D LUT measurement tab: only show charts/thumbs after a lattice/hybrid/skeleton
 // series is selected. Otherwise leftover greyscale/ColorChecker charts from the
 // previous tab stay on screen.
+// True only when the ACTIVE series is a volume profiling series (not greyscale
+// 26 / ColorChecker 30, and not a stale AutoCal lg-3d-* key alone).
 function meter3dLutTabHasSelectedSeries(){
- if(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries()) return true;
- const key=String(meterActiveSeriesKey||'');
- if(key.indexOf('lg-3d-lattice-profile-')===0) return true;
+ try{
+  if(typeof meterActiveVolumeProfileSeries==='function'){
+   const s=meterActiveVolumeProfileSeries();
+   if(s&&(s.kind==='lattice'||s.kind==='hybrid'||s.kind==='skeleton')) return true;
+  }
+ }catch(e){}
  return false;
 }
+// When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
+let meter3dLutChartsAllowed=true;
 function meterSync3dLutTabChartVisibility(){
- if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') return;
+ const on3d=meterNormalizeSeriesTab(meterSeriesTab)==='3dlut';
+ if(!on3d){
+  meter3dLutChartsAllowed=true;
+  return;
+ }
  const has=meter3dLutTabHasSelectedSeries();
+ meter3dLutChartsAllowed=!!has;
  const charts=document.getElementById('meterCharts');
  const exportRow=document.getElementById('meterExportRow');
  const grey=document.getElementById('chartsGreyscaleWrap');
  const color=document.getElementById('chartsColorWrap');
+ const thumbs=document.getElementById('meterPatchThumbs');
+ const thumbsWrap=document.getElementById('meterPatchThumbsWrap')||(thumbs&&thumbs.parentElement);
  if(!has){
-  if(charts) charts.style.display='none';
+  if(charts){ charts.style.display='none'; charts.setAttribute('data-3dlut-empty','1'); }
   if(exportRow) exportRow.style.display='none';
   if(grey) grey.style.display='none';
   if(color) color.style.display='none';
+  if(thumbs) thumbs.style.display='none';
+  if(thumbsWrap&&thumbsWrap!==charts) try{ thumbsWrap.style.display='none'; }catch(e){}
   try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
   try{ if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false}); }catch(e){}
   try{ if(typeof meterResetLiveReadingDisplay==='function') meterResetLiveReadingDisplay(); }catch(e){}
   const liveEl=document.getElementById('meterLiveReading');
   if(liveEl) liveEl.style.display='none';
+  // Hide progress/export leftovers from greyscale/color runs.
+  const progress=document.getElementById('meterProgress');
+  if(progress&&!meterSeriesRunning) progress.style.display='none';
  } else {
-  if(charts) charts.style.display='';
+  if(charts){ charts.style.display=''; charts.removeAttribute('data-3dlut-empty'); }
   if(grey) grey.style.display='none';
   if(color) color.style.display='';
  }
+}
+// drawAllCharts / preset must not fight the empty 3D LUT tab.
+function meter3dLutChartsBlocked(){
+ return meterNormalizeSeriesTab(meterSeriesTab)==='3dlut'&&!meter3dLutChartsAllowed;
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
@@ -24600,6 +24623,13 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  if(meterSeriesTab==='3dlut'){
   meterSync3dLutTabChartVisibility();
   try{ meterUpdateReadButtons(); }catch(e){}
+  // Beat any post-tab async redraw (status poll / refresh charts).
+  try{
+   requestAnimationFrame(function(){
+    try{ meterSync3dLutTabChartVisibility(); }catch(e2){}
+    try{ meterUpdateReadButtons(); }catch(e2){}
+   });
+  }catch(e){}
   if(skipAutoSelect) return;
   return;
  }
@@ -36059,6 +36089,11 @@ function drawTwoPointCharts(gs,allSteps){
 }
 
 function drawAllChartsPreset(sortedSteps){
+ // 3D LUT tab with no profiling series selected: never re-open leftover charts.
+ if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+  return;
+ }
  try{
   const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
    ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
@@ -36386,6 +36421,10 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
 function drawAllCharts(readings){
+ if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+  return;
+ }
  try{
   const is3dLut=(typeof meterIs3dLutProfileChartContext==='function'&&meterIs3dLutProfileChartContext())
    ||(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
@@ -41330,6 +41369,10 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
+	 if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
+	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+	  return;
+	 }
 	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
 	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
 	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
