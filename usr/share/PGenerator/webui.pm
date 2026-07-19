@@ -9985,13 +9985,24 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
 }
+/* Expand (2D or 3D): hide side panels, CIE fills the row, taller canvas */
+#colorTopLayout.cie-expanded{
+ width:100%;align-items:stretch;flex-wrap:nowrap!important
+}
+#colorTopLayout.cie-expanded #chartCIEBox{
+ flex:1 1 0%!important;min-width:0;max-width:none
+}
 #colorTopLayout.cie-3d-layout.cie-expanded #meterRGBColorWrap,
 #colorTopLayout.cie-3d-layout.cie-expanded #meterXYYColorWrap,
-#colorTopLayout.cie-3d-layout.cie-expanded #colorReadingDetail{
+#colorTopLayout.cie-3d-layout.cie-expanded #colorReadingDetail,
+#colorTopLayout.cie-expanded #meterRGBColorWrap,
+#colorTopLayout.cie-expanded #meterXYYColorWrap,
+#colorTopLayout.cie-expanded #colorReadingDetail{
  display:none!important
 }
-#colorTopLayout.cie-3d-layout.cie-expanded #chartCIE{
- height:min(78vh,760px)!important
+#colorTopLayout.cie-3d-layout.cie-expanded #chartCIE,
+#colorTopLayout.cie-expanded #chartCIE{
+ width:100%!important;height:min(78vh,760px)!important;max-width:none
 }
 .header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
 padding:10px 16px;border-bottom:1px solid var(--border);display:flex;
@@ -11617,7 +11628,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
       <div id="chartCIEBox" style="position:relative;flex:0 0 600px;max-width:100%">
        <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
-       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cie')" style="display:none">&#8600;</button>
+       <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" onclick="meterToggleChartExpand('cie')">&#8600;</button>
       </div>
       <div id="meterRGBColorWrap" style="flex:0 0 126px;width:126px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
        <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;text-align:center">RGB</div>
@@ -37713,10 +37724,16 @@ function colorChartRegisterInteraction(readings){
    if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
    _colorChartHitZones.push({canvasId:'chartCIE',cx:g.toX(rd.x),cy:g.toY(rd.y),radius:12,reading:rd});
   });
-  cieCanvas.onmousemove=function(e){colorChartHandleHover(e,'chartCIE');};
+  // Hover via property handlers; click is handled by cie2d mouseup (so pan
+  // drag does not also select). Wheel/pan bound in cie2dBindHandlers.
+  cieCanvas.onmousemove=function(e){
+   if(_cie2d&&_cie2d.dragging) return;
+   colorChartHandleHover(e,'chartCIE');
+  };
   cieCanvas.onmouseleave=function(){document.getElementById('chartTooltip').style.display='none';};
-  cieCanvas.onclick=function(e){colorChartHandleClick(e,'chartCIE');};
-  cieCanvas.style.cursor='crosshair';
+  cieCanvas.onclick=null;
+  cieCanvas.style.cursor=(_cie2d&&_cie2d.scale>1.001)?'grab':'crosshair';
+  try{ cie2dBindHandlers(cieCanvas); }catch(e){}
  } else if(cieCanvas&&meterCie3dViewEnabled()){
   // Clear any leftover 2D property handlers so they don't fight orbit controls.
   cieCanvas.onmousemove=null;
@@ -37803,19 +37820,145 @@ function meterSelectedCIETargetColor(rd,baseColor){
  return meterIsSelectedColorReading(rd)?'#ffffff':baseColor;
 }
 
-// 2D CIE layout: full plot area, x grid 0..1.0, y 0..0.9.
+// 2D CIE view: wheel zoom + drag pan (independent of the per-patch zoom inset).
+// scale=1 shows the full x 0..1 / y 0..0.9 plot; pan is centre offset in xy.
+const CIE2D_WORLD={xMin:0,xMax:1.0,yMin:0,yMax:0.9};
+const CIE2D_SCALE_MIN=1,CIE2D_SCALE_MAX=25;
+let _cie2d={
+ scale:1,panX:0,panY:0,
+ dragging:false,lastX:0,lastY:0,moved:false,handlersBound:false,
+ lastReadings:null,lastPreset:false
+};
+function cie2dResetView(){
+ _cie2d.scale=1; _cie2d.panX=0; _cie2d.panY=0;
+}
+function meterCie2dViewport(){
+ const defW=CIE2D_WORLD.xMax-CIE2D_WORLD.xMin;
+ const defH=CIE2D_WORLD.yMax-CIE2D_WORLD.yMin;
+ const scale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+ const vw=defW/scale, vh=defH/scale;
+ let cx=0.5+(Number(_cie2d.panX)||0);
+ let cy=0.45+(Number(_cie2d.panY)||0);
+ // Keep the viewport inside the world when zoomed; full view is locked.
+ const halfW=vw/2, halfH=vh/2;
+ if(scale<=1.0001){ cx=0.5; cy=0.45; _cie2d.panX=0; _cie2d.panY=0; }
+ else {
+  cx=Math.max(CIE2D_WORLD.xMin+halfW,Math.min(CIE2D_WORLD.xMax-halfW,cx));
+  cy=Math.max(CIE2D_WORLD.yMin+halfH,Math.min(CIE2D_WORLD.yMax-halfH,cy));
+  _cie2d.panX=cx-0.5; _cie2d.panY=cy-0.45;
+ }
+ return {xMin:cx-halfW,xMax:cx+halfW,yMin:cy-halfH,yMax:cy+halfH,scale:scale,cx:cx,cy:cy};
+}
+function meterCie2dNiceStep(range){
+ const r=Math.max(1e-6,Number(range)||0.1);
+ if(r<=0.04) return 0.005;
+ if(r<=0.08) return 0.01;
+ if(r<=0.2) return 0.02;
+ if(r<=0.45) return 0.05;
+ return 0.1;
+}
+// 2D CIE layout: full plot area with optional zoom/pan viewport.
 // Zoom inset is drawn over the top-right of the plot (not a side gutter).
 function meterCie2dGeom(cw,ch){
  const pad={t:15,r:15,b:35,l:45};
- const xMin=0,xMax=1.0,yMin=0,yMax=0.9;
+ const vp=meterCie2dViewport();
+ const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
  const w=Math.max(1,cw-pad.l-pad.r);
  const h=Math.max(1,ch-pad.t-pad.b);
+ const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
  return {
-  pad,w,h,xMin,xMax,yMin,yMax,
+  pad,w,h,xMin,xMax,yMin,yMax,scale:vp.scale,
   plotRight:pad.l+w,
-  toX:v=>pad.l+(v-xMin)/(xMax-xMin)*w,
-  toY:v=>pad.t+h-(v-yMin)/(yMax-yMin)*h
+  toX:v=>pad.l+(v-xMin)/xSpan*w,
+  toY:v=>pad.t+h-(v-yMin)/ySpan*h,
+  fromX:px=>xMin+((px-pad.l)/w)*xSpan,
+  fromY:py=>yMin+((pad.t+h-py)/h)*ySpan
  };
+}
+function meterCie2dRedraw(){
+ const isColor=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
+ if(!isColor) return;
+ if(Array.isArray(meterReadings)&&meterReadings.length){
+  drawCIEChart(meterReadings);
+ } else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  drawCIEChartPreset(meterSeriesSteps);
+ }
+}
+function cie2dBindHandlers(canvas){
+ if(!canvas||canvas._cie2dBound) return;
+ canvas._cie2dBound=true;
+ const onDown=(e)=>{
+  if(meterCie3dViewEnabled()) return;
+  if(e.button!=null&&e.button!==0) return;
+  _cie2d.dragging=true; _cie2d.moved=false;
+  _cie2d.lastX=e.clientX; _cie2d.lastY=e.clientY;
+  canvas.style.cursor='grabbing';
+ };
+ const onMove=(e)=>{
+  if(!_cie2d.dragging||meterCie3dViewEnabled()) return;
+  const dx=e.clientX-_cie2d.lastX, dy=e.clientY-_cie2d.lastY;
+  if(Math.abs(dx)+Math.abs(dy)<2&&!_cie2d.moved) return;
+  _cie2d.moved=true;
+  _cie2d.lastX=e.clientX; _cie2d.lastY=e.clientY;
+  const rect=canvas.getBoundingClientRect();
+  const g=meterCie2dGeom(rect.width,rect.height);
+  // Drag moves the world under the cursor (natural map pan).
+  const xSpan=g.xMax-g.xMin, ySpan=g.yMax-g.yMin;
+  _cie2d.panX-=(dx/Math.max(1,g.w))*xSpan;
+  _cie2d.panY+=(dy/Math.max(1,g.h))*ySpan;
+  meterCie2dRedraw();
+ };
+ const onUp=(e)=>{
+  if(!_cie2d.dragging) return;
+  const wasDrag=_cie2d.moved;
+  _cie2d.dragging=false;
+  canvas.style.cursor=(_cie2d.scale>1.001)?'grab':'crosshair';
+  // Click without drag = existing point-select behaviour.
+  if(!wasDrag&&e&&e.type==='mouseup'){
+   try{ colorChartHandleClick(e,'chartCIE'); }catch(err){}
+  }
+ };
+ const onWheel=(e)=>{
+  if(meterCie3dViewEnabled()) return;
+  e.preventDefault();
+  const rect=canvas.getBoundingClientRect();
+  const g0=meterCie2dGeom(rect.width,rect.height);
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  // Only zoom when pointer is over the plot area.
+  if(mx<g0.pad.l||mx>g0.pad.l+g0.w||my<g0.pad.t||my>g0.pad.t+g0.h) return;
+  const xy={x:g0.fromX(mx),y:g0.fromY(my)};
+  const factor=e.deltaY<0?1.12:1/1.12;
+  const oldScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+  const newScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,oldScale*factor));
+  if(Math.abs(newScale-oldScale)<1e-6) return;
+  _cie2d.scale=newScale;
+  if(newScale<=1.0001){ cie2dResetView(); }
+  else {
+   // Keep the CIE point under the cursor fixed.
+   const g1=meterCie2dGeom(rect.width,rect.height);
+   const xAfter=g1.fromX(mx), yAfter=g1.fromY(my);
+   _cie2d.panX+=(xy.x-xAfter);
+   _cie2d.panY+=(xy.y-yAfter);
+  }
+  canvas.style.cursor=(_cie2d.scale>1.001)?'grab':'crosshair';
+  meterCie2dRedraw();
+ };
+ const onDbl=()=>{
+  if(meterCie3dViewEnabled()) return;
+  cie2dResetView();
+  canvas.style.cursor='crosshair';
+  meterCie2dRedraw();
+ };
+ canvas.addEventListener('mousedown',onDown);
+ window.addEventListener('mousemove',onMove);
+ window.addEventListener('mouseup',onUp);
+ canvas.addEventListener('wheel',onWheel,{passive:false});
+ canvas.addEventListener('dblclick',onDbl);
+ canvas._cie2dHandlers={onDown,onMove,onUp,onWheel,onDbl};
+}
+function cie2dUnbindHandlers(canvas){
+ // Handlers stay bound once; mode checks gate behaviour. No-op cleanup.
+ if(!canvas) return;
 }
 
 // CIE ΔY% luminance-error ring. Only drawn when Include luminance error is on.
@@ -37863,19 +38006,20 @@ function meterUpdateCie3dLabel(){
  if(!lab) return;
  lab.textContent=meterCie3dViewEnabled()?'CIE xyY (3D)':'CIE 1931 Chromaticity';
 }
-// Expand CIE into free row width when 3D is on; restore fixed 450² for 2D.
+// CIE layout: 3D uses free row width; expand (2D or 3D) fills the card.
 function meterApplyCie3dLayout(){
  const layout=document.getElementById('colorTopLayout');
  const canvas=document.getElementById('chartCIE');
  if(!layout||!canvas) return;
  const is3d=meterCie3dViewEnabled();
  layout.classList.toggle('cie-3d-layout',is3d);
- // The expand arrow is a 3D-only affordance; leaving 3D also collapses it.
- if(!is3d){ layout.classList.remove('cie-expanded'); meterChartExpanded.cie=false; }
+ // Keep expand state across 2D/3D toggle; re-assert class from flag.
+ layout.classList.toggle('cie-expanded',!!meterChartExpanded.cie);
  const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
  if(cieExpandBtn){
-  cieExpandBtn.style.display=is3d?'flex':'none';
+  cieExpandBtn.style.display='flex';
   cieExpandBtn.innerHTML=meterChartExpanded.cie?'↖':'↘';
+  cieExpandBtn.title=meterChartExpanded.cie?'Collapse':'Expand to full width';
  }
  void canvas.offsetWidth; // reflow before getChartCtx measures the box
 }
@@ -38034,8 +38178,8 @@ function meterRedrawCubeView(){
  if(meterCubeViewLast) meterDrawCubeView(meterCubeViewLast.items,meterCubeViewLast.isPreset);
 }
 
-// Expand toggle for the two 3D charts (RGB cube + 3D CIE). Collapsed = fixed
-// 600px; expanded = full card width (side panels wrap below via flex-wrap).
+// Expand toggle for RGB cube + CIE (2D or 3D). Collapsed = fixed ~600px;
+// expanded = full card width (side panels hidden), taller canvas.
 let meterChartExpanded={cie:false,cube:false};
 function meterToggleChartExpand(which){
  meterChartExpanded[which]=!meterChartExpanded[which];
@@ -38053,9 +38197,7 @@ function meterApplyChartExpand(which){
   if(btn){ btn.innerHTML=glyph; btn.title=expanded?'Collapse':'Expand to full width'; }
   meterRedrawCubeView();
  } else {
-  // In 3D the layout is class-driven with !important, so toggle a class rather
-  // than fight it with inline flex; expanded hides the side panels so the CIE
-  // box fills the row.
+  // Class-driven layout (works for 2D and 3D CIE); hides RGB/XyY/detail.
   const layout=document.getElementById('colorTopLayout');
   const btn=document.getElementById('chartCIEExpandBtn');
   if(layout) layout.classList.toggle('cie-expanded',expanded);
@@ -38665,7 +38807,8 @@ function drawCIEChart(readings){
   return;
  }
  const canvas=document.getElementById('chartCIE');
- if(canvas) cie3dUnbindHandlers(canvas);
+ if(canvas){ try{ cie3dUnbindHandlers(canvas); }catch(e){} try{ cie2dBindHandlers(canvas); }catch(e){} }
+ _cie2d.lastReadings=readings; _cie2d.lastPreset=false;
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  // Always wipe the full canvas first so disabling ΔY% halos cannot leave
@@ -38678,30 +38821,34 @@ function drawCIEChart(readings){
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
+ const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
  // Background
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- // Chromaticity wash fills the full plot box (no reserved zoom gutter).
- { const dpr=window.devicePixelRatio||1;
+ // Clip plot so locus/points outside the zoomed window stay off-canvas.
+ ctx.save();
+ ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
+ // Chromaticity wash cropped to the current viewport.
+ try{
+  const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
+  if(grad){
+   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
+   const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
+   const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
+   const sh=(yMax-yMin)/(CY_MAX-CY_MIN)*grad.height;
    ctx.save();
    ctx.globalAlpha=0.62;
-   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
+   ctx.drawImage(grad,sx,sy,Math.max(1,sw),Math.max(1,sh),pad.l,pad.t,w,h);
    ctx.restore();
- }
- // Grid
+  }
+ }catch(e){}
+ // Grid (step scales with zoom)
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
- for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
- for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
+ for(let x=x0;x<=xMax+1e-9;x+=xStep){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=y0;y<=yMax+1e-9;y+=yStep){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
  // Axes
  ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
- // Axis labels
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
- for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
- ctx.textAlign='right';
- for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
- // Axis titles
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  // CIE spectral locus
  if(meterCieViewOpts.locus){
   ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
@@ -38754,7 +38901,7 @@ function drawCIEChart(readings){
   });
  }
  // Plot target and measured points
- readings.forEach(rd=>{
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   const hasMeasuredXY=!!(rd.x&&rd.y&&rd.x>0&&rd.y>0);
   const targetXYZ=meterTargetXYZForReading(rd);
@@ -38794,6 +38941,20 @@ function drawCIEChart(readings){
    ctx.restore();
   }
  });
+ ctx.restore(); // end plot clip
+ // Axis labels outside the clip so they stay readable at any zoom.
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ const labDec=xStep<0.01?3:(xStep<0.05?2:1);
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ if(g.scale>1.001){
+  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
+ }
  drawCIETargetInset(ctx,readings,g);
 }
 
@@ -38985,30 +39146,37 @@ function drawCIEChartPreset(steps){
   return;
  }
  const canvas=document.getElementById('chartCIE');
- if(canvas) cie3dUnbindHandlers(canvas);
+ if(canvas){ try{ cie3dUnbindHandlers(canvas); }catch(e){} try{ cie2dBindHandlers(canvas); }catch(e){} }
+ _cie2d.lastReadings=null; _cie2d.lastPreset=true;
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
+ const dpr=window.devicePixelRatio||1;
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
+ const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
+ const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
  ctx.fillStyle='#0d0d15';ctx.fillRect(0,0,ctx.w,ctx.h);
- { const dpr=window.devicePixelRatio||1;
+ ctx.save();
+ ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
+ try{
+  const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
+  if(grad){
+   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
+   const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
+   const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
+   const sh=(yMax-yMin)/(CY_MAX-CY_MIN)*grad.height;
    ctx.save();
    ctx.globalAlpha=0.42;
-   ctx.drawImage(getCIEGradient(w*dpr,h*dpr),pad.l,pad.t,w,h);
+   ctx.drawImage(grad,sx,sy,Math.max(1,sw),Math.max(1,sh),pad.l,pad.t,w,h);
    ctx.restore();
- }
+  }
+ }catch(e){}
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
- for(let x=0;x<=xMax;x+=0.1){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
- for(let y=0;y<=yMax;y+=0.1){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
+ for(let x=x0;x<=xMax+1e-9;x+=xStep){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
+ for(let y=y0;y<=yMax+1e-9;y+=yStep){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
  ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
- for(let x=0;x<=xMax;x+=0.1) ctx.fillText(x.toFixed(1),toX(x),pad.t+h+14);
- ctx.textAlign='right';
- for(let y=0;y<=yMax;y+=0.1) ctx.fillText(y.toFixed(1),pad.l-4,toY(y)+3);
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  // Locus / gamut honor the same view options as the live 2D chart — the
  // pre-read preset used to ignore them, leaving the checkboxes dead until
  // the first measurement arrived.
@@ -39030,14 +39198,16 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
  ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
- // Target placeholders (hollow squares) — hidden when Targets is unchecked,
- // matching the 3D preset path.
- // Same square size as the live chart (3.5) — the preset used to draw
- // oversized boxes that visibly shrank once the read started.
- if(meterCieViewOpts.targets) steps.forEach(s=>{
-  const tgt=((s.target_x!=null&&s.target_y!=null) || (s.series_color&&s.sat_pct!=null))
-   ? meterTargetChromaticityForReading(s)
-   : targetChromaticityXY(s.r,s.g,s.b);
+ // Target placeholders (hollow squares) — hidden when Targets is unchecked.
+ if(meterCieViewOpts.targets) (steps||[]).forEach(s=>{
+  if(!s) return;
+  let tgt=null;
+  try{
+   tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
+    ? meterTargetChromaticityForReading(s)
+    : targetChromaticityXY(s.r,s.g,s.b);
+  }catch(e){ tgt=null; }
+  if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
   const sq=3.5;
   const tx=toX(tgt.x), ty=toY(tgt.y);
@@ -39045,6 +39215,20 @@ function drawCIEChartPreset(steps){
   ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
   ctx.restore();
  });
+ ctx.restore(); // end plot clip
+ const labDec=xStep<0.01?3:(xStep<0.05?2:1);
+ ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ ctx.textAlign='right';
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillText('x',pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ if(g.scale>1.001){
+  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
+ }
+ try{ cie2dBindHandlers(canvas); }catch(e){}
 }
 
 function drawColorDeltaE2000Chart(readings){
