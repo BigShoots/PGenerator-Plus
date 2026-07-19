@@ -10995,7 +10995,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
     <button class="btn btn-sm btn-danger" id="meterClearChartBtn" onclick="meterClearResults()" style="display:none">Clear Chart Data</button>
     <button class="btn btn-sm btn-secondary" id="meterReadOnce" onclick="meterReadOnce()" style="display:none" disabled>&#9679; Read Once</button>
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
-    <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterRunSeries()" style="display:none">&#9654; Read Series</button>
+    <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterReadSeriesPrimaryAction()" style="display:none">&#9654; Read Series</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterOpenLg3dAutoCalModal()" style="display:none">&#9654; 3D LUT AutoCal</button>
@@ -11691,7 +11691,6 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div class="btn-row" id="meterExportRow" style="display:none">
    <button class="btn btn-sm btn-secondary" onclick="meterExportCSV()">&#128190; Export CSV</button>
    <button class="btn btn-sm btn-secondary" onclick="meterOpenReportDialog()">&#128196; Generate Report</button>
-   <button class="btn btn-sm btn-primary" id="meterGenerateLutBtn" onclick="meterGenerateLutFromLattice()" style="display:none" title="Solve a corrective 3D LUT from the measured lattice patches (white-preserving matrix baseline + per-node residuals) and export it to LUT Tools">&#9881; Generate 3D LUT</button>
   </div>
 
   <div id="meterReportOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:16px">
@@ -23788,6 +23787,7 @@ async function meterStop(){
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ if(hadSeriesStop) meterBuild3dLutPending=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
  meterActionPending=hadSeriesStop||hadContinuousStop;
@@ -26424,15 +26424,30 @@ function meterLutCubeDraw(){
 // adds bounded per-node residual corrections, and exports .cube/.bin/.json to
 // the solved-LUT dir. Works for ANY display — nothing is uploaded to a TV.
 let meterLutSolvePolling=null;
+let meterLutSolvePendingDownload='';
 
 function meterGenerateLutFromLattice(opts){
- const series=meterActiveLatticeSeries();
- if(!series){ toast('Select a lattice series first',true); return; }
+ const series=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+  ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
+  ||null;
+ if(!series){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Select a 3D LUT profiling series first',true);
+  return;
+ }
  const readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
- if(readings.length<5){ toast('Measure the lattice first (the W/R/G/B/K corners at minimum)',true); return; }
+ if(readings.length<5){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Measure the series first (the W/R/G/B/K corners at minimum)',true);
+  return;
+ }
  const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
  const missing=corners.filter(n=>!readings.some(rd=>rd.name===n));
- if(missing.length){ toast('Lattice read is missing corner patches: '+missing.join(', '),true); return; }
+ if(missing.length){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  toast('Series read is missing corner patches: '+missing.join(', '),true);
+  return;
+ }
  meterLutSolveStart(series,readings,opts);
 }
 
@@ -26462,24 +26477,30 @@ async function meterLutSolveStart(series,readings,opts){
   // Mid-sat WRGB damp (hybrid): blend inverse toward matrix where W engages.
   lg_autocal_3dlut_mid_sat_blend:1
  };
+ // Build 3D LUT already collected format + greyscale; other callers can still confirm.
  if(!(opts&&opts.auto)){
   const ok=await meterShowChoiceModal({
    title:'Generate 3D LUT?',
-   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nWRGB mid-sat blend is on so hybrid solves do not oversaturate mid tones the way pure inverse can.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
+   body:'Solve a corrective 3D LUT from '+payload.length+' measured patches ('+signalMode.toUpperCase()+', '+gamut+' / '+(gamma||'auto')+').\n\nFor Resolve / editing / external processors the greyscale axis is included in the cube by default (complete LUT). Uncheck only if you already apply a separate 1D greyscale.\n\nNothing is uploaded to the display — result goes to LUT Tools (.cube / .3dl).',
    acceptLabel:'Generate',cancelLabel:'Cancel',
-   // Optional second confirm path: if the modal helper supports a checkbox
-   // key we pass it; otherwise body text documents the default.
    checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT (recommended for Resolve)',checked:true}]
   });
   if(!ok) return;
-  // If the choice modal returns an object with checkbox state, honour it.
   if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
    body.include_greyscale=ok.include_greyscale?1:0;
   }
  }
+ // Stash download preference for the poll completion handler.
+ meterLutSolvePendingDownload=(opts&&opts.downloadFormat)?String(opts.downloadFormat):'';
+ if(meterLutSolvePendingDownload!=='3dl') meterLutSolvePendingDownload=meterLutSolvePendingDownload==='cube'?'cube':'';
  let r=null;
  try{ r=await fetchJSON('/api/3d-lut/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:15000}); }catch(e){}
- if(!r||r.status!=='started'){ toast((r&&r.message)||'LUT solve failed to start',true); return; }
+ if(!r||r.status!=='started'){
+  if(meterBuild3dLutPending) meterBuild3dLutPending=null;
+  meterLutSolvePendingDownload='';
+  toast((r&&r.message)||'LUT solve failed to start',true);
+  return;
+ }
  toast('Solving 3D LUT…');
  if(meterLutSolvePolling) clearInterval(meterLutSolvePolling);
  meterLutSolvePolling=setInterval(meterLutSolvePoll,1500);
@@ -26492,19 +26513,32 @@ async function meterLutSolvePoll(){
  if(s.status==='complete'){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   const rep=s.solve_report||{};
-  const how=(rep.mode==='matrix_plus_residuals')
-   ?('matrix + residuals from '+(rep.nodes_used||0)+' nodes'
-     +((rep.residual_signal_rms!=null)?(', residual RMS '+(Math.round(rep.residual_signal_rms*1000)/10)+'% signal'):''))
-   :'matrix only'+(rep.residual_skip_reason?(' ('+rep.residual_skip_reason+')'):'');
+  const how=(rep.mode==='measured_inverse')
+   ?('measured inverse from '+(rep.nodes_used||0)+' nodes')
+   :((rep.mode==='matrix_plus_residuals')
+    ?('matrix + residuals from '+(rep.nodes_used||0)+' nodes'
+      +((rep.residual_signal_rms!=null)?(', residual RMS '+(Math.round(rep.residual_signal_rms*1000)/10)+'% signal'):''))
+    :'matrix only'+(rep.residual_skip_reason?(' ('+rep.residual_skip_reason+')'):''));
   toast('3D LUT solved: '+how);
   try{
    const nm=String((s.export&&s.export.cube_path)||'').split('/').pop();
-   if(nm) meterLutSolveDonePrompt(nm,how,s);
+   const pref=meterLutSolvePendingDownload||'';
+   meterLutSolvePendingDownload='';
+   meterBuild3dLutPending=null;
+   if(nm){
+    meterLutSolveDonePrompt(nm,how,s);
+    // Build 3D LUT flow: immediately download the format chosen up front.
+    if(pref==='cube'||pref==='3dl'){
+     setTimeout(function(){ try{ meterLutSolveDownload(pref); }catch(e){} },250);
+    }
+   }
   }catch(e){}
   return;
  }
  if(s.status==='error'){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
+  meterLutSolvePendingDownload='';
+  meterBuild3dLutPending=null;
   toast(s.message||'LUT solve failed',true);
  }
 }
@@ -30972,6 +31006,43 @@ function meterShowChoiceModal(options){
    checkHost.appendChild(lab);
    checkInputs[c.id]=inp;
   });
+  const radios=Array.isArray(opts.radios)?opts.radios:[];
+  const radioInputs={};
+  const radioHost=document.createElement('div');
+  radioHost.style.cssText='display:grid;gap:10px;margin-bottom:16px';
+  radios.forEach(g=>{
+   if(!g||!g.id||!Array.isArray(g.options)||!g.options.length) return;
+   const group=document.createElement('div');
+   group.style.cssText='display:grid;gap:6px';
+   if(g.label){
+    const gl=document.createElement('div');
+    gl.style.cssText='font-size:.72rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em';
+    gl.textContent=String(g.label);
+    group.appendChild(gl);
+   }
+   const name='meterChoiceRadio_'+g.id;
+   let first=true;
+   g.options.forEach(opt=>{
+    if(!opt||opt.value==null) return;
+    const lab=document.createElement('label');
+    lab.style.cssText='display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--text,#e3e6ef);cursor:pointer;line-height:1.4';
+    const inp=document.createElement('input');
+    inp.type='radio';
+    inp.name=name;
+    inp.value=String(opt.value);
+    inp.checked=opt.checked===true||(opt.checked==null&&first);
+    first=false;
+    inp.style.cssText='margin-top:3px;accent-color:var(--accent,#5b7fff)';
+    lab.appendChild(inp);
+    const span=document.createElement('span');
+    span.textContent=String(opt.label!=null?opt.label:opt.value);
+    lab.appendChild(span);
+    group.appendChild(lab);
+    if(!radioInputs[g.id]) radioInputs[g.id]=[];
+    radioInputs[g.id].push(inp);
+   });
+   radioHost.appendChild(group);
+  });
   const row=document.createElement('div');
   row.style.cssText='display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap';
   const cancelBtn=document.createElement('button');
@@ -30984,6 +31055,7 @@ function meterShowChoiceModal(options){
   row.appendChild(acceptBtn);
   card.appendChild(title);
   card.appendChild(body);
+  if(radios.length) card.appendChild(radioHost);
   if(checks.length) card.appendChild(checkHost);
   card.appendChild(row);
   root.appendChild(card);
@@ -30997,9 +31069,14 @@ function meterShowChoiceModal(options){
    resolve(value);
   };
   acceptBtn.onclick=()=>{
-   if(!checks.length){ cleanup(true); return; }
+   if(!checks.length&&!radios.length){ cleanup(true); return; }
    const out={accepted:true};
    Object.keys(checkInputs).forEach(id=>{ out[id]=!!(checkInputs[id]&&checkInputs[id].checked); });
+   Object.keys(radioInputs).forEach(id=>{
+    const list=radioInputs[id]||[];
+    const sel=list.find(inp=>inp&&inp.checked);
+    out[id]=sel?String(sel.value):'';
+   });
    cleanup(out);
   };
   cancelBtn.onclick=()=>cleanup(false);
@@ -34602,9 +34679,56 @@ function meterClearSeriesRunUiState(){
  meterUpdateReadButtons();
 }
 
-// Lattice profiling reads exist to produce a LUT — the series button says so.
+// 3D LUT tab volume series (lattice / hybrid / skeleton): primary action is
+// Build 3D LUT (format modal -> measure -> solve -> download). Other series
+// keep Read Series.
+function meterSeriesIs3dLutBuild(){
+ return !!(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries());
+}
 function meterReadSeriesButtonLabel(){
- return (typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())?'&#9654; Solve 3D LUT':'&#9654; Read Series';
+ return meterSeriesIs3dLutBuild()?'&#9881; Build 3D LUT':'&#9654; Read Series';
+}
+function meterReadSeriesPrimaryAction(){
+ if(meterSeriesIs3dLutBuild()) return meterBuild3dLutSeries();
+ return meterRunSeries();
+}
+
+// Pending Build 3D LUT options chosen in the pre-measure modal.
+let meterBuild3dLutPending=null;
+
+// Build 3D LUT: pick export format (+ greyscale policy), measure the series,
+// solve, then download the chosen format.
+async function meterBuild3dLutSeries(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return false;}
+ if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
+ const series=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+ if(!series){toast('Select a 3D LUT profiling series first',true);return false;}
+ const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toUpperCase();
+ const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
+ const ok=await meterShowChoiceModal({
+  title:'Build 3D LUT',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.
+
+Nothing is uploaded to the TV — the LUT is exported for host apps (Resolve, madVR, etc.).',
+  acceptLabel:'Start measurement',
+  cancelLabel:'Cancel',
+  radios:[{
+   id:'lut_format',
+   label:'Output format',
+   options:[
+    {value:'cube',label:'.cube — Resolve, madVR, LUT boxes (recommended)',checked:true},
+    {value:'3dl',label:'.3dl — Autodesk Lustre / Flame'}
+   ]
+  }],
+  checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT (recommended for Resolve)',checked:true}]
+ });
+ if(!ok) return false;
+ const fmt=(ok&&typeof ok==='object'&&ok.lut_format)?String(ok.lut_format):'cube';
+ const includeGrey=!(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale'))||!!ok.include_greyscale;
+ meterBuild3dLutPending={format:(fmt==='3dl'?'3dl':'cube'),includeGreyscale:includeGrey};
+ const started=await meterRunSeries();
+ if(!started) meterBuild3dLutPending=null;
+ return started;
 }
 
 // Run full automated series (Read Series button)
@@ -34637,7 +34761,7 @@ async function meterRunSeries(){
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterProgressLabel').textContent='Connecting to meter...';
- document.getElementById('meterReadSeriesBtn').innerHTML='&#9209; Reading Series';
+ document.getElementById('meterReadSeriesBtn').innerHTML=meterBuild3dLutPending?'&#9209; Building 3D LUT…':'&#9209; Reading Series';
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
  // Raise the shared spectro setup modal in 'Working…' mode immediately so
@@ -34667,6 +34791,7 @@ async function meterRunSeries(){
   const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+meterSeriesSteps.length+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
   if(!proceed){
    meterSeriesRunning=false;
+   meterBuild3dLutPending=null;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
@@ -34919,11 +35044,22 @@ async function meterPollSeries(){
    meterCurrentPatchStep=null;
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
-   // A lattice profiling read exists to produce a LUT: solve automatically on
-   // completion and pop the download/format prompt (Solve 3D LUT button flow).
+   // Build 3D LUT flow: after measurement, solve with the pre-selected format
+   // and greyscale policy, then download. Clear pending on cancel/error paths
+   // is handled in the solve helpers.
    try{
-    if(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries()){
-     setTimeout(function(){ try{ meterGenerateLutFromLattice({auto:true}); }catch(e){} },400);
+    if(meterBuild3dLutPending&&typeof meterGenerateLutFromLattice==='function'){
+     const pending=meterBuild3dLutPending;
+     setTimeout(function(){
+      try{
+       meterGenerateLutFromLattice({
+        auto:true,
+        includeGreyscale:!!pending.includeGreyscale,
+        downloadFormat:pending.format||'cube',
+        fromBuildFlow:true
+       });
+      }catch(e){}
+     },400);
     }
    }catch(e){}
   }
@@ -37709,8 +37845,6 @@ function meterUpdateColorChartMode(isLattice){
  // Averages are ΔE-based: force-hide for lattice; for other series the
  // averages renderer manages visibility (it only shows when rows exist).
  if(isLattice){ const avg=document.getElementById('colorSeriesAveragesWrap'); if(avg) avg.style.display='none'; }
- // The measure -> solve -> export entry point lives with the lattice charts.
- set('meterGenerateLutBtn',isLattice,'');
  set('chartCIELabel',true,'');
  set('meterCie3dViewLabel',true,'inline-flex');
  set('meterCieOptDropLinesLabel',true,'inline-flex');
