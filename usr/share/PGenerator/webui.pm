@@ -10030,7 +10030,7 @@ body.ui-offline .offline-mask{display:flex}
 .meter-autocal-mask{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(6,6,10,.66);backdrop-filter:blur(4px)}
 body.meter-autocal-active .dashboard,body.meter-autocal-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 body.meter-autocal-active .meter-autocal-mask{display:flex}
-.meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box;overflow-x:hidden}
+.meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box}
 /* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
 #meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
 #meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
@@ -32872,7 +32872,7 @@ function meterAutoCalDisplayTypeIsOled(value,label){
 // the main controls at phase entry, and the previous bug where the wizard's
 // choice never reached the run config is fixed by writing both into
 // meterAutoCalPendingConfig in Continue.
-function meterAutoCalDisplayTypePopulate(){
+async function meterAutoCalDisplayTypePopulate(){
  const src=document.getElementById('meterDisplayType');
  const dst=document.getElementById('meterAutoCalDisplayTypeSelect');
  if(!src||!dst) return;
@@ -32885,10 +32885,18 @@ function meterAutoCalDisplayTypePopulate(){
  dst.value=src.value;
  if(dst.selectedIndex<0) dst.selectedIndex=0;
  dst.onchange=meterAutoCalDisplayTypeUpdateSummary;
- // Make sure the wizard CCSS dropdown has the latest options + mirrors the
- // persisted ccss_override from the main control (so a refresh / page
- // reload is the source of truth, not a hardcoded "Auto").
- populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+ // Ensure the CCSS catalog is loaded before building the wizard select.
+ // Full AutoCal can reach this step before the page-init /api/ccss/all
+ // promise settles (or after a failed legacy append crashed the loader).
+ try{
+  if(!Array.isArray(meterCcssLibrary)||!meterCcssLibrary.length){
+   await refreshMeterCcssCatalog();
+  }else{
+   populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+  }
+ }catch(e){
+  try{ populateMeterCcssProfileSelect('meterAutoCalCcssProfile'); }catch(e2){}
+ }
  const mainCcss=document.getElementById('meterCcssProfile');
  const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
  if(mainCcss&&wizardCcss){
@@ -40257,46 +40265,41 @@ function meterSetCcssProfileSelection(token){
 // handles both prefixes identically.
 async function loadMeterCcssOptions(){
  const r=await fetchJSON('/api/ccss/all',{_quiet:true,_timeoutMs:5000});
- // The legacy #meterDtCcss optgroup is intentionally empty now that the
- // spec split display_type and CCSS into two controls; populate the new
- // #meterCcssProfile dropdown (and any wizard clone) instead. The optgroup
- // remains in the DOM only as an anchor point — existing code that
- // queries it (`getElementById('meterDtCcss')`) keeps working.
+ // CCSS lives on #meterCcssProfile (+ wizard clone), not on the technology
+ // dropdown. The old #meterDtCcss optgroup was removed with the panel/CCSS
+ // split — do not append into it (null append used to abort this loader and
+ // leave AutoCal with only the "Auto" option).
  const grp=document.getElementById('meterDtCcss');
  if(grp) grp.innerHTML='';
  meterCcssLibrary=(r&&Array.isArray(r.files))?r.files:[];
- ccssPreviewPopulateOptions(meterCcssLibrary);
- populateMeterCcssProfileSelect();
+ try{ ccssPreviewPopulateOptions(meterCcssLibrary); }catch(e){}
+ // Always fill main + wizard CCSS selects from the library.
+ populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
  if(!meterCcssLibrary.length) return;
- const sel=document.getElementById('meterDisplayType');
- const prev=sel.value;
- const byLabel=new Map();
- meterCcssLibrary.forEach(f=>{
-  if(f.source==='system'&&ccssIsGenericProfile(f)) return;
-  const label=ccssFormatDropdownLabel(f);
-  if(!label) return;
-  const score=(f.source==='custom'?1000:0)
-   +(ccssLegacyTechFirstName(f.name)?0:100)
-   +((f.display&&f.technology)?20:0)
-   +(String(f.name||'').length>0?Math.min(String(f.name).length,50):0);
-  const current=byLabel.get(label);
-  if(!current||score>current.score){
-   byLabel.set(label,{entry:f,label:label,score:score});
-  }
- });
- [...byLabel.values()].sort((a,b)=>a.label.localeCompare(b.label)).forEach(item=>{
-  const f=item.entry;
-  const prefix=f.source==='custom'?'custom_':'ccss_';
-  const opt=document.createElement('option');
-  opt.value=prefix+f.name;
-  opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
-  grp.appendChild(opt);
- });
- // restore previous or pending selection if still present
- const restore=sel.dataset.pendingValue||prev;
- if(restore){
-  sel.value=restore;
-  if(sel.value===restore) delete sel.dataset.pendingValue;
+ // Optional legacy optgroup fill (only if the anchor still exists).
+ if(grp){
+  const byLabel=new Map();
+  meterCcssLibrary.forEach(f=>{
+   if(f.source==='system'&&ccssIsGenericProfile(f)) return;
+   const label=ccssFormatDropdownLabel(f);
+   if(!label) return;
+   const score=(f.source==='custom'?1000:0)
+    +(ccssLegacyTechFirstName(f.name)?0:100)
+    +((f.display&&f.technology)?20:0)
+    +(String(f.name||'').length>0?Math.min(String(f.name).length,50):0);
+   const current=byLabel.get(label);
+   if(!current||score>current.score){
+    byLabel.set(label,{entry:f,label:label,score:score});
+   }
+  });
+  [...byLabel.values()].sort((a,b)=>a.label.localeCompare(b.label)).forEach(item=>{
+   const f=item.entry;
+   const prefix=f.source==='custom'?'custom_':'ccss_';
+   const opt=document.createElement('option');
+   opt.value=prefix+f.name;
+   opt.textContent=item.label+(f.source==='custom'?' (custom)':'');
+   grp.appendChild(opt);
+  });
  }
 }
 
