@@ -1301,8 +1301,13 @@ sub model_from_readings {
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
   # Chromatic LUMINANCE compensation in the gamut-matrix cube path
-  # (gamut_matrix_output). Default ON when WRGB is detected (addY << white);
-  # can force with lg_autocal_3dlut_chroma_luma_comp=0/1.
+  # (gamut_matrix_output). OPT-IN ONLY (lg_autocal_3dlut_chroma_luma_comp=1).
+  # Default ON was tried in 26785cfb and regressed HDR matrix Full AutoCal
+  # mid-sat ColorChecker/sat Y to ~0.61x (Yellow/Orange ΔE 6–9) while
+  # greys/100% primaries stayed fine — envelope peaks at sat~2/3. The
+  # pre-26785cfb path (opt-in) matched the good 2026-07-12 HDR matrix
+  # report (CC avg ΔE 0.79). Hybrid mid-sat damp is separate
+  # (wrgb_mid_sat_matrix_blend, hybrid/skeleton only).
   wrgb_chroma_luma_comp => wrgb_chroma_luma_comp_enabled($config,$chromatic_white_y,$white_y),
   wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
    && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
@@ -2960,11 +2965,12 @@ sub neutral_axis_source_label {
 sub wrgb_chroma_luma_comp_enabled {
  my ($config,$cw,$wy)=@_;
  return 0 if(!($wy > 0 && $cw > 0 && $cw < $wy*0.98));
+ # Opt-in only. Default-ON crushed HDR matrix mid-sat luminance on WRGB
+ # (see model_from_readings note / 2026-07-19 regression vs 07-12 report).
  if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})) {
   return ($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0) ? 1 : 0;
  }
- # Default ON when WRGB auto-detected (additive primary sum well below white).
- return 1;
+ return 0;
 }
 
 sub wrgb_mid_sat_matrix_blend_enabled {
