@@ -24649,9 +24649,12 @@ function meterSync3dLutTabChartVisibility(){
  }
 }
 // drawAllCharts / preset must not fight the empty 3D LUT tab.
+// LIVE check only: do NOT OR in the cached meter3dLutChartsAllowed flag.
+// That flag stays false from the empty-tab hide until after sync; OR-ing it
+// blocked the first Hybrid/lattice draw after Select series, so the old
+// ColorChecker canvas was un-hidden without a redraw (second load "fixed" it).
 function meter3dLutChartsBlocked(){
- // Prefer live series check so a stale allowed=true cannot keep charts open.
- return meterShouldSuppressMeterCharts()||(meterNormalizeSeriesTab(meterSeriesTab)==='3dlut'&&!meter3dLutChartsAllowed);
+ return meterShouldSuppressMeterCharts();
 }
 
 function meterSetSeriesTab(tab,skipAutoSelect){
@@ -27767,6 +27770,9 @@ async function meterSelectSeries(type,points,opts){
  if(opts.preserveTab&&meterSeriesTab==='autocal'){
   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
  }
+ // Volume series now active: clear the empty-3D-LUT suppress flag BEFORE any
+ // draw so the first Hybrid/lattice load is not blocked (stale ColorChecker).
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
  // Build steps
  const steps=meterBuildStepsJS(type,points);
  meterSeriesSteps=steps;
