@@ -10090,11 +10090,10 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
-.meter-card-header-select{width:100%;max-width:100%;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 30px 6px 10px;border-radius:6px;font-size:.82rem;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+/* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
+.meter-card-header-select{width:100%;max-width:100%;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 24px 6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
 .meter-card-header-select:focus{border-color:var(--accent)}
 .meter-card-header-select option,.meter-card-header-select optgroup{background:#0d0d15;color:var(--text)}
-#meterDisplayType.meter-card-header-select{min-height:34px;box-sizing:border-box}
-#meterMeasurementPort.meter-card-header-select{min-height:34px;box-sizing:border-box}
 .meter-ccss-profile-row{display:flex;flex-direction:column;gap:3px;width:100%;max-width:100%;min-width:0}
 .meter-ccss-profile-row > select,
 #meterCcssProfile,#meterAutoCalCcssProfile{width:100%;max-width:100%;box-sizing:border-box}
