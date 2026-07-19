@@ -24074,15 +24074,19 @@ function meterUpdateReadButtons(){
   clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
   clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal;
  }
+ const on3dLutTab=meterSeriesTab==='3dlut';
+ const has3dLutSeries=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
+ // On the 3D LUT tab, only expose Build 3D LUT once a profiling series is selected.
+ const seriesControlsOk=on3dLutTab?has3dLutSeries:showSeries;
  if(readSeriesBtn){
   if(!meterSeriesRunning&&!meterActionPending) readSeriesBtn.innerHTML=meterReadSeriesButtonLabel();
-  readSeriesBtn.disabled=!hasSeries||!meterDetected||settingsDirty||busy;
-  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+  readSeriesBtn.disabled=!seriesControlsOk||!meterDetected||settingsDirty||busy;
+  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':(on3dLutTab&&!has3dLutSeries?'Select a 3D LUT series first':'');
  }
- if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive)?'':'none';
- if(continuousBtn) continuousBtn.style.display=show?'':'none';
+ if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive&&!on3dLutTab)?'':'none';
+ if(continuousBtn) continuousBtn.style.display=(show&&!on3dLutTab)?'':'none';
  const toneMapSeriesActive=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
- if(readSeriesBtn) readSeriesBtn.style.display=(showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
+ if(readSeriesBtn) readSeriesBtn.style.display=(seriesControlsOk&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
  const autoCalTabActive=meterSeriesTab==='autocal';
  const showAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&!continuousUiActive;
  if(autoCalBtn){
@@ -24415,6 +24419,8 @@ function meterUpdateSeriesTabUi(){
  meterGreySyncUi();
 	 if(greyBar) greyBar.style.display=(tab==='greyscale'&&!twoPointActive&&!autoCal26Active&&!meterActiveSeriesIsCustom())?'flex':'none';
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
+ // Hide leftover greyscale/color charts on the 3D LUT tab until a profiling series is chosen.
+ try{ if(tab==='3dlut'&&typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 }
 
 function meterAutoCalChoiceForSeries(type,points){
@@ -24553,10 +24559,50 @@ function meterDefaultSeriesButtonForTab(tab){
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
 
+// 3D LUT measurement tab: only show charts/thumbs after a lattice/hybrid/skeleton
+// series is selected. Otherwise leftover greyscale/ColorChecker charts from the
+// previous tab stay on screen.
+function meter3dLutTabHasSelectedSeries(){
+ if(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries()) return true;
+ const key=String(meterActiveSeriesKey||'');
+ if(key.indexOf('lg-3d-lattice-profile-')===0) return true;
+ return false;
+}
+function meterSync3dLutTabChartVisibility(){
+ if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') return;
+ const has=meter3dLutTabHasSelectedSeries();
+ const charts=document.getElementById('meterCharts');
+ const exportRow=document.getElementById('meterExportRow');
+ const grey=document.getElementById('chartsGreyscaleWrap');
+ const color=document.getElementById('chartsColorWrap');
+ if(!has){
+  if(charts) charts.style.display='none';
+  if(exportRow) exportRow.style.display='none';
+  if(grey) grey.style.display='none';
+  if(color) color.style.display='none';
+  try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false); }catch(e){}
+  try{ if(typeof showColorReadingDetail==='function') showColorReadingDetail(null,{pin:false}); }catch(e){}
+  try{ if(typeof meterResetLiveReadingDisplay==='function') meterResetLiveReadingDisplay(); }catch(e){}
+  const liveEl=document.getElementById('meterLiveReading');
+  if(liveEl) liveEl.style.display='none';
+ } else {
+  if(charts) charts.style.display='';
+  if(grey) grey.style.display='none';
+  if(color) color.style.display='';
+ }
+}
+
 function meterSetSeriesTab(tab,skipAutoSelect){
  const previousTab=meterNormalizeSeriesTab(meterSeriesTab);
  meterSeriesTab=meterNormalizeSeriesTab(tab);
  meterUpdateSeriesTabUi();
+ // 3D LUT tab never auto-loads a leftover greyscale/color series into the charts.
+ if(meterSeriesTab==='3dlut'){
+  meterSync3dLutTabChartVisibility();
+  try{ meterUpdateReadButtons(); }catch(e){}
+  if(skipAutoSelect) return;
+  return;
+ }
  if(skipAutoSelect) return;
  if(meterSeriesTab==='autocal'){
   meterSelectAutoCalGreyscale();
@@ -24566,6 +24612,22 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
+ // Leaving Tone Map / 3D LUT empty shell: restore charts if another series is live.
+ try{
+  if(meterSeriesTab!=='3dlut'&&meterActiveSeriesType&&meterDetected){
+   const charts=document.getElementById('meterCharts');
+   if(charts) charts.style.display='';
+   const grey=document.getElementById('chartsGreyscaleWrap');
+   const color=document.getElementById('chartsColorWrap');
+   if(meterActiveSeriesType==='greyscale'){
+    if(grey) grey.style.display='';
+    if(color) color.style.display='none';
+   } else if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+    if(grey) grey.style.display='none';
+    if(color) color.style.display='';
+   }
+  }
+ }catch(e){}
 }
 
 function meterSelectAutoCalGreyscale(){
@@ -27655,6 +27717,7 @@ async function meterSelectSeries(type,points,opts){
   }
   meterUpdateDeltaEFormControl();
   toast(meterSeriesLabelFromKey(key)+' loaded');
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
   return;
  }
  // Sort for display
@@ -27681,6 +27744,7 @@ async function meterSelectSeries(type,points,opts){
  meterUpdateReadButtons();
  meterUpdateDeltaEFormControl();
  toast(meterSeriesLabelFromKey(key)+' loaded');
+ try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 }
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
@@ -33849,7 +33913,11 @@ async function meterConfirmLg3dSelectSeries(){
  const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
  if(!resolved.series||resolved.series.id==null){ toast('No measurable series for that choice',true); return; }
  meterCloseLg3dSelectSeriesModal();
- await meterSelectSeries('colors',resolved.series.id,{force:true});
+ // Ensure charts reappear under the 3D LUT tab for the chosen series.
+ if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') meterSeriesTab='3dlut';
+ await meterSelectSeries('colors',resolved.series.id,{force:true,preserveTab:true});
+ try{ meterSync3dLutTabChartVisibility(); }catch(e){}
+ try{ meterUpdateReadButtons(); }catch(e){}
 }
 
 // Upload-only picker for the start modal (and any legacy callers).
