@@ -34355,9 +34355,20 @@ async function meterStartLg3dAutoCal(options){
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
  const skipPreprofileUnityReset=!!(fullWorkflow&&preflightLut3d&&preflightLut3d.upload_verified===true&&(!preflightPictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
-  const rawTargetGamma=meterAutoCalTargetGammaValue();
- const targetGamma=signalMode==='hdr10'?'st2084':(fullWorkflow?'bt1886':(String(rawTargetGamma).toLowerCase()==='st2084'?'bt1886':rawTargetGamma));
- const targetGamut=signalMode==='hdr10'?meterHdrMetadataGamut():(fullWorkflow?'bt709':meterAutoCalTargetGamutValue());
+ // HDR 3D: force ST.2084 (PQ) for the cube solve. Greyscale HDR AutoCal
+ // still uses 2.2 via meterLgAutoCalGreyscaleTargetGammaValue() — that is
+ // intentional (1D DPG vs 3D target space).
+ // SDR 3D: honor the same UI gamma/gamut as greyscale. Do NOT force BT.1886 /
+ // BT.709 just because this is a full-workflow stage.
+ const rawTargetGamma=(typeof meterLgAutoCalGreyscaleTargetGammaValue==='function')
+  ? meterLgAutoCalGreyscaleTargetGammaValue()
+  : meterAutoCalTargetGammaValue();
+ const targetGamma=signalMode==='hdr10'
+  ? 'st2084'
+  : (String(rawTargetGamma||'').toLowerCase()==='st2084' ? 'bt1886' : rawTargetGamma);
+ const targetGamut=signalMode==='hdr10'
+  ? ((typeof meterHdrMetadataGamut==='function')?meterHdrMetadataGamut():'p3d65')
+  : meterAutoCalTargetGamutValue();
  // Committed (applied) quant range — same source as meterMeasurementSignalContext.
  // Dropdown-only getVal('rgb_quant_range') can lag Apply & Restart and wrongly
  // profile a Full link with limited 16-235 / 64-940 codes (or the reverse).
