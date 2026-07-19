@@ -12053,6 +12053,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	   <div id="meterAutoCalResultsSummary" style="font-size:.82rem;color:var(--text);line-height:1.45"></div>
 	   <div id="meterAutoCalResultsDuration" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
 	   <div id="meterAutoCalResultsWorst" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
+	   <div id="meterAutoCalResultsApplyAllNote" style="display:none;margin-top:12px;padding:10px 12px;border:1px solid #3a4a28;border-radius:6px;background:#12180e;font-size:.8rem;color:#d7e8b8;line-height:1.45">
+	    <strong style="color:#e8f5c8">Next step on the TV:</strong> open Advanced picture settings for this picture mode and use <strong>Apply to all inputs</strong> so every HDMI input gets the calibrated settings (SDR and HDR Full Auto Cal alike).
+	   </div>
 	  </div>
 	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
@@ -29335,7 +29338,11 @@ function meterAutoCalRenderDuration(status){
 function meterAutoCalRenderResults(status){
  const summary=document.getElementById('meterAutoCalResultsSummary');
  const worst=document.getElementById('meterAutoCalResultsWorst');
+ const applyAllNote=document.getElementById('meterAutoCalResultsApplyAllNote');
  meterAutoCalRenderDuration(status);
+ // Full AutoCal (SDR + HDR) only: remind operator to copy the picture mode
+ // to every HDMI input on the TV.
+ if(applyAllNote) applyAllNote.style.display=(status&&status.full_autocal)?'':'none';
  if(!summary&&!worst) return;
  if(status&&status.full_autocal){
   const lut=status.lut3d||{};
