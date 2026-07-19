@@ -5122,6 +5122,7 @@ sub webui_meter_settings_save (@) {
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
+    low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
@@ -10034,9 +10035,7 @@ body.meter-autocal-active .meter-autocal-mask{display:flex}
 /* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
 #meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
 #meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
-#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row{display:flex;flex-direction:column;align-items:stretch;gap:8px;width:100%;max-width:100%;min-width:0}
-#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row > div{min-width:0;width:100%}
-#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row > button{align-self:flex-start}
+#meterAutoCalDisplayTypeBox .meter-autocal-ccss-row{display:block;width:100%;max-width:100%;min-width:0}
 /* CCSS editor/create must sit above the AutoCal mask (z 9000) and outside
    the .dashboard filter/opacity stacking context while AutoCal is active. */
 #meterCcssCreateModal,#customCcssEditorModal{z-index:10050!important}
@@ -10096,12 +10095,15 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-select option,.meter-card-header-select optgroup{background:#0d0d15;color:var(--text)}
 #meterDisplayType.meter-card-header-select{min-height:34px;box-sizing:border-box}
 #meterMeasurementPort.meter-card-header-select{min-height:34px;box-sizing:border-box}
-.meter-ccss-profile-row{display:flex;flex-direction:column;gap:8px;width:100%}
-.meter-ccss-profile-main{display:flex;flex-direction:column;gap:3px;width:100%;min-width:0}
-.meter-ccss-profile-main > select{width:100%;box-sizing:border-box}
-#meterProfileGearPopover .meter-ccss-profile-row{margin:0}
-#meterProfileGearPopover #meterCcssProfileBtn{align-self:stretch;width:100%}
+.meter-ccss-profile-row{display:flex;flex-direction:column;gap:3px;width:100%;max-width:100%;min-width:0}
+.meter-ccss-profile-row > select,
+#meterCcssProfile,#meterAutoCalCcssProfile{width:100%;max-width:100%;box-sizing:border-box}
+#meterProfileGearPopover{width:280px}
+#meterProfileGearPopover #meterProfileDisplayField{width:100%;max-width:100%;min-width:0}
 #meterProfileGearPopover #meterProfileDisplayField > label{display:none}
+#meterProfileGearPopover .meter-ccss-profile-row{margin:0}
+#meterProfileGearPopover #meterCcssProfile{font-size:.78rem}
+.meter-autocal-ccss-row{display:block;width:100%;max-width:100%}
 #meterCard.meter-patterns-only .meter-card-header-row{display:none}
 .meter-header-label{display:block;font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin:0 0 2px}
 #meterCard.meter-patterns-only .meter-header-label{display:none}
@@ -10184,7 +10186,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 	.meter-xyz-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
-	#meterProfileGearPopover{width:290px;max-height:72vh;overflow-y:auto;left:0;right:auto}
+	#meterProfileGearPopover{width:280px;max-height:72vh;overflow-y:auto;left:0;right:auto}
 	.meter-profile-title{font-size:.78rem;font-weight:600;color:#dfe6f6;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
 	#meterProfileGearPopover .field{margin-bottom:10px;display:flex;flex-direction:column;align-items:stretch;gap:4px}
 	.meter-profile-section{border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;flex-direction:column;gap:8px}
@@ -10744,12 +10746,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
-    <div class="meter-ccss-profile-row">
-     <div class="meter-ccss-profile-main">
-      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override." aria-label="Meter profile CCSS help">?</span></label>
-      <select id="meterCcssProfile"><option value="">Auto (technology default)</option></select>
-     </div>
-     <button type="button" id="meterCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile">Profile my TV&hellip;</button>
+    <div class="meter-ccss-profile-row field">
+      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
+      <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
     </div>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
@@ -11986,11 +11985,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
 	   </div>
 	   <div class="field meter-autocal-ccss-row">
-	    <div>
 	     <label>Meter profile (CCSS)</label>
-	     <select id="meterAutoCalCcssProfile"><option value="">Auto (technology default)</option></select>
-	    </div>
-	    <button type="button" id="meterAutoCalCcssProfileBtn" class="btn btn-sm btn-secondary" onclick="meterOpenCustomCcssEditor()" title="Profile this TV and save a custom CCSS, then attach it as the meter profile">Profile my TV&hellip;</button>
+	     <select id="meterAutoCalCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
@@ -22684,7 +22680,7 @@ function meterRelocateProfileControls(){
  });
  const ccssRow=document.querySelector('.meter-ccss-profile-row');
  if(ccssRow&&ccssRow.parentElement!==displayField) displayField.appendChild(ccssRow);
- // Editor panel is opened via Profile my TV / Open Editor — do not park it in the popover.
+ // Editor panel is opened via CCSS Editor… in the profile dropdown — do not park it in the popover.
  const ccss=document.getElementById('customCcssPanel');
  if(ccss&&displayField.contains(ccss)) displayField.removeChild(ccss);
  const delay=document.getElementById('meterDelay');
@@ -22746,6 +22742,7 @@ function meterSetLowLightHandler(){
    trigger:Number(trigger.value)||5.0
   }));
  }catch(e){}
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
 }
 function meterRestoreLowLightHandler(){
  const sel=document.getElementById('meterLowLightEnabled');
@@ -39705,17 +39702,15 @@ async function meterCloseCustomCcssEditor(){
 
 const meterDisplayTypeEl=document.getElementById('meterDisplayType');
 meterDisplayTypeEl.dataset.lastStableValue=meterDisplayTypeEl.value||'lcd';
-// The "Profile my TV…" button (#meterCcssProfileBtn) is the new entry point
-// for the CCSS editor; the legacy "CCSS Editor..." option has been moved out
-// of the dropdown. If a future caller still sends a `custom_editor` token,
-// fall back to the last stable value instead of opening the editor.
+// Display Type is technology-only. CCSS Editor lives on #meterCcssProfile.
+// A stale custom_editor token on this select is ignored and restored.
 meterDisplayTypeEl.addEventListener('change',function(){
  const v=this.value;
  if(v==='custom_editor'){
   const stable=this.dataset.lastStableValue||'lcd';
   this.value=stable;
   meterApplyDisplayTypeSelection(stable);
-  meterOpenCustomCcssEditor();
+  try{ meterOpenCustomCcssEditor(); }catch(e){}
   return;
  }
  this.dataset.lastStableValue=v;
@@ -39727,11 +39722,13 @@ meterDisplayTypeEl.addEventListener('change',function(){
   const ccss=document.getElementById('meterCcssProfile');
   if(ccss){
    ccss.value='';
+   ccss.dataset.lastStableValue='';
    delete ccss.dataset.pendingValue;
   }
   const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
   if(wizardCcss){
    wizardCcss.value='';
+   wizardCcss.dataset.lastStableValue='';
    delete wizardCcss.dataset.pendingValue;
   }
   meterRefreshCcssAutoLabel('meterAutoCalCcssProfile');
@@ -40300,6 +40297,7 @@ function getCcssOverride(){
  const sel=document.getElementById('meterCcssProfile');
  if(!sel) return '';
  const v=String(sel.value||'');
+ if(v==='custom_editor') return '';
  return v;
 }
 
@@ -40356,16 +40354,18 @@ function populateMeterCcssProfileSelect(wizardId){
  for(const id of ids){
   const sel=document.getElementById(id);
   if(!sel) continue;
-  const prev=String(sel.dataset.pendingValue||sel.value||'');
-  // Preserve the leading "Auto" option; the rest is rebuilt from the library.
-  const autoOpt=sel.querySelector('option[value=""]');
+  // Never persist the transient editor sentinel as the selected profile.
+  let prev=String(sel.dataset.pendingValue||sel.value||'');
+  if(prev==='custom_editor') prev=String(sel.dataset.lastStableValue||'');
   sel.innerHTML='';
-  if(autoOpt) sel.appendChild(autoOpt);
-  else{
-   const o=document.createElement('option');
-   o.value='';
-   sel.appendChild(o);
-  }
+  const editorOpt=document.createElement('option');
+  editorOpt.value='custom_editor';
+  editorOpt.textContent='CCSS Editor…';
+  sel.appendChild(editorOpt);
+  const autoOpt=document.createElement('option');
+  autoOpt.value='';
+  autoOpt.textContent='Auto (technology default)';
+  sel.appendChild(autoOpt);
   for(const entry of library){
    if(!entry||!entry.name) continue;
    const name=String(entry.name);
@@ -40378,10 +40378,49 @@ function populateMeterCcssProfileSelect(wizardId){
    opt.textContent=ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
    sel.appendChild(opt);
   }
+  if(prev==='custom_editor') prev='';
   sel.value=prev;
-  if(sel.value===prev) delete sel.dataset.pendingValue;
+  if(sel.value!==prev){
+   // pending token not in library yet — keep until next catalog refresh
+   if(prev){ sel.dataset.pendingValue=prev; sel.value=''; }
+  } else {
+   delete sel.dataset.pendingValue;
+  }
+  if(sel.value!=='custom_editor') sel.dataset.lastStableValue=String(sel.value||'');
+  if(!sel.dataset.boundCcssEditor){
+   sel.addEventListener('change',meterOnCcssProfileChange);
+   sel.dataset.boundCcssEditor='1';
+  }
  }
  meterRefreshCcssAutoLabel(wizardId);
+}
+
+// CCSS dropdown: top "CCSS Editor…" opens the importer/manager and does not
+// stick as the selected profile. All other values auto-save for reboot.
+function meterOnCcssProfileChange(ev){
+ const sel=ev&&ev.target;
+ if(!sel) return;
+ const v=String(sel.value||'');
+ if(v==='custom_editor'){
+  const stable=(sel.dataset.lastStableValue!=null)?String(sel.dataset.lastStableValue):'';
+  sel.value=stable;
+  if(sel.value!==stable) sel.value='';
+  try{ meterOpenCustomCcssEditor(); }catch(e){}
+  return;
+ }
+ sel.dataset.lastStableValue=v;
+ try{
+  // Keep wizard/main in sync when either changes.
+  const otherId=(sel.id==='meterCcssProfile')?'meterAutoCalCcssProfile':'meterCcssProfile';
+  const other=document.getElementById(otherId);
+  if(other&&other!==sel){
+   other.dataset.pendingValue=v;
+   other.value=v;
+   if(other.value===v) delete other.dataset.pendingValue;
+   other.dataset.lastStableValue=v;
+  }
+ }catch(e){}
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
 }
 
 // Wire the meter-profile dropdown to the persisted state: when a custom CCSS
@@ -40669,8 +40708,11 @@ function saveMeterSettings(){
   // override is in its own dropdown. Send the operator's selection (empty
   // string when on the "Auto" option, which the server resolves to the
   // $_dtype_info default for the chosen display_type).
-  ccss_override:val('meterCcssProfile'),
+  ccss_override:(()=>{ const v=val('meterCcssProfile'); return (v==='custom_editor')?'':v; })(),
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
+  low_light_enabled:(()=>{ try{ const e=document.getElementById('meterLowLightEnabled'); return !!(e&&e.checked); }catch(e){ return false; } })(),
+  low_light_mode:(()=>{ try{ const e=document.getElementById('meterLowLightMode'); return String((e&&e.value)||'off'); }catch(e){ return 'off'; } })(),
+  low_light_trigger:(()=>{ try{ const e=document.getElementById('meterLowLightTrigger'); const n=Number(e&&e.value); return Number.isFinite(n)?n:5.0; }catch(e){ return 5.0; } })(),
   measurement_meter_port:meterMeasurementPort,
   profiling_meter_port:meterProfilingPort,
   simulate_spectro:chk('meterSimulateSpectro'),
@@ -40839,12 +40881,20 @@ async function loadMeterSettings(){
  // CCSS override: prefer the explicit new field when the server sent one,
  // else fall back to the migrated token from the legacy display_type.
  const _ccssOverride=(s.ccss_override!=null)?String(s.ccss_override):_migratedCcssOverride;
- if(_ccssOverride){
+ if(_ccssOverride && _ccssOverride!=='custom_editor'){
   const ccssSel=document.getElementById('meterCcssProfile');
   if(ccssSel){
    ccssSel.dataset.pendingValue=_ccssOverride;
+   ccssSel.dataset.lastStableValue=_ccssOverride;
    ccssSel.value=_ccssOverride;
    if(ccssSel.value===_ccssOverride) delete ccssSel.dataset.pendingValue;
+  }
+  const wiz=document.getElementById('meterAutoCalCcssProfile');
+  if(wiz){
+   wiz.dataset.pendingValue=_ccssOverride;
+   wiz.dataset.lastStableValue=_ccssOverride;
+   wiz.value=_ccssOverride;
+   if(wiz.value===_ccssOverride) delete wiz.dataset.pendingValue;
   }
  }
  // Refresh the "Auto" label now that the technology dropdown is populated.
@@ -40920,6 +40970,30 @@ async function loadMeterSettings(){
  meterSyncHdrMetadata();
  meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
  meterUpdateHdrConfigVisibility();
+ // Low Light Handler: server-side meter_settings survives Pi reboot (localStorage
+ // alone does not when the browser profile is wiped / another client is used).
+ try{
+  if(s.low_light_enabled!=null||s.low_light_mode!=null||s.low_light_trigger!=null){
+   const en=document.getElementById('meterLowLightEnabled');
+   const mode=document.getElementById('meterLowLightMode');
+   const trigger=document.getElementById('meterLowLightTrigger');
+   if(en&&s.low_light_enabled!=null) en.checked=!!(s.low_light_enabled===true||s.low_light_enabled==='1'||s.low_light_enabled===1);
+   if(mode&&s.low_light_mode!=null){
+    let base=String(s.low_light_mode||'off');
+    if(base==='x') base='off';
+    else if(base.indexOf('x_')===0) base=base.slice(2);
+    if(Array.from(mode.options).some(o=>o.value===base)) mode.value=base;
+   }
+   if(trigger&&s.low_light_trigger!=null){
+    const n=Number(s.low_light_trigger);
+    if(Number.isFinite(n)&&n>0) trigger.value=n;
+   }
+   // Mirror into localStorage for offline warm-start.
+   if(typeof meterSetLowLightHandler==='function') meterSetLowLightHandler();
+  } else if(typeof meterRestoreLowLightHandler==='function'){
+   meterRestoreLowLightHandler();
+  }
+ }catch(e){}
  if(meterReadings&&meterReadings.length){
   meterOnGreyRefChange();
   const live=meterFindReadingForStep(meterCurrentPatchStep)||[...meterReadings].reverse().find(rd=>meterReadingHasLuminance(rd));
