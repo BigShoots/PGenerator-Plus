@@ -1301,14 +1301,15 @@ sub model_from_readings {
   wrgb_white_ratio => $wrgb_white_ratio,
   wrgb_comp_source => $wrgb_comp_source,
   # Chromatic LUMINANCE compensation in the gamut-matrix cube path
-  # (gamut_matrix_output). OPT-IN ONLY (lg_autocal_3dlut_chroma_luma_comp=1).
-  # Default ON was tried in 26785cfb and regressed HDR matrix Full AutoCal
-  # mid-sat ColorChecker/sat Y to ~0.61x (Yellow/Orange ΔE 6–9) while
-  # greys/100% primaries stayed fine — envelope peaks at sat~2/3. The
-  # pre-26785cfb path (opt-in) matched the good 2026-07-12 HDR matrix
-  # report (CC avg ΔE 0.79). Hybrid mid-sat damp is separate
-  # (wrgb_mid_sat_matrix_blend, hybrid/skeleton only).
-  wrgb_chroma_luma_comp => wrgb_chroma_luma_comp_enabled($config,$chromatic_white_y,$white_y),
+  # (gamut_matrix_output). Default OFF for matrix (2026-07-19 HDR matrix
+  # regression: mid-sat CC/sat Y ~0.61x). Default ON for hybrid/skeleton
+  # WRGB when addY << white (same mid-sat envelope). Override with
+  # lg_autocal_3dlut_chroma_luma_comp=0/1. Hybrid also has a separate
+  # inverse-toward-matrix blend (wrgb_mid_sat_matrix_blend).
+  wrgb_chroma_luma_comp => wrgb_chroma_luma_comp_enabled(
+   $config,$chromatic_white_y,$white_y,
+   (ref($config) eq "HASH" ? ($config->{"method"}||$method) : $method)
+  ),
   wrgb_chroma_luma_comp_strength => (ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"})
    && ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) > 0)
    ? ($config->{"lg_autocal_3dlut_chroma_luma_comp_strength"}+0) : 0.8,
@@ -2963,13 +2964,20 @@ sub neutral_axis_source_label {
 }
 
 sub wrgb_chroma_luma_comp_enabled {
- my ($config,$cw,$wy)=@_;
+ my ($config,$cw,$wy,$method)=@_;
  return 0 if(!($wy > 0 && $cw > 0 && $cw < $wy*0.98));
- # Opt-in only. Default-ON crushed HDR matrix mid-sat luminance on WRGB
- # (see model_from_readings note / 2026-07-19 regression vs 07-12 report).
  if(ref($config) eq "HASH" && defined($config->{"lg_autocal_3dlut_chroma_luma_comp"})) {
   return ($config->{"lg_autocal_3dlut_chroma_luma_comp"}+0) ? 1 : 0;
  }
+ $method=lc($method||"");
+ # Prefer config method when volume paths call model_from_readings("matrix")
+ # only to harvest corner contrib.
+ if(ref($config) eq "HASH" && defined($config->{"method"}) && $config->{"method"} ne "") {
+  $method=lc($config->{"method"});
+ }
+ # Matrix: default OFF (HDR Full AutoCal matrix regressed with default ON).
+ # Hybrid/skeleton: default ON when WRGB gap is present (mid-sat overshoot).
+ return 1 if($method eq "hybrid" || $method eq "skeleton");
  return 0;
 }
 
