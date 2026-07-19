@@ -70,7 +70,8 @@ sub describe_and_exit {
   payload_channel_order => "RGB values per node",
   cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   signal_modes => ["sdr","hdr10"],
-  hdr10_methods => ["matrix","lattice","skeleton","hybrid","imported"],
+  # Calman HDR only supports matrix 3D LUT; imported is upload-only.
+  hdr10_methods => ["matrix","imported"],
   target_gamuts => ["bt709","p3d65","p3dci","bt2020"],
   target_gammas => ["bt1886","2.2","2.4","srgb","st2084"],
   ramp_levels => [ramp_levels()],
@@ -4192,6 +4193,13 @@ if(!$config->{"solve_only"}
 }
 my ($signal_mode,$signal_mode_error)=sanitize_signal_mode($config->{"requested_signal_mode"},$config->{"ui_signal_mode"},$config->{"signal_mode"});
 $config->{"signal_mode"}=$signal_mode;
+# HDR10: Calman matrix-only. Demote volume/ramp profiles (imported upload OK).
+# Also demote solve_only hybrid/lattice so standalone HDR solves stay matrix.
+if($signal_mode eq "hdr10" && $method ne "matrix" && $method ne "imported") {
+ log_line("HDR10 forces method=matrix (was $method)");
+ $method="matrix";
+ $config->{"solve_matrix_only"}=1 if($config->{"solve_only"});
+}
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
 # Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
@@ -4270,8 +4278,8 @@ my $upload_requested=upload_requested($config);
 
 eval {
  die "$signal_mode_error\n" if($signal_mode_error);
- die "LG 3D LUT Auto Cal HDR10 runs are matrix/lattice/skeleton/hybrid-profiled in this version\n"
-  if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && !is_volume_profile_method($method) && $method ne "imported");
+ die "LG 3D LUT Auto Cal HDR10 is matrix-only (Calman parity)\n"
+  if($config->{"signal_mode"} eq "hdr10" && $method ne "matrix" && $method ne "imported");
  # HDR20 post-cal shadow correction was MOVED to after the 3D LUT +
  # tone-map commit (operator-approved reorder, 2026-07-03). Running it
  # here (before profiling) made the trim converge against a mid-workflow
