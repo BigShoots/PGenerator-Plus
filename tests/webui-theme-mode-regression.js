@@ -47,6 +47,8 @@ assert(source.includes('body.layout-tablet #displaySettingsCard{order:-200;grid-
 assert(source.includes('body.layout-tablet #hdrCard{order:-199;grid-column:2}'),'HDR metadata reserves the second Tablet grid slot');
 assert(source.includes('body.layout-tablet #uiSettingsCard{grid-column:auto}'),'UI Settings remains a normal half-width Tablet card');
 assert(source.includes('--badge-neutral:#d5dce7'),'Light mode provides a readable neutral status badge surface');
+assert(source.includes('class="custom-series-patch-drag"'),'custom-series patch rows include reorder handles');
+assert(source.includes('editor.patches.splice(drag.index,1)')&&source.includes('editor.patches.splice(target,0,moved)'),'custom-series dragging reorders the underlying patch array');
 assert(source.includes('body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr))'),'Tablet layout and theme settings stay side by side');
 assert(source.includes('<h3>Theme</h3>'),'appearance group is named Theme');
 assert(source.includes('[data-theme="light"] #meterThumbsRow'),'measurement scrollbars use light-theme tokens');
