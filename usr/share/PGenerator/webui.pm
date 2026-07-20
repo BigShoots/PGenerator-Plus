@@ -24667,19 +24667,97 @@ function meterDefaultSeriesButtonForTab(tab){
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
 }
 
-// 3D LUT measurement tab: only show charts/thumbs after a lattice/hybrid/skeleton
-// series is selected. Otherwise leftover greyscale/ColorChecker charts from the
+// 3D LUT measurement tab: only show charts/thumbs after a matrix/volume series
+// is selected. Otherwise leftover greyscale/ColorChecker charts from the
 // previous tab stay on screen.
-// True only when the ACTIVE series is a volume profiling series (not greyscale
-// 26 / ColorChecker 30, and not a stale AutoCal lg-3d-* key alone).
+function meterActiveMatrixProfileSeries(){
+ return String(meterActiveSeriesKey||'')==='lg-3d-matrix-profile';
+}
+// True when the ACTIVE series is matrix (5-point) or volume (lattice/hybrid/skeleton).
 function meter3dLutTabHasSelectedSeries(){
  try{
+  if(meterActiveMatrixProfileSeries()) return true;
   if(typeof meterActiveVolumeProfileSeries==='function'){
    const s=meterActiveVolumeProfileSeries();
    if(s&&(s.kind==='lattice'||s.kind==='hybrid'||s.kind==='skeleton')) return true;
   }
  }catch(e){}
  return false;
+}
+// Five WRGBK patches for offline matrix profile / Build 3D LUT.
+function meterMatrixProfileSteps(){
+ const wire=(typeof meterLatticeWireRange==='function')?meterLatticeWireRange():{min:0,span:255,max:255};
+ const inputMax=(wire.max!=null)?wire.max:((wire.min||0)+(wire.span||255));
+ const pct=function(f){ const n=Math.round(Number(f)*1000)/10; return (Math.abs(n-Math.round(n))<0.05)?String(Math.round(n)):String(n); };
+ const code=function(f){ return Math.round((wire.min||0)+Math.max(0,Math.min(1,Number(f)||0))*(wire.span||255)); };
+ const prev=function(c){
+  const max=inputMax>0?inputMax:255;
+  return max>255?Math.max(0,Math.min(255,Math.round(Number(c)*255/max))):Math.max(0,Math.min(255,Math.round(Number(c)||0)));
+ };
+ const make=function(fr,fg,fb){
+  const r=code(fr),g=code(fg),b=code(fb);
+  return {
+   name:pct(fr)+'/'+pct(fg)+'/'+pct(fb),
+   ire:pct(Math.max(fr,fg,fb)),
+   stimulus:Number(pct(Math.max(fr,fg,fb))),
+   signal_r_pct:Number(pct(fr)),signal_g_pct:Number(pct(fg)),signal_b_pct:Number(pct(fb)),
+   r:r,g:g,b:b,
+   preview_r:prev(r),preview_g:prev(g),preview_b:prev(b),
+   input_max:inputMax,
+   series_type:'colors',
+   custom_series_id:'matrix'
+  };
+ };
+ // W, R, G, B, K — corners the offline matrix solve requires.
+ return [make(1,1,1),make(1,0,0),make(0,1,0),make(0,0,1),make(0,0,0)];
+}
+// Load matrix as a measurable series on the 3D LUT *series* tab (not Autocal).
+function meterInstallMatrixProfileSeries(opts){
+ const o=opts||{};
+ meterSeriesTab='3dlut';
+ try{ if(typeof meterUpdateSeriesTabUi==='function') meterUpdateSeriesTabUi(); }catch(e){}
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ meterSharedSeriesId=null;
+ if(o.clearReadings!==false){
+  meterReadings=[];
+  meterWhiteReading=null;
+ }
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints='matrix';
+ meterActiveSeriesKey='lg-3d-matrix-profile';
+ meterLg3dActiveLatticeSeriesId=0;
+ try{ meterActiveSeriesSignalMode=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase(); }catch(e){ meterActiveSeriesSignalMode='sdr'; }
+ const steps=meterMatrixProfileSteps();
+ meterSeriesSteps=steps;
+ try{ meterSetActiveSeriesChartContext(); }catch(e){}
+ try{ meterResetSeriesButtons(); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ try{
+  document.getElementById('chartsGreyscaleWrap').style.display='none';
+  document.getElementById('chartsColorWrap').style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+  else document.getElementById('meterCharts').style.display='';
+ }catch(e){}
+ try{
+  const deSec=document.getElementById('meterColorDeltaESection');
+  if(deSec) deSec.style.display='none';
+  const avgWrap=document.getElementById('colorSeriesAveragesWrap');
+  if(avgWrap) avgWrap.style.display='none';
+  const tableWrap=document.getElementById('colorReadingsTableWrap');
+  if(tableWrap) tableWrap.style.display='none';
+ }catch(e){}
+ try{ meterBuildPatchThumbs(steps,new Set(),null); }catch(e){}
+ try{ meterSetThumbsVisible(true); }catch(e){}
+ try{ drawAllChartsPreset(steps); }catch(e){}
+ try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+ try{ meterClearLiveReading(); }catch(e){}
+ try{ meterResetLiveReadingDisplay(); }catch(e){}
+ try{ meterUpdateDeltaEFormControl(); }catch(e){}
+ try{ meterUpdateReadButtons(); }catch(e){}
+ return true;
 }
 // When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
 let meter3dLutChartsAllowed=true;
@@ -26798,8 +26876,9 @@ async function meterLutSolveStart(series,readings,opts){
   includeGreyscale=!!opts.includeGreyscale;
  }
  // HDR10: Calman only supports matrix — force matrix solve even if a volume series was measured.
- let methodGuess=(series&&(series.kind==='hybrid'||series.kind==='skeleton'||series.kind==='lattice'))
-  ?String(series.kind):'hybrid';
+ let methodGuess='hybrid';
+ if(series&&series.kind==='matrix') methodGuess='matrix';
+ else if(series&&(series.kind==='hybrid'||series.kind==='skeleton'||series.kind==='lattice')) methodGuess=String(series.kind);
  if(signalMode==='hdr10') methodGuess='matrix';
  const body={
   signal_mode:signalMode, requested_signal_mode:signalMode, ui_signal_mode:signalMode,
@@ -34315,8 +34394,11 @@ function meterLg3dSelectSeriesChanged(){
  }
  const explain=document.getElementById('meterLg3dSelSeriesExplain');
  if(explain){
-  if(src==='matrix'&&meterLg3dHdrMatrixOnly()){
-   explain.textContent='HDR10 matrix only — Calman supports matrix for HDR 3D LUTs (matrix remains available for SDR too).\n\nMatrix measures white/red/green/blue/black (5 patches) and solves a white-preserving 3×3 gamut matrix into a full 33³ upload LUT. Hybrid / skeleton / lattice are not offered under HDR.\n\nUse 3D LUT AutoCal to measure and solve; this picker installs the matrix chart context.';
+  if(src==='matrix'){
+   explain.textContent=(meterLg3dHdrMatrixOnly()
+    ?'HDR10 matrix only — Calman supports matrix for HDR 3D LUTs.\n\n'
+    :'')
+    +'Matrix (5-point) — white, red, green, blue, and black.\n\nLoads a 5-patch series on the 3D LUT tab. Use Build 3D LUT to measure those patches and solve a corrective cube for download (or use 3D LUT AutoCal on the AutoCal tab to measure, solve, and upload to the TV).';
   } else {
    explain.textContent=meterLg3dProfilingExplain(src);
   }
@@ -34364,18 +34446,16 @@ async function meterConfirmLg3dSelectSeries(){
  let src=meterLg3dSelectSeriesSourceValue();
  if(meterLg3dHdrMatrixOnly()) src='matrix';
  meterLg3dSelSeriesLastSource=src;
- // Matrix has no multi-patch series — install the matrix chart shell on the 3D LUT tab.
+ // Matrix: load a 5-point WRGBK series on the 3D LUT tab (Build 3D LUT / Read).
+ // Do NOT use meterLg3dPrepareChartContext — that jumps to Autocal and leaves
+ // an empty shell with no Build button.
  if(src==='matrix'){
   meterCloseLg3dSelectSeriesModal();
-  if(typeof meterNormalizeSeriesTab==='function'&&meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') meterSeriesTab='3dlut';
-  try{ meterLg3dPrepareChartContext({method:'matrix',clearReadings:true}); }catch(e){}
+  meterSeriesTab='3dlut';
+  try{ meterInstallMatrixProfileSeries({clearReadings:true}); }catch(e){}
   try{ meterSync3dLutTabChartVisibility(); }catch(e){}
   try{ meterUpdateReadButtons(); }catch(e){}
-  if(meterLg3dHdrMatrixOnly()){
-   toast('HDR 3D LUT uses matrix profiling only — use 3D LUT AutoCal to measure and solve');
-  } else {
-   toast('Matrix profile selected — use 3D LUT AutoCal to measure and solve');
-  }
+  toast('Matrix 5-point series loaded — use Build 3D LUT to measure and solve');
   return;
  }
  const latSel=document.getElementById('meterLg3dSelSeriesLattice');
@@ -35225,6 +35305,7 @@ function meterClearSeriesRunUiState(){
 // Build 3D LUT (confirm -> measure -> solve -> pick download format). Other
 // series keep Read Series.
 function meterSeriesIs3dLutBuild(){
+ if(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()) return true;
  return !!(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries());
 }
 function meterReadSeriesButtonLabel(){
@@ -35244,8 +35325,10 @@ let meterBuild3dLutPending=null;
 async function meterBuild3dLutSeries(){
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
- const series=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
- if(!series){toast('Select a 3D LUT profiling series first',true);return false;}
+ const volume=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+ const isMatrix=(typeof meterActiveMatrixProfileSeries==='function')&&meterActiveMatrixProfileSeries();
+ if(!volume&&!isMatrix){toast('Select a 3D LUT profiling series first',true);return false;}
+ const series=volume||{id:'matrix',kind:'matrix',name:'Matrix (5-point)'};
  const signalMode=String(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr').toUpperCase();
  const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
  const ok=await meterShowChoiceModal({
@@ -35257,7 +35340,7 @@ async function meterBuild3dLutSeries(){
  });
  if(!ok) return false;
  const includeGrey=!(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale'))||!!ok.include_greyscale;
- meterBuild3dLutPending={includeGreyscale:includeGrey};
+ meterBuild3dLutPending={includeGreyscale:includeGrey,series:series};
  const started=await meterRunSeries();
  if(!started) meterBuild3dLutPending=null;
  return started;
@@ -35273,8 +35356,14 @@ async function meterRunSeries(){
 	 // Rebuild the local preview steps from the current UI state before starting.
 	 // Without this, rerunning the same series key can keep stale step codes from
 	 // a previous mode/range selection and then stamp them back onto fresh reads.
-	 meterSetActiveSeriesChartContext();
-	 meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	 // Matrix profile is installed by meterInstallMatrixProfileSeries — do not
+	 // rebuild via ColorChecker / greyscale builders (points==='matrix').
+	 if(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()){
+	  meterSeriesSteps=meterMatrixProfileSteps();
+	 } else {
+	  meterSetActiveSeriesChartContext();
+	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	 }
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterReadings=[];
@@ -35356,7 +35445,7 @@ async function meterRunSeries(){
  };
  try{
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
-		  if(meterActiveSeriesIsCustom()&&Array.isArray(meterSeriesSteps)){
+		  if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
 		   if(_activeCustom&&_activeCustom.kind==='lattice'){
