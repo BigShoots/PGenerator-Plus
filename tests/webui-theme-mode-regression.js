@@ -69,6 +69,7 @@ assert(source.includes('[data-theme="light"] .logo > img:first-child{display:non
 assert(source.includes('[data-theme="light"] .desktop-nav-btn[aria-current="page"]')&&source.includes('.ui-choice-title{color:var(--text-primary)!important}'),'Light selected navigation and setting tiles use dark text');
 assert(source.includes('--chart-annotation:#344255'),'Light chart annotations use a readable dark token');
 assert(source.includes('--chart-gamut-line:#334b70'),'Light CIE gamut lines use a visible dark stroke');
+assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert.strictEqual((source.match(/pgThemeColor\('--chart-gamut-line'/g)||[]).length,3,'preset, live 2D, and 3D CIE gamut triangles use the theme token');
 assert(source.includes('meterSetThumbsVisible(meterSeriesUiCaps(sortedSteps2.length).thumbs);'),'series completion reasserts thumbnail wrapper visibility after rebuilding');
 assert(source.includes('.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}'),'measured patch colors are insulated from theme surface overrides');
