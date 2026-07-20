@@ -36292,6 +36292,13 @@ function meterSeriesThumbContentWidth(sortedSteps,row){
  return Math.max(viewport,total);
 }
 
+function meterDesktopColorThumbsFit(sortedSteps,row){
+ if(!document.body.classList.contains('layout-desktop')) return false;
+ if(meterActiveSeriesType!=='colors'&&meterActiveSeriesType!=='saturations') return false;
+ const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
+ return meterSeriesThumbContentWidth(sortedSteps,row)<=viewport+4;
+}
+
 function meterGreyscaleScrollTargets(){
  const ids=['meterRgbChartScroller','meterDeltaEScroller','meterGammaValueScroller','meterColorDeltaEScroller'];
  return ids.map(id=>document.getElementById(id)).filter(Boolean);
@@ -36596,7 +36603,11 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  if(!container) return;
  const visibleSteps=meterFilterLgAutoCalChartItems(sortedSteps);
  const row=meterGreyscaleScrollSource();
- const scrollMode=meterSeriesThumbsUseScroll(visibleSteps.length);
+ let scrollMode=meterSeriesThumbsUseScroll(visibleSteps.length);
+ // Tablet keeps the established fixed-width colour strip. In the wider
+ // Desktop workspace, distribute short colour series across the whole row;
+ // long custom/lattice series still use the existing scroll-sync path.
+ if(scrollMode&&meterDesktopColorThumbsFit(visibleSteps,row)) scrollMode=false;
  container.style.flexWrap='nowrap';
  container.dataset.scrollMode=scrollMode?'1':'0';
  if(scrollMode){
