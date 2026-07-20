@@ -59,7 +59,8 @@ assert(webui.includes('#meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display
 assert(webui.includes('#meterGreyLiveRail{display:grid;grid-template-rows:subgrid'), 'the live-reading rail inherits the RGB and Delta E row tracks');
 assert(webui.includes('#meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}'), 'the live-reading rail spans the RGB and Delta E rows');
 assert(webui.includes('#meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal'), 'compact Desktop live targets wrap inside their panel');
-assert(webui.includes('#meterGreyTvWrap{width:100%!important;height:100%!important;min-height:220px!important}'), 'Desktop LG RGB columns fill only the RGB balance row');
+assert(webui.includes('#meterGreyTvWrap{grid-row:1;width:100%!important;height:100%!important;min-height:220px!important}'), 'Desktop LG RGB columns fill only the RGB balance row');
+assert(webui.includes('#meterLiveReading{grid-row:2;margin:0!important'), 'Desktop live reading occupies the Delta E row below the RGB columns');
 assert(webui.includes('#chartRGB{height:100%!important;min-height:220px}'), 'Desktop RGB canvas fills its allocated panel height');
 assert(webui.includes('#chartDeltaE,\nbody.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}'), 'Desktop Delta E and Gamma charts use the taller layout');
 assert(webui.includes("set('meterLumTgt', tY!=null?('Target: '+tY.toFixed(2)):'')"), 'live readings use explicit target labels instead of arrows');
