@@ -37264,6 +37264,9 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
 document.addEventListener('pointerdown',event=>{
  if(meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
  if(event.target&&event.target.closest&&event.target.closest('#meterPatchThumbs')) return;
+ // Measurement actions operate on the selected patch. Do not let the
+ // click-away handler clear it before their click handlers run.
+ if(event.target&&event.target.closest&&event.target.closest('#meterReadBtnRow')) return;
  try{ meterDeselectCurrentPatch(); }catch(e){}
 },true);
 

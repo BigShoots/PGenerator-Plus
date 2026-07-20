@@ -77,5 +77,6 @@ assert.strictEqual((source.match(/pgThemeColor\('--chart-gamut-line'/g)||[]).len
 assert(source.includes('meterSetThumbsVisible(meterSeriesUiCaps(sortedSteps2.length).thumbs);'),'series completion reasserts thumbnail wrapper visibility after rebuilding');
 assert(source.includes('.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}'),'measured patch colors are insulated from theme surface overrides');
 assert(source.includes("event.target.closest('#meterPatchThumbs')"),'clicking away from a patch thumbnail clears its transient selection');
+assert(source.includes("event.target.closest('#meterReadBtnRow')"),'measurement actions preserve the selected thumbnail and displayed patch');
 
 console.log('webui theme mode regression OK');
