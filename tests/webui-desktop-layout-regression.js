@@ -48,6 +48,11 @@ assert(webui.includes("if(document.body.classList.contains('layout-desktop')) re
 assert(webui.includes("else card.classList.toggle('collapsed',!!state[card.dataset.collapseKey]);"), 'tablet collapse state is restored after leaving desktop');
 assert(webui.includes("localStorage.getItem('cardCollapse')"), 'collapse preferences remain separate from layout preference');
 assert(webui.includes("localStorage.setItem('pg_widget_order'"), 'tablet widget ordering remains supported');
+assert(webui.includes('body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode){display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr)'), 'desktop greyscale reserves a right chart column');
+assert(webui.includes('#meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important'), 'desktop stacks EOTF above luminance');
+assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLuminanceGrid"'), 'greyscale chart regions have stable layout anchors');
+assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.includes("home.insertAdjacentElement('afterend',live)"), 'live reading moves into the Desktop RGB rail and returns home in Tablet');
+assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
 
 // Conditional panels and workflow affordances must stay correct.
 assert(webui.includes("const available=panel.style.display!=='none';"), 'workspace selection respects existing conditional panel visibility');

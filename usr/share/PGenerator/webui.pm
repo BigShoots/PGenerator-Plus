@@ -10576,6 +10576,19 @@ body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode){display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #chartEOTF,
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #chartGamma{height:300px!important;min-height:300px!important}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyLiveRail{display:flex;flex:0 0 150px;width:150px;min-width:0;flex-direction:column;gap:8px}
+body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
+body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div>span{display:block;min-width:0}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}
@@ -11351,6 +11364,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   </div>
 
   <!-- Live Reading -->
+  <div id="meterLiveReadingHome" aria-hidden="true"></div>
   <div id="meterLiveReading" style="display:none;margin-bottom:12px">
     <div id="meterLiveReadingLabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Patch Reading</div>
    <div style="background:#0d0d15;padding:10px;border-radius:6px">
@@ -11813,9 +11827,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    <div id="meterGreyscaleLgPrimary">
 	    <div id="meterGreyscaleRgbBlock" style="margin-bottom:10px">
 	     <div id="meterGreyscaleRgbRow" style="display:flex;gap:8px;align-items:stretch">
+	      <div id="meterGreyLiveRail">
 	      <div id="meterGreyRgbLegacyWrap" style="flex:0 0 100px;width:100px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:flex;flex-direction:column;box-sizing:border-box">
 	       <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
 	       <canvas id="meterRGBCanvasGrey" width="200" height="200" style="width:100%;flex:1;min-height:0;display:block"></canvas>
+	      </div>
 	      </div>
 	      <div id="meterGreyTvWrap" style="flex:0 0 180px;width:180px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:flex;flex-direction:column;box-sizing:border-box">
 	       <div id="meterGreyTvTitle" style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
@@ -11876,7 +11892,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    </div>
 	    </div>
 	    </div>
-	    <div style="margin-bottom:10px">
+	    <div id="meterGammaBlock" style="margin-bottom:10px">
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartGammaValueLabel">Gamma</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto">
@@ -11888,8 +11904,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     </div>
     <div id="chartTooltip" style="display:none;position:fixed;pointer-events:none;z-index:9999;background:rgba(13,13,21,0.95);border:1px solid #555;border-radius:5px;padding:6px 10px;font-size:12px;color:#ddd;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
-    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:10px">
-     <div>
+    <div id="meterEotfLuminanceGrid" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:10px">
+     <div id="meterEotfBlock">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
        <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartEotfLabel">EOTF</div>
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Absolute error view: plots inverse-EOTF so a perfectly tracking display is a straight diagonal and errors deviate from it. Unchecked shows the normal bowed EOTF luminance curve.">
@@ -11911,7 +11927,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <canvas id="chartEOTF" width="500" height="350" style="width:100%;min-width:100%;height:350px;min-height:350px;background:#0d0d15;border-radius:6px"></canvas>
       </div>
      </div>
-    <div style="min-width:0">
+    <div id="meterLuminanceBlock" style="min-width:0">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
          <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase">Luminance</div>
          <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Use logarithmic vertical scaling for the luminance chart. This changes only the chart axis, not the target calculations.">
@@ -15294,6 +15310,7 @@ function pgApplyLayout(options){
  pgLayoutEffective=(pgLayoutPreference==='desktop'&&pgWideEnoughForDesktop())?'desktop':'tablet';
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
+ meterSyncGreyscaleDesktopLayout();
  pgSyncCardCollapseForLayout();
  pgUpdateLayoutControls();
  if(pgLayoutEffective==='desktop'){
@@ -15306,6 +15323,19 @@ function pgApplyLayout(options){
   // returning to Tablet or CSS order masks DOM drag-and-drop reordering.
   document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
   pgRefreshVisibleWorkspace();
+ }
+}
+function meterSyncGreyscaleDesktopLayout(){
+ const live=document.getElementById('meterLiveReading');
+ const home=document.getElementById('meterLiveReadingHome');
+ const rail=document.getElementById('meterGreyLiveRail');
+ const charts=document.getElementById('chartsGreyscaleFullWrap');
+ if(!live||!home||!rail) return;
+ const useRail=document.body.classList.contains('layout-desktop')&&!(charts&&charts.classList.contains('lg-calibration-mode'));
+ if(useRail){
+  if(live.parentNode!==rail) rail.appendChild(live);
+ }else if(live.previousElementSibling!==home){
+  home.insertAdjacentElement('afterend',live);
  }
 }
 function pgSetLayoutPreference(mode){
@@ -29528,6 +29558,7 @@ function meterUpdateGreyTvWidgetMode(useTvControls){
  if(tv) tv.style.display='flex';
  if(title) title.textContent=useTvControls?'LG RGB':'RGB';
  if(meta) meta.style.display=useTvControls?'':'none';
+ meterSyncGreyscaleDesktopLayout();
  meterUpdateSeriesLabels();
 }
 
