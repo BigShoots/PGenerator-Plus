@@ -10666,6 +10666,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .info-item,[data-theme="light"] .stat-card,[data-theme="light"] .if-hex,
 [data-theme="light"] .meter-autocal-progress,[data-theme="light"] .meter-lg-rgb-bar,
 [data-theme="light"] .meter-lg-rgb-luma,[data-theme="light"] .custom-ccss-panel{background:var(--surface-inset)}
+[data-theme="light"] .stat-card .meter{background:var(--badge-neutral);box-shadow:inset 0 0 0 1px rgba(70,84,102,.12)}
 [data-theme="light"] .meter-pattern-insert-popover,[data-theme="light"] .meter-xyz-gear-popover{background:var(--surface-popover);box-shadow:0 8px 24px var(--shadow)}
 [data-theme="light"] .meter-pattern-insert-gear,[data-theme="light"] .meter-xyz-gear{background:var(--surface-field);color:var(--text-secondary);border-color:var(--border)}
 [data-theme="light"] .meter-pattern-insert-gear:hover,[data-theme="light"] .meter-xyz-gear:hover{background:var(--hover-bg);color:var(--accent);border-color:var(--accent)}
