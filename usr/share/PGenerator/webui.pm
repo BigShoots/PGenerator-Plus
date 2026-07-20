@@ -10578,24 +10578,26 @@ body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
 #meterGreyLiveRail{display:contents}
 body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:150px minmax(0,1fr);column-gap:8px;row-gap:10px;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:300px!important;min-height:300px!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:flex;flex:0 0 150px;width:150px;min-width:0;flex-direction:column;gap:8px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{display:block;margin-bottom:0}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbBlock{display:block!important}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbRow{display:flex!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
+body.layout-desktop #chartsGreyscaleFullWrap #meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap #meterDeltaEBlock{grid-column:2;grid-row:2;margin-bottom:0!important;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:220px!important;min-height:220px!important;flex:0 0 220px!important}
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterRgbChartScroller,
-body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterDeltaEBlock{grid-column:auto;grid-row:auto}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div>span{display:block;min-width:0}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div>span{display:block;min-width:0;line-height:1.35;overflow-wrap:anywhere}
+body.layout-desktop #meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal;margin-top:2px}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}

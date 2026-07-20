@@ -54,7 +54,9 @@ assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLumi
 assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.includes("home.insertAdjacentElement('afterend',live)"), 'live reading moves into the Desktop RGB rail and returns home in Tablet');
 assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
 assert(webui.includes('#meterGreyLiveRail{display:contents}'), 'the live-reading rail wrapper is layout-neutral outside standard Desktop greyscale');
-assert(webui.includes('#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbRow{display:flex!important}'), 'the Desktop chart arrangement also applies to the LG/read-only RGB widget state');
+assert(webui.includes('#meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:150px minmax(0,1fr)'), 'Desktop RGB and Delta E share the chart column beside the live-reading rail');
+assert(webui.includes('#meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}'), 'the live-reading rail spans the RGB and Delta E rows');
+assert(webui.includes('#meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal'), 'compact Desktop live targets wrap inside their panel');
 
 // Conditional panels and workflow affordances must stay correct.
 assert(webui.includes("const available=panel.style.display!=='none';"), 'workspace selection respects existing conditional panel visibility');
