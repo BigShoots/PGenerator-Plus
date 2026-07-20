@@ -10577,14 +10577,20 @@ body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
 #meterGreyLiveRail{display:contents}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode){display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;min-width:0}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #chartEOTF,
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #chartGamma{height:300px!important;min-height:300px!important}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyLiveRail{display:flex;flex:0 0 150px;width:150px;min-width:0;flex-direction:column;gap:8px}
-body.layout-desktop #chartsGreyscaleFullWrap:not(.lg-calibration-mode) #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
+body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:start}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
+body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:300px!important;min-height:300px!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:flex;flex:0 0 150px;width:150px;min-width:0;flex-direction:column;gap:8px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{flex:0 0 220px!important;width:100%!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{display:block;margin-bottom:0}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbBlock{display:block!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbRow{display:flex!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{width:100%!important;height:220px!important;min-height:220px!important;flex:0 0 220px!important}
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterRgbChartScroller,
+body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterDeltaEBlock{grid-column:auto;grid-row:auto}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{margin:0!important;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
@@ -11833,11 +11839,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	       <div style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
 	       <canvas id="meterRGBCanvasGrey" width="200" height="200" style="width:100%;flex:1;min-height:0;display:block"></canvas>
 	      </div>
-	      </div>
 	      <div id="meterGreyTvWrap" style="flex:0 0 180px;width:180px;height:220px;background:#0d0d15;border-radius:6px;padding:6px;display:flex;flex-direction:column;box-sizing:border-box">
 	       <div id="meterGreyTvTitle" style="font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;text-align:center">RGB</div>
 	       <div id="meterGreyTvWidget" style="width:100%;flex:1;min-height:0;display:block"></div>
 	       <div id="meterGreyTvMeta" style="font-size:.6rem;color:var(--text2);line-height:1.35;margin-top:4px;text-align:center">LG TV</div>
+	      </div>
 	      </div>
 	      <div id="meterRgbChartScroller" class="meter-scroll-sync" style="flex:1;min-width:0;background:#0d0d15;border-radius:6px">
 	       <canvas id="chartRGB" width="800" height="220" style="width:100%;min-width:100%;height:220px;background:#0d0d15;border-radius:6px"></canvas>
@@ -15330,9 +15336,8 @@ function meterSyncGreyscaleDesktopLayout(){
  const live=document.getElementById('meterLiveReading');
  const home=document.getElementById('meterLiveReadingHome');
  const rail=document.getElementById('meterGreyLiveRail');
- const charts=document.getElementById('chartsGreyscaleFullWrap');
  if(!live||!home||!rail) return;
- const useRail=document.body.classList.contains('layout-desktop')&&!(charts&&charts.classList.contains('lg-calibration-mode'));
+ const useRail=document.body.classList.contains('layout-desktop');
  if(useRail){
   if(live.parentNode!==rail) rail.appendChild(live);
  }else if(live.previousElementSibling!==home){
