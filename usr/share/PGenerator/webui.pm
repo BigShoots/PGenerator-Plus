@@ -26975,12 +26975,33 @@ function meterRenderCustomSeriesManager(){
  }).join('');
 }
 
-function meterCustomSeriesLoad(id){
+async function meterCustomSeriesLoad(id){
  const series=meterCustomSeriesById(id);
  if(!series){ toast('Series not found',true); return; }
- meterCloseCustomSeriesManager();
  const type=(series.kind==='lattice'||series.category==='color')?'colors':'greyscale';
- meterSelectSeries(type,series.id,{force:true});
+ // A just-finished read/stop can leave the shared action guard set briefly.
+ // Previously the manager closed first and meterSelectSeries silently returned,
+ // making the last built-in series look as though it had been loaded again.
+ for(let attempt=0;meterActionPending&&attempt<30;attempt++){
+  await new Promise(resolve=>setTimeout(resolve,100));
+ }
+ if(meterActionPending){
+  toast('Wait for the current meter operation to finish, then load the series again',true);
+  return;
+ }
+ try{
+  await meterSelectSeries(type,series.id,{force:true});
+ }catch(e){
+  toast('Could not load custom series: '+(e&&e.message?e.message:'unknown error'),true);
+  return;
+ }
+ const expectedKey=type+'-'+series.id;
+ if(meterActiveSeriesKey!==expectedKey){
+  toast('Custom series was not loaded; try again after the current operation finishes',true);
+  return;
+ }
+ meterRenderCustomSeriesButtons();
+ meterCloseCustomSeriesManager();
 }
 
 function meterManagerNewSeries(category){
