@@ -26465,7 +26465,10 @@ function meterCustomSeriesClampCode(value,max){
 }
 
 function meterCustomSeriesCode8To10(code8){
- return meterCustomSeriesClampCode(code8,255)*4;
+ const code=meterCustomSeriesClampCode(code8,255);
+ // Preserve the exact full-scale endpoint. A plain left shift maps 255 to
+ // 1020, leaving the top three 10-bit codes unreachable from the editor.
+ return code===255?1023:code*4;
 }
 
 function meterCustomSeriesCode10To8(code10){
