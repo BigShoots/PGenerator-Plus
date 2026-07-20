@@ -10618,7 +10618,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 /* Theme bridge for legacy inline presentation styles. Measured patch, gamut,
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
-[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border);border-radius:8px;padding:10px;box-sizing:border-box}
+[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}
 [data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
 [data-theme="light"] .logo > img:first-child{display:none!important}
 [data-theme="light"] .logo .logo-light{display:block}
