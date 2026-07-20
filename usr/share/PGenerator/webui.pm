@@ -28536,11 +28536,22 @@ function meterImportToggleAll(checked){
  const st=meterImportWizardState; if(!st||st.mode!=='ccfx') return;
  st.sets.forEach((s,i)=>{ const c=document.getElementById('meterImpCk_'+i); if(c) c.checked=!!checked; });
 }
+function meterImportSeriesCategory(patches){
+ const list=Array.isArray(patches)?patches:[];
+ if(!list.length) return 'color';
+ const neutral=(p,a,b,c)=>{
+  const av=Number(p&&p[a]),bv=Number(p&&p[b]),cv=Number(p&&p[c]);
+  return Number.isFinite(av)&&Number.isFinite(bv)&&Number.isFinite(cv)&&av===bv&&bv===cv;
+ };
+ // Import parsers normalize both code depths. An all-neutral list is a
+ // greyscale series; any chromatic patch keeps the series in Color.
+ return list.every(p=>neutral(p,'r8','g8','b8')&&neutral(p,'r10','g10','b10'))?'greyscale':'color';
+}
 function meterImportAddSeries(name,mode,patches,range){
  const st=meterCustomSeriesNormalizeState();
  const src=Array.isArray(patches)?patches:[];
  const kept=src.slice(0,METER_CUSTOM_SERIES_MAX_PATCHES);
- const series={id:st.next_id,category:'color',mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
+ const series={id:st.next_id,category:meterImportSeriesCategory(kept),mode:(mode==='hdr'?'hdr':'sdr'),kind:'manual',
   range:(range==='full'?'full':'limited'),
   name:String(name||'').replace(/[\[\]{}"\\]/g,'').slice(0,96).trim()||('Imported '+st.next_id),patches:kept};
  st.next_id+=1; st.series.push(series);

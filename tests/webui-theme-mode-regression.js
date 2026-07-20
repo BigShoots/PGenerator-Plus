@@ -85,6 +85,8 @@ assert(source.includes('@media(min-width:701px) and (max-width:900px)'), 'Narrow
 assert(source.includes('grid-template-columns:minmax(0,1fr) 165px 165px 205px'), 'Wide tablet color layout dynamically gives CIE the remaining row width');
 assert(source.includes('#colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #chartCIEBox{width:100%!important;max-width:none!important;min-width:0}'), 'Tablet CIE box sheds its hard-coded width without affecting 3D or expanded layouts');
 assert(source.includes('text-align:center">xyY</div>'), 'Chromaticity/luminance bar chart uses the correct xyY label');
+assert(source.includes("return list.every(p=>neutral(p,'r8','g8','b8')&&neutral(p,'r10','g10','b10'))?'greyscale':'color'"), 'Custom-series import classifies all-neutral patch lists as greyscale');
+assert(source.includes("category:meterImportSeriesCategory(kept)"), 'Imported custom series use patch-based category detection instead of hard-coded Color');
 assert(source.includes('let labelY=themedColorBars?H-6:'), 'Color-series values stay in a fixed footer below their tracks');
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');
