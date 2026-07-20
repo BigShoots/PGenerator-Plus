@@ -109,28 +109,25 @@ sub resolve_connect (@) {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=0;
  };
- # NEVER use alarm()/SIGALRM here. This process is multi-threaded (webui,
- # discovery, resolve). Process-global SIGALRM can interrupt or kill the wrong
- # thread and take the whole daemon down (WebUI offline) after Connect.
- # Prefer a blocking connect with a short Timeout; fall back to plain connect
- # if Timeout misbehaves on this Perl build.
+ # Connect BLOCKING, and NEVER with IO::Socket::INET's Timeout param. Timeout
+ # makes new() perform a NON-BLOCKING connect + internal select(), which is
+ # unreliable in threaded Perl on this platform: the kernel completes the TCP
+ # 3-way handshake (the calibration PC, e.g. DisplayCAL, shows "connected")
+ # but new() still returns a dead/undef socket, so PGenerator reports
+ # "connection failed" on a link that actually came up. A plain blocking
+ # connect is handled entirely in the kernel and returns only once the socket
+ # is ESTABLISHED (or refused), so it is immune to that race.
+ # NEVER use alarm()/SIGALRM to bound it either: process-global SIGALRM can
+ # interrupt the wrong thread and take the whole daemon down (WebUI offline)
+ # after Connect. An unreachable host just blocks this dedicated thread until
+ # the kernel's own connect timeout; the WebUI has its own status-poll timeout.
  eval {
   $socket=IO::Socket::INET->new(
    PeerHost=>$ip,
    PeerPort=>$port,
    Proto=>'tcp',
-   Timeout=>8,
   );
  };
- if(!$socket) {
-  eval {
-   $socket=IO::Socket::INET->new(
-    PeerHost=>$ip,
-    PeerPort=>$port,
-    Proto=>'tcp',
-   );
-  };
- }
  if(!$socket) {
   my $err=$@||$!||"refused/unreachable";
   &log("Resolve: connection failed to $ip:$port: $err");
