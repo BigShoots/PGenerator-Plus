@@ -2138,7 +2138,7 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
 	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
 	  </style>
-	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Checking...</span><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" style="margin-left:auto" onclick="lgOpenDisplayControl()">Display Control</button></h2>
+	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Checking...</span><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" style="margin-left:auto" onclick="lgOpenDisplayControl()">Display Control</button></h2>
   <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
    <span class="spinner"></span>
    <span id="lgCommandStatusText">Communicating with LG TV...</span>

@@ -27,6 +27,14 @@ for (const workspace of workspaces) {
 assert(webui.includes("let pgDesktopWorkspace='output';"), 'Output is the desktop landing workspace');
 assert(webui.includes("if(previous!=='desktop'||(options&&options.resetWorkspace)) pgDesktopWorkspace='output';"), 'entering desktop resets to Output');
 assert(webui.includes("btn.setAttribute('aria-current','page')"), 'active navigation state is exposed to assistive technology');
+assert(webui.includes("'display-control':'LG Display'"), 'Display Control workspace is presented as LG Display');
+assert(webui.includes("integrations:'HDMI-CEC'"), 'Integrations workspace is presented as HDMI-CEC');
+assert(webui.includes("diagnostics:'HDMI Infoframes'"), 'Diagnostics workspace is presented as HDMI Infoframes');
+assert(/data-widget="info" data-desktop-workspace="system" data-desktop-order="10"/.test(webui), 'Device Info is first in System');
+assert(/data-widget="resolve" data-desktop-workspace="connectivity" data-desktop-order="40"/.test(webui), 'Resolve Protocol is in Connectivity');
+assert(/data-widget="cec" data-desktop-workspace="integrations"/.test(webui), 'HDMI-CEC contains the CEC panel');
+assert(/data-widget="infoframes" data-desktop-workspace="diagnostics"/.test(webui), 'HDMI Infoframes contains the infoframe panel');
+assert(/id="lgCardTitle"[^>]*>.*LG Display/.test(lg), 'Tablet LG card is titled LG Display');
 
 // The same panels remain in place; desktop only changes presentation and visibility.
 assert(webui.includes('body.layout-desktop .dashboard{max-width:none;width:100%'), 'desktop workspace removes the tablet width cap');

@@ -10581,10 +10581,10 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
   <button type="button" class="desktop-nav-btn" data-workspace-target="output" onclick="pgSelectDesktopWorkspace('output')">Output</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" onclick="pgSelectDesktopWorkspace('patterns')">Patterns</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">Display Control</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">Integrations</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="diagnostics" onclick="pgSelectDesktopWorkspace('diagnostics')">Diagnostics</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">HDMI-CEC</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="diagnostics" onclick="pgSelectDesktopWorkspace('diagnostics')">HDMI Infoframes</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
  </nav>
 </aside>
@@ -11831,7 +11831,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
  </div>
 
  <!-- Device Info -->
- <div class="card span2" data-widget="info" data-desktop-workspace="diagnostics" data-desktop-order="10" draggable="true">
+ <div class="card span2" data-widget="info" data-desktop-workspace="system" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Device Info</h2>
   <div class="stat-grid" style="margin-bottom:8px">
    <div class="stat-card">
@@ -11904,7 +11904,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
  </div>
 
  <!-- Resolve Protocol -->
- <div class="card" data-widget="resolve" data-desktop-workspace="integrations" data-desktop-order="20" draggable="true">
+ <div class="card" data-widget="resolve" data-desktop-workspace="connectivity" data-desktop-order="40" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
   <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect via HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
   <div class="grid">
@@ -11976,7 +11976,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
  </div>
 
  <!-- HDMI Infoframes -->
- <div class="card" data-widget="infoframes" data-desktop-workspace="diagnostics" data-desktop-order="20" draggable="true">
+ <div class="card" data-widget="infoframes" data-desktop-workspace="diagnostics" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>HDMI Infoframes</h2>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="loadInfoframes()">Refresh</button>
@@ -11998,7 +11998,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
   __PG_LG_CARD__
 
  <!-- GPU Memory -->
- <div class="card" data-widget="gpu_memory" data-desktop-workspace="system" data-desktop-order="10" draggable="true">
+ <div class="card" data-widget="gpu_memory" data-desktop-workspace="system" data-desktop-order="20" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>GPU Memory</h2>
   <div class="info-grid" id="gpuMemInfo" style="margin-bottom:8px"></div>
   <div class="grid">
@@ -12019,7 +12019,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
  </div>
 
  <!-- Software Update -->
- <div class="card span2" data-widget="update" data-desktop-workspace="system" data-desktop-order="20" draggable="true" id="updateCard">
+ <div class="card span2" data-widget="update" data-desktop-workspace="system" data-desktop-order="30" draggable="true" id="updateCard">
   <h2><span class="drag-handle">&#9776;</span>Software Update</h2>
   <div id="updateContent">
    <div class="info-grid">
@@ -14854,8 +14854,8 @@ const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration',
- 'display-control':'Display Control',connectivity:'Connectivity',
- integrations:'Integrations',diagnostics:'Diagnostics',system:'System'
+ 'display-control':'LG Display',connectivity:'Connectivity',
+ integrations:'HDMI-CEC',diagnostics:'HDMI Infoframes',system:'System'
 };
 let pgLayoutPreference='tablet';
 let pgLayoutEffective='tablet';
