@@ -11245,6 +11245,9 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Render every node of the LUT instead of the 9-per-axis subset. Large LUTs (33³/65³) draw tens of thousands of markers — rotation may be slow.">
        <input type="checkbox" id="lutCubeFullLattice" onchange="meterLutCubeDraw()" style="vertical-align:middle"> Full lattice
       </label>
+      <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;text-transform:none" title="Relative marker size for the output dots and target boxes. 1 = default size.">
+       Size <input type="number" id="lutCubeDotSize" min="0.2" max="5" step="0.1" value="1" onchange="meterLutCubeDotSizeChange()" style="width:48px;vertical-align:middle">
+      </label>
      </div>
      <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
     </div>
@@ -26611,6 +26614,29 @@ async function meterDeleteSolvedLut(name){
 // on the CIE charts (profiling is characterization, not verification).
 let _lutCube3d={yaw:0.9,pitch:0.5,scale:1,dist:3.2};
 let meterLutCubeState=null; // {parsed, name}
+const LUT_CUBE_DOT_SIZE_KEY='pgen.meter.lutCubeDotSize';
+
+// Restores the persisted marker-size multiplier into the Size input. Called
+// on viewer open, before the first draw, so the field reflects last session's
+// choice instead of resetting to the 1x default every time.
+function meterLutCubeDotSizeLoad(){
+ const el=document.getElementById('lutCubeDotSize');
+ if(!el) return;
+ try{
+  const raw=localStorage.getItem(LUT_CUBE_DOT_SIZE_KEY);
+  const val=raw==null?NaN:parseFloat(raw);
+  if(val>=0.2&&val<=5) el.value=val;
+ }catch(e){}
+}
+
+function meterLutCubeDotSizeChange(){
+ const el=document.getElementById('lutCubeDotSize');
+ if(!el) return;
+ const val=Math.min(5,Math.max(0.2,parseFloat(el.value)||1));
+ el.value=val;
+ try{ localStorage.setItem(LUT_CUBE_DOT_SIZE_KEY,String(val)); }catch(e){}
+ meterLutCubeDraw();
+}
 
 function lutCubeProject(fr,fg,fb,layout){
  const px=fr-0.5,py=fg-0.5,pz=fb-0.5;
@@ -26653,6 +26679,7 @@ function meterLutCubeShow(parsed,name){
   try{ wrap.scrollIntoView({block:'start',behavior:'smooth'}); }catch(e){ wrap.scrollIntoView(); }
  }
  meterLutCubeBindHandlers();
+ meterLutCubeDotSizeLoad();
  requestAnimationFrame(meterLutCubeDraw);
 }
 
@@ -26738,7 +26765,12 @@ function meterLutCubeDraw(){
  // markedly smaller markers (and skip the white outline) so structure stays
  // readable instead of smearing into a solid blob.
  const dense=axis.length>9;
- const msz=dense?0.4:1;
+ // Size input: a relative multiplier (1 = current default), not literal px —
+ // markers already scale with camera zoom and perspective, so this just
+ // folds into the same msz term the density floor uses.
+ const sizeEl=document.getElementById('lutCubeDotSize');
+ const userSize=sizeEl?Math.min(5,Math.max(0.2,parseFloat(sizeEl.value)||1)):1;
+ const msz=(dense?0.4:1)*userSize;
  // Targets checkbox: off = only the LUT's output dots (no input boxes, no
  // displacement connectors). Missing element (tests/headless) = on.
  const targetsEl=document.getElementById('lutCubeShowTargets');
