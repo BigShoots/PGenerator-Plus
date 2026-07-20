@@ -10756,6 +10756,7 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 [data-theme="light"] .desktop-nav-btn[aria-current="page"],[data-theme="light"] .ui-choice[aria-pressed="true"],[data-theme="light"] .ui-choice[aria-pressed="true"] .ui-choice-title{color:var(--text-primary)!important}
 .layout-switch-btn:focus-visible,.desktop-nav-btn:focus-visible,body.layout-desktop .desktop-utility-toggle:focus-visible,.ui-choice:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(960px,100%)}
 .ui-settings-group{min-width:0}
 .ui-settings-group h3{margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
 .ui-choice-list{display:grid;gap:8px}
