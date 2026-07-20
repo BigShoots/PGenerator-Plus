@@ -2558,8 +2558,11 @@ sub webui_custom_series_steps_from_body (@) {
   my $name="";
   $name=$1 if($obj=~/"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
   $name=~s/\\(.)/$1/g;
-  $name=~s/[^A-Za-z0-9 ._%#()+-]//g;
-  $name=substr($name,0,40);
+  # Keep "/" so lattice/hybrid/skeleton names stay "R/G/B" percent triplets
+  # (e.g. 100/0/0). Stripping slashes made "100/100/100" → "100100100" and
+  # offline Build 3D LUT silently failed (no triplet names → no solve).
+  $name=~s/[^A-Za-z0-9 ._%#()+\-\/]//g;
+  $name=substr($name,0,48);
   $name="Patch ".(scalar(@out)+1) if($name eq "");
   my $ire=(defined $num{"ire"})?$num{"ire"}+0:0;
   $ire=0 if($ire<0);
@@ -26688,6 +26691,53 @@ function meterLutCubeDraw(){
 let meterLutSolvePolling=null;
 let meterLutSolvePendingDownload='';
 
+// Rebuild "R/G/B" percent triplet names for solve when the series worker
+// stored slash-stripped labels (e.g. "1000" for 10/0/0, "100100100" for white).
+function meterRgbTripletNameFromReading(rd){
+ if(!rd) return '';
+ const raw=String(rd.name||'');
+ if(/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(raw)) return raw;
+ const fmt=function(v){
+  const n=Number(v);
+  if(!Number.isFinite(n)) return null;
+  const r=Math.round(n*10)/10;
+  return (Math.abs(r-Math.round(r))<0.05)?String(Math.round(r)):String(r);
+ };
+ if(rd.signal_r_pct!=null&&rd.signal_g_pct!=null&&rd.signal_b_pct!=null){
+  const a=fmt(rd.signal_r_pct),b=fmt(rd.signal_g_pct),c=fmt(rd.signal_b_pct);
+  if(a!=null&&b!=null&&c!=null) return a+'/'+b+'/'+c;
+ }
+ // Wire codes → percent via the same limited/full mapping as lattice.
+ try{
+  const wire=(typeof meterLatticeWireRange==='function')?meterLatticeWireRange():null;
+  if(wire&&wire.span>0&&rd.r_code!=null&&rd.g_code!=null&&rd.b_code!=null){
+   const pct=function(code){
+    const f=Math.max(0,Math.min(1,(Number(code)-wire.min)/wire.span));
+    return fmt(f*100);
+   };
+   const a=pct(rd.r_code),b=pct(rd.g_code),c=pct(rd.b_code);
+   if(a!=null&&b!=null&&c!=null) return a+'/'+b+'/'+c;
+  }
+ }catch(e){}
+ return raw;
+}
+
+function meterNormalizeLutSolveReadings(list){
+ return (Array.isArray(list)?list:[]).map(function(rd){
+  if(!rd||!meterReadingHasLuminance(rd)) return null;
+  const name=meterRgbTripletNameFromReading(rd);
+  if(!/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(name)) return null;
+  const xyz=(typeof meterReadingXYZ==='function'&&meterReadingXYZ(rd))||{X:rd.X,Y:rd.Y,Z:rd.Z};
+  return {
+   name:name,
+   X:xyz.X,Y:xyz.Y,Z:xyz.Z,
+   luminance:(rd.luminance!=null)?rd.luminance:xyz.Y,
+   r_code:rd.r_code,g_code:rd.g_code,b_code:rd.b_code,
+   signal_r_pct:rd.signal_r_pct,signal_g_pct:rd.signal_g_pct,signal_b_pct:rd.signal_b_pct
+  };
+ }).filter(Boolean);
+}
+
 function meterGenerateLutFromLattice(opts){
  const o=opts||{};
  // Prefer snapshot stashed by Build 3D LUT (survives post-measure chart cleanup).
@@ -26703,22 +26753,17 @@ function meterGenerateLutFromLattice(opts){
   toast('Select a 3D LUT profiling series first',true);
   return;
  }
- let readings=Array.isArray(o.readings)?o.readings:null;
- if(!readings&&meterBuild3dLutPending&&Array.isArray(meterBuild3dLutPending.readings)){
-  readings=meterBuild3dLutPending.readings;
+ let rawReadings=Array.isArray(o.readings)?o.readings:null;
+ if(!rawReadings&&meterBuild3dLutPending&&Array.isArray(meterBuild3dLutPending.readings)){
+  rawReadings=meterBuild3dLutPending.readings;
  }
- if(!readings){
-  readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
- } else {
-  readings=readings.filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
- }
+ if(!rawReadings) rawReadings=Array.isArray(meterReadings)?meterReadings:[];
+ const readings=meterNormalizeLutSolveReadings(rawReadings);
  if(readings.length<5){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
   toast('Measure the series first (the W/R/G/B/K corners at minimum)',true);
   return;
  }
- const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
- const missing=corners.filter(n=>!readings.some(rd=>String(rd.name)===n||String(rd.name).replace(/\.0+\//g,'/').replace(/\.0+$/,'')===n));
  // Tolerate "100.0/0/0" style names from some series expansions.
  const hasCorner=function(want){
   const parts=want.split('/');
@@ -26730,6 +26775,7 @@ function meterGenerateLutFromLattice(opts){
     && Math.abs(Number(m[3])-Number(parts[2]))<0.05;
   });
  };
+ const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
  const missingTol=corners.filter(n=>!hasCorner(n));
  if(missingTol.length){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
@@ -26794,8 +26840,22 @@ async function meterLutSolveStart(series,readings,opts){
   return;
  }
  toast('Solving 3D LUT…');
+ try{
+  // Keep the series progress chrome showing "Building…" so the operator sees
+  // that measure-complete is not the end of Build 3D LUT.
+  const btn=document.getElementById('meterReadSeriesBtn');
+  if(btn) btn.innerHTML='&#9881; Building 3D LUT…';
+  const label=document.getElementById('meterProgressLabel');
+  if(label) label.textContent='Building 3D LUT from measurements…';
+  const fill=document.getElementById('meterProgressFill');
+  if(fill){ fill.style.width='100%'; fill.style.opacity='0.85'; }
+  const prog=document.getElementById('meterProgress');
+  if(prog) prog.style.display='';
+ }catch(e){}
  if(meterLutSolvePolling) clearInterval(meterLutSolvePolling);
  meterLutSolvePolling=setInterval(meterLutSolvePoll,1500);
+ // Immediate first poll so short solves do not wait a full interval.
+ try{ meterLutSolvePoll(); }catch(e){}
 }
 
 async function meterLutSolvePoll(){
@@ -35552,14 +35612,17 @@ async function meterPollSeries(){
      const seriesSnap=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
       ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
       ||null;
-     const readingSnap=(Array.isArray(meterReadings)?meterReadings:[]).filter(function(rd){
-      return rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd);
-     }).map(function(rd){
-      const xyz=(typeof meterReadingXYZ==='function'&&meterReadingXYZ(rd))||{X:rd.X,Y:rd.Y,Z:rd.Z};
-      return {name:rd.name,X:xyz.X,Y:xyz.Y,Z:xyz.Z,luminance:rd.luminance!=null?rd.luminance:xyz.Y};
-     });
+     // Keep full readings (incl. codes); name recovery runs at solve time so
+     // slash-stripped labels like "100100100" still become 100/100/100.
+     const readingSnap=(typeof meterNormalizeLutSolveReadings==='function')
+      ? meterNormalizeLutSolveReadings(meterReadings)
+      : (Array.isArray(meterReadings)?meterReadings:[]).filter(function(rd){
+         return rd&&meterReadingHasLuminance(rd);
+        });
+     // If normalize emptied (legacy path), fall back to raw measured rows.
+     const readingKeep=readingSnap.length?readingSnap:(Array.isArray(meterReadings)?meterReadings.slice():[]);
      pending.series=seriesSnap||pending.series||null;
-     pending.readings=readingSnap.length?readingSnap:(pending.readings||null);
+     pending.readings=readingKeep.length?readingKeep:(pending.readings||null);
      meterBuild3dLutPending=pending;
      setTimeout(function(){
       try{
