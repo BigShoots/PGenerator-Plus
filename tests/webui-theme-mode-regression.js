@@ -57,7 +57,7 @@ assert(source.includes('[data-theme="light"] .meter-pattern-insert-gear'),'gear 
 assert(source.includes('[data-theme="light"] #meterTwoPointControls,[data-theme="light"] #meterGreyProfileBar'),'greyscale setup strips have explicit Light surfaces resilient to runtime inline-style serialization');
 assert(source.includes('id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset)'), 'two-point setup uses a semantic surface in both themes');
 assert(source.includes('id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:var(--surface-inset)'), 'custom greyscale setup uses a semantic surface in both themes');
-assert(source.includes("document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order so drag reorder remains effective');
+assert(source.includes("document.querySelectorAll('.dashboard > .card[data-desktop-workspace]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order from every workspace card so Tablet CSS and drag ordering remain effective');
 assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
 assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');
 assert(source.includes('[data-theme="light"] [id$="Modal"] > .meter-modal-scroll'),'modal content receives an explicit Light surface');

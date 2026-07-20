@@ -15384,7 +15384,7 @@ function pgApplyLayout(options){
   pgSelectDesktopWorkspace(pgDesktopWorkspace);
  }else{
   pgSetDesktopUtilityDrawer(false);
-  document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});
+  document.querySelectorAll('.dashboard > .card[data-desktop-workspace]').forEach(panel=>{panel.style.order='';});
   // Desktop workspaces assign inline presentation order. Clear it when
   // returning to Tablet or CSS order masks DOM drag-and-drop reordering.
   document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
