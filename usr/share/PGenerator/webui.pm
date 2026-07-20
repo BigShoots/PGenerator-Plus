@@ -10799,8 +10799,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 /* Layout and theme preferences use the same compact switch in both interface
    layouts. The switch carries the selected state; the surrounding row stays
    neutral so it does not look like a second, competing selection control. */
-#uiSettingsCard .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible;border-color:var(--border);background:var(--surface-inset);box-shadow:none}
-#uiSettingsCard .ui-choice[aria-pressed="true"]{border-color:var(--border);background:var(--surface-inset);box-shadow:none;padding-left:10px}
+#uiSettingsCard .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible;border-color:transparent;background:var(--surface-inset);box-shadow:none}
+#uiSettingsCard .ui-choice:hover:not(:disabled),#uiSettingsCard .ui-choice[aria-pressed="true"]{border-color:transparent;background:var(--surface-inset);box-shadow:none;padding-left:10px}
 #uiSettingsCard .ui-choice::before,#uiSettingsCard .ui-choice[aria-pressed="true"]::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
 #uiSettingsCard .ui-choice::after{content:'';position:absolute;right:27px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transform:translateY(-50%);transition:transform .18s}
 #uiSettingsCard .ui-choice[aria-pressed="true"]::before{background:var(--accent)}
