@@ -10514,6 +10514,35 @@ body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
+.desktop-utility-toggle,.desktop-utility-drawer{display:none}
+body.layout-desktop .desktop-utility-toggle{display:flex;position:fixed;right:4px;top:50%;transform:translateY(-50%);z-index:56;width:22px;height:62px;padding:0;align-items:center;justify-content:center;border:1px solid var(--border);border-right:0;border-radius:7px 0 0 7px;background:#181824;color:var(--text2);font-size:22px;line-height:1;cursor:pointer;box-shadow:-4px 0 14px rgba(0,0,0,.3);transition:right .22s ease,color .16s,background .16s}
+body.layout-desktop .desktop-utility-toggle:hover{background:#222235;color:#fff}
+body.layout-desktop .desktop-utility-toggle:focus-visible{outline:2px solid #fff;outline-offset:2px}
+body.layout-desktop .desktop-utility-drawer{display:flex;position:fixed;top:var(--pg-header-height,61px);right:0;bottom:0;z-index:55;width:min(390px,calc(100vw - 260px));transform:translateX(100%);flex-direction:column;background:#101019;border-left:1px solid var(--border);box-shadow:-12px 0 32px rgba(0,0,0,.42);transition:transform .22s ease;overflow:hidden}
+body.layout-desktop.desktop-utility-open .desktop-utility-toggle{right:min(390px,calc(100vw - 260px))}
+body.layout-desktop.desktop-utility-open .desktop-utility-drawer{transform:translateX(0)}
+.desktop-utility-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px;border-bottom:1px solid var(--border);flex:0 0 auto}
+.desktop-utility-title{font-size:.92rem;font-weight:700;color:var(--text)}
+.desktop-utility-close{border:0;background:transparent;color:var(--text2);font-size:1.2rem;cursor:pointer;padding:2px 5px;border-radius:4px}
+.desktop-utility-close:hover{color:#fff;background:rgba(255,255,255,.06)}
+.desktop-utility-scroll{min-height:0;overflow-y:auto;padding:4px 14px 20px;scrollbar-color:#525264 #161621;scrollbar-width:thin}
+.desktop-utility-section{padding:13px 0;border-bottom:1px solid var(--border)}
+.desktop-utility-section:last-child{border-bottom:0}
+.desktop-utility-section h3{margin:0 0 9px;color:var(--accent);font-size:.76rem;text-transform:uppercase;letter-spacing:.55px}
+.desktop-utility-subtitle{margin:10px 0 6px;color:var(--text2);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.45px}
+.desktop-utility-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:5px 10px;font-size:.72rem;line-height:1.35}
+.desktop-utility-label{color:var(--text2);min-width:0}
+.desktop-utility-value{color:var(--text);min-width:0;text-align:right;overflow-wrap:anywhere}
+.desktop-utility-data{padding:8px;background:#0b0b12;border:1px solid var(--border);border-radius:5px;color:var(--text2);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.64rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.desktop-utility-data+.desktop-utility-data{margin-top:6px}
+.desktop-utility-cec-status{margin-bottom:8px;color:var(--text2);font-size:.76rem}
+.desktop-utility-cec-actions{display:flex;gap:5px;flex-wrap:wrap}
+.desktop-utility-cec-actions .btn{padding:5px 8px;font-size:.7rem}
+body.ui-offline.layout-desktop .desktop-utility-toggle,body.ui-offline.layout-desktop .desktop-utility-drawer,
+body.meter-autocal-active.layout-desktop .desktop-utility-toggle,body.meter-autocal-active.layout-desktop .desktop-utility-drawer,
+body.apply-settings-active.layout-desktop .desktop-utility-toggle,body.apply-settings-active.layout-desktop .desktop-utility-drawer,
+body.lg-connect-active.layout-desktop .desktop-utility-toggle,body.lg-connect-active.layout-desktop .desktop-utility-drawer,
+body.meter-stop-active.layout-desktop .desktop-utility-toggle,body.meter-stop-active.layout-desktop .desktop-utility-drawer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 body.layout-desktop.is-widget-dragging{cursor:default!important;user-select:auto!important}
 body.layout-desktop.is-widget-dragging *{cursor:auto!important}
 body.ui-offline.layout-desktop .desktop-sidebar,
@@ -12050,6 +12079,46 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 </div>
 </div>
 </div>
+
+<button type="button" class="desktop-utility-toggle" id="desktopUtilityToggle" aria-label="Open live information sidebar" aria-controls="desktopUtilityDrawer" aria-expanded="false" onclick="pgToggleDesktopUtilityDrawer()"><span id="desktopUtilityArrow" aria-hidden="true">&#8249;</span></button>
+<aside class="desktop-utility-drawer" id="desktopUtilityDrawer" aria-label="Live output and device information" aria-hidden="true">
+ <div class="desktop-utility-header">
+  <div class="desktop-utility-title">Live Information</div>
+  <button type="button" class="desktop-utility-close" aria-label="Close live information sidebar" onclick="pgSetDesktopUtilityDrawer(false)">&times;</button>
+ </div>
+ <div class="desktop-utility-scroll">
+  <section class="desktop-utility-section">
+   <h3>Display Output</h3>
+   <div class="desktop-utility-grid" id="desktopUtilityOutput"></div>
+   <div class="desktop-utility-subtitle" id="desktopUtilityMetadataTitle">Metadata</div>
+   <div class="desktop-utility-grid" id="desktopUtilityMetadata"></div>
+  </section>
+  <section class="desktop-utility-section">
+   <h3>HDMI Infoframes</h3>
+   <div class="desktop-utility-subtitle">AVI</div>
+   <div class="desktop-utility-data" id="desktopUtilityAvi">No data</div>
+   <div class="desktop-utility-subtitle">DRM / HDR</div>
+   <div class="desktop-utility-data" id="desktopUtilityDrm">No data</div>
+  </section>
+  <section class="desktop-utility-section">
+   <h3>HDMI-CEC</h3>
+   <div class="desktop-utility-cec-status" id="desktopUtilityCecStatus">Checking...</div>
+   <div class="desktop-utility-cec-actions">
+    <button class="btn btn-sm btn-success" onclick="cecCmd('on')">Power On</button>
+    <button class="btn btn-sm btn-danger" onclick="cecCmd('off')">Standby</button>
+    <button class="btn btn-sm btn-secondary" onclick="cecCmd('volup')">Volume +</button>
+    <button class="btn btn-sm btn-secondary" onclick="cecCmd('voldown')">Volume -</button>
+    <button class="btn btn-sm btn-secondary" onclick="cecCmd('mute')">Mute</button>
+    <button class="btn btn-sm btn-secondary" onclick="cecScan()">Scan</button>
+   </div>
+   <div class="desktop-utility-data" id="desktopUtilityCecDevices" style="margin-top:8px">Not scanned yet</div>
+  </section>
+  <section class="desktop-utility-section">
+   <h3>Device Info</h3>
+   <div class="desktop-utility-grid" id="desktopUtilityDevice"></div>
+  </section>
+ </div>
+</aside>
 
 <div class="offline-mask" id="offlineMask" aria-hidden="true">
  <div class="offline-mask-card">
@@ -14943,6 +15012,7 @@ function pgApplyLayout(options){
   if(previous!=='desktop'||(options&&options.resetWorkspace)) pgDesktopWorkspace='output';
   pgSelectDesktopWorkspace(pgDesktopWorkspace);
  }else{
+  pgSetDesktopUtilityDrawer(false);
   document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
   pgRefreshVisibleWorkspace();
  }
@@ -14981,6 +15051,98 @@ function pgLayoutInit(){
   if(pgLayoutResizeTimer) clearTimeout(pgLayoutResizeTimer);
   pgLayoutResizeTimer=setTimeout(()=>pgApplyLayout(),80);
  });
+}
+
+function pgUtilityControlText(id){
+ const el=document.getElementById(id);
+ if(!el) return '-';
+ if(el.tagName==='SELECT'){
+  const option=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null;
+  return option?String(option.textContent||option.value||'-').trim():'-';
+ }
+ return String(el.value!=null?el.value:(el.textContent||'-')).trim()||'-';
+}
+function pgUtilitySetRows(id,rows){
+ const host=document.getElementById(id);
+ if(!host) return;
+ host.innerHTML='';
+ (rows||[]).forEach(row=>{
+  const label=document.createElement('div');
+  const value=document.createElement('div');
+  label.className='desktop-utility-label';
+  value.className='desktop-utility-value';
+  label.textContent=row[0];
+  value.textContent=(row[1]==null||String(row[1]).trim()==='')?'-':String(row[1]);
+  host.appendChild(label);
+  host.appendChild(value);
+ });
+}
+function pgUtilityInfoframeText(decodedId,rawId){
+ const decoded=document.getElementById(decodedId);
+ const raw=document.getElementById(rawId);
+ const decodedText=decoded?String(decoded.innerText||decoded.textContent||'').trim():'';
+ const rawText=raw?String(raw.textContent||'').trim():'';
+ return [decodedText,rawText&&rawText!=='-'?rawText:''].filter(Boolean).join('\n')||'No data';
+}
+function pgSyncDesktopUtilityDrawer(){
+ pgUtilitySetRows('desktopUtilityOutput',[
+  ['Resolution',pgUtilityControlText('mode_idx_text')],['Signal Mode',pgUtilityControlText('signal_mode')],
+  ['Bit Depth',pgUtilityControlText('max_bpc')],['Color Format',pgUtilityControlText('color_format')],
+  ['Colorimetry',pgUtilityControlText('colorimetry')],['Range',pgUtilityControlText('rgb_quant_range')]
+ ]);
+ const signal=String(getVal('signal_mode')||'sdr');
+ const metadataTitle=document.getElementById('desktopUtilityMetadataTitle');
+ let metadata=[];
+ if(signal==='dv'){
+  if(metadataTitle) metadataTitle.textContent='Dolby Vision Metadata';
+  metadata=[['Transport',pgUtilityControlText('dv_transport')],['Map Mode',pgUtilityControlText('dv_map_mode')],['Max Luma',pgUtilityControlText('dv_max_luma')+' nits'],['Min Luma',pgUtilityControlText('dv_min_luma')+' nits'],['MaxCLL',pgUtilityControlText('dv_max_cll')],['MaxFALL',pgUtilityControlText('dv_max_fall')]];
+ }else if(signal==='hdr10'||signal==='hlg'){
+  if(metadataTitle) metadataTitle.textContent='HDR Metadata';
+  metadata=[['EOTF',pgUtilityControlText('eotf')],['Primaries',pgUtilityControlText('primaries')],['Max Luma',pgUtilityControlText('max_luma')+' nits'],['Min Luma',pgUtilityControlText('min_luma')+' nits'],['MaxCLL',pgUtilityControlText('max_cll')],['MaxFALL',pgUtilityControlText('max_fall')]];
+ }else{
+  if(metadataTitle) metadataTitle.textContent='HDMI Metadata';
+  metadata=[['EOTF',pgUtilityControlText('eotf')],['Primaries',pgUtilityControlText('primaries')]];
+ }
+ pgUtilitySetRows('desktopUtilityMetadata',metadata);
+ const avi=document.getElementById('desktopUtilityAvi');
+ const drm=document.getElementById('desktopUtilityDrm');
+ if(avi) avi.textContent=pgUtilityInfoframeText('aviDecoded','aviIF');
+ if(drm) drm.textContent=pgUtilityInfoframeText('drmDecoded','drmIF');
+ const cec=document.getElementById('cecStatus');
+ const cecOut=document.getElementById('desktopUtilityCecStatus');
+ if(cecOut) cecOut.textContent=cec?String(cec.innerText||cec.textContent||'Checking...').trim():'Checking...';
+ const cecDevices=document.getElementById('cecDeviceList');
+ const cecDevicesOut=document.getElementById('desktopUtilityCecDevices');
+ if(cecDevicesOut) cecDevicesOut.textContent=cecDevices?String(cecDevices.innerText||cecDevices.textContent||'Not scanned yet').trim():'Not scanned yet';
+ const deviceRows=[['CPU Usage',String((document.getElementById('cpuUsageValue')||{}).textContent||'--%').trim()],['Memory Usage',String((document.getElementById('memUsageValue')||{}).textContent||'--%').trim()]];
+ const info=document.getElementById('infoGrid');
+ if(info){
+  info.querySelectorAll('.info-item').forEach(item=>{
+   const label=item.querySelector('.label');
+   const value=item.querySelector('.value');
+   if(label&&value) deviceRows.push([String(label.textContent||'').trim(),String(value.textContent||'').trim()]);
+  });
+ }
+ pgUtilitySetRows('desktopUtilityDevice',deviceRows);
+}
+function pgSetDesktopUtilityDrawer(open){
+ const next=!!open&&document.body.classList.contains('layout-desktop');
+ document.body.classList.toggle('desktop-utility-open',next);
+ const toggle=document.getElementById('desktopUtilityToggle');
+ const drawer=document.getElementById('desktopUtilityDrawer');
+ const arrow=document.getElementById('desktopUtilityArrow');
+ if(toggle){toggle.setAttribute('aria-expanded',next?'true':'false');toggle.setAttribute('aria-label',next?'Close live information sidebar':'Open live information sidebar');}
+ if(drawer) drawer.setAttribute('aria-hidden',next?'false':'true');
+ if(arrow) arrow.innerHTML=next?'&#8250;':'&#8249;';
+ if(next) pgSyncDesktopUtilityDrawer();
+}
+function pgToggleDesktopUtilityDrawer(){
+ pgSetDesktopUtilityDrawer(!document.body.classList.contains('desktop-utility-open'));
+}
+function pgDesktopUtilityInit(){
+ document.addEventListener('change',()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();});
+ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('desktop-utility-open')) pgSetDesktopUtilityDrawer(false);});
+ setInterval(()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();},1500);
 }
 
 async function loadInfoframes(){
@@ -42850,6 +43012,7 @@ function pgInitialRetry(name,fn,delays){
  // Init
 (async()=>{
  pgLayoutInit();
+ pgDesktopUtilityInit();
  initCardCollapse();
  pgSyncCardCollapseForLayout();
  await loadConfig(true);
