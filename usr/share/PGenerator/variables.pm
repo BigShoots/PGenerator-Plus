@@ -391,21 +391,25 @@ share($calibration_client_software);
 share(%rpc_client);
 share(%hcfr_client);
 
-$resolve_request_ip="";
-$resolve_request_port="";
+# threads::shared: share() must see an empty scalar first. Assigning a value
+# (especially 0) before share() leaves the variable unshared — lock() then
+# dies with "lock can only be used on shared values" and Resolve Connect
+# never queues (DisplayCAL stays on "Waiting for connection").
 share($resolve_request_ip);
 share($resolve_request_port);
+$resolve_request_ip="";
+$resolve_request_port="";
 # Set by WebUI/API disconnect (or reconnect) so the Resolve session loop
 # can abort a blocking read and close the TCP socket. DisplayCAL has no
 # protocol-level bye — only TCP FIN/close re-arms its listener.
-$resolve_disconnect_request=0;
 share($resolve_disconnect_request);
+$resolve_disconnect_request=0;
 # Last pattern received over the Resolve protocol (raw, pre-override):
 # "r,g,b;bgr,bgg,bgb;x,y,cx,cy;bits". Lets the WebUI redraw the live patch
 # immediately when the Resolve card knobs (force-center / size override)
 # change, instead of waiting for the calibration software's next message.
-$resolve_last_pattern="";
 share($resolve_last_pattern);
+$resolve_last_pattern="";
 
 $webui_info_cache="";
 $webui_info_cache_time=0;

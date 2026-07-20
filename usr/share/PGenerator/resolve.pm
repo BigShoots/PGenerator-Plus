@@ -67,9 +67,14 @@ sub resolve_trigger_connect (@) {
  &log("Resolve: trigger connect to $ip:$port");
  # Force-close any existing session first so the thread is free to accept
  # a new connect request (session loop is blocked on interruptible read).
- {
+ # Guard lock: if share() was mis-ordered at boot the lock croaks and the
+ # whole connect path used to abort before queuing the new peer.
+ eval {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=1 if($calibration_client_software eq "Resolve");
+ };
+ if($@) {
+  &log("Resolve: disconnect flag lock failed (shared var?): $@");
  }
  for(my $i=0; $i<30; $i++) {
   last if($calibration_client_software ne "Resolve");
@@ -81,6 +86,7 @@ sub resolve_trigger_connect (@) {
   $resolve_request_port=$port;
   cond_signal($resolve_request_ip);
  }
+ &log("Resolve: connect request queued for $ip:$port");
 }
 
 ###############################################
