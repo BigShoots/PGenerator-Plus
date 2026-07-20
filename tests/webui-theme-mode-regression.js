@@ -49,5 +49,7 @@ assert(source.includes("document.querySelectorAll('.dashboard > [data-widget]').
 assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
 assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');
 assert(source.includes('[data-theme="light"] [id$="Modal"] > .meter-modal-scroll'),'modal content receives an explicit Light surface');
+assert(source.includes('.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}'),'measured patch colors are insulated from theme surface overrides');
+assert(source.includes("event.target.closest('#meterPatchThumbs')"),'clicking away from a patch thumbnail clears its transient selection');
 
 console.log('webui theme mode regression OK');

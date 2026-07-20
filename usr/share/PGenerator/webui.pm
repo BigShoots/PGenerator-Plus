@@ -9975,6 +9975,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	.meter-thumbs-nav:disabled{opacity:.35;cursor:default;filter:none}
 	.meter-scroll-sync{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
 	.meter-scroll-sync>canvas{display:block}
+	.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}
 	#meterGreyscaleLgPrimary{display:block}
 	#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{display:grid;grid-template-columns:180px minmax(0,1fr);column-gap:8px;row-gap:10px;align-items:stretch;margin-bottom:10px}
 	#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbBlock,#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbRow{display:contents!important}
@@ -37054,6 +37055,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   meterThumbsBuilt=true;
   visibleSteps.forEach(step=>{
    const thumb=document.createElement('div');
+   thumb.className='meter-patch-thumb';
     const isGrey=meterSeriesStepIsGreyscale(step);
    const bgColor=meterPreviewColorForStep(step);
    const textColor=meterContrastTextColor(bgColor);
@@ -37062,7 +37064,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   const thumbWidth=scrollMode?meterSeriesThumbWidth(step):0;
   const padX=isGrey?'2px':'1px';
   const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
-  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;color:'+textColor+';background:'+bgColor+';text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
+  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
+  thumb.style.setProperty('--patch-bg',bgColor);
+  thumb.style.setProperty('--patch-fg',textColor);
    thumb.textContent=label;
    thumb.dataset.ire=step.ire;
    thumb.dataset.r=step.r;
@@ -37119,6 +37123,14 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
   }
  }
 }
+
+// Patch selection is transient. Clicking away clears it instead of disabling
+// ordinary text selection or making the whole dashboard inert.
+document.addEventListener('pointerdown',event=>{
+ if(meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
+ if(event.target&&event.target.closest&&event.target.closest('#meterPatchThumbs')) return;
+ try{ meterDeselectCurrentPatch(); }catch(e){}
+},true);
 
 // Pre-populate ALL charts with grids and placeholder points before readings
 function meterGreyChartX(step,steps,idx){
