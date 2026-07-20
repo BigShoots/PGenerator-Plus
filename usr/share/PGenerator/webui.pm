@@ -10796,6 +10796,19 @@ body.layout-tablet .ui-choice-title::after{content:'?';display:inline-flex;align
 body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
 body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
+/* Layout and theme preferences use the same compact switch in both interface
+   layouts. The switch carries the selected state; the surrounding row stays
+   neutral so it does not look like a second, competing selection control. */
+#uiSettingsCard .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible;border-color:var(--border);background:var(--surface-inset);box-shadow:none}
+#uiSettingsCard .ui-choice[aria-pressed="true"]{border-color:var(--border);background:var(--surface-inset);box-shadow:none;padding-left:10px}
+#uiSettingsCard .ui-choice::before,#uiSettingsCard .ui-choice[aria-pressed="true"]::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
+#uiSettingsCard .ui-choice::after{content:'';position:absolute;right:27px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transform:translateY(-50%);transition:transform .18s}
+#uiSettingsCard .ui-choice[aria-pressed="true"]::before{background:var(--accent)}
+#uiSettingsCard .ui-choice[aria-pressed="true"]::after{transform:translate(16px,-50%)}
+#uiSettingsCard .ui-choice-title{grid-column:1;grid-row:1;display:flex;align-items:center;gap:6px;padding-right:8px}
+#uiSettingsCard .ui-choice-title::after{content:'?';display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1px solid var(--border);border-radius:50%;color:var(--text-secondary);font-size:.62rem;font-weight:700}
+#uiSettingsCard .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
+#uiSettingsCard .ui-choice:hover .ui-choice-description,#uiSettingsCard .ui-choice:focus-visible .ui-choice-description{display:block}
 @media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
 </style>
 </head>
