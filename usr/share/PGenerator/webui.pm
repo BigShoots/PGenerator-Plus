@@ -8172,7 +8172,14 @@ sub webui_bluetooth_status_json (@) {
  $powered="false" if($kv{SOFT_BLOCKED} && $kv{SOFT_BLOCKED} eq "1");
  my $discoverable=($adapter=~/Discoverable:\s*yes/i) ? "true" : "false";
  my $agent=($kv{AGENT} && $kv{AGENT} eq "1") ? "true" : "false";
- my $pan_running=(($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") || $pan_raw=~/\b(?:pan0|bnep\d+)\b.*\b(?:flags|inet)\b/s) ? "true" : "false";
+ # PAN "Running" means the NAP service (or an active bnep client link) is up —
+ # not merely that the pan0 bridge still has an address after the radio is
+ # powered off. With Power Off, always report PAN stopped.
+ my $pan_running="false";
+ if($powered eq "true") {
+  if($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") { $pan_running="true"; }
+  elsif($pan_raw=~/\bbnep\d+\b/s) { $pan_running="true"; }
+ }
  my $available=(($kv{BLUETOOTHCTL_AVAILABLE} && $kv{BLUETOOTHCTL_AVAILABLE} eq "1") || $raw=~/HCI_BEGIN\n.+?\nHCI_END/s) ? "true" : "false";
  my $pan_available=(($kv{PAND_AVAILABLE} && $kv{PAND_AVAILABLE} eq "1") || ($kv{BT_NETWORK_AVAILABLE} && $kv{BT_NETWORK_AVAILABLE} eq "1")) ? "true" : "false";
  my $pan_net=&_webui_json_escape($kv{PAND_NET}||"10.10.11");

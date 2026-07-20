@@ -1458,6 +1458,17 @@ sub bt_set_discoverable (@) {
  }
 }
 
+# Stop the Bluetooth PAN/NAP side (bt-network nap or legacy pand). Does not
+# print a response — callers print OK/ERR themselves.
+sub bt_stop_pan (@) {
+ if(-x "/etc/init.d/pand") {
+  &pgen_system_quiet("/etc/init.d/pand","stop");
+ }
+ # Kill modern BlueZ NAP helper left running after the radio is powered down.
+ system("pkill -f '[b]t-network.*-s nap' >/dev/null 2>&1");
+ system("pkill -f '[b]t-network.*nap' >/dev/null 2>&1");
+}
+
 sub bt_set_powered (@) {
  my $val=$ARGV[1];
  if($val eq "on" || $val eq "off") {
@@ -1469,7 +1480,14 @@ sub bt_set_powered (@) {
    } elsif(defined $bluetoothctl && &pgen_cmd_exists($bluetoothctl)) {
     &pgen_system_quiet($bluetoothctl,"power","on");
    }
+   # Radio is back — restore PAN so the power toggle is a full on/off for the
+   # Bluetooth PAN card (NAP was stopped on power-off). Quiet so the power
+   # response stays a single OK; Restart PAN remains available if NAP fails.
+   &bt_restart_pan(1);
   } else {
+   # Tear down PAN before killing the radio so status doesn't stay "PAN
+   # Running" while Power shows Off (orphaned bt-network / pan0 bridge).
+   &bt_stop_pan();
    if(-x "/usr/bin/bluez-test-adapter") {
     system("/usr/bin/bluez-test-adapter powered off");
    } elsif(defined $bluetoothctl && &pgen_cmd_exists($bluetoothctl)) {
@@ -1509,11 +1527,21 @@ sub bt_set_pan_ip (@) {
  }
 }
 
+# Restart Bluetooth PAN/NAP. Optional quiet flag (truthy) suppresses the OK/ERR
+# line so nested callers (e.g. power-on) can own the response.
 sub bt_restart_pan (@) {
+ my ($quiet)=@_;
+ $quiet=0 if(!defined $quiet);
+ my $say=sub {
+  my ($msg)=@_;
+  print $msg if(!$quiet);
+ };
  if(-x "/etc/init.d/pand") {
   &pgen_system_quiet("/etc/init.d/pand","restart");
-  print $ok_response;
- } elsif(-x "/usr/bin/bt-network" || -x "/usr/sbin/bt-network") {
+  $say->($ok_response);
+  return 1;
+ }
+ if(-x "/usr/bin/bt-network" || -x "/usr/sbin/bt-network") {
   my $bt_network=(-x "/usr/bin/bt-network") ? "/usr/bin/bt-network" : "/usr/sbin/bt-network";
   my $pan_net="10.10.11";
   if(-f $pand_default_file) {
@@ -1543,13 +1571,14 @@ sub bt_restart_pan (@) {
   system("setsid $bt_network -d -s nap pan0 >/var/log/PGenerator/bt-network.log 2>&1 </dev/null &");
   sleep(1);
   if(`pgrep -f 'bt-network.*-s nap' 2>/dev/null` ne "") {
-   print $ok_response;
-  } else {
-   print "$error_response:bt-network failed to start";
+   $say->($ok_response);
+   return 1;
   }
- } else {
-  print "$error_response:Bluetooth PAN service not available";
+  $say->("$error_response:bt-network failed to start");
+  return 0;
  }
+ $say->("$error_response:Bluetooth PAN service not available");
+ return 0;
 }
 
 sub bt_remove_device (@) {
