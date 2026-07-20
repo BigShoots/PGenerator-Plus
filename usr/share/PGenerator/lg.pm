@@ -2107,7 +2107,7 @@ sub webui_lg_card_html (@) {
    </div>
   </div>
 	 </div>
-	 <div class="card" data-widget="lg" draggable="true">
+	 <div class="card" data-widget="lg" data-desktop-workspace="display-control" data-desktop-order="10" draggable="true">
 	  <style>
 	   #lgDeviceList::-webkit-scrollbar{width:10px}
 	   #lgDeviceList::-webkit-scrollbar-track{background:#0d0d15;border-radius:6px}

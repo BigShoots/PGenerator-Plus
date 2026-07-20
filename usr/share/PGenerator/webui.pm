@@ -10485,6 +10485,43 @@ cursor:pointer;animation:updatePulse 2s ease-in-out infinite}
 display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .site-footer-note{font-size:.7rem;color:var(--text2);line-height:1.4;max-width:70%}
 @media(max-width:700px){.site-footer-note{max-width:100%}.site-footer-inner{justify-content:center;text-align:center}}
+/* Desktop workspace layout. Tablet remains the baseline; these rules only
+   apply when the layout controller has confirmed there is room for a sidebar. */
+.layout-switch{display:inline-flex;align-items:center;padding:2px;background:#0d0d15;border:1px solid var(--border);border-radius:7px}
+.layout-switch-btn{border:0;background:transparent;color:var(--text2);padding:4px 8px;border-radius:5px;font-size:.7rem;font-weight:600;cursor:pointer;line-height:1.2}
+.layout-switch-btn:hover{color:var(--text);background:rgba(255,255,255,.05)}
+.layout-switch-btn[aria-pressed="true"]{background:var(--accent);color:#fff}
+.layout-switch-btn:focus-visible,.desktop-nav-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.layout-switch-btn:disabled{cursor:not-allowed;opacity:.45}
+.desktop-shell{min-width:0}
+.desktop-sidebar{display:none}
+.desktop-nav{display:flex;flex-direction:column;gap:3px}
+.desktop-nav-title{padding:0 10px 9px;color:var(--text2);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px}
+.desktop-nav-btn{display:flex;align-items:center;width:100%;min-height:38px;border:0;border-radius:6px;padding:8px 10px;background:transparent;color:var(--text2);font-size:.8rem;font-weight:600;text-align:left;cursor:pointer;transition:background .16s,color .16s}
+.desktop-nav-btn:hover{background:rgba(255,255,255,.055);color:var(--text)}
+.desktop-nav-btn[aria-current="page"]{background:rgba(91,127,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
+.desktop-workspace-title{display:none}
+body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start}
+body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
+body.layout-desktop .desktop-content{min-width:0;width:100%}
+body.layout-desktop .dashboard{max-width:none;width:100%;margin:0;padding:20px 24px 28px;display:flex;flex-direction:column;gap:0}
+body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 0 18px;font-size:1.25rem;line-height:1.25;color:var(--text);font-weight:700}
+body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:transparent;border:0;border-radius:0;padding:18px 0;box-shadow:none;min-width:0;border-bottom:1px solid var(--border)}
+body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
+body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
+body.layout-desktop .dashboard > .card > h2::after{display:none}
+body.layout-desktop .dashboard > .card .drag-handle{display:none}
+body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+body.layout-desktop .site-footer{max-width:none;width:100%;margin:0;padding:0 24px 20px}
+body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
+body.layout-desktop.is-widget-dragging{cursor:default!important;user-select:auto!important}
+body.layout-desktop.is-widget-dragging *{cursor:auto!important}
+body.ui-offline.layout-desktop .desktop-sidebar,
+body.meter-autocal-active.layout-desktop .desktop-sidebar,
+body.apply-settings-active.layout-desktop .desktop-sidebar,
+body.lg-connect-active.layout-desktop .desktop-sidebar,
+body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
+@media(max-width:1023px){.layout-switch-btn[data-layout-mode="desktop"]{opacity:.45}}
 </style>
 </head>
 <body>
@@ -10509,7 +10546,11 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   <div><div class="ver" id="verDisplay"></div></div>
  </div>
  <div class="hdr-right">
-  <div class="hdr-actions">
+ <div class="hdr-actions">
+   <div class="layout-switch" role="group" aria-label="Interface layout">
+    <button type="button" class="layout-switch-btn" data-layout-mode="tablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')">Tablet</button>
+    <button type="button" class="layout-switch-btn" data-layout-mode="desktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')">Desktop</button>
+   </div>
    <button class="btn btn-sm btn-secondary" id="updateBtn" style="display:none" onclick="showUpdateCard()">Update Available</button>
   <button class="icon-btn power-btn offline" id="pwrBtn" aria-label="Power off" title="Power off" onclick="shutdownDevice()">
    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M7.2 6.8a7 7 0 1 0 9.6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
@@ -10533,10 +10574,27 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 </div>
 
 <div class="main-content" id="mainContent">
+<div class="desktop-shell">
+<aside class="desktop-sidebar" aria-label="Desktop workspace navigation">
+ <nav class="desktop-nav" aria-label="PGenerator workspaces">
+  <div class="desktop-nav-title">Workspaces</div>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="output" onclick="pgSelectDesktopWorkspace('output')">Output</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" onclick="pgSelectDesktopWorkspace('patterns')">Patterns</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">Display Control</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">Integrations</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="diagnostics" onclick="pgSelectDesktopWorkspace('diagnostics')">Diagnostics</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
+ </nav>
+</aside>
+<div class="desktop-content">
 <div class="dashboard">
 
+ <h1 class="desktop-workspace-title" id="desktopWorkspaceTitle" tabindex="-1">Output</h1>
+
  <!-- Display Settings -->
- <div class="card">
+ <div class="card" id="displaySettingsCard" data-desktop-workspace="output" data-desktop-order="10">
   <h2>Display Settings <button class="btn btn-sm btn-secondary" style="float:right;font-size:.65rem;padding:2px 8px" onclick="resetDefaults()">Defaults</button></h2>
   <div class="grid">
   <div class="field field-display">
@@ -10590,7 +10648,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- HDR Metadata -->
- <div class="card" id="hdrCard">
+ <div class="card" id="hdrCard" data-desktop-workspace="output" data-desktop-order="20">
   <h2>HDR Metadata</h2>
   <div class="grid">
    <div class="field">
@@ -10631,7 +10689,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Dolby Vision Settings -->
- <div class="card" id="dvCard">
+ <div class="card" id="dvCard" data-desktop-workspace="output" data-desktop-order="30">
 	  <h2><span class="dv-badge">DV</span> Dolby Vision</h2>
 	  <div class="grid">
 	   <input type="hidden" id="dv_interface" value="0">
@@ -10669,7 +10727,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Apply Settings Bar -->
- <div class="card span2" id="applyBar" style="display:none">
+ <div class="card span2" id="applyBar" data-desktop-workspace="output" data-desktop-global="dirty-settings" data-desktop-order="40" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
    <span style="color:var(--text2);font-size:.85rem">Settings changed</span>
    <button class="btn btn-sm btn-primary" onclick="applySettings()">Apply &amp; Restart</button>
@@ -10677,7 +10735,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Diagnostic Patterns -->
- <div class="card span2" data-widget="patterns" draggable="true">
+ <div class="card span2" data-widget="patterns" data-desktop-workspace="patterns" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Diagnostic Patterns</h2>
   <div class="pat-section">
    <div class="pat-content">
@@ -10743,7 +10801,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
 <!-- Calibration -->
- <div class="card span2 meter-patterns-only" data-widget="meter" draggable="true" id="meterCard">
+ <div class="card span2 meter-patterns-only" data-widget="meter" data-desktop-workspace="calibration" data-desktop-order="10" draggable="true" id="meterCard">
   <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
   <div class="meter-card-header-row">
    <div class="meter-card-header-col meter-card-header-col-meter">
@@ -11773,7 +11831,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Device Info -->
- <div class="card span2" data-widget="info" draggable="true">
+ <div class="card span2" data-widget="info" data-desktop-workspace="diagnostics" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Device Info</h2>
   <div class="stat-grid" style="margin-bottom:8px">
    <div class="stat-card">
@@ -11793,7 +11851,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- WiFi Client -->
- <div class="card" data-widget="wifi" draggable="true">
+ <div class="card" data-widget="wifi" data-desktop-workspace="connectivity" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>WiFi Client<label class="pg-switch" data-no-collapse title="Enable or disable the WiFi radio (also stops the Access Point)"><input type="checkbox" id="wifiRadioToggle" onchange="onWifiRadioToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="wifiStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
@@ -11821,7 +11879,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- HDMI-CEC TV Control -->
- <div class="card" data-widget="cec" draggable="true">
+ <div class="card" data-widget="cec" data-desktop-workspace="integrations" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>HDMI-CEC</h2>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
    <span id="cecStatus" style="font-size:.85rem;color:var(--text2)">Checking...</span>
@@ -11846,7 +11904,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Resolve Protocol -->
- <div class="card" data-widget="resolve" draggable="true">
+ <div class="card" data-widget="resolve" data-desktop-workspace="integrations" data-desktop-order="20" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Resolve Protocol <span id="resolveStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Disconnected</span></h2>
   <div style="font-size:.7rem;color:var(--text2);margin-bottom:8px;line-height:1.4">Connect via HCFR / DisplayCAL Resolve protocol. Enter the IP of the PC running calibration software.</div>
   <div class="grid">
@@ -11884,7 +11942,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- WiFi AP (PAN) -->
- <div class="card" data-widget="ap" draggable="true">
+ <div class="card" data-widget="ap" data-desktop-workspace="connectivity" data-desktop-order="20" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>WiFi Access Point<label class="pg-switch" data-no-collapse title="Start or stop the WiFi Access Point"><input type="checkbox" id="apEnableToggle" onchange="onApToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="apStatus" style="margin-bottom:8px"></div>
   <div class="grid">
@@ -11904,7 +11962,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Bluetooth PAN -->
- <div class="card" data-widget="bluetooth" draggable="true">
+ <div class="card" data-widget="bluetooth" data-desktop-workspace="connectivity" data-desktop-order="30" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Bluetooth PAN<label class="pg-switch" data-no-collapse title="Power the Bluetooth radio on or off"><input type="checkbox" id="btPowerToggle" onchange="onBtPowerToggle(this)"><span class="pg-switch-track"><span class="pg-switch-thumb"></span></span></label></h2>
   <div class="info-grid" id="btStatus" style="margin-bottom:8px"></div>
   <div class="btn-row" style="margin-bottom:8px">
@@ -11918,7 +11976,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- HDMI Infoframes -->
- <div class="card" data-widget="infoframes" draggable="true">
+ <div class="card" data-widget="infoframes" data-desktop-workspace="diagnostics" data-desktop-order="20" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>HDMI Infoframes</h2>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="loadInfoframes()">Refresh</button>
@@ -11940,7 +11998,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
   __PG_LG_CARD__
 
  <!-- GPU Memory -->
- <div class="card" data-widget="gpu_memory" draggable="true">
+ <div class="card" data-widget="gpu_memory" data-desktop-workspace="system" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>GPU Memory</h2>
   <div class="info-grid" id="gpuMemInfo" style="margin-bottom:8px"></div>
   <div class="grid">
@@ -11961,7 +12019,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
  </div>
 
  <!-- Software Update -->
- <div class="card span2" data-widget="update" draggable="true" id="updateCard">
+ <div class="card span2" data-widget="update" data-desktop-workspace="system" data-desktop-order="20" draggable="true" id="updateCard">
   <h2><span class="drag-handle">&#9776;</span>Software Update</h2>
   <div id="updateContent">
    <div class="info-grid">
@@ -11989,6 +12047,8 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    <a class="btn btn-sm btn-coffee" href="https://buymeacoffee.com/bigshoots" target="_blank" rel="noopener noreferrer">&#9749; Buy Me a Coffee</a>
   </div>
  </div>
+</div>
+</div>
 </div>
 
 <div class="offline-mask" id="offlineMask" aria-hidden="true">
@@ -14787,6 +14847,142 @@ async function resolveDisconnect(){
  else toast('Disconnect failed','err');
 }
 
+// Interface layout controller. Desktop mode is deliberately a presentation
+// layer over the existing dashboard DOM: controls, pollers, canvases and
+// workflow state stay alive when their workspace is not currently visible.
+const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
+const PG_DESKTOP_MIN_WIDTH=1024;
+const PG_DESKTOP_WORKSPACES={
+ output:'Output',patterns:'Patterns',calibration:'Calibration',
+ 'display-control':'Display Control',connectivity:'Connectivity',
+ integrations:'Integrations',diagnostics:'Diagnostics',system:'System'
+};
+let pgLayoutPreference='tablet';
+let pgLayoutEffective='tablet';
+let pgDesktopWorkspace='output';
+let pgLayoutResizeTimer=null;
+let pgLayoutPanelObserver=null;
+
+function pgWideEnoughForDesktop(){
+ return window.innerWidth>=PG_DESKTOP_MIN_WIDTH;
+}
+function pgReadLayoutPreference(){
+ try{
+  const saved=localStorage.getItem(PG_LAYOUT_STORAGE_KEY);
+  return saved==='desktop'?'desktop':'tablet';
+ }catch(e){ return 'tablet'; }
+}
+function pgUpdateLayoutControls(){
+ const effective=pgLayoutEffective;
+ document.querySelectorAll('.layout-switch-btn[data-layout-mode]').forEach(btn=>{
+  const mode=btn.getAttribute('data-layout-mode');
+  btn.setAttribute('aria-pressed',mode===effective?'true':'false');
+  if(mode==='desktop'){
+   const unavailable=!pgWideEnoughForDesktop();
+   btn.disabled=unavailable;
+   btn.title=unavailable
+    ?'Desktop mode requires a browser width of at least 1024 pixels'
+    :'Use the full-width desktop workspace';
+  }
+ });
+}
+function pgPanelBelongsToActiveWorkspace(panel){
+ if(!panel||!panel.getAttribute) return false;
+ const workspace=panel.getAttribute('data-desktop-workspace');
+ const globalPanel=panel.getAttribute('data-desktop-global');
+ const available=panel.style.display!=='none';
+ return available&&((workspace===pgDesktopWorkspace)||!!globalPanel);
+}
+function pgSyncDesktopPanels(){
+ document.querySelectorAll('.dashboard > .card[data-desktop-workspace]').forEach(panel=>{
+  panel.setAttribute('data-desktop-active',pgPanelBelongsToActiveWorkspace(panel)?'true':'false');
+  const order=Number(panel.getAttribute('data-desktop-order')||0);
+  if(Number.isFinite(order)) panel.style.order=String(order);
+ });
+}
+function pgRefreshVisibleWorkspace(){
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+  if(pgDesktopWorkspace==='calibration'&&typeof meterRefreshActiveSeriesCharts==='function'){
+   try{ meterRefreshActiveSeriesCharts(); }catch(e){}
+  }
+ }));
+}
+function pgSyncCardCollapseForLayout(){
+ let state={};
+ try{ state=JSON.parse(localStorage.getItem('cardCollapse')||'{}')||{}; }catch(e){ state={}; }
+ document.querySelectorAll('.card[data-collapse-key]').forEach(card=>{
+  if(pgLayoutEffective==='desktop') card.classList.remove('collapsed');
+  else card.classList.toggle('collapsed',!!state[card.dataset.collapseKey]);
+ });
+}
+function pgSelectDesktopWorkspace(workspace,options){
+ if(!Object.prototype.hasOwnProperty.call(PG_DESKTOP_WORKSPACES,workspace)) workspace='output';
+ pgDesktopWorkspace=workspace;
+ document.querySelectorAll('.desktop-nav-btn[data-workspace-target]').forEach(btn=>{
+  const active=btn.getAttribute('data-workspace-target')===workspace;
+  if(active) btn.setAttribute('aria-current','page');
+  else btn.removeAttribute('aria-current');
+ });
+ const title=document.getElementById('desktopWorkspaceTitle');
+ if(title) title.textContent=PG_DESKTOP_WORKSPACES[workspace];
+ pgSyncDesktopPanels();
+ pgRefreshVisibleWorkspace();
+ if(options&&options.focus&&title){
+  try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
+ }
+}
+function pgApplyLayout(options){
+ const previous=pgLayoutEffective;
+ pgLayoutEffective=(pgLayoutPreference==='desktop'&&pgWideEnoughForDesktop())?'desktop':'tablet';
+ document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
+ document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
+ pgSyncCardCollapseForLayout();
+ pgUpdateLayoutControls();
+ if(pgLayoutEffective==='desktop'){
+  if(previous!=='desktop'||(options&&options.resetWorkspace)) pgDesktopWorkspace='output';
+  pgSelectDesktopWorkspace(pgDesktopWorkspace);
+ }else{
+  document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
+  pgRefreshVisibleWorkspace();
+ }
+}
+function pgSetLayoutPreference(mode){
+ pgLayoutPreference=mode==='desktop'?'desktop':'tablet';
+ try{ localStorage.setItem(PG_LAYOUT_STORAGE_KEY,pgLayoutPreference); }catch(e){}
+ pgApplyLayout({resetWorkspace:pgLayoutPreference==='desktop'});
+}
+function pgUpdateHeaderOffset(){
+ const header=document.querySelector('.header');
+ if(!header) return;
+ document.documentElement.style.setProperty('--pg-header-height',Math.ceil(header.getBoundingClientRect().height)+'px');
+}
+function pgLayoutInit(){
+ pgLayoutPreference=pgReadLayoutPreference();
+ pgLayoutEffective='tablet';
+ pgDesktopWorkspace='output';
+ pgUpdateHeaderOffset();
+ pgApplyLayout({resetWorkspace:true});
+ const header=document.querySelector('.header');
+ if(header&&window.ResizeObserver){
+  try{ new ResizeObserver(pgUpdateHeaderOffset).observe(header); }catch(e){}
+ }
+ const dashboard=document.querySelector('.dashboard');
+ if(dashboard&&window.MutationObserver){
+  try{
+   pgLayoutPanelObserver=new MutationObserver(mutations=>{
+    if(mutations.some(m=>m.target&&m.target.matches&&m.target.matches('.dashboard > .card[data-desktop-workspace]'))) pgSyncDesktopPanels();
+   });
+   pgLayoutPanelObserver.observe(dashboard,{subtree:true,attributes:true,attributeFilter:['style']});
+  }catch(e){}
+ }
+ window.addEventListener('resize',()=>{
+  pgUpdateHeaderOffset();
+  if(pgLayoutResizeTimer) clearTimeout(pgLayoutResizeTimer);
+  pgLayoutResizeTimer=setTimeout(()=>pgApplyLayout(),80);
+ });
+}
+
 async function loadInfoframes(){
  const r=await fetchJSON('/api/infoframes',{_quiet:true,_timeoutMs:10000});
  if(!r||r.status!=='ok') return;
@@ -14939,6 +15135,7 @@ async function loadInfoframes(){
  }
 
  function onPointerDown(e){
+  if(document.body.classList.contains('layout-desktop')) return;
   if(e.button!=null&&e.button!==0) return;
   const handle=e.target.closest&&e.target.closest('.drag-handle');
   if(!handle) return;
@@ -15020,6 +15217,7 @@ async function checkUpdate(){
 }
 let _updateChecked=false;
 function showUpdateCard(){
+ if(document.body.classList.contains('layout-desktop')) pgSelectDesktopWorkspace('system');
  document.getElementById('updateCard').style.display='';
  document.getElementById('updateCard').scrollIntoView({behavior:'smooth'});
  if(!_updateChecked) checkUpdate();
@@ -42551,8 +42749,9 @@ function initCardCollapse(){
   // Derive a stable key: id > data-widget > index
   const key=card.id||card.getAttribute('data-widget')||('card'+i);
   card.dataset.collapseKey=key;
-  if(state[key]) card.classList.add('collapsed');
+  if(state[key]&&!document.body.classList.contains('layout-desktop')) card.classList.add('collapsed');
   h.addEventListener('click',(ev)=>{
+   if(document.body.classList.contains('layout-desktop')) return;
    // Don't toggle if the click was on a control or the card-reorder handle
     if(ev.target.closest('button,input,select,a,[data-no-collapse],.drag-handle')) return;
    card.classList.toggle('collapsed');
@@ -42595,7 +42794,9 @@ function pgInitialRetry(name,fn,delays){
 
  // Init
 (async()=>{
+ pgLayoutInit();
  initCardCollapse();
+ pgSyncCardCollapseForLayout();
  await loadConfig(true);
  await diagRefreshCustomAssets();
  // Fire the header-card loads (resolution, temperature, version) on a
