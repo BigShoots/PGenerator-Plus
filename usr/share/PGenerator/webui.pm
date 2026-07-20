@@ -5197,8 +5197,9 @@ sub webui_meter_settings_save (@) {
 # Generic lattice-cube solve (measure -> solve -> export, any display): runs
 # meter_lg_3d_autocal.pl in solve_only mode with its OWN config/state/stop
 # paths -- no meter, no TV, no upload, no collision with a real AutoCal run.
-# The exported .cube/.bin/.json land in the standard solved-LUT dir so LUT
-# Tools lists them immediately.
+# Offline solve exports .cube + .json (host apps). AutoCal upload also writes
+# the LG .bin payload. Files land in the standard solved-LUT dir so LUT Tools
+# lists them immediately.
 my $_lut_solve_config_file="/tmp/lut_solve_config.json";
 my $_lut_solve_state_file="/tmp/lut_solve_state.json";
 my $_lut_solve_stop_file="/tmp/lut_solve_stop.signal";
@@ -26829,8 +26830,9 @@ function meterLutCubeDraw(){
 // ---- Generate 3D LUT from a measured lattice (measure -> solve -> export) ----
 // POSTs the completed lattice read's XYZ data to /api/3d-lut/solve; the worker
 // (solve_only mode) builds the baseline model from the lattice's own corners,
-// adds bounded per-node residual corrections, and exports .cube/.bin/.json to
-// the solved-LUT dir. Works for ANY display — nothing is uploaded to a TV.
+// adds bounded per-node residual corrections, and exports a host-app .cube
+// (+ .json) to the solved-LUT dir. Works for ANY display — nothing is uploaded
+// to a TV and no LG payload is built on this path.
 let meterLutSolvePolling=null;
 let meterLutSolvePendingDownload='';
 

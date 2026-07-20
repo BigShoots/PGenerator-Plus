@@ -2268,36 +2268,33 @@ sub run_solve_only {
  $cube_size=33 unless($cube_size==17 || $cube_size==33 || $cube_size==65);
  $state->{"solve_cube_size"}=$cube_size;
  $state->{"cube_lut_size"}=$cube_size;
- $state->{"message"}="Building model from ".scalar(@nodes)." lattice readings";
+ $state->{"message"}="Building colour model from ".scalar(@nodes)." profile readings";
  $state->{"current_name"}="Building model";
- $state->{"solve_progress_pct"}=15;
+ $state->{"solve_progress_pct"}=20;
  write_state($state);
- $state->{"message"}="Generating ${cube_size}-point export cube (".($cube_size**3)." nodes)";
- $state->{"current_name"}="Generating ${cube_size}³ export cube";
- $state->{"solve_progress_pct"}=35;
+ # Offline / standalone solve: host-app export only (.cube for Resolve, madVR,
+ # etc.). No LG TV payload — that is AutoCal upload language and wastes time
+ # generating a 33³ binary nobody downloads from this path.
+ $state->{"message"}="Generating ${cube_size}³ export cube (".($cube_size**3)." nodes)";
+ $state->{"current_name"}="Generating ${cube_size}³ cube";
+ $state->{"solve_progress_pct"}=45;
  write_state($state);
- # Export cube size is operator-selected (17/33). LG payload stays 33³ for
- # upload paths; solve_only still builds a payload sidecar for LUT Tools.
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
- $state->{"message"}="Generating 33-point LG payload sidecar";
- $state->{"current_name"}="Generating 33³ payload";
- $state->{"solve_progress_pct"}=75;
- write_state($state);
- my $payload_u16=generate_lut_lg_payload($model,33);
  $model->{"method"}="cube";
- $state->{"message"}="Writing export files";
- $state->{"current_name"}="Writing .cube export";
+ $state->{"message"}="Writing ${cube_size}³ .cube export";
+ $state->{"current_name"}="Writing .cube";
  $state->{"solve_progress_pct"}=90;
  write_state($state);
- my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
+ # undef payload → export_lut writes .cube + .json only (no LG .bin).
+ my $export=export_lut($cube_u16,undef,$model,$config,$cube_size);
  $state->{"status"}="complete";
  $state->{"message"}="3D LUT solved (${cube_size}³ export)";
- $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." lattice readings";
+ $state->{"current_name"}="3D LUT solved from ".scalar(@nodes)." profile readings";
  $state->{"solve_progress_pct"}=100;
  $state->{"export"}=$export;
  $state->{"solve_report"}=$solve_report;
  $state->{"cube_lut_size"}=$cube_size;
- $state->{"payload_lut_size"}=33;
+ $state->{"payload_lut_size"}=0;
  $state->{"lattice_nodes"}=scalar(@nodes);
  $state->{"signal_mode"}=$model->{"signal_mode"};
  $state->{"target_gamut"}=$model->{"target_gamut"};
@@ -2427,9 +2424,19 @@ sub export_lut {
  my $gamut=sanitize_target_gamut($model->{"target_gamut"}||$config->{"target_gamut"},$signal_mode);
  my $gamma=sanitize_target_gamma($model->{"signal_gamma"}||$config->{"target_gamma"},$signal_mode);
  my $base="$dir/${stamp}_".sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
- my $title="PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma);
- my $binary=pack("v*",@{$payload_u16});
- write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
+ my $solve_only=!!(ref($config) eq "HASH" && $config->{"solve_only"});
+ # Offline export is display-agnostic host-app LUT; AutoCal upload keeps the LG title.
+ my $title=$solve_only
+  ? ("PGenerator ".signal_mode_label($signal_mode)." $method ".target_gamut_label($gamut)." ".target_gamma_label($gamma))
+  : ("PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma));
+ my $have_payload=(ref($payload_u16) eq "ARRAY" && scalar(@{$payload_u16})>0) ? 1 : 0;
+ my $binary="";
+ my $payload_size=0;
+ if($have_payload) {
+  $binary=pack("v*",@{$payload_u16});
+  $payload_size=33;
+  write_file("$base.bin",$binary,1) or die "Unable to write LG 3D LUT payload\n";
+ }
  write_file("$base.cube",cube_text($cube_u16,$cube_size,$title),0) or die "Unable to write cube export\n";
  write_file("$base.json",$json->encode({
   status => "ok",
@@ -2439,13 +2446,14 @@ sub export_lut {
   target_gamut => $gamut,
   target_gamma => $gamma,
   title => $title,
+  solve_only => json_bool($solve_only),
   lut_size => $cube_size,
   cube_lut_size => $cube_size,
-  payload_lut_size => 33,
-  payload_bits => 12,
-  payload_endianness => "little-endian uint16",
-  payload_axis_order => "R fastest, G middle, B slowest",
-  payload_channel_order => "RGB values per node",
+  payload_lut_size => $payload_size,
+  payload_bits => ($have_payload ? 12 : 0),
+  payload_endianness => ($have_payload ? "little-endian uint16" : undef),
+  payload_axis_order => ($have_payload ? "R fastest, G middle, B slowest" : undef),
+  payload_channel_order => ($have_payload ? "RGB values per node" : undef),
   cube_axis_order => "R fastest, G middle, B slowest (standard .cube)",
   neutral_axis_source => $model->{"neutral_axis_source"},
   neutral_axis_protection => $model->{"neutral_neighborhood_identity_enabled"}
@@ -2457,10 +2465,10 @@ sub export_lut {
  }),0);
  return {
   cube_path => "$base.cube",
-  payload_path => "$base.bin",
+  payload_path => ($have_payload ? "$base.bin" : undef),
   metadata_path => "$base.json",
   cube_values => scalar(@{$cube_u16}),
-  payload_values => scalar(@{$payload_u16}),
+  payload_values => ($have_payload ? scalar(@{$payload_u16}) : 0),
   payload_bytes => length($binary),
  };
 }
