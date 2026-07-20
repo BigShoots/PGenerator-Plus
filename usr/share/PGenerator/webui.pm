@@ -8175,14 +8175,16 @@ sub webui_bluetooth_status_json (@) {
  $powered="false" if($kv{SOFT_BLOCKED} && $kv{SOFT_BLOCKED} eq "1");
  my $discoverable=($adapter=~/Discoverable:\s*yes/i) ? "true" : "false";
  my $agent=($kv{AGENT} && $kv{AGENT} eq "1") ? "true" : "false";
- # PAN "Running" means the NAP service (or an active bnep client link) is up —
- # not merely that the pan0 bridge still has an address after the radio is
- # powered off. With Power Off, always report PAN stopped.
- my $pan_running="false";
- if($powered eq "true") {
-  if($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") { $pan_running="true"; }
-  elsif($pan_raw=~/\bbnep\d+\b/s) { $pan_running="true"; }
- }
+  # PAN "Running" means the NAP service (or an active bnep client link) is up —
+  # not merely that the pan0 bridge still has an address after the radio is
+  # powered off. With Power Off, always report PAN stopped. Require BOTH the
+  # daemon's NAP_RUNNING flag AND a bnep interface — the bnep name alone can
+  # persist in the kernel after the radio goes down, so an OR used to falsely
+  # report Running until the next refresh.
+  my $pan_running="false";
+  if($powered eq "true") {
+   if(($kv{NAP_RUNNING} && $kv{NAP_RUNNING} eq "1") && $pan_raw=~/\bbnep\d+\b/s) { $pan_running="true"; }
+  }
  my $available=(($kv{BLUETOOTHCTL_AVAILABLE} && $kv{BLUETOOTHCTL_AVAILABLE} eq "1") || $raw=~/HCI_BEGIN\n.+?\nHCI_END/s) ? "true" : "false";
  my $pan_available=(($kv{PAND_AVAILABLE} && $kv{PAND_AVAILABLE} eq "1") || ($kv{BT_NETWORK_AVAILABLE} && $kv{BT_NETWORK_AVAILABLE} eq "1")) ? "true" : "false";
  my $pan_net=&_webui_json_escape($kv{PAND_NET}||"10.10.11");
@@ -34904,6 +34906,23 @@ async function meterPollLg3dAutoCal(options){
 	    meterClearDisplayPattern();
 	    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'complete'});
     toast('LG 3D LUT AutoCal complete');
+    // The server worker already solved + wrote the cube on disk; surface it in
+    // LUT Tools and open the download / 3D-view prompt so the standalone run
+    // produces the same build + save flow as the lattice "Build 3D LUT" path.
+    // Without this the standalone only showed the completion overlay (no way to
+    // retrieve the cube, and the LUT list never refreshed).
+    setTimeout(function(){
+     try{
+      fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000}).then(function(resp){
+       const luts=(resp&&Array.isArray(resp.luts))?resp.luts:[];
+       if(!luts.length) return;
+       const newest=luts.slice().sort(function(a,b){return Number(b&&b.mtime||0)-Number(a&&a.mtime||0);})[0];
+       if(!newest||!newest.name) return;
+       try{ meterLoadSolvedLutList(); }catch(_e){}
+       try{ meterLutSolveDonePrompt(newest.name,'standalone 3D LUT AutoCal',{cube_lut_size:33}); }catch(_e){}
+      }).catch(function(){});
+     }catch(_e){}
+    },400);
    }else if(r.status==='error'){
     meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
@@ -35333,7 +35352,7 @@ async function meterBuild3dLutSeries(){
  const n=Array.isArray(meterSeriesSteps)?meterSeriesSteps.length:0;
  const ok=await meterShowChoiceModal({
   title:'Build 3D LUT',
-  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the TV — when the solve finishes you can download .cube or .3dl for host apps (Resolve, madVR, etc.).',
+  body:'Measure '+(n||'?')+' patches for "'+String(series.name||series.kind||'series')+'" ('+signalMode+'), then solve a corrective 3D LUT for download.\n\nNothing is uploaded to the display — when the solve finishes you can download .cube or .3dl for host apps (Resolve, madVR, etc.).',
   acceptLabel:'Start measurement',
   cancelLabel:'Cancel',
   checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
