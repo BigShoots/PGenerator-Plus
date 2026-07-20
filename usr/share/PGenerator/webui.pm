@@ -23199,7 +23199,8 @@ function drawDeltaBarsVertical(canvasId,spec){
   return;
  }
  const useHorizontal=(canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor')&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
- const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor';
+ const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor'
+  ||canvasId==='meterTwoPointLowCanvas'||canvasId==='meterTwoPointHighCanvas';
  const padTop=themedColorBars?28:18,padBot=themedColorBars?30:24,padL=6,padR=6;
  const plotH=H-padTop-padBot;
  const plotW=W-padL-padR;
@@ -23297,8 +23298,8 @@ function drawDeltaBarsVertical(canvasId,spec){
   if(themedColorBars){ctx.shadowColor=e.color;ctx.shadowBlur=8;roundedRect(left,top,width,height,3);ctx.fill();}
   else {ctx.fillRect(left,top,width,height);ctx.beginPath();ctx.arc(Math.round(cx),yVPx,3,0,Math.PI*2);ctx.fill();}
   ctx.restore();
-  // Themed color-series values use the same fixed footer row as greyscale
-  // RGB balance instead of following the moving bar endpoint.
+  // Themed color-series and 2-point RGB values use the same fixed footer row
+  // as greyscale RGB balance instead of following the moving bar endpoint.
   if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
   ctx.fillStyle=labelColor;ctx.font='10px sans-serif';ctx.textAlign='center';
   const dec=(spec.decimals!=null)?spec.decimals:1;
