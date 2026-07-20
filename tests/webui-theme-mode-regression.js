@@ -81,7 +81,10 @@ assert(source.includes("const themedColorBars=canvasId==='meterRGBCanvasColor'||
 assert(source.includes('const trackW=themedColorBars?42:'), 'Color-series tracks match the 42px greyscale RGB balance tracks');
 assert(source.includes('const barW=themedColorBars?20:'), 'Color-series fills match the 20px greyscale RGB balance fills');
 assert(source.includes('flex:0 0 180px!important;width:180px!important;height:480px!important'), 'Color-series side charts match the 180px greyscale RGB balance panel width');
-assert(source.includes('body.layout-tablet #colorTopLayout #meterXYYColorWrap{flex:0 0 160px!important;width:160px!important}'), 'Tablet color-series side charts narrow enough to keep reading details on the first row');
+assert(source.includes('@media(min-width:701px) and (max-width:900px)'), 'Narrow tablet color-series side charts retain their compact fallback');
+assert(source.includes('grid-template-columns:minmax(0,1fr) 165px 165px 205px'), 'Wide tablet color layout dynamically gives CIE the remaining row width');
+assert(source.includes('#colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #chartCIEBox{width:100%!important;max-width:none!important;min-width:0}'), 'Tablet CIE box sheds its hard-coded width without affecting 3D or expanded layouts');
+assert(source.includes('text-align:center">xyY</div>'), 'Chromaticity/luminance bar chart uses the correct xyY label');
 assert(source.includes('let labelY=themedColorBars?H-6:'), 'Color-series values stay in a fixed footer below their tracks');
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');

@@ -10054,9 +10054,16 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
 }
-@media(min-width:701px){
+@media(min-width:701px) and (max-width:900px){
  body.layout-tablet #colorTopLayout #meterRGBColorWrap,
  body.layout-tablet #colorTopLayout #meterXYYColorWrap{flex:0 0 160px!important;width:160px!important}
+}
+@media(min-width:901px){
+ body.layout-tablet #colorTopLayout:not(.cie-3d-layout):not(.cie-expanded){display:grid!important;grid-template-columns:minmax(0,1fr) 165px 165px 205px;gap:10px;align-items:start}
+ body.layout-tablet #colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #chartCIEBox{width:100%!important;max-width:none!important;min-width:0}
+ body.layout-tablet #colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #meterRGBColorWrap,
+ body.layout-tablet #colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #meterXYYColorWrap,
+ body.layout-tablet #colorTopLayout:not(.cie-3d-layout):not(.cie-expanded) #colorReadingDetail{width:auto!important;min-width:0!important}
 }
 /* Expand (2D or 3D): hide side panels, CIE fills the row, taller canvas */
 #colorTopLayout.cie-expanded{
@@ -12011,7 +12018,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
       <div id="meterXYYColorWrap" style="flex:0 0 180px;width:180px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
-       <div style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">XyY</div>
+       <div style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">xyY</div>
        <canvas id="meterXYYCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
       <div id="colorReadingDetail" style="flex:0 0 205px;width:205px;height:450px;background:#0d0d15;border-radius:6px;padding:12px;font-size:12px;color:#888;box-sizing:border-box;overflow:auto">
