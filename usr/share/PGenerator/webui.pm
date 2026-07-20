@@ -10660,6 +10660,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-track,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-track,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-track{background:var(--scroll-track);border-color:var(--border)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-color:var(--scroll-thumb-border);box-shadow:none}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb:hover,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb:hover,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
+[data-theme="light"] body .meter-scroll-sync{background:var(--chart-bg)!important}
 body.layout-desktop .desktop-sidebar{background:var(--surface-sidebar)}
 body.layout-desktop .desktop-utility-toggle{background:var(--surface-popover);box-shadow:-4px 0 14px var(--shadow)}
 body.layout-desktop .desktop-utility-toggle:hover,.desktop-utility-close:hover,.desktop-nav-btn:hover,.layout-switch-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
