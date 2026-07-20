@@ -9942,9 +9942,9 @@ sub webui_html (@) {
 --scroll-track:#161621;--scroll-thumb:#525264;--scroll-thumb-border:#6c6c82;--scroll-thumb-hover:#67677c;
 --status-success:#4caf50;--status-warning:#ff9800;--status-error:#f44;--status-hdmi:#e53935;--status-dv:#b388ff;--status-calibration:#5b7fff}
 [data-theme="light"]{color-scheme:light;--bg:#eef1f6;--card:#fff;--border:#c7ced9;--accent:#315dd8;--accent2:#6445d5;
---text:#18202b;--text2:#586576;--green:#217a36;--red:#c62828;--orange:#a55300;--dv:#7044bd;
+--text:#18202b;--text2:#465466;--green:#217a36;--red:#c62828;--orange:#a55300;--dv:#7044bd;
 --surface-page:#eef1f6;--surface-header:#fff;--surface-sidebar:#f7f8fb;--surface-card:#fff;--surface-drawer:#fff;--surface-modal:#fff;--surface-popover:#f7f8fb;--surface-inset:#f3f5f8;--surface-field:#fff;
---text-primary:#18202b;--text-secondary:#586576;--text-muted:#6b7685;--text-inverse:#fff;--text-disabled:#8a94a2;
+--text-primary:#18202b;--text-secondary:#465466;--text-muted:#596676;--text-inverse:#fff;--text-disabled:#687586;
 --divider:#c7ced9;--focus-ring:#174fc4;--shadow:rgba(18,29,45,.22);--overlay:rgba(4,8,14,.72);--selected-bg:rgba(49,93,216,.13);--hover-bg:rgba(24,32,43,.07);
 --chart-bg:#fff;--chart-grid:#dfe4eb;--chart-axis:#8793a3;--chart-label:#4f5d6d;--chart-tooltip:#fff;--chart-empty:#6b7685;
 --scroll-track:#e3e7ed;--scroll-thumb:#9aa5b3;--scroll-thumb-border:#7f8b9a;--scroll-thumb-hover:#7f8b9a;
@@ -10603,6 +10603,8 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] [style*="background:#080a11"],[data-theme="light"] [style*="background: #080a11"]{background:var(--surface-field)!important}
 [data-theme="light"] [style*="color:#eee"],[data-theme="light"] [style*="color: #eee"]{color:var(--text-primary)!important}
 [data-theme="light"] [style*="color:#888"],[data-theme="light"] [style*="color: #888"]{color:var(--text-secondary)!important}
+[data-theme="light"] [style*="color:#aaa"],[data-theme="light"] [style*="color: #aaa"],
+[data-theme="light"] [style*="color:#ccc"],[data-theme="light"] [style*="color: #ccc"]{color:var(--text-secondary)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 [data-theme="light"] select,[data-theme="light"] textarea,[data-theme="light"] .meter-card-header-select,
@@ -10615,12 +10617,18 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .meter-autocal-progress,[data-theme="light"] .meter-lg-rgb-bar,
 [data-theme="light"] .meter-lg-rgb-luma,[data-theme="light"] .custom-ccss-panel{background:var(--surface-inset)}
 [data-theme="light"] .meter-pattern-insert-popover,[data-theme="light"] .meter-xyz-gear-popover{background:var(--surface-popover);box-shadow:0 8px 24px var(--shadow)}
+[data-theme="light"] .meter-pattern-insert-gear,[data-theme="light"] .meter-xyz-gear{background:var(--surface-field);color:var(--text-secondary);border-color:var(--border)}
+[data-theme="light"] .meter-pattern-insert-gear:hover,[data-theme="light"] .meter-xyz-gear:hover{background:var(--hover-bg);color:var(--accent);border-color:var(--accent)}
 [data-theme="light"] .meter-profile-title{color:var(--text-primary)}
 [data-theme="light"] .btn-secondary{background:var(--divider);color:var(--text-primary)}
 [data-theme="light"] .btn-secondary:hover,[data-theme="light"] .pat-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
 [data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}
 [data-theme="light"] .diag-asset-icon-btn-delete:not(:disabled){color:var(--status-error)!important}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
+[data-theme="light"] #meterThumbsRow,[data-theme="light"] .meter-scroll-sync,[data-theme="light"] .meter-modal-scroll{scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
+[data-theme="light"] #meterThumbsRow::-webkit-scrollbar-track,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-track,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-track{background:var(--scroll-track);border-color:var(--border)}
+[data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-color:var(--scroll-thumb-border);box-shadow:none}
+[data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb:hover,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb:hover,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
 body.layout-desktop .desktop-sidebar{background:var(--surface-sidebar)}
 body.layout-desktop .desktop-utility-toggle{background:var(--surface-popover);box-shadow:-4px 0 14px var(--shadow)}
 body.layout-desktop .desktop-utility-toggle:hover,.desktop-utility-close:hover,.desktop-nav-btn:hover,.layout-switch-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
@@ -10655,7 +10663,8 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 /* Tablet cards favour compact switches. The complete explanatory copy stays
    available as a keyboard/hover tooltip and remains part of the button's
    accessible name. Desktop keeps the spacious selection tiles. */
-body.layout-tablet .ui-settings-sections{grid-template-columns:1fr;gap:14px}
+body.layout-tablet #uiSettingsCard{order:1000!important;grid-column:1 / -1}
+body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 body.layout-tablet .ui-choice-list{gap:5px}
 body.layout-tablet .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible}
 body.layout-tablet .ui-choice::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
@@ -10667,7 +10676,7 @@ body.layout-tablet .ui-choice-title::after{content:'?';display:inline-flex;align
 body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
 body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
-@media(max-width:700px){.ui-settings-sections{grid-template-columns:1fr}}
+@media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
 </style>
 </head>
 <body>
@@ -10753,8 +10762,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <p class="ui-choice-note" id="desktopLayoutUnavailable" role="status">Desktop requires a browser width of at least 1024 pixels.</p>
    </div>
    <div class="ui-settings-group">
-    <h3>Appearance</h3>
-    <div class="ui-choice-list" aria-label="Appearance">
+    <h3>Theme</h3>
+    <div class="ui-choice-list" aria-label="Theme">
      <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')"><span class="ui-choice-title">Dark</span><span class="ui-choice-description">Low-light interface optimized for calibration environments.</span></button>
      <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')"><span class="ui-choice-title">Light</span><span class="ui-choice-description">High-contrast light interface for bright rooms and general administration.</span></button>
     </div>
@@ -15234,6 +15243,9 @@ function pgApplyLayout(options){
   pgSelectDesktopWorkspace(pgDesktopWorkspace);
  }else{
   pgSetDesktopUtilityDrawer(false);
+  // Desktop workspaces assign inline presentation order. Clear it when
+  // returning to Tablet or CSS order masks DOM drag-and-drop reordering.
+  document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});
   document.querySelectorAll('.dashboard > .card[data-desktop-active]').forEach(panel=>panel.removeAttribute('data-desktop-active'));
   pgRefreshVisibleWorkspace();
  }
@@ -27409,7 +27421,7 @@ function meterLutCubeDraw(){
    ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.stroke();
   }
  });
- ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
  const shown=axis.length;
  ctx.fillText(N+'³ LUT'+(shown<N?(' · showing '+shown+'³ subset'):'')+' · hollow = input node, filled = LUT output',8,ctx.h-8);
 }
@@ -39694,7 +39706,7 @@ function meterDrawCubeViewNow(){
   ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=0.7;
   ctx.beginPath();ctx.arc(n.pt.sx,n.pt.sy,mr,0,Math.PI*2);ctx.stroke();
  });
- ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+ ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
  const label=(total>patches.length?('showing '+patches.length+' of '+total+' nodes'):(total+' nodes'))+(isPreset?'':' · '+measuredMap.size+' measured · filled = measured');
  ctx.fillText(label,8,ctx.h-8);
 }
@@ -39835,7 +39847,7 @@ function drawCIEChart3D(readings,opts){
   prims.push({z:cie3dAvgZ(gPts), draw:()=>{
    ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
    cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
-   ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
    ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
    ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
    ctx.textAlign='right';ctx.fillText('B',gPts[2].sx-4,gPts[2].sy+12);
@@ -39844,8 +39856,8 @@ function drawCIEChart3D(readings,opts){
  // D65
  const d65=cie3dProject(0.3127,0.329,0,layout);
  prims.push({z:d65.z, draw:()=>{
-  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
-  ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText('D65',d65.sx+5,d65.sy+3);
  }});
  // Axes: origin at (0,0,0) → x, y(chroma), Y
@@ -39858,13 +39870,13 @@ function drawCIEChart3D(readings,opts){
   ctx.beginPath();ctx.moveTo(o.sx,o.sy);ctx.lineTo(ax.sx,ax.sy);ctx.stroke();
   ctx.beginPath();ctx.moveTo(o.sx,o.sy);ctx.lineTo(ay.sx,ay.sy);ctx.stroke();
   ctx.beginPath();ctx.moveTo(o.sx,o.sy);ctx.lineTo(aY.sx,aY.sy);ctx.stroke();
-  ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';
+  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';
   ctx.textAlign='center';
   ctx.fillText('x',ax.sx,ax.sy+14);
   ctx.fillText('y',ay.sx-10,ay.sy+4);
   ctx.fillText('Y',aY.sx-8,aY.sy-6);
   // Y ticks
-  ctx.font='9px sans-serif';ctx.fillStyle='#aab6cb';ctx.textAlign='right';
+  ctx.font='9px sans-serif';ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.textAlign='right';
   const tickN=4;
   for(let i=0;i<=tickN;i++){
    const yy=yMax*(i/tickN);
@@ -40015,19 +40027,19 @@ function drawCIEChart3D(readings,opts){
  prims.sort((a,b)=>b.z-a.z);
  prims.forEach(p=>{ try{ p.draw(); }catch(e){} });
  // Overlay labels (always on top)
- ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';
+ ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
- ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';
+ ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
  ctx.fillText('3D xyY  ·  drag rotate · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
  } else {
-  ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';
+  ctx.fillStyle=pgThemeColor('--chart-empty','#6a7690');ctx.font='9px sans-serif';
   ctx.fillText('Chroma only: target Y matched to measured',ctx.w-12,42);
  }
  ctx.textAlign='left';
- ctx.fillStyle='#aab6cb';ctx.font='9px sans-serif';
+ ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='9px sans-serif';
  ctx.fillText('Y max '+(_cie3d.yMax>=100?_cie3d.yMax.toFixed(0):_cie3d.yMax.toFixed(1))+' cd/m\u00B2',12,ctx.h-10);
  _cie3d.hitZones=hitZones;
  const canvas=document.getElementById('chartCIE');
@@ -40269,21 +40281,21 @@ function drawCIEChart(readings){
   ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
   ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
  }
  // D65 white point
- ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
- ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
  // Gamut / legend at plot top-right (zoom inset draws below these lines).
- ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
+ ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  if(colorInclLum){
-  ctx.fillStyle='#9fb3d9';ctx.font='9px sans-serif';ctx.textAlign='right';
+  ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';ctx.textAlign='right';
   ctx.fillText('Ring = |\u0394Y|%',pad.l+w-2,pad.t+22);
  } else {
-  ctx.fillStyle='#6a7690';ctx.font='9px sans-serif';ctx.textAlign='right';
+  ctx.fillStyle=pgThemeColor('--chart-empty','#6a7690');ctx.font='9px sans-serif';ctx.textAlign='right';
   ctx.fillText('Chroma only',pad.l+w-2,pad.t+22);
  }
  // Unread series targets stay on the chart for the whole read — only the
@@ -40351,16 +40363,16 @@ function drawCIEChart(readings){
  });
  ctx.restore(); // end plot clip
  // Axis labels outside the clip so they stay readable at any zoom.
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
  const labDec=xStep<0.01?3:(xStep<0.05?2:1);
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
  ctx.fillText('x',pad.l+w/2,ctx.h-2);
  ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  if(g.scale>1.001){
-  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
  }
  drawCIETargetInset(ctx,readings,g);
@@ -40461,7 +40473,7 @@ function drawCIETargetInset(ctx,readings,geom){
  ctx.fillRect(lx,ly,lw,labelH);
  ctx.strokeStyle='rgba(132,148,178,0.9)';ctx.lineWidth=1;
  ctx.strokeRect(lx+0.5,ly+0.5,lw-1,labelH-1);
- ctx.fillStyle='#edf3ff';ctx.textAlign='center';ctx.textBaseline='middle';
+ ctx.fillStyle=pgThemeColor('--text-primary','#edf3ff');ctx.textAlign='center';ctx.textBaseline='middle';
  ctx.font=fontPx+'px sans-serif';
  ctx.fillText(labelText,lx+lw/2,ly+labelH/2);
  // Zoom frame
@@ -40598,14 +40610,14 @@ function drawCIEChartPreset(steps){
  if(meterCieViewOpts.gamut){
   ctx.strokeStyle='rgba(220,228,245,0.9)';ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
-  ctx.fillStyle='#e0e8f6';ctx.font='9px sans-serif';
+  ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
  }
  // D65
- ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
- ctx.fillStyle='#d8e2f2';ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
- ctx.fillStyle='#d7e1f3';ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
+ ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  // Target placeholders (hollow squares) — hidden when Targets is unchecked.
  if(meterCieViewOpts.targets) (steps||[]).forEach(s=>{
   if(!s) return;
@@ -40625,15 +40637,15 @@ function drawCIEChartPreset(steps){
  });
  ctx.restore(); // end plot clip
  const labDec=xStep<0.01?3:(xStep<0.05?2:1);
- ctx.fillStyle='#aab6cb';ctx.font='10px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
- ctx.fillStyle='#c4d0e6';ctx.font='11px sans-serif';ctx.textAlign='center';
+ ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
  ctx.fillText('x',pad.l+w/2,ctx.h-2);
  ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
  if(g.scale>1.001){
-  ctx.fillStyle='#8b97ad';ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
  }
  try{ cie2dBindHandlers(canvas); }catch(e){}

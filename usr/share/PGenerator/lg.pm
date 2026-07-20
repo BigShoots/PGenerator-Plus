@@ -2110,9 +2110,10 @@ sub webui_lg_card_html (@) {
 	 <div class="card" data-widget="lg" data-desktop-workspace="display-control" data-desktop-order="10" draggable="true">
 	  <style>
 	   #lgDeviceList::-webkit-scrollbar{width:10px}
-	   #lgDeviceList::-webkit-scrollbar-track{background:#0d0d15;border-radius:6px}
-	   #lgDeviceList::-webkit-scrollbar-thumb{background:#2a2a3a;border-radius:999px;border:2px solid #0d0d15}
-	   #lgDeviceList::-webkit-scrollbar-thumb:hover{background:#3a3a4a}
+	   #lgDeviceList{background:var(--surface-inset)!important;color:var(--text-primary)!important;scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
+	   #lgDeviceList::-webkit-scrollbar-track{background:var(--scroll-track);border-radius:6px}
+	   #lgDeviceList::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:999px;border:2px solid var(--scroll-track)}
+	   #lgDeviceList::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
 	   #lgDeviceList .lg-device-item:hover{background:var(--hover-bg)!important}
 	   #lgDeviceList .lg-device-item.selected{background:var(--selected-bg)!important;color:var(--text-primary);box-shadow:inset 4px 0 0 var(--accent)}
 	   #lgCardTitle::after{margin-left:0}

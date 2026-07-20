@@ -40,5 +40,11 @@ assert(source.includes('box-shadow:inset 4px 0 0 var(--accent)'),'selected contr
 assert(source.includes('[data-theme="light"] select,[data-theme="light"] textarea'),'light theme overrides stylesheet-authored form backgrounds');
 assert(source.includes('[data-theme="light"] .pat-btn'),'light theme overrides diagnostic button backgrounds');
 assert(source.includes('[data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}'),'light theme keeps icon buttons visible');
+assert(source.includes('body.layout-tablet #uiSettingsCard{order:1000!important'),'UI Settings defaults near the bottom of Tablet mode');
+assert(source.includes('body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr))'),'Tablet layout and theme settings stay side by side');
+assert(source.includes('<h3>Theme</h3>'),'appearance group is named Theme');
+assert(source.includes('[data-theme="light"] #meterThumbsRow'),'measurement scrollbars use light-theme tokens');
+assert(source.includes('[data-theme="light"] .meter-pattern-insert-gear'),'gear buttons have an explicit light treatment');
+assert(source.includes("document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order so drag reorder remains effective');
 
 console.log('webui theme mode regression OK');
