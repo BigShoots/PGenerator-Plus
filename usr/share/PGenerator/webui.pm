@@ -10625,6 +10625,7 @@ body.layout-desktop #meterCard.meter-two-point-active #meterThumbsRow{flex:0 1 3
 body.layout-desktop #meterCard.meter-two-point-active .meter-thumbs-nav{display:none}
 body.layout-desktop #chartsGreyscaleTwoPointWrap{width:min(680px,100%);margin-left:auto;margin-right:auto}
 body.layout-desktop #chartsGreyscaleTwoPointWrap>div:first-child{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+body.layout-desktop .diag-pattern-layout{grid-template-columns:minmax(0,1fr)}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}
