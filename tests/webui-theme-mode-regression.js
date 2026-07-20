@@ -31,5 +31,14 @@ assert(source.includes("document.querySelectorAll('.layout-switch-btn[data-layou
 assert(source.includes("btn.disabled=unavailable"),'all Desktop controls respect width eligibility');
 assert(source.includes("note.classList.toggle('is-visible',!pgWideEnoughForDesktop())"),'width restriction has a visible explanation');
 assert(source.includes("btn.setAttribute('aria-pressed',btn.getAttribute('data-theme-mode')===pgThemeMode?'true':'false')"),'theme selected state is accessible');
+assert(source.includes('body.layout-tablet .ui-choice::before'),'tablet preferences use compact switch tracks');
+assert(source.includes("body.layout-tablet .ui-choice-title::after{content:'?'"),'tablet preferences expose help affordances');
+assert(source.includes('body.layout-tablet .ui-choice:hover .ui-choice-description'),'tablet help copy appears on hover');
+assert(source.includes('#meterSeriesTabRow [data-series-tab].btn-primary'),'series tabs share the selected blue treatment');
+assert(source.includes('.pat-btn.active,#meterSeriesTabRow'),'pattern selections share the selected blue treatment');
+assert(source.includes('box-shadow:inset 4px 0 0 var(--accent)'),'selected controls use the wider left accent rail');
+assert(source.includes('[data-theme="light"] select,[data-theme="light"] textarea'),'light theme overrides stylesheet-authored form backgrounds');
+assert(source.includes('[data-theme="light"] .pat-btn'),'light theme overrides diagnostic button backgrounds');
+assert(source.includes('[data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}'),'light theme keeps icon buttons visible');
 
 console.log('webui theme mode regression OK');

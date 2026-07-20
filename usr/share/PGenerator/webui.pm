@@ -10604,6 +10604,23 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] [style*="color:#eee"],[data-theme="light"] [style*="color: #eee"]{color:var(--text-primary)!important}
 [data-theme="light"] [style*="color:#888"],[data-theme="light"] [style*="color: #888"]{color:var(--text-secondary)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
+[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+[data-theme="light"] select,[data-theme="light"] textarea,[data-theme="light"] .meter-card-header-select,
+[data-theme="light"] .inline-select,[data-theme="light"] .pat-btn,[data-theme="light"] .meter-chart-inline-input,
+[data-theme="light"] .meter-inline-value input{background-color:var(--surface-field)!important;color:var(--text-primary)!important}
+[data-theme="light"] .mode-select-wrap select{color:transparent!important}
+[data-theme="light"] .meter-card-header-select option,[data-theme="light"] .meter-card-header-select optgroup,
+[data-theme="light"] .mode-select-wrap select option{background:var(--surface-field);color:var(--text-primary)}
+[data-theme="light"] .info-item,[data-theme="light"] .stat-card,[data-theme="light"] .if-hex,
+[data-theme="light"] .meter-autocal-progress,[data-theme="light"] .meter-lg-rgb-bar,
+[data-theme="light"] .meter-lg-rgb-luma,[data-theme="light"] .custom-ccss-panel{background:var(--surface-inset)}
+[data-theme="light"] .meter-pattern-insert-popover,[data-theme="light"] .meter-xyz-gear-popover{background:var(--surface-popover);box-shadow:0 8px 24px var(--shadow)}
+[data-theme="light"] .meter-profile-title{color:var(--text-primary)}
+[data-theme="light"] .btn-secondary{background:var(--divider);color:var(--text-primary)}
+[data-theme="light"] .btn-secondary:hover,[data-theme="light"] .pat-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
+[data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}
+[data-theme="light"] .diag-asset-icon-btn-delete:not(:disabled){color:var(--status-error)!important}
+[data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
 body.layout-desktop .desktop-sidebar{background:var(--surface-sidebar)}
 body.layout-desktop .desktop-utility-toggle{background:var(--surface-popover);box-shadow:-4px 0 14px var(--shadow)}
 body.layout-desktop .desktop-utility-toggle:hover,.desktop-utility-close:hover,.desktop-nav-btn:hover,.layout-switch-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
@@ -10626,6 +10643,30 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 .ui-choice-description{font-size:.7rem;line-height:1.4;color:var(--text-secondary)}
 .ui-choice-note{display:none;margin-top:8px;color:var(--status-warning);font-size:.7rem;line-height:1.4}
 .ui-choice-note.is-visible{display:block}
+/* Selected choices use the same restrained blue fill and strong left rail as
+   UI Settings. Restrict this to mode/series/pattern selectors: primary action
+   buttons retain their higher-emphasis gradient. */
+.pat-btn.active,#meterSeriesTabRow [data-series-tab].btn-primary,#meterSeriesBtnRow [data-series].btn-primary,
+#meterSeriesGroupAutoCal [data-autocal-series].btn-primary,#meterCustomSeriesBtnGrey.btn-primary,
+#meterCustomSeriesBtnColor.btn-primary,#meterCustomSeriesBtn3dLut.btn-primary{
+ border:1px solid var(--accent);background:var(--selected-bg);color:var(--text-primary);
+ box-shadow:inset 4px 0 0 var(--accent);padding-left:12px
+}
+/* Tablet cards favour compact switches. The complete explanatory copy stays
+   available as a keyboard/hover tooltip and remains part of the button's
+   accessible name. Desktop keeps the spacious selection tiles. */
+body.layout-tablet .ui-settings-sections{grid-template-columns:1fr;gap:14px}
+body.layout-tablet .ui-choice-list{gap:5px}
+body.layout-tablet .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible}
+body.layout-tablet .ui-choice::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
+body.layout-tablet .ui-choice::after{content:'';position:absolute;right:27px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transform:translateY(-50%);transition:transform .18s}
+body.layout-tablet .ui-choice[aria-pressed="true"]::before{background:var(--accent)}
+body.layout-tablet .ui-choice[aria-pressed="true"]::after{transform:translate(16px,-50%)}
+body.layout-tablet .ui-choice-title{grid-column:1;grid-row:1;display:flex;align-items:center;gap:6px;padding-right:8px}
+body.layout-tablet .ui-choice-title::after{content:'?';display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1px solid var(--border);border-radius:50%;color:var(--text-secondary);font-size:.62rem;font-weight:700}
+body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
+body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
+body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
 @media(max-width:700px){.ui-settings-sections{grid-template-columns:1fr}}
 </style>
 </head>

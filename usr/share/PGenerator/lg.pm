@@ -2113,8 +2113,8 @@ sub webui_lg_card_html (@) {
 	   #lgDeviceList::-webkit-scrollbar-track{background:#0d0d15;border-radius:6px}
 	   #lgDeviceList::-webkit-scrollbar-thumb{background:#2a2a3a;border-radius:999px;border:2px solid #0d0d15}
 	   #lgDeviceList::-webkit-scrollbar-thumb:hover{background:#3a3a4a}
-	   #lgDeviceList .lg-device-item:hover{background:#171a25!important}
-	   #lgDeviceList .lg-device-item.selected{background:#10131d!important;color:#fff;box-shadow:inset 3px 0 0 var(--green)}
+	   #lgDeviceList .lg-device-item:hover{background:var(--hover-bg)!important}
+	   #lgDeviceList .lg-device-item.selected{background:var(--selected-bg)!important;color:var(--text-primary);box-shadow:inset 4px 0 0 var(--accent)}
 	   #lgCardTitle::after{margin-left:0}
 	   #lgDisplayControlModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
 	   #lgDisplayControlPanel{width:min(920px,calc(100vw - 36px));max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px;box-sizing:border-box;scrollbar-color:#525264 #232330;scrollbar-width:auto;scrollbar-gutter:stable}
