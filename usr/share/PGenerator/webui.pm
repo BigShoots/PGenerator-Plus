@@ -11248,13 +11248,13 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
    </div>
   </div>
 
-  <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10002;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(520px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="font-size:.95rem;font-weight:700;color:#eee;margin-bottom:8px">3D LUT solved</div>
     <div id="lutSolveDoneSummary" style="font-size:.8rem;color:var(--text2);margin-bottom:12px;line-height:1.5"></div>
     <div class="btn-row" style="margin:0;flex-wrap:wrap;gap:6px">
-     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('cube')" title="Standard .cube (Resolve, madVR, LUT boxes)">Download .cube</button>
-     <button class="btn btn-sm btn-primary" onclick="meterLutSolveDownload('3dl')" title="Autodesk/Kodak .3dl (Lustre, Flame)">Download .3dl</button>
+     <button class="btn btn-sm btn-primary" id="lutSolveDoneDownloadCubeBtn" onclick="meterLutSolveDownload('cube')" title="Standard .cube (Resolve, madVR, LUT boxes)">Download .cube</button>
+     <button class="btn btn-sm btn-primary" id="lutSolveDoneDownload3dlBtn" onclick="meterLutSolveDownload('3dl')" title="Autodesk/Kodak .3dl (Lustre, Flame)">Download .3dl</button>
      <button class="btn btn-sm btn-secondary" onclick="meterLutSolveView3d()" title="Inspect the solved LUT as a 3D cube in LUT Tools">View in 3D</button>
      <button class="btn btn-sm btn-secondary" onclick="meterLutSolveDoneClose()">Close</button>
     </div>
@@ -26458,14 +26458,28 @@ async function meterLoadSolvedLutList(){
  }
 }
 
-async function meterDownloadSolvedLut(name){
+// Trigger a browser download for a solved .cube. Prefer a real navigation-style
+// attachment link (server sends Content-Disposition) so the save dialog is more
+// reliable than a blob URL after long async work.
+function meterDownloadSolvedLut(name){
+ const file=String(name||'');
+ if(!file){ toast('No solved LUT',true); return; }
  try{
-  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
-  if(!resp.ok){ toast('LUT download failed',true); return; }
-  const blob=await resp.blob();
-  meterDownloadBlob(blob,name);
+  const a=document.createElement('a');
+  a.href='/api/3d-lut/cube?file='+encodeURIComponent(file);
+  a.download=file;
+  a.rel='noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
  }catch(e){
-  toast('LUT download failed',true);
+  // Fallback: fetch + blob (same as other exports).
+  fetch('/api/3d-lut/cube?file='+encodeURIComponent(file)).then(function(resp){
+   if(!resp.ok){ toast('LUT download failed',true); return null; }
+   return resp.blob();
+  }).then(function(blob){
+   if(blob) meterDownloadBlob(blob,file);
+  }).catch(function(){ toast('LUT download failed',true); });
  }
 }
 
@@ -26675,28 +26689,54 @@ let meterLutSolvePolling=null;
 let meterLutSolvePendingDownload='';
 
 function meterGenerateLutFromLattice(opts){
- const series=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
-  ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
-  ||null;
+ const o=opts||{};
+ // Prefer snapshot stashed by Build 3D LUT (survives post-measure chart cleanup).
+ let series=o.series||null;
+ if(!series&&meterBuild3dLutPending&&meterBuild3dLutPending.series) series=meterBuild3dLutPending.series;
+ if(!series){
+  series=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+   ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
+   ||null;
+ }
  if(!series){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
   toast('Select a 3D LUT profiling series first',true);
   return;
  }
- const readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
+ let readings=Array.isArray(o.readings)?o.readings:null;
+ if(!readings&&meterBuild3dLutPending&&Array.isArray(meterBuild3dLutPending.readings)){
+  readings=meterBuild3dLutPending.readings;
+ }
+ if(!readings){
+  readings=(Array.isArray(meterReadings)?meterReadings:[]).filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
+ } else {
+  readings=readings.filter(rd=>rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd));
+ }
  if(readings.length<5){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
   toast('Measure the series first (the W/R/G/B/K corners at minimum)',true);
   return;
  }
  const corners=['100/100/100','100/0/0','0/100/0','0/0/100'];
- const missing=corners.filter(n=>!readings.some(rd=>rd.name===n));
- if(missing.length){
+ const missing=corners.filter(n=>!readings.some(rd=>String(rd.name)===n||String(rd.name).replace(/\.0+\//g,'/').replace(/\.0+$/,'')===n));
+ // Tolerate "100.0/0/0" style names from some series expansions.
+ const hasCorner=function(want){
+  const parts=want.split('/');
+  return readings.some(rd=>{
+   const m=String(rd.name||'').match(/^([0-9.]+)\/([0-9.]+)\/([0-9.]+)$/);
+   if(!m) return false;
+   return Math.abs(Number(m[1])-Number(parts[0]))<0.05
+    && Math.abs(Number(m[2])-Number(parts[1]))<0.05
+    && Math.abs(Number(m[3])-Number(parts[2]))<0.05;
+  });
+ };
+ const missingTol=corners.filter(n=>!hasCorner(n));
+ if(missingTol.length){
   if(meterBuild3dLutPending) meterBuild3dLutPending=null;
-  toast('Series read is missing corner patches: '+missing.join(', '),true);
+  toast('Series read is missing corner patches: '+missingTol.join(', '),true);
   return;
  }
- meterLutSolveStart(series,readings,opts);
+ meterLutSolveStart(series,readings,o);
 }
 
 async function meterLutSolveStart(series,readings,opts){
@@ -26778,13 +26818,20 @@ async function meterLutSolvePoll(){
    meterLutSolvePendingDownload='';
    meterBuild3dLutPending=null;
    if(nm){
-    meterLutSolveDonePrompt(nm,how,s);
-    // Build 3D LUT flow: immediately download the format chosen up front.
+    // Always show the completion modal first. Browsers block automatic
+    // downloads after long async work (no user gesture), so the modal is the
+    // reliable path to Save — preferred format button is focused/highlighted.
+    meterLutSolveDonePrompt(nm,how,s,{preferredFormat:pref});
     if(pref==='cube'||pref==='3dl'){
-     setTimeout(function(){ try{ meterLutSolveDownload(pref); }catch(e){} },250);
+     // Best-effort auto-save; if the browser blocks it, the modal buttons work.
+     setTimeout(function(){ try{ meterLutSolveDownload(pref); }catch(e){} },300);
     }
+   } else {
+    toast('3D LUT solved but no export file was reported',true);
    }
-  }catch(e){}
+  }catch(e){
+   toast('3D LUT solved but the download UI failed to open',true);
+  }
   return;
  }
  if(s.status==='error'){
@@ -26799,18 +26846,39 @@ async function meterLutSolvePoll(){
 // pops the download/format chooser (both formats stay available; View in 3D
 // opens LUT Tools' cube viewer on the fresh solve).
 let meterLutSolveDoneName=null;
-function meterLutSolveDonePrompt(name,how,state){
+function meterLutSolveDonePrompt(name,how,state,opts){
  meterLutSolveDoneName=String(name||'');
+ const pref=(opts&&opts.preferredFormat)?String(opts.preferredFormat):'';
  const summary=document.getElementById('lutSolveDoneSummary');
  if(summary){
   const esc=(t)=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const sz=(state&&state.cube_lut_size)||33;
+  const fmtNote=(pref==='3dl')?'.3dl':((pref==='cube')?'.cube':'a format');
   summary.innerHTML='<div style="font-weight:600;color:var(--text)">'+esc(meterLutSolveDoneName)+'</div>'
    +'<div>'+esc(sz)+'&sup3; &middot; '+esc(how||'')+'</div>'
-   +'<div style="margin-top:4px">Choose a download format — the LUT also stays in LUT Tools.</div>';
+   +'<div style="margin-top:6px">'+(pref?('Click <strong>Download '+esc(fmtNote)+'</strong> to save the file (your browser may block automatic downloads after a long measurement).'):'Choose a download format — the LUT also stays in LUT Tools.')+'</div>';
+ }
+ const cubeBtn=document.getElementById('lutSolveDoneDownloadCubeBtn');
+ const d3Btn=document.getElementById('lutSolveDoneDownload3dlBtn');
+ if(cubeBtn){
+  cubeBtn.className=(pref==='3dl')?'btn btn-sm btn-secondary':'btn btn-sm btn-primary';
+  cubeBtn.textContent=(pref==='cube')?'Download .cube (chosen format)':'Download .cube';
+ }
+ if(d3Btn){
+  d3Btn.className=(pref==='3dl')?'btn btn-sm btn-primary':'btn btn-sm btn-secondary';
+  d3Btn.textContent=(pref==='3dl')?'Download .3dl (chosen format)':'Download .3dl';
  }
  const modal=document.getElementById('lutSolveDoneModal');
- if(modal){ modal.style.display='flex'; try{ uiSyncBodyScrollLock(); }catch(e){} }
+ if(modal){
+  modal.style.display='flex';
+  try{ uiSyncBodyScrollLock(); }catch(e){}
+  setTimeout(function(){
+   try{
+    const focusBtn=(pref==='3dl')?d3Btn:cubeBtn;
+    if(focusBtn) focusBtn.focus();
+   }catch(e){}
+  },50);
+ }
 }
 
 function meterLutSolveDownload(fmt){
@@ -35476,20 +35544,36 @@ async function meterPollSeries(){
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
    // Build 3D LUT flow: after measurement, solve with the pre-selected format
-   // and greyscale policy, then download. Clear pending on cancel/error paths
-   // is handled in the solve helpers.
+   // and greyscale policy, then open the save/download UI. Snapshot series +
+   // readings now — later cleanup must not empty the solve input.
    try{
     if(meterBuild3dLutPending&&typeof meterGenerateLutFromLattice==='function'){
      const pending=meterBuild3dLutPending;
+     const seriesSnap=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+      ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
+      ||null;
+     const readingSnap=(Array.isArray(meterReadings)?meterReadings:[]).filter(function(rd){
+      return rd&&rd.name&&/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(String(rd.name))&&meterReadingHasLuminance(rd);
+     }).map(function(rd){
+      const xyz=(typeof meterReadingXYZ==='function'&&meterReadingXYZ(rd))||{X:rd.X,Y:rd.Y,Z:rd.Z};
+      return {name:rd.name,X:xyz.X,Y:xyz.Y,Z:xyz.Z,luminance:rd.luminance!=null?rd.luminance:xyz.Y};
+     });
+     pending.series=seriesSnap||pending.series||null;
+     pending.readings=readingSnap.length?readingSnap:(pending.readings||null);
+     meterBuild3dLutPending=pending;
      setTimeout(function(){
       try{
        meterGenerateLutFromLattice({
         auto:true,
         includeGreyscale:!!pending.includeGreyscale,
         downloadFormat:pending.format||'cube',
-        fromBuildFlow:true
+        fromBuildFlow:true,
+        series:pending.series,
+        readings:pending.readings
        });
-      }catch(e){}
+      }catch(e){
+       toast('Could not start 3D LUT solve after measurement',true);
+      }
      },400);
     }
    }catch(e){}
