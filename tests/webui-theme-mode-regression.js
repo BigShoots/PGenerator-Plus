@@ -45,6 +45,9 @@ assert(source.includes('body.layout-tablet .ui-settings-sections{grid-template-c
 assert(source.includes('<h3>Theme</h3>'),'appearance group is named Theme');
 assert(source.includes('[data-theme="light"] #meterThumbsRow'),'measurement scrollbars use light-theme tokens');
 assert(source.includes('[data-theme="light"] .meter-pattern-insert-gear'),'gear buttons have an explicit light treatment');
+assert(source.includes('[data-theme="light"] #meterTwoPointControls,[data-theme="light"] #meterGreyProfileBar'),'greyscale setup strips have explicit Light surfaces resilient to runtime inline-style serialization');
+assert(source.includes('id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset)'), 'two-point setup uses a semantic surface in both themes');
+assert(source.includes('id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:var(--surface-inset)'), 'custom greyscale setup uses a semantic surface in both themes');
 assert(source.includes("document.querySelectorAll('.dashboard > [data-widget]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order so drag reorder remains effective');
 assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
 assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');

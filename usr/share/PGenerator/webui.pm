@@ -10642,6 +10642,8 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .meter-pattern-insert-popover,[data-theme="light"] .meter-xyz-gear-popover{background:var(--surface-popover);box-shadow:0 8px 24px var(--shadow)}
 [data-theme="light"] .meter-pattern-insert-gear,[data-theme="light"] .meter-xyz-gear{background:var(--surface-field);color:var(--text-secondary);border-color:var(--border)}
 [data-theme="light"] .meter-pattern-insert-gear:hover,[data-theme="light"] .meter-xyz-gear:hover{background:var(--hover-bg);color:var(--accent);border-color:var(--accent)}
+[data-theme="light"] #meterTwoPointControls,[data-theme="light"] #meterGreyProfileBar{background:var(--surface-inset)!important;border:1px solid var(--border)}
+[data-theme="light"] #meterTwoPointLow,[data-theme="light"] #meterTwoPointHigh{background:var(--surface-field)!important;color:var(--text-primary)!important;border-color:var(--border)!important}
 [data-theme="light"] .meter-profile-title{color:var(--text-primary)}
 [data-theme="light"] .btn-secondary{background:var(--divider);color:var(--text-primary)}
 [data-theme="light"] .btn-secondary:hover,[data-theme="light"] .pat-btn:hover{background:var(--hover-bg);color:var(--text-primary)}
@@ -11266,15 +11268,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
      <div id="meterToneMapStatusText" style="font-size:.72rem;color:var(--text2);margin-top:8px">Select Measure &amp; Upload to measure peak and upload the tone map.</div>
     </div>
-    <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:#0d0d15;border-radius:6px">
+    <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset);border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
      <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
       <span>Low Patch</span>
-      <input type="number" id="meterTwoPointLow" min="0" max="99" step="1" value="30" style="width:84px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+      <input type="number" id="meterTwoPointLow" min="0" max="99" step="1" value="30" style="width:84px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
      </label>
      <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
       <span>High Patch</span>
-      <input type="number" id="meterTwoPointHigh" min="1" max="100" step="1" value="100" style="width:84px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+      <input type="number" id="meterTwoPointHigh" min="1" max="100" step="1" value="100" style="width:84px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
      </label>
      <div style="font-size:.7rem;color:var(--text2);line-height:1.45;max-width:38ch">Defaults use the common 30 / 100 two-point workflow. Change them before starting the series if you want different low and high patches.</div>
     </div>
@@ -11294,7 +11296,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <button class="btn btn-sm btn-primary" id="meterManualPromptBtn" onclick="meterSignalManualPromptReady()" style="display:none">Continue Meter Setup</button>
    </div>
   </div>
-  <div id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:#0d0d15;border-radius:6px">
+  <div id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:var(--surface-inset);border-radius:6px">
    <label style="font-size:.72rem;color:var(--text2);display:flex;align-items:center;gap:6px;user-select:none">
     <input type="checkbox" id="meterUseCustomGreyscale" onchange="meterToggleCustomGreyscale()" style="vertical-align:middle">
     Use custom greyscale values
