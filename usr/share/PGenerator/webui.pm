@@ -10564,7 +10564,7 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 .desktop-nav-btn:hover{background:rgba(255,255,255,.055);color:var(--text)}
 .desktop-nav-btn[aria-current="page"]{background:rgba(91,127,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
 .desktop-workspace-title{display:none}
-body.layout-desktop{--desktop-utility-width:min(390px,30vw)}
+body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px)}
 body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start;transition:width .22s ease}
 body.layout-desktop.desktop-utility-open .desktop-shell{width:calc(100% - var(--desktop-utility-width))}
 body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
@@ -10580,7 +10580,7 @@ body.layout-desktop .dashboard > .card .drag-handle{display:none}
 body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:block!important;position:sticky;bottom:12px;z-index:45;margin-top:12px;padding:10px 12px;background:rgba(20,20,31,.96);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
 #meterGreyLiveRail{display:contents}
 body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:stretch}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr);column-gap:8px;row-gap:10px;min-width:0;padding-top:18px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr);grid-template-rows:var(--desktop-rgb-chart-height) auto;column-gap:8px;row-gap:10px;min-width:0;padding-top:18px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:repeat(2,minmax(0,1fr));gap:10px!important;min-width:0;height:100%;margin-bottom:0!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfBlock,
@@ -10594,7 +10594,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbRow{display:contents!important}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}
-body.layout-desktop #chartsGreyscaleFullWrap #meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0}
+body.layout-desktop #chartsGreyscaleFullWrap #meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0;height:var(--desktop-rgb-chart-height)}
 body.layout-desktop #chartsGreyscaleFullWrap #meterDeltaEBlock{grid-column:2;grid-row:2;margin-bottom:0!important;min-width:0}
 body.layout-desktop #chartsGreyscaleFullWrap #chartRGB{height:100%!important;min-height:220px}
 body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,

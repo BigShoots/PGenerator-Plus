@@ -56,6 +56,9 @@ assert(webui.includes('function meterSyncGreyscaleDesktopLayout()')&&webui.inclu
 assert(webui.includes('meterSyncGreyscaleDesktopLayout();\n pgSyncCardCollapseForLayout();'), 'layout changes synchronize the live reading mount');
 assert(webui.includes('#meterGreyLiveRail{display:contents}'), 'the live-reading rail wrapper is layout-neutral outside standard Desktop greyscale');
 assert(webui.includes('#meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr)'), 'Desktop RGB and Delta E share the chart column beside the live-reading rail');
+assert(webui.includes('--desktop-rgb-chart-height:clamp(260px,42vh,420px)'), 'Desktop RGB row has a bounded responsive height that cannot grow from canvas intrinsic resizing');
+assert(webui.includes('grid-template-rows:var(--desktop-rgb-chart-height) auto'), 'Desktop greyscale primary grid uses the bounded RGB row height');
+assert(webui.includes('#meterRgbChartScroller{grid-column:2;grid-row:1;min-width:0;height:var(--desktop-rgb-chart-height)}'), 'Desktop RGB scroller is pinned to the stable row height');
 assert(webui.includes('#meterGreyLiveRail{display:grid;grid-template-rows:subgrid'), 'the live-reading rail inherits the RGB and Delta E row tracks');
 assert(webui.includes('#meterGreyLiveRail{grid-column:1;grid-row:1 / span 2}'), 'the live-reading rail spans the RGB and Delta E rows');
 assert(webui.includes('#meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal'), 'compact Desktop live targets wrap inside their panel');
