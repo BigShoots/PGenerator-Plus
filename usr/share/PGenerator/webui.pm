@@ -24310,6 +24310,9 @@ function meterSelectPatchFromInteraction(step,reading,opts){
  meterLgGreySyncForCurrentStep(false);
  if(isColorSeries){
   const pin=!(opts&&opts.pin===false);
+  // Keep thumb selection key so rebuild/restyle (desktop refresh, caps) still
+  // marks the chosen colour patch, not only greyscale.
+  meterSelectedThumbIre=meterStepNameKey(resolvedStep)||String(resolvedStep.name||'')||null;
   if(resolvedReading) meterFocusColorReading(resolvedReading,{pin:pin});
   else {
    // Unread node: targets only, measured = --
@@ -37158,8 +37161,13 @@ function drawAllChartsPreset(sortedSteps){
   if(wrap) wrap.style.display='none';
   const avgWrap=document.getElementById('colorSeriesAveragesWrap');
   if(avgWrap) avgWrap.style.display='none';
-  _selectedColorReadingName=null;
-  showColorReadingDetail(null);
+  // Keep the operator's selected patch detail (target-only for unread nodes).
+  // Unconditional nulling made thumb/table selection flash targets then snap
+  // back to "Select a color to see details" on every preset redraw — empty
+  // series, CIE option toggles, desktop layout refresh, etc.
+  if(typeof meterRestoreColorReadingDetailSelection==='function'){
+   meterRestoreColorReadingDetailSelection();
+  }
  }
 }
 function drawRGBChartPreset(gsSteps){
@@ -37498,22 +37506,26 @@ function drawAllCharts(readings){
     if(avgWrap) avgWrap.style.display='none';
    }
    colorChartRegisterInteraction(cr);
-   if(is3dProfile&&meterCurrentPatchStep){
-    const curRd=typeof meterFindReadingForStep==='function'?meterFindReadingForStep(meterCurrentPatchStep):null;
-    if(curRd&&meterReadingIsRealMeasurement(curRd)) showColorReadingDetail(curRd,{pin:false});
-    else showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
-   } else if(_colorDetailPinned&&_selectedColorReadingName){
+   if(_colorDetailPinned&&_selectedColorReadingName){
+    // User-selected patch always wins (measured or target-only unread).
     const sel=cr.find(r=>r&&r.name===_selectedColorReadingName&&meterReadingIsRealMeasurement(r));
     if(sel) showColorReadingDetail(sel,{pin:true});
     else if(meterCurrentPatchStep) showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:true});
+    else if(typeof meterRestoreColorReadingDetailSelection==='function') meterRestoreColorReadingDetailSelection();
     // Do NOT fall back to cr[last] — that re-shows a previous patch's measured values.
+   } else if(is3dProfile&&meterCurrentPatchStep){
+    // Live 3D profile progress: follow the current patch, keep pin relaxed.
+    const curRd=typeof meterFindReadingForStep==='function'?meterFindReadingForStep(meterCurrentPatchStep):null;
+    if(curRd&&meterReadingIsRealMeasurement(curRd)) showColorReadingDetail(curRd,{pin:false});
+    else showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
    } else if(cr.length&&meterReadingIsRealMeasurement(cr[cr.length-1])){
     showColorReadingDetail(cr[cr.length-1],{pin:false});
    }
-  } else if(is3dProfile&&meterCurrentPatchStep){
-   // Profile running but first reading not in yet — still draw empty CIE with inset target.
+  } else if(meterCurrentPatchStep||(_colorDetailPinned&&_selectedColorReadingName)){
+   // No in-series samples plotted yet — still keep selected unread targets.
    try{ drawCIEChart([]); }catch(e){}
-   showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:false});
+   if(typeof meterRestoreColorReadingDetailSelection==='function') meterRestoreColorReadingDetailSelection();
+   else if(meterCurrentPatchStep) showColorReadingDetail(meterColorUnreadDetailFromStep(meterCurrentPatchStep),{pin:!!_colorDetailPinned});
   }
   return;
  }
@@ -38555,6 +38567,38 @@ function getCIEGradient(innerPxW,innerPxH){
 // Color reading detail box (beside CIE chart)
 let _selectedColorReadingName=null;
 let _colorDetailPinned=false;
+// Re-apply detail for the selected colour patch after chart redraws that do
+// not own selection (preset CIE, layout refresh, option toggles). Unread
+// patches keep the target-only card; measured patches keep their sample.
+function meterRestoreColorReadingDetailSelection(){
+ if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return;
+ // User click pins; series-run current step also counts as a selection even
+ // if pin was relaxed by a live redraw.
+ if(!_colorDetailPinned&&!meterCurrentPatchStep&&!_selectedColorReadingName) return;
+ let step=meterCurrentPatchStep||null;
+ if(!step&&_selectedColorReadingName&&Array.isArray(meterSeriesSteps)){
+  const want=String(_selectedColorReadingName);
+  step=meterSeriesSteps.find(s=>s&&String(s.name||'')===want)||null;
+  if(!step&&typeof meterStepNameKey==='function'){
+   step=meterSeriesSteps.find(s=>s&&meterStepNameKey(s)===want)||null;
+  }
+ }
+ if(!step) return;
+ const pin=true;
+ const rd=(typeof meterFindReadingForStep==='function')?meterFindReadingForStep(step):null;
+ if(rd&&typeof meterReadingIsRealMeasurement==='function'&&meterReadingIsRealMeasurement(rd)){
+  showColorReadingDetail(rd,{pin:pin});
+ } else if(typeof meterColorUnreadDetailFromStep==='function'){
+  const unread=meterColorUnreadDetailFromStep(step);
+  if(unread) showColorReadingDetail(unread,{pin:pin});
+  else if(step.name){
+   _selectedColorReadingName=step.name;
+   _colorDetailPinned=true;
+   try{ colorHighlightThumb(step.name); }catch(e){}
+   try{ colorHighlightTableRow(step.name); }catch(e){}
+  }
+ }
+}
 function meterFocusColorReading(rd,opts){
  showColorReadingDetail(rd,opts);
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&Array.isArray(meterReadings)&&meterReadings.length){
