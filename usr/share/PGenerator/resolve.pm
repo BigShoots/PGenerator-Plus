@@ -109,28 +109,35 @@ sub resolve_connect (@) {
   lock($resolve_disconnect_request);
   $resolve_disconnect_request=0;
  };
- # Connect BLOCKING, and NEVER with IO::Socket::INET's Timeout param. Timeout
- # makes new() perform a NON-BLOCKING connect + internal select(), which is
- # unreliable in threaded Perl on this platform: the kernel completes the TCP
- # 3-way handshake (the calibration PC, e.g. DisplayCAL, shows "connected")
- # but new() still returns a dead/undef socket, so PGenerator reports
- # "connection failed" on a link that actually came up. A plain blocking
- # connect is handled entirely in the kernel and returns only once the socket
- # is ESTABLISHED (or refused), so it is immune to that race.
- # NEVER use alarm()/SIGALRM to bound it either: process-global SIGALRM can
- # interrupt the wrong thread and take the whole daemon down (WebUI offline)
- # after Connect. An unreachable host just blocks this dedicated thread until
- # the kernel's own connect timeout; the WebUI has its own status-poll timeout.
+ # Connect BLOCKING but BOUNDED. IO::Socket::INET's Timeout param is NOT usable
+ # here: it makes new() do a NON-BLOCKING connect + internal select(), which is
+ # unreliable in threaded Perl on this platform (the kernel completes the
+ # handshake and the calibration PC shows "connected", but new() still returns a
+ # dead/undef socket, so PGenerator reports a false "connection failed"). And
+ # NEVER use alarm()/SIGALRM to bound it: process-global SIGALRM can interrupt
+ # the wrong thread and take the whole daemon down (WebUI offline).
+ # So: create the socket unconnected, arm SO_SNDTIMEO, then do a plain blocking
+ # connect(). SO_SNDTIMEO bounds the connect to ~$connect_timeout s (verified on
+ # this platform) so a mistyped/unreachable IP fails fast instead of the
+ # kernel's ~127s SYN timeout -- that lets the operator Cancel and retry, and
+ # frees this single connection thread for the corrected address.
+ # CAUTION: a SO_SNDTIMEO-timed-out connect() returns TRUE with $!=EINPROGRESS
+ # while the socket is NOT actually connected, so establishment MUST be
+ # confirmed with ->connected (getpeername), never the connect() return value.
+ my $connect_timeout=10;
  eval {
-  $socket=IO::Socket::INET->new(
-   PeerHost=>$ip,
-   PeerPort=>$port,
-   Proto=>'tcp',
-  );
+  $socket=IO::Socket::INET->new(Proto=>'tcp');
+  if($socket) {
+   $socket->setsockopt(SOL_SOCKET, Socket::SO_SNDTIMEO(), pack('l!l!',$connect_timeout,0));
+   my $ia=Socket::inet_aton($ip);
+   $socket->connect(Socket::pack_sockaddr_in($port,$ia)) if($ia);
+  }
  };
- if(!$socket) {
-  my $err=$@||$!||"refused/unreachable";
+ if(!$socket || !$socket->connected) {
+  my $err=$@||$!||"refused/unreachable/timed out";
   &log("Resolve: connection failed to $ip:$port: $err");
+  # Clear any Cancel/disconnect request so it does not carry into the next try.
+  eval { lock($resolve_disconnect_request); $resolve_disconnect_request=0; };
   return;
  }
  &log("Resolve: connected to $ip:$port");

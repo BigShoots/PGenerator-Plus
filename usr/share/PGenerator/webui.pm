@@ -12351,6 +12351,9 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
   </div>
   <div class="apply-settings-title" id="meterStopTitle">Stopping</div>
   <div class="apply-settings-status" id="meterStopStatus">Waiting for the meter to stop&hellip;</div>
+  <div id="meterStopCancelRow" style="display:none;margin-top:16px;text-align:center">
+   <button class="btn btn-sm btn-danger" id="meterStopCancelBtn" type="button">Cancel</button>
+  </div>
  </div>
 </div>
 
@@ -12457,6 +12460,19 @@ function meterStopModalShow(kind,statusText){
  const pack=labels[meterStopModalKind]||labels.meter;
  if(title) title.textContent=pack.title;
  if(status) status.textContent=statusText||pack.status;
+ // Cancel affordance: only the Resolve connect wait is user-abortable (the
+ // "stopping" masks must run to completion). Show + wire it for that kind only.
+ const cancelRow=document.getElementById('meterStopCancelRow');
+ const cancelBtn=document.getElementById('meterStopCancelBtn');
+ if(cancelRow&&cancelBtn){
+  if(meterStopModalKind==='resolve-connect'){
+   cancelBtn.onclick=resolveConnectCancel;
+   cancelRow.style.display='';
+  }else{
+   cancelBtn.onclick=null;
+   cancelRow.style.display='none';
+  }
+ }
  overlay.setAttribute('aria-hidden','false');
 }
 function meterStopModalHide(){
@@ -12464,6 +12480,8 @@ function meterStopModalHide(){
  if(!overlay) return;
  overlay.setAttribute('aria-hidden','true');
  document.body.classList.remove('meter-stop-active','apply-settings-success','apply-settings-error');
+ const cancelRow=document.getElementById('meterStopCancelRow');
+ if(cancelRow) cancelRow.style.display='none';
  meterStopModalKind='';
 }
 
@@ -14866,19 +14884,24 @@ async function btRestartPan(){
  else toast(r&&(r.message||r.error)?(r.message||r.error):'Bluetooth PAN restart failed','err');
 }
 
+// Set by the modal Cancel button so the connect poll loop below bails out and
+// does not fire a "timed out" toast over the "Cancelled" one.
+let resolveConnectCancelled=false;
 async function resolveConnect(){
  const ip=document.getElementById('resolveIp').value.trim();
  const port=parseInt(document.getElementById('resolvePort').value)||20002;
  if(!ip||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){toast('Enter a valid IP address','err');return;}
- // Blocking spinner until the daemon's outbound connect is accepted by the
- // calibration PC (or we give up). The connect endpoint only queues the
- // request; /api/resolve/status flips connected once the socket is up.
+ // Blocking spinner (with a Cancel button) until the daemon's outbound connect
+ // is accepted by the calibration PC (or we give up). The connect endpoint only
+ // queues the request; /api/resolve/status flips connected once the socket is up.
+ resolveConnectCancelled=false;
  meterStopModalShow('resolve-connect','Connecting to '+ip+':'+port+'…');
  let r=null;
  try{
   r=await fetchJSON('/api/resolve/connect',{method:'POST',
    headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
  }catch(e){ r=null; }
+ if(resolveConnectCancelled) return;
  if(!(r&&r.status==='ok')){
   meterStopModalHide();
   toast(r&&r.message?r.message:'Connect failed','err');
@@ -14886,15 +14909,27 @@ async function resolveConnect(){
  }
  const t0=Date.now();
  let connected=false;
- while(Date.now()-t0<20000){
+ while(Date.now()-t0<20000 && !resolveConnectCancelled){
   await new Promise(res=>setTimeout(res,700));
+  if(resolveConnectCancelled) break;
   let s=null;
   try{ s=await fetchJSON('/api/resolve/status',{_quiet:true,_timeoutMs:4000}); }catch(e){ s=null; }
   if(s&&s.connected){connected=true;break;}
  }
+ if(resolveConnectCancelled) return;
  meterStopModalHide();
  if(connected){toast('Resolve connected to '+ip+':'+port);loadInfo();}
  else{toast('Resolve connect timed out. Check the calibration software is listening on '+ip+':'+port,'err');loadInfo();}
+}
+// Cancel an in-progress connect (e.g. the operator realises the IP is wrong).
+// Signals the daemon to abort via the disconnect flag; the daemon's connect is
+// bounded (~10s) so the single connection thread frees for a corrected retry.
+function resolveConnectCancel(){
+ resolveConnectCancelled=true;
+ try{ fetchJSON('/api/resolve/disconnect',{method:'POST',_quiet:true}); }catch(e){}
+ meterStopModalHide();
+ toast('Connection cancelled');
+ loadInfo();
 }
 async function resolvePatchSizeChanged(v){
  try{
