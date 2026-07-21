@@ -29307,6 +29307,25 @@ function meterLatticeDefault3dView(points){
  }catch(e){}
 }
 
+// Verification series (built-in ColorChecker / saturation sweeps and ordinary
+// custom colour lists) start with target markers visible. 3D LUT profiling is
+// the deliberate exception: its lattice/skeleton/hybrid targets are governed
+// by meterLatticeDefault3dView and default off because they are not grading
+// references. Keeping this reset here prevents a prior profiling view from
+// leaking its Targets-off state into the next verification series.
+function meterDefaultTargetsForColorSeries(type,points){
+ if(type!=='colors'&&type!=='saturations') return;
+ const custom=meterCustomSeriesById(points);
+ const kind=custom?String(custom.kind||'').toLowerCase():'';
+ if(kind==='lattice'||kind==='hybrid'||kind==='skeleton') return;
+ const targets=document.getElementById('meterCieOptTargets');
+ if(targets) targets.checked=true;
+ if(typeof meterCieViewOpts!=='undefined'&&meterCieViewOpts){
+  meterCieViewOpts.targets=true;
+  try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
+ }
+}
+
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
@@ -29329,6 +29348,7 @@ async function meterSelectSeries(type,points,opts){
  if(meterSeriesRunning) meterStop();
  else meterStopContinuous();
  meterLatticeDefault3dView(points);
+ meterDefaultTargetsForColorSeries(type,points);
  if(meterActiveSeriesKey===key){
   // Same-key early return ONLY when the active context matches the LIVE
   // signal mode. A stale restore (e.g. the boot restore racing the config
