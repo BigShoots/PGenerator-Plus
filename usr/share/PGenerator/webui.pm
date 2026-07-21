@@ -10678,7 +10678,7 @@ body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{padding-
 body.layout-tablet #meterProfileCard{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
 body.layout-desktop #sessionCard[data-desktop-active="true"]{border-bottom:0;padding-right:48px;box-sizing:border-box}
-.session-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.session-actions{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
 .session-button-wrap{display:inline-flex;align-items:center;gap:5px}
 .session-format-note{margin-top:12px;color:var(--text2);font-size:.7rem;line-height:1.45}
 body.layout-tablet #sessionCard{grid-column:auto}
@@ -10962,19 +10962,18 @@ body.layout-tablet .ui-choice-title::after{content:'?';display:inline-flex;align
 body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
 body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
-/* Layout and theme preferences use the same compact switch in both interface
-   layouts. The switch carries the selected state; the surrounding row stays
-   neutral so it does not look like a second, competing selection control. */
-#uiSettingsCard .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible;border-color:transparent;background:var(--surface-inset);box-shadow:none}
-#uiSettingsCard .ui-choice:hover:not(:disabled),#uiSettingsCard .ui-choice[aria-pressed="true"]{border-color:transparent;background:var(--surface-inset);box-shadow:none;padding-left:10px}
-#uiSettingsCard .ui-choice::before,#uiSettingsCard .ui-choice[aria-pressed="true"]::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
-#uiSettingsCard .ui-choice::after{content:'';position:absolute;right:27px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transform:translateY(-50%);transition:transform .18s}
-#uiSettingsCard .ui-choice[aria-pressed="true"]::before{background:var(--accent)}
-#uiSettingsCard .ui-choice[aria-pressed="true"]::after{transform:translate(16px,-50%)}
-#uiSettingsCard .ui-choice-title{grid-column:1;grid-row:1;display:flex;align-items:center;gap:6px;padding-right:8px}
-#uiSettingsCard .ui-choice-title::after{content:'?';display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1px solid var(--border);border-radius:50%;color:var(--text-secondary);font-size:.62rem;font-weight:700}
-#uiSettingsCard .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
-#uiSettingsCard .ui-choice:hover .ui-choice-description,#uiSettingsCard .ui-choice:focus-visible .ui-choice-description{display:block}
+/* Each preference is one two-sided switch in both Tablet and Desktop. */
+.ui-binary-control{display:grid;grid-template-columns:minmax(58px,1fr) 42px minmax(58px,1fr);align-items:center;gap:8px;min-height:48px;padding:7px 9px;border-radius:8px;background:var(--surface-inset)}
+.ui-binary-option{min-width:0;padding:7px 5px;border:0;border-radius:6px;background:transparent;color:var(--text-secondary);font-size:.76rem;font-weight:700;cursor:pointer}
+.ui-binary-option:hover:not(:disabled){background:var(--hover-bg);color:var(--text-primary)}
+.ui-binary-option[aria-pressed="true"]{color:var(--accent);background:var(--selected-bg)}
+.ui-binary-option:disabled{cursor:not-allowed;opacity:.45}
+.ui-binary-switch{position:relative;width:42px;height:22px;padding:0;border:1px solid var(--border);border-radius:999px;background:var(--text-muted);cursor:pointer;transition:background .18s,border-color .18s}
+.ui-binary-switch::after{content:'';position:absolute;left:3px;top:3px;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transition:transform .18s}
+.ui-binary-switch[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+.ui-binary-switch[aria-checked="true"]::after{transform:translateX(20px)}
+.ui-binary-switch:disabled{cursor:not-allowed;opacity:.45}
+.ui-binary-option:focus-visible,.ui-binary-switch:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 @media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
 </style>
 </head>
@@ -11038,10 +11037,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" onclick="pgSelectDesktopWorkspace('3d-lut')">3D LUT</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="session" onclick="pgSelectDesktopWorkspace('session')">Session</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" onclick="pgSelectDesktopWorkspace('ui-settings')">UI Settings</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="session" onclick="pgSelectDesktopWorkspace('session')">Session</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
  </nav>
 </aside>
@@ -11056,17 +11055,19 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="ui-settings-sections">
    <div class="ui-settings-group">
     <h3>Interface Layout</h3>
-    <div class="ui-choice-list" aria-label="Interface layout">
-     <button type="button" class="ui-choice layout-switch-btn" data-layout-mode="tablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')"><span class="ui-choice-title">Tablet</span><span class="ui-choice-description">Card-based layout designed for touch and narrower screens.</span></button>
-     <button type="button" class="ui-choice layout-switch-btn" data-layout-mode="desktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')"><span class="ui-choice-title">Desktop</span><span class="ui-choice-description">Full-width workspace with left navigation and optional information sidebar.</span></button>
+    <div class="ui-binary-control" role="group" aria-label="Interface layout">
+     <button type="button" class="ui-binary-option" id="uiLayoutTablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')">Tablet</button>
+     <button type="button" class="ui-binary-switch" id="uiLayoutSwitch" role="switch" aria-label="Switch between Tablet and Desktop layout" aria-checked="false" onclick="pgToggleLayoutPreference()"></button>
+     <button type="button" class="ui-binary-option" id="uiLayoutDesktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')">Desktop</button>
     </div>
     <p class="ui-choice-note" id="desktopLayoutUnavailable" role="status">Desktop requires a browser width of at least 1024 pixels.</p>
    </div>
    <div class="ui-settings-group">
     <h3>Theme</h3>
-    <div class="ui-choice-list" aria-label="Theme">
-     <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')"><span class="ui-choice-title">Dark</span><span class="ui-choice-description">Low-light interface optimized for calibration environments.</span></button>
-     <button type="button" class="ui-choice theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')"><span class="ui-choice-title">Light</span><span class="ui-choice-description">High-contrast light interface for bright rooms and general administration.</span></button>
+    <div class="ui-binary-control" role="group" aria-label="Theme">
+     <button type="button" class="ui-binary-option" id="uiThemeDark" aria-pressed="true" onclick="pgSetThemeMode('dark')">Dark</button>
+     <button type="button" class="ui-binary-switch" id="uiThemeSwitch" role="switch" aria-label="Switch between Dark and Light theme" aria-checked="false" onclick="pgToggleThemeMode()"></button>
+     <button type="button" class="ui-binary-option" id="uiThemeLight" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
     </div>
    </div>
   </div>
@@ -15514,6 +15515,19 @@ function pgUpdateLayoutControls(){
     :'Use the full-width desktop workspace';
   }
  });
+ const tablet=document.getElementById('uiLayoutTablet');
+ const desktop=document.getElementById('uiLayoutDesktop');
+ const toggle=document.getElementById('uiLayoutSwitch');
+ const desktopUnavailable=!pgWideEnoughForDesktop();
+ if(tablet) tablet.setAttribute('aria-pressed',effective==='tablet'?'true':'false');
+ if(desktop){
+  desktop.setAttribute('aria-pressed',effective==='desktop'?'true':'false');
+  desktop.disabled=desktopUnavailable;
+ }
+ if(toggle){
+  toggle.setAttribute('aria-checked',effective==='desktop'?'true':'false');
+  toggle.disabled=desktopUnavailable;
+ }
  const note=document.getElementById('desktopLayoutUnavailable');
  if(note) note.classList.toggle('is-visible',!pgWideEnoughForDesktop());
 }
@@ -15533,6 +15547,12 @@ function pgUpdateThemeControls(){
  document.querySelectorAll('.theme-switch-btn[data-theme-mode]').forEach(btn=>{
   btn.setAttribute('aria-pressed',btn.getAttribute('data-theme-mode')===pgThemeMode?'true':'false');
  });
+ const dark=document.getElementById('uiThemeDark');
+ const light=document.getElementById('uiThemeLight');
+ const toggle=document.getElementById('uiThemeSwitch');
+ if(dark) dark.setAttribute('aria-pressed',pgThemeMode==='dark'?'true':'false');
+ if(light) light.setAttribute('aria-pressed',pgThemeMode==='light'?'true':'false');
+ if(toggle) toggle.setAttribute('aria-checked',pgThemeMode==='light'?'true':'false');
 }
 function pgRedrawChartsForTheme(){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
@@ -15562,6 +15582,9 @@ function pgApplyThemeMode(mode,options){
 function pgSetThemeMode(mode){
  pgApplyThemeMode(mode);
  try{ localStorage.setItem(PG_THEME_STORAGE_KEY,pgThemeMode); }catch(e){}
+}
+function pgToggleThemeMode(){
+ pgSetThemeMode(pgThemeMode==='light'?'dark':'light');
 }
 function pgPanelBelongsToActiveWorkspace(panel){
  if(!panel||!panel.getAttribute) return false;
@@ -15715,6 +15738,9 @@ function pgSetLayoutPreference(mode){
  pgLayoutPreference=mode==='desktop'?'desktop':'tablet';
  try{ localStorage.setItem(PG_LAYOUT_STORAGE_KEY,pgLayoutPreference); }catch(e){}
  pgApplyLayout({resetWorkspace:pgLayoutPreference==='desktop'});
+}
+function pgToggleLayoutPreference(){
+ pgSetLayoutPreference(pgLayoutEffective==='desktop'?'tablet':'desktop');
 }
 function pgUpdateHeaderOffset(){
  const header=document.querySelector('.header');

@@ -16,6 +16,8 @@ assert(source.includes('dash.insertBefore(uiSettings,anchor)') && source.include
 assert(/onclick="meterExportHcfrChc\(\)">Export<\/button>/.test(source), 'simple Session export button is missing');
 assert(/onclick="meterOpenHcfrImport\(\)">Import<\/button>/.test(source), 'simple Session import button is missing');
 assert(source.includes('aria-label="HCFR session export help"') && source.includes('aria-label="HCFR session import help"'), 'Session button help tooltips are missing');
+assert(source.includes('.session-actions{display:flex;flex-direction:column;align-items:flex-start'), 'Session Import must be stacked below Export');
+assert(source.indexOf('data-workspace-target="ui-settings"') < source.indexOf('data-workspace-target="session"') && source.indexOf('data-workspace-target="session"') < source.indexOf('data-workspace-target="system"'), 'Desktop Session workspace must sit immediately above System');
 assert(source.includes('function meterExportHcfrChc()'), 'CHC export action is missing');
 assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC import action is missing');
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
