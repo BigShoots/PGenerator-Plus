@@ -38784,15 +38784,58 @@ function meterAdjustChartYZoom(id,steps){
  meterRedrawForChartYZoom(id);
 }
 
+let meterChartYZoomRedrawIds=new Set();
+let meterChartYZoomRedrawFrame=0;
 function meterRedrawForChartYZoom(id){
- _chartHitZones=[];
- meterLastChartSignature='';
- meterLastChartCount=0;
- if(meterReadings&&meterReadings.length){
-  drawAllCharts(meterReadings);
- } else if(meterSeriesSteps&&meterSeriesSteps.length){
-  drawAllChartsPreset(meterSeriesSteps);
+ if(!id) return;
+ meterChartYZoomRedrawIds.add(id);
+ if(meterChartYZoomRedrawFrame) return;
+ // High-resolution wheels can emit dozens of events per frame. Apply every
+ // zoom increment, but paint at most once per animation frame and redraw only
+ // the canvas whose Y axis changed. Previously every tick rebuilt all six
+ // calibration charts, their caches, labels, and interaction regions.
+ meterChartYZoomRedrawFrame=requestAnimationFrame(()=>{
+  meterChartYZoomRedrawFrame=0;
+  const ids=[...meterChartYZoomRedrawIds];
+  meterChartYZoomRedrawIds.clear();
+  ids.forEach(meterRedrawSingleChartForYZoom);
+ });
+}
+
+function meterRedrawSingleChartForYZoom(id){
+ const hasReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
+ const hasSteps=Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length>0;
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  const cr=hasReadings
+   ?meterFilterReadingsForCurrentSteps(meterReadings,meterActiveSeriesType).filter(r=>meterReadingHasLuminance(r)&&!meterIsWhiteReferenceReading(r))
+   :[];
+  if(id==='chartColorDE'){
+   if(cr.length) drawColorDeltaE2000Chart(cr);
+   else if(hasSteps) drawColorDeltaE2000Preset(meterSeriesSteps);
+  }
+  return;
  }
+ if(meterActiveSeriesType&&meterActiveSeriesType!=='greyscale') return;
+ const allSteps=hasSteps?meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(meterSeriesSteps)):[];
+ if(hasReadings){
+  const rawGs=meterGreyscaleReadings(meterReadings);
+  const gs=meterFilterLgAutoCalChartItems(rawGs);
+  const readingMap=meterGreyscaleReadingMap(gs);
+  if(id==='chartRGB') drawRGBChart(gs,allSteps,readingMap);
+  else if(id==='chartDeltaE') drawDeltaEChart(gs,allSteps,readingMap,rawGs);
+  else if(id==='chartGammaValue') drawGammaValueChart(gs,allSteps,readingMap);
+  else if(id==='chartEOTF') drawEOTFChart(gs,allSteps,readingMap);
+  else if(id==='chartGamma') drawGammaChart(gs,allSteps,readingMap);
+  else if(id==='chartDeltaE2000') drawDeltaE2000Chart(gs,allSteps,readingMap);
+  return;
+ }
+ if(!allSteps.length) return;
+ if(id==='chartRGB') drawRGBChartPreset(allSteps);
+ else if(id==='chartDeltaE') drawDeltaEPreset(allSteps);
+ else if(id==='chartGammaValue') drawGammaValuePreset(allSteps);
+ else if(id==='chartEOTF') drawEOTFPreset(allSteps);
+ else if(id==='chartGamma') drawGammaPreset(allSteps);
+ else if(id==='chartDeltaE2000') drawDeltaE2000Preset(allSteps);
 }
 
 function meterApplyLinearYZoom(id,min,max,center){
