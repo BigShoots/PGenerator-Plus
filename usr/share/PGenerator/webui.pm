@@ -10417,6 +10417,7 @@ body.apply-settings-success .apply-settings-actions{display:none}
 .info-item .value{font-size:.82rem;margin-top:1px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal;overflow-wrap:normal}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px}
 .stat-card{background:#0d0d15;padding:8px;border-radius:8px}
+#colorReadingsTable tr.color-reading-selected{background:#1a1a2f}
 .stat-label{font-size:.6rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px}
 .stat-value{font-size:1.05rem;font-weight:700;margin:3px 0 4px}
 .stat-value.warn{color:#ffeb3b}.stat-value.hot{color:var(--orange)}.stat-value.bad{color:var(--red)}
@@ -10742,6 +10743,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .diag-asset-icon-btn-delete:not(:disabled){color:var(--status-error)!important}
 [data-theme="light"] #diagInfo{background:var(--surface-inset)!important;color:var(--text-secondary)!important}
 [data-theme="light"] #ccssPreviewMeta,[data-theme="light"] #ccssPreviewMeta strong{color:var(--text-primary)!important}
+[data-theme="light"] #colorReadingsTable tr.color-reading-selected{background:var(--selected-bg)!important}
 [data-theme="light"] .chart-expand-btn{background:rgba(255,255,255,.94);color:var(--accent);border-color:var(--chart-axis);box-shadow:0 1px 3px rgba(18,29,45,.18)}
 [data-theme="light"] .chart-expand-btn:hover{background:var(--surface-inset);color:#174fc4;border-color:var(--accent)}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
@@ -39444,7 +39446,7 @@ function colorTableRowClick(tr){
 function colorHighlightTableRow(name){
  const rows=document.querySelectorAll('#colorReadingsTable tbody tr[data-name]');
  rows.forEach(tr=>{
-  tr.style.background=tr.getAttribute('data-name')===name?'#1a1a2f':'';
+  tr.classList.toggle('color-reading-selected',tr.getAttribute('data-name')===name);
  });
 }
 // Color chart interaction (CIE + ΔE bar chart)

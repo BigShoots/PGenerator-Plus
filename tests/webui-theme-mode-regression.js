@@ -96,6 +96,7 @@ assert(source.includes('let labelY=themedColorBars?H-6:'), 'Color-series values 
 assert(source.includes('[data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border)'),'Tablet Light charts sit on a contrasting workspace surface');
 assert(source.includes('[data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}'),'Tablet Light cards have a subtle separating shadow');
 assert(source.includes('[data-theme="light"] body.layout-desktop .dashboard>#applyBar[data-desktop-active="true"]'),'Desktop settings-change bar has an explicit Light surface');
+assert(source.includes('[data-theme="light"] #colorReadingsTable tr.color-reading-selected{background:var(--selected-bg)!important}'),'selected Color Readings rows use the Light selection surface');
 assert(source.includes('border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}'),'Tablet Light chart workspace leaves space above export controls');
 assert.strictEqual((source.match(/pgThemeColor\('--chart-gamut-line'/g)||[]).length,3,'preset, live 2D, and 3D CIE gamut triangles use the theme token');
 assert(source.includes('meterSetThumbsVisible(meterSeriesUiCaps(sortedSteps2.length).thumbs);'),'series completion reasserts thumbnail wrapper visibility after rebuilding');
