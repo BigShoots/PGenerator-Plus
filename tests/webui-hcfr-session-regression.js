@@ -57,6 +57,8 @@ assert(source.includes('const recoveredChartKey=meterActiveSeriesKey'), 'deferre
 assert(source.includes("if(seriesType==='colors') return 30")&&source.includes("if(seriesType==='saturations') return 24"), 'imported CHC color workspaces must use normal chart modes');
 assert(source.includes("meterSelectImportedHcfrGroup('colorChecker')"), 'ColorChecker must open the active imported CHC sibling workspace');
 assert(source.includes("meterSelectImportedHcfrGroup('saturations')"), 'Sat Sweep must open the active imported CHC sibling workspace');
+assert(source.includes("meterSelectImportedHcfrGroup('grayscale')"), 'matching greyscale preset must reopen the active imported CHC workspace');
+assert(source.includes('let meterActiveHcfrSessionId=null'), 'imported CHC sibling navigation must survive built-in tab changes');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
 assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series cache persistence must support deferred writes');

@@ -16274,6 +16274,7 @@ let meterLastChartCount=0; // track reading count to skip redundant chart redraw
 let meterLastChartSignature='';
 let meterSeriesCache={};
 let meterSeriesCacheBootId='';
+let meterActiveHcfrSessionId=null;
 let meterCcssCreateDisplayType='oled_generic';
 let meterExportFilenameBases={};
 
@@ -23419,6 +23420,8 @@ function meterCacheSeriesState(status,options){
 function meterRestoreSeriesFromCache(key){
  const cached=meterResolveSeriesSnapshotFromCache(key,arguments[1]||{});
  if(!cached||!cached.steps||cached.steps.length===0) return false;
+ const sourceSnap=meterSeriesCache&&meterSeriesCache[key];
+ if(sourceSnap&&sourceSnap.source_format==='hcfr-chc'&&sourceSnap.source_session_id) meterActiveHcfrSessionId=sourceSnap.source_session_id;
  meterRecoverSeries({
   series_id:null,
   cache_key:key,
@@ -29605,8 +29608,9 @@ function meterRestoreHcfrFixedCodesPreference(){
 }
 function meterSelectImportedHcfrGroup(group){
  const active=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
- if(!meterSeriesSnapshotIsImported(active)||!active.source_session_id) return false;
- const match=Object.keys(meterSeriesCache).map(key=>({key:key,snap:meterSeriesCache[key]})).find(entry=>entry.snap&&entry.snap.source_format==='hcfr-chc'&&entry.snap.source_session_id===active.source_session_id&&entry.snap.source_group===group);
+ const sessionId=meterActiveHcfrSessionId||(meterSeriesSnapshotIsImported(active)&&active.source_session_id);
+ if(!sessionId) return false;
+ const match=Object.keys(meterSeriesCache).map(key=>({key:key,snap:meterSeriesCache[key]})).find(entry=>entry.snap&&entry.snap.source_format==='hcfr-chc'&&entry.snap.source_session_id===sessionId&&entry.snap.source_group===group);
  if(!match) return false;
  return meterRestoreSeriesFromCache(match.key,{signalMode:match.snap.signal_mode});
 }
@@ -29634,6 +29638,12 @@ async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
  if(type==='greyscale' && points===256) points=100;
+ if(!opts.ignoreHcfrImport&&type==='greyscale'&&meterActiveHcfrSessionId){
+  const imported=Object.values(meterSeriesCache||{}).find(snap=>snap&&snap.source_format==='hcfr-chc'&&snap.source_session_id===meterActiveHcfrSessionId&&snap.source_group==='grayscale');
+  const count=imported&&Array.isArray(imported.steps)?imported.steps.length:0;
+  const importedPoints=count<=2?2:(count<=11?11:(count>=101?100:21));
+  if(imported&&Number(points)===importedPoints&&meterSelectImportedHcfrGroup('grayscale')) return;
+ }
  if(type==='greyscale' && Number(points)===30 && !meterHdrGreyscaleSeriesAvailable()){
   toast('Greyscale HDR 30pt is unavailable',true);
   return;
@@ -42508,7 +42518,7 @@ async function meterImportHcfrChcFile(input){
   const groupLines=Object.entries(sum.groups).filter(([,g])=>g.valid).map(([name,g])=>name+': '+g.valid);
   const warning=mode!==String(meterChartSignalMode()||'sdr').toLowerCase()?'\n\nThe imported analysis mode is '+mode.toUpperCase()+'; output settings will NOT be changed or restarted.':'';
   if(!window.confirm('Import '+file.name+'?\n\nFormat v'+parsed.fileVersion+', measurements v'+parsed.measurementVersion+'\nGenerator RGB range: '+sourceRange.toUpperCase()+'\n'+groupLines.join('\n')+'\nFixed readings: '+Object.values(sum.fixed).filter(Boolean).length+warning+'\n\nAnalysis preferences will be applied. Output range will NOT be changed. Existing sessions will be preserved.'))return;
-  const stamp=Date.now(),keys=[];importContext.session_id=stamp;
+  const stamp=Date.now(),keys=[];importContext.session_id=stamp;meterActiveHcfrSessionId=stamp;
   const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
   const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode,sourceRange,importContext,'grayscale');if(gkey)keys.push(gkey);
   const nearBlackGroup=parsed.groups.nearBlack,nearWhiteGroup=parsed.groups.nearWhite;
