@@ -21,11 +21,14 @@ assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC imp
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
 assert(source.includes("fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white"), 'HCFR prime white must match the chroma stimulus luminance');
 assert(source.includes("colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map"), 'ColorChecker master collection must mirror exported measurements');
-assert(source.includes('colorCheckerMode:1'), 'PGenerator ColorChecker must advertise HCFR Classic MCD mode');
-assert(source.includes('colors.slice(6,24).map((rd,index)=>({...rd,index}))'), 'ColorChecker chromatic patches are not mapped to MCD slots');
-assert(source.includes('[[5,19],[4,20],[3,21],[2,22]]'), 'compatible ColorChecker neutral patches are not mapped to MCD slots');
-assert(source.includes('HCFR saturation references are constant luminance'), 'export preview must disclose incompatible saturation reference semantics');
+assert(source.includes('colorCheckerMode:0'), 'PGenerator ColorChecker must advertise HCFR Classic GCD mode');
+assert(source.includes('{...colors[1],index:0},{...colors[0],index:5}'), 'ColorChecker black and white are not mapped to GCD slots');
+assert(source.includes("colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}))"), 'ColorChecker chromatic patches are not mapped to GCD slots');
+assert(source.includes('free.push(...colors.slice(2,6))'), 'incompatible PGenerator neutral patches must be preserved as free measurements');
+assert(source.includes('HCFR Sat Sweep'), 'HCFR-compatible constant-luminance saturation series is missing');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
+assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
+assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
 
 console.log('webui HCFR Session workspace regression OK');

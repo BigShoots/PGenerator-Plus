@@ -3850,6 +3850,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # to the top of PQ where the panel clips, crushing the saturation ratio to
   # white for every patch except the pure 100%-saturation primaries.
   my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
+  my $hcfr_constant_luminance=($points==25)?1:0;
   # $max_code is the outer-scope bit-depth-aware $chroma_max_code set
   # at the top of the step-build; no need to recompute here.
 	  # White first (reference Y), then saturation sweeps.
@@ -3920,9 +3921,18 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
 	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
 	     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
-	     # SDR references measured white directly: target_Yn = level_linear/mx (the patch's luminance relative to white), so target_Yn*measured_white = the reachable absolute luminance. The 10000/sat_white_ref PQ normalization is for PQ-absolute (hdr10 / DV-Absolute) only; applying it to SDR produced HDR-scale (hundreds-of-nits) sweep targets.
-	     $target_Yn_for_step=($level_linear/$mx)*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1)) if($mx>0);
-	     if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+	     if($hcfr_constant_luminance) {
+	      # HCFR saturation sweeps keep Y fixed at the endpoint luma K while
+	      # chromaticity moves from white to the primary/secondary. Preserve
+	      # PGenerator's safe sub-peak signal level, but do not normalize the
+	      # intermediate RGB vector by its maximum channel.
+	      $rl*=$mix_Y;$gl*=$mix_Y;$bl*=$mix_Y;
+	      $target_Yn_for_step=$level_linear*$mix_Y;
+	     } else {
+	      # Native PGenerator sweep keeps the maximum channel fixed.
+	      $target_Yn_for_step=($level_linear/$mx)*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1)) if($mx>0);
+	      if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+	     }
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
 	     $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
 	    $r=$encode_channel->($rl,$name);
@@ -11472,6 +11482,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
+     <button class="btn btn-sm btn-secondary" data-series="saturations-25" onclick="meterSelectSeries('saturations',25)" title="Constant-luminance saturation sequence compatible with HCFR saturation references">HCFR Sat Sweep</button>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -16385,6 +16396,21 @@ function meterParseSeriesKey(key){
  return {type:match[1],points:Number(match[2])||0};
 }
 
+function meterSeriesReadingIsImported(reading){
+ return !!(reading&&(reading.source_format==='hcfr-chc'||reading.measurement_only===true));
+}
+
+function meterSeriesSnapshotIsImported(snapshot){
+ if(!snapshot||typeof snapshot!=='object') return false;
+ if(snapshot.source_format==='hcfr-chc'||snapshot.measurement_only===true) return true;
+ const readings=Array.isArray(snapshot.readings)?snapshot.readings:[];
+ return readings.length>0&&readings.every(meterSeriesReadingIsImported);
+}
+
+function meterSeriesKeyIsNativePreset(key){
+ return /^(?:greyscale-(?:2|11|21|26|30|100|101|256)|colors-30|saturations-(?:24|25))$/.test(String(key||''));
+}
+
 function meterSeriesSnapshotSignalMode(snapshot,fallbackMode){
  const mode=String((snapshot&&snapshot.signal_mode)||fallbackMode||'sdr').toLowerCase();
  return mode||'sdr';
@@ -16737,7 +16763,17 @@ function meterResolveSeriesSnapshotFromCache(key,options){
   return out;
  };
  const opts=options||{};
- const exact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ let exact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ // CHC imports are measurement-only workspaces. Older builds allowed their
+ // readings to be merged into a native preset with the same IRE labels, then
+ // persisted that mixture under e.g. greyscale-21 during boot recovery. Strip
+ // those imported readings when resolving a native preset so its patch steps,
+ // thumbnails, and measurements cannot become cross-wired after a restart.
+ if(exact&&meterSeriesKeyIsNativePreset(key)&&Array.isArray(exact.readings)&&exact.readings.some(meterSeriesReadingIsImported)){
+  const nativeReadings=exact.readings.filter(rd=>!meterSeriesReadingIsImported(rd));
+  exact={...exact,readings:nativeReadings};
+  if(exact.white_reading&&meterSeriesReadingIsImported(exact.white_reading)) exact.white_reading=null;
+ }
  const parsed=meterParseSeriesKey(key)||null;
  const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||'greyscale';
  const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||21;
@@ -16777,6 +16813,9 @@ function meterResolveSeriesSnapshotFromCache(key,options){
    const meta=meterParseSeriesKey(cacheKey);
    if(!meta||meta.type!=='greyscale') return;
    if(!snap||!Array.isArray(snap.readings)||snap.readings.length===0) return;
+   // Imported CHC workspaces must remain selectable as their own snapshot, but
+   // must never act as fallback measurements for native point-count presets.
+   if(meterSeriesSnapshotIsImported(snap)) return;
    if(meterSeriesSnapshotSignalMode(snap,signalMode)!==signalMode) return;
    const snapshotLg26=meta.points===26||meterSeriesSnapshotHasLgAutoCal26Markers(snap);
    if(snapshotLg26!==requestedLg26) return;
@@ -18223,7 +18262,7 @@ function meterFindMeasuredWhiteReading(){
   const liveWhite=meterReadings.find(isWhiteReading);
   if(liveWhite) return liveWhite;
  }
- const preferredKeys=['greyscale-100','greyscale-2','greyscale-21','greyscale-11','saturations-24','colors-30'];
+ const preferredKeys=['greyscale-100','greyscale-2','greyscale-21','greyscale-11','saturations-25','saturations-24','colors-30'];
  let best=null;
  const considerSnapshot=(snap)=>{
   if(!snap||!Array.isArray(snap.readings)) return;
@@ -19152,6 +19191,23 @@ function meterBuildSaturationTargetStepMeta(colorName,satPercent){
   target_y:sum>0?xyz.Y/sum:wp.y,
   target_Yn:Math.max(0,xyz.Y||0)
  };
+}
+
+function meterBuildHcfrSaturationStep(colorName,satPercent){
+ const solveGamut=meterSaturationSolveGamut();
+ const targetGamut=meterAnalysisGamut();
+ const sat=Math.max(0,Math.min(100,Number(satPercent)||0))/100;
+ const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
+ const wp=meterTargetWhitePoint();
+ const x=wp.x+sat*(endpoint.x-wp.x),y=wp.y+sat*(endpoint.y-wp.y);
+ const endpointRgb=meterGamutColorEndpointRgb(colorName);
+ const endpointXyz=linRgbToXyz(endpointRgb[0],endpointRgb[1],endpointRgb[2],targetGamut.rgbToXyz);
+ const K=Math.max(0,Number(endpointXyz.Y)||0);
+ const coeffs=y>0?xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb):[0,0,0];
+ const level=meterSaturationStimulusLinearLevel(colorName);
+ const linear=coeffs.map(v=>Math.max(0,Math.min(1,v*K))*level);
+ const rgb=linear.map(v=>meterEncodeSaturationLinear(v,colorName));
+ return {ire:satPercent,r:rgb[0],g:rgb[1],b:rgb[2],name:colorName+' '+satPercent+'%',series_color:colorName,sat_pct:satPercent,target_x:x,target_y:y,target_Yn:level*K,series_mode:'hcfr-constant-luminance'};
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
@@ -29130,8 +29186,11 @@ function meterBuildStepsJS(type,points){
  } else if(type==='saturations'){
   ['Red','Green','Blue','Cyan','Magenta','Yellow'].forEach(name=>{
    [25,50,75,100].forEach(sat=>{
-    const rgb=meterBuildSaturationStepRgb(name,sat);
-    steps.push({ire:sat,r:rgb[0],g:rgb[1],b:rgb[2],name:name+' '+sat+'%',series_color:name,sat_pct:sat,...meterBuildSaturationTargetStepMeta(name,sat)});
+    if(Number(points)===25) steps.push(meterBuildHcfrSaturationStep(name,sat));
+    else {
+     const rgb=meterBuildSaturationStepRgb(name,sat);
+     steps.push({ire:sat,r:rgb[0],g:rgb[1],b:rgb[2],name:name+' '+sat+'%',series_color:name,sat_pct:sat,...meterBuildSaturationTargetStepMeta(name,sat)});
+    }
    });
   });
  }
@@ -41724,7 +41783,8 @@ function meterSeriesLabelFromKey(key){
 	  'greyscale-26':meterGreyscale26SeriesLabel(),
 	  'greyscale-11':'Greyscale 11pt',
   'colors-30':'ColorChecker',
-  'saturations-24':'Sat Sweep'
+  'saturations-24':'Sat Sweep',
+  'saturations-25':'HCFR Sat Sweep'
  }[key]||String(key||'Series');
 }
 
@@ -41748,7 +41808,8 @@ function meterAllSeriesReportOptions(){
 	  {key:'greyscale-26',label:meterGreyscale26SeriesLabel()},
 	  {key:'greyscale-11',label:'Greyscale 11pt'},
   {key:'colors-30',label:'ColorChecker'},
-  {key:'saturations-24',label:'Sat Sweep'}
+  {key:'saturations-24',label:'Sat Sweep'},
+  {key:'saturations-25',label:'HCFR Sat Sweep'}
  ].map(item=>{
   const snap=meterGetSeriesSnapshotByKey(item.key);
   const count=snap&&snap.readings?snap.readings.length:0;
@@ -42126,7 +42187,7 @@ function meterHcfrPreferenceModel(mode,white,black){
   contentMaxLuminance:value('max_cll',masterMax)||masterMax,frameAverageMaxLuminance:value('max_fall',400)||400,
   useToneMap:checked('meterHdrApplyBT2390'),overrideTargets:!checked('meterTargetWhiteUseMeasured')||!checked('meterTargetBlackUseMeasured'),
   diffuseLuminance:value('meterHdrDiffuseWhite',94.3784),nearWhiteClipColumn:101,
-  whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:1,
+  whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:0,
   colorStandard:gamutMap[gamut]||(mode==='sdr'?2:7),
   deltaEFormula:deMap[text('meterColorDeltaEForm','de2000')]!=null?deMap[text('meterColorDeltaEForm','de2000')]:3,
   grayscaleDeltaE:greyMap[text('meterGreyRefMode','relative')],grayWorldWeight:gw===0.15?1:(gw===0.05?2:0),
@@ -42169,16 +42230,16 @@ function meterBuildHcfrExportModel(){
  const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
  const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(satEntry) warnings.push('PGenerator saturation sweeps use variable luminance; HCFR saturation references are constant luminance, so intermediate saturation Delta E values are not directly comparable.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
- // PGenerator's 18 chromatic patches and four middle neutral chips most
- // closely match HCFR Classic MCD. PGenerator White/Black are calibration
- // anchors, not the physical checker white/black chips, so do not put them
- // in MCD slots 18 and 23. That preserves honest measurements and avoids
- // manufacturing two severe luminance errors.
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
+ // HCFR GCD aligns the 18 chromatic patches plus PGenerator's full black and
+ // white anchors. The four PGenerator neutral chips use different stimuli
+ // from GCD's named grays, so preserve them as free measurements instead of
+ // putting correct XYZ under incompatible references.
  let colorCheckerItems=[];
  if(colors.length>=24){
-  colorCheckerItems=colors.slice(6,24).map((rd,index)=>({...rd,index}));
-  [[5,19],[4,20],[3,21],[2,22]].forEach(([source,index])=>colorCheckerItems.push({...colors[source],index}));
+  colorCheckerItems=[{...colors[1],index:0},{...colors[0],index:5}];
+  colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
+  free.push(...colors.slice(2,6));
  }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
  return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
