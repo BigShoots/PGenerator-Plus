@@ -2206,7 +2206,12 @@ sub apply_residual_correction {
 
 sub run_solve_only {
  my ($config)=@_;
- my $state={ status=>"running", solve_only=>json_true(), method=>"cube",
+ # Keep the profiling-series type through the standalone solve.  "cube" is
+ # the export container, not the method that produced it; using it here made
+ # every solved filename indistinguishable regardless of whether the source
+ # series was matrix, hybrid, lattice, or skeleton.
+ my $series_method=lc($config->{"method"}||"matrix");
+ my $state={ status=>"running", solve_only=>json_true(), method=>$series_method,
   current_name=>"Solving 3D LUT from lattice readings", message=>"Building model",
   started_at=>int(time()*1000) };
  write_state($state);
@@ -2280,7 +2285,7 @@ sub run_solve_only {
  $state->{"solve_progress_pct"}=45;
  write_state($state);
  my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
- $model->{"method"}="cube";
+ $model->{"method"}=$series_method;
  $state->{"message"}="Writing ${cube_size}³ .cube export";
  $state->{"current_name"}="Writing .cube";
  $state->{"solve_progress_pct"}=90;
@@ -4240,6 +4245,7 @@ if($signal_mode eq "hdr10" && $method ne "matrix" && $method ne "imported") {
  $method="matrix";
  $config->{"solve_matrix_only"}=1 if($config->{"solve_only"});
 }
+$config->{"method"}=$method;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
 # Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
