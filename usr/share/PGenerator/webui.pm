@@ -11386,14 +11386,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White</label>
-         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" placeholder="auto" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
-         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" placeholder="auto" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
@@ -24308,6 +24308,10 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
    bUm.checked=true; if(black) black.value='';
   }
  }
+ // A display-type change can flip Target Black between the manual OLED
+ // default and Use Measured. Keep the input's disabled/placeholder state in
+ // lockstep with the checkbox instead of leaving the previous mode editable.
+ meterSetTargetLevelsStateOnly();
 }
 // Resolve the effective Target White level. Returns {useMeasured,value}.
 function meterTargetWhiteLevel(){

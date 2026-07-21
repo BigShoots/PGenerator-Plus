@@ -62,4 +62,15 @@ unlike($src, qr/meterLowLightReadState[\s\S]{0,500}?'x_'\s*\+/s,
 unlike($src, qr/highPrecision/s,
   'highPrecision no longer persisted/restored by the low-light handler');
 
+# Task 5: measured target levels are visibly blank and cannot be edited,
+# including after Display Type changes apply new black-level defaults.
+like($src, qr/id="meterTargetWhite"[^>]*disabled/s,
+  'Target White starts disabled while Use Measured is selected');
+like($src, qr/id="meterTargetBlack"[^>]*disabled/s,
+  'Target Black starts disabled while Use Measured is selected');
+unlike($src, qr/id="meterTarget(?:White|Black)"[^>]*placeholder="auto"/s,
+  'measured Target White and Target Black start blank');
+like($src, qr/function meterApplyTargetLevelsDisplayDefaults[\s\S]{0,1800}?meterSetTargetLevelsStateOnly\(\)/s,
+  'Display Type defaults resynchronize target input disabled state');
+
 done_testing();
