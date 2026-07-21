@@ -12189,7 +12189,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  <div class="card span2" id="meter3dLutWorkspaceCard" data-desktop-workspace="3d-lut" data-desktop-order="10">
   <div class="meter-3dlut-workspace-head">
    <div>
-    <h2>3D LUT</h2>
     <p>Select a profiling series, measure it and generate a 3D LUT. Solved LUTs and the interactive cube viewer remain available below.</p>
    </div>
    <button class="btn btn-primary" id="meter3dLutWorkspaceBuildBtn" onclick="meterReadSeriesPrimaryAction()">Build 3D LUT</button>
@@ -27045,7 +27044,7 @@ async function meterRefreshCustomSeriesFromServer(){
 }
 
 async function meterOpenCustomSeriesManager(){
- const modal=document.getElementById('meterCustomSeriesManagerModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterCustomSeriesManagerModal'));
  if(!modal) return;
  const status=document.getElementById('meterCustomSeriesManagerStatus');
  if(status){ status.textContent=''; status.style.display='none'; }
@@ -35600,7 +35599,7 @@ function meterOpenLg3dSelectSeriesModal(){
   toast('Meter operation already in progress',true);
   return;
  }
- const modal=document.getElementById('meterLg3dSelectSeriesModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterLg3dSelectSeriesModal'));
  if(!modal) return;
  const srcSel=document.getElementById('meterLg3dSelSeriesSource');
  // HDR: only matrix. SDR: keep matrix + hybrid/skeleton/lattice all available.
@@ -35617,11 +35616,13 @@ function meterOpenLg3dSelectSeriesModal(){
  }
  meterLg3dSelectSeriesChanged();
  modal.style.display='flex';
+ uiSyncBodyScrollLock();
  try{ const b=document.getElementById('meterLg3dSelSeriesLoadBtn'); if(b) b.focus(); }catch(e){}
 }
 function meterCloseLg3dSelectSeriesModal(){
  const modal=document.getElementById('meterLg3dSelectSeriesModal');
  if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
 }
 async function meterConfirmLg3dSelectSeries(){
  let src=meterLg3dSelectSeriesSourceValue();
