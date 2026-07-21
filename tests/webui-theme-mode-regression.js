@@ -58,6 +58,10 @@ assert(source.includes('[data-theme="light"] #meterTwoPointControls,[data-theme=
 assert(source.includes('id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset)'), 'two-point setup uses a semantic surface in both themes');
 assert(source.includes('id="meterGreyProfileBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:-2px 0 10px 0;padding:8px 10px;background:var(--surface-inset)'), 'custom greyscale setup uses a semantic surface in both themes');
 assert(source.includes("document.querySelectorAll('.dashboard > .card[data-desktop-workspace]').forEach(panel=>{panel.style.order='';});"),'returning to Tablet clears Desktop inline order from every workspace card so Tablet CSS and drag ordering remain effective');
+assert(source.includes('data-workspace-target="meter-profile"')&&source.includes("'meter-profile':'Meter Profile'"),'Desktop navigation exposes the Meter Profile workspace');
+assert(source.includes('id="meterProfileCard" data-desktop-workspace="meter-profile"'),'the CCSS editor has a dedicated Desktop workspace host');
+assert(source.includes("if(desktop) pgSelectDesktopWorkspace('meter-profile',{focus:true});"),'selecting CCSS Editor routes Desktop users to Meter Profile');
+assert(source.includes('body.layout-tablet #meterProfileCard{display:none!important}'),'the dedicated Meter Profile card remains hidden in Tablet mode');
 assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
 assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');
 assert(source.includes('[data-theme="light"] [id$="Modal"] > .meter-modal-scroll'),'modal content receives an explicit Light surface');

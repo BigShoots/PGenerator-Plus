@@ -10585,6 +10585,11 @@ body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 
 body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:transparent;border:0;border-radius:0;padding:18px 0;box-shadow:none;min-width:0;border-bottom:1px solid var(--border)}
 body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
 body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-bottom:0}
+body.layout-tablet #meterProfileCard{display:none!important}
+body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:0}
+body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
+body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
+body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
 body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
@@ -10872,6 +10877,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="output" onclick="pgSelectDesktopWorkspace('output')">Output</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" onclick="pgSelectDesktopWorkspace('patterns')">Patterns</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">HDMI-CEC</button>
@@ -11813,7 +11819,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
   </div>
 
-  <div id="customCcssEditorModal" onclick="if(event.target===this) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="customCcssEditorModal" onclick="if(event.target===this&&!document.body.classList.contains('layout-desktop')) meterCloseCustomCcssEditor()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
@@ -11822,7 +11828,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
-       <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomCcssEditor()">Close</button>
+       <button class="btn btn-sm btn-secondary ccss-editor-close-btn" onclick="meterCloseCustomCcssEditor()">Close</button>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
@@ -12146,6 +12152,12 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
   </div>
+ </div>
+
+ <!-- Desktop hosts the existing CCSS editor here as a full workspace. Tablet
+      keeps the same element in its modal presentation layer. -->
+ <div class="card span2" id="meterProfileCard" data-desktop-workspace="meter-profile" data-desktop-order="10">
+  <div id="meterProfileWorkspaceHost"></div>
  </div>
 
  <!-- Device Info -->
@@ -14012,6 +14024,7 @@ function uiAnyBlockingOverlayVisible(){
  return uiBlockingOverlayIds.some(id=>{
   const el=document.getElementById(id);
   if(!el) return false;
+  if(id==='customCcssEditorModal'&&document.body.classList.contains('layout-desktop')) return false;
   if(el.style.display) return el.style.display!=='none';
   return getComputedStyle(el).display!=='none';
  });
@@ -15247,7 +15260,7 @@ const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
 const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
- output:'Output',patterns:'Patterns',calibration:'Calibration',
+ output:'Output',patterns:'Patterns',calibration:'Calibration','meter-profile':'Meter Profile',
  'display-control':'LG Display',connectivity:'Connectivity',
  integrations:'HDMI-CEC',diagnostics:'HDMI Infoframes','ui-settings':'UI Settings',system:'System'
 };
@@ -15366,6 +15379,10 @@ function pgSelectDesktopWorkspace(workspace,options){
  const title=document.getElementById('desktopWorkspaceTitle');
  if(title) title.textContent=PG_DESKTOP_WORKSPACES[workspace];
  pgSyncDesktopPanels();
+ if(workspace==='meter-profile'&&document.body.classList.contains('layout-desktop')){
+  meterPlaceCcssEditorForLayout();
+  meterActivateCcssEditorWorkspace();
+ }
  pgRefreshVisibleWorkspace();
  if(options&&options.focus&&title){
   try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
@@ -15376,6 +15393,8 @@ function pgApplyLayout(options){
  pgLayoutEffective=(pgLayoutPreference==='desktop'&&pgWideEnoughForDesktop())?'desktop':'tablet';
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
+ meterPlaceCcssEditorForLayout();
+ uiSyncBodyScrollLock();
  meterSyncGreyscaleDesktopLayout();
  pgSyncCardCollapseForLayout();
  pgUpdateLayoutControls();
@@ -41893,18 +41912,35 @@ function _ccssEditorBaselineKey(){
  const customs=lib.filter(f=>f&&f.source==='custom').map(f=>String(f.name||'')+':'+String(f.mtime||'')).sort().join('|');
  return customs;
 }
-function meterOpenCustomCcssEditor(){
- const modal=meterEnsureModalOnBody(document.getElementById('customCcssEditorModal'));
- if(!modal) return;
+function meterPlaceCcssEditorForLayout(){
+ const editor=document.getElementById('customCcssEditorModal');
+ if(!editor) return null;
+ if(document.body.classList.contains('layout-desktop')){
+  const host=document.getElementById('meterProfileWorkspaceHost');
+  if(host&&editor.parentNode!==host) host.appendChild(editor);
+ }else if(editor.parentNode!==document.body){
+  editor.style.display='none';
+  document.body.appendChild(editor);
+ }
+ return editor;
+}
+function meterActivateCcssEditorWorkspace(){
  _ccssEditorBaseline=_ccssEditorBaselineKey();
  loadCustomCcssList();
- modal.style.display='flex';
- uiSyncBodyScrollLock();
  requestAnimationFrame(()=>{
   const active=ccssPreviewActiveValue||ccssPreviewCurrentDisplayValue()||(customCcssFile?('custom\t'+customCcssFile):'');
   if(active) ccssPreviewLoadByValue(active,true);
   else ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
  });
+}
+function meterOpenCustomCcssEditor(){
+ const desktop=document.body.classList.contains('layout-desktop');
+ const modal=desktop?meterPlaceCcssEditorForLayout():meterEnsureModalOnBody(document.getElementById('customCcssEditorModal'));
+ if(!modal) return;
+ modal.style.display=desktop?'block':'flex';
+ if(desktop) pgSelectDesktopWorkspace('meter-profile',{focus:true});
+ else meterActivateCcssEditorWorkspace();
+ uiSyncBodyScrollLock();
 }
 
 async function meterCloseCustomCcssEditor(){
