@@ -834,82 +834,6 @@ sub lg_scan_devices (@) {
  };
 }
 
-# Network discovery can take up to ten seconds when televisions are asleep.
-# The WebUI HTTP server intentionally has a simple single-request loop, so
-# running discovery inline starves meter/status and makes a connected meter
-# appear to disconnect on page load.  Run the scan in a detached process and
-# exchange its result through small files instead.  This also keeps manual LG
-# scans from pausing calibration status updates.
-sub lg_scan_async_paths (@) {
- return ("/tmp/pgenerator-lg-scan.running","/tmp/pgenerator-lg-scan-result.json");
-}
-
-sub lg_scan_async_read_result (@) {
- my (undef,$result_file)=&lg_scan_async_paths();
- return undef if(!-f $result_file);
- my $raw="";
- if(open(my $fh,"<",$result_file)) { local $/; $raw=<$fh>; close($fh); }
- return undef if($raw eq "");
- my $decoded=eval { JSON::PP::decode_json($raw) };
- return (ref($decoded) eq "HASH") ? $decoded : undef;
-}
-
-sub lg_scan_async_status (@) {
- my ($running_file,undef)=&lg_scan_async_paths();
- my $running=0;
- if(-f $running_file) {
-  my $age=time()-((stat($running_file))[9]||0);
-  if($age < 90) { $running=1; }
-  else { unlink($running_file); }
- }
- my $result=&lg_scan_async_read_result();
- if($running) {
-  return &lg_encode_json({status=>"running",running=>JSON::PP::true});
- }
- return &lg_encode_json($result) if(ref($result) eq "HASH");
- return &lg_encode_json({status=>"idle",running=>JSON::PP::false,devices=>[]});
-}
-
-sub lg_scan_async_start (@) {
- my ($running_file,$result_file)=&lg_scan_async_paths();
- if(-f $running_file) {
-  my $age=time()-((stat($running_file))[9]||0);
-  return &lg_encode_json({status=>"running",running=>JSON::PP::true}) if($age < 90);
-  unlink($running_file);
- }
-
- # O_EXCL without adding another module: create the marker first and refuse a
- # racing request if another browser won the creation race.
- if(!sysopen(my $marker,$running_file,0x0001|0x0040|0x0080,0644)) {
-  return &lg_encode_json({status=>"running",running=>JSON::PP::true});
- }
- print $marker time()."\n";
- close($marker);
-
- # Launch a separate worker process. PGeneratord's main process is already
- # multi-threaded; forking it from the WebUI thread can deadlock inherited
- # Perl/runtime locks. A fresh exec has no inherited thread state and runs
- # concurrently without holding the HTTP request loop.
- my $pid=fork();
- if(!defined($pid)) {
-  unlink($running_file);
-  return &lg_encode_json({status=>"error",message=>"Unable to start LG TV scan"});
- }
- if($pid==0) {
-  my $child=fork();
-  exit(0) if(defined($child) && $child>0);
-  exit(1) if(!defined($child));
-  open(STDIN,'<','/dev/null');
-  open(STDOUT,'>','/tmp/pgenerator-lg-scan.log');
-  open(STDERR,'>&STDOUT');
-  exec('/usr/sbin/PGeneratord.pl','--lg-scan-worker');
-  unlink($running_file);
-  exit(1);
- }
- waitpid($pid,0);
- return &lg_encode_json({status=>"running",running=>JSON::PP::true});
-}
-
 sub lg_target_ip (@) {
  my ($payload,$clients)=@_;
  $payload={} if(ref($payload) ne "HASH");
@@ -2036,17 +1960,8 @@ sub webui_lg_api (@) {
 	 if($path eq "/api/lg/disconnect" && $method eq "POST") {
 	  return &webui_lg_disconnect();
 	 }
- if($path eq "/api/lg/scan/start" && $method eq "POST") {
-  return &lg_scan_async_start();
- }
- if($path eq "/api/lg/scan/status" && $method eq "GET") {
-  return &lg_scan_async_status();
- }
 	 if($path eq "/api/lg/scan" && $method eq "GET") {
-  # Compatibility for older clients: start discovery without blocking the
-  # request loop, then return the latest completed result if one exists.
-  &lg_scan_async_start();
-  return &lg_scan_async_status();
+  return &webui_lg_scan();
  }
  if($path eq "/api/lg/scan/saved" && $method eq "GET") {
   return &lg_encode_json(&lg_scan_saved_devices());
@@ -2832,14 +2747,7 @@ function lgDismissDetectedPrompt(){
 	  }
 	 }catch(e){}
 	 try{
-	  await fetchJSON('/api/lg/scan/start',{method:'POST',_quiet:true,_timeoutMs:4000});
-	  let r=null;
-	  const deadline=Date.now()+20000;
-	  while(Date.now()<deadline){
-	   r=await fetchJSON('/api/lg/scan/status',{_quiet:true,_timeoutMs:4000});
-	   if(r&&r.status!=='running') break;
-	   await new Promise(resolve=>setTimeout(resolve,500));
-	  }
+	  const r=await fetchJSON('/api/lg/scan',{_quiet:true,_timeoutMs:20000});
 	  if(r&&Array.isArray(r.devices)&&(r.devices.length||!savedShown)) lgRenderScanResults(r);
 	  else if(savedShown&&cardStatus) cardStatus.textContent='Showing saved TVs. Network scan found nothing new.';
 	 }catch(e){
