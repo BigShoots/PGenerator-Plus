@@ -15527,8 +15527,12 @@ function meterPlace3dLutWorkspaceForLayout(){
   if(desktop){
    if(tools.parentNode!==toolsHost) toolsHost.appendChild(tools);
   }else{
+   const returningFromDesktop=tools.parentNode===toolsHost;
    if(tools.parentNode!==toolsHome.parentNode) toolsHome.insertAdjacentElement('afterend',tools);
-   tools.style.display='none';
+   // A Tablet modal open locks body scrolling, which can fire a viewport
+   // resize and re-run this layout sync. Do not close an already-hosted modal;
+   // hide it only when it is actually returning from the Desktop workspace.
+   if(returningFromDesktop) tools.style.display='none';
   }
  }
  meterSync3dLutWorkspaceUi();
