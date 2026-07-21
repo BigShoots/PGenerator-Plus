@@ -15447,6 +15447,11 @@ function pgRedrawChartsForTheme(){
    if(typeof meterReadings!=='undefined'&&meterReadings&&meterReadings.length&&typeof drawAllCharts==='function') drawAllCharts(meterReadings);
    else if(typeof meterSeriesSteps!=='undefined'&&meterSeriesSteps&&meterSeriesSteps.length&&typeof drawAllChartsPreset==='function') drawAllChartsPreset(meterSeriesSteps);
   }catch(e){}
+  try{
+   if(typeof ccssPreviewLastPayload!=='undefined'&&ccssPreviewLastPayload&&typeof ccssPreviewRender==='function'){
+    ccssPreviewRender(ccssPreviewLastPayload);
+   }
+  }catch(e){}
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
  }));
 }
@@ -42099,6 +42104,7 @@ async function meterClearResults(){
 let customCcssFile=null;
 let meterCcssLibrary=[];
 let ccssPreviewActiveValue='';
+let ccssPreviewLastPayload=null;
 let meterCcssOptionsPromise=loadMeterCcssOptions();
 function meterDisplayTypeCcssEntry(value){
  const current=String(value||'');
@@ -42649,11 +42655,15 @@ async function deleteSelectedCustomCcss(){
 }
 
 function ccssPreviewSampleColor(index){
- const colors=['#ff6b6b','#67d36f','#6fb6ff','#f6ef9a','#ff9f68','#d29cff'];
+ const lightTheme=(document.documentElement.getAttribute('data-theme')==='light');
+ const colors=lightTheme
+  ? ['#c92536','#16813a','#1764b8','#927000','#b84d16','#7040a8']
+  : ['#ff6b6b','#67d36f','#6fb6ff','#f6ef9a','#ff9f68','#d29cff'];
  return colors[index%colors.length];
 }
 
 function ccssPreviewClear(message){
+ ccssPreviewLastPayload=null;
  const meta=document.getElementById('ccssPreviewMeta');
  const legend=document.getElementById('ccssPreviewLegend');
  const canvas=document.getElementById('ccssPreviewCanvas');
@@ -42742,6 +42752,7 @@ function ccssPreviewRender(payload){
   ccssPreviewClear('No spectral data found in this CCSS profile.');
   return;
  }
+ ccssPreviewLastPayload=payload;
  const minNm=Number(payload.start_nm)||Number(wavelengths[0])||380;
  const maxNm=Number(payload.end_nm)||Number(wavelengths[wavelengths.length-1])||780;
  let maxValue=Number(payload.max_value)||0;
