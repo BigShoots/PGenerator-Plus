@@ -26543,7 +26543,7 @@ function meterCustomSeriesSanitizePatch(raw,index){
  const src=(raw&&typeof raw==='object')?raw:{};
  const patch={name:'',r8:0,g8:0,b8:0,r10:0,g10:0,b10:0,target_nits:null};
  patch.name=String(src.name==null?'':src.name).replace(/[\[\]{}"\\,]/g,'').slice(0,40).trim();
- if(!patch.name) patch.name='Patch '+(Number(index||0)+1);
+ if(!patch.name) patch.name='Patch '+Number(index||0);
  ['r','g','b'].forEach(ch=>{
   const c10=Number(src[ch+'10']);
   const c8=Number(src[ch+'8']);
@@ -28089,7 +28089,7 @@ function meterBuildCustomSeriesSteps(series){
    preview_g:previewForCode(g),
    preview_b:previewForCode(b),
    input_max:inputMax,
-   name:patch.name||('Patch '+(idx+1)),
+   name:patch.name||('Patch '+idx),
    series_type:isGrey?'greyscale':'colors',
    custom_series_id:series.id
   };
@@ -28365,7 +28365,7 @@ function meterCustomSeriesCsv(series,format){
   const rangeHdr=(meterCustomSeriesRangeKey(series&&series.range)==='full')?'Full':'Legal';
   const header='# Bitdepth 10\r\n# Range '+rangeHdr+'\r\n';
   const body=rows.map((p,i)=>{
-   const name=String(p.name||('Patch '+(i+1))).replace(/[\r\n,]/g,' ').trim();
+   const name=String(p.name||('Patch '+i)).replace(/[\r\n,]/g,' ').trim();
    return [(i+1),meterCustomSeriesClampCode(p.r10,1023),meterCustomSeriesClampCode(p.g10,1023),meterCustomSeriesClampCode(p.b10,1023),name].join(',');
   }).join('\r\n');
   return header+body+'\r\n';
