@@ -8,6 +8,7 @@ Backup/
 v2.1/
 docs/
 tests/
+tools/scripts/
 tools/dv_helper
 tools/read_csc
 usr/lib/scdc_tool
@@ -40,3 +41,4 @@ usr/share/PGenerator/*.bak
 tools/image-targets/*/src/pattern_generator/bin/
 tools/image-targets/*/src/pattern_generator/obj/
 tools/image-targets/*/build/
+data/
