@@ -42126,7 +42126,7 @@ function meterHcfrPreferenceModel(mode,white,black){
   contentMaxLuminance:value('max_cll',masterMax)||masterMax,frameAverageMaxLuminance:value('max_fall',400)||400,
   useToneMap:checked('meterHdrApplyBT2390'),overrideTargets:!checked('meterTargetWhiteUseMeasured')||!checked('meterTargetBlackUseMeasured'),
   diffuseLuminance:value('meterHdrDiffuseWhite',94.3784),nearWhiteClipColumn:101,
-  whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:0,
+  whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:1,
   colorStandard:gamutMap[gamut]||(mode==='sdr'?2:7),
   deltaEFormula:deMap[text('meterColorDeltaEForm','de2000')]!=null?deMap[text('meterColorDeltaEForm','de2000')]:3,
   grayscaleDeltaE:greyMap[text('meterGreyRefMode','relative')],grayWorldWeight:gw===0.15?1:(gw===0.05?2:0),
@@ -42169,11 +42169,17 @@ function meterBuildHcfrExportModel(){
  const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
  const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
- // PGenerator starts its classic set White, Black, four grays. HCFR GCD uses
- // Black, four grays, White, followed by the same 18 chromatic patches.
- const classicColors=colors.length>=24?[colors[1],colors[2],colors[3],colors[4],colors[5],colors[0],...colors.slice(6,24)]:colors.slice(0,24);
- const colorCheckerItems=classicColors.map((rd,index)=>({...rd,index}));
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(satEntry) warnings.push('PGenerator saturation sweeps use variable luminance; HCFR saturation references are constant luminance, so intermediate saturation Delta E values are not directly comparable.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
+ // PGenerator's 18 chromatic patches and four middle neutral chips most
+ // closely match HCFR Classic MCD. PGenerator White/Black are calibration
+ // anchors, not the physical checker white/black chips, so do not put them
+ // in MCD slots 18 and 23. That preserves honest measurements and avoids
+ // manufacturing two severe luminance errors.
+ let colorCheckerItems=[];
+ if(colors.length>=24){
+  colorCheckerItems=colors.slice(6,24).map((rd,index)=>({...rd,index}));
+  [[5,19],[4,20],[3,21],[2,22]].forEach(([source,index])=>colorCheckerItems.push({...colors[source],index}));
+ }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
  return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 

@@ -21,7 +21,10 @@ assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC imp
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
 assert(source.includes("fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white"), 'HCFR prime white must match the chroma stimulus luminance');
 assert(source.includes("colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map"), 'ColorChecker master collection must mirror exported measurements');
-assert(source.includes("[colors[1],colors[2],colors[3],colors[4],colors[5],colors[0],...colors.slice(6,24)]"), 'PGenerator ColorChecker neutrals are not reordered to HCFR GCD order');
+assert(source.includes('colorCheckerMode:1'), 'PGenerator ColorChecker must advertise HCFR Classic MCD mode');
+assert(source.includes('colors.slice(6,24).map((rd,index)=>({...rd,index}))'), 'ColorChecker chromatic patches are not mapped to MCD slots');
+assert(source.includes('[[5,19],[4,20],[3,21],[2,22]]'), 'compatible ColorChecker neutral patches are not mapped to MCD slots');
+assert(source.includes('HCFR saturation references are constant luminance'), 'export preview must disclose incompatible saturation reference semantics');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
 
