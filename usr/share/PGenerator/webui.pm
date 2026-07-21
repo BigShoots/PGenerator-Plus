@@ -10606,9 +10606,24 @@ body.layout-desktop #meter3dLutWorkspaceCard #meterSeriesGroup3dLut{display:flex
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
+body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:grid;grid-template-columns:minmax(260px,.75fr) minmax(0,1.25fr);gap:14px 18px;align-items:start}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head,
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import,
+body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel{grid-column:1 / -1}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-content{grid-column:1 / -1;display:grid;grid-template-columns:minmax(260px,.75fr) minmax(0,1.25fr);gap:18px;align-items:start}
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-close{display:none!important}
-body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;padding:14px;background:var(--surface-inset);border-radius:8px}
+body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutSection{grid-column:1;grid-row:1;min-width:0}
+body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;grid-column:2;grid-row:1;min-width:0;padding:14px;background:var(--surface-inset);border-radius:8px}
+body.layout-desktop #meter3dLutWorkspaceCard #lutCubeView{max-width:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutList{background:var(--surface-inset)!important}
+.meter-solved-lut-row{display:flex;align-items:center;gap:6px;padding:4px;border-radius:5px}
+.meter-solved-lut-name{flex:1 1 auto;min-width:0;border:0;border-radius:4px;padding:7px 8px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;overflow:hidden}
+.meter-solved-lut-name:hover{background:rgba(91,127,255,.12)}
+.meter-solved-lut-name.is-selected{background:rgba(91,127,255,.2);box-shadow:inset 3px 0 0 var(--accent)}
+.meter-solved-lut-name-main{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.meter-solved-lut-name-date{display:block;margin-top:2px;color:var(--text2);font-size:.68rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[data-theme="light"] .meter-solved-lut-name:hover{background:var(--hover-bg)}
+[data-theme="light"] .meter-solved-lut-name.is-selected{background:var(--selected-bg)}
 body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
@@ -11637,15 +11652,16 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <span id="meterLutToolsHome" hidden></span>
   <div id="meterLutToolsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div class="meter-modal-scroll" style="width:min(720px,100%);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <div class="meter-lut-tools-head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div style="font-size:.95rem;font-weight:700;color:#eee">3D LUT Tools</div>
      <button class="btn btn-sm btn-secondary meter-lut-tools-close" onclick="meterCloseLutTools()">Close</button>
     </div>
-    <div class="btn-row" style="margin:0 0 12px 0">
+    <div class="btn-row meter-lut-tools-import" style="margin:0 0 12px 0">
      <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()" title="Parse and preview a .cube 3D LUT file (not applied to the display)">Import .cube (preview)</button>
      <input type="file" id="meterCubeImportInput" accept=".cube,text/plain" style="display:none">
     </div>
     <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
+    <div class="meter-lut-tools-content">
     <div id="lutCubeViewWrap" style="display:none;margin-bottom:12px">
      <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">3D LUT Cube &mdash; <span id="lutCubeViewName" style="text-transform:none">Select a solved LUT below</span>
       <span class="meter-help-tip" title="The LUT's contents in signal RGB space: hollow box = input lattice node, filled dot = where the LUT sends it. Connector length shows how far the LUT moves that node (an identity LUT shows dots centred in their boxes). Drag = rotate, wheel = zoom, double-click = reset camera." aria-label="LUT cube view help">?</span>
@@ -11663,8 +11679,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
      <canvas id="lutCubeView" width="640" height="480" style="width:100%;max-width:640px;background:#0d0d15;border-radius:6px;cursor:grab;display:block"></canvas>
     </div>
-    <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs</div>
-    <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
+    <div id="meterSolvedLutSection">
+     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Solved LUTs</div>
+     <div id="meterSolvedLutList" style="padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)">Loading&hellip;</div>
+    </div>
+    </div>
    </div>
   </div>
 
@@ -27504,15 +27523,18 @@ async function meterLoadSolvedLutList(){
   const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
   const luts=(r&&Array.isArray(r.luts))?r.luts:[];
   if(!luts.length){ panel.textContent='No solved LUTs yet — Build 3D LUT or run 3D LUT AutoCal to create one.'; return; }
-  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const escJs=(s)=>String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ');
   panel.innerHTML=luts.map(l=>{
+   const name=String(l.name||'');
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
-   return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
-    +'<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(l.name)+'">'+esc(l.name)+' <span style="color:var(--text2)">'+esc(when)+'</span></span>'
-    +'<button class="btn btn-sm btn-secondary" title="Render this LUT as a 3D cube (input lattice vs LUT output positions)" onclick="meterViewSolvedLutIn3d(\''+esc(l.name)+'\')">3D</button>'
-    +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+esc(l.name)+'\')">.cube</button>'
-    +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+esc(l.name)+'\')">.3dl</button>'
-    +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+esc(l.name)+'\')">&#10005;</button>'
+   const selected=!!(meterLutCubeState&&meterLutCubeState.name===name);
+   return '<div class="meter-solved-lut-row">'
+    +'<button type="button" class="meter-solved-lut-name'+(selected?' is-selected':'')+'" data-lut-name="'+esc(name)+'" aria-current="'+(selected?'true':'false')+'" title="Load '+esc(name)+' in the 3D cube viewer" onclick="meterViewSolvedLutIn3d(\''+escJs(name)+'\')">'
+    +'<span class="meter-solved-lut-name-main">'+esc(name)+'</span><span class="meter-solved-lut-name-date">'+esc(when)+'</span></button>'
+    +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+escJs(name)+'\')">.cube</button>'
+    +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+escJs(name)+'\')">.3dl</button>'
+    +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+escJs(name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
  }catch(e){
@@ -27641,11 +27663,18 @@ function meterLutCubeShow(parsed,name){
  const wrap=document.getElementById('lutCubeViewWrap');
  const label=document.getElementById('lutCubeViewName');
  if(label) label.textContent=meterLutCubeState.name+' ('+parsed.size+'³)';
+ document.querySelectorAll('#meterSolvedLutList .meter-solved-lut-name').forEach(btn=>{
+  const selected=btn.getAttribute('data-lut-name')===meterLutCubeState.name;
+  btn.classList.toggle('is-selected',selected);
+  btn.setAttribute('aria-current',selected?'true':'false');
+ });
  if(wrap){
   wrap.style.display='';
   // Bring the viewer into view — clicking 3D on a row far down the solved
   // list otherwise renders the cube off-screen above the scroll position.
-  try{ wrap.scrollIntoView({block:'start',behavior:'smooth'}); }catch(e){ wrap.scrollIntoView(); }
+  if(!document.body.classList.contains('layout-desktop')){
+   try{ wrap.scrollIntoView({block:'start',behavior:'smooth'}); }catch(e){ wrap.scrollIntoView(); }
+  }
  }
  meterLutCubeBindHandlers();
  meterLutCubeDotSizeLoad();
