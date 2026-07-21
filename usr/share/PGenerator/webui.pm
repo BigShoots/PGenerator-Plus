@@ -10629,6 +10629,7 @@ body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!impor
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
 body.layout-desktop #meterProfileCard .ccss-editor-panel{background:var(--surface-inset)!important;border:0!important;border-radius:8px!important}
+body.layout-desktop #meterProfileCard #ccssPreviewCanvas{height:440px!important}
 body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"]{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
