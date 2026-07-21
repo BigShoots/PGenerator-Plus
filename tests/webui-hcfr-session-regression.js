@@ -49,6 +49,10 @@ assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export 
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
 assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
+assert(source.includes('rd.series_type=type;rd.signal_mode=mode'), 'imported CHC readings must be classified for chart filtering');
+assert(source.includes('if(!importedWorkspace) meterSeriesSteps=meterBuildStepsJS'), 'chart refresh must preserve imported CHC measurement steps');
+assert(source.includes("target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null"), 'imported CHC snapshots must retain HDR analysis context');
+assert(source.includes("if(s&&s.source_format==='hcfr-chc') return points"), 'imported CHC workspaces must retain their unique cache identity');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
 assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series cache persistence must support deferred writes');
