@@ -10595,6 +10595,7 @@ body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180p
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
 body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"]{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{border-bottom:0}
+body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
 .meter-3dlut-workspace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
 .meter-3dlut-workspace-head h2{margin:0 0 5px;font-size:1.05rem;color:var(--text)}
 .meter-3dlut-workspace-head p{margin:0;color:var(--text2);font-size:.78rem;line-height:1.45}
@@ -10765,6 +10766,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .chart-expand-btn:hover{background:var(--surface-inset);color:#174fc4;border-color:var(--accent)}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
 [data-theme="light"] #meterCcssCreateStartBtn:disabled{color:var(--text-primary)!important}
+[data-theme="light"] #meter3dLutWorkspaceBuildBtn:disabled{color:var(--text-primary)!important}
 [data-theme="light"] #meterThumbsRow,[data-theme="light"] .meter-scroll-sync,[data-theme="light"] .meter-modal-scroll{scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-track,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-track,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-track{background:var(--scroll-track);border-color:var(--border)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-color:var(--scroll-thumb-border);box-shadow:none}
