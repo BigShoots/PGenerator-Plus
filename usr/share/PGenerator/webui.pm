@@ -10612,7 +10612,7 @@ body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-sc
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head,
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import,
 body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel{grid-column:1 / -1}
-body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-content{grid-column:1 / -1;display:grid;grid-template-columns:minmax(260px,.75fr) minmax(0,1.25fr);gap:18px;align-items:start}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-content{grid-column:1 / -1;display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,1fr);gap:18px;align-items:start}
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-close{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutSection{grid-column:1;grid-row:1;min-width:0}
 body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;grid-column:2;grid-row:1;min-width:0;padding:14px;background:var(--surface-inset);border-radius:8px}
