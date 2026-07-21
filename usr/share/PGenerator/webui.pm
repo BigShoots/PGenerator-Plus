@@ -10680,6 +10680,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
    warning and brand colours intentionally remain authored values. */
 [data-theme="light"] body{background:var(--surface-page);color:var(--text-primary)}
 [data-theme="light"] body.layout-tablet .dashboard>.card{box-shadow:0 3px 12px rgba(18,29,45,.10)}
+[data-theme="light"] body.layout-desktop .dashboard>#applyBar[data-desktop-active="true"]{background:rgba(255,255,255,.96);border-color:var(--border);box-shadow:0 8px 24px rgba(18,29,45,.14)}
 [data-theme="light"] body.layout-tablet #meterCharts{background:var(--surface-page);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}
 [data-theme="light"] .header{background:#e3e7ed;color:var(--text-primary)}
 [data-theme="light"] .logo > img:first-child{display:none!important}
