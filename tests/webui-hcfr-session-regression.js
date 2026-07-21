@@ -26,6 +26,11 @@ assert(source.includes('{...colors[1],index:0},{...colors[0],index:5}'), 'ColorC
 assert(source.includes("colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}))"), 'ColorChecker chromatic patches are not mapped to GCD slots');
 assert(source.includes('free.push(...colors.slice(2,6))'), 'incompatible PGenerator neutral patches must be preserved as free measurements');
 assert(source.includes('HCFR Sat Sweep'), 'HCFR-compatible constant-luminance saturation series is missing');
+assert(source.includes('HCFR ColorChecker'), 'HCFR-compatible GCD ColorChecker series is missing');
+assert(source.includes("['Dark Skin',45.20,31.96,26.03]"), 'client HCFR GCD Dark Skin stimulus is not exact');
+assert(source.includes('["Dark Skin","hcfr_rgb",45.20,31.96,26.03]'), 'server HCFR GCD Dark Skin stimulus is not exact');
+assert(source.includes("colorEntries.find(e=>Number(e.snap.points)===29)"), 'CHC export must prefer the HCFR ColorChecker series');
+assert(source.includes("satEntries.find(e=>Number(e.snap.points)===25)"), 'CHC export must prefer the HCFR saturation series');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');

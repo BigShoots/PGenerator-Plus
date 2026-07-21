@@ -3639,10 +3639,40 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      ["Magenta","xyYn",0.371346,0.24177,0.187509],
      ["Cyan","xyYn",0.19619,0.266985,0.193415]
     );
+    if($points==29 && $signal_mode eq "sdr") {
+     # HCFR Classic GCD is defined by fixed legal-range video RGB levels,
+     # not by reverse-solving xyY through PGenerator's selected transfer
+     # curve. Keep these percentages byte-for-byte aligned with HCFR.
+     @classic=(
+      ["Gray 35","hcfr_rgb",62.10,62.10,62.10],["Gray 50","hcfr_rgb",73.06,73.06,73.06],
+      ["Gray 65","hcfr_rgb",82.19,82.19,82.19],["Gray 80","hcfr_rgb",89.95,89.95,89.95],
+      ["Dark Skin","hcfr_rgb",45.20,31.96,26.03],["Light Skin","hcfr_rgb",75.80,58.90,51.14],
+      ["Blue Sky","hcfr_rgb",36.99,47.95,61.19],["Foliage","hcfr_rgb",35.16,42.01,26.03],
+      ["Blue Flower","hcfr_rgb",51.14,50.23,68.95],["Bluish Green","hcfr_rgb",38.81,73.97,66.21],
+      ["Orange","hcfr_rgb",84.93,47.03,15.98],["Purplish Blue","hcfr_rgb",29.22,36.07,63.93],
+      ["Moderate Red","hcfr_rgb",75.80,32.88,37.90],["Purple","hcfr_rgb",36.07,24.20,42.01],
+      ["Yellow Green","hcfr_rgb",62.10,73.06,25.11],["Orange Yellow","hcfr_rgb",89.95,63.01,17.81],
+      ["Blue","hcfr_rgb",20.09,24.20,58.90],["Green","hcfr_rgb",27.85,57.99,27.85],
+      ["Red","hcfr_rgb",68.95,19.18,22.83],["Yellow","hcfr_rgb",93.15,78.08,12.79],
+      ["Magenta","hcfr_rgb",73.06,32.88,57.08],["Cyan","hcfr_rgb",0,52.05,63.93]
+     );
+    }
     push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
     push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":0,\"input_max\":$chroma_input_max}";
     foreach my $src (@classic) {
      my ($name,$kind,@vals)=@$src;
+	     if($kind eq "hcfr_rgb") {
+	      my @codes=map { int($min_code + $_*$span_code/100 + .5) } @vals[0..2];
+	      my @linear=map { $decode_linear->($span_code>0?(($_-$min_code)/$span_code):0) } @codes;
+	      my $X=$RGB_TO_XYZ[0][0]*$linear[0]+$RGB_TO_XYZ[0][1]*$linear[1]+$RGB_TO_XYZ[0][2]*$linear[2];
+	      my $Y=$RGB_TO_XYZ[1][0]*$linear[0]+$RGB_TO_XYZ[1][1]*$linear[1]+$RGB_TO_XYZ[1][2]*$linear[2];
+	      my $Z=$RGB_TO_XYZ[2][0]*$linear[0]+$RGB_TO_XYZ[2][1]*$linear[1]+$RGB_TO_XYZ[2][2]*$linear[2];
+	      my $sum=$X+$Y+$Z;
+	      my $tx=$sum>0?$X/$sum:$target_wx;my $ty=$sum>0?$Y/$sum:$target_wy;
+	      my $ire=int($Y*100+.5);
+	      push @steps, "{\"ire\":$ire,\"r\":$codes[0],\"g\":$codes[1],\"b\":$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$Y,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-sdr\"}";
+	      next;
+	     }
 	     if($kind eq "gray") {
 	      my $level=$vals[0];
 	      my $code=$encode_linear->($level);
@@ -11481,6 +11511,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
+     <button class="btn btn-sm btn-secondary" data-series="colors-29" onclick="meterSelectSeries('colors',29)" title="HCFR Classic GCD legal-range patch sequence for SDR session export">HCFR ColorChecker</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
      <button class="btn btn-sm btn-secondary" data-series="saturations-25" onclick="meterSelectSeries('saturations',25)" title="Constant-luminance saturation sequence compatible with HCFR saturation references">HCFR Sat Sweep</button>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
@@ -16417,7 +16448,7 @@ function meterSeriesSnapshotIsImported(snapshot){
 }
 
 function meterSeriesKeyIsNativePreset(key){
- return /^(?:greyscale-(?:2|11|21|26|30|100|101|256)|colors-30|saturations-(?:24|25))$/.test(String(key||''));
+ return /^(?:greyscale-(?:2|11|21|26|30|100|101|256)|colors-(?:29|30)|saturations-(?:24|25))$/.test(String(key||''));
 }
 
 function meterSeriesSnapshotSignalMode(snapshot,fallbackMode){
@@ -20071,6 +20102,43 @@ function meterColorCheckerClassicSource(){
  ];
 }
 
+function meterHcfrGcdColorCheckerSource(){
+ return [
+  ['Gray 35',62.10,62.10,62.10],['Gray 50',73.06,73.06,73.06],
+  ['Gray 65',82.19,82.19,82.19],['Gray 80',89.95,89.95,89.95],
+  ['Dark Skin',45.20,31.96,26.03],['Light Skin',75.80,58.90,51.14],
+  ['Blue Sky',36.99,47.95,61.19],['Foliage',35.16,42.01,26.03],
+  ['Blue Flower',51.14,50.23,68.95],['Bluish Green',38.81,73.97,66.21],
+  ['Orange',84.93,47.03,15.98],['Purplish Blue',29.22,36.07,63.93],
+  ['Moderate Red',75.80,32.88,37.90],['Purple',36.07,24.20,42.01],
+  ['Yellow Green',62.10,73.06,25.11],['Orange Yellow',89.95,63.01,17.81],
+  ['Blue',20.09,24.20,58.90],['Green',27.85,57.99,27.85],
+  ['Red',68.95,19.18,22.83],['Yellow',93.15,78.08,12.79],
+  ['Magenta',73.06,32.88,57.08],['Cyan',0,52.05,63.93]
+ ];
+}
+
+function meterBuildHcfrColorCheckerStepsJS(){
+ const steps=[];
+ const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan(),max=min+span;
+ const gamut=meterAnalysisGamut(),wp=meterTargetWhitePoint();
+ const add=(name,rPct,gPct,bPct,ire)=>{
+  const codes=[rPct,gPct,bPct].map(v=>Math.round(min+Math.max(0,Math.min(100,v))*span/100));
+  const linear=codes.map(code=>meterDecodeColorCheckerSignal(span>0?(code-min)/span:0));
+  const xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
+  const sum=xyz.X+xyz.Y+xyz.Z;
+  steps.push({ire:ire!=null?ire:Math.round(xyz.Y*100),r:codes[0],g:codes[1],b:codes[2],name:name,
+   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:Math.max(0,xyz.Y),series_mode:'hcfr-gcd-sdr'});
+ };
+ add('White',100,100,100,100);add('Black',0,0,0,0);
+ meterHcfrGcdColorCheckerSource().forEach(row=>add(row[0],row[1],row[2],row[3]));
+ [['100% Red','Red'],['100% Green','Green'],['100% Blue','Blue'],['100% Cyan','Cyan'],['100% Magenta','Magenta'],['100% Yellow','Yellow']].forEach(([name,colorName])=>{
+  const rgb=meterBuildSaturationStepRgb(colorName,100),target=meterBuildSaturationTargetStepMeta(colorName,100);
+  steps.push({ire:100,r:rgb[0],g:rgb[1],b:rgb[2],name:name,series_color:colorName,sat_pct:100,...target});
+ });
+ return steps;
+}
+
 function meterBuildColorCheckerStepsJS(){
 	 const steps=[];
 	 const min=meterChromaPatchRangeMin();
@@ -22976,7 +23044,7 @@ function meterRecoverSeries(s){
 	  const stepCount=Array.isArray(steps)?steps.length:0;
 	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
 	  // ids (>=1001); their patch count is not a built-in point preset.
-	  if(seriesType==='colors') return (points>=900)?points:30;
+	  if(seriesType==='colors') return (points>=900||points===29)?points:30;
 	  if(seriesType==='saturations') return 24;
 	  if(seriesType==='greyscale'&&points>=1001) return points;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
@@ -23077,15 +23145,24 @@ function meterRecoverSeries(s){
  if(meterReadings) meterReadings.forEach(rd=>{if(rd.luminance!=null) completedIres.add(meterStepNameKey(rd));});
  let currentIre=s.current_name||null;
  meterBuildPatchThumbs(sortedSteps,completedIres,currentIre);
- // Draw charts with available readings
- if(meterReadings&&meterReadings.length>0){
-  const sorted=(type==='colors'||type==='saturations')?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-  drawAllCharts(sorted);
-  const lastValid=[...meterReadings].reverse().find(rd=>rd.luminance!=null);
-  if(lastValid) updateLiveReading(lastValid);
- } else {
-  drawAllChartsPreset(sortedSteps);
- }
+ // Canvas resizing and six greyscale chart paints are the most expensive part
+ // of a cached switch (especially the 3726px-wide 101-point canvases). Let the
+ // selected button and thumbnails paint first, then redraw against a captured
+ // snapshot. The key guard drops a stale callback after a rapid second click.
+ const recoveredChartKey=type+'-'+points;
+ const recoveredReadings=Array.isArray(meterReadings)?[...meterReadings]:[];
+ const drawRecoveredCharts=()=>{
+  if(meterActiveSeriesKey!==recoveredChartKey) return;
+  if(recoveredReadings.length>0){
+   const sorted=(type==='colors'||type==='saturations')?[...recoveredReadings]:[...recoveredReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+   drawAllCharts(sorted);
+   const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
+   if(lastValid) updateLiveReading(lastValid);
+  } else drawAllChartsPreset(sortedSteps);
+ };
+ if(s&&s._defer_cache_persist&&typeof window.requestAnimationFrame==='function'){
+  window.requestAnimationFrame(()=>setTimeout(drawRecoveredCharts,0));
+ } else drawRecoveredCharts();
   meterCacheSeriesState(s.status||'complete',s&&s._defer_cache_persist?{deferPersist:true}:null);
   if(s.status==='running'||s.status==='setup'||s.status==='started'){
   // Series is still running — start polling and show stop button
@@ -29194,7 +29271,8 @@ function meterBuildStepsJS(type,points){
 	   });
 	  }
  } else if(type==='colors'){
-  steps.push(...meterBuildColorCheckerStepsJS());
+  if(Number(points)===29&&String(meterChartSignalMode()||'sdr').toLowerCase()==='sdr') steps.push(...meterBuildHcfrColorCheckerStepsJS());
+  else steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
   ['Red','Green','Blue','Cyan','Magenta','Yellow'].forEach(name=>{
    [25,50,75,100].forEach(sat=>{
@@ -29484,6 +29562,10 @@ async function meterSelectSeries(type,points,opts){
  if(type==='greyscale' && points===256) points=100;
  if(type==='greyscale' && Number(points)===30 && !meterHdrGreyscaleSeriesAvailable()){
   toast('Greyscale HDR 30pt is unavailable',true);
+  return;
+ }
+ if(((type==='colors'&&Number(points)===29)||(type==='saturations'&&Number(points)===25))&&String(meterChartSignalMode()||'sdr').toLowerCase()!=='sdr'){
+  toast('HCFR-compatible verification series are currently available in SDR only',true);
   return;
  }
  const key=type+'-'+points;
@@ -41800,7 +41882,8 @@ function meterSeriesLabelFromKey(key){
 	  'greyscale-21':meterGreyscale21SeriesLabel(),
 	  'greyscale-30':'Greyscale HDR 30pt',
 	  'greyscale-26':meterGreyscale26SeriesLabel(),
-	  'greyscale-11':'Greyscale 11pt',
+  'greyscale-11':'Greyscale 11pt',
+  'colors-29':'HCFR ColorChecker',
   'colors-30':'ColorChecker',
   'saturations-24':'Sat Sweep',
   'saturations-25':'HCFR Sat Sweep'
@@ -41826,6 +41909,7 @@ function meterAllSeriesReportOptions(){
 	  {key:'greyscale-30',label:'Greyscale HDR 30pt'},
 	  {key:'greyscale-26',label:meterGreyscale26SeriesLabel()},
 	  {key:'greyscale-11',label:'Greyscale 11pt'},
+  {key:'colors-29',label:'HCFR ColorChecker'},
   {key:'colors-30',label:'ColorChecker'},
   {key:'saturations-24',label:'Sat Sweep'},
   {key:'saturations-25',label:'HCFR Sat Sweep'}
@@ -42227,7 +42311,11 @@ function meterBuildHcfrExportModel(){
  if(!entries.length) throw new Error('No measurements match the current signal mode');
  const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
  const byType=type=>entries.filter(e=>String(e.snap.type||'')===type).sort((a,b)=>Number(b.snap.updated_at||0)-Number(a.snap.updated_at||0));
- const greyEntry=byType('greyscale')[0]||null, satEntry=byType('saturations')[0]||null, colorEntry=byType('colors')[0]||null;
+ const greyEntry=byType('greyscale')[0]||null;
+ const satEntries=byType('saturations'),colorEntries=byType('colors');
+ // Prefer explicitly HCFR-compatible measurements over a newer native sweep.
+ const satEntry=satEntries.find(e=>Number(e.snap.points)===25)||satEntries[0]||null;
+ const colorEntry=colorEntries.find(e=>Number(e.snap.points)===29)||colorEntries[0]||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=valid(greyEntry&&greyEntry.snap).sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0));
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
@@ -42255,7 +42343,11 @@ function meterBuildHcfrExportModel(){
  // from GCD's named grays, so preserve them as free measurements instead of
  // putting correct XYZ under incompatible references.
  let colorCheckerItems=[];
- if(colors.length>=24){
+ if(colorEntry&&Number(colorEntry.snap.points)===29&&colors.length>=24){
+  const slotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan'];
+  const byName=new Map(colors.map(rd=>[String(rd.name||'').toLowerCase(),rd]));
+  colorCheckerItems=slotNames.map((name,index)=>{const rd=byName.get(name.toLowerCase());return rd?{...rd,index:index}:null;}).filter(Boolean);
+ }else if(colors.length>=24){
   colorCheckerItems=[{...colors[1],index:0},{...colors[0],index:5}];
   colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
   free.push(...colors.slice(2,6));

@@ -17,5 +17,9 @@ assert(
   !select.includes('else meterStopContinuous();'),
   'unconditional idle continuous-stop teardown has returned'
 );
+assert(
+  source.includes("window.requestAnimationFrame(()=>setTimeout(drawRecoveredCharts,0))"),
+  'cached series chart redraw must yield so the new selection can paint first'
+);
 
 console.log('series switch performance regression OK');
