@@ -10920,8 +10920,8 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 .layout-switch-btn[aria-pressed="true"],.desktop-nav-btn[aria-current="page"]{color:var(--text-inverse)}
 [data-theme="light"] .desktop-nav-btn[aria-current="page"],[data-theme="light"] .ui-choice[aria-pressed="true"],[data-theme="light"] .ui-choice[aria-pressed="true"] .ui-choice-title{color:var(--text-primary)!important}
 .layout-switch-btn:focus-visible,.desktop-nav-btn:focus-visible,body.layout-desktop .desktop-utility-toggle:focus-visible,.ui-choice:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
-.ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
-body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(960px,100%)}
+.ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:min(460px,100%)}
+body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(460px,100%);gap:16px}
 .ui-settings-group{min-width:0}
 .ui-settings-group h3{margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
 .ui-choice-list{display:grid;gap:8px}
@@ -10950,7 +10950,7 @@ body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(960px,100%)}
 body.layout-tablet #displaySettingsCard{order:-200;grid-column:1}
 body.layout-tablet #hdrCard{order:-199;grid-column:2}
 body.layout-tablet #uiSettingsCard{grid-column:auto}
-body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+body.layout-tablet .ui-settings-sections{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 body.layout-tablet .ui-choice-list{gap:5px}
 body.layout-tablet .ui-choice{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;min-height:42px;padding:8px 10px;overflow:visible}
 body.layout-tablet .ui-choice::before{content:'';grid-column:2;grid-row:1;width:34px;height:18px;margin:0;border:0;border-radius:999px;background:var(--text-muted);transition:background .18s}
@@ -10963,8 +10963,6 @@ body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index
 body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
 /* UI Settings uses the exact segmented control treatment from the title bar. */
-.ui-settings-switch{min-height:30px}
-.ui-settings-switch .layout-switch-btn{min-width:68px;padding:6px 12px;font-size:.76rem}
 @media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
 </style>
 </head>
