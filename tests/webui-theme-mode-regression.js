@@ -61,6 +61,7 @@ assert(source.includes("document.querySelectorAll('.dashboard > .card[data-deskt
 assert(source.includes('data-workspace-target="meter-profile"')&&source.includes("'meter-profile':'Meter Profile'"),'Desktop navigation exposes the Meter Profile workspace');
 assert(source.includes('id="meterProfileCard" data-desktop-workspace="meter-profile"'),'the CCSS editor has a dedicated Desktop workspace host');
 assert(source.includes("if(desktop) pgSelectDesktopWorkspace('meter-profile',{focus:true});"),'selecting CCSS Editor routes Desktop users to Meter Profile');
+assert(source.includes("workspace==='meter-profile'&&workspaceChanged&&document.body.classList.contains('layout-desktop')"),'Meter Profile catalog activation runs only when entering the workspace, not on resize-driven layout refreshes');
 assert(source.includes('body.layout-tablet #meterProfileCard{display:none!important}'),'the dedicated Meter Profile card remains hidden in Tablet mode');
 assert(source.includes("if(document.body.classList.contains('layout-desktop')&&mutations.some"),'desktop panel observer cannot reapply CSS order during a Tablet drag');
 assert(source.includes('[data-theme="light"] [style*="background:#111723"]'),'dark inline modal surfaces are tokenized in Light mode');

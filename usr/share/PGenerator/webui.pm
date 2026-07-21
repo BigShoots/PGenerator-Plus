@@ -15367,6 +15367,7 @@ function pgSyncCardCollapseForLayout(){
 }
 function pgSelectDesktopWorkspace(workspace,options){
  if(!Object.prototype.hasOwnProperty.call(PG_DESKTOP_WORKSPACES,workspace)) workspace='output';
+ const workspaceChanged=pgDesktopWorkspace!==workspace;
  pgDesktopWorkspace=workspace;
  document.querySelectorAll('.desktop-nav-btn[data-workspace-target]').forEach(btn=>{
   const active=btn.getAttribute('data-workspace-target')===workspace;
@@ -15376,7 +15377,7 @@ function pgSelectDesktopWorkspace(workspace,options){
  const title=document.getElementById('desktopWorkspaceTitle');
  if(title) title.textContent=PG_DESKTOP_WORKSPACES[workspace];
  pgSyncDesktopPanels();
- if(workspace==='meter-profile'&&document.body.classList.contains('layout-desktop')){
+ if(workspace==='meter-profile'&&workspaceChanged&&document.body.classList.contains('layout-desktop')){
   meterPlaceCcssEditorForLayout();
   meterActivateCcssEditorWorkspace();
  }
