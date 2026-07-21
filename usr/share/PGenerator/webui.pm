@@ -10609,14 +10609,14 @@ body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsBtn{display:none!impo
 body.layout-tablet #meter3dLutWorkspaceBuildBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
-body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:grid;grid-template-columns:minmax(260px,.75fr) minmax(0,1.25fr);gap:14px 18px;align-items:start}
-body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head,
-body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import,
-body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel{grid-column:1 / -1}
-body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-content{grid-column:1 / -1;display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,1fr);gap:18px;align-items:start}
+body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,1fr);grid-template-rows:auto auto auto auto;gap:14px 18px;align-items:start}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head{grid-column:1;grid-row:1}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import{grid-column:1;grid-row:2}
+body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel{grid-column:1;grid-row:3}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-content{display:contents}
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-close{display:none!important}
-body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutSection{grid-column:1;grid-row:1;min-width:0}
-body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;grid-column:2;grid-row:1;min-width:0;padding:14px;background:var(--surface-inset);border-radius:8px}
+body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutSection{grid-column:1;grid-row:4;min-width:0}
+body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;grid-column:2;grid-row:1 / span 4;min-width:0;padding:14px;background:var(--surface-inset);border-radius:8px}
 body.layout-desktop #meter3dLutWorkspaceCard #lutCubeView{max-width:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutList{background:var(--surface-inset)!important}
 .meter-solved-lut-row{display:flex;align-items:center;gap:6px;padding:4px;border-radius:5px}
