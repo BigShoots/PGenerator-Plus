@@ -37246,7 +37246,14 @@ function meterThumbsWrap(){
 function meterSetThumbsVisible(visible){
  const wrap=meterThumbsWrap();
  if(!wrap) return;
+ const row=meterGreyscaleScrollSource();
+ const thumbs=document.getElementById('meterPatchThumbs');
  wrap.style.display=visible?'flex':'none';
+ // The empty 3D-LUT workspace used to hide each nested layer separately.
+ // Re-show all three here so returning to any normal measurement series
+ // cannot leave a populated thumbnail strip trapped behind display:none.
+ if(row) row.style.display=visible?'':'none';
+ if(thumbs) thumbs.style.display=visible?'flex':'none';
  meterUpdateThumbScrollButtons();
 }
 
