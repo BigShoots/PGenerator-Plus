@@ -23050,9 +23050,20 @@ function meterRecoverSeries(s){
   if(m) type=m[1];
  }
 	 const normalizePoints=(seriesType,total,steps)=>{
-	  if(s&&s.source_format==='hcfr-chc') return points;
 	  const count=Number(total||0)||0;
 	  const stepCount=Array.isArray(steps)?steps.length:0;
+	  // Imported workspaces use a timestamp in their cache key, but chart mode
+	  // selection still needs a recognized built-in-sized point count. Keeping
+	  // the timestamp as `points` makes color charts look like a custom/3D LUT
+	  // series (IDs >= 900) and suppresses the ColorChecker/Sat Sweep plots.
+	  if(s&&s.source_format==='hcfr-chc'){
+	   if(seriesType==='colors') return 30;
+	   if(seriesType==='saturations') return 24;
+	   const importedBasis=count||stepCount;
+	   if(importedBasis>0&&importedBasis<=2) return 2;
+	   if(importedBasis>=101) return 100;
+	   return importedBasis>0&&importedBasis<=11?11:21;
+	  }
 	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
 	  // ids (>=1001); their patch count is not a built-in point preset.
 	  if(seriesType==='colors') return (points>=900)?points:((points===29||count===29||stepCount===29)?29:30);
@@ -23100,7 +23111,7 @@ function meterRecoverSeries(s){
  meterActiveSeriesMaxLuma=(activeMaxLuma>0&&isFinite(activeMaxLuma))?activeMaxLuma:null;
  meterActiveSeriesDvMapMode=String((s.dv_map_mode||metaStep.dv_map_mode||metaReading.dv_map_mode||'')).toLowerCase()||null;
  meterActiveSeriesDvInterface=String((s.dv_interface||metaStep.dv_interface||metaReading.dv_interface||'')).toLowerCase()||null;
- meterActiveSeriesKey=type+'-'+points;
+ meterActiveSeriesKey=(s&&s.cache_key)?String(s.cache_key):(type+'-'+points);
  meterSharedSeriesId=s.series_id||null;
  if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
    meterCurrentPatchStep=null;
@@ -23160,7 +23171,7 @@ function meterRecoverSeries(s){
  // of a cached switch (especially the 3726px-wide 101-point canvases). Let the
  // selected button and thumbnails paint first, then redraw against a captured
  // snapshot. The key guard drops a stale callback after a rapid second click.
- const recoveredChartKey=type+'-'+points;
+ const recoveredChartKey=meterActiveSeriesKey;
  const recoveredReadings=Array.isArray(meterReadings)?[...meterReadings]:[];
  const drawRecoveredCharts=()=>{
   if(meterActiveSeriesKey!==recoveredChartKey) return;
@@ -23410,6 +23421,7 @@ function meterRestoreSeriesFromCache(key){
  if(!cached||!cached.steps||cached.steps.length===0) return false;
  meterRecoverSeries({
   series_id:null,
+  cache_key:key,
   type:cached.type,
   points:cached.points,
   source_format:cached.source_format||null,

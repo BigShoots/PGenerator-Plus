@@ -52,7 +52,9 @@ assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must ret
 assert(source.includes('rd.series_type=type;rd.signal_mode=mode'), 'imported CHC readings must be classified for chart filtering');
 assert(source.includes('if(!importedWorkspace) meterSeriesSteps=meterBuildStepsJS'), 'chart refresh must preserve imported CHC measurement steps');
 assert(source.includes("target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null"), 'imported CHC snapshots must retain HDR analysis context');
-assert(source.includes("if(s&&s.source_format==='hcfr-chc') return points"), 'imported CHC workspaces must retain their unique cache identity');
+assert(source.includes("meterActiveSeriesKey=(s&&s.cache_key)?String(s.cache_key):(type+'-'+points)"), 'imported CHC workspaces must retain their unique cache identity');
+assert(source.includes('const recoveredChartKey=meterActiveSeriesKey'), 'deferred imported CHC chart draws must use the unique active cache key');
+assert(source.includes("if(seriesType==='colors') return 30")&&source.includes("if(seriesType==='saturations') return 24"), 'imported CHC color workspaces must use normal chart modes');
 assert(source.includes("meterSelectImportedHcfrGroup('colorChecker')"), 'ColorChecker must open the active imported CHC sibling workspace');
 assert(source.includes("meterSelectImportedHcfrGroup('saturations')"), 'Sat Sweep must open the active imported CHC sibling workspace');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
