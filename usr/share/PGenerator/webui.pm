@@ -10740,6 +10740,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .diag-asset-icon-btn{color:var(--text-primary)!important}
 [data-theme="light"] .diag-asset-icon-btn-delete:not(:disabled){color:var(--status-error)!important}
 [data-theme="light"] #diagInfo{background:var(--surface-inset)!important;color:var(--text-secondary)!important}
+[data-theme="light"] #ccssPreviewMeta,[data-theme="light"] #ccssPreviewMeta strong{color:var(--text-primary)!important}
 [data-theme="light"] .chart-expand-btn{background:rgba(255,255,255,.94);color:var(--accent);border-color:var(--chart-axis);box-shadow:0 1px 3px rgba(18,29,45,.18)}
 [data-theme="light"] .chart-expand-btn:hover{background:var(--surface-inset);color:#174fc4;border-color:var(--accent)}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
