@@ -39919,7 +39919,7 @@ function getCIEGradient(innerPxW,innerPxH){
  const ox=oc.getContext('2d');
  const img=ox.createImageData(gw,gh);
  const d=img.data;
- const xMn=0,xMx=1.0,yMn=0,yMx=0.9;
+ const xMn=CIE2D_WORLD.xMin,xMx=CIE2D_WORLD.xMax,yMn=CIE2D_WORLD.yMin,yMx=CIE2D_WORLD.yMax;
  const locus=CIE_LOCUS, M=M_XYZ_TO_RGB;
  function pip(px,py){
   let ins=false;
@@ -40230,7 +40230,10 @@ function meterSelectedCIETargetColor(rd,baseColor){
 
 // 2D CIE view: wheel zoom + drag pan (independent of the per-patch zoom inset).
 // scale=1 shows the full x 0..1 / y 0..0.9 plot; pan is centre offset in xy.
-const CIE2D_WORLD={xMin:0,xMax:1.0,yMin:0,yMax:0.9};
+// Equal x/y extents keep the unzoomed chromaticity plot square while the
+// geometry below preserves one pixel scale per xy unit. The spectral locus
+// fits below x=.9, so the old unused .9-1.0 x gutter only distorted the frame.
+const CIE2D_WORLD={xMin:0,xMax:0.9,yMin:0,yMax:0.9};
 const CIE2D_SCALE_MIN=1,CIE2D_SCALE_MAX=25;
 let _cie2d={
  scale:1,panX:0,panY:0,
@@ -40245,15 +40248,17 @@ function meterCie2dViewport(){
  const defH=CIE2D_WORLD.yMax-CIE2D_WORLD.yMin;
  const scale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
  const vw=defW/scale, vh=defH/scale;
- let cx=0.5+(Number(_cie2d.panX)||0);
- let cy=0.45+(Number(_cie2d.panY)||0);
+ const worldCx=(CIE2D_WORLD.xMin+CIE2D_WORLD.xMax)/2;
+ const worldCy=(CIE2D_WORLD.yMin+CIE2D_WORLD.yMax)/2;
+ let cx=worldCx+(Number(_cie2d.panX)||0);
+ let cy=worldCy+(Number(_cie2d.panY)||0);
  // Keep the viewport inside the world when zoomed; full view is locked.
  const halfW=vw/2, halfH=vh/2;
- if(scale<=1.0001){ cx=0.5; cy=0.45; _cie2d.panX=0; _cie2d.panY=0; }
+ if(scale<=1.0001){ cx=worldCx; cy=worldCy; _cie2d.panX=0; _cie2d.panY=0; }
  else {
   cx=Math.max(CIE2D_WORLD.xMin+halfW,Math.min(CIE2D_WORLD.xMax-halfW,cx));
   cy=Math.max(CIE2D_WORLD.yMin+halfH,Math.min(CIE2D_WORLD.yMax-halfH,cy));
-  _cie2d.panX=cx-0.5; _cie2d.panY=cy-0.45;
+  _cie2d.panX=cx-worldCx; _cie2d.panY=cy-worldCy;
  }
  return {xMin:cx-halfW,xMax:cx+halfW,yMin:cy-halfH,yMax:cy+halfH,scale:scale,cx:cx,cy:cy};
 }
