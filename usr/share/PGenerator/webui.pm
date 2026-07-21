@@ -10726,6 +10726,7 @@ body.layout-desktop .diag-custom-picker>button:nth-of-type(1){grid-column:2}
 body.layout-desktop .diag-custom-picker>button:nth-of-type(2){grid-column:3}
 body.layout-desktop .diag-custom-picker>button:nth-of-type(3){grid-column:4}
 body.layout-desktop .card[data-desktop-workspace="connectivity"] .info-grid{grid-template-columns:repeat(auto-fit,minmax(145px,220px));justify-content:start}
+body.layout-desktop .card[data-widget="wifi"] .wifi-list{width:min(680px,100%)}
 body.layout-desktop .site-footer{max-width:none;width:100%;margin:auto 0 0;padding:0 24px 20px;flex:0 0 auto}
 body.layout-desktop .site-footer-inner{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:14px 0}
 .desktop-utility-toggle,.desktop-utility-drawer{display:none}
