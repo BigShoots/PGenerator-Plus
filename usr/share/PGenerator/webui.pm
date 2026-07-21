@@ -10923,7 +10923,7 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 .ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:min(460px,100%)}
 body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(460px,100%);gap:16px}
 .ui-settings-group{min-width:0}
-.ui-settings-group h3{margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
+.ui-settings-group h3{display:flex;align-items:center;gap:6px;margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
 .ui-choice-list{display:grid;gap:8px}
 .ui-choice{display:grid;grid-template-columns:20px minmax(0,1fr);gap:3px 9px;width:100%;padding:11px 12px;text-align:left;background:var(--surface-inset);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;cursor:pointer}
 .ui-choice:hover:not(:disabled){border-color:var(--accent);background:var(--hover-bg)}
@@ -11043,7 +11043,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <h2><span class="drag-handle">&#9776;</span>UI Settings</h2>
   <div class="ui-settings-sections">
    <div class="ui-settings-group">
-    <h3>Interface Layout</h3>
+    <h3>Interface Layout <span class="meter-help-tip" tabindex="0" title="Tablet shows the configurable card dashboard. Desktop shows one full-width workspace at a time and requires a browser width of at least 1024 pixels." aria-label="Interface layout help">?</span></h3>
     <div class="layout-switch ui-settings-switch" role="group" aria-label="Interface layout">
      <button type="button" class="layout-switch-btn" data-layout-mode="tablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')">Tablet</button>
      <button type="button" class="layout-switch-btn" data-layout-mode="desktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')">Desktop</button>
@@ -11051,7 +11051,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <p class="ui-choice-note" id="desktopLayoutUnavailable" role="status">Desktop requires a browser width of at least 1024 pixels.</p>
    </div>
    <div class="ui-settings-group">
-    <h3>Theme</h3>
+    <h3>Theme <span class="meter-help-tip" tabindex="0" title="Dark uses the low-light interface. Light uses the high-contrast light interface. This preference is stored in this browser." aria-label="Theme help">?</span></h3>
     <div class="layout-switch ui-settings-switch" role="group" aria-label="Theme">
      <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')">Dark</button>
      <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
