@@ -10161,6 +10161,7 @@ body.ui-offline .offline-mask{display:flex}
 body.meter-autocal-active .dashboard,body.meter-autocal-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 body.meter-autocal-active .meter-autocal-mask{display:flex}
 .meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box}
+.meter-autocal-step-box{background:var(--surface-inset)}
 /* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
 #meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
 #meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
@@ -10805,6 +10806,10 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] [id$="Modal"] > .meter-modal-scroll,[data-theme="light"] [id$="Modal"] > div,
 [data-theme="light"] #meterReportOverlay > div{background:var(--surface-modal)!important;color:var(--text-primary);border-color:var(--border)!important}
 [data-theme="light"] .apply-settings-card,[data-theme="light"] .meter-autocal-card,[data-theme="light"] #hdmiOverlay .hdmi-box{background:var(--surface-modal);color:var(--text-primary);border-color:var(--border)}
+[data-theme="light"] #meterAutoCalOverlay .meter-autocal-step-box{background:var(--surface-inset)!important;color:var(--text-primary);border-color:var(--border)!important}
+[data-theme="light"] #meterAutoCalOverlay .meter-autocal-panel-light-item{background:var(--surface-field)!important;border-color:var(--border)!important}
+[data-theme="light"] #meterAutoCalResultsApplyAllNote{background:#edf7e9!important;border-color:#9bc58d!important;color:#285c24!important}
+[data-theme="light"] #meterAutoCalResultsApplyAllNote strong{color:#1d4d1a!important}
 [data-theme="light"] #chartTooltip{background:var(--chart-tooltip)!important;color:var(--text-primary)!important;border-color:var(--border)!important;box-shadow:0 2px 8px var(--shadow)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
@@ -12572,7 +12577,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  <div class="meter-autocal-card">
 	  <div class="meter-autocal-title">LG Auto Cal</div>
 	  <div class="meter-autocal-status" id="meterAutoCalStatusText">Preparing...</div>
-	  <div id="meterAutoCalUseCaseBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalUseCaseBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">What will this display be used for?</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">This sets the HDMI output format the calibration will be built on. Pick the one that matches how the display is normally fed.</div>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalUseCase" value="pc"> PC Monitor <span style="color:var(--text2)">&nbsp;(RGB, Full range 0-255, 10-bit)</span></label>
@@ -12582,14 +12587,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	   <div id="meterAutoCalUseCaseHdrNote" style="display:none;font-size:.72rem;color:var(--text2);margin-top:8px">HDR10 note: YCbCr 4:4:4 Limited is the panel's native HDR signalling mode and the recommended choice. RGB modes are supported for PC and console sources. The HDR gamma target is fixed and not part of this wizard.</div>
 	   <div id="meterAutoCalUseCaseStatus" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
-	  <div id="meterAutoCalGammaBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalGammaBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Choose the gamma target</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">The greyscale will be calibrated to this curve, and the post-cal verification charts grade against the same gamma.</div>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="bt1886"> BT.1886 <span style="color:var(--text2)">&nbsp;(the SDR video standard; on an OLED this is a pure 2.4 power curve. Best for movies/TV in a dim room.)</span></label>
 	   <label class="meter-toggle" style="display:flex;margin-bottom:6px"><input type="radio" name="meterAutoCalGammaTarget" value="2.2"> Gamma 2.2 <span style="color:var(--text2)">&nbsp;(brighter shadows; the common choice for PC monitors, consoles and brighter rooms.)</span></label>
 	   <label class="meter-toggle" style="display:flex"><input type="radio" name="meterAutoCalGammaTarget" value="srgb"> sRGB <span style="color:var(--text2)">&nbsp;(the sRGB spec curve with a linear toe, near 2.2; for PC desktop and color-managed work.)</span></label>
 	  </div>
-	  <div id="meterAutoCalDisplayTypeBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalDisplayTypeBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
 	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
 	   <div class="field">
@@ -12602,11 +12607,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	   </div>
 	   <div id="meterAutoCalDisplayTypeSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
-	  <div id="meterAutoCalDisclaimerBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalDisclaimerBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Picture mode reset required</div>
 	   <div style="font-size:.82rem;color:var(--text2);line-height:1.45">Click Reset to reset the active LG picture mode and clear greyscale DDC calibration state. After reset, leave this screen open while you adjust any TV settings needed before Auto Cal, then click Continue.</div>
   </div>
-	  <div id="meterAutoCalLuminanceBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalLuminanceBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
    <div id="meterAutoCalLuminanceNote" style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">
     Set OLED pixel brightness (OLED) or Backlight (LCD) so the live 100% white
     luminance reads at your target peak. After Auto Cal completes the calibrated
@@ -12638,14 +12643,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    </div>
    </div>
   </div>
-	  <div id="meterAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalConfirmBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	  <div id="meterAutoCalConfirmDescription" style="font-size:.82rem;color:var(--text);line-height:1.45;margin-bottom:10px">The active LG picture mode has been reset. Auto Cal will use the current 100% white luminance and selected gamma target, derive the 109% headroom reference, then calibrate the LG 26-point greyscale sequence top/body first and shadows low-to-high. 100% is used for setup and then checked internally as the legal-white anchor; 0% is read for black level/charts. The closest result is kept when the target cannot be reached.</div>
 	   <label id="meterAutoCalTargetRow" style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px;max-width:150px">Target &Delta;E
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
 	   <div id="meterAutoCalConfirmSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
 	  </div>
-	  <div id="meterAutoCalResultsBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterAutoCalResultsBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Auto Cal complete</div>
 	   <div id="meterAutoCalResultsSummary" style="font-size:.82rem;color:var(--text);line-height:1.45"></div>
 	   <div id="meterAutoCalResultsDuration" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
@@ -12654,7 +12659,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    <strong style="color:#e8f5c8">Next step on the TV:</strong> open Advanced picture settings for this picture mode and use <strong>Apply to all inputs</strong> so every HDMI input gets the calibrated settings (SDR and HDR Full Auto Cal alike).
 	   </div>
 	  </div>
-	  <div id="meterFullAutoCalConfirmBox" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
+	  <div id="meterFullAutoCalConfirmBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
 	   <label id="meterFullAutoCalShadowFixRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px">
