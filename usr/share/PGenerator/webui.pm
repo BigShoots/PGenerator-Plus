@@ -15409,6 +15409,8 @@ let pgLayoutEffective='tablet';
 let pgDesktopWorkspace='output';
 let pgLayoutResizeTimer=null;
 let pgLayoutPanelObserver=null;
+let pgLayoutViewportWidth=0;
+let pgLayoutViewportHeight=0;
 
 function pgWideEnoughForDesktop(){
  return window.innerWidth>=PG_DESKTOP_MIN_WIDTH;
@@ -15644,6 +15646,8 @@ function pgLayoutInit(){
  pgLayoutPreference=pgReadLayoutPreference();
  pgLayoutEffective='tablet';
  pgDesktopWorkspace='output';
+ pgLayoutViewportWidth=Math.round(window.innerWidth||0);
+ pgLayoutViewportHeight=Math.round(window.innerHeight||0);
  pgUpdateHeaderOffset();
  pgApplyLayout({resetWorkspace:true});
  const header=document.querySelector('.header');
@@ -15660,6 +15664,15 @@ function pgLayoutInit(){
   }catch(e){}
  }
  window.addEventListener('resize',()=>{
+  const width=Math.round(window.innerWidth||0);
+  const height=Math.round(window.innerHeight||0);
+  // Chart code deliberately dispatches synthetic resize events after a
+  // workspace/theme redraw. Re-running pgApplyLayout for those events calls
+  // pgRefreshVisibleWorkspace, which dispatches resize again and creates a
+  // permanent redraw loop. Only the real viewport changing needs layout work.
+  if(width===pgLayoutViewportWidth&&height===pgLayoutViewportHeight) return;
+  pgLayoutViewportWidth=width;
+  pgLayoutViewportHeight=height;
   pgUpdateHeaderOffset();
   if(pgLayoutResizeTimer) clearTimeout(pgLayoutResizeTimer);
   pgLayoutResizeTimer=setTimeout(()=>pgApplyLayout(),80);
