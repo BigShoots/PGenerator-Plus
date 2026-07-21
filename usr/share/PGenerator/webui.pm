@@ -26199,7 +26199,13 @@ function meterSetSeriesTab(tab,skipAutoSelect){
  // which makes the tab appear selected with blank charts until the operator
  // visits Sat Sweep and explicitly clicks ColorChecker again.
  if(meterSeriesTab==='color'&&meterActiveHcfrSessionId){
-  if(meterSelectImportedHcfrGroup('colorChecker')) return;
+  const importedSession=meterActiveHcfrSessionId;
+  const selectImportedDefault=()=>{
+   if(meterSeriesTab==='color'&&meterActiveHcfrSessionId===importedSession) meterSelectImportedHcfrGroup('colorChecker');
+  };
+  if(typeof window.requestAnimationFrame==='function') window.requestAnimationFrame(()=>setTimeout(selectImportedDefault,0));
+  else setTimeout(selectImportedDefault,0);
+  return;
  }
  if(previousTab===meterSeriesTab&&meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
