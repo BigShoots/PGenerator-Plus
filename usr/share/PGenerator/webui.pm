@@ -10813,6 +10813,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] #meterAutoCalResultsApplyAllNote strong{color:#1d4d1a!important}
 [data-theme="light"] .wifi-item:hover,[data-theme="light"] .wifi-item.is-selected{background:var(--selected-bg);color:var(--text-primary)}
 [data-theme="light"] #wifiConnectBtn:disabled{color:#fff!important}
+[data-theme="light"] #meterReadSeriesBtn.btn-success:disabled,[data-theme="light"] #meterClearChartBtn.btn-danger:disabled{color:#fff!important}
 [data-theme="light"] #chartTooltip{background:var(--chart-tooltip)!important;color:var(--text-primary)!important;border-color:var(--border)!important;box-shadow:0 2px 8px var(--shadow)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
