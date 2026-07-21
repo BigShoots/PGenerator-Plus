@@ -2018,8 +2018,12 @@ sub webui_meter_read (@) {
  my $ccss_override_token="";
  $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
  if($ccss_override_token ne "") {
-  my $override_path=&resolve_ccss_override($ccss_override_token);
-  $ccss_file=$override_path if($override_path ne "");
+  if(lc($ccss_override_token) eq "none") {
+   $ccss_file="";
+  } else {
+   my $override_path=&resolve_ccss_override($ccss_override_token);
+   $ccss_file=$override_path if($override_path ne "");
+  }
  }
  my $refresh_rate="";
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
@@ -2631,8 +2635,12 @@ sub webui_meter_series_start (@) {
  my $ccss_override_token="";
  $ccss_override_token=$1 if($body=~/"ccss_override"\s*:\s*"([^"\\]{0,160})"/);
  if($ccss_override_token ne "") {
-  my $override_path=&resolve_ccss_override($ccss_override_token);
-  $ccss_file=$override_path if($override_path ne "");
+  if(lc($ccss_override_token) eq "none") {
+   $ccss_file="";
+  } else {
+   my $override_path=&resolve_ccss_override($ccss_override_token);
+   $ccss_file=$override_path if($override_path ne "");
+  }
  }
  my $delay_ms=1000;
  $delay_ms=$1 if($body=~/"delay_ms"\s*:\s*(\d+)/);
@@ -11276,7 +11284,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div class="meter-card-header-meter"><select id="meterMeasurementPort" class="meter-card-header-select" title="Used for Read Once, Continuous, and series measurements."><option value="">Meter</option></select><span class="meter-xyz-gear-wrap meter-profile-gear-wrap"><button type="button" id="meterProfileGear" class="meter-xyz-gear" aria-label="Meter settings" aria-expanded="false" title="Meter settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterProfileGearPopover" role="dialog" aria-label="Meter settings"><div class="meter-profile-title">Meter Settings</div><div class="field" id="meterProfileDisplayField"></div><div id="meterProfileRelocSlot"></div><div class="meter-profile-section" id="meterProfileLowLight"><div class="meter-profile-section-title">Low Light Handler <span class="meter-help-tip" title="For reads whose expected target luminance is below the Trigger, use the selected averaging Mode (multi-read) instead of the default single long read. Maps to spotread averaging (-Y a/aa/aaa); applies to autocal, series, and single reads." aria-label="Low light handler help">?</span></div><label class="meter-toggle"><input type="checkbox" id="meterLowLightEnabled" onchange="meterSetLowLightHandler()"> Enabled</label><div class="field"><label>Mode</label><select id="meterLowLightMode" onchange="meterSetLowLightHandler()"><option value="off" title="Single long read, no -Y flag">Off (single read)</option><option value="a" title="2-read averaging (-Y a)">2 reads (a)</option><option value="aa" title="3-read averaging (-Y aa)">3 reads (aa)</option><option value="aaa" title="5-read averaging (-Y aaa)">5 reads (aaa)</option></select></div><div class="field"><label>Trigger</label><div class="meter-inline-value"><input type="number" id="meterLowLightTrigger" onchange="meterSetLowLightHandler()" min="0.1" max="1000" step="0.1" value="5.0" title="Target luminance (cd/m^2) below which the low-light Mode kicks in. Default 5.0."><span class="meter-inline-unit">cd/m&sup2;</span></div></div></div></div></span><span class="meter-help-tip" title="Used for Read Once, Continuous, and series measurements." aria-label="Measurement meter help">?</span></div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-display">
-    <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation, pattern insertion defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in generic profile; you can override with a custom CCSS." aria-label="Display type help">?</span></label>
+    <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
     <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
      <optgroup label="Generic" id="meterDtGeneric">
       <option value="oled_generic">WRGB OLED</option>
@@ -11288,7 +11296,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <option value="plasma">Plasma</option>
       <option value="projector_ccss">Projector</option>
       <option value="crt">CRT</option>
-      <option value="lcd">None (no correction)</option>
      </optgroup>
     </select>
    </div>
@@ -11300,8 +11307,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
     <div class="meter-ccss-profile-row field">
-      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; pick a custom or display-specific CCSS to override. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
-      <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option></select>
+      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; choose No Correction to read without a CCSS, or select a custom profile. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
+      <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
     </div>
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
@@ -43460,8 +43467,8 @@ async function refreshMeterCcssCatalog(){
 // and the CCSS profile (the correction matrix) can be picked independently.
 // `getDisplayTechnology()` returns the current tech key (always one of the
 // generic keys: oled_generic/qdoled/lcd_wled/...). `getCcssOverride()` returns
-// the operator-selected CCSS token (ccss_<file> or custom_<file>), or "" when
-// they're tracking the technology's built-in default. These are the source of
+// the operator-selected CCSS token (ccss_<file>, custom_<file>, or "none"),
+// or "" when they're tracking the technology's built-in default. These are the source of
 // truth for everything downstream — single reads, series, autocal, 3D LUT,
 // wizard — and replace the old `getEffectiveDisplayType()` which conflated the
 // two into one token (the previous behavior dropped WRGB force whenever a
@@ -43506,7 +43513,6 @@ function meterTechnologyDefaultCcssLabel(){
  if(tech==='plasma') return 'Plasma (built-in)';
  if(tech==='projector_ccss') return 'Projector family (built-in)';
  if(tech==='crt') return 'CRT (built-in)';
- if(tech==='lcd') return 'None (no correction)';
  return 'technology default';
 }
 
@@ -43550,6 +43556,10 @@ function populateMeterCcssProfileSelect(wizardId){
   autoOpt.value='';
   autoOpt.textContent='Auto (technology default)';
   sel.appendChild(autoOpt);
+  const noneOpt=document.createElement('option');
+  noneOpt.value='none';
+  noneOpt.textContent='No Correction';
+  sel.appendChild(noneOpt);
   for(const entry of library){
    if(!entry||!entry.name) continue;
    const name=String(entry.name);
@@ -44040,6 +44050,12 @@ async function loadMeterSettings(){
    else if(/lcd|wled/.test(fname)) inferred='lcd_wled';
    _migratedDisplayType=inferred;
    _migratedCcssOverride=token;
+  } else if(legacyValue==='lcd') {
+   // The former Display Type "None (no correction)" combined a generic LCD
+   // measurement mode with no CCSS. Preserve that behavior after moving the
+   // correction choice into Meter Profile.
+   _migratedDisplayType='lcd_wled';
+   _migratedCcssOverride='none';
   } else {
    // Was already a tech key — drop it into the technology slot, leave
    // the CCSS override on "Auto" (matches pre-split behavior of an empty
@@ -44064,7 +44080,8 @@ async function loadMeterSettings(){
  }
  // CCSS override: prefer the explicit new field when the server sent one,
  // else fall back to the migrated token from the legacy display_type.
- const _ccssOverride=(s.ccss_override!=null)?String(s.ccss_override):_migratedCcssOverride;
+ const _savedCcssOverride=(s.ccss_override!=null)?String(s.ccss_override):'';
+ const _ccssOverride=_savedCcssOverride||_migratedCcssOverride;
  if(_ccssOverride && _ccssOverride!=='custom_editor'){
   const ccssSel=document.getElementById('meterCcssProfile');
   if(ccssSel){
