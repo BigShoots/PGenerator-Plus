@@ -5075,6 +5075,10 @@ my $_meter_settings_file="/tmp/meter_settings.json";
 # by the unprivileged pgenerator daemon user.
 my $_meter_settings_persist="/var/lib/PGenerator/meter_settings.json";
 my $_meter_settings_persist_legacy="/usr/share/PGenerator/meter_settings.json";
+# Custom series are user data, not merely a UI preference.  Keep an independent
+# authoritative copy below a persistent subdirectory so daemon cleanup of
+# top-level runtime/settings files cannot make every imported series vanish.
+my $_custom_series_store="/var/lib/PGenerator/custom-series/series.json";
 
 sub _webui_meter_settings_write_json (@) {
  my ($path,$json)=@_;
@@ -5174,6 +5178,7 @@ sub webui_meter_settings_save (@) {
  # dies on large escaped strings (Perl 32766 recursion limit) -- the cause of
  # large/many custom series silently "disappearing". Extract + preserve them by
  # linear scan, then append to $safe.
+ my $custom_series_store_ok=1;
  foreach my $sticky (qw(grey_patch_profiles_json custom_series_json)) {
   my $posted=_webui_json_str_value($body,$sticky);
   $posted="" if(!defined($posted));
@@ -5185,6 +5190,12 @@ sub webui_meter_settings_save (@) {
   my $value_to_write="";
   if($posted ne "" && !$posted_empty_stale) {
    $value_to_write=$posted;
+   if($sticky eq "custom_series_json") {
+    # Store the quoted JSON-string value exactly as carried by the settings
+    # response.  The inner series document remains untouched regardless of
+    # size, and can be injected directly into a later settings response.
+    $custom_series_store_ok=&_webui_meter_settings_write_json($_custom_series_store,$posted) ? 1 : 0;
+   }
   } else {
    foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
     next unless(-f $path);
@@ -5203,7 +5214,7 @@ sub webui_meter_settings_save (@) {
  }
  my $saved_runtime=&_webui_meter_settings_write_json($_meter_settings_runtime,$safe);
  my $saved_persist=&_webui_meter_settings_write_json($_meter_settings_persist,$safe);
- return '{"status":"ok"}' if($saved_runtime || $saved_persist);
+ return '{"status":"ok"}' if(($saved_runtime || $saved_persist) && $custom_series_store_ok);
  &log("WebUI: meter settings save failed (runtime=$_meter_settings_runtime persist=$_meter_settings_persist)");
  return '{"status":"error","message":"Failed to save meter settings"}';
 }
@@ -5350,11 +5361,27 @@ sub webui_meter_settings_load (@) {
   $meter_target_gamut_auto="p3d65";
  }
  my $boot_id=&_webui_meter_settings_boot_id();
+ my $custom_series_value="";
+ if(-f $_custom_series_store && open(my $cs,"<",$_custom_series_store)) {
+  local $/;
+  $custom_series_value=<$cs>;
+  close($cs);
+  $custom_series_value="" unless($custom_series_value=~/^".*"\s*$/s);
+ }
  foreach my $path ($_meter_settings_runtime, $_meter_settings_file, $_meter_settings_persist, $_meter_settings_persist_legacy) {
   next unless(-f $path);
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "" && $json=~/^\{/) {
+     # One-time migration for installations that already persisted custom
+     # series inside meter_settings.json before the independent store existed.
+     if($custom_series_value eq "") {
+      my $legacy_custom=_webui_json_str_value($json,"custom_series_json");
+      if(defined($legacy_custom) && $legacy_custom ne ""
+       && &_webui_meter_settings_write_json($_custom_series_store,$legacy_custom)) {
+       $custom_series_value=$legacy_custom;
+      }
+     }
      my $delay_user_set=($json=~/"delay_user_set"\s*:\s*true/i) ? 1 : 0;
      my $delay_explicit=$delay_user_set ? 1 : 0;
      my $delay_value;
@@ -5402,6 +5429,13 @@ sub webui_meter_settings_load (@) {
    $json=~s/\s*\}\s*$//;
    $json.="," if($json!~/\{\s*$/);
    $json.="\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
+   # A duplicate JSON key is intentionally appended last when an old runtime
+   # settings copy also contains custom_series_json; JSON.parse uses the last
+   # value, making the independent persistent store authoritative.
+   if($custom_series_value ne "") {
+    $json=~s/\}\s*$//;
+    $json.=',"custom_series_json":'.$custom_series_value.'}';
+   }
    return $json;
   }
  }
@@ -5411,6 +5445,7 @@ sub webui_meter_settings_load (@) {
    push @fallback_parts, "\"hdr_master_peak\":\"$peak\"";
    push @fallback_parts, "\"hdr_master_min\":\"$min\"";
    push @fallback_parts, "\"boot_id\":\"$boot_id\"";
+   push @fallback_parts, '"custom_series_json":'.$custom_series_value if($custom_series_value ne "");
    return "{".join(",",@fallback_parts)."}";
 }
 
@@ -15525,6 +15560,11 @@ function pgSelectDesktopWorkspace(workspace,options){
  }
  if(workspace==='3d-lut'&&workspaceChanged&&document.body.classList.contains('layout-desktop')) meterActivate3dLutWorkspace();
  else if(previousWorkspace==='3d-lut'&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')) meterSetSeriesTab('greyscale');
+ if(workspaceChanged&&(workspace==='calibration'||workspace==='3d-lut')&&document.body.classList.contains('layout-desktop')){
+  // Pick up series created/imported in another browser whenever the operator
+  // returns to a measurement workspace; no page reload should be required.
+  try{ meterRefreshCustomSeriesFromServer(); }catch(e){}
+ }
  pgRefreshVisibleWorkspace();
  if(options&&options.focus&&title){
   try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
@@ -27074,7 +27114,7 @@ let meterCustomSeriesDirty=false;
 async function meterRefreshCustomSeriesFromServer(){
  if(meterCustomSeriesDirty) return false;
  let s=null;
- try{ s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000}); }catch(e){ return false; }
+ try{ s=await fetchJSON('/api/meter/settings?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}); }catch(e){ return false; }
  if(!s||!s.custom_series_json) return false;
  try{
   const next=JSON.parse(s.custom_series_json);
@@ -43333,7 +43373,7 @@ async function flushMeterSettings(timeoutMs){
 }
 async function loadMeterSettings(){
  if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
- const s=await fetchJSON('/api/meter/settings',{_quiet:true,_timeoutMs:5000})||{};
+ const s=await fetchJSON('/api/meter/settings?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'})||{};
  try{ meterSetSeriesCacheBootId(s.boot_id||''); }catch(e){}
  // Apply any locally-cached color prefs first — server values below will
  // overwrite them on first sync, but this keeps the UI warm during a brief
