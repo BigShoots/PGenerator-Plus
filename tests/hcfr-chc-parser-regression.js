@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('assert');
+const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { ChcParseError, parseHcfrChc } = require('../usr/share/PGenerator/hcfr_chc.js');
@@ -97,5 +98,16 @@ assert.throws(() => parseHcfrChc(Buffer.from('not a chc file')), ChcParseError);
 const corrupt = Buffer.from(minimalChc());
 corrupt.writeUInt32LE(0xffffffff, 16);
 assert.throws(() => parseHcfrChc(corrupt), /safety limit/);
+
+if (fixtureExists('Bright Cinema HDR.chc')) {
+  const cli = path.join(root, 'tools/parse_hcfr_chc.js');
+  const modernPath = path.join(root, 'HCFR CHC/Bright Cinema HDR.chc');
+  const fullOutput = JSON.parse(childProcess.execFileSync(process.execPath, [cli, '--full', modernPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+  assert.strictEqual(fullOutput.groups.grayscale.items.length, 21);
+  assert.strictEqual(typeof fullOutput.groups.grayscale.items[0].X, 'number');
+  const summaryOutput = JSON.parse(childProcess.execFileSync(process.execPath, [cli, '--summary', modernPath], { encoding: 'utf8' }));
+  assert.strictEqual(summaryOutput.groups.grayscale.valid, 21);
+  assert.strictEqual(summaryOutput.groups.grayscale.items, undefined);
+}
 
 process.stdout.write('HCFR CHC parser regression tests passed\n');
