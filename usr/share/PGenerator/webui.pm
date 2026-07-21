@@ -26184,6 +26184,15 @@ function meterSetSeriesTab(tab,skipAutoSelect){
   meterSelectAutoCalGreyscale();
   return;
  }
+ // An imported CHC session owns a linked grayscale/ColorChecker/Sat Sweep
+ // workspace. Entering Color must open that session's ColorChecker snapshot
+ // through the same handler as an explicit ColorChecker click. Falling through
+ // to the generic data-series parser selects native colors-29/30 instead,
+ // which makes the tab appear selected with blank charts until the operator
+ // visits Sat Sweep and explicitly clicks ColorChecker again.
+ if(meterSeriesTab==='color'&&meterActiveHcfrSessionId){
+  if(meterSelectImportedHcfrGroup('colorChecker')) return;
+ }
  if(previousTab===meterSeriesTab&&meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
