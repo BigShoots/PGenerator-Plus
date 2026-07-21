@@ -11,6 +11,11 @@ assert(source.includes('<script src="/assets/hcfr_chc.js"></script>'), 'CHC brow
 assert(source.includes('data-workspace-target="session"'), 'desktop Session workspace navigation is missing');
 assert(source.includes('id="sessionCard"') && source.includes('data-desktop-workspace="session"'), 'Session workspace card is missing');
 assert(/id="sessionCard"[^>]*class="card"/.test(source) || /class="card"[^>]*id="sessionCard"/.test(source), 'tablet Session card must be half-width, not span2');
+assert(source.includes("const session=document.getElementById('sessionCard')") && source.includes("const update=document.getElementById('updateCard')"), 'tablet default ordering does not identify Session and Software Update');
+assert(source.includes('dash.insertBefore(uiSettings,anchor)') && source.includes('dash.insertBefore(session,anchor)'), 'Session and UI Settings are not placed together above Software Update');
+assert(/onclick="meterExportHcfrChc\(\)">Export<\/button>/.test(source), 'simple Session export button is missing');
+assert(/onclick="meterOpenHcfrImport\(\)">Import<\/button>/.test(source), 'simple Session import button is missing');
+assert(source.includes('aria-label="HCFR session export help"') && source.includes('aria-label="HCFR session import help"'), 'Session button help tooltips are missing');
 assert(source.includes('function meterExportHcfrChc()'), 'CHC export action is missing');
 assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC import action is missing');
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');

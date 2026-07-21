@@ -10638,13 +10638,10 @@ body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{padding-
 body.layout-tablet #meterProfileCard{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
 body.layout-desktop #sessionCard[data-desktop-active="true"]{border-bottom:0;padding-right:48px;box-sizing:border-box}
-.session-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.session-action{padding:16px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
-.session-action h3{margin:0 0 6px;font-size:.9rem;color:var(--text)}
-.session-action p{margin:0 0 13px;color:var(--text2);font-size:.74rem;line-height:1.45}
+.session-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.session-button-wrap{display:inline-flex;align-items:center;gap:5px}
 .session-format-note{margin-top:12px;color:var(--text2);font-size:.7rem;line-height:1.45}
 body.layout-tablet #sessionCard{grid-column:auto}
-@media(max-width:650px){.session-actions{grid-template-columns:1fr}}
 body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
@@ -12298,17 +12295,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  <div class="card" id="sessionCard" data-widget="session" data-collapse-key="session" data-desktop-workspace="session" data-desktop-order="10" draggable="true">
   <h2><span class="drag-handle">&#9776;</span>Session</h2>
   <div class="session-actions">
-   <div class="session-action">
-    <h3>Export HCFR CHC</h3>
-    <p>Build a current HCFR session from measurements matching the active signal mode. Grayscale, saturation, ColorChecker and unmatched readings are mapped automatically.</p>
-    <button class="btn btn-sm btn-primary" type="button" onclick="meterExportHcfrChc()">Export .chc</button>
-   </div>
-   <div class="session-action">
-    <h3>Import HCFR CHC</h3>
-    <p>Preview an HCFR session, preserve its measurements as new chart series, and map supported analysis preferences without restarting the pattern output.</p>
-    <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenHcfrImport()">Choose .chc file</button>
+   <span class="session-button-wrap">
+    <button class="btn btn-sm btn-primary" type="button" onclick="meterExportHcfrChc()">Export</button>
+    <span class="meter-help-tip" tabindex="0" title="Export measurements matching the active signal mode as a current HCFR CHC session. Grayscale, saturation, ColorChecker and unmatched readings are mapped automatically." aria-label="HCFR session export help">?</span>
+   </span>
+   <span class="session-button-wrap">
+    <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenHcfrImport()">Import</button>
+    <span class="meter-help-tip" tabindex="0" title="Import an HCFR CHC session as preserved chart series and map supported analysis preferences. Existing sessions are not overwritten and pattern output is not restarted." aria-label="HCFR session import help">?</span>
     <input type="file" id="meterHcfrImportInput" accept=".chc,application/octet-stream" style="display:none" onchange="meterImportHcfrChcFile(this)">
-   </div>
+   </span>
   </div>
   <div class="session-format-note" id="meterHcfrSessionStatus">HCFR v17 export; supported historical CHC versions can be imported. Output changes are never applied automatically.</div>
  </div>
@@ -15899,10 +15894,18 @@ async function loadInfoframes(){
   try{
    const order=JSON.parse(localStorage.getItem('pg_widget_order'));
    const uiSettings=document.getElementById('uiSettingsCard');
+   const session=document.getElementById('sessionCard');
+   const update=document.getElementById('updateCard');
+   const placeBottomPair=()=>{
+    const anchor=(update&&update.parentNode===dash)?update:(dash.querySelector('.toast')||null);
+    if(uiSettings&&uiSettings.parentNode===dash) dash.insertBefore(uiSettings,anchor);
+    if(session&&session.parentNode===dash) dash.insertBefore(session,anchor);
+   };
    if(!order||!Array.isArray(order)){
-    // UI Settings defaults near the bottom, but has no forced CSS order so
-    // its standard drag handle can move it like every other Tablet widget.
-    if(uiSettings&&uiSettings.parentNode===dash) dash.appendChild(uiSettings);
+    // Session and UI Settings share the final half-width row immediately
+    // above the full-width Software Update card by default. They remain
+    // ordinary draggable widgets after this initial placement.
+    placeBottomPair();
     return;
    }
    const map={}; widgets().forEach(w=>{ map[w.dataset.widget]=w; });
@@ -15911,7 +15914,7 @@ async function loadInfoframes(){
    // Existing browsers have a saved order created before UI Settings became
    // draggable. Put that newly introduced widget at the default end once;
    // the next drag save includes it and preserves the operator's placement.
-   if(uiSettings&&order.indexOf('ui_settings')<0) dash.insertBefore(uiSettings,end);
+   if((uiSettings&&order.indexOf('ui_settings')<0)||(session&&order.indexOf('session')<0)) placeBottomPair();
   }catch(e){}
  }
  function clearDragState(){
