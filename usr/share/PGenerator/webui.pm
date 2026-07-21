@@ -10587,10 +10587,26 @@ body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:
 body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
 body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-tablet #meterProfileCard{display:none!important}
+body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
 body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
+body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"]{display:none!important}
+body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{border-bottom:0}
+.meter-3dlut-workspace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
+.meter-3dlut-workspace-head h2{margin:0 0 5px;font-size:1.05rem;color:var(--text)}
+.meter-3dlut-workspace-head p{margin:0;color:var(--text2);font-size:.78rem;line-height:1.45}
+.meter-3dlut-workspace-section{padding:14px;background:var(--surface-inset);border-radius:8px;margin-bottom:16px}
+.meter-3dlut-workspace-label{margin-bottom:9px;color:var(--text2);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.meter-3dlut-workspace-status{margin-top:9px;color:var(--text2);font-size:.74rem}
+body.layout-desktop #meter3dLutWorkspaceCard #meterSeriesGroup3dLut{display:flex!important;width:100%;align-items:center}
+body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsBtn{display:none!important}
+body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
+body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
+body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-close{display:none!important}
+body.layout-desktop #meter3dLutWorkspaceCard #lutCubeViewWrap{display:block!important;padding:14px;background:var(--surface-inset);border-radius:8px}
+body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutList{background:var(--surface-inset)!important}
 body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
@@ -10881,6 +10897,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="output" onclick="pgSelectDesktopWorkspace('output')">Output</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" onclick="pgSelectDesktopWorkspace('patterns')">Patterns</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" onclick="pgSelectDesktopWorkspace('3d-lut')">3D LUT</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
@@ -11358,6 +11375,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
+     <span id="meter3dLutSeriesHome" hidden></span>
      <div id="meterSeriesGroup3dLut" style="display:none;gap:4px;flex-wrap:wrap;flex:1 1 auto">
       <!-- 3D LUT profiling series: measured like any colour series (CIE charts
            only — no target grading; profiling data feeds the LUT solve). The
@@ -11608,11 +11626,12 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
   </div>
 
+  <span id="meterLutToolsHome" hidden></span>
   <div id="meterLutToolsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div class="meter-modal-scroll" style="width:min(720px,100%);max-height:90vh;overflow-y:auto;overflow-x:hidden;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div style="font-size:.95rem;font-weight:700;color:#eee">3D LUT Tools</div>
-     <button class="btn btn-sm btn-secondary" onclick="meterCloseLutTools()">Close</button>
+     <button class="btn btn-sm btn-secondary meter-lut-tools-close" onclick="meterCloseLutTools()">Close</button>
     </div>
     <div class="btn-row" style="margin:0 0 12px 0">
      <button class="btn btn-sm btn-secondary" onclick="meterOpenCubeImport()" title="Parse and preview a .cube 3D LUT file (not applied to the display)">Import .cube (preview)</button>
@@ -11620,7 +11639,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div id="meterCubePreviewPanel" style="display:none;margin-bottom:12px;padding:10px;background:#0d0d15;border-radius:6px;font-size:.75rem;color:var(--text2)"></div>
     <div id="lutCubeViewWrap" style="display:none;margin-bottom:12px">
-     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">3D LUT Cube &mdash; <span id="lutCubeViewName" style="text-transform:none"></span>
+     <div style="font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">3D LUT Cube &mdash; <span id="lutCubeViewName" style="text-transform:none">Select a solved LUT below</span>
       <span class="meter-help-tip" title="The LUT's contents in signal RGB space: hollow box = input lattice node, filled dot = where the LUT sends it. Connector length shows how far the LUT moves that node (an identity LUT shows dots centred in their boxes). Drag = rotate, wheel = zoom, double-click = reset camera." aria-label="LUT cube view help">?</span>
      </div>
      <div style="font-size:.7rem;color:var(--text2);margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -12154,6 +12173,25 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
   </div>
+ </div>
+
+ <!-- Desktop consolidates profiling-series selection, LUT generation, solved
+      LUT management and the cube viewer into one workspace. The live controls
+      are moved into these hosts; Tablet retains their original presentation. -->
+ <div class="card span2" id="meter3dLutWorkspaceCard" data-desktop-workspace="3d-lut" data-desktop-order="10">
+  <div class="meter-3dlut-workspace-head">
+   <div>
+    <h2>3D LUT</h2>
+    <p>Select a profiling series, measure it and generate a 3D LUT. Solved LUTs and the interactive cube viewer remain available below.</p>
+   </div>
+   <button class="btn btn-primary" id="meter3dLutWorkspaceBuildBtn" onclick="meterReadSeriesPrimaryAction()">Build 3D LUT</button>
+  </div>
+  <div class="meter-3dlut-workspace-section">
+   <div class="meter-3dlut-workspace-label">Profiling series</div>
+   <div id="meter3dLutSeriesWorkspaceHost"></div>
+   <div id="meter3dLutWorkspaceStatus" class="meter-3dlut-workspace-status">Select a profiling series to begin.</div>
+  </div>
+  <div id="meter3dLutToolsWorkspaceHost"></div>
  </div>
 
  <!-- Desktop hosts the existing CCSS editor here as a full workspace. Tablet
@@ -15262,7 +15300,7 @@ const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
 const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
- output:'Output',patterns:'Patterns',calibration:'Calibration','meter-profile':'Meter Profile',
+ output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','meter-profile':'Meter Profile',
  'display-control':'LG Display',connectivity:'Connectivity','ui-settings':'UI Settings',system:'System'
 };
 let pgThemeMode='dark';
@@ -15369,8 +15407,57 @@ function pgSyncCardCollapseForLayout(){
   else card.classList.toggle('collapsed',!!state[card.dataset.collapseKey]);
  });
 }
+function meterPlace3dLutWorkspaceForLayout(){
+ const group=document.getElementById('meterSeriesGroup3dLut');
+ const groupHome=document.getElementById('meter3dLutSeriesHome');
+ const groupHost=document.getElementById('meter3dLutSeriesWorkspaceHost');
+ const tools=document.getElementById('meterLutToolsModal');
+ const toolsHome=document.getElementById('meterLutToolsHome');
+ const toolsHost=document.getElementById('meter3dLutToolsWorkspaceHost');
+ const desktop=document.body.classList.contains('layout-desktop');
+ if(group&&groupHome&&groupHost){
+  if(desktop){ if(group.parentNode!==groupHost) groupHost.appendChild(group); }
+  else if(group.previousElementSibling!==groupHome) groupHome.insertAdjacentElement('afterend',group);
+ }
+ if(tools&&toolsHome&&toolsHost){
+  if(desktop){
+   if(tools.parentNode!==toolsHost) toolsHost.appendChild(tools);
+  }else{
+   if(tools.parentNode!==toolsHome.parentNode) toolsHome.insertAdjacentElement('afterend',tools);
+   tools.style.display='none';
+  }
+ }
+ meterSync3dLutWorkspaceUi();
+}
+function meterActivate3dLutWorkspace(){
+ if(!document.body.classList.contains('layout-desktop')) return;
+ meterPlace3dLutWorkspaceForLayout();
+ meterSetSeriesTab('3dlut');
+ try{ meterLoadSolvedLutList(); }catch(e){}
+ meterSync3dLutWorkspaceUi();
+}
+function meterSync3dLutWorkspaceUi(){
+ const button=document.getElementById('meter3dLutWorkspaceBuildBtn');
+ const status=document.getElementById('meter3dLutWorkspaceStatus');
+ if(!button&&!status) return;
+ const selected=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
+ const source=document.getElementById('meterReadSeriesBtn');
+ const loaded=document.getElementById('meterCustomSeriesLoaded3dLut');
+ const loadedName=loaded&&loaded.style.display!=='none'?String(loaded.textContent||'').trim():'';
+ const picker=document.getElementById('meter3dLutSelectSeriesBtn');
+ const pickerName=picker?String(picker.textContent||'').replace(/\s+/g,' ').trim():'';
+ if(status) status.textContent=selected
+  ?('Selected: '+(loadedName||pickerName||'3D LUT profiling series'))
+  :'Select a profiling series to begin.';
+ if(button){
+  button.disabled=!selected||!meterDetected||(source?source.disabled:false);
+  button.title=source?source.title:'';
+  button.textContent=(meterSeriesRunning||meterActionPending)?'Building…':'Build 3D LUT';
+ }
+}
 function pgSelectDesktopWorkspace(workspace,options){
  if(!Object.prototype.hasOwnProperty.call(PG_DESKTOP_WORKSPACES,workspace)) workspace='output';
+ const previousWorkspace=pgDesktopWorkspace;
  const workspaceChanged=pgDesktopWorkspace!==workspace;
  pgDesktopWorkspace=workspace;
  document.querySelectorAll('.desktop-nav-btn[data-workspace-target]').forEach(btn=>{
@@ -15385,6 +15472,8 @@ function pgSelectDesktopWorkspace(workspace,options){
   meterPlaceCcssEditorForLayout();
   meterActivateCcssEditorWorkspace();
  }
+ if(workspace==='3d-lut'&&workspaceChanged&&document.body.classList.contains('layout-desktop')) meterActivate3dLutWorkspace();
+ else if(previousWorkspace==='3d-lut'&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')) meterSetSeriesTab('greyscale');
  pgRefreshVisibleWorkspace();
  if(options&&options.focus&&title){
   try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
@@ -15396,6 +15485,7 @@ function pgApplyLayout(options){
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
  meterPlaceCcssEditorForLayout();
+ meterPlace3dLutWorkspaceForLayout();
  uiSyncBodyScrollLock();
  meterSyncGreyscaleDesktopLayout();
  pgSyncCardCollapseForLayout();
@@ -25094,12 +25184,13 @@ function meterUpdateReadButtons(){
   readyBtn.disabled=!readyVisible||meterReadySignalPending;
   readyBtn.textContent=meterReadySignalPending?'Sending...':'Device Ready';
  }
-   if(manualPromptBtn){
+ if(manualPromptBtn){
     const promptVisible=meterManualPromptAwaiting;
     manualPromptBtn.style.display=promptVisible?'':'none';
     manualPromptBtn.disabled=!promptVisible||meterReadySignalPending;
     manualPromptBtn.textContent=meterReadySignalPending?'Sending...':meterManualPromptActionLabel();
    }
+ try{ meterSync3dLutWorkspaceUi(); }catch(e){}
 }
 function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
@@ -25366,6 +25457,7 @@ function meterUpdateSeriesTabUi(){
  if(twoPointControls) twoPointControls.style.display=(tab==='greyscale'&&twoPointActive)?'flex':'none';
  // Hide leftover greyscale/color charts on the 3D LUT tab until a profiling series is chosen.
  try{ if(tab==='3dlut'&&typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+ try{ meterSync3dLutWorkspaceUi(); }catch(e){}
 }
 
 function meterAutoCalChoiceForSeries(type,points){
