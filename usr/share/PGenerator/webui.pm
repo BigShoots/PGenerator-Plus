@@ -23194,6 +23194,14 @@ function meterRecoverSeries(s){
     window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{
      if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
     }));
+    // The Color tab's automatic default selection also completes a broader
+    // tab/layout pass after the animation frames above. That pass can resize
+    // (and therefore clear) chartCIE while leaving the readings table intact.
+    // Repaint once after it settles; the key guard prevents stale work when
+    // the operator has already moved to Sat Sweep or another series.
+    setTimeout(()=>{
+     if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
+    },150);
    }
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
    if(lastValid) updateLiveReading(lastValid);
