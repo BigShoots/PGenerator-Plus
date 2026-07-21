@@ -10586,6 +10586,7 @@ body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 
 body.layout-desktop .dashboard > .card{display:none;grid-column:auto;background:transparent;border:0;border-radius:0;padding:18px 0;box-shadow:none;min-width:0;border-bottom:1px solid var(--border)}
 body.layout-desktop .dashboard > .card[data-desktop-active="true"]{display:block}
 body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-bottom:0}
+body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
 body.layout-tablet #meterProfileCard{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
 body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:0}
