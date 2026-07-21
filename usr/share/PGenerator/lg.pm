@@ -2716,6 +2716,13 @@ function lgDismissDetectedPrompt(){
 		 }
 	}
 
+	async function lgLoadSavedTvs(){
+	 try{
+	  const s=await fetchJSON('/api/lg/scan/saved',{_quiet:true,_timeoutMs:4000});
+	  if(s&&Array.isArray(s.devices)&&s.devices.length) lgRenderScanResults(s);
+	 }catch(e){}
+	}
+
 	async function lgScanTvs(force){
 	 if(lgScanPending&&!force) return;
 	 lgScanPending=true;
@@ -2796,7 +2803,7 @@ function lgMaybeShowDetectedPrompt(r){
  modal.style.display='flex';
  lgDetectedPromptShown=true;
  lgMarkDetectedPromptHandled(key);
- lgScanTvs(false);
+ lgLoadSavedTvs();
 }
 
 function lgSchedulePictureModeRefresh(force){
@@ -3728,7 +3735,11 @@ sub webui_lg_load_info_js (@) {
 }
 
 sub webui_lg_init_js (@) {
- return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgScanTvs(false),1200);';
+ # Only render saved TVs on page load. A full network scan can take ten or
+ # more seconds and the legacy HTTP loop cannot serve meter status while it
+ # runs, which made the calibration workspace briefly lose its meter/charts.
+ # Full discovery remains available through the explicit Scan button.
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);';
 }
 
 return 1;

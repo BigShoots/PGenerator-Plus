@@ -22744,6 +22744,19 @@ async function meterCheckStatus(){
  }
 
  const r=await fetchJSON('/api/meter/status',{_quiet:true,_timeoutMs:5000});
+ // A timed-out request is not a USB disconnect. Keep a previously detected
+ // meter and its charts visible until the daemon explicitly reports
+ // detected:false; slow auxiliary status work must not blank calibration UI.
+ if(!r){
+  if(meterDetected){
+   document.getElementById('meterStatusWrap').style.display='';
+   document.getElementById('meterDot').style.background='var(--orange)';
+   document.getElementById('meterStatusText').textContent=meterLastKnownName+' (busy)';
+   document.getElementById('meterStatusText').style.color='var(--text)';
+   syncTopStatusStack();
+  }
+  return;
+ }
  meterUpdateUsbPowerWarning(r);
  const busy=meterSeriesRunning||meterContinuousActive||meterAutoCalRunning||meterActionPending||meterLgGreyBusy||(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy())||document.getElementById('meterDot').style.background==='var(--orange)';
  if(r&&r.detected){
