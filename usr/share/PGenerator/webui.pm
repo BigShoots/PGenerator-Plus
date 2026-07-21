@@ -23201,7 +23201,7 @@ function meterRecoverSeries(s){
     // the operator has already moved to Sat Sweep or another series.
     setTimeout(()=>{
      if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
-    },150);
+    },500);
    }
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
    if(lastValid) updateLiveReading(lastValid);
