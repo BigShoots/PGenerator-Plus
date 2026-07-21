@@ -68,6 +68,27 @@ do "serial.pm"        || die "Error";
 #############################################
 &get_conf();
 
+# Standalone LG network-discovery worker. The WebUI starts this as a fresh
+# process so slow TV probes never occupy its single HTTP accept loop. Handle
+# the worker mode before normal daemon startup and before lg_mark_disconnected
+# so discovery cannot alter the live display connection state.
+if(@ARGV && $ARGV[0] eq '--lg-scan-worker') {
+ my $running_file='/tmp/pgenerator-lg-scan.running';
+ my $result_file='/tmp/pgenerator-lg-scan-result.json';
+ my $result=eval { &lg_scan_devices() };
+ if(ref($result) ne 'HASH') {
+  $result={status=>'error',devices=>[],message=>'LG TV scan failed'};
+ }
+ my $tmp=$result_file.'.'.$$;
+ if(open(my $fh,'>',$tmp)) {
+  print $fh &lg_encode_json($result);
+  close($fh);
+  rename($tmp,$result_file);
+ }
+ unlink($running_file);
+ exit(0);
+}
+
 #############################################
 #        LG: no auto-reconnect on boot      #
 #############################################
