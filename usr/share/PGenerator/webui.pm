@@ -23185,6 +23185,16 @@ function meterRecoverSeries(s){
   if(recoveredReadings.length>0){
    const sorted=(type==='colors'||type==='saturations')?[...recoveredReadings]:[...recoveredReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
    drawAllCharts(sorted);
+   // On the first greyscale -> colour transition the newly unhidden colour
+   // canvases can still report their old/zero layout during this paint. A
+   // guarded second-frame paint uses the settled dimensions. Without it the
+   // imported readings are loaded but the ColorChecker charts/table remain
+   // visually blank until another colour series supplies a second paint.
+   if((type==='colors'||type==='saturations')&&typeof window.requestAnimationFrame==='function'){
+    window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{
+     if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
+    }));
+   }
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
    if(lastValid) updateLiveReading(lastValid);
   } else drawAllChartsPreset(sortedSteps);
