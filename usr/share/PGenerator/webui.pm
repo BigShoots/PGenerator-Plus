@@ -37381,6 +37381,18 @@ function meterSeriesThumbWidth(step){
 function meterSeriesThumbContentWidth(sortedSteps,row){
  const steps=Array.isArray(sortedSteps)?sortedSteps:[];
  const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
+ // Desktop's thumbnail viewport spans the calibration card while the
+ // greyscale plots occupy only the left chart column.  A fixed 34px thumb
+ // therefore exposes far more patches than the synchronized chart viewport.
+ // Scale the strip by the chart's visible/content ratio so one horizontal
+ // thumbnail slot represents the same patch slot as the plots below it.
+ if(document.body.classList.contains('layout-desktop')
+    &&meterActiveSeriesType==='greyscale'&&steps.length>64){
+  const chartScroller=document.getElementById('meterRgbChartScroller');
+  const chartViewport=Math.max(320,Math.round((chartScroller&&chartScroller.clientWidth)||0)||viewport);
+  const chartContent=meterGreyscaleChartContentWidth(steps.length,chartViewport);
+  return Math.max(viewport,Math.round(viewport*(chartContent/chartViewport)));
+ }
  let total=0;
  steps.forEach((step,idx)=>{
   total+=meterSeriesThumbWidth(step);
@@ -37644,6 +37656,24 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
   meterGreyscaleScrollFrame=0;
  }
  meterBindGreyscaleScrollSync();
+ // A drawer/browser resize changes the relative widths of the full-card
+ // thumbnail viewport and the left chart column. Rebuild just the thumbnail
+ // slot geometry here so their visible patch ranges remain identical.
+ if(scrollMode&&document.body.classList.contains('layout-desktop')){
+  const thumbContainer=document.getElementById('meterPatchThumbs');
+  const steps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(meterSeriesSteps||[]));
+  if(thumbContainer&&steps.length===count&&thumbContainer.children.length===count){
+   const contentWidth=meterSeriesThumbContentWidth(steps,thumbRow);
+   const slotWidth=Math.max(1,(contentWidth-Math.max(0,count-1)*2)/Math.max(1,count));
+   thumbContainer.style.width=contentWidth+'px';
+   thumbContainer.style.minWidth=contentWidth+'px';
+   Array.from(thumbContainer.children).forEach(thumb=>{
+    thumb.style.flex='0 0 '+slotWidth+'px';
+    thumb.style.minWidth=slotWidth+'px';
+    thumb.dataset.thumbWidth=String(slotWidth);
+   });
+  }
+ }
  meterGreyscaleScrollSyncing=true;
  meterGreyscaleScrollElements().forEach(el=>meterSetGreyscaleScrollRatio(el,meterGreyscaleScrollRatio));
  meterGreyscaleScrollSyncing=false;
@@ -37715,11 +37745,14 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   container.style.width='100%';
   container.style.minWidth='100%';
  }
+	 const uniformGreyThumbWidth=(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
+	  ?Math.max(1,((parseFloat(container.style.width)||0)-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
+	  :null;
 	 const needsRebuild=(container.children.length!==visibleSteps.length)||visibleSteps.some((step,idx)=>{
 	  const child=container.children[idx];
 	  const isGrey=meterSeriesStepIsGreyscale(step);
 	  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-	  const thumbWidth=scrollMode?String(meterSeriesThumbWidth(step)):'';
+	  const thumbWidth=scrollMode?String(uniformGreyThumbWidth||meterSeriesThumbWidth(step)):'';
 	  const colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
 	  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label||(child.dataset.thumbWidth||'')!==thumbWidth||(child.dataset.colorKey||'')!==colorKey;
  });
@@ -37734,7 +37767,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const textColor=meterContrastTextColor(bgColor);
    const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-  const thumbWidth=scrollMode?meterSeriesThumbWidth(step):0;
+  const thumbWidth=scrollMode?(uniformGreyThumbWidth||meterSeriesThumbWidth(step)):0;
   const padX=isGrey?'2px':'1px';
   const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
   thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
