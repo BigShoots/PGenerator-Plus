@@ -23199,9 +23199,9 @@ function meterRecoverSeries(s){
     // (and therefore clear) chartCIE while leaving the readings table intact.
     // Repaint once after it settles; the key guard prevents stale work when
     // the operator has already moved to Sat Sweep or another series.
-    setTimeout(()=>{
+    [150,500,1000,1500].forEach(delay=>setTimeout(()=>{
      if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
-    },500);
+    },delay));
    }
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
    if(lastValid) updateLiveReading(lastValid);

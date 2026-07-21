@@ -64,7 +64,7 @@ assert(source.includes('step=meterBuildHcfrSaturationStep(hue,pct)'), 'CHC satur
 assert(source.includes("activeBtn=document.getElementById('meterColorCheckerSeriesBtn')"), 'imported CHC series must highlight their normal series buttons');
 assert(source.includes("if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings])"), 'first imported color transition must repaint after layout settles');
 assert(source.includes("if(meterSeriesTab==='color'&&meterActiveHcfrSessionId)")&&source.includes("window.requestAnimationFrame(()=>setTimeout(selectImportedDefault,0))"), 'Color tab must open imported ColorChecker only after the tab layout completes');
-assert(source.includes('},500);'), 'automatic imported Color tab selection must repaint after the full layout pass');
+assert(source.includes('[150,500,1000,1500].forEach(delay=>setTimeout'), 'automatic imported Color tab selection must repaint through the layout settle window');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
 assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series cache persistence must support deferred writes');
