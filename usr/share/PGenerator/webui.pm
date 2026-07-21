@@ -10763,6 +10763,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .chart-expand-btn{background:rgba(255,255,255,.94);color:var(--accent);border-color:var(--chart-axis);box-shadow:0 1px 3px rgba(18,29,45,.18)}
 [data-theme="light"] .chart-expand-btn:hover{background:var(--surface-inset);color:#174fc4;border-color:var(--accent)}
 [data-theme="light"] input:disabled,[data-theme="light"] select:disabled,[data-theme="light"] button:disabled{color:var(--text-disabled)!important}
+[data-theme="light"] #meterCcssCreateStartBtn:disabled{color:var(--text-primary)!important}
 [data-theme="light"] #meterThumbsRow,[data-theme="light"] .meter-scroll-sync,[data-theme="light"] .meter-modal-scroll{scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-track,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-track,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-track{background:var(--scroll-track);border-color:var(--border)}
 [data-theme="light"] #meterThumbsRow::-webkit-scrollbar-thumb,[data-theme="light"] .meter-scroll-sync::-webkit-scrollbar-thumb,[data-theme="light"] .meter-modal-scroll::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-color:var(--scroll-thumb-border);box-shadow:none}
