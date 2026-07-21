@@ -19,6 +19,9 @@ assert(source.includes('aria-label="HCFR session export help"') && source.includ
 assert(source.includes('function meterExportHcfrChc()'), 'CHC export action is missing');
 assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC import action is missing');
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
+assert(source.includes("fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white"), 'HCFR prime white must match the chroma stimulus luminance');
+assert(source.includes("colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map"), 'ColorChecker master collection must mirror exported measurements');
+assert(source.includes("[colors[1],colors[2],colors[3],colors[4],colors[5],colors[0],...colors.slice(6,24)]"), 'PGenerator ColorChecker neutrals are not reordered to HCFR GCD order');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
 

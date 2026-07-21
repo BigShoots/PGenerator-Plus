@@ -42094,6 +42094,12 @@ function meterHcfrValidReading(rd){
  return !!(rd&&typeof rd==='object'&&meterReadingHasLuminance(rd)&&Number.isFinite(Number(rd.Y!=null?rd.Y:rd.luminance)));
 }
 
+function meterHcfrScaleXyz(rd,scale){
+ if(!rd||!Number.isFinite(Number(scale))) return null;
+ const factor=Math.max(0,Number(scale));
+ return {...rd,X:Number(rd.X||0)*factor,Y:Number(rd.Y!=null?rd.Y:rd.luminance||0)*factor,Z:Number(rd.Z||0)*factor,luminance:Number(rd.Y!=null?rd.Y:rd.luminance||0)*factor,hcfr_reference_only:true};
+}
+
 function meterHcfrSnapshotList(){
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length) meterCacheSeriesState(meterSeriesRunning?'running':'complete');
  const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
@@ -42152,12 +42158,23 @@ function meterBuildHcfrExportModel(){
  fixedMap.forEach(([name,index])=>{fixed[name]=colors[index]||null;});
  const black=grey.find(rd=>Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
  const white=[...grey].reverse().find(rd=>Number(meterReadingPlotIre(rd)||0)>=99)||null;
- fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=white;fixed.ansiBlack=null;fixed.ansiWhite=null;
+ // HCFR grades primary and saturation luminance against primeWhite: a white
+ // patch at the SAME signal level as the chroma patches, not the full-scale
+ // on/off white. SDR uses 75% chroma (about 50% linear at gamma 2.4); writing
+ // full white here makes every otherwise-correct primary appear about -50% Y.
+ let chromaWhiteScale=1;
+ try{chromaWhiteScale=meterSaturationStimulusLinearLevel('White');}catch(e){}
+ if(!(Number.isFinite(chromaWhiteScale)&&chromaWhiteScale>0)) chromaWhiteScale=1;
+ fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white;fixed.ansiBlack=null;fixed.ansiWhite=null;
  const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
  const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
  const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
- return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colors.slice(0,24).map((rd,index)=>({...rd,index}))},colorCheckerMaster:{declaredCount:5000,items:[]},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:Math.min(24,colors.length),free:free.length,warnings}};
+ // PGenerator starts its classic set White, Black, four grays. HCFR GCD uses
+ // Black, four grays, White, followed by the same 18 chromatic patches.
+ const classicColors=colors.length>=24?[colors[1],colors[2],colors[3],colors[4],colors[5],colors[0],...colors.slice(6,24)]:colors.slice(0,24);
+ const colorCheckerItems=classicColors.map((rd,index)=>({...rd,index}));
+ return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 
 function meterExportHcfrChc(){
