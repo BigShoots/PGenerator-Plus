@@ -10683,11 +10683,11 @@ body.layout-desktop .dashboard > #applyBar[data-desktop-active="true"]{display:b
 body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr);grid-template-rows:auto auto;gap:10px;align-items:stretch}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleLgPrimary{grid-column:1;grid-row:1;display:grid;grid-template-columns:180px minmax(0,1fr);grid-template-rows:var(--desktop-rgb-chart-height) auto;column-gap:8px;row-gap:10px;min-width:0;padding-top:18px}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGammaBlock{grid-column:1;grid-row:2;min-width:0;margin:0 0 0 188px!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-rows:repeat(2,var(--desktop-eotf-chart-height));gap:10px!important;min-width:0;height:auto;align-self:start;margin-bottom:0!important}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:10px!important;min-width:0;margin-bottom:0!important}
 /* Let the left RGB/Delta-E/Gamma stack establish the shared grid height.
    Splitting that real grid area avoids browser-specific vh rounding and keeps
    the bottom of Luminance aligned with the bottom of Gamma. */
-body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-template-rows:repeat(2,minmax(0,1fr))!important;height:100%;min-height:0;align-self:stretch}
+body.layout-desktop #chartsGreyscaleFullWrap #meterEotfLuminanceGrid{grid-template-rows:repeat(2,minmax(0,1fr))!important;height:auto;min-height:0;align-self:stretch;contain:size layout}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfBlock,
 body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceBlock{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
 body.layout-desktop #chartsGreyscaleFullWrap #meterEotfScroller,
