@@ -11504,7 +11504,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <button class="btn btn-sm btn-secondary" id="meterSaturationSeriesBtn" data-series="saturations-24" onclick="meterSelectBuiltinSaturationSweep()">Sat Sweep</button>
      <label id="meterHcfrFixedCodesWrap" style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
       <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed GCD Video Codes
-      <span class="meter-help-tip" title="Use this before measuring ColorChecker or Sat Sweep when the results will be exported to HCFR. ColorChecker emits HCFR Classic GCD fixed video levels instead of PGenerator's xyY-derived patches, and Sat Sweep uses HCFR constant-luminance encoding instead of holding the maximum RGB channel fixed. The levels are quantized into the active Limited or Full output range. Native and HCFR measurements are stored separately, and CHC export follows this checkbox." aria-label="HCFR fixed GCD video codes help">?</span>
+      <span class="meter-help-tip" title="Use this before measuring ColorChecker or Sat Sweep when the results will be exported to HCFR. ColorChecker emits HCFR Classic GCD fixed video levels instead of PGenerator's xyY-derived patches, and Sat Sweep uses HCFR constant-luminance encoding instead of holding the maximum RGB channel fixed. The levels are quantized into the active Limited or Full output range. Enabling this also turns on luminance error so PGenerator's CIE2000 result is comparable to HCFR's full Lab Delta E. Native and HCFR measurements are stored separately, and CHC export follows this checkbox." aria-label="HCFR fixed GCD video codes help">?</span>
      </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
@@ -16982,14 +16982,14 @@ function meterSharedSeriesStatusKey(status){
  }
  // Custom/lattice color series ride on type 'colors' with points>=900 (900-999
  // built-in cubes, >=1001 user series); only the stock ColorChecker is 30.
- if(type==='colors') points=(points>=900)?points:30;
- else if(type==='saturations') points=24;
+ const total=Number(status.total_steps||0)||0;
+ const stepCount=steps?steps.length:0;
+ if(type==='colors') points=(points>=900)?points:((points===29||total===29||stepCount===29)?29:30);
+ else if(type==='saturations') points=(points===25||total===25||stepCount===25)?25:24;
  else if(type==='greyscale'){
   // User-defined greyscale series use their id as points, just like custom
   // colour series. Do not collapse a cached 40-patch custom series to 21pt.
   if(points>=1001) return type+'-'+points;
-  const total=Number(status.total_steps||0)||0;
-  const stepCount=steps?steps.length:0;
   if(meterSeriesSnapshotHasLgAutoCal26Markers(status)) points=26;
   else {
    const basis=points||total||stepCount;
@@ -23036,8 +23036,8 @@ function meterRecoverSeries(s){
 	  const stepCount=Array.isArray(steps)?steps.length:0;
 	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
 	  // ids (>=1001); their patch count is not a built-in point preset.
-	  if(seriesType==='colors') return (points>=900||points===29)?points:30;
-	  if(seriesType==='saturations') return 24;
+	  if(seriesType==='colors') return (points>=900)?points:((points===29||count===29||stepCount===29)?29:30);
+	  if(seriesType==='saturations') return (points===25||count===25||stepCount===25)?25:24;
 	  if(seriesType==='greyscale'&&points>=1001) return points;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
@@ -29571,6 +29571,16 @@ function meterSelectBuiltinSaturationSweep(){return meterSelectSeries('saturatio
 function meterOnHcfrFixedCodesChange(checked){
  try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0');}catch(e){}
  meterSyncHcfrFixedCodesUi();
+ if(checked){
+  // HCFR's CIE2000 result is full Lab Delta E and therefore includes the
+  // luminance term. Keep PGenerator's analysis comparable when HCFR patch
+  // encoding is selected; the operator can still turn this back off.
+  const includeLum=document.getElementById('meterColorIncludeLumError');
+  if(includeLum&&!includeLum.checked){
+   includeLum.checked=true;
+   meterOnColorIncludeLumChange();
+  }
+ }
  const type=String(meterActiveSeriesType||'');
  if(type==='colors'&&(Number(meterActiveSeriesPoints)===29||Number(meterActiveSeriesPoints)===30)) meterSelectBuiltinColorChecker();
  else if(type==='saturations'&&(Number(meterActiveSeriesPoints)===24||Number(meterActiveSeriesPoints)===25)) meterSelectBuiltinSaturationSweep();

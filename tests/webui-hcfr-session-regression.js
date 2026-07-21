@@ -39,6 +39,9 @@ assert(source.includes('aria-label="HCFR fixed GCD video codes help"'), 'HCFR fi
 assert(source.includes('Sat Sweep uses HCFR constant-luminance encoding'), 'HCFR checkbox tooltip must explain its chart encoding effect');
 assert(source.includes("meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30)"), 'ColorChecker button must select the checkbox-backed variant');
 assert(source.includes("meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24)"), 'Sat Sweep button must select the checkbox-backed variant');
+assert(source.includes("(points===25||count===25||stepCount===25)?25:24"), 'shared status recovery must preserve HCFR saturation identity');
+assert(source.includes("(points===29||count===29||stepCount===29)?29:30"), 'shared status recovery must preserve HCFR ColorChecker identity');
+assert(source.includes('includeLum.checked=true')&&source.includes('meterOnColorIncludeLumChange();'), 'HCFR fixed-code mode must enable luminance-inclusive CIE2000 comparison');
 assert(source.includes("localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0')"), 'HCFR fixed-code preference must persist');
 assert(source.includes("Number(e.snap.points)===(preferHcfr?29:30)"), 'CHC export must follow the ColorChecker checkbox variant');
 assert(source.includes("Number(e.snap.points)===(preferHcfr?25:24)"), 'CHC export must follow the saturation checkbox variant');
