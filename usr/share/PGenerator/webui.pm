@@ -11512,8 +11512,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <button class="btn btn-sm btn-secondary" id="meterColorCheckerSeriesBtn" data-series="colors-30" onclick="meterSelectBuiltinColorChecker()">ColorChecker</button>
      <button class="btn btn-sm btn-secondary" id="meterSaturationSeriesBtn" data-series="saturations-24" onclick="meterSelectBuiltinSaturationSweep()">Sat Sweep</button>
-     <label id="meterHcfrFixedCodesWrap" title="Use HCFR Classic GCD fixed video levels for ColorChecker and HCFR constant-luminance saturation patches. Limited/Full codes follow the active output range." style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
+     <label id="meterHcfrFixedCodesWrap" style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
       <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed GCD Video Codes
+      <span class="meter-help-tip" title="Use this before measuring ColorChecker or Sat Sweep when the results will be exported to HCFR. ColorChecker emits HCFR Classic GCD fixed video levels instead of PGenerator's xyY-derived patches, and Sat Sweep uses HCFR constant-luminance encoding instead of holding the maximum RGB channel fixed. The levels are quantized into the active Limited or Full output range. Native and HCFR measurements are stored separately, and CHC export follows this checkbox." aria-label="HCFR fixed GCD video codes help">?</span>
      </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>

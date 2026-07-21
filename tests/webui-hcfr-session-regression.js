@@ -30,6 +30,8 @@ assert(source.includes('HCFR ColorChecker'), 'HCFR-compatible GCD ColorChecker s
 assert(source.includes("['Dark Skin',45.20,31.96,26.03]"), 'client HCFR GCD Dark Skin stimulus is not exact');
 assert(source.includes('["Dark Skin","hcfr_rgb",45.20,31.96,26.03]'), 'server HCFR GCD Dark Skin stimulus is not exact');
 assert(source.includes('id="meterHcfrFixedCodes"'), 'normal built-in series controls need the HCFR fixed-code checkbox');
+assert(source.includes('aria-label="HCFR fixed GCD video codes help"'), 'HCFR fixed-code checkbox help tooltip is missing');
+assert(source.includes('Sat Sweep uses HCFR constant-luminance encoding'), 'HCFR checkbox tooltip must explain its chart encoding effect');
 assert(source.includes("meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30)"), 'ColorChecker button must select the checkbox-backed variant');
 assert(source.includes("meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24)"), 'Sat Sweep button must select the checkbox-backed variant');
 assert(source.includes("localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0')"), 'HCFR fixed-code preference must persist');
