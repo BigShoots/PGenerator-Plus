@@ -21394,6 +21394,17 @@ function meterNiceAxisTop(dataMax,base,maxTicks){
  return {top:top,steps:Math.max(1,Math.round(top/step))};
 }
 
+// Keep the initial EOTF/luminance axis on clean engineering divisions, but
+// do not snap every user-zoomed ceiling back to the same large increment.
+// That snapping made several wheel ticks visually do nothing (especially the
+// luminance chart's 50 cd/m2 base), so these charts felt much slower than the
+// other Y-axis zoom controls.
+function meterNiceAxisTopForZoom(id,dataMax,base,maxTicks){
+ if(!meterChartYZoomIsActive(id)) return meterNiceAxisTop(dataMax,base,maxTicks);
+ const top=Math.max(Number(base)||1,Number(dataMax)||0);
+ return {top:top,steps:Math.max(1,Number(maxTicks)||10)};
+}
+
 function meterEotfChartTop(values){
  const vals=(values||[]).filter(v=>v!=null&&isFinite(v)&&v>=0);
  const max=Math.max(...(vals.length?vals:[0.5]));
@@ -38595,7 +38606,7 @@ function drawEOTFPreset(gsSteps){
  for(let pct=0;pct<=axisMax;pct+=1) allVals.push(meterGreyTargetEotfChartValue(pct,refPeak,0,null));
  let yTop=meterEotfChartTop(allVals);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
- const _ax=meterNiceAxisTop(yTop,0.2,10); yTop=_ax.top;
+ const _ax=meterNiceAxisTopForZoom('chartEOTF',yTop,0.2,10); yTop=_ax.top;
  const chart=drawChartGrid(ctx,{
   pad:{t:34,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:_ax.steps,
@@ -38615,7 +38626,7 @@ function drawGammaPreset(gsSteps){
  const curveMax=meterGreyTargetChartValue(axisMax,refPeak,0,null);
  let yTop=Math.ceil(Math.max(Lw,refPeak,curveMax)*1.1/10)*10||Math.max(Lw,refPeak,curveMax);
  yTop=meterApplyTopYZoom('chartGamma',yTop,0).max;
- const _ax=meterNiceAxisTop(yTop,50,10); yTop=_ax.top;
+ const _ax=meterNiceAxisTopForZoom('chartGamma',yTop,50,10); yTop=_ax.top;
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:_ax.steps,
@@ -39420,7 +39431,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  for(let pct=0;pct<=axisMax;pct+=1) allValues.push(meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null));
  let yTop=meterEotfChartTop(allValues);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
- const _ax=meterNiceAxisTop(yTop,0.2,10); yTop=_ax.top;
+ const _ax=meterNiceAxisTopForZoom('chartEOTF',yTop,0.2,10); yTop=_ax.top;
  const chart=drawChartGrid(ctx,{
   pad:{t:34,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:_ax.steps,
@@ -39533,7 +39544,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  const curveMax=meterGreyTargetChartValue(axisMax,targetPeak,Lb,null);
  let yTop=Math.ceil(Math.max(measuredMax,targetPeak,curveMax)*1.1/10)*10||Math.max(measuredMax,targetPeak,curveMax);
  yTop=meterApplyTopYZoom('chartGamma',yTop,0).max;
- const _ax=meterNiceAxisTop(yTop,50,10); yTop=_ax.top;
+ const _ax=meterNiceAxisTopForZoom('chartGamma',yTop,50,10); yTop=_ax.top;
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:15,b:30,l:55},
   xSteps:axisMax/10,ySteps:_ax.steps,
