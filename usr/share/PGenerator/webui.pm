@@ -29498,7 +29498,11 @@ async function meterSelectSeries(type,points,opts){
  }
  clearActive();
  if(meterSeriesRunning) meterStop();
- else meterStopContinuous();
+ // Do not run the continuous-stop UI teardown when continuous reading is
+ // already idle. That path rebuilds every thumbnail in the OLD series; on a
+ // 101-point greyscale switch the browser did a full discarded DOM/style pass
+ // before it could build the newly selected series.
+ else if(meterContinuousActive||meterContinuousSuspendedForLgWrite||meterContinuousTimer) meterStopContinuous();
  meterLatticeDefault3dView(points);
  meterDefaultTargetsForColorSeries(type,points);
  if(meterActiveSeriesKey===key){
