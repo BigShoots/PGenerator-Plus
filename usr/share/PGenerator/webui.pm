@@ -10733,7 +10733,7 @@ body.layout-desktop .site-footer-inner{background:transparent;border:0;border-to
 body.layout-desktop .desktop-utility-toggle{display:flex;position:fixed;right:4px;top:50%;transform:translateY(-50%);z-index:56;width:22px;height:62px;padding:0;align-items:center;justify-content:center;border:1px solid var(--border);border-right:0;border-radius:7px 0 0 7px;background:#181824;color:var(--text2);font-size:22px;line-height:1;cursor:pointer;box-shadow:-4px 0 14px rgba(0,0,0,.3);transition:right .22s ease,color .16s,background .16s}
 body.layout-desktop .desktop-utility-toggle:hover{background:#222235;color:#fff}
 body.layout-desktop .desktop-utility-toggle:focus-visible{outline:2px solid #fff;outline-offset:2px}
-body.layout-desktop .desktop-utility-drawer{display:flex;position:fixed;top:var(--pg-header-height,61px);right:0;bottom:0;z-index:55;width:var(--desktop-utility-width);transform:translateX(100%);flex-direction:column;background:#101019;border-left:1px solid var(--border);box-shadow:-12px 0 32px rgba(0,0,0,.42);transition:transform .22s ease;overflow:hidden}
+body.layout-desktop .desktop-utility-drawer{display:flex;position:fixed;top:var(--pg-header-height,61px);right:0;bottom:0;z-index:55;width:var(--desktop-utility-width);transform:translateX(100%);flex-direction:column;background:#101019;border-left:1px solid var(--border);box-shadow:-12px 0 32px rgba(0,0,0,.42);transition:transform .22s ease;overflow:hidden;contain:layout paint style;will-change:transform}
 body.layout-desktop.desktop-utility-open .desktop-utility-toggle{right:var(--desktop-utility-width)}
 body.layout-desktop.desktop-utility-open .desktop-utility-drawer{transform:translateX(0)}
 .desktop-utility-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px;border-bottom:1px solid var(--border);flex:0 0 auto}
@@ -15691,14 +15691,18 @@ function pgUtilityControlText(id){
 function pgUtilitySetRows(id,rows){
  const host=document.getElementById(id);
  if(!host) return;
+ const normalized=(rows||[]).map(row=>[String(row[0]||''),(row[1]==null||String(row[1]).trim()==='')?'-':String(row[1])]);
+ const signature=JSON.stringify(normalized);
+ if(host.dataset.utilitySignature===signature) return;
+ host.dataset.utilitySignature=signature;
  host.innerHTML='';
- (rows||[]).forEach(row=>{
+ normalized.forEach(row=>{
   const label=document.createElement('div');
   const value=document.createElement('div');
   label.className='desktop-utility-label';
   value.className='desktop-utility-value';
   label.textContent=row[0];
-  value.textContent=(row[1]==null||String(row[1]).trim()==='')?'-':String(row[1]);
+  value.textContent=row[1];
   host.appendChild(label);
   host.appendChild(value);
  });
@@ -15709,6 +15713,11 @@ function pgUtilityInfoframeText(decodedId,rawId){
  const decodedText=decoded?String(decoded.innerText||decoded.textContent||'').trim():'';
  const rawText=raw?String(raw.textContent||'').trim():'';
  return [decodedText,rawText&&rawText!=='-'?rawText:''].filter(Boolean).join('\n')||'No data';
+}
+function pgUtilitySetText(el,value){
+ if(!el) return;
+ const next=String(value==null?'':value);
+ if(el.textContent!==next) el.textContent=next;
 }
 function pgSyncDesktopUtilityDrawer(){
  pgUtilitySetRows('desktopUtilityOutput',[
@@ -15732,14 +15741,14 @@ function pgSyncDesktopUtilityDrawer(){
  pgUtilitySetRows('desktopUtilityMetadata',metadata);
  const avi=document.getElementById('desktopUtilityAvi');
  const drm=document.getElementById('desktopUtilityDrm');
- if(avi) avi.textContent=pgUtilityInfoframeText('aviDecoded','aviIF');
- if(drm) drm.textContent=pgUtilityInfoframeText('drmDecoded','drmIF');
+ pgUtilitySetText(avi,pgUtilityInfoframeText('aviDecoded','aviIF'));
+ pgUtilitySetText(drm,pgUtilityInfoframeText('drmDecoded','drmIF'));
  const cec=document.getElementById('cecStatus');
  const cecOut=document.getElementById('desktopUtilityCecStatus');
- if(cecOut) cecOut.textContent=cec?String(cec.innerText||cec.textContent||'Checking...').trim():'Checking...';
+ pgUtilitySetText(cecOut,cec?String(cec.innerText||cec.textContent||'Checking...').trim():'Checking...');
  const cecDevices=document.getElementById('cecDeviceList');
  const cecDevicesOut=document.getElementById('desktopUtilityCecDevices');
- if(cecDevicesOut) cecDevicesOut.textContent=cecDevices?String(cecDevices.innerText||cecDevices.textContent||'Not scanned yet').trim():'Not scanned yet';
+ pgUtilitySetText(cecDevicesOut,cecDevices?String(cecDevices.innerText||cecDevices.textContent||'Not scanned yet').trim():'Not scanned yet');
  const deviceRows=[['CPU Usage',String((document.getElementById('cpuUsageValue')||{}).textContent||'--%').trim()],['Memory Usage',String((document.getElementById('memUsageValue')||{}).textContent||'--%').trim()]];
  const info=document.getElementById('infoGrid');
  if(info){
@@ -15761,7 +15770,9 @@ function pgSetDesktopUtilityDrawer(open){
  if(drawer) drawer.setAttribute('aria-hidden',next?'false':'true');
  if(arrow) arrow.innerHTML=next?'&#8250;':'&#8249;';
  if(next) pgSyncDesktopUtilityDrawer();
- window.dispatchEvent(new Event('resize'));
+ // The drawer reserves workspace width in Desktop mode. Redraw charts once,
+ // after the CSS transition reaches its final size; redrawing both before and
+ // after the transition doubled the most expensive calibration work.
  setTimeout(()=>window.dispatchEvent(new Event('resize')),240);
 }
 function pgToggleDesktopUtilityDrawer(){
@@ -15770,7 +15781,7 @@ function pgToggleDesktopUtilityDrawer(){
 function pgDesktopUtilityInit(){
  document.addEventListener('change',()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();});
  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('desktop-utility-open')) pgSetDesktopUtilityDrawer(false);});
- setInterval(()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();},1500);
+ setInterval(()=>{if(!document.hidden&&document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();},3000);
 }
 
 async function loadInfoframes(){
