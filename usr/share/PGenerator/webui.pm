@@ -14105,7 +14105,7 @@ async function loadInfo(quiet){
 }
 
 let _hdmiIgnored=false;
-const uiBlockingOverlayIds=['meterGreyProfileModal','meterCcssCreateModal','customCcssEditorModal','meterReportOverlay','lgDisplayControlModal'];
+const uiBlockingOverlayIds=['meterGreyProfileModal','meterCcssCreateModal','customCcssEditorModal','meterReportOverlay','lgDisplayControlModal','lutSolveProgressModal','lutSolveDoneModal'];
 let uiLockedScrollTop=0;
 
 function uiAnyBlockingOverlayVisible(){
@@ -27111,6 +27111,12 @@ function meterCloseCustomSeriesManager(){
 function meterOpenLutTools(){
  const modal=document.getElementById('meterLutToolsModal');
  if(!modal) return;
+ if(document.body.classList.contains('layout-desktop')){
+  // LUT Tools is embedded in the dedicated desktop workspace.  Merely
+  // changing the old modal display property leaves it hidden when invoked
+  // from the solve-complete dialog on another workspace.
+  pgSelectDesktopWorkspace('3d-lut',{focus:true});
+ }
  if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -27543,11 +27549,14 @@ function meterImportCubeFile(evt){
 
 async function meterLoadSolvedLutList(){
  const panel=document.getElementById('meterSolvedLutList');
- if(!panel) return;
+ if(!panel) return [];
  try{
-  const r=await fetchJSON('/api/3d-lut/luts',{_quiet:true,_timeoutMs:5000});
+  // This list changes immediately after a solve.  Do not let the browser
+  // reuse the pre-solve GET while the freshly exported cube is already being
+  // shown in the viewer.
+  const r=await fetchJSON('/api/3d-lut/luts?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'});
   const luts=(r&&Array.isArray(r.luts))?r.luts:[];
-  if(!luts.length){ panel.textContent='No solved LUTs yet — Build 3D LUT or run 3D LUT AutoCal to create one.'; return; }
+  if(!luts.length){ panel.textContent='No solved LUTs yet — Build 3D LUT or run 3D LUT AutoCal to create one.'; return []; }
   const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   const escJs=(s)=>String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ');
   panel.innerHTML=luts.map(l=>{
@@ -27562,9 +27571,23 @@ async function meterLoadSolvedLutList(){
     +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+escJs(name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
+  return luts;
  }catch(e){
   panel.textContent='Could not load LUT list.';
+  return [];
  }
+}
+
+// A completed solve writes the cube before reporting complete, so refresh the
+// history and select that exact file as one ordered operation.  Keeping this
+// sequence awaited prevents the list's older response from replacing the
+// selected row after the viewer has already loaded the new cube.
+async function meterSolvedLutRefreshAndSelect(name){
+ const file=String(name||'');
+ if(!file) return false;
+ await meterLoadSolvedLutList();
+ await meterViewSolvedLutIn3d(file);
+ return !!(meterLutCubeState&&meterLutCubeState.name===file);
 }
 
 // Trigger a browser download for a solved .cube. Prefer a real navigation-style
@@ -27703,7 +27726,13 @@ function meterLutCubeShow(parsed,name){
  }
  meterLutCubeBindHandlers();
  meterLutCubeDotSizeLoad();
- requestAnimationFrame(meterLutCubeDraw);
+ // Desktop workspace navigation and its canvas resize settle on successive
+ // frames.  Draw after both so View in 3D cannot render into the old hidden
+ // workspace dimensions and leave only a stale wireframe behind.
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+  meterLutCubeDraw();
+ }));
 }
 
 // Coalesce drag/wheel repaints onto animation frames — a full-lattice 17-cube
@@ -27812,7 +27841,10 @@ function meterLutCubeDraw(){
     ctx.beginPath();ctx.moveTo(d.pin.sx,d.pin.sy);ctx.lineTo(d.pout.sx,d.pout.sy);ctx.stroke();
    }
   }
-  const mr=Math.max(dense?0.5:1.1,2.5*d.pout.persp*scale*msz);
+  // A 33³ matrix cube has many near-overlapping regular nodes.  At the old
+  // half-pixel floor those nodes effectively disappeared on light-theme/high
+  // DPI canvases, leaving only the coloured corners visible.
+  const mr=Math.max(dense?0.85:1.1,2.5*d.pout.persp*scale*msz);
   ctx.fillStyle=col;
   ctx.beginPath();ctx.arc(d.pout.sx,d.pout.sy,mr,0,Math.PI*2);ctx.fill();
   if(!dense){
@@ -28018,7 +28050,7 @@ async function meterLutSolveStart(series,readings,opts){
 }
 
 function meterLutSolveProgressShow(msg,detail){
- const modal=document.getElementById('lutSolveProgressModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('lutSolveProgressModal'));
  if(!modal) return;
  const title=document.getElementById('lutSolveProgressTitle');
  const m=document.getElementById('lutSolveProgressMsg');
@@ -28088,6 +28120,10 @@ async function meterLutSolvePoll(){
    // Hand progress modal off to the solved download modal.
    meterLutSolveProgressHide();
    if(nm){
+    // Make the exported LUT immediately visible in the desktop workspace.
+    // Await both operations so the list and cube viewer cannot disagree about
+    // which file is current when the completion dialog appears.
+    try{ await meterSolvedLutRefreshAndSelect(nm); }catch(_e){}
     // Completion modal is where the operator picks .cube vs .3dl (browsers
     // also block auto-download after long async measure/solve work).
     meterLutSolveDonePrompt(nm,how,s);
@@ -28134,7 +28170,11 @@ function meterLutSolveDonePrompt(name,how,state){
  const d3Btn=document.getElementById('lutSolveDoneDownload3dlBtn');
  if(cubeBtn){ cubeBtn.className='btn btn-sm btn-primary'; cubeBtn.textContent='Download .cube'; }
  if(d3Btn){ d3Btn.className='btn btn-sm btn-primary'; d3Btn.textContent='Download .3dl'; }
- const modal=document.getElementById('lutSolveDoneModal');
+ // In desktop layout Calibration is a hidden workspace while 3D LUT is
+ // active.  These overlays originate in Calibration markup, so hoist them to
+ // body or the hidden ancestor suppresses the dialog until the operator
+ // switches back to Calibration.
+ const modal=meterEnsureModalOnBody(document.getElementById('lutSolveDoneModal'));
  if(modal){
   modal.style.display='flex';
   try{ uiSyncBodyScrollLock(); }catch(e){}
@@ -28148,11 +28188,11 @@ function meterLutSolveDownload(fmt){
  else meterDownloadSolvedLut(meterLutSolveDoneName);
 }
 
-function meterLutSolveView3d(){
+async function meterLutSolveView3d(){
  const name=meterLutSolveDoneName;
  meterLutSolveDoneClose();
  if(!name) return;
- try{ meterOpenLutTools(); meterLoadSolvedLutList(); meterViewSolvedLutIn3d(name); }catch(e){}
+ try{ meterOpenLutTools(); await meterSolvedLutRefreshAndSelect(name); }catch(e){}
 }
 
 function meterLutSolveDoneClose(){
