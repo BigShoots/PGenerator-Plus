@@ -42357,14 +42357,15 @@ function meterBuildHcfrExportModel(){
   colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
   free.push(...colors.slice(2,6));
  }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
- return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
+ const rgbRange=(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())?'limited':'full';
+ return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 
 function meterExportHcfrChc(){
  try{
   if(!window.PGeneratorHcfrChc) throw new Error('CHC module did not load');
   const built=meterBuildHcfrExportModel(),s=built.summary;
-  const message='Export '+s.mode.toUpperCase()+' session?\n\nGreyscale: '+s.grayscale+'\nSaturation: '+s.saturations+'\nColorChecker: '+s.colorChecker+'\nFree measurements: '+s.free+(s.warnings.length?'\n\nWarnings:\n'+s.warnings.join('\n'):'');
+  const message='Export '+s.mode.toUpperCase()+' session?\n\nRGB range: '+String(s.rgbRange||'unknown').toUpperCase()+'\nGreyscale: '+s.grayscale+'\nSaturation: '+s.saturations+'\nColorChecker: '+s.colorChecker+'\nFree measurements: '+s.free+(s.warnings.length?'\n\nWarnings:\n'+s.warnings.join('\n'):'');
   if(!window.confirm(message)) return;
   let filename=meterPromptExportFilename('chc','pgenerator_'+s.mode+'_session','chc','Enter a file name for the HCFR session');
   if(!filename) filename=meterDefaultExportFilename('chc','pgenerator_'+s.mode+'_session','chc');
@@ -42378,11 +42379,11 @@ function meterOpenHcfrImport(){const input=document.getElementById('meterHcfrImp
 
 function meterHcfrImportedReading(color,name,ire){return {name:name,ire:ire,plot_ire:ire,nominal_ire:ire,X:color.X,Y:color.Y,Z:color.Z,luminance:color.Y,x:color.x,y:color.y,raw_X:color.X,raw_Y:color.Y,raw_Z:color.Z,lux:color.lux,spectrum:color.spectrum||null,source_format:'hcfr-chc',measurement_only:true};}
 
-function meterHcfrImportSnapshot(type,readings,label,stamp,mode){
+function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange){
  if(!readings.length) return null;
  const key=type+'-'+stamp;
  const steps=readings.map(rd=>({name:rd.name,ire:rd.ire,measurement_only:true}));
- meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,steps:steps,readings:readings,status:'complete',source_format:'hcfr-chc',source_label:label,updated_at:Date.now()};
+ meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,steps:steps,readings:readings,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,updated_at:Date.now()};
  return key;
 }
 
@@ -42406,25 +42407,26 @@ async function meterImportHcfrChcFile(input){
   if(!window.PGeneratorHcfrChc)throw new Error('CHC module did not load');
   const parsed=window.PGeneratorHcfrChc.parseHcfrChc(await file.arrayBuffer()),sum=window.PGeneratorHcfrChc.summarizeHcfrChc(parsed);
   const mode=parsed.preferences.gammaOffsetType===5?'hdr10':(parsed.preferences.gammaOffsetType===7?'hlg':([8,9].includes(parsed.preferences.gammaOffsetType)?'dv':'sdr'));
+  const sourceRange=(parsed.generator&&parsed.generator.rgbRange)||'unknown';
   const groupLines=Object.entries(sum.groups).filter(([,g])=>g.valid).map(([name,g])=>name+': '+g.valid);
   const warning=mode!==String(meterChartSignalMode()||'sdr').toLowerCase()?'\n\nThe imported analysis mode is '+mode.toUpperCase()+'; output settings will NOT be changed or restarted.':'';
-  if(!window.confirm('Import '+file.name+'?\n\nFormat v'+parsed.fileVersion+', measurements v'+parsed.measurementVersion+'\n'+groupLines.join('\n')+'\nFixed readings: '+Object.values(sum.fixed).filter(Boolean).length+warning+'\n\nAnalysis preferences will be applied. Existing sessions will be preserved.'))return;
+  if(!window.confirm('Import '+file.name+'?\n\nFormat v'+parsed.fileVersion+', measurements v'+parsed.measurementVersion+'\nGenerator RGB range: '+sourceRange.toUpperCase()+'\n'+groupLines.join('\n')+'\nFixed readings: '+Object.values(sum.fixed).filter(Boolean).length+warning+'\n\nAnalysis preferences will be applied. Output range will NOT be changed. Existing sessions will be preserved.'))return;
   const stamp=Date.now(),keys=[];
   const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
-  const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode);if(gkey)keys.push(gkey);
+  const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode,sourceRange);if(gkey)keys.push(gkey);
   const nearBlackGroup=parsed.groups.nearBlack,nearWhiteGroup=parsed.groups.nearWhite;
   const nearBlack=nearBlackGroup?nearBlackGroup.items.map((c,i)=>c.valid?meterHcfrImportedReading(c,'Near black '+(i+1)+'%',i+1):null).filter(Boolean):[];
   const nearWhite=nearWhiteGroup?nearWhiteGroup.items.map((c,i,a)=>c.valid?meterHcfrImportedReading(c,'Near white '+(101-a.length+i)+'%',101-a.length+i):null).filter(Boolean):[];
-  const nbkey=meterHcfrImportSnapshot('greyscale',nearBlack,file.name+' near black',stamp+1,mode);if(nbkey)keys.push(nbkey);
-  const nwkey=meterHcfrImportSnapshot('greyscale',nearWhite,file.name+' near white',stamp+2,mode);if(nwkey)keys.push(nwkey);
+  const nbkey=meterHcfrImportSnapshot('greyscale',nearBlack,file.name+' near black',stamp+1,mode,sourceRange);if(nbkey)keys.push(nbkey);
+  const nwkey=meterHcfrImportSnapshot('greyscale',nearWhite,file.name+' near white',stamp+2,mode,sourceRange);if(nwkey)keys.push(nwkey);
   const sat=[];[['redSaturation','Red'],['greenSaturation','Green'],['blueSaturation','Blue'],['yellowSaturation','Yellow'],['cyanSaturation','Cyan'],['magentaSaturation','Magenta']].forEach(([group,hue])=>{const all=(parsed.groups[group]&&parsed.groups[group].items)||[];all.forEach((c,i)=>{if(c.valid){const pct=all.length>1?i*100/(all.length-1):0;sat.push(meterHcfrImportedReading(c,Math.round(pct)+'% '+hue,pct));}});});
-  const skey=meterHcfrImportSnapshot('saturations',sat,file.name,stamp+3,mode);if(skey)keys.push(skey);
+  const skey=meterHcfrImportSnapshot('saturations',sat,file.name,stamp+3,mode,sourceRange);if(skey)keys.push(skey);
   const ccGroup=parsed.groups.colorChecker;
   const colors=ccGroup?ccGroup.validItems.map((c,i)=>meterHcfrImportedReading(c,'HCFR Patch '+((c.index!=null?c.index:i)+1),c.index!=null?c.index:i)):[];
   [['redPrimary','Red'],['greenPrimary','Green'],['bluePrimary','Blue'],['cyanSecondary','Cyan'],['magentaSecondary','Magenta'],['yellowSecondary','Yellow']].forEach(([key,name])=>{const c=parsed.fixed[key];if(c&&c.valid)colors.push(meterHcfrImportedReading(c,'100% '+name,100));});
-  const ckey=meterHcfrImportSnapshot('colors',colors,file.name,stamp+4,mode);if(ckey)keys.push(ckey);
+  const ckey=meterHcfrImportSnapshot('colors',colors,file.name,stamp+4,mode,sourceRange);if(ckey)keys.push(ckey);
   const free=parsed.groups.freeMeasurements.validItems.map((c,i)=>meterHcfrImportedReading(c,'HCFR Free '+(i+1),i));
-  const fkey=meterHcfrImportSnapshot('colors',free,file.name,stamp+5,mode);if(fkey)keys.push(fkey);
+  const fkey=meterHcfrImportSnapshot('colors',free,file.name,stamp+5,mode,sourceRange);if(fkey)keys.push(fkey);
   meterPersistSeriesCache();meterApplyHcfrAnalysisPreferences(parsed.preferences);
   if(keys.length)meterRestoreSeriesFromCache(keys[0],{signalMode:mode});
   toast('Imported '+parsed.validMeasurementCount+' HCFR measurements into '+keys.length+' preserved series');

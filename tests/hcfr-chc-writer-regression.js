@@ -8,6 +8,7 @@ const {
 
 const color = (n) => ({ X: n + 0.1, Y: n + 0.2, Z: n + 0.3 });
 const bytes = serializeHcfrChc({
+  generator: { type: 'gdi', rgbRange: 'limited' },
   preferences: {
     colorStandard: 8,
     gammaOffsetType: 5,
@@ -50,6 +51,19 @@ assert(parsed.notes.includes('€'));
 assert(parsed.notes.includes('?'));
 assert.strictEqual(parsed.trailingObjectBytes, 487);
 assert.strictEqual(parsed.measurementEndOffset + parsed.trailingObjectBytes, bytes.length);
+assert.strictEqual(parsed.generator.type, 'gdi');
+assert.strictEqual(parsed.generator.rgbRange, 'limited');
+assert.strictEqual(parsed.generator.rgb16_235, true);
+
+const fullBytes = serializeHcfrChc({ generator: { type: 'gdi', rgbRange: 'full' } });
+const fullParsed = parseHcfrChc(fullBytes);
+assert.strictEqual(fullParsed.generator.rgbRange, 'full');
+assert.strictEqual(fullParsed.generator.rgb16_235, false);
+assert.notStrictEqual(
+  bytes[parsed.generator.byteOffset],
+  fullBytes[fullParsed.generator.byteOffset],
+  'limited/full exports must differ at the serialized m_b16_235 field'
+);
 
 assert.throws(() => serializeHcfrChc({
   groups: { colorChecker: { declaredCount: 10, items: [{ ...color(1), index: 10 }] } }

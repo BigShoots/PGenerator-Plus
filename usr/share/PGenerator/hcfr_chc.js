@@ -100,6 +100,46 @@
     return Uint8Array.from(binary, c => c.charCodeAt(0));
   }
 
+  function findAscii(bytes, value, start) {
+    const needle = Array.from(value, ch => ch.charCodeAt(0));
+    for (let i = Math.max(0, start || 0); i + needle.length <= bytes.length; i++) {
+      let match = true;
+      for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) { match = false; break; }
+      if (match) return i;
+    }
+    return -1;
+  }
+
+  // CGenerator::Serialize writes version, screen blanking, then m_b16_235.
+  // The GDI subclass name is present in the MFC object stream immediately
+  // before that base payload, so this can be read without pretending to be a
+  // general-purpose MFC archive parser.
+  function readGeneratorMetadata(bytes, startOffset) {
+    const className = 'CGDIGenerator';
+    const classOffset = findAscii(bytes, className, startOffset || 0);
+    if (classOffset < 0) return { type:null, rgbRange:null, rgb16_235:null, byteOffset:null };
+    const versionOffset = classOffset + className.length;
+    if (versionOffset + 12 > bytes.length) return { type:'gdi', rgbRange:null, rgb16_235:null, byteOffset:null };
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const version = view.getInt32(versionOffset, true);
+    if (version < 2 || version > 6) return { type:'gdi', version, rgbRange:null, rgb16_235:null, byteOffset:null };
+    const rangeOffset = versionOffset + 8;
+    const flag = view.getInt32(rangeOffset, true);
+    if (flag !== 0 && flag !== 1) return { type:'gdi', version, rgbRange:null, rgb16_235:null, byteOffset:null };
+    return { type:'gdi', version, rgbRange:flag ? 'limited' : 'full', rgb16_235:!!flag, byteOffset:rangeOffset };
+  }
+
+  function documentTailWithGeneratorRange(source, range) {
+    const tail = new Uint8Array(source);
+    if (range == null || range === '') return tail;
+    const normalized = String(range).toLowerCase();
+    if (normalized !== 'limited' && normalized !== 'full') throw new RangeError('HCFR generator range must be limited or full');
+    const metadata = readGeneratorMetadata(tail, 0);
+    if (metadata.type !== 'gdi' || metadata.byteOffset == null) throw new Error('HCFR GDI generator range field was not found');
+    new DataView(tail.buffer, tail.byteOffset, tail.byteLength).setInt32(metadata.byteOffset, normalized === 'limited' ? 1 : 0, true);
+    return tail;
+  }
+
   function finite(value, fallback) {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
@@ -202,11 +242,14 @@
     ['redPrimary','greenPrimary','bluePrimary','yellowSecondary','cyanSecondary','magentaSecondary','onOffBlack','onOffWhite','ansiBlack','ansiWhite','primeWhite'].forEach(k=>writeColor(writer, fixed[k]));
     writeMfcString(writer, model.notes || 'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+\r\n');
     writer.i32(model.ireScaleMode?1:0);
-    writer.raw(options.documentTail || base64Bytes(V17_DOCUMENT_TAIL_BASE64));
+    const tailSource = options.documentTail || base64Bytes(V17_DOCUMENT_TAIL_BASE64);
+    const generatorRange = options.generatorRange || (model.generator && model.generator.rgbRange) || null;
+    writer.raw(documentTailWithGeneratorRange(tailSource, generatorRange));
     const bytes = writer.finish();
     if (options.validate !== false) {
       const parsed = parseHcfrChc(bytes);
       if (parsed.fileVersion !== 3 || parsed.measurementVersion !== 17 || parsed.measurementEndOffset + parsed.trailingObjectBytes !== bytes.length) throw new Error('Generated CHC failed validation');
+      if (generatorRange && parsed.generator.rgbRange !== String(generatorRange).toLowerCase()) throw new Error('Generated CHC generator range failed validation');
     }
     return bytes;
   }
@@ -415,12 +458,13 @@
     }
     const ireScaleMode = measurementVersion > 5 ? !!reader.i32('IRE scale mode') : false;
     const measurementEndOffset = reader.offset;
+    const generator = readGeneratorMetadata(reader.bytes, measurementEndOffset);
     const validCount = Object.values(groups).reduce((sum, group) => sum + group.validItems.length, 0) +
       Object.values(fixed).filter(color => color.valid).length;
 
     return {
       format: 'hcfr-chc', magic, fileVersion, measurementVersion,
-      preferences, groups, fixed, notes, ireScaleMode,
+      preferences, groups, fixed, notes, ireScaleMode, generator,
       validMeasurementCount: validCount,
       byteLength: reader.bytes.byteLength,
       measurementEndOffset,
@@ -442,6 +486,7 @@
       validMeasurementCount: parsed.validMeasurementCount,
       groups, fixed,
       preferences: parsed.preferences,
+      generator: parsed.generator,
       notes: parsed.notes,
       ireScaleMode: parsed.ireScaleMode,
       byteLength: parsed.byteLength,

@@ -31,6 +31,9 @@ assert(source.includes("['Dark Skin',45.20,31.96,26.03]"), 'client HCFR GCD Dark
 assert(source.includes('["Dark Skin","hcfr_rgb",45.20,31.96,26.03]'), 'server HCFR GCD Dark Skin stimulus is not exact');
 assert(source.includes("colorEntries.find(e=>Number(e.snap.points)===29)"), 'CHC export must prefer the HCFR ColorChecker series');
 assert(source.includes("satEntries.find(e=>Number(e.snap.points)===25)"), 'CHC export must prefer the HCFR saturation series');
+assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export must serialize the active RGB range');
+assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
+assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
