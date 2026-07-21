@@ -10463,7 +10463,7 @@ body.apply-settings-success .apply-settings-actions{display:none}
 .wifi-list{max-height:150px;overflow-y:auto;margin:6px 0}
 .wifi-item{display:flex;justify-content:space-between;align-items:center;
 padding:6px 10px;border-radius:5px;cursor:pointer;transition:background .2s}
-.wifi-item:hover{background:#1a1a2e}
+.wifi-item:hover,.wifi-item.is-selected{background:#1a1a2e}
 .wifi-item .name{font-size:.85rem}
 .wifi-item .meta{font-size:.7rem;color:var(--text2)}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
@@ -10810,6 +10810,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] #meterAutoCalOverlay .meter-autocal-panel-light-item{background:var(--surface-field)!important;border-color:var(--border)!important}
 [data-theme="light"] #meterAutoCalResultsApplyAllNote{background:#edf7e9!important;border-color:#9bc58d!important;color:#285c24!important}
 [data-theme="light"] #meterAutoCalResultsApplyAllNote strong{color:#1d4d1a!important}
+[data-theme="light"] .wifi-item:hover,[data-theme="light"] .wifi-item.is-selected{background:var(--selected-bg);color:var(--text-primary)}
 [data-theme="light"] #chartTooltip{background:var(--chart-tooltip)!important;color:var(--text-primary)!important;border-color:var(--border)!important;box-shadow:0 2px 8px var(--shadow)!important}
 [data-theme="light"] select option{background:var(--surface-field);color:var(--text-primary)}
 [data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
@@ -14994,7 +14995,11 @@ async function scanWifi(){
  .forEach(n=>{
   const d=document.createElement('div');d.className='wifi-item';
   d.innerHTML='<div><div class="name">'+n.ssid+'</div><div class="meta">'+n.security+'</div></div><div class="meta">'+n.signal+' dBm</div>';
-  d.onclick=()=>showWifiForm(n.ssid,n.security);
+  d.onclick=()=>{
+   list.querySelectorAll('.wifi-item.is-selected').forEach(item=>item.classList.remove('is-selected'));
+   d.classList.add('is-selected');
+   showWifiForm(n.ssid,n.security);
+  };
   list.appendChild(d);
  });
 }
