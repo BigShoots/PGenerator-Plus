@@ -21,6 +21,9 @@ assert(source.indexOf('data-workspace-target="ui-settings"') < source.indexOf('d
 assert(source.includes('function meterExportHcfrChc()'), 'CHC export action is missing');
 assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC import action is missing');
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
+assert(source.includes('function meterHcfrAlignedGrayscale(snap)') && source.includes('if(index<0) return null;'), 'partial grayscale export must preserve empty HCFR stimulus slots');
+assert(source.includes('const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);'), 'CHC export must not compact grayscale readings');
+assert(source.includes("empty stimulus slots are preserved and will appear blank in HCFR"), 'partial grayscale export must warn about blank HCFR slots');
 assert(source.includes("fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white"), 'HCFR prime white must match the chroma stimulus luminance');
 assert(source.includes("colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map"), 'ColorChecker master collection must mirror exported measurements');
 assert(source.includes('colorCheckerMode:0'), 'PGenerator ColorChecker must advertise HCFR Classic GCD mode');

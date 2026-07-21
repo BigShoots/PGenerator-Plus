@@ -42331,6 +42331,23 @@ function meterHcfrSnapshotList(){
  return Object.entries(meterSeriesCache||{}).filter(([,snap])=>snap&&String(snap.signal_mode||mode).toLowerCase()===mode&&Array.isArray(snap.readings)&&snap.readings.some(meterHcfrValidReading)).map(([key,snap])=>({key,snap}));
 }
 
+// HCFR derives each grayscale stimulus from the array position. Never compact
+// a partially measured series: one omitted reading would shift every later
+// XYZ value onto the wrong stimulus (a 21-point series becomes 20 points).
+function meterHcfrAlignedGrayscale(snap){
+ const readings=(snap&&Array.isArray(snap.readings)?snap.readings:[]).filter(meterHcfrValidReading);
+ const steps=(snap&&Array.isArray(snap.steps)?snap.steps:[]).filter(step=>meterSeriesStepIsGreyscale(step)&&!meterIsWhiteReferenceReading(step));
+ if(!steps.length) return readings.sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0));
+ const used=new Set();
+ return [...steps].sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0)).map(step=>{
+  const ire=meterReadingPlotIre(step);
+  const index=readings.findIndex((rd,i)=>!used.has(i)&&ire!=null&&meterReadingPlotIre(rd)!=null&&Math.abs(Number(meterReadingPlotIre(rd))-Number(ire))<0.001);
+  if(index<0) return null;
+  used.add(index);
+  return readings[index];
+ });
+}
+
 function meterHcfrPreferenceModel(mode,white,black){
  const value=(id,fallback)=>{const el=document.getElementById(id),n=Number(el&&el.value);return Number.isFinite(n)?n:fallback;};
  const text=(id,fallback)=>{const el=document.getElementById(id);return String((el&&el.value)||fallback||'');};
@@ -42380,15 +42397,15 @@ function meterBuildHcfrExportModel(){
  const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries[0]||null;
  const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries[0]||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
- const grey=valid(greyEntry&&greyEntry.snap).sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0));
+ const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
  valid(satEntry&&satEntry.snap).forEach(rd=>{const name=String(rd.name||'').toLowerCase();for(const key of Object.keys(satGroups)){const hue=key.replace('Saturation','').toLowerCase();if(name.includes(hue)){satGroups[key].push(rd);break;}}});
  Object.keys(satGroups).forEach(key=>{const list=satGroups[key].sort((a,b)=>Number(a.sat_pct||a.ire||0)-Number(b.sat_pct||b.ire||0));satGroups[key]=list.length===4?[null,...list]:list;});
  const colors=valid(colorEntry&&colorEntry.snap), fixed={};
  const fixedMap=[['redPrimary',24],['greenPrimary',25],['bluePrimary',26],['cyanSecondary',27],['magentaSecondary',28],['yellowSecondary',29]];
  fixedMap.forEach(([name,index])=>{fixed[name]=colors[index]||null;});
- const black=grey.find(rd=>Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
- const white=[...grey].reverse().find(rd=>Number(meterReadingPlotIre(rd)||0)>=99)||null;
+ const black=grey.find(rd=>rd&&Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
+ const white=[...grey].reverse().find(rd=>rd&&Number(meterReadingPlotIre(rd)||0)>=99)||null;
  // HCFR grades primary and saturation luminance against primeWhite: a white
  // patch at the SAME signal level as the chroma patches, not the full-scale
  // on/off white. SDR uses 75% chroma (about 50% linear at gamma 2.4); writing
@@ -42400,7 +42417,7 @@ function meterBuildHcfrExportModel(){
  const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
  const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
  // HCFR GCD aligns the 18 chromatic patches plus PGenerator's full black and
  // white anchors. The four PGenerator neutral chips use different stimuli
  // from GCD's named grays, so preserve them as free measurements instead of
