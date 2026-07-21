@@ -10603,7 +10603,9 @@ body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding
 .meter-3dlut-workspace-label{margin-bottom:9px;color:var(--text2);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .meter-3dlut-workspace-status{margin-top:9px;color:var(--text2);font-size:.74rem}
 body.layout-desktop #meter3dLutWorkspaceCard #meterSeriesGroup3dLut{display:flex!important;width:100%;align-items:center}
+body.layout-desktop #meter3dLutWorkspaceCard #meter3dLutSelectSeriesBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsBtn{display:none!important}
+body.layout-tablet #meter3dLutWorkspaceBuildBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:grid;grid-template-columns:minmax(260px,.75fr) minmax(0,1.25fr);gap:14px 18px;align-items:start}
@@ -10624,6 +10626,16 @@ body.layout-desktop #meter3dLutWorkspaceCard #meterSolvedLutList{background:var(
 .meter-solved-lut-name-date{display:block;margin-top:2px;color:var(--text2);font-size:.68rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 [data-theme="light"] .meter-solved-lut-name:hover{background:var(--hover-bg)}
 [data-theme="light"] .meter-solved-lut-name.is-selected{background:var(--selected-bg)}
+.meter-3dlut-measure-card{width:min(900px,calc(100vw - 36px));max-height:calc(100vh - 36px);display:flex;flex-direction:column;gap:10px;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box}
+.meter-3dlut-measure-status{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text);font-size:.8rem}
+.meter-3dlut-measure-track{height:9px;border-radius:5px;background:#0d0f18;border:1px solid rgba(255,255,255,.12);overflow:hidden}
+.meter-3dlut-measure-fill{height:100%;width:0;background:var(--accent);transition:width .2s ease}
+#meterBuild3dLutCieHost{min-height:0;overflow:auto}
+#meterBuild3dLutCieHost #chartCIEBox{width:100%!important;max-width:none!important;flex:none!important}
+#meterBuild3dLutCieHost #chartCIE{width:100%!important;height:min(68vh,680px)!important;max-width:none!important}
+#meterBuild3dLutCieHost #chartCIEExpandBtn{display:none!important}
+[data-theme="light"] .meter-3dlut-measure-card{background:var(--surface-modal);border-color:var(--border)}
+[data-theme="light"] .meter-3dlut-measure-track{background:var(--surface-inset);border-color:var(--border)}
 body.layout-desktop .dashboard > .card > h2{cursor:default;font-size:1rem;margin-bottom:14px}
 body.layout-desktop .dashboard > .card > h2::after{display:none}
 body.layout-desktop .dashboard > .card .drag-handle{display:none}
@@ -11407,6 +11419,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
            its descriptions. The LUT cube visual lives in LUT Tools. -->
       <button class="btn btn-sm btn-secondary" id="meter3dLutSelectSeriesBtn" onclick="meterOpenLg3dSelectSeriesModal()" title="Choose a 3D LUT profiling series to measure (lattice / skeleton / hybrid) — same method chooser and descriptions as the standalone 3D LUT AutoCal">Select series&hellip;</button>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
+      <button class="btn btn-sm btn-primary" id="meter3dLutWorkspaceBuildBtn" onclick="meterDesktop3dLutBuildFlow()">Build 3D LUT</button>
       <span id="meterCustomSeriesLoaded3dLut" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
       <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="View, import and download 3D LUTs">LUT Tools</button>
      </div>
@@ -11696,6 +11709,16 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div id="lutSolveProgressFill" class="meter-workflow-progress-fill active" style="width:8%;height:100%"></div>
     </div>
     <div id="lutSolveProgressDetail" style="font-size:.7rem;color:var(--text2);margin-top:10px;line-height:1.4">&nbsp;</div>
+   </div>
+  </div>
+  <div id="meterBuild3dLutMeasureModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100040;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div class="meter-3dlut-measure-card">
+    <div class="meter-3dlut-measure-status">
+     <strong>Measuring 3D LUT profile</strong>
+     <span id="meterBuild3dLutMeasureCounter">Starting meter…</span>
+    </div>
+    <div class="meter-3dlut-measure-track"><div id="meterBuild3dLutMeasureFill" class="meter-3dlut-measure-fill"></div></div>
+    <div id="meterBuild3dLutCieHost"></div>
    </div>
   </div>
   <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
@@ -12097,6 +12120,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </div>
      </div>
      <div id="colorTopLayout" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;width:100%;box-sizing:border-box">
+      <span id="meterBuild3dLutCieHome" hidden></span>
       <div id="chartCIEBox" style="position:relative;flex:0 0 600px;max-width:100%">
        <canvas id="chartCIE" width="640" height="600" style="width:100%;height:450px;max-width:100%;background:#0d0d15;border-radius:6px;display:block"></canvas>
        <button type="button" id="chartCIEExpandBtn" class="chart-expand-btn" title="Expand to full width" aria-label="Expand CIE chart to full width" onclick="meterToggleChartExpand('cie')"></button>
@@ -12210,7 +12234,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div>
     <p>Select a profiling series, measure it and generate a 3D LUT. Solved LUTs and the interactive cube viewer remain available below.</p>
    </div>
-   <button class="btn btn-primary" id="meter3dLutWorkspaceBuildBtn" onclick="meterReadSeriesPrimaryAction()">Build 3D LUT</button>
   </div>
   <div class="meter-3dlut-workspace-section">
    <div class="meter-3dlut-workspace-label">Profiling series</div>
@@ -15467,7 +15490,6 @@ function meterSync3dLutWorkspaceUi(){
  const status=document.getElementById('meter3dLutWorkspaceStatus');
  if(!button&&!status) return;
  const selected=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
- const source=document.getElementById('meterReadSeriesBtn');
  const loaded=document.getElementById('meterCustomSeriesLoaded3dLut');
  const loadedName=loaded&&loaded.style.display!=='none'?String(loaded.textContent||'').trim():'';
  const picker=document.getElementById('meter3dLutSelectSeriesBtn');
@@ -15476,8 +15498,10 @@ function meterSync3dLutWorkspaceUi(){
   ?('Selected: '+(loadedName||pickerName||'3D LUT profiling series'))
   :'Select a profiling series to begin.';
  if(button){
-  button.disabled=!selected||!meterDetected||(source?source.disabled:false);
-  button.title=source?source.title:'';
+  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterContinuousActive;
+  const dirty=hasUnsavedSettings();
+  button.disabled=!meterDetected||dirty||busy;
+  button.title=!meterDetected?'Connect a meter first':dirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'Choose a profiling series and build a 3D LUT';
   button.textContent=(meterSeriesRunning||meterActionPending)?'Building…':'Build 3D LUT';
  }
 }
@@ -35648,12 +35672,16 @@ function meterOpenLg3dSelectSeriesModal(){
  uiSyncBodyScrollLock();
  try{ const b=document.getElementById('meterLg3dSelSeriesLoadBtn'); if(b) b.focus(); }catch(e){}
 }
-function meterCloseLg3dSelectSeriesModal(){
+function meterCloseLg3dSelectSeriesModal(preserveBuildFlow){
  const modal=document.getElementById('meterLg3dSelectSeriesModal');
  if(modal) modal.style.display='none';
+ if(!preserveBuildFlow) meterDesktop3dLutBuildAfterSelect=false;
+ const load=document.getElementById('meterLg3dSelSeriesLoadBtn');
+ if(load) load.textContent='Load series';
  uiSyncBodyScrollLock();
 }
 async function meterConfirmLg3dSelectSeries(){
+ const startBuild=!!meterDesktop3dLutBuildAfterSelect&&document.body.classList.contains('layout-desktop');
  let src=meterLg3dSelectSeriesSourceValue();
  if(meterLg3dHdrMatrixOnly()) src='matrix';
  meterLg3dSelSeriesLastSource=src;
@@ -35661,23 +35689,27 @@ async function meterConfirmLg3dSelectSeries(){
  // Do NOT use meterLg3dPrepareChartContext — that jumps to Autocal and leaves
  // an empty shell with no Build button.
  if(src==='matrix'){
-  meterCloseLg3dSelectSeriesModal();
+  meterDesktop3dLutBuildAfterSelect=false;
+  meterCloseLg3dSelectSeriesModal(true);
   meterSeriesTab='3dlut';
   try{ meterInstallMatrixProfileSeries({clearReadings:true}); }catch(e){}
   try{ meterSync3dLutTabChartVisibility(); }catch(e){}
   try{ meterUpdateReadButtons(); }catch(e){}
-  toast('Matrix 5-point series loaded — use Build 3D LUT to measure and solve');
+  if(startBuild) setTimeout(function(){ meterBuild3dLutSeries(); },40);
+  else toast('Matrix 5-point series loaded — use Build 3D LUT to measure and solve');
   return;
  }
  const latSel=document.getElementById('meterLg3dSelSeriesLattice');
  const resolved=meterLg3dResolveProfilingChoice(src,(src==='lattice'&&latSel)?latSel.value:null);
  if(!resolved.series||resolved.series.id==null){ toast('No measurable series for that choice',true); return; }
- meterCloseLg3dSelectSeriesModal();
+ meterDesktop3dLutBuildAfterSelect=false;
+ meterCloseLg3dSelectSeriesModal(true);
  // Ensure charts reappear under the 3D LUT tab for the chosen series.
  if(meterNormalizeSeriesTab(meterSeriesTab)!=='3dlut') meterSeriesTab='3dlut';
  await meterSelectSeries('colors',resolved.series.id,{force:true,preserveTab:true});
  try{ meterSync3dLutTabChartVisibility(); }catch(e){}
  try{ meterUpdateReadButtons(); }catch(e){}
+ if(startBuild) setTimeout(function(){ meterBuild3dLutSeries(); },40);
 }
 
 // Upload-only picker for the start modal (and any legacy callers).
@@ -36586,6 +36618,53 @@ function meterReadSeriesPrimaryAction(){
  return meterRunSeries();
 }
 
+let meterDesktop3dLutBuildAfterSelect=false;
+function meterDesktop3dLutBuildFlow(){
+ if(!document.body.classList.contains('layout-desktop')) return meterReadSeriesPrimaryAction();
+ if(meterActionPending||meterSeriesRunning){ toast('Meter operation already in progress',true); return false; }
+ meterDesktop3dLutBuildAfterSelect=true;
+ meterOpenLg3dSelectSeriesModal();
+ const load=document.getElementById('meterLg3dSelSeriesLoadBtn');
+ if(load) load.textContent='Continue';
+ return true;
+}
+
+function meterBuild3dLutMeasureShow(){
+ const modal=meterEnsureModalOnBody(document.getElementById('meterBuild3dLutMeasureModal'));
+ const box=document.getElementById('chartCIEBox');
+ const host=document.getElementById('meterBuild3dLutCieHost');
+ if(!modal||!box||!host) return;
+ if(box.parentNode!==host) host.appendChild(box);
+ meterBuild3dLutMeasureUpdate({current_step:0,total_steps:(meterSeriesSteps||[]).length,current_name:'Connecting to meter'});
+ modal.style.display='flex';
+ try{ uiSyncBodyScrollLock(); }catch(e){}
+ setTimeout(function(){
+  try{
+   window.dispatchEvent(new Event('resize'));
+   drawCIEChart((meterReadings||[]).filter(function(rd){ return rd&&meterReadingHasLuminance(rd); }));
+  }catch(e){}
+ },40);
+}
+function meterBuild3dLutMeasureUpdate(status){
+ const s=status||{};
+ const total=Math.max(0,Number(s.total_steps)||Number((meterSeriesSteps||[]).length)||0);
+ const current=Math.max(0,Number(s.current_step)||0);
+ const counter=document.getElementById('meterBuild3dLutMeasureCounter');
+ const fill=document.getElementById('meterBuild3dLutMeasureFill');
+ const name=String(s.current_name||'Reading patch');
+ if(counter) counter.textContent=total?(name+' · patch '+Math.min(current,total)+' of '+total):name;
+ if(fill) fill.style.width=(total?Math.max(0,Math.min(100,current*100/total)):0)+'%';
+}
+function meterBuild3dLutMeasureHide(){
+ const modal=document.getElementById('meterBuild3dLutMeasureModal');
+ const box=document.getElementById('chartCIEBox');
+ const home=document.getElementById('meterBuild3dLutCieHome');
+ if(modal) modal.style.display='none';
+ if(box&&home&&box.previousElementSibling!==home) home.insertAdjacentElement('afterend',box);
+ try{ uiSyncBodyScrollLock(); }catch(e){}
+ try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+}
+
 // Pending Build 3D LUT options from the pre-measure confirm (not format —
 // format is chosen only after the solve on the completion modal).
 let meterBuild3dLutPending=null;
@@ -36658,6 +36737,7 @@ async function meterBuild3dLutSeries(){
  meterBuild3dLutPending={includeGreyscale:includeGrey,solveCubeSize:cubeSize,series:series};
  const started=await meterRunSeries();
  if(!started) meterBuild3dLutPending=null;
+ else if(document.body.classList.contains('layout-desktop')) meterBuild3dLutMeasureShow();
  return started;
 }
 
@@ -36920,6 +37000,7 @@ async function meterPollSeries(){
   // Always show the patch counter next to the name (e.g. "75/0/50 (12/125)").
   const stepCounter=(r.current_step!=null&&r.total_steps)?(' ('+r.current_step+'/'+r.total_steps+')'):'';
   const label=r.current_name?(r.current_name+stepCounter):('Step '+r.current_step+'/'+r.total_steps);
+  if(meterBuild3dLutPending) meterBuild3dLutMeasureUpdate(r);
   if(meterInternalSeriesWorkflow&&meterInternalSeriesWorkflow.workflow){
    meterSetWorkflowProgress(r,{workflow:meterInternalSeriesWorkflow.workflow,label:meterInternalSeriesWorkflow.label||label});
   }else{
@@ -36952,6 +37033,8 @@ async function meterPollSeries(){
  }
 
  if(r.status==='complete'||r.status==='cancelled'||r.status==='error'){
+  if(meterBuild3dLutPending) meterBuild3dLutMeasureHide();
+  if(r.status!=='complete') meterBuild3dLutPending=null;
   clearInterval(meterSeriesPolling);
   meterSeriesPolling=null;
   meterSeriesRunning=false;
