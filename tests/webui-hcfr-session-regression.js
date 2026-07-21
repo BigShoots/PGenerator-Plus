@@ -29,8 +29,12 @@ assert(source.includes('HCFR Sat Sweep'), 'HCFR-compatible constant-luminance sa
 assert(source.includes('HCFR ColorChecker'), 'HCFR-compatible GCD ColorChecker series is missing');
 assert(source.includes("['Dark Skin',45.20,31.96,26.03]"), 'client HCFR GCD Dark Skin stimulus is not exact');
 assert(source.includes('["Dark Skin","hcfr_rgb",45.20,31.96,26.03]'), 'server HCFR GCD Dark Skin stimulus is not exact');
-assert(source.includes("colorEntries.find(e=>Number(e.snap.points)===29)"), 'CHC export must prefer the HCFR ColorChecker series');
-assert(source.includes("satEntries.find(e=>Number(e.snap.points)===25)"), 'CHC export must prefer the HCFR saturation series');
+assert(source.includes('id="meterHcfrFixedCodes"'), 'normal built-in series controls need the HCFR fixed-code checkbox');
+assert(source.includes("meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30)"), 'ColorChecker button must select the checkbox-backed variant');
+assert(source.includes("meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24)"), 'Sat Sweep button must select the checkbox-backed variant');
+assert(source.includes("localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0')"), 'HCFR fixed-code preference must persist');
+assert(source.includes("Number(e.snap.points)===(preferHcfr?29:30)"), 'CHC export must follow the ColorChecker checkbox variant');
+assert(source.includes("Number(e.snap.points)===(preferHcfr?25:24)"), 'CHC export must follow the saturation checkbox variant');
 assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export must serialize the active RGB range');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
 assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');

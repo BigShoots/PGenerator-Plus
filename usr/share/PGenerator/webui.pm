@@ -11510,10 +11510,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
-     <button class="btn btn-sm btn-secondary" data-series="colors-30" onclick="meterSelectSeries('colors',30)">ColorChecker</button>
-     <button class="btn btn-sm btn-secondary" data-series="colors-29" onclick="meterSelectSeries('colors',29)" title="HCFR Classic GCD legal-range patch sequence for SDR session export">HCFR ColorChecker</button>
-     <button class="btn btn-sm btn-secondary" data-series="saturations-24" onclick="meterSelectSeries('saturations',24)">Sat Sweep</button>
-     <button class="btn btn-sm btn-secondary" data-series="saturations-25" onclick="meterSelectSeries('saturations',25)" title="Constant-luminance saturation sequence compatible with HCFR saturation references">HCFR Sat Sweep</button>
+     <button class="btn btn-sm btn-secondary" id="meterColorCheckerSeriesBtn" data-series="colors-30" onclick="meterSelectBuiltinColorChecker()">ColorChecker</button>
+     <button class="btn btn-sm btn-secondary" id="meterSaturationSeriesBtn" data-series="saturations-24" onclick="meterSelectBuiltinSaturationSweep()">Sat Sweep</button>
+     <label id="meterHcfrFixedCodesWrap" title="Use HCFR Classic GCD fixed video levels for ColorChecker and HCFR constant-luminance saturation patches. Limited/Full codes follow the active output range." style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
+      <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed GCD Video Codes
+     </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -29556,6 +29557,34 @@ function meterDefaultTargetsForColorSeries(type,points){
  }
 }
 
+const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
+function meterHcfrFixedCodesEnabled(){
+ const el=document.getElementById('meterHcfrFixedCodes');
+ return !!(el&&el.checked);
+}
+function meterSyncHcfrFixedCodesUi(){
+ const enabled=meterHcfrFixedCodesEnabled();
+ const colorBtn=document.getElementById('meterColorCheckerSeriesBtn');
+ const satBtn=document.getElementById('meterSaturationSeriesBtn');
+ if(colorBtn){colorBtn.dataset.series='colors-'+(enabled?29:30);colorBtn.title=enabled?'HCFR Classic GCD fixed video-level ColorChecker':'PGenerator native xyY ColorChecker';}
+ if(satBtn){satBtn.dataset.series='saturations-'+(enabled?25:24);satBtn.title=enabled?'HCFR constant-luminance saturation sweep':'PGenerator native fixed-maximum-channel saturation sweep';}
+}
+function meterRestoreHcfrFixedCodesPreference(){
+ const el=document.getElementById('meterHcfrFixedCodes');
+ if(!el) return;
+ try{el.checked=localStorage.getItem(METER_HCFR_FIXED_CODES_KEY)==='1';}catch(e){el.checked=false;}
+ meterSyncHcfrFixedCodesUi();
+}
+function meterSelectBuiltinColorChecker(){return meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30);}
+function meterSelectBuiltinSaturationSweep(){return meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24);}
+function meterOnHcfrFixedCodesChange(checked){
+ try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0');}catch(e){}
+ meterSyncHcfrFixedCodesUi();
+ const type=String(meterActiveSeriesType||'');
+ if(type==='colors'&&(Number(meterActiveSeriesPoints)===29||Number(meterActiveSeriesPoints)===30)) meterSelectBuiltinColorChecker();
+ else if(type==='saturations'&&(Number(meterActiveSeriesPoints)===24||Number(meterActiveSeriesPoints)===25)) meterSelectBuiltinSaturationSweep();
+}
+
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
@@ -42318,9 +42347,11 @@ function meterBuildHcfrExportModel(){
  const byType=type=>entries.filter(e=>String(e.snap.type||'')===type).sort((a,b)=>Number(b.snap.updated_at||0)-Number(a.snap.updated_at||0));
  const greyEntry=byType('greyscale')[0]||null;
  const satEntries=byType('saturations'),colorEntries=byType('colors');
- // Prefer explicitly HCFR-compatible measurements over a newer native sweep.
- const satEntry=satEntries.find(e=>Number(e.snap.points)===25)||satEntries[0]||null;
- const colorEntry=colorEntries.find(e=>Number(e.snap.points)===29)||colorEntries[0]||null;
+ // The visible checkbox chooses which built-in variant export consumes. Each
+ // variant keeps its own cache key, so toggling never re-labels measurements.
+ const preferHcfr=meterHcfrFixedCodesEnabled();
+ const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries[0]||null;
+ const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries[0]||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=valid(greyEntry&&greyEntry.snap).sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0));
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
@@ -44249,6 +44280,7 @@ const meterCubeImportInputEl=document.getElementById('meterCubeImportInput');
 if(meterCubeImportInputEl) meterCubeImportInputEl.addEventListener('change',meterImportCubeFile);
 meterCieViewOptsLoad();
 initMeterGreyCanvasEditing();
+meterRestoreHcfrFixedCodesPreference();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
 ['signal_mode','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
