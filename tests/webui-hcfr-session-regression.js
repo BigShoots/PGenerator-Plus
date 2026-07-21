@@ -29,6 +29,9 @@ assert(source.includes('HCFR Sat Sweep'), 'HCFR-compatible constant-luminance sa
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
+assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series cache persistence must support deferred writes');
+assert(source.includes("meterCacheSeriesState(meterSeriesRunning?'running':'complete',{deferPersist:true})"), 'series switching must not synchronously persist the entire cache');
+assert(source.includes('_defer_cache_persist:true'), 'cached restore must coalesce its persistence write');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
 
 console.log('webui HCFR Session workspace regression OK');

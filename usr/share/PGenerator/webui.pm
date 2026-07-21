@@ -16380,6 +16380,15 @@ function meterPersistSeriesCache(){
  }catch(e){}
 }
 
+let meterSeriesCachePersistTimer=null;
+function meterScheduleSeriesCachePersist(){
+ if(meterSeriesCachePersistTimer) clearTimeout(meterSeriesCachePersistTimer);
+ meterSeriesCachePersistTimer=setTimeout(()=>{
+  meterSeriesCachePersistTimer=null;
+  meterPersistSeriesCache();
+ },0);
+}
+
 function meterLoadSeriesCache(){
  if(!meterSeriesCacheBootId) return;
  try{
@@ -23077,7 +23086,7 @@ function meterRecoverSeries(s){
  } else {
   drawAllChartsPreset(sortedSteps);
  }
-  meterCacheSeriesState(s.status||'complete');
+  meterCacheSeriesState(s.status||'complete',s&&s._defer_cache_persist?{deferPersist:true}:null);
   if(s.status==='running'||s.status==='setup'||s.status==='started'){
   // Series is still running — start polling and show stop button
   meterSeriesRunning=true;
@@ -23274,13 +23283,14 @@ function meterIsWhiteReferenceReading(rd){
  return name==='white ref';
 }
 
-function meterCacheSeriesState(status){
+function meterCacheSeriesState(status,options){
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const prev=meterSeriesCache[meterActiveSeriesKey]||null;
  const readings=JSON.parse(JSON.stringify(meterReadings||[]));
  if(readings.length===0&&prev&&meterSeriesSnapshotIsCleared(prev)&&String(status||'').toLowerCase()!=='running'){
   meterSeriesCache[meterActiveSeriesKey]={...prev,updated_at:Date.now()};
-  meterPersistSeriesCache();
+  if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
+  else meterPersistSeriesCache();
   return;
  }
 	 meterSeriesCache[meterActiveSeriesKey]={
@@ -23298,7 +23308,8 @@ function meterCacheSeriesState(status){
   series_id:meterSharedSeriesId||((prev&&prev.series_id)?prev.series_id:null),
   updated_at:Date.now()
  };
- meterPersistSeriesCache();
+ if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
+ else meterPersistSeriesCache();
 }
 
 function meterRestoreSeriesFromCache(key){
@@ -23316,7 +23327,8 @@ function meterRestoreSeriesFromCache(key){
 	  dv_map_mode:cached.dv_map_mode,
 	  steps:JSON.parse(JSON.stringify(cached.steps)),
   readings:JSON.parse(JSON.stringify(cached.readings||[])),
-  white_reading:cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null
+  white_reading:cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null,
+  _defer_cache_persist:true
  });
  meterSharedSeriesId=null;
  return true;
@@ -29522,7 +29534,10 @@ async function meterSelectSeries(type,points,opts){
   }
  }
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
-  meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+  // Update the in-memory snapshot immediately, then persist after this event
+  // has rendered the newly selected button and chart. localStorage writes are
+  // synchronous and can otherwise stall on large profiling/session caches.
+  meterCacheSeriesState(meterSeriesRunning?'running':'complete',{deferPersist:true});
  }
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
