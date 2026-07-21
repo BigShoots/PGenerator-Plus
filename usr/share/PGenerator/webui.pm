@@ -10880,8 +10880,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="integrations" onclick="pgSelectDesktopWorkspace('integrations')">HDMI-CEC</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="diagnostics" onclick="pgSelectDesktopWorkspace('diagnostics')">HDMI Infoframes</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" onclick="pgSelectDesktopWorkspace('ui-settings')">UI Settings</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
  </nav>
@@ -15261,8 +15259,7 @@ const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration','meter-profile':'Meter Profile',
- 'display-control':'LG Display',connectivity:'Connectivity',
- integrations:'HDMI-CEC',diagnostics:'HDMI Infoframes','ui-settings':'UI Settings',system:'System'
+ 'display-control':'LG Display',connectivity:'Connectivity','ui-settings':'UI Settings',system:'System'
 };
 let pgThemeMode='dark';
 let pgLayoutPreference='tablet';

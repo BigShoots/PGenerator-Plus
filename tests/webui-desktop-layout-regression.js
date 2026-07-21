@@ -17,7 +17,7 @@ assert(/class="layout-switch"[^>]*role="group"[^>]*aria-label="Interface layout"
 assert((webui.match(/class="layout-switch-btn"/g) || []).length === 2, 'layout switch has exactly two choices');
 
 // Desktop navigation is task-oriented and always begins at Output.
-const workspaces = ['output', 'patterns', 'calibration', 'display-control', 'connectivity', 'integrations', 'diagnostics', 'system'];
+const workspaces = ['output', 'patterns', 'calibration', 'meter-profile', 'display-control', 'connectivity', 'ui-settings', 'system'];
 for (const workspace of workspaces) {
   assert(webui.includes(`data-workspace-target="${workspace}"`), `sidebar contains ${workspace}`);
   const inMain = webui.includes(`data-desktop-workspace="${workspace}"`);
@@ -28,12 +28,12 @@ assert(webui.includes("let pgDesktopWorkspace='output';"), 'Output is the deskto
 assert(webui.includes("if(previous!=='desktop'||(options&&options.resetWorkspace)) pgDesktopWorkspace='output';"), 'entering desktop resets to Output');
 assert(webui.includes("btn.setAttribute('aria-current','page')"), 'active navigation state is exposed to assistive technology');
 assert(webui.includes("'display-control':'LG Display'"), 'Display Control workspace is presented as LG Display');
-assert(webui.includes("integrations:'HDMI-CEC'"), 'Integrations workspace is presented as HDMI-CEC');
-assert(webui.includes("diagnostics:'HDMI Infoframes'"), 'Diagnostics workspace is presented as HDMI Infoframes');
+assert(!webui.includes('data-workspace-target="integrations"')&&!webui.includes("integrations:'HDMI-CEC'"), 'HDMI-CEC is omitted from Desktop workspaces because it is available in the utility drawer');
+assert(!webui.includes('data-workspace-target="diagnostics"')&&!webui.includes("diagnostics:'HDMI Infoframes'"), 'HDMI Infoframes is omitted from Desktop workspaces because it is available in the utility drawer');
 assert(/data-widget="info" data-desktop-workspace="system" data-desktop-order="10"/.test(webui), 'Device Info is first in System');
 assert(/data-widget="resolve" data-desktop-workspace="connectivity" data-desktop-order="40"/.test(webui), 'Resolve Protocol is in Connectivity');
-assert(/data-widget="cec" data-desktop-workspace="integrations"/.test(webui), 'HDMI-CEC contains the CEC panel');
-assert(/data-widget="infoframes" data-desktop-workspace="diagnostics"/.test(webui), 'HDMI Infoframes contains the infoframe panel');
+assert(/data-widget="cec" data-desktop-workspace="integrations"/.test(webui), 'the HDMI-CEC card remains available to Tablet mode');
+assert(/data-widget="infoframes" data-desktop-workspace="diagnostics"/.test(webui), 'the HDMI Infoframes card remains available to Tablet mode');
 assert(/id="lgCardTitle"[^>]*>.*LG Display/.test(lg), 'Tablet LG card is titled LG Display');
 
 // The same panels remain in place; desktop only changes presentation and visibility.
@@ -51,7 +51,7 @@ assert(webui.includes("localStorage.getItem('cardCollapse')"), 'collapse prefere
 assert(webui.includes("localStorage.setItem('pg_widget_order'"), 'tablet widget ordering remains supported');
 assert(webui.includes('body.layout-desktop #chartsGreyscaleFullWrap{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,1fr)'), 'desktop greyscale reserves a right chart column');
 assert(webui.includes('#meterEotfLuminanceGrid{grid-column:2;grid-row:1 / span 2;display:grid!important;grid-template-columns:minmax(0,1fr)!important'), 'desktop stacks EOTF above luminance');
-assert(webui.includes('--desktop-eotf-chart-height:clamp(300px,40vh,420px)'), 'Desktop EOTF and luminance charts have a bounded responsive height');
+assert(webui.includes('--desktop-eotf-chart-height:clamp(420px,54vh,560px)'), 'Desktop EOTF and luminance charts have a bounded responsive height');
 assert(webui.includes('grid-template-rows:repeat(2,var(--desktop-eotf-chart-height))'), 'Desktop EOTF/luminance rows cannot grow from resized canvas buffers');
 assert(webui.includes('height:auto;align-self:start;margin-bottom:0!important'), 'Desktop EOTF/luminance stack does not feed parent height back into its canvases');
 assert(webui.includes('id="meterGammaBlock"')&&webui.includes('id="meterEotfLuminanceGrid"'), 'greyscale chart regions have stable layout anchors');
