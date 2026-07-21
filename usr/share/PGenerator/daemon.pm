@@ -34,6 +34,8 @@ sub fork_pattern_daemon (@) {
   threads->create(\&discovery_lightspace)->detach();
   threads->create(\&discovery_rpc)->detach();
   threads->create(\&resolve_connection_thread)->detach();
+  &lg_startup_scan_prepare();
+  threads->create(\&lg_startup_scan_worker)->detach();
   threads->create(\&webui_http)->detach();
   threads->create(\&webui_mdns)->detach();
   &pattern_daemon();

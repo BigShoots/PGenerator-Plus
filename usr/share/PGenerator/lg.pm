@@ -834,6 +834,54 @@ sub lg_scan_devices (@) {
  };
 }
 
+# First-load LG discovery runs in its own daemon thread. The HTTP server can
+# continue serving meter/chart requests while network probes are in flight;
+# the browser only polls the small result file written here.
+sub lg_startup_scan_paths (@) {
+ return ("/tmp/pgenerator-lg-startup-scan.running","/tmp/pgenerator-lg-startup-scan.json");
+}
+
+sub lg_startup_scan_prepare (@) {
+ my ($running,$result)=&lg_startup_scan_paths();
+ unlink($running);
+ unlink($result);
+ if(open(my $fh,">",$running)) { print $fh time()."\n"; close($fh); }
+}
+
+sub lg_startup_scan_worker (@) {
+ my ($running,$result_file)=&lg_startup_scan_paths();
+ # Let renderer and USB meter initialization get their first turn before the
+ # network sweep begins. This thread never owns the WebUI listening socket.
+ sleep(2);
+ my $result=eval { &lg_scan_devices() };
+ if(ref($result) ne "HASH") {
+  $result={status=>"error",devices=>[],message=>"Automatic LG TV scan failed"};
+ }
+ my $tmp=$result_file.".".threads->tid();
+ if(open(my $fh,">",$tmp)) {
+  print $fh &lg_encode_json($result);
+  close($fh);
+  rename($tmp,$result_file);
+ }
+ unlink($running);
+}
+
+sub lg_startup_scan_status (@) {
+ my ($running,$result_file)=&lg_startup_scan_paths();
+ if(-f $running) {
+  my $age=time()-((stat($running))[9]||0);
+  return &lg_encode_json({status=>"running",running=>JSON::PP::true}) if($age < 90);
+  unlink($running);
+ }
+ if(-f $result_file) {
+  my $raw="";
+  if(open(my $fh,"<",$result_file)) { local $/; $raw=<$fh>; close($fh); }
+  my $decoded=eval { JSON::PP::decode_json($raw) };
+  return &lg_encode_json($decoded) if(ref($decoded) eq "HASH");
+ }
+ return &lg_encode_json({status=>"idle",running=>JSON::PP::false,devices=>[]});
+}
+
 sub lg_target_ip (@) {
  my ($payload,$clients)=@_;
  $payload={} if(ref($payload) ne "HASH");
@@ -1966,6 +2014,9 @@ sub webui_lg_api (@) {
  if($path eq "/api/lg/scan/saved" && $method eq "GET") {
   return &lg_encode_json(&lg_scan_saved_devices());
  }
+ if($path eq "/api/lg/scan/startup" && $method eq "GET") {
+  return &lg_startup_scan_status();
+ }
  if($path eq "/api/lg/calibration-mode" && $method eq "POST") {
   return &webui_lg_calibration_mode($body);
  }
@@ -2721,6 +2772,24 @@ function lgDismissDetectedPrompt(){
 	  const s=await fetchJSON('/api/lg/scan/saved',{_quiet:true,_timeoutMs:4000});
 	  if(s&&Array.isArray(s.devices)&&s.devices.length) lgRenderScanResults(s);
 	 }catch(e){}
+	}
+
+	async function lgStartupAutoDetect(){
+	 const deadline=Date.now()+25000;
+	 let result=null;
+	 while(Date.now()<deadline){
+	  try{
+	   result=await fetchJSON('/api/lg/scan/startup',{_quiet:true,_timeoutMs:3000});
+	  }catch(e){ result=null; }
+	  if(result&&result.status!=='running') break;
+	  await new Promise(resolve=>setTimeout(resolve,600));
+	 }
+	 if(result&&Array.isArray(result.devices)&&result.devices.length){
+	  lgRenderScanResults(result);
+	  // The scan updates auto-detection metadata. Refreshing normal LG status
+	  // invokes the existing new-TV pairing prompt when appropriate.
+	  await loadLgStatus(true);
+	 }
 	}
 
 	async function lgScanTvs(force){
@@ -3735,11 +3804,9 @@ sub webui_lg_load_info_js (@) {
 }
 
 sub webui_lg_init_js (@) {
- # Only render saved TVs on page load. A full network scan can take ten or
- # more seconds and the legacy HTTP loop cannot serve meter status while it
- # runs, which made the calibration workspace briefly lose its meter/charts.
- # Full discovery remains available through the explicit Scan button.
- return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);';
+ # Saved TVs render immediately; the full first-start scan runs in a sibling
+ # daemon thread and is consumed asynchronously without blocking meter status.
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);setTimeout(()=>lgStartupAutoDetect(),1400);';
 }
 
 return 1;
