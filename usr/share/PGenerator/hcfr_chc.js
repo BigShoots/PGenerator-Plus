@@ -8,6 +8,11 @@
   const FILE_MAGIC = 'COLORHCF';
   const MATRIX_MAGIC = 'taMCCxir';
   const INVALID_XYZ_LIMIT = -99999;
+  const INVALID_XYZ = -99999.99;
+  // Serialized current-HCFR document objects following the measurement block.
+  // This tail comes from a v17 document using HCFR's simulated sensor. It is
+  // deliberately kept opaque: the measurement writer never modifies it.
+  const V17_DOCUMENT_TAIL_BASE64 = '//8BABAAQ1NpbXVsYXRlZFNlbnNvcnRhTUNDeGlyAQAAAAMAAAADAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPA/AQAAAAAAAAADAAAAAADIQgEAAAABAAAAAQAAAA8AAAB0YU1DQ3hpcgEAAAADAAAAAwAAAHsUrkfheuQ/H4XrUbge1T+gHoXrUbiePzMzMzMzM9M/MzMzMzMz4z+YmZmZmZm5PzMzMzMzM8M/uB6F61G4rj9I4XoUrkfpP3RhTUNDeGlyAQAAAAEAAAADAAAAiGNd3EYD1D91kxgEVg7VPwMJih9j7tY/AAACAAAAAAAAAAAA8D8CAAAAAQAAAAMAAAABAAAAAQAAAHsUrkfheoQ/AQAAAOxRuB6F67E///8BAA0AQ0dESUdlbmVyYXRvcgYAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAADAAAAAAAAAAAAAAAKAAAAAAAAAGQAAAAAAAAABgAAAAEAAAAAAAAAAQAAAAEAAAADAAAA///////////4////4f///wAAAAAAAAAAtgMAANoCAAAAAAAAAQAAAAEAAADpoQAAARUABQ==';
   const DEFAULT_LIMITS = Object.freeze({
     maxFileBytes: 32 * 1024 * 1024,
     maxArrayItems: 100000,
@@ -71,6 +76,139 @@
       }
       return value;
     }
+  }
+
+  class Writer {
+    constructor() { this.bytes = []; }
+    u8(v) { this.bytes.push(v & 255); }
+    u16(v) { this.u8(v); this.u8(v >>> 8); }
+    u32(v) { v = Number(v) >>> 0; this.u16(v); this.u16(v >>> 16); }
+    i32(v) { this.u32(Number(v) | 0); }
+    f64(v) {
+      const b = new ArrayBuffer(8);
+      new DataView(b).setFloat64(0, Number(v), true);
+      this.raw(new Uint8Array(b));
+    }
+    ascii(s) { for (let i = 0; i < s.length; i++) this.u8(s.charCodeAt(i)); }
+    raw(a) { for (const b of a) this.u8(b); }
+    finish() { return Uint8Array.from(this.bytes); }
+  }
+
+  function base64Bytes(value) {
+    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(value, 'base64'));
+    const binary = atob(value);
+    return Uint8Array.from(binary, c => c.charCodeAt(0));
+  }
+
+  function finite(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function normalizeColor(value) {
+    if (!value || value.valid === false) return { valid: false, X: INVALID_XYZ, Y: INVALID_XYZ, Z: INVALID_XYZ };
+    let X = finite(value.X, NaN), Y = finite(value.Y != null ? value.Y : value.luminance, NaN), Z = finite(value.Z, NaN);
+    const x = finite(value.x, NaN), y = finite(value.y, NaN);
+    if ((!Number.isFinite(X) || !Number.isFinite(Z)) && Number.isFinite(Y) && Number.isFinite(x) && Number.isFinite(y) && y > 0) {
+      X = x * Y / y;
+      Z = (1 - x - y) * Y / y;
+    }
+    if (![X, Y, Z].every(Number.isFinite)) return { valid: false, X: INVALID_XYZ, Y: INVALID_XYZ, Z: INVALID_XYZ };
+    return { valid: true, X, Y, Z };
+  }
+
+  function writeMatrix(writer, rows, columns, values) {
+    writer.ascii(MATRIX_MAGIC); writer.u32(1); writer.u32(columns); writer.u32(rows);
+    for (let column = 0; column < columns; column++) for (let row = 0; row < rows; row++) writer.f64(values[row][column]);
+  }
+
+  function writeColor(writer, value) {
+    const c = normalizeColor(value);
+    writer.u32(1);
+    writeMatrix(writer, 3, 1, [[c.X], [c.Y], [c.Z]]);
+    const zero = [[0,0,0],[0,0,0],[0,0,0]];
+    writeMatrix(writer, 3, 3, zero); writeMatrix(writer, 3, 3, zero);
+  }
+
+  function writeColorArray(writer, items) {
+    const list = Array.isArray(items) ? items : [];
+    writer.u32(list.length); list.forEach(item => writeColor(writer, item));
+  }
+
+  function writeSparseColorArray(writer, group, defaultDeclaredCount) {
+    const source = group && Array.isArray(group.items) ? group.items : [];
+    const declared = Math.max(1, finite(group && group.declaredCount, defaultDeclaredCount) | 0);
+    writer.u32(declared);
+    source.forEach((entry, serialIndex) => {
+      const index = finite(entry && entry.index, serialIndex) | 0;
+      if (index < 0 || index >= declared) throw new RangeError('Sparse color index is outside declared array');
+      writeColor(writer, entry); writer.u32(index);
+    });
+    writeColor(writer, { X: 0.123, Y: 0.456, Z: 0.789 });
+  }
+
+  function cp1252Bytes(value) {
+    const replacements = {'€':0x80,'‚':0x82,'ƒ':0x83,'„':0x84,'…':0x85,'†':0x86,'‡':0x87,'ˆ':0x88,'‰':0x89,'Š':0x8a,'‹':0x8b,'Œ':0x8c,'Ž':0x8e,'‘':0x91,'’':0x92,'“':0x93,'”':0x94,'•':0x95,'–':0x96,'—':0x97,'˜':0x98,'™':0x99,'š':0x9a,'›':0x9b,'œ':0x9c,'ž':0x9e,'Ÿ':0x9f};
+    return Uint8Array.from(Array.from(String(value == null ? '' : value)), ch => replacements[ch] != null ? replacements[ch] : (ch.charCodeAt(0) <= 255 ? ch.charCodeAt(0) : 0x3f));
+  }
+
+  function writeMfcString(writer, value) {
+    const bytes = cp1252Bytes(value);
+    if (bytes.length < 0xff) writer.u8(bytes.length);
+    else if (bytes.length < 0xfffe) { writer.u8(0xff); writer.u16(bytes.length); }
+    else { writer.u8(0xff); writer.u16(0xffff); writer.u32(bytes.length); }
+    writer.raw(bytes);
+  }
+
+  function defaultPreferences(overrides) {
+    return Object.assign({
+      bt2390BlackStart:1, bt2390WhiteStart:0, bt2390WhiteStart1:25, targetSystemGamma:1.2,
+      masterMinLuminance:0, masterMaxLuminance:1000, targetMinLuminance:0,
+      targetMaxLuminance:100, contentMaxLuminance:1000, frameAverageMaxLuminance:400,
+      useToneMap:false, overrideTargets:false, diffuseLuminance:94.3784,
+      nearWhiteClipColumn:101, whiteTarget:0, colorCheckerMode:0, colorStandard:2,
+      deltaEFormula:3, grayscaleDeltaE:3, grayWorldWeight:0, gammaOffsetType:4,
+      gammaReference:2.4, gammaRelative:0, gammaSplit:100,
+      manualWhiteX:0.3127, manualWhiteY:0.3290, useMeasuredGamma:false,
+      manualBlueX:0.15, manualRedX:0.64, manualGreenX:0.30,
+      manualBlueY:0.06, manualRedY:0.33, manualGreenY:0.60,
+      overrideBlack:false, userBlack:null
+    }, overrides || {});
+  }
+
+  function writePreferences(writer, input) {
+    const p = defaultPreferences(input);
+    ['bt2390BlackStart','bt2390WhiteStart','bt2390WhiteStart1','targetSystemGamma','masterMinLuminance','masterMaxLuminance','targetMinLuminance','targetMaxLuminance','contentMaxLuminance','frameAverageMaxLuminance'].forEach(k=>writer.f64(finite(p[k],0)));
+    writer.i32(p.useToneMap?1:0); writer.i32(p.overrideTargets?1:0); writer.f64(finite(p.diffuseLuminance,94.3784));
+    writer.i32(finite(p.nearWhiteClipColumn,101));
+    ['whiteTarget','colorCheckerMode','colorStandard','deltaEFormula','grayscaleDeltaE','grayWorldWeight','gammaOffsetType'].forEach(k=>writer.i32(finite(p[k],0)));
+    ['gammaReference','gammaRelative','gammaSplit','manualWhiteX','manualWhiteY'].forEach(k=>writer.f64(finite(p[k],0)));
+    writer.i32(p.useMeasuredGamma?1:0);
+    ['manualBlueX','manualRedX','manualGreenX','manualBlueY','manualRedY','manualGreenY'].forEach(k=>writer.f64(finite(p[k],0)));
+    writer.i32(p.overrideBlack?1:0); writeColor(writer, p.userBlack || {X:0,Y:0,Z:0});
+  }
+
+  function serializeHcfrChc(model, options) {
+    model = model || {}; options = options || {};
+    const groups = model.groups || {}, fixed = model.fixed || {}, writer = new Writer();
+    writer.ascii(FILE_MAGIC); writer.u32(3); writer.u32(17); writePreferences(writer, model.preferences);
+    writeColorArray(writer, groups.grayscale);
+    writeColorArray(writer, groups.nearBlack || Array(5).fill(null));
+    writeColorArray(writer, groups.nearWhite || Array(5).fill(null));
+    ['redSaturation','greenSaturation','blueSaturation','yellowSaturation','cyanSaturation','magentaSaturation'].forEach(k=>writeColorArray(writer, groups[k] || Array(5).fill(null)));
+    writeSparseColorArray(writer, groups.colorChecker, 1000);
+    writeSparseColorArray(writer, groups.colorCheckerMaster, 5000);
+    writeColorArray(writer, groups.freeMeasurements || []);
+    ['redPrimary','greenPrimary','bluePrimary','yellowSecondary','cyanSecondary','magentaSecondary','onOffBlack','onOffWhite','ansiBlack','ansiWhite','primeWhite'].forEach(k=>writeColor(writer, fixed[k]));
+    writeMfcString(writer, model.notes || 'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+\r\n');
+    writer.i32(model.ireScaleMode?1:0);
+    writer.raw(options.documentTail || base64Bytes(V17_DOCUMENT_TAIL_BASE64));
+    const bytes = writer.finish();
+    if (options.validate !== false) {
+      const parsed = parseHcfrChc(bytes);
+      if (parsed.fileVersion !== 3 || parsed.measurementVersion !== 17 || parsed.measurementEndOffset + parsed.trailingObjectBytes !== bytes.length) throw new Error('Generated CHC failed validation');
+    }
+    return bytes;
   }
 
   function readMatrix(reader, label) {
@@ -312,5 +450,5 @@
     };
   }
 
-  return { ChcParseError, parseHcfrChc, summarizeHcfrChc };
+  return { ChcParseError, parseHcfrChc, summarizeHcfrChc, serializeHcfrChc, defaultPreferences, normalizeColor };
 }));

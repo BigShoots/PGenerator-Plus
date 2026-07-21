@@ -654,6 +654,18 @@ sub webui_http (@) {
      print $client "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
     }
    }
+   elsif($path eq "/assets/hcfr_chc.js") {
+    my $asset_path="/usr/share/PGenerator/hcfr_chc.js";
+    if(-f $asset_path) {
+     open(my $fh, "<:raw", $asset_path);
+     my $asset_data; { local $/; $asset_data=<$fh>; } close($fh);
+     my $len=length($asset_data);
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\nContent-Length: $len\r\nCache-Control: no-cache\r\n\r\n";
+     print $client $asset_data;
+    } else {
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    }
+   }
    elsif($path eq "/pgen-logo-light.png") {
     my $logo_path="/usr/share/PGenerator/pgen-logo-light.png";
     if(-f $logo_path) {
@@ -10625,6 +10637,14 @@ body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-b
 body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
 body.layout-tablet #meterProfileCard{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
+body.layout-desktop #sessionCard[data-desktop-active="true"]{border-bottom:0;padding-right:48px;box-sizing:border-box}
+.session-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.session-action{padding:16px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
+.session-action h3{margin:0 0 6px;font-size:.9rem;color:var(--text)}
+.session-action p{margin:0 0 13px;color:var(--text2);font-size:.74rem;line-height:1.45}
+.session-format-note{margin-top:12px;color:var(--text2);font-size:.7rem;line-height:1.45}
+body.layout-tablet #sessionCard{grid-column:auto}
+@media(max-width:650px){.session-actions{grid-template-columns:1fr}}
 body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
@@ -10981,6 +11001,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" onclick="pgSelectDesktopWorkspace('3d-lut')">3D LUT</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="session" onclick="pgSelectDesktopWorkspace('session')">Session</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" onclick="pgSelectDesktopWorkspace('ui-settings')">UI Settings</button>
@@ -12273,6 +12294,25 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   </div>
  </div>
 
+ <!-- Full desktop workspace and half-width tablet card for session interchange. -->
+ <div class="card" id="sessionCard" data-widget="session" data-collapse-key="session" data-desktop-workspace="session" data-desktop-order="10" draggable="true">
+  <h2><span class="drag-handle">&#9776;</span>Session</h2>
+  <div class="session-actions">
+   <div class="session-action">
+    <h3>Export HCFR CHC</h3>
+    <p>Build a current HCFR session from measurements matching the active signal mode. Grayscale, saturation, ColorChecker and unmatched readings are mapped automatically.</p>
+    <button class="btn btn-sm btn-primary" type="button" onclick="meterExportHcfrChc()">Export .chc</button>
+   </div>
+   <div class="session-action">
+    <h3>Import HCFR CHC</h3>
+    <p>Preview an HCFR session, preserve its measurements as new chart series, and map supported analysis preferences without restarting the pattern output.</p>
+    <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenHcfrImport()">Choose .chc file</button>
+    <input type="file" id="meterHcfrImportInput" accept=".chc,application/octet-stream" style="display:none" onchange="meterImportHcfrChcFile(this)">
+   </div>
+  </div>
+  <div class="session-format-note" id="meterHcfrSessionStatus">HCFR v17 export; supported historical CHC versions can be imported. Output changes are never applied automatically.</div>
+ </div>
+
  <!-- Desktop consolidates profiling-series selection, LUT generation, solved
       LUT management and the cube viewer into one workspace. The live controls
       are moved into these hosts; Tablet retains their original presentation. -->
@@ -12792,6 +12832,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  </div>
 </div>
 
+<script src="/assets/hcfr_chc.js"></script>
 <script>
 const API=window.location.origin;
 let config={};
@@ -15401,7 +15442,7 @@ const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','meter-profile':'Meter Profile',
- 'display-control':'LG Display',connectivity:'Connectivity','ui-settings':'UI Settings',system:'System'
+ 'display-control':'LG Display',connectivity:'Connectivity',session:'Session','ui-settings':'UI Settings',system:'System'
 };
 let pgThemeMode='dark';
 let pgLayoutPreference='tablet';
@@ -42044,6 +42085,147 @@ async function meterGenerateReport(){
   meterDownloadBlob(blob,filename);
   toast('HTML report downloaded');
  }
+}
+
+function meterHcfrValidReading(rd){
+ return !!(rd&&typeof rd==='object'&&meterReadingHasLuminance(rd)&&Number.isFinite(Number(rd.Y!=null?rd.Y:rd.luminance)));
+}
+
+function meterHcfrSnapshotList(){
+ if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length) meterCacheSeriesState(meterSeriesRunning?'running':'complete');
+ const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
+ return Object.entries(meterSeriesCache||{}).filter(([,snap])=>snap&&String(snap.signal_mode||mode).toLowerCase()===mode&&Array.isArray(snap.readings)&&snap.readings.some(meterHcfrValidReading)).map(([key,snap])=>({key,snap}));
+}
+
+function meterHcfrPreferenceModel(mode,white,black){
+ const value=(id,fallback)=>{const el=document.getElementById(id),n=Number(el&&el.value);return Number.isFinite(n)?n:fallback;};
+ const text=(id,fallback)=>{const el=document.getElementById(id);return String((el&&el.value)||fallback||'');};
+ const checked=id=>!!((document.getElementById(id)||{}).checked);
+ const gamut=text('meterTargetGamut','auto').toLowerCase();
+ const gamma=text('meterTargetGamma','bt1886').toLowerCase();
+ const gamutMap={bt709:2,bt2020:7,p3d65:(mode==='sdr'?6:8),p3dci:6};
+ const gammaMap={bt1886:4,'2.2':0,'2.4':0,st2084:5,srgb:0};
+ const greyMap={absolute:0,eotf:1,relative:2};
+ const deMap={deluv76:0,de76lab:1,de94:2,de2000:3,decmc:4,de2000_jnd:5,deitp:6};
+ const gw=Number(text('meterGrayWorld','1'));
+ const masterMax=value('max_luma',mode==='sdr'?100:1000);
+ return {
+  bt2390BlackStart:1,bt2390WhiteStart:0,bt2390WhiteStart1:25,targetSystemGamma:mode==='hlg'?1.2:1.2,
+  masterMinLuminance:value('min_luma',0),masterMaxLuminance:masterMax,
+  targetMinLuminance:checked('meterTargetBlackUseMeasured')?(black?Number(black.Y||black.luminance)||0:0):value('meterTargetBlack',0),
+  targetMaxLuminance:checked('meterTargetWhiteUseMeasured')?(white?Number(white.Y||white.luminance)||masterMax:masterMax):value('meterTargetWhite',masterMax),
+  contentMaxLuminance:value('max_cll',masterMax)||masterMax,frameAverageMaxLuminance:value('max_fall',400)||400,
+  useToneMap:checked('meterHdrApplyBT2390'),overrideTargets:!checked('meterTargetWhiteUseMeasured')||!checked('meterTargetBlackUseMeasured'),
+  diffuseLuminance:value('meterHdrDiffuseWhite',94.3784),nearWhiteClipColumn:101,
+  whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:0,
+  colorStandard:gamutMap[gamut]||(mode==='sdr'?2:7),
+  deltaEFormula:deMap[text('meterColorDeltaEForm','de2000')]!=null?deMap[text('meterColorDeltaEForm','de2000')]:3,
+  grayscaleDeltaE:greyMap[text('meterGreyRefMode','relative')],grayWorldWeight:gw===0.15?1:(gw===0.05?2:0),
+  gammaOffsetType:mode==='hdr10'||mode==='dv'?5:(mode==='hlg'?7:(gammaMap[gamma]!=null?gammaMap[gamma]:0)),
+  gammaReference:Number(gamma)||((gamma==='bt1886'||gamma==='2.4')?2.4:2.2),gammaRelative:0,gammaSplit:100,
+  manualWhiteX:value('meterTargetWhiteX',0.3127),manualWhiteY:value('meterTargetWhiteY',0.329),useMeasuredGamma:false,
+  manualBlueX:gamut==='bt2020'?0.131:gamut.startsWith('p3')?0.15:0.15,
+  manualRedX:gamut==='bt2020'?0.708:gamut.startsWith('p3')?0.68:0.64,
+  manualGreenX:gamut==='bt2020'?0.17:gamut.startsWith('p3')?0.265:0.30,
+  manualBlueY:gamut==='bt2020'?0.046:0.06,manualRedY:gamut==='bt2020'?0.292:gamut.startsWith('p3')?0.32:0.33,
+  manualGreenY:gamut==='bt2020'?0.797:gamut.startsWith('p3')?0.69:0.60,
+  overrideBlack:!checked('meterTargetBlackUseMeasured'),userBlack:black||{X:0,Y:0,Z:0}
+ };
+}
+
+function meterBuildHcfrExportModel(){
+ const entries=meterHcfrSnapshotList();
+ if(!entries.length) throw new Error('No measurements match the current signal mode');
+ const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
+ const byType=type=>entries.filter(e=>String(e.snap.type||'')===type).sort((a,b)=>Number(b.snap.updated_at||0)-Number(a.snap.updated_at||0));
+ const greyEntry=byType('greyscale')[0]||null, satEntry=byType('saturations')[0]||null, colorEntry=byType('colors')[0]||null;
+ const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
+ const grey=valid(greyEntry&&greyEntry.snap).sort((a,b)=>Number(meterReadingPlotIre(a)||0)-Number(meterReadingPlotIre(b)||0));
+ const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
+ valid(satEntry&&satEntry.snap).forEach(rd=>{const name=String(rd.name||'').toLowerCase();for(const key of Object.keys(satGroups)){const hue=key.replace('Saturation','').toLowerCase();if(name.includes(hue)){satGroups[key].push(rd);break;}}});
+ Object.keys(satGroups).forEach(key=>{const list=satGroups[key].sort((a,b)=>Number(a.sat_pct||a.ire||0)-Number(b.sat_pct||b.ire||0));satGroups[key]=list.length===4?[null,...list]:list;});
+ const colors=valid(colorEntry&&colorEntry.snap), fixed={};
+ const fixedMap=[['redPrimary',24],['greenPrimary',25],['bluePrimary',26],['cyanSecondary',27],['magentaSecondary',28],['yellowSecondary',29]];
+ fixedMap.forEach(([name,index])=>{fixed[name]=colors[index]||null;});
+ const black=grey.find(rd=>Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
+ const white=[...grey].reverse().find(rd=>Number(meterReadingPlotIre(rd)||0)>=99)||null;
+ fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=white;fixed.ansiBlack=null;fixed.ansiWhite=null;
+ const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
+ const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
+ const now=new Date().toISOString();
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
+ return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colors.slice(0,24).map((rd,index)=>({...rd,index}))},colorCheckerMaster:{declaredCount:5000,items:[]},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:Math.min(24,colors.length),free:free.length,warnings}};
+}
+
+function meterExportHcfrChc(){
+ try{
+  if(!window.PGeneratorHcfrChc) throw new Error('CHC module did not load');
+  const built=meterBuildHcfrExportModel(),s=built.summary;
+  const message='Export '+s.mode.toUpperCase()+' session?\n\nGreyscale: '+s.grayscale+'\nSaturation: '+s.saturations+'\nColorChecker: '+s.colorChecker+'\nFree measurements: '+s.free+(s.warnings.length?'\n\nWarnings:\n'+s.warnings.join('\n'):'');
+  if(!window.confirm(message)) return;
+  let filename=meterPromptExportFilename('chc','pgenerator_'+s.mode+'_session','chc','Enter a file name for the HCFR session');
+  if(!filename) filename=meterDefaultExportFilename('chc','pgenerator_'+s.mode+'_session','chc');
+  const bytes=window.PGeneratorHcfrChc.serializeHcfrChc(built.model);
+  meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),filename);
+  toast('HCFR CHC exported');
+ }catch(e){toast('HCFR export failed: '+((e&&e.message)||e),true);}
+}
+
+function meterOpenHcfrImport(){const input=document.getElementById('meterHcfrImportInput');if(input){input.value='';input.click();}}
+
+function meterHcfrImportedReading(color,name,ire){return {name:name,ire:ire,plot_ire:ire,nominal_ire:ire,X:color.X,Y:color.Y,Z:color.Z,luminance:color.Y,x:color.x,y:color.y,raw_X:color.X,raw_Y:color.Y,raw_Z:color.Z,lux:color.lux,spectrum:color.spectrum||null,source_format:'hcfr-chc',measurement_only:true};}
+
+function meterHcfrImportSnapshot(type,readings,label,stamp,mode){
+ if(!readings.length) return null;
+ const key=type+'-'+stamp;
+ const steps=readings.map(rd=>({name:rd.name,ire:rd.ire,measurement_only:true}));
+ meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,steps:steps,readings:readings,status:'complete',source_format:'hcfr-chc',source_label:label,updated_at:Date.now()};
+ return key;
+}
+
+function meterApplyHcfrAnalysisPreferences(p){
+ const set=(id,value)=>{const e=document.getElementById(id);if(e&&value!=null)e.value=value;};
+ const check=(id,value)=>{const e=document.getElementById(id);if(e)e.checked=!!value;};
+ const gamut={2:'bt709',3:'bt709',6:'p3d65',7:'bt2020',8:'p3d65',9:'bt709'}[p.colorStandard];if(gamut)set('meterTargetGamut',gamut);
+ const gamma={4:'bt1886',5:'st2084',7:'st2084'}[p.gammaOffsetType]||(Math.abs(Number(p.gammaReference)-2.4)<0.05?'2.4':'2.2');set('meterTargetGamma',gamma);
+ set('meterGreyRefMode',({0:'absolute',1:'eotf',2:'relative'})[p.grayscaleDeltaE]||'relative');
+ set('meterGrayWorld',({0:'1',1:'0.15',2:'0.05'})[p.grayWorldWeight]||'1');
+ set('meterDeltaEForm',({0:'deluv76',1:'de76lab',2:'de94',3:'de2000',4:'decmc',5:'de2000_jnd',6:'deitp'})[p.deltaEFormula]||'de2000');
+ set('meterColorDeltaEForm',({0:'deluv76',1:'de76lab',2:'de94',3:'de2000',4:'decmc',5:'de2000_jnd',6:'deitp'})[p.deltaEFormula]||'de2000');
+ check('meterHdrApplyBT2390',p.useToneMap);set('meterHdrDiffuseWhite',p.diffuseLuminance);
+ if(p.whiteTarget===10){check('meterCustomD65Enabled',true);set('meterTargetWhiteX',p.manualWhiteX);set('meterTargetWhiteY',p.manualWhiteY);}
+ try{meterSaveColorPrefs();meterOnGreyRefChange();}catch(e){}
+}
+
+async function meterImportHcfrChcFile(input){
+ try{
+  const file=input&&input.files&&input.files[0];if(!file)return;
+  if(!window.PGeneratorHcfrChc)throw new Error('CHC module did not load');
+  const parsed=window.PGeneratorHcfrChc.parseHcfrChc(await file.arrayBuffer()),sum=window.PGeneratorHcfrChc.summarizeHcfrChc(parsed);
+  const mode=parsed.preferences.gammaOffsetType===5?'hdr10':(parsed.preferences.gammaOffsetType===7?'hlg':([8,9].includes(parsed.preferences.gammaOffsetType)?'dv':'sdr'));
+  const groupLines=Object.entries(sum.groups).filter(([,g])=>g.valid).map(([name,g])=>name+': '+g.valid);
+  const warning=mode!==String(meterChartSignalMode()||'sdr').toLowerCase()?'\n\nThe imported analysis mode is '+mode.toUpperCase()+'; output settings will NOT be changed or restarted.':'';
+  if(!window.confirm('Import '+file.name+'?\n\nFormat v'+parsed.fileVersion+', measurements v'+parsed.measurementVersion+'\n'+groupLines.join('\n')+'\nFixed readings: '+Object.values(sum.fixed).filter(Boolean).length+warning+'\n\nAnalysis preferences will be applied. Existing sessions will be preserved.'))return;
+  const stamp=Date.now(),keys=[];
+  const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
+  const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode);if(gkey)keys.push(gkey);
+  const nearBlackGroup=parsed.groups.nearBlack,nearWhiteGroup=parsed.groups.nearWhite;
+  const nearBlack=nearBlackGroup?nearBlackGroup.items.map((c,i)=>c.valid?meterHcfrImportedReading(c,'Near black '+(i+1)+'%',i+1):null).filter(Boolean):[];
+  const nearWhite=nearWhiteGroup?nearWhiteGroup.items.map((c,i,a)=>c.valid?meterHcfrImportedReading(c,'Near white '+(101-a.length+i)+'%',101-a.length+i):null).filter(Boolean):[];
+  const nbkey=meterHcfrImportSnapshot('greyscale',nearBlack,file.name+' near black',stamp+1,mode);if(nbkey)keys.push(nbkey);
+  const nwkey=meterHcfrImportSnapshot('greyscale',nearWhite,file.name+' near white',stamp+2,mode);if(nwkey)keys.push(nwkey);
+  const sat=[];[['redSaturation','Red'],['greenSaturation','Green'],['blueSaturation','Blue'],['yellowSaturation','Yellow'],['cyanSaturation','Cyan'],['magentaSaturation','Magenta']].forEach(([group,hue])=>{const all=(parsed.groups[group]&&parsed.groups[group].items)||[];all.forEach((c,i)=>{if(c.valid){const pct=all.length>1?i*100/(all.length-1):0;sat.push(meterHcfrImportedReading(c,Math.round(pct)+'% '+hue,pct));}});});
+  const skey=meterHcfrImportSnapshot('saturations',sat,file.name,stamp+3,mode);if(skey)keys.push(skey);
+  const ccGroup=parsed.groups.colorChecker;
+  const colors=ccGroup?ccGroup.validItems.map((c,i)=>meterHcfrImportedReading(c,'HCFR Patch '+((c.index!=null?c.index:i)+1),c.index!=null?c.index:i)):[];
+  [['redPrimary','Red'],['greenPrimary','Green'],['bluePrimary','Blue'],['cyanSecondary','Cyan'],['magentaSecondary','Magenta'],['yellowSecondary','Yellow']].forEach(([key,name])=>{const c=parsed.fixed[key];if(c&&c.valid)colors.push(meterHcfrImportedReading(c,'100% '+name,100));});
+  const ckey=meterHcfrImportSnapshot('colors',colors,file.name,stamp+4,mode);if(ckey)keys.push(ckey);
+  const free=parsed.groups.freeMeasurements.validItems.map((c,i)=>meterHcfrImportedReading(c,'HCFR Free '+(i+1),i));
+  const fkey=meterHcfrImportSnapshot('colors',free,file.name,stamp+5,mode);if(fkey)keys.push(fkey);
+  meterPersistSeriesCache();meterApplyHcfrAnalysisPreferences(parsed.preferences);
+  if(keys.length)meterRestoreSeriesFromCache(keys[0],{signalMode:mode});
+  toast('Imported '+parsed.validMeasurementCount+' HCFR measurements into '+keys.length+' preserved series');
+ }catch(e){toast('HCFR import failed: '+((e&&e.message)||e),true);}finally{if(input)input.value='';}
 }
 
 function meterExportCSV(){
