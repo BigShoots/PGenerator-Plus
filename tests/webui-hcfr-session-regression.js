@@ -59,6 +59,9 @@ assert(source.includes("meterSelectImportedHcfrGroup('colorChecker')"), 'ColorCh
 assert(source.includes("meterSelectImportedHcfrGroup('saturations')"), 'Sat Sweep must open the active imported CHC sibling workspace');
 assert(source.includes("meterSelectImportedHcfrGroup('grayscale')"), 'matching greyscale preset must reopen the active imported CHC workspace');
 assert(source.includes('let meterActiveHcfrSessionId=null'), 'imported CHC sibling navigation must survive built-in tab changes');
+assert(source.includes("ccSlotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White'"), 'CHC ColorChecker slots must map to canonical HCFR patch names');
+assert(source.includes('step=meterBuildHcfrSaturationStep(hue,pct)'), 'CHC saturation readings must receive canonical stimulus and target metadata');
+assert(source.includes("activeBtn=document.getElementById('meterColorCheckerSeriesBtn')"), 'imported CHC series must highlight their normal series buttons');
 assert(source.includes('if(meterSeriesSnapshotIsImported(snap)) return'), 'imported CHC snapshots must not feed native grayscale cache recovery');
 assert(source.includes('exact.readings.some(meterSeriesReadingIsImported)'), 'native snapshots must remove previously merged imported readings');
 assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series cache persistence must support deferred writes');
