@@ -10962,18 +10962,9 @@ body.layout-tablet .ui-choice-title::after{content:'?';display:inline-flex;align
 body.layout-tablet .ui-choice-description{display:none;position:absolute;z-index:80;left:10px;right:10px;top:calc(100% + 5px);padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-popover);color:var(--text-primary);box-shadow:0 8px 22px var(--shadow);font-weight:400}
 body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .ui-choice:focus-visible .ui-choice-description{display:block}
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
-/* Each preference is one two-sided switch in both Tablet and Desktop. */
-.ui-binary-control{display:grid;grid-template-columns:minmax(58px,1fr) 42px minmax(58px,1fr);align-items:center;gap:8px;min-height:48px;padding:7px 9px;border-radius:8px;background:var(--surface-inset)}
-.ui-binary-option{min-width:0;padding:7px 5px;border:0;border-radius:6px;background:transparent;color:var(--text-secondary);font-size:.76rem;font-weight:700;cursor:pointer}
-.ui-binary-option:hover:not(:disabled){background:var(--hover-bg);color:var(--text-primary)}
-.ui-binary-option[aria-pressed="true"]{color:var(--accent);background:var(--selected-bg)}
-.ui-binary-option:disabled{cursor:not-allowed;opacity:.45}
-.ui-binary-switch{position:relative;width:42px;height:22px;padding:0;border:1px solid var(--border);border-radius:999px;background:var(--text-muted);cursor:pointer;transition:background .18s,border-color .18s}
-.ui-binary-switch::after{content:'';position:absolute;left:3px;top:3px;width:14px;height:14px;border-radius:50%;background:var(--text-inverse);box-shadow:0 1px 3px var(--shadow);transition:transform .18s}
-.ui-binary-switch[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
-.ui-binary-switch[aria-checked="true"]::after{transform:translateX(20px)}
-.ui-binary-switch:disabled{cursor:not-allowed;opacity:.45}
-.ui-binary-option:focus-visible,.ui-binary-switch:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+/* UI Settings uses the exact segmented control treatment from the title bar. */
+.ui-settings-switch{min-height:30px}
+.ui-settings-switch .layout-switch-btn{min-width:68px;padding:6px 12px;font-size:.76rem}
 @media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
 </style>
 </head>
@@ -11055,19 +11046,17 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="ui-settings-sections">
    <div class="ui-settings-group">
     <h3>Interface Layout</h3>
-    <div class="ui-binary-control" role="group" aria-label="Interface layout">
-     <button type="button" class="ui-binary-option" id="uiLayoutTablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')">Tablet</button>
-     <button type="button" class="ui-binary-switch" id="uiLayoutSwitch" role="switch" aria-label="Switch between Tablet and Desktop layout" aria-checked="false" onclick="pgToggleLayoutPreference()"></button>
-     <button type="button" class="ui-binary-option" id="uiLayoutDesktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')">Desktop</button>
+    <div class="layout-switch ui-settings-switch" role="group" aria-label="Interface layout">
+     <button type="button" class="layout-switch-btn" data-layout-mode="tablet" aria-pressed="true" onclick="pgSetLayoutPreference('tablet')">Tablet</button>
+     <button type="button" class="layout-switch-btn" data-layout-mode="desktop" aria-pressed="false" onclick="pgSetLayoutPreference('desktop')">Desktop</button>
     </div>
     <p class="ui-choice-note" id="desktopLayoutUnavailable" role="status">Desktop requires a browser width of at least 1024 pixels.</p>
    </div>
    <div class="ui-settings-group">
     <h3>Theme</h3>
-    <div class="ui-binary-control" role="group" aria-label="Theme">
-     <button type="button" class="ui-binary-option" id="uiThemeDark" aria-pressed="true" onclick="pgSetThemeMode('dark')">Dark</button>
-     <button type="button" class="ui-binary-switch" id="uiThemeSwitch" role="switch" aria-label="Switch between Dark and Light theme" aria-checked="false" onclick="pgToggleThemeMode()"></button>
-     <button type="button" class="ui-binary-option" id="uiThemeLight" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
+    <div class="layout-switch ui-settings-switch" role="group" aria-label="Theme">
+     <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')">Dark</button>
+     <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
     </div>
    </div>
   </div>
@@ -15515,19 +15504,6 @@ function pgUpdateLayoutControls(){
     :'Use the full-width desktop workspace';
   }
  });
- const tablet=document.getElementById('uiLayoutTablet');
- const desktop=document.getElementById('uiLayoutDesktop');
- const toggle=document.getElementById('uiLayoutSwitch');
- const desktopUnavailable=!pgWideEnoughForDesktop();
- if(tablet) tablet.setAttribute('aria-pressed',effective==='tablet'?'true':'false');
- if(desktop){
-  desktop.setAttribute('aria-pressed',effective==='desktop'?'true':'false');
-  desktop.disabled=desktopUnavailable;
- }
- if(toggle){
-  toggle.setAttribute('aria-checked',effective==='desktop'?'true':'false');
-  toggle.disabled=desktopUnavailable;
- }
  const note=document.getElementById('desktopLayoutUnavailable');
  if(note) note.classList.toggle('is-visible',!pgWideEnoughForDesktop());
 }
@@ -15547,12 +15523,6 @@ function pgUpdateThemeControls(){
  document.querySelectorAll('.theme-switch-btn[data-theme-mode]').forEach(btn=>{
   btn.setAttribute('aria-pressed',btn.getAttribute('data-theme-mode')===pgThemeMode?'true':'false');
  });
- const dark=document.getElementById('uiThemeDark');
- const light=document.getElementById('uiThemeLight');
- const toggle=document.getElementById('uiThemeSwitch');
- if(dark) dark.setAttribute('aria-pressed',pgThemeMode==='dark'?'true':'false');
- if(light) light.setAttribute('aria-pressed',pgThemeMode==='light'?'true':'false');
- if(toggle) toggle.setAttribute('aria-checked',pgThemeMode==='light'?'true':'false');
 }
 function pgRedrawChartsForTheme(){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
@@ -15582,9 +15552,6 @@ function pgApplyThemeMode(mode,options){
 function pgSetThemeMode(mode){
  pgApplyThemeMode(mode);
  try{ localStorage.setItem(PG_THEME_STORAGE_KEY,pgThemeMode); }catch(e){}
-}
-function pgToggleThemeMode(){
- pgSetThemeMode(pgThemeMode==='light'?'dark':'light');
 }
 function pgPanelBelongsToActiveWorkspace(panel){
  if(!panel||!panel.getAttribute) return false;
@@ -15738,9 +15705,6 @@ function pgSetLayoutPreference(mode){
  pgLayoutPreference=mode==='desktop'?'desktop':'tablet';
  try{ localStorage.setItem(PG_LAYOUT_STORAGE_KEY,pgLayoutPreference); }catch(e){}
  pgApplyLayout({resetWorkspace:pgLayoutPreference==='desktop'});
-}
-function pgToggleLayoutPreference(){
- pgSetLayoutPreference(pgLayoutEffective==='desktop'?'tablet':'desktop');
 }
 function pgUpdateHeaderOffset(){
  const header=document.querySelector('.header');
