@@ -10593,6 +10593,7 @@ body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:
 body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
+body.layout-desktop #meterProfileCard .ccss-editor-panel{background:var(--surface-inset)!important;border:0!important;border-radius:8px!important}
 body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"]{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
@@ -11902,8 +11903,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <button class="btn btn-sm btn-secondary ccss-editor-close-btn" onclick="meterCloseCustomCcssEditor()">Close</button>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
-     <div style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
+    <div class="ccss-editor-layout" style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
+     <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
        <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, EDR, TI3, or spectral CSV</label>
        <input type="file" id="ccssFileInput" accept=".ccss,.edr,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
       <div style="display:flex;gap:6px;align-items:center">
@@ -11916,7 +11917,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <div id="customCcssList"></div>
       </div>
      </div>
-     <div style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px;min-width:0">
+     <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px;min-width:0">
       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Spectral Chart Viewer</label>
       <select id="ccssPreviewSelect" style="width:100%;font-size:.78rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <option value="">Choose installed CCSS profile...</option>
