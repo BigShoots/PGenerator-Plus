@@ -392,6 +392,8 @@ my $_custom_ccss_legacy_dir="$_ccss_dir/custom";
 
 # Display technology map: key => [spotread_y_flag, ccss_filename]
 my $_dtype_info={
+ "non_refresh"  => ["l",""],
+ "refresh"      => ["c",""],
  "lcd"          => ["l",""],
  "oled"         => ["c",""],
  "projector"    => ["p",""],
@@ -410,6 +412,8 @@ my $_dtype_info={
 };
 
 my $_ccxxmake_disptech_map={
+ "non_refresh"    => "l",
+ "refresh"        => "c",
  "lcd"            => "l",
  "lcd_wled"       => "e",
  "lcd_ccfl"       => "l",
@@ -11284,6 +11288,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
     <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
      <optgroup label="Generic" id="meterDtGeneric">
+      <option value="non_refresh">Non-refresh display (raw)</option>
+      <option value="refresh">Refresh display (raw)</option>
       <option value="oled_generic">WRGB OLED</option>
       <option value="qdoled">QD-OLED</option>
       <option value="lcd_wled">LCD - White LED</option>
@@ -42322,6 +42328,11 @@ async function meterGenerateReport(){
  const format=(document.querySelector('input[name="meterReportFormat"]:checked')||{}).value||'html';
  const filename=meterPromptExportFilename('report','pgenerator_measurement_report',format==='pdf'?'pdf':'html','Enter a file name for the report export');
  if(!filename) return;
+ // Reserve the PDF window while this click still has transient user
+ // activation. Report preparation awaits chart redraws; opening the window
+ // afterward is treated by browsers as an unsolicited pop-up.
+ const pdfWin=(format==='pdf')?window.open('','_blank'):null;
+ if(format==='pdf'&&!pdfWin){toast('Pop-up blocked — allow pop-ups to create PDF',true);return;}
  const btn=document.getElementById('meterReportGenerateBtn');
  if(btn){btn.disabled=true;btn.textContent='Generating…';}
  const restore={
@@ -42358,16 +42369,14 @@ async function meterGenerateReport(){
   }
   if(btn){btn.disabled=false;btn.textContent='Generate';}
  }
- if(!sectionHtml){toast('No reportable series data found',true);return;}
+ if(!sectionHtml){if(pdfWin)pdfWin.close();toast('No reportable series data found',true);return;}
  const html=meterBuildReportDocument(sectionHtml,meterFilenameBase(filename));
  meterCloseReportDialog();
  if(format==='pdf'){
-  const win=window.open('','_blank');
-  if(!win){toast('Pop-up blocked — allow pop-ups to create PDF',true);return;}
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  setTimeout(()=>{win.focus();win.print();},400);
+  pdfWin.document.open();
+  pdfWin.document.write(html);
+  pdfWin.document.close();
+  setTimeout(()=>{pdfWin.focus();pdfWin.print();},400);
   toast('Print dialog opened — choose Save as PDF');
  } else {
   const blob=new Blob([html],{type:'text/html'});
@@ -42815,7 +42824,7 @@ function meterDisplayTypeMetaText(value){
 function meterDisplayTypePatchSizeDefault(value){
  const current=String(value||'').toLowerCase();
  if(current.startsWith('oled')||current.startsWith('qdoled')) return '10';
- if(current==='lcd'||current.startsWith('lcd_')||current==='projector'||current==='projector_ccss') return '100';
+ if(current==='non_refresh'||current==='refresh'||current==='lcd'||current.startsWith('lcd_')||current==='projector'||current==='projector_ccss') return '100';
  if(current.startsWith('ccss_')||current.startsWith('custom_')){
   const meta=meterDisplayTypeMetaText(value);
   if(/\b(?:qd[-\s]*oled|wrgb[-\s]*oled|rgb[-\s]*oled|woled|amoled|oled)\b/i.test(meta)) return '10';
@@ -43593,6 +43602,8 @@ function getEffectiveDisplayType(){
 // operator can see what "Auto" will pick without inspecting $_dtype_info.
 function meterTechnologyDefaultCcssLabel(){
  const tech=getDisplayTechnology();
+ if(tech==='non_refresh') return 'raw non-refresh, no correction';
+ if(tech==='refresh') return 'raw refresh, no correction';
  if(tech==='oled_generic') return 'WRGB OLED (built-in)';
  if(tech==='qdoled') return 'QD-OLED (built-in)';
  if(tech==='lcd_wled') return 'W-LED family (built-in)';

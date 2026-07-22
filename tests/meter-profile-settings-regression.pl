@@ -73,4 +73,20 @@ unlike($src, qr/id="meterTarget(?:White|Black)"[^>]*placeholder="auto"/s,
 like($src, qr/function meterApplyTargetLevelsDisplayDefaults[\s\S]{0,1800}?meterSetTargetLevelsStateOnly\(\)/s,
   'Display Type defaults resynchronize target input disabled state');
 
+# Task 6: HCFR-style raw display types select Argyll refresh behavior without
+# silently applying a spectral correction.
+like($src, qr/<option value="non_refresh">Non-refresh display \(raw\)<\/option>/,
+  'raw non-refresh display type is selectable');
+like($src, qr/<option value="refresh">Refresh display \(raw\)<\/option>/,
+  'raw refresh display type is selectable');
+like($src, qr/"non_refresh"\s*=>\s*\["l",""\]/,
+  'raw non-refresh maps to spotread non-refresh mode without CCSS');
+like($src, qr/"refresh"\s*=>\s*\["c",""\]/,
+  'raw refresh maps to spotread refresh mode without CCSS');
+
+# Task 7: reserve the PDF window before asynchronous chart preparation so the
+# browser still recognizes it as user-initiated.
+like($src, qr/const pdfWin=\(format==='pdf'\)\?window\.open\('','_blank'\):null;[\s\S]{0,1800}?await meterPrepareCurrentSeriesForReport\(\)/s,
+  'PDF report window opens before awaited chart preparation');
+
 done_testing();
