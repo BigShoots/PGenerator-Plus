@@ -42762,16 +42762,25 @@ function meterBuildHcfrExportModel(){
  entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
  const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' imported HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
- // HCFR GCD aligns the 18 chromatic patches plus PGenerator's full black and
- // white anchors. The four PGenerator neutral chips use different stimuli
- // from GCD's named grays, so preserve them as free measurements instead of
- // putting correct XYZ under incompatible references.
+ // HCFR SDR GCD aligns the 18 chromatic patches plus PGenerator's full black
+ // and white anchors. The native SDR neutral chips use different stimuli from
+ // fixed GCD's named grays, so preserve those as free measurements. HDR-class
+ // native series do use the four neutral ColorChecker slots and retain them.
  let colorCheckerItems=[];
  const colorUsesHcfrSlots=colorEntry&&(Number(colorEntry.snap.points)===29||(colorEntry.snap.source_format==='hcfr-chc'&&colorEntry.snap.source_group==='colorChecker'));
  if(colorUsesHcfrSlots&&colors.length>=24){
   const slotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan'];
   const byName=new Map(colors.map(rd=>[String(rd.name||'').toLowerCase(),rd]));
   colorCheckerItems=slotNames.map((name,index)=>{const rd=byName.get(name.toLowerCase());return rd?{...rd,index:index}:null;}).filter(Boolean);
+ }else if(colors.length>=24&&mode!=='sdr'){
+  // The native HDR/HLG/DV ColorChecker series measures HCFR's four neutral
+  // chips as colors[2..5]. Keep them in slots 1..4. The previous exporter
+  // applied the SDR fixed-GCD incompatibility rule here too, producing only
+  // slots 0,5,6..23 and leaving Gray 35/50/65/80 blank in HCFR.
+  colorCheckerItems=[{...colors[1],index:0}];
+  colors.slice(2,6).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+1}));
+  colorCheckerItems.push({...colors[0],index:5});
+  colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
  }else if(colors.length>=24){
   colorCheckerItems=[{...colors[1],index:0},{...colors[0],index:5}];
   colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));

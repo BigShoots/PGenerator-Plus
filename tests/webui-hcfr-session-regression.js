@@ -34,6 +34,7 @@ assert(source.includes('colorCheckerMode:0'), 'PGenerator ColorChecker must adve
 assert(source.includes('{...colors[1],index:0},{...colors[0],index:5}'), 'ColorChecker black and white are not mapped to GCD slots');
 assert(source.includes("colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}))"), 'ColorChecker chromatic patches are not mapped to GCD slots');
 assert(source.includes('free.push(...colors.slice(2,6))'), 'incompatible PGenerator neutral patches must be preserved as free measurements');
+assert(source.includes("colors.length>=24&&mode!=='sdr'")&&source.includes("index:offset+1"), 'HDR ColorChecker export must retain Gray 35/50/65/80 in HCFR slots 1-4');
 assert(source.includes('HCFR Sat Sweep'), 'HCFR-compatible constant-luminance saturation series is missing');
 assert(source.includes('HCFR ColorChecker'), 'HCFR-compatible GCD ColorChecker series is missing');
 assert(source.includes("['Dark Skin',45.20,31.96,26.03]"), 'client HCFR GCD Dark Skin stimulus is not exact');
