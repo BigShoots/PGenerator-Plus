@@ -60,6 +60,12 @@ assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export 
 assert(source.includes("const outputIsBt2020=outputColorimetry==='9'||outputColorimetry.includes('2020')"), 'CHC export must inspect output colorimetry separately from target gamut');
 assert(source.includes("colorStandard=outputIsBt2020?8:(outputIsP3?6:2)"), 'BT.2020 output with P3 target must map to HCFR Rec.2020/P3');
 assert(source.includes("7:'bt2020',8:'p3d65'"), 'HCFR Rec.2020/P3 import must use P3 targets while native BT.2020 retains BT.2020 targets');
+assert(source.includes('function meterHdrNativeDiffuseWhite()')&&source.includes('meterGreyStimulusFraction(50)'), 'HDR diffuse white Auto must follow PGenerator\'s encoded 50% PQ target');
+assert(source.includes('diffuseLuminance:meterHdrDiffuseWhiteResolved()'), 'CHC export must serialize PGenerator\'s resolved diffuse-white target');
+assert(source.includes('id="meterHdrDiffuseWhiteAuto"')&&source.includes('aria-label="HDR diffuse white help"'), 'Calibration card must expose an explained Auto/manual diffuse-white control');
+assert(source.includes("meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator grayscale PQ target decoding');
+assert(source.includes("meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator ColorChecker and saturation PQ target decoding');
+assert(source.includes('hdr_diffuse_white hdr_diffuse_white_auto'), 'Diffuse-white Auto/manual settings must be accepted by persistent meter settings');
 assert(source.includes("const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled()"), 'SDR fixed GCD variants must not replace HDR color-series exports');
 assert(source.includes("meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma})"), 'HDR CHC import must activate PQ context before rebuilding chart steps');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');

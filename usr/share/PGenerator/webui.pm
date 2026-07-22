@@ -5217,7 +5217,7 @@ sub webui_meter_settings_save (@) {
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
     xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
-  hdr_bt2390 incl_lum sep_lum color_incl_lum simulate_spectro
+  hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum simulate_spectro
  );
  my @parts;
  while($body=~/"(\w+)"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
@@ -10337,6 +10337,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 auto;min-width:88px}
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:72px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
+#meterSettingsGrid #meterHdrDiffuseWhite.meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26)!important;cursor:not-allowed}
 #meterSettingsGrid .field-hdr{width:auto}
 #meterSettingsGrid .field-delay{width:auto}
 #meterSettingsGrid .field-patch{width:150px}
@@ -11462,6 +11463,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
     </label>
    </div>
+  <div class="field field-hdr" id="meterHdrDiffuseConfig" style="display:none">
+    <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator's PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator's encoded 50% PQ patch for the active limited/full range. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
+    <div class="meter-inline-value">
+     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="94.3784" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator's encoded 50% PQ target" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+     <span class="meter-inline-unit">cd/m&sup2;</span>
+     <input type="checkbox" id="meterHdrDiffuseWhiteAuto" onchange="meterOnHdrDiffuseWhiteAutoChange()" checked>
+     <label for="meterHdrDiffuseWhiteAuto" class="meter-toggle-label">Auto</label>
+    </div>
+   </div>
   	   <div class="field field-delay">
 	    <label>Meter Delay</label>
 	    <div class="meter-inline-value">
@@ -12168,11 +12178,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </label>
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none" title="Use logarithmic vertical scaling for the EOTF chart. This changes only the chart axis, not the target calculations.">
         <input type="checkbox" id="meterEotfLogScale" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle"> Log scale
-       </label>
-       <label id="meterHdrDiffuseWhiteWrap" style="font-size:.7rem;color:var(--text2);display:none;align-items:center;gap:4px;user-select:none" title="HDR/PQ projector analysis override. Blank keeps the measured/default target. A value scales the target curve relative to the 94.4 cd/m² diffuse-white reference.">
-        Diffuse white
-        <input type="number" id="meterHdrDiffuseWhite" class="meter-chart-inline-input" min="1" max="10000" step="0.1" placeholder="94.4" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()">
-        <span>cd/m&sup2;</span>
        </label>
       </div>
       <div id="meterEotfScroller" class="meter-scroll-sync" style="width:100%;min-width:0;background:#0d0d15;border-radius:6px">
@@ -19360,7 +19365,8 @@ function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
  if(meterChartIsPq()&&!meterChartIsDv()){
-  const nits=meterChartPqDecodeNormalized(norm);
+  const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
+  const nits=meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1);
   // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,
   // but it DISTORTS THE HUE of any mix with a channel above the mastering
   // peak: 100/75/25 truly encodes ~10:1 R:G linear light (orange), yet with
@@ -20907,7 +20913,7 @@ function meterGreyInputFraction(ire,code){
  return nominal;
 }
 
-const METER_HDR_DIFFUSE_WHITE_DEFAULT=94.4;
+const METER_HDR_DIFFUSE_WHITE_DEFAULT=94.3784;
 
 function meterDisplayTypeIsProjector(value){
  const current=String(value||((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
@@ -20923,33 +20929,63 @@ function meterDisplayTypeIsProjector(value){
 }
 
 function meterUpdateHdrDiffuseWhiteVisibility(value){
- const wrap=document.getElementById('meterHdrDiffuseWhiteWrap');
+ const wrap=document.getElementById('meterHdrDiffuseConfig');
  if(!wrap) return;
- wrap.style.display=meterDisplayTypeIsProjector(value)?'flex':'none';
+ const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'').toLowerCase();
+ wrap.style.display=(meterChartIsPq()||sel==='st2084')?'':'none';
+ meterSyncHdrDiffuseWhiteControl();
+}
+
+function meterSyncHdrDiffuseWhiteControl(){
+ const input=document.getElementById('meterHdrDiffuseWhite');
+ const automatic=document.getElementById('meterHdrDiffuseWhiteAuto');
+ if(!input||!automatic) return;
+ if(automatic.checked) input.value=meterHdrNativeDiffuseWhite().toFixed(4);
+ else if(!(Number(input.value)>0)) input.value=meterHdrNativeDiffuseWhite().toFixed(4);
+ input.disabled=!!automatic.checked;
+ input.classList.toggle('meter-input-disabled',!!automatic.checked);
+}
+
+function meterHdrNativeDiffuseWhite(){
+ if(!(typeof meterChartPqDecodeNormalized==='function')) return METER_HDR_DIFFUSE_WHITE_DEFAULT;
+ let signal=0.5;
+ try{
+  if(typeof meterGreyStimulusFraction==='function') signal=meterGreyStimulusFraction(50);
+ }catch(e){}
+ const nits=meterChartPqDecodeNormalized(signal);
+ return (Number.isFinite(nits)&&nits>0)?nits:METER_HDR_DIFFUSE_WHITE_DEFAULT;
+}
+
+function meterHdrDiffuseWhiteResolved(){
+ const automatic=document.getElementById('meterHdrDiffuseWhiteAuto');
+ if(!automatic||automatic.checked) return meterHdrNativeDiffuseWhite();
+ const el=document.getElementById('meterHdrDiffuseWhite');
+ const value=Number(el&&el.value);
+ if(!(Number.isFinite(value)&&value>0)) return meterHdrNativeDiffuseWhite();
+ return Math.max(1,Math.min(200,value));
 }
 
 function meterHdrDiffuseWhiteOverride(){
- if(!meterDisplayTypeIsProjector()) return null;
- const el=document.getElementById('meterHdrDiffuseWhite');
- if(!el) return null;
- const value=Number(el.value);
- if(!(Number.isFinite(value)&&value>0)) return null;
- return Math.max(1,Math.min(10000,value));
+ const automatic=document.getElementById('meterHdrDiffuseWhiteAuto');
+ if(!automatic||automatic.checked) return null;
+ return meterHdrDiffuseWhiteResolved();
 }
 
 function meterHdrDiffuseScale(){
  const diffuse=meterHdrDiffuseWhiteOverride();
  if(!(diffuse>0)) return 1;
  if(!(meterChartIsPq&&meterChartIsPq())) return 1;
- return diffuse/METER_HDR_DIFFUSE_WHITE_DEFAULT;
+ const native=meterHdrNativeDiffuseWhite();
+ return native>0?diffuse/native:1;
 }
 
 function meterApplyHdrDiffuseOverridePeak(peak){
  const p=Number(peak);
  if(!(p>0)) return peak;
- const scale=meterHdrDiffuseScale();
- if(!(scale>0)||Math.abs(scale-1)<1e-9) return p;
- return Math.max(0.001,Math.min(10000,p*scale));
+ // Diffuse white scales the authored PQ target curve, not the display or
+ // mastering peak. Keep this legacy call site neutral; target decoding is
+ // scaled in meterChartHdrCodeLuminance/meterDecodeColorTargetChannel.
+ return p;
 }
 
 function meterOnHdrDiffuseWhiteChange(){
@@ -20960,6 +20996,11 @@ function meterOnHdrDiffuseWhiteChange(){
  }
  meterRedrawEotfChart();
  meterRedrawLuminanceChart();
+}
+
+function meterOnHdrDiffuseWhiteAutoChange(){
+ meterSyncHdrDiffuseWhiteControl();
+ meterOnHdrDiffuseWhiteChange();
 }
 
 function meterGreyTargetLuminance(ire,Lw,Lb,code){
@@ -21806,9 +21847,9 @@ function bt2390Tonemap(Lsrc, Lmax, Ldisp){
 // context change and draw (including empty preset draws).
 function meterUpdateHdrConfigVisibility(){
  const el=document.getElementById('meterHdrConfig');
- if(!el) return;
  const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'').toLowerCase();
- el.style.display = (meterChartIsPq()||sel==='st2084') ? '' : 'none';
+ if(el) el.style.display = (meterChartIsPq()||sel==='st2084') ? '' : 'none';
+ meterUpdateHdrDiffuseWhiteVisibility();
 }
 
 function meterChartPqEncodeNormalized(nits){
@@ -21963,7 +22004,8 @@ function meterChartHdrStimulusLuminance(v){
 
 function meterChartHdrCodeLuminance(v,clipPeak){
  const peak=(clipPeak>0)?clipPeak:meterChartHdrPeak();
- const raw=meterChartPqDecodeNormalized(v);
+ const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
+ const raw=meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1);
  if(meterChartBt2390Enabled()){
   const master=meterChartMasterPeak();
   return bt2390Tonemap(raw,master,peak);
@@ -22182,7 +22224,8 @@ function meterSaveColorPrefs(){
     eotf_log: cb('meterEotfLogScale'),
     luminance_log: cb('meterLuminanceLogScale'),
     cie_3d: cb('meterCie3dView'),
-    hdr_diffuse_white: v('meterHdrDiffuseWhite')
+    hdr_diffuse_white: v('meterHdrDiffuseWhite'),
+    hdr_diffuse_white_auto: cb('meterHdrDiffuseWhiteAuto')
   };
   localStorage.setItem('pgen.meter.colorPrefs', JSON.stringify(prefs));
  }catch(e){}
@@ -22232,6 +22275,8 @@ function meterLoadColorPrefs(){
   setChk('meterLuminanceLogScale', p.luminance_log);
   setChk('meterCie3dView', p.cie_3d);
   setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white);
+  setChk('meterHdrDiffuseWhiteAuto', p.hdr_diffuse_white_auto==null?'1':p.hdr_diffuse_white_auto);
+  meterSyncHdrDiffuseWhiteControl();
   try{ meterUpdateCie3dLabel(); meterApplyCie3dLayout(); }catch(e2){}
  }catch(e){}
 }
@@ -42462,7 +42507,7 @@ function meterHcfrPreferenceModel(mode,white,black){
   targetMaxLuminance:checked('meterTargetWhiteUseMeasured')?(white?Number(white.Y||white.luminance)||masterMax:masterMax):value('meterTargetWhite',masterMax),
   contentMaxLuminance:value('max_cll',masterMax)||masterMax,frameAverageMaxLuminance:value('max_fall',400)||400,
   useToneMap:checked('meterHdrApplyBT2390'),overrideTargets:!checked('meterTargetWhiteUseMeasured')||!checked('meterTargetBlackUseMeasured'),
-  diffuseLuminance:value('meterHdrDiffuseWhite',94.3784),nearWhiteClipColumn:101,
+  diffuseLuminance:meterHdrDiffuseWhiteResolved(),nearWhiteClipColumn:101,
   whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:0,
   colorStandard:colorStandard,
   deltaEFormula:deMap[text('meterColorDeltaEForm','de2000')]!=null?deMap[text('meterColorDeltaEForm','de2000')]:3,
@@ -42604,7 +42649,7 @@ function meterApplyHcfrAnalysisPreferences(p){
  set('meterGrayWorld',({0:'1',1:'0.15',2:'0.05'})[p.grayWorldWeight]||'1');
  set('meterDeltaEForm',({0:'deluv76',1:'de76lab',2:'de94',3:'de2000',4:'decmc',5:'de2000_jnd',6:'deitp'})[p.deltaEFormula]||'de2000');
  set('meterColorDeltaEForm',({0:'deluv76',1:'de76lab',2:'de94',3:'de2000',4:'decmc',5:'de2000_jnd',6:'deitp'})[p.deltaEFormula]||'de2000');
- check('meterHdrApplyBT2390',p.useToneMap);set('meterHdrDiffuseWhite',p.diffuseLuminance);
+ check('meterHdrApplyBT2390',p.useToneMap);set('meterHdrDiffuseWhite',p.diffuseLuminance);check('meterHdrDiffuseWhiteAuto',false);meterSyncHdrDiffuseWhiteControl();
  if(p.whiteTarget===10){check('meterCustomD65Enabled',true);set('meterTargetWhiteX',p.manualWhiteX);set('meterTargetWhiteY',p.manualWhiteY);}
  try{meterSaveColorPrefs();meterOnGreyRefChange();}catch(e){}
 }
@@ -44125,7 +44170,9 @@ function saveMeterSettings(){
     xyz_m33:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][2]):val('meterXyzM33'),
   sep_lum:chk('meterSeparateLumError'),
   // HDR tone-mapping config
-  hdr_bt2390:chk('meterHdrApplyBT2390')
+  hdr_bt2390:chk('meterHdrApplyBT2390'),
+  hdr_diffuse_white:val('meterHdrDiffuseWhite'),
+  hdr_diffuse_white_auto:chk('meterHdrDiffuseWhiteAuto')
  };
  const carriedCustomSeries=!!meterCustomSeriesDirty;
  if(carriedCustomSeries) meterCustomSeriesBackupWrite(true);
@@ -44332,6 +44379,9 @@ async function loadMeterSettings(){
  setChk('meterSeparateLumError', (greyMode==='eotf') ? s.sep_lum : false);
  meterUpdateSeparateLumVisibility();
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
+ setVal('meterHdrDiffuseWhite',s.hdr_diffuse_white);
+ setChk('meterHdrDiffuseWhiteAuto',s.hdr_diffuse_white_auto==null?true:s.hdr_diffuse_white_auto);
+ meterSyncHdrDiffuseWhiteControl();
  meterSyncHdrMetadata();
  meterUpdateCustomCcssPanel(meterNormalizeStoredDisplayType(s.display_type,s.ccss_file));
  meterUpdateHdrConfigVisibility();
@@ -44461,7 +44511,7 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await meterCheckStatus();
 });
 // meterXyzMatrixEnabled applies immediately (meterApplyXyzMatrixEnableFromDraft); only cells are deferred.
-['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390'].forEach(id=>{
+['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390','meterHdrDiffuseWhite','meterHdrDiffuseWhiteAuto'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
