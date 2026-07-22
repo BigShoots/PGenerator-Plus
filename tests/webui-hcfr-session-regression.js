@@ -63,6 +63,8 @@ assert(source.includes("colorStandard=outputIsBt2020?8:(outputIsP3?6:2)"), 'BT.2
 assert(source.includes("7:'bt2020',8:'p3d65'"), 'HCFR Rec.2020/P3 import must use P3 targets while native BT.2020 retains BT.2020 targets');
 assert(source.includes('function meterHdrNativeDiffuseWhite()')&&source.includes('meterGreyStimulusFraction(50)'), 'HDR diffuse white Auto must follow PGenerator\'s encoded 50% PQ target');
 assert(source.includes('diffuseLuminance:meterHdrDiffuseWhiteResolved()'), 'CHC export must serialize PGenerator\'s resolved diffuse-white target');
+assert(source.includes("if(raw==='') return fallback;"), 'blank HCFR preference inputs must use valid defaults instead of serializing as zero');
+assert(source.includes("manualWhiteX:value('meterTargetWhiteX',0.3127)")&&source.includes("manualWhiteY:value('meterTargetWhiteY',0.329)"), 'HCFR export must fall back to valid D65 white coordinates');
 assert(source.includes('id="meterHdrDiffuseWhiteAuto"')&&source.includes('aria-label="HDR diffuse white help"'), 'Calibration card must expose an explained Auto/manual diffuse-white control');
 assert(source.includes("meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator grayscale PQ target decoding');
 assert(source.includes("meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator ColorChecker and saturation PQ target decoding');

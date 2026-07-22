@@ -42652,7 +42652,12 @@ function meterHcfrAlignedGrayscale(snap){
 }
 
 function meterHcfrPreferenceModel(mode,white,black){
- const value=(id,fallback)=>{const el=document.getElementById(id),n=Number(el&&el.value);return Number.isFinite(n)?n:fallback;};
+ const value=(id,fallback)=>{
+  const el=document.getElementById(id),raw=el==null?'':String(el.value==null?'':el.value).trim();
+  if(raw==='') return fallback;
+  const n=Number(raw);
+  return Number.isFinite(n)?n:fallback;
+ };
  const text=(id,fallback)=>{const el=document.getElementById(id);return String((el&&el.value)||fallback||'');};
  const checked=id=>!!((document.getElementById(id)||{}).checked);
  const gamut=text('meterTargetGamut','auto').toLowerCase();
