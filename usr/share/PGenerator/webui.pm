@@ -10277,8 +10277,14 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .pg-switch input:checked + .pg-switch-track .pg-switch-thumb{transform:translateX(16px)}
 .pg-switch input:disabled + .pg-switch-track{opacity:.5;cursor:default}
 #meterCard > h2{align-items:center;gap:10px 12px}
-#meterCard > h2::after{margin-left:auto}
+#meterCard > h2::after{display:none}
 .meter-card-header-title{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
+.meter-config-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--text2);cursor:pointer;font-size:.82rem;transition:transform .2s,color .15s,background .15s}
+.meter-config-toggle:hover{color:var(--text);background:var(--hover-bg)}
+.meter-config-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+#meterCard.meter-config-collapsed .meter-config-toggle{transform:rotate(-90deg)}
+#meterCard.meter-config-collapsed > .meter-card-header-row,#meterCard.meter-config-collapsed > #meterResetRow,#meterCard.meter-config-collapsed > #meterSettingsGrid{display:none!important}
+#meterCard.meter-patterns-only .meter-config-toggle{display:none}
 .meter-card-header-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin:0 0 10px;width:100%;max-width:100%}
 .meter-card-header-col{display:flex;flex-direction:column;gap:2px;min-width:0}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
@@ -10343,7 +10349,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-patch{width:150px}
 #meterSettingsGrid .field-refresh{width:170px}
 .meter-inline-value{display:inline-flex;align-items:center;gap:6px;padding:0}
-.meter-inline-value input{width:54px;min-height:0;padding:6px 10px;border:1px solid var(--border) !important;background:#0d0d15 !important;border-radius:6px}
+.meter-inline-value input:not([type=checkbox]){width:54px;min-height:0;padding:6px 10px;border:1px solid var(--border) !important;background:#0d0d15 !important;border-radius:6px}
+.meter-inline-value input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--accent);flex:0 0 auto}
 #meterSettingsGrid .field-delay #meterDelay{height:auto;box-sizing:border-box}
 .meter-inline-value input:focus{outline:none;border-color:var(--accent) !important}
 .meter-inline-unit{font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
@@ -10938,6 +10945,10 @@ body.layout-desktop .desktop-utility-drawer{background:var(--surface-drawer);box
 .layout-switch-btn:focus-visible,.desktop-nav-btn:focus-visible,body.layout-desktop .desktop-utility-toggle:focus-visible,.ui-choice:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .ui-settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:min(460px,100%)}
 body.layout-desktop #uiSettingsCard .ui-settings-sections{width:min(460px,100%);gap:16px}
+.ui-settings-zoom{display:none}
+body.layout-desktop #uiSettingsCard .ui-settings-sections{grid-template-columns:repeat(3,minmax(0,1fr));width:min(680px,100%)}
+body.layout-desktop #uiSettingsCard .ui-settings-zoom{display:block}
+.ui-zoom-select{width:100%;max-width:130px;min-height:34px;padding:6px 28px 6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-field);color:var(--text-primary);font-size:.78rem;cursor:pointer}
 .ui-settings-group{min-width:0}
 .ui-settings-group h3{display:flex;align-items:center;gap:6px;margin:0 0 9px;font-size:.78rem;color:var(--text-primary)}
 .ui-choice-list{display:grid;gap:8px}
@@ -11072,6 +11083,12 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="dark" aria-pressed="true" onclick="pgSetThemeMode('dark')">Dark</button>
      <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
     </div>
+   </div>
+   <div class="ui-settings-group ui-settings-zoom">
+    <h3>Desktop Zoom <span class="meter-help-tip" tabindex="0" title="Scales the complete Desktop interface like browser zoom. This browser-local preference is restored after reloads and device reboots and does not affect Tablet mode." aria-label="Desktop zoom help">?</span></h3>
+    <select id="pgDesktopZoom" class="ui-zoom-select" aria-label="Desktop interface zoom" onchange="pgSetDesktopZoom(this.value)">
+     <option value="0.75">75%</option><option value="0.8">80%</option><option value="0.9">90%</option><option value="1" selected>100%</option><option value="1.1">110%</option><option value="1.25">125%</option>
+    </select>
    </div>
   </div>
  </section>
@@ -11285,7 +11302,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 
 <!-- Calibration -->
  <div class="card span2 meter-patterns-only" data-widget="meter" data-desktop-workspace="calibration" data-desktop-order="10" draggable="true" id="meterCard">
-  <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span></h2>
+  <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span><button type="button" id="meterConfigToggle" class="meter-config-toggle" data-no-collapse aria-expanded="true" aria-controls="meterSettingsGrid" title="Collapse meter and target settings" onclick="meterToggleConfiguration(event)">&#9662;</button></h2>
   <div class="meter-card-header-row">
    <div class="meter-card-header-col meter-card-header-col-meter">
     <label class="meter-header-label">Meter</label>
@@ -15501,6 +15518,8 @@ async function resolveDisconnect(){
 // workflow state stay alive when their workspace is not currently visible.
 const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
 const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
+const PG_DESKTOP_ZOOM_STORAGE_KEY='pgen.ui.desktopZoom';
+const PG_METER_CONFIG_COLLAPSE_KEY='pgen.ui.meterConfigCollapsed';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
  output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','meter-profile':'Meter Profile',
@@ -15509,6 +15528,7 @@ const PG_DESKTOP_WORKSPACES={
 let pgThemeMode='dark';
 let pgLayoutPreference='tablet';
 let pgLayoutEffective='tablet';
+let pgDesktopZoom=1;
 let pgDesktopWorkspace='output';
 let pgLayoutResizeTimer=null;
 let pgLayoutPanelObserver=null;
@@ -15523,6 +15543,46 @@ function pgReadLayoutPreference(){
   const saved=localStorage.getItem(PG_LAYOUT_STORAGE_KEY);
   return saved==='desktop'?'desktop':'tablet';
  }catch(e){ return 'tablet'; }
+}
+function pgReadDesktopZoom(){
+ try{
+  const value=Number(localStorage.getItem(PG_DESKTOP_ZOOM_STORAGE_KEY));
+  return [0.75,0.8,0.9,1,1.1,1.25].includes(value)?value:1;
+ }catch(e){ return 1; }
+}
+function pgApplyDesktopZoom(){
+ const scale=pgLayoutEffective==='desktop'?pgDesktopZoom:1;
+ const root=document.documentElement;
+ root.style.zoom=scale===1?'':String(scale);
+ root.style.width=scale===1?'':((100/scale)+'%');
+ const select=document.getElementById('pgDesktopZoom');
+ if(select) select.value=String(pgDesktopZoom);
+}
+function pgSetDesktopZoom(value){
+ const parsed=Number(value);
+ pgDesktopZoom=[0.75,0.8,0.9,1,1.1,1.25].includes(parsed)?parsed:1;
+ try{ localStorage.setItem(PG_DESKTOP_ZOOM_STORAGE_KEY,String(pgDesktopZoom)); }catch(e){}
+ pgApplyDesktopZoom();
+ pgUpdateHeaderOffset();
+ pgRefreshVisibleWorkspace();
+}
+function meterSyncConfigurationCollapse(){
+ const card=document.getElementById('meterCard');
+ const button=document.getElementById('meterConfigToggle');
+ if(!card||!button) return;
+ let collapsed=false;
+ try{ collapsed=localStorage.getItem(PG_METER_CONFIG_COLLAPSE_KEY)==='1'; }catch(e){}
+ card.classList.toggle('meter-config-collapsed',collapsed);
+ button.setAttribute('aria-expanded',collapsed?'false':'true');
+ button.title=collapsed?'Expand meter and target settings':'Collapse meter and target settings';
+}
+function meterToggleConfiguration(event){
+ if(event){ event.preventDefault();event.stopPropagation(); }
+ const card=document.getElementById('meterCard');
+ if(!card) return;
+ const collapsed=!card.classList.contains('meter-config-collapsed');
+ try{ localStorage.setItem(PG_METER_CONFIG_COLLAPSE_KEY,collapsed?'1':'0'); }catch(e){}
+ meterSyncConfigurationCollapse();
 }
 function pgUpdateLayoutControls(){
  const effective=pgLayoutEffective;
@@ -15704,6 +15764,7 @@ function pgApplyLayout(options){
  pgLayoutEffective=(pgLayoutPreference==='desktop'&&pgWideEnoughForDesktop())?'desktop':'tablet';
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
+ pgApplyDesktopZoom();
  meterPlaceCcssEditorForLayout();
  meterPlace3dLutWorkspaceForLayout();
  uiSyncBodyScrollLock();
@@ -15747,12 +15808,14 @@ function pgUpdateHeaderOffset(){
 function pgLayoutInit(){
  pgApplyThemeMode(pgReadThemeMode(),{initial:true});
  pgLayoutPreference=pgReadLayoutPreference();
+ pgDesktopZoom=pgReadDesktopZoom();
  pgLayoutEffective='tablet';
  pgDesktopWorkspace='output';
  pgLayoutViewportWidth=Math.round(window.innerWidth||0);
  pgLayoutViewportHeight=Math.round(window.innerHeight||0);
  pgUpdateHeaderOffset();
  pgApplyLayout({resetWorkspace:true});
+ meterSyncConfigurationCollapse();
  const header=document.querySelector('.header');
  if(header&&window.ResizeObserver){
   try{ new ResizeObserver(pgUpdateHeaderOffset).observe(header); }catch(e){}
@@ -44789,6 +44852,7 @@ function initCardCollapse(){
  let state={};
  try{ state=JSON.parse(localStorage.getItem('cardCollapse')||'{}')||{}; }catch(e){ state={}; }
  cards.forEach((card,i)=>{
+  if(card.id==='meterCard') return;
   const h=card.querySelector(':scope > h2');
   if(!h) return;
   // Derive a stable key: id > data-widget > index
