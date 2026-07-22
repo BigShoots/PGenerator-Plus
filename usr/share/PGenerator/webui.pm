@@ -23710,10 +23710,17 @@ function meterLiveTargetRgbCodes(src){
   return Number(code);
  });
  if(!raw.every(Number.isFinite)) return null;
- // Show the actual 8-bit-equivalent patch code, not a range-normalized value
- // and not the tone-mapped output luminance. PGenerator's 10-bit codes use
- // the exact 4x video-code mapping (Limited 940 -> 235; Full 1023 -> 255).
- return raw.map(code=>Math.max(0,Math.min(255,Math.round(code>255?code/4:code))));
+ // Decide code depth once for the whole patch/series. Testing each channel's
+ // value independently made Limited 10-bit greyscale jump from 64/108/239
+ // to 71 at the first code above 255. input_max is stamped on every normal
+ // series step; the remaining checks cover recovered legacy snapshots.
+ const inputMax=Number(step.input_max!=null?step.input_max:src.input_max);
+ const tenBit=inputMax===1023 || raw.some(code=>code>255) ||
+  ((typeof meterPatchBitDepth==='function'&&meterPatchBitDepth()===10) &&
+   !(typeof meterActiveSeriesCodesAre8Bit==='function'&&meterActiveSeriesCodesAre8Bit()));
+ // Show 8-bit-equivalent wire codes. PGenerator's 10-bit ladders use the
+ // exact 4x mapping (Limited 64..940 -> 16..235; Full 0..1023 -> 0..255).
+ return raw.map(code=>Math.max(0,Math.min(255,Math.round(tenBit?code/4:code))));
 }
 
 function meterLiveXyzRgbCodes(xyz){
@@ -23729,7 +23736,12 @@ function meterLiveXyzRgbCodes(xyz){
   const reference=Math.max(0.0001,meterColorSeriesReferenceNits());
   signal=linear.map(channel=>meterTargetLinearToSignal(Math.max(0,channel)/reference));
  }
- return signal.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
+ // Put calculated measured RGB on the same 8-bit-equivalent wire scale as
+ // the patch target. Limited-range output is 16..235, not full-range 0..255.
+ const limited=(typeof meterPatchUsesVideoRange==='function')?meterPatchUsesVideoRange():false;
+ const codeMin=limited?16:0;
+ const codeSpan=limited?219:255;
+ return signal.map(value=>Math.round(codeMin+codeSpan*Math.max(0,Math.min(1,value))));
 }
 
 function meterLiveMeasuredRgbCodes(reading){
