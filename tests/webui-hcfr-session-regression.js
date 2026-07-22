@@ -105,6 +105,8 @@ assert(source.includes("meterCacheSeriesState(meterSeriesRunning?'running':'comp
 assert(source.includes('_defer_cache_persist:true'), 'cached restore must coalesce its persistence write');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
 assert(source.includes('id="meterLiveRgbMeasured"')&&source.includes('id="meterLiveRgbTarget"'), 'live reading must show measured and target RGB values in both layouts');
+assert(source.includes('body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important')&&source.includes('RGB: <strong id="meterLiveRgbMeasured"'), 'Tablet live values must keep RGB in the single summary row with bold measured values');
+assert(source.includes('<strong id="meterLiveXyzMeasured"')&&source.includes('<strong id="meterLiveDeltaE"'), 'extended Desktop measured values must use the same bold treatment as the original live values');
 assert(source.includes('function meterLiveMeasuredRgbCodes(reading)')&&source.includes('meterChartPqEncodeNormalized(Math.max(0,channel))'), 'live measured RGB values must use the active transfer function');
 assert(source.includes('function meterLiveTargetRgbCodes(src)')&&source.includes('Math.round(255*Math.max(0,Math.min(1,value)))'), 'live target RGB values must use HCFR-style full-range-equivalent 8-bit codes');
 assert(source.includes("target?meterLiveXyzRgbCodes(target)")&&source.includes('Showing the raw stimulus next'), 'HDR live target RGB must represent tone-mapped target output rather than raw input stimulus');

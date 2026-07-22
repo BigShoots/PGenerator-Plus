@@ -10358,11 +10358,11 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-chart-inline-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
 /* Muted per-field target readout in the live Patch Reading box. */
 .meter-live-tgt{font-size:.72rem;color:var(--text2);font-weight:400;white-space:nowrap}
-.meter-live-rgb-values{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.72rem;line-height:1.35}
 .meter-live-detail-label{color:var(--text2);white-space:nowrap}
 .meter-live-rgb-triplet{font-variant-numeric:tabular-nums;white-space:nowrap}
 .meter-live-rgb-triplet .r{color:#ff6666}.meter-live-rgb-triplet .g{color:#66cc77}.meter-live-rgb-triplet .b{color:#65aaff}
 .meter-live-desktop-details{display:none}
+body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflow-x:auto;padding-bottom:2px}
 .meter-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;line-height:1.25}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
 	.meter-note-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
@@ -11643,18 +11643,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <span>CCT: <strong id="meterCCT">--</strong>K <span class="meter-live-tgt" id="meterCCTTgt" title="Target CCT (from target white point)"></span></span>
      <span>CIE x: <strong id="meterCIEx">--</strong> <span class="meter-live-tgt" id="meterCIExTgt" title="Target CIE x"></span></span>
      <span>CIE y: <strong id="meterCIEy">--</strong> <span class="meter-live-tgt" id="meterCIEyTgt" title="Target CIE y"></span></span>
-    </div>
-    <div class="meter-live-rgb-values" aria-label="Measured and target RGB values">
-     <span class="meter-live-detail-label">Measured RGB</span><span id="meterLiveRgbMeasured" class="meter-live-rgb-triplet">--</span>
-     <span class="meter-live-detail-label">Target RGB</span><span id="meterLiveRgbTarget" class="meter-live-rgb-triplet">--</span>
+     <span>RGB: <strong id="meterLiveRgbMeasured" class="meter-live-rgb-triplet">--</strong> <span class="meter-live-tgt" title="Target RGB">Target: <span id="meterLiveRgbTarget" class="meter-live-rgb-triplet">--</span></span></span>
     </div>
     <div class="meter-live-desktop-details" aria-label="Detailed live measurement values">
-     <span class="meter-live-detail-label">Measured XYZ</span><span id="meterLiveXyzMeasured">--</span>
+     <span class="meter-live-detail-label">Measured XYZ</span><strong id="meterLiveXyzMeasured">--</strong>
      <span class="meter-live-detail-label">Target XYZ</span><span id="meterLiveXyzTarget">--</span>
-     <span class="meter-live-detail-label">&Delta;x / &Delta;y</span><span id="meterLiveDeltaXy">--</span>
-     <span class="meter-live-detail-label">&Delta;Y</span><span id="meterLiveDeltaY">--</span>
-     <span class="meter-live-detail-label">u&prime; / v&prime;</span><span id="meterLiveUvMeasured">--</span>
-     <span class="meter-live-detail-label">&Delta;E</span><span id="meterLiveDeltaE">--</span>
+     <span class="meter-live-detail-label">&Delta;x / &Delta;y</span><strong id="meterLiveDeltaXy">--</strong>
+     <span class="meter-live-detail-label">&Delta;Y</span><strong id="meterLiveDeltaY">--</strong>
+     <span class="meter-live-detail-label">u&prime; / v&prime;</span><strong id="meterLiveUvMeasured">--</strong>
+     <span class="meter-live-detail-label">&Delta;E</span><strong id="meterLiveDeltaE">--</strong>
     </div>
     <!-- Vertical live-RGB bars render inside the active chart (greyscale: left of RGB Balance; color/sat: right of CIE). -->
     <canvas id="meterRGBCanvas" width="1" height="1" style="display:none"></canvas>
