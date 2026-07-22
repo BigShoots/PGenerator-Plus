@@ -42465,9 +42465,11 @@ function meterBuildHcfrExportModel(){
  const satEntries=byType('saturations'),colorEntries=byType('colors');
  // The visible checkbox chooses which built-in variant export consumes. Each
  // variant keeps its own cache key, so toggling never re-labels measurements.
+ // Do not fall back to the opposite built-in variant when the selected cache
+ // was cleared; that would resurrect measurements the operator removed.
  const preferHcfr=meterHcfrFixedCodesEnabled();
- const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries[0]||null;
- const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries[0]||null;
+ const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
+ const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
