@@ -38843,7 +38843,8 @@ function drawGammaValuePreset(gsSteps){
   const targetIre=meterGreyscaleTargetSlotIre(s);
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
- const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),100,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ const presetTargetYw=meterChartIsHdr()?meterGreyTargetPeak(100):100;
+ const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),presetTargetYw,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
 	 const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq()||meterChartIsHlg());
  let yMin=axis.min;
  let yMax=axis.max;
@@ -38861,7 +38862,7 @@ function drawGammaValuePreset(gsSteps){
  chartSteps.forEach((s,idx)=>{
   const targetIre=meterGreyscaleTargetSlotIre(s);
   if(!((targetIre||0)>0&&(targetIre||0)<100)) return;
-  const g=meterGreyTargetGamma(targetIre,100,0,s.r_code!=null?s.r_code:s.r);
+  const g=meterGreyTargetGamma(targetIre,presetTargetYw,0,s.r_code!=null?s.r_code:s.r);
   if(g!=null&&isFinite(g)) tgtPts.push([meterGammaChartX(s,chartSteps,idx),Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
  });
  const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
@@ -38890,6 +38891,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   return;
  }
  const xSteps=gammaFixedAxis?meterFilterGammaChartItems(rawXSteps):rawXSteps;
+ const targetChartYw=meterChartIsHdr()?meterGreyTargetPeak(chartYw):chartYw;
  const gammaMap={};
  const targetMap={};
 	 sorted.forEach((rd,idx)=>{
@@ -38909,7 +38911,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	   if(g!=null&&isFinite(g)) gammaMap[rd.ire]=g;
 	  }
 		  const targetIreForRd=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(rd):null)||analysisIre;
-		  const tg=meterGreyTargetGamma(targetIreForRd,chartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
+		  const tg=meterGreyTargetGamma(targetIreForRd,targetChartYw,Lb,rd.r_code,prevIre,prev?(prev.r_code!=null?prev.r_code:prev.r):null);
 	  if(tg!=null&&isFinite(tg)) targetMap[rd.ire]=tg;
 	 });
  xSteps.forEach((step,idx)=>{
@@ -38921,7 +38923,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 		  const targetCode=rd&&rd.r_code!=null?rd.r_code:meterGreyscaleTargetCodeForStep(step,readingMap);
 		  const prevIre=prevRd?(((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(prevRd):null)||prev.ire):(prev?meterGreyscaleTargetIreForStep(prev,readingMap):null);
 	  const prevCode=prevRd&&prevRd.r_code!=null?prevRd.r_code:(prev?meterGreyscaleTargetCodeForStep(prev,readingMap):null);
-	  const tg=meterGreyTargetGamma(targetIre,chartYw,Lb,targetCode,prevIre,prevCode);
+	  const tg=meterGreyTargetGamma(targetIre,targetChartYw,Lb,targetCode,prevIre,prevCode);
 	  if(tg!=null&&isFinite(tg)) targetMap[step.ire]=tg;
 	 });
  const measuredVals=Object.values(gammaMap).filter(v=>v!=null&&isFinite(v));
