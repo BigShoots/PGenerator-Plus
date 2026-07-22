@@ -40353,9 +40353,9 @@ function meterSelectedCIETargetColor(rd,baseColor){
 
 // 2D CIE view: wheel zoom + drag pan (independent of the per-patch zoom inset).
 // scale=1 shows the full x 0..1 / y 0..0.9 plot; pan is centre offset in xy.
-// Equal x/y extents keep the unzoomed chromaticity plot square while the
-// geometry below preserves one pixel scale per xy unit. The spectral locus
-// fits below x=.9, so the old unused .9-1.0 x gutter only distorted the frame.
+// Equal x/y world extents keep zoom and pan symmetric. The rendered viewport
+// uses a slightly wider 1.15:1 presentation so the plot fills more of its
+// card without restoring the old unused x=.9-1.0 world-coordinate gutter.
 const CIE2D_WORLD={xMin:0,xMax:0.9,yMin:0,yMax:0.9};
 const CIE2D_SCALE_MIN=1,CIE2D_SCALE_MAX=25;
 let _cie2d={
@@ -40400,11 +40400,13 @@ function meterCie2dGeom(cw,ch){
  const vp=meterCie2dViewport();
  const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
  const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
- // Keep one chromaticity unit the same size on both axes. Responsive and
- // expanded canvases letterbox instead of stretching the CIE geometry.
+ // A modest 15% horizontal presentation stretch uses the otherwise empty
+ // sides of the chart card in both normal and expanded layouts. All drawing,
+ // hit testing, zooming and inset placement consume this same geometry.
  const availableW=Math.max(1,cw-pad.l-pad.r), availableH=Math.max(1,ch-pad.t-pad.b);
- const pixelsPerUnit=Math.max(1,Math.min(availableW/xSpan,availableH/ySpan));
- const w=xSpan*pixelsPerUnit, h=ySpan*pixelsPerUnit;
+ const targetAspect=1.15*(xSpan/ySpan);
+ let w=availableW,h=w/targetAspect;
+ if(h>availableH){h=availableH;w=h*targetAspect;}
  pad.l+=(availableW-w)/2;
  pad.t+=(availableH-h)/2;
  return {

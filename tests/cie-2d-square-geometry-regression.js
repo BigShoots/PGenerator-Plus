@@ -28,9 +28,11 @@ vm.runInContext(`
 
 for (const [width, height] of [[600,450],[420,600],[1200,760]]) {
   const geom = vm.runInContext(`meterCie2dGeom(${width},${height})`, ctx);
-  assert(Math.abs(geom.w - geom.h) < 1e-9, `plot is not square at ${width}x${height}`);
-  assert(Math.abs((geom.toX(0.6)-geom.toX(0.5))-(geom.toY(0.5)-geom.toY(0.6))) < 1e-9,
-    `x/y unit scales differ at ${width}x${height}`);
+  assert(Math.abs((geom.w / geom.h) - 1.15) < 1e-9, `plot is not 15% wider at ${width}x${height}`);
+  const xUnit=geom.toX(0.6)-geom.toX(0.5);
+  const yUnit=geom.toY(0.5)-geom.toY(0.6);
+  assert(Math.abs((xUnit/yUnit)-1.15) < 1e-9,
+    `horizontal unit scale is not stretched 15% at ${width}x${height}`);
 }
 
-console.log('CIE 2D square geometry regression OK');
+console.log('CIE 2D wide geometry regression OK');
