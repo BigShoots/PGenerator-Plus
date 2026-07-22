@@ -27996,7 +27996,7 @@ function meterCloseLatticeGenerator(){
  }
 }
 
-async function meterSaveLatticeGenerator(){
+function meterSaveLatticeGenerator(){
  const nameInput=document.getElementById('meterLatticeName');
  meterCustomSeriesDirty=true;
  const params=meterLatticeGenParamsFromForm();
@@ -28019,17 +28019,9 @@ async function meterSaveLatticeGenerator(){
  meterCustomSeriesNormalizeState();
  const seriesId=series.id;
  meterCustomSeriesReturnToManager=false;
- // Keep a local recovery copy before the async settings request begins. This
- // covers a refresh during the short window before the daemon acknowledges
- // the custom-series blob (and also a settings load that is still starting).
- meterCustomSeriesBackupWrite(true);
- const saved=await saveMeterSettings();
- if(!saved||saved.status!=='ok'){
-  toast('3D LUT series could not be saved to the Pi; leave this page open and try again',true);
-  return;
- }
  meterCloseLatticeGenerator();
  meterCloseCustomSeriesManager();
+ saveMeterSettings();
  meterRenderCustomSeriesButtons();
  meterSelectSeries('colors',seriesId);
  toast('Lattice series saved');
