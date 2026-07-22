@@ -10351,6 +10351,11 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 .meter-chart-inline-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
 /* Muted per-field target readout in the live Patch Reading box. */
 .meter-live-tgt{font-size:.72rem;color:var(--text2);font-weight:400;white-space:nowrap}
+.meter-live-rgb-values{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.72rem;line-height:1.35}
+.meter-live-detail-label{color:var(--text2);white-space:nowrap}
+.meter-live-rgb-triplet{font-variant-numeric:tabular-nums;white-space:nowrap}
+.meter-live-rgb-triplet .r{color:#ff6666}.meter-live-rgb-triplet .g{color:#66cc77}.meter-live-rgb-triplet .b{color:#65aaff}
+.meter-live-desktop-details{display:none}
 .meter-toggle{display:inline-flex;align-items:flex-start;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);text-transform:none !important;letter-spacing:0 !important;cursor:pointer;line-height:1.25}
 .meter-toggle input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
 	.meter-note-toggle{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0;font-size:.78rem;color:var(--text);cursor:pointer;margin-top:0;text-transform:none !important;letter-spacing:0 !important;line-height:1.25}
@@ -10777,9 +10782,10 @@ body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWra
 body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:18px;min-width:0}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child>div>span{display:block;min-width:0;line-height:1.35;overflow-wrap:anywhere}
+body.layout-desktop #meterGreyLiveRail .meter-live-primary-values{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
+body.layout-desktop #meterGreyLiveRail .meter-live-primary-values>span{display:block;min-width:0;line-height:1.35;overflow-wrap:anywhere}
 body.layout-desktop #meterGreyLiveRail .meter-live-tgt{display:block;white-space:normal;margin-top:2px}
+body.layout-desktop #meterGreyLiveRail .meter-live-desktop-details{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.7rem;line-height:1.35;font-variant-numeric:tabular-nums}
 body.layout-desktop #meterExportRow{margin-top:22px!important}
 body.layout-desktop #meterCard.meter-two-point-active #meterThumbsWrap{width:min(360px,100%);margin-left:auto;margin-right:auto}
 body.layout-desktop #meterCard.meter-two-point-active #meterThumbsRow{flex:0 1 360px;width:100%}
@@ -11614,11 +11620,23 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div id="meterLiveReading" style="display:none;margin-bottom:12px">
     <div id="meterLiveReadingLabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase;margin-bottom:4px">Patch Reading</div>
    <div style="background:#0d0d15;padding:10px;border-radius:6px">
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:.82rem">
+    <div class="meter-live-primary-values" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:.82rem">
      <span>Luminance: <strong id="meterLum">--</strong> cd/m&sup2; <span class="meter-live-tgt" id="meterLumTgt" title="Target luminance"></span></span>
      <span>CCT: <strong id="meterCCT">--</strong>K <span class="meter-live-tgt" id="meterCCTTgt" title="Target CCT (from target white point)"></span></span>
      <span>CIE x: <strong id="meterCIEx">--</strong> <span class="meter-live-tgt" id="meterCIExTgt" title="Target CIE x"></span></span>
      <span>CIE y: <strong id="meterCIEy">--</strong> <span class="meter-live-tgt" id="meterCIEyTgt" title="Target CIE y"></span></span>
+    </div>
+    <div class="meter-live-rgb-values" aria-label="Measured and target RGB values">
+     <span class="meter-live-detail-label">Measured RGB</span><span id="meterLiveRgbMeasured" class="meter-live-rgb-triplet">--</span>
+     <span class="meter-live-detail-label">Target RGB</span><span id="meterLiveRgbTarget" class="meter-live-rgb-triplet">--</span>
+    </div>
+    <div class="meter-live-desktop-details" aria-label="Detailed live measurement values">
+     <span class="meter-live-detail-label">Measured XYZ</span><span id="meterLiveXyzMeasured">--</span>
+     <span class="meter-live-detail-label">Target XYZ</span><span id="meterLiveXyzTarget">--</span>
+     <span class="meter-live-detail-label">&Delta;x / &Delta;y</span><span id="meterLiveDeltaXy">--</span>
+     <span class="meter-live-detail-label">&Delta;Y</span><span id="meterLiveDeltaY">--</span>
+     <span class="meter-live-detail-label">u&prime; / v&prime;</span><span id="meterLiveUvMeasured">--</span>
+     <span class="meter-live-detail-label">&Delta;E</span><span id="meterLiveDeltaE">--</span>
     </div>
     <!-- Vertical live-RGB bars render inside the active chart (greyscale: left of RGB Balance; color/sat: right of CIE). -->
     <canvas id="meterRGBCanvas" width="1" height="1" style="display:none"></canvas>
@@ -23551,6 +23569,7 @@ function meterClearLiveReading(step){
  // Selected-but-unread patch: still show its targets so the operator knows
  // what the read should land on.
  meterUpdateLiveReadingTargets(targetStep);
+ meterUpdateLiveReadingDetails(targetStep,false);
  drawRGBBars(null);
  meterRenderGreyTvControls(null);
  drawDeltaBarsVertical('meterRGBCanvasGrey',null);
@@ -23604,6 +23623,70 @@ function meterUpdateLiveReadingTargets(src){
  set('meterCIEyTgt', tXY?('Target: '+tXY.y.toFixed(4)):'');
 }
 
+function meterLiveTargetRgbCodes(src){
+ if(!src) return null;
+ const step=meterCanonicalSeriesStep(src)||src;
+ const raw=['r','g','b'].map(channel=>{
+  const code=step[channel+'_code']!=null?step[channel+'_code']:step[channel];
+  return Number(code);
+ });
+ if(!raw.every(Number.isFinite)) return null;
+ let normalized;
+ if(meterReadingIsGreyscale(step)){
+  normalized=raw.map(meterGreySignalFractionFromCode);
+ }else{
+  const range=meterColorTargetCodeRange();
+  normalized=raw.map(code=>Math.max(0,Math.min(1,(code-range.min)/range.span)));
+ }
+ return normalized.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
+}
+
+function meterLiveMeasuredRgbCodes(reading){
+ const xyz=meterReadingXYZ(reading);
+ if(!xyz) return null;
+ const linear=xyzToLinRgb(xyz.X,xyz.Y,xyz.Z,meterAnalysisGamut().xyzToRgb);
+ let signal;
+ if(meterChartIsPq() && (!meterChartIsDv() || meterDvUsesPqTargetCurve())){
+  signal=linear.map(channel=>meterChartPqEncodeNormalized(Math.max(0,channel)));
+ }else if(meterChartIsHlg()){
+  const peak=Math.max(1,meterColorSeriesReferenceNits());
+  signal=linear.map(channel=>hlgInverseEotfSignal(Math.max(0,channel),meterChartMasterMin(),peak));
+ }else{
+  const reference=Math.max(0.0001,meterColorSeriesReferenceNits());
+  signal=linear.map(channel=>meterTargetLinearToSignal(Math.max(0,channel)/reference));
+ }
+ return signal.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
+}
+
+function meterLiveRgbMarkup(values){
+ if(!values||values.length!==3) return '--';
+ return '<span class="r">'+values[0]+'</span>, <span class="g">'+values[1]+'</span>, <span class="b">'+values[2]+'</span>';
+}
+
+function meterUpdateLiveReadingDetails(src,isMeasured){
+ const set=(id,value)=>{ const el=document.getElementById(id); if(el) el.textContent=value; };
+ const setRgb=(id,value)=>{ const el=document.getElementById(id); if(el) el.innerHTML=meterLiveRgbMarkup(value); };
+ const target=src?meterTargetXYZForReading(src):null;
+ const measured=isMeasured?meterReadingXYZ(src):null;
+ setRgb('meterLiveRgbMeasured',measured?meterLiveMeasuredRgbCodes(src):null);
+ setRgb('meterLiveRgbTarget',src?meterLiveTargetRgbCodes(src):null);
+ const xyzText=xyz=>xyz?[xyz.X,xyz.Y,xyz.Z].map(value=>Number(value).toFixed(3)).join(', '):'--';
+ set('meterLiveXyzMeasured',xyzText(measured));
+ set('meterLiveXyzTarget',xyzText(target));
+ let measuredXy=null,targetXy=null;
+ if(measured){ const sum=measured.X+measured.Y+measured.Z; if(sum>0) measuredXy={x:measured.X/sum,y:measured.Y/sum}; }
+ if(target){ const sum=target.X+target.Y+target.Z; if(sum>0) targetXy={x:target.X/sum,y:target.Y/sum}; }
+ set('meterLiveDeltaXy',(measuredXy&&targetXy)?((measuredXy.x-targetXy.x>=0?'+':'')+(measuredXy.x-targetXy.x).toFixed(4)+' / '+(measuredXy.y-targetXy.y>=0?'+':'')+(measuredXy.y-targetXy.y).toFixed(4)):'--');
+ set('meterLiveDeltaY',(measured&&target)?((measured.Y-target.Y>=0?'+':'')+(measured.Y-target.Y).toFixed(2)+' cd/m²'):'--');
+ if(measured){
+  const denominator=measured.X+15*measured.Y+3*measured.Z;
+  set('meterLiveUvMeasured',denominator>0?((4*measured.X/denominator).toFixed(4)+' / '+(9*measured.Y/denominator).toFixed(4)):'--');
+ }else set('meterLiveUvMeasured','--');
+ let deltaE=null;
+ if(measured){ try{ deltaE=meterColorDeltaE2000(src,meterGreyRefMode()); }catch(e){} }
+ set('meterLiveDeltaE',Number.isFinite(deltaE)?deltaE.toFixed(2):'--');
+}
+
 function updateLiveReading(reading){
  // Unread step shells: never invent live measured values from patch codes.
  if(!reading||reading._unreadStep||reading._presetStep||!meterReadingIsRealMeasurement(reading)){
@@ -23630,6 +23713,7 @@ function updateLiveReading(reading){
  document.getElementById('meterCIEx').textContent=(measured&&reading.x!=null)?reading.x.toFixed(4):'--';
  document.getElementById('meterCIEy').textContent=(measured&&reading.y!=null)?reading.y.toFixed(4):'--';
  meterUpdateLiveReadingTargets(reading);
+ meterUpdateLiveReadingDetails(reading,true);
 
  const liveRgb=meterLiveRgbData(reading);
  drawRGBBars(liveRgb);

@@ -104,5 +104,9 @@ assert(source.includes('function meterScheduleSeriesCachePersist()'), 'series ca
 assert(source.includes("meterCacheSeriesState(meterSeriesRunning?'running':'complete',{deferPersist:true})"), 'series switching must not synchronously persist the entire cache');
 assert(source.includes('_defer_cache_persist:true'), 'cached restore must coalesce its persistence write');
 assert(source.includes("output settings will NOT be changed or restarted"), 'import preview must disclose output behavior');
+assert(source.includes('id="meterLiveRgbMeasured"')&&source.includes('id="meterLiveRgbTarget"'), 'live reading must show measured and target RGB values in both layouts');
+assert(source.includes('function meterLiveMeasuredRgbCodes(reading)')&&source.includes('meterChartPqEncodeNormalized(Math.max(0,channel))'), 'live measured RGB values must use the active transfer function');
+assert(source.includes('function meterLiveTargetRgbCodes(src)')&&source.includes('Math.round(255*Math.max(0,Math.min(1,value)))'), 'live target RGB values must use HCFR-style full-range-equivalent 8-bit codes');
+assert(source.includes('class="meter-live-desktop-details"')&&source.includes('body.layout-desktop #meterGreyLiveRail .meter-live-desktop-details{display:grid'), 'XYZ, chromaticity, luminance, and delta-E details must remain desktop-only');
 
 console.log('webui HCFR Session workspace regression OK');
