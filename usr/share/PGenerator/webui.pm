@@ -42399,7 +42399,7 @@ function meterHcfrScaleXyz(rd,scale){
 
 function meterHcfrSnapshotList(){
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length) meterCacheSeriesState(meterSeriesRunning?'running':'complete');
- const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
+ const mode=String(meterActiveChartSignalMode()||'sdr').toLowerCase();
  return Object.entries(meterSeriesCache||{}).filter(([,snap])=>snap&&String(snap.signal_mode||mode).toLowerCase()===mode&&Array.isArray(snap.readings)&&snap.readings.some(meterHcfrValidReading)).map(([key,snap])=>({key,snap}));
 }
 
@@ -42461,9 +42461,16 @@ function meterHcfrPreferenceModel(mode,white,black){
 function meterBuildHcfrExportModel(){
  const entries=meterHcfrSnapshotList();
  if(!entries.length) throw new Error('No measurements match the current signal mode');
- const mode=String(meterChartSignalMode()||'sdr').toLowerCase();
+ const mode=String(meterActiveChartSignalMode()||'sdr').toLowerCase();
  const byType=type=>entries.filter(e=>String(e.snap.type||'')===type).sort((a,b)=>Number(b.snap.updated_at||0)-Number(a.snap.updated_at||0));
- const greyEntry=byType('greyscale')[0]||null;
+ const activeImportedSession=meterActiveHcfrSessionId;
+ const importedGroup=group=>entries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_session_id===activeImportedSession&&e.snap.source_group===group)||null;
+ const greyEntries=byType('greyscale');
+ // Near-black and near-white are preserved as separate imported workspaces.
+ // Never let the most recently-created one replace the main grayscale array.
+ const greyEntry=importedGroup('grayscale')||greyEntries.find(e=>!['nearBlack','nearWhite'].includes(e.snap.source_group))||null;
+ const nearBlackEntry=importedGroup('nearBlack');
+ const nearWhiteEntry=importedGroup('nearWhite');
  const satEntries=byType('saturations'),colorEntries=byType('colors');
  // The visible checkbox chooses which built-in variant export consumes. Each
  // variant keeps its own cache key, so toggling never re-labels measurements.
@@ -42476,6 +42483,8 @@ function meterBuildHcfrExportModel(){
  const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);
+ const nearBlack=valid(nearBlackEntry&&nearBlackEntry.snap).slice(0,5);
+ const nearWhite=valid(nearWhiteEntry&&nearWhiteEntry.snap).slice(0,5);
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
  valid(satEntry&&satEntry.snap).forEach(rd=>{const name=String(rd.name||'').toLowerCase();for(const key of Object.keys(satGroups)){const hue=key.replace('Saturation','').toLowerCase();if(name.includes(hue)){satGroups[key].push(rd);break;}}});
  Object.keys(satGroups).forEach(key=>{const list=satGroups[key].sort((a,b)=>Number(a.sat_pct||a.ire||0)-Number(b.sat_pct||b.ire||0));satGroups[key]=list.length===4?[null,...list]:list;});
@@ -42529,7 +42538,7 @@ function meterBuildHcfrExportModel(){
   free.push(...colors.slice(2,6));
  }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
  const rgbRange=(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())?'limited':'full';
- return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:Array(5).fill(null),nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
+ return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:nearBlack.length?nearBlack:Array(5).fill(null),nearWhite:nearWhite.length?nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,nearBlack:nearBlack.length,nearWhite:nearWhite.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 
 function meterExportHcfrChc(){

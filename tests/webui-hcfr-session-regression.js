@@ -21,8 +21,12 @@ assert(source.indexOf('data-workspace-target="ui-settings"') < source.indexOf('d
 assert(source.includes('function meterExportHcfrChc()'), 'CHC export action is missing');
 assert(source.includes('async function meterImportHcfrChcFile(input)'), 'CHC import action is missing');
 assert(source.includes("String(snap.signal_mode||mode).toLowerCase()===mode"), 'export must filter snapshots by active signal mode');
+assert(source.includes("const mode=String(meterActiveChartSignalMode()||'sdr').toLowerCase()"), 'CHC export must use imported/active HDR context rather than the unchanged physical output mode');
 assert(source.includes('function meterHcfrAlignedGrayscale(snap)') && source.includes('if(index<0) return null;'), 'partial grayscale export must preserve empty HCFR stimulus slots');
 assert(source.includes('const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);'), 'CHC export must not compact grayscale readings');
+assert(source.includes("const greyEntry=importedGroup('grayscale')"), 'CHC re-export must select the main imported grayscale group instead of near-black/near-white');
+assert(source.includes("const nearBlackEntry=importedGroup('nearBlack')")&&source.includes("const nearWhiteEntry=importedGroup('nearWhite')"), 'CHC re-export must preserve imported near-black and near-white groups');
+assert(source.includes('nearBlack:nearBlack.length?nearBlack:Array(5).fill(null)')&&source.includes('nearWhite:nearWhite.length?nearWhite:Array(5).fill(null)'), 'CHC export must serialize preserved near-black and near-white measurements');
 assert(source.includes("empty stimulus slots are preserved and will appear blank in HCFR"), 'partial grayscale export must warn about blank HCFR slots');
 assert(source.includes("fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white"), 'HCFR prime white must match the chroma stimulus luminance');
 assert(source.includes("colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map"), 'ColorChecker master collection must mirror exported measurements');
