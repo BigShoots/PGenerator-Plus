@@ -11883,7 +11883,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div class="meter-3dlut-measure-track"><div id="meterBuild3dLutMeasureFill" class="meter-3dlut-measure-fill"></div></div>
     <div id="meterBuild3dLutCieHost"></div>
     <div style="display:flex;justify-content:flex-end;margin-top:10px">
-     <button type="button" class="btn btn-sm btn-danger" id="meterBuild3dLutMeasureCancelBtn" onclick="meterStop()">Cancel measurement</button>
+     <button type="button" class="btn btn-sm btn-danger" id="meterBuild3dLutMeasureCancelBtn" onclick="meterStop()">Cancel</button>
     </div>
    </div>
   </div>
@@ -25452,6 +25452,7 @@ async function meterStop(){
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ if(hadSeriesStop&&meterBuild3dLutPending) meterBuild3dLutMeasureHide();
  if(hadSeriesStop) meterBuild3dLutPending=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
