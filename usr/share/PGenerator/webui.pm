@@ -11288,8 +11288,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
     <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
      <optgroup label="Generic" id="meterDtGeneric">
-      <option value="non_refresh">Non-refresh display (raw)</option>
-      <option value="refresh">Refresh display (raw)</option>
+      <option value="non_refresh">Non-refresh display</option>
+      <option value="refresh">Refresh display</option>
       <option value="oled_generic">WRGB OLED</option>
       <option value="qdoled">QD-OLED</option>
       <option value="lcd_wled">LCD - White LED</option>

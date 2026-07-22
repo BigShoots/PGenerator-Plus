@@ -75,9 +75,9 @@ like($src, qr/function meterApplyTargetLevelsDisplayDefaults[\s\S]{0,1800}?meter
 
 # Task 6: HCFR-style raw display types select Argyll refresh behavior without
 # silently applying a spectral correction.
-like($src, qr/<option value="non_refresh">Non-refresh display \(raw\)<\/option>/,
+like($src, qr/<option value="non_refresh">Non-refresh display<\/option>/,
   'raw non-refresh display type is selectable');
-like($src, qr/<option value="refresh">Refresh display \(raw\)<\/option>/,
+like($src, qr/<option value="refresh">Refresh display<\/option>/,
   'raw refresh display type is selectable');
 like($src, qr/"non_refresh"\s*=>\s*\["l",""\]/,
   'raw non-refresh maps to spotread non-refresh mode without CCSS');
