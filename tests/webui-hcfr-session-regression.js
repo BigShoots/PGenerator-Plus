@@ -107,9 +107,11 @@ assert(source.includes("output settings will NOT be changed or restarted"), 'imp
 assert(source.includes('id="meterLiveRgbMeasured"')&&source.includes('id="meterLiveRgbTarget"'), 'live reading must show measured and target RGB values in both layouts');
 assert(source.includes('function meterLiveMeasuredRgbCodes(reading)')&&source.includes('meterChartPqEncodeNormalized(Math.max(0,channel))'), 'live measured RGB values must use the active transfer function');
 assert(source.includes('function meterLiveTargetRgbCodes(src)')&&source.includes('Math.round(255*Math.max(0,Math.min(1,value)))'), 'live target RGB values must use HCFR-style full-range-equivalent 8-bit codes');
+assert(source.includes("target?meterLiveXyzRgbCodes(target)")&&source.includes('Showing the raw stimulus next'), 'HDR live target RGB must represent tone-mapped target output rather than raw input stimulus');
 assert(source.includes('class="meter-live-desktop-details"')&&source.includes('body.layout-desktop #meterGreyLiveRail .meter-live-desktop-details{display:grid'), 'XYZ, chromaticity, luminance, and delta-E details must remain desktop-only');
 assert(source.includes('id="pgDesktopZoom"')&&source.includes("PG_DESKTOP_ZOOM_STORAGE_KEY='pgen.ui.desktopZoom'"), 'UI Settings must provide a persistent desktop-only zoom control');
 assert(source.includes("root.style.zoom=scale===1?'':String(scale)")&&source.includes("pgLayoutEffective==='desktop'?pgDesktopZoom:1"), 'UI zoom must scale only Desktop mode');
+assert(source.includes("root.style.width=''"), 'Desktop zoom must remain responsive instead of forcing a synthetic page width');
 assert(source.includes('id="meterConfigToggle"')&&source.includes('function meterToggleConfiguration(event)'), 'Calibration must provide a dedicated meter/target settings collapse control');
 assert(source.includes("#meterCard.meter-config-collapsed > .meter-card-header-row")&&source.includes("#meterCard.meter-config-collapsed > #meterSettingsGrid"), 'Calibration collapse must hide settings without hiding series controls');
 assert(source.includes('.meter-inline-value input:not([type=checkbox])'), 'inline number-field sizing must not create oversized checkbox spacing');

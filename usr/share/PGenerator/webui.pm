@@ -10773,7 +10773,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #meterEotfScroller,
 body.layout-desktop #chartsGreyscaleFullWrap #meterLuminanceScroller{height:100%;min-height:0}
 body.layout-desktop #chartsGreyscaleFullWrap #chartEOTF,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGamma{height:100%!important;min-height:0!important}
-body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:grid;grid-template-rows:subgrid;width:180px;min-width:0;gap:10px}
+body.layout-desktop #chartsGreyscaleFullWrap #meterGreyLiveRail{display:grid;grid-template-rows:subgrid;width:180px;min-width:0;gap:10px;position:relative}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyRgbLegacyWrap{width:100%!important;height:100%!important;min-height:220px}
 body.layout-desktop #chartsGreyscaleFullWrap .meter-lg-rgb-column.is-readonly{height:auto;grid-template-rows:auto minmax(0,calc(var(--desktop-rgb-chart-height) - 78px)) auto;align-content:start}
 body.layout-desktop #chartsGreyscaleFullWrap #meterGreyscaleRgbBlock,
@@ -10786,7 +10786,7 @@ body.layout-desktop #chartsGreyscaleFullWrap #chartDeltaE,
 body.layout-desktop #chartsGreyscaleFullWrap #chartGammaValue{height:220px!important}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{margin-bottom:0}
 body.layout-desktop #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{grid-row:1;width:100%!important;height:100%!important;min-height:220px!important}
-body.layout-desktop #meterGreyLiveRail #meterLiveReading{grid-row:2;margin:0!important;padding-top:18px;min-width:0}
+body.layout-desktop #meterGreyLiveRail #meterLiveReading{position:absolute;top:calc(var(--desktop-rgb-chart-height) + 10px);left:0;width:180px;margin:0!important;padding-top:18px;min-width:0;z-index:1}
 body.layout-desktop #meterGreyLiveRail #meterLiveReadingLabel{margin:0 0 4px!important}
 body.layout-desktop #meterGreyLiveRail #meterLiveReading>div:last-child{padding:9px!important}
 body.layout-desktop #meterGreyLiveRail .meter-live-primary-values{display:grid!important;grid-template-columns:1fr;gap:6px!important;margin:0!important;font-size:.72rem!important}
@@ -10900,6 +10900,7 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] select,[data-theme="light"] textarea,[data-theme="light"] .meter-card-header-select,
 [data-theme="light"] .inline-select,[data-theme="light"] .pat-btn,[data-theme="light"] .meter-chart-inline-input,
 [data-theme="light"] .meter-inline-value input{background-color:var(--surface-field)!important;color:var(--text-primary)!important}
+[data-theme="light"] #meterSettingsGrid #meterHdrDiffuseWhite.meter-input-disabled{background-color:var(--surface-field)!important;color:var(--text-primary)!important}
 [data-theme="light"] .mode-select-wrap select{color:transparent!important}
 [data-theme="light"] .meter-card-header-select option,[data-theme="light"] .meter-card-header-select optgroup,
 [data-theme="light"] .mode-select-wrap select option{background:var(--surface-field);color:var(--text-primary)}
@@ -15554,7 +15555,7 @@ function pgApplyDesktopZoom(){
  const scale=pgLayoutEffective==='desktop'?pgDesktopZoom:1;
  const root=document.documentElement;
  root.style.zoom=scale===1?'':String(scale);
- root.style.width=scale===1?'':((100/scale)+'%');
+ root.style.width='';
  const select=document.getElementById('pgDesktopZoom');
  if(select) select.value=String(pgDesktopZoom);
 }
@@ -23704,8 +23705,7 @@ function meterLiveTargetRgbCodes(src){
  return normalized.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
 }
 
-function meterLiveMeasuredRgbCodes(reading){
- const xyz=meterReadingXYZ(reading);
+function meterLiveXyzRgbCodes(xyz){
  if(!xyz) return null;
  const linear=xyzToLinRgb(xyz.X,xyz.Y,xyz.Z,meterAnalysisGamut().xyzToRgb);
  let signal;
@@ -23721,6 +23721,10 @@ function meterLiveMeasuredRgbCodes(reading){
  return signal.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
 }
 
+function meterLiveMeasuredRgbCodes(reading){
+ return meterLiveXyzRgbCodes(meterReadingXYZ(reading));
+}
+
 function meterLiveRgbMarkup(values){
  if(!values||values.length!==3) return '--';
  return '<span class="r">'+values[0]+'</span>, <span class="g">'+values[1]+'</span>, <span class="b">'+values[2]+'</span>';
@@ -23732,7 +23736,11 @@ function meterUpdateLiveReadingDetails(src,isMeasured){
  const target=src?meterTargetXYZForReading(src):null;
  const measured=isMeasured?meterReadingXYZ(src):null;
  setRgb('meterLiveRgbMeasured',measured?meterLiveMeasuredRgbCodes(src):null);
- setRgb('meterLiveRgbTarget',src?meterLiveTargetRgbCodes(src):null);
+ // Target RGB is the expected DISPLAY output derived from target XYZ. This
+ // matters above an HDR roll-off: an 80% input stimulus is code 204, but a
+ // BT.2390 target near 750 nits is PQ code ~184. Showing the raw stimulus next
+ // to output-derived measured RGB would make correct tone mapping look wrong.
+ setRgb('meterLiveRgbTarget',target?meterLiveXyzRgbCodes(target):(src?meterLiveTargetRgbCodes(src):null));
  const xyzText=xyz=>xyz?[xyz.X,xyz.Y,xyz.Z].map(value=>Number(value).toFixed(3)).join(', '):'--';
  set('meterLiveXyzMeasured',xyzText(measured));
  set('meterLiveXyzTarget',xyzText(target));
