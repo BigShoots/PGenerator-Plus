@@ -37394,6 +37394,15 @@ let meterDesktop3dLutBuildAfterSelect=false;
 function meterDesktop3dLutBuildFlow(){
  if(!document.body.classList.contains('layout-desktop')) return meterReadSeriesPrimaryAction();
  if(meterActionPending||meterSeriesRunning){ toast('Meter operation already in progress',true); return false; }
+ // A custom lattice (or the built-in matrix profile) selected on the 3D LUT
+ // workspace is already the operator's profiling choice. Start the normal
+ // Build flow directly instead of reopening the method-selection wizard.
+ const activeVolume=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+ const activeMatrix=(typeof meterActiveMatrixProfileSeries==='function')&&meterActiveMatrixProfileSeries();
+ if(activeVolume||activeMatrix){
+  meterDesktop3dLutBuildAfterSelect=false;
+  return meterBuild3dLutSeries();
+ }
  meterDesktop3dLutBuildAfterSelect=true;
  meterOpenLg3dSelectSeriesModal();
  const load=document.getElementById('meterLg3dSelSeriesLoadBtn');
