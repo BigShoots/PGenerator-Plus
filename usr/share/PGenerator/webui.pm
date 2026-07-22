@@ -12206,7 +12206,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
        <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartEotfLabel">EOTF</div>
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto" title="Absolute error view: plots inverse-EOTF so a perfectly tracking display is a straight diagonal and errors deviate from it. Unchecked shows the normal bowed EOTF luminance curve.">
-       <input type="checkbox" id="meterEotfAbsolute" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle"> Absolute
+       <input type="checkbox" id="meterEotfAbsolute" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle" checked> Absolute
        </label>
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none" title="Overlay separate R, G, B EOTF curves (same as the Gamma chart per-channel option).">
        <input type="checkbox" id="meterEotfPerChannel" onchange="meterRedrawEotfChart();meterSaveColorPrefs()" style="vertical-align:middle"> Per-channel
@@ -21342,9 +21342,8 @@ function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
 }
 
 function meterEotfNormalizedEnabled(){
- // The bowed normalized EOTF view is the default. The "Absolute" checkbox
- // switches to the inverse-EOTF (diagonal) absolute-error view, so the
- // normalized view is active whenever Absolute is NOT checked.
+ // Absolute/inverse-EOTF is the default view. The bowed normalized EOTF view
+ // is active whenever Absolute is NOT checked.
  const el=document.getElementById('meterEotfAbsolute');
  return !el || !el.checked;
 }

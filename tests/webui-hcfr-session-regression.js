@@ -122,5 +122,6 @@ assert(source.includes("#meterCard.meter-config-collapsed > .meter-card-header-r
 assert(source.includes('.meter-inline-value input:not([type=checkbox])'), 'inline number-field sizing must not create oversized checkbox spacing');
 assert(source.includes('#meterSettingsGrid #meterHdrDiffuseWhite{width:84px}'), 'Diffuse White input must be wide enough to display its decimal precision');
 assert(source.includes('[data-theme="light"] .meter-workflow-progress{background:var(--surface-inset)'), 'AutoCal workflow progress track must use the light-theme surface instead of its dark default');
+assert(/id="meterEotfAbsolute"[^>]*checked/.test(source), 'EOTF Absolute view must be selected by default');
 
 console.log('webui HCFR Session workspace regression OK');
