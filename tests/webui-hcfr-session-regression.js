@@ -119,5 +119,6 @@ assert(source.includes('const dpr=pgCanvasPixelRatio();'), 'chart drawing paths 
 assert(source.includes('id="meterConfigToggle"')&&source.includes('function meterToggleConfiguration(event)'), 'Calibration must provide a dedicated meter/target settings collapse control');
 assert(source.includes("#meterCard.meter-config-collapsed > .meter-card-header-row")&&source.includes("#meterCard.meter-config-collapsed > #meterSettingsGrid"), 'Calibration collapse must hide settings without hiding series controls');
 assert(source.includes('.meter-inline-value input:not([type=checkbox])'), 'inline number-field sizing must not create oversized checkbox spacing');
+assert(source.includes('#meterSettingsGrid #meterHdrDiffuseWhite{width:84px}'), 'Diffuse White input must be wide enough to display its decimal precision');
 
 console.log('webui HCFR Session workspace regression OK');
