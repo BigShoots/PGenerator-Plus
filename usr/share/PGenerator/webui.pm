@@ -15564,6 +15564,14 @@ function pgSetDesktopZoom(value){
  pgUpdateHeaderOffset();
  pgRefreshVisibleWorkspace();
 }
+function pgCanvasPixelRatio(){
+ const nativeRatio=window.devicePixelRatio||1;
+ const zoom=(pgLayoutEffective==='desktop'&&pgDesktopZoom>0)?pgDesktopZoom:1;
+ // CSS zoom scales a canvas after it has been rasterized. Allocate the
+ // inverse zoom in the backing store so chart text and one-pixel grid lines
+ // still land at the display's native pixel density.
+ return nativeRatio/zoom;
+}
 function meterSyncConfigurationCollapse(){
  const card=document.getElementById('meterCard');
  const button=document.getElementById('meterConfigToggle');
@@ -23944,7 +23952,7 @@ function drawDeltaBarsVertical(canvasId,spec){
  if(!c) return;
  const rect=c.getBoundingClientRect();
  if(rect.width<2||rect.height<2) return;
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  c.width=rect.width*dpr;
  c.height=rect.height*dpr;
  const ctx=c.getContext('2d');
@@ -24083,7 +24091,7 @@ function drawRGBBars(bal){
  // for backward compatibility — the live data now renders into the
  // vertical companions inside the chart areas.
  if(rect.width<2||rect.height<2) return;
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  c.width=rect.width*dpr;
  c.height=rect.height*dpr;
  const ctx=c.getContext('2d');
@@ -28362,7 +28370,7 @@ function meterLutCubeDraw(){
  if(!ctx||!(ctx.w>10)) return;
  ctx.setTransform(1,0,0,1,0,0);
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  ctx.setTransform(dpr,0,0,dpr,0,0);
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
@@ -39245,7 +39253,7 @@ function getChartCtx(id){
  const c=document.getElementById(id);
  if(!c) return null;
  meterEnsureChartYZoomInput(c);
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  const rect=c.getBoundingClientRect();
  // Guard: if canvas not visible (VS Code webview, hidden panel), skip
  if(rect.width<10||rect.height<10) return null;
@@ -41010,7 +41018,7 @@ function meterDrawCubeViewNow(){
  cubeViewBindHandlers(document.getElementById('chartCubeView'));
  ctx.setTransform(1,0,0,1,0,0);
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  ctx.setTransform(dpr,0,0,dpr,0,0);
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  const layout={w:ctx.w,h:ctx.h,cx:ctx.w*0.5,cy:ctx.h*0.52};
@@ -41592,7 +41600,7 @@ function drawCIEChart(readings){
  // previous ring strokes (partial redraw / DPR edge cases).
  ctx.setTransform(1,0,0,1,0,0);
  ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  ctx.setTransform(dpr,0,0,dpr,0,0);
  const colorInclLum=!!meterColorIncludeLum();
  const g=meterCie2dGeom(ctx.w,ctx.h);
@@ -41928,7 +41936,7 @@ function drawCIEChartPreset(steps){
  _cie2d.lastReadings=null; _cie2d.lastPreset=true;
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
- const dpr=window.devicePixelRatio||1;
+ const dpr=pgCanvasPixelRatio();
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
@@ -42127,7 +42135,7 @@ function chartRegisterInteraction(){
  canvasIds.forEach(cid=>{
   const canvas=document.getElementById(cid);
   if(!canvas) return;
-  const dpr=window.devicePixelRatio||1;
+  const dpr=pgCanvasPixelRatio();
   const rect=canvas.getBoundingClientRect();
   const cW=rect.width, cH=rect.height;
   const isBarChart=cid.indexOf('DeltaE')>=0;

@@ -114,6 +114,8 @@ assert(source.includes('class="meter-live-desktop-details"')&&source.includes('b
 assert(source.includes('id="pgDesktopZoom"')&&source.includes("PG_DESKTOP_ZOOM_STORAGE_KEY='pgen.ui.desktopZoom'"), 'UI Settings must provide a persistent desktop-only zoom control');
 assert(source.includes("root.style.zoom=scale===1?'':String(scale)")&&source.includes("pgLayoutEffective==='desktop'?pgDesktopZoom:1"), 'UI zoom must scale only Desktop mode');
 assert(source.includes("root.style.width=''"), 'Desktop zoom must remain responsive instead of forcing a synthetic page width');
+assert(source.includes('function pgCanvasPixelRatio()')&&source.includes('return nativeRatio/zoom;'), 'Desktop zoom must compensate chart backing resolution to keep canvas labels sharp');
+assert(source.includes('const dpr=pgCanvasPixelRatio();'), 'chart drawing paths must use the zoom-aware canvas pixel ratio');
 assert(source.includes('id="meterConfigToggle"')&&source.includes('function meterToggleConfiguration(event)'), 'Calibration must provide a dedicated meter/target settings collapse control');
 assert(source.includes("#meterCard.meter-config-collapsed > .meter-card-header-row")&&source.includes("#meterCard.meter-config-collapsed > #meterSettingsGrid"), 'Calibration collapse must hide settings without hiding series controls');
 assert(source.includes('.meter-inline-value input:not([type=checkbox])'), 'inline number-field sizing must not create oversized checkbox spacing');
