@@ -23430,6 +23430,7 @@ function meterCacheSeriesState(status,options){
 	  source_rgb_range:(prev&&prev.source_rgb_range)||null,
 	  source_session_id:(prev&&prev.source_session_id)||null,
 	  source_group:(prev&&prev.source_group)||null,
+	  hcfr_preferences:(prev&&prev.hcfr_preferences)?JSON.parse(JSON.stringify(prev.hcfr_preferences)):null,
 	  signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
 	  target_gamma:meterActiveSeriesTargetGamma||null,
 	  max_luma:meterActiveSeriesMaxLuma||null,
@@ -42433,7 +42434,8 @@ function meterHcfrPreferenceModel(mode,white,black){
  const greyMap={absolute:0,eotf:1,relative:2};
  const deMap={deluv76:0,de76lab:1,de94:2,de2000:3,decmc:4,de2000_jnd:5,deitp:6};
  const gw=Number(text('meterGrayWorld','1'));
- const masterMax=value('max_luma',mode==='sdr'?100:1000);
+ const activeMax=(typeof meterActiveSeriesMaxLuma!=='undefined')?Number(meterActiveSeriesMaxLuma):NaN;
+ const masterMax=(activeMax>0&&Number.isFinite(activeMax))?activeMax:value('max_luma',mode==='sdr'?100:1000);
  return {
   bt2390BlackStart:1,bt2390WhiteStart:0,bt2390WhiteStart1:25,targetSystemGamma:mode==='hlg'?1.2:1.2,
   masterMinLuminance:value('min_luma',0),masterMaxLuminance:masterMax,
@@ -42522,13 +42524,14 @@ function meterBuildHcfrExportModel(){
  const free=[];
  entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' imported HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' imported HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
  // HCFR GCD aligns the 18 chromatic patches plus PGenerator's full black and
  // white anchors. The four PGenerator neutral chips use different stimuli
  // from GCD's named grays, so preserve them as free measurements instead of
  // putting correct XYZ under incompatible references.
  let colorCheckerItems=[];
- if(colorEntry&&Number(colorEntry.snap.points)===29&&colors.length>=24){
+ const colorUsesHcfrSlots=colorEntry&&(Number(colorEntry.snap.points)===29||(colorEntry.snap.source_format==='hcfr-chc'&&colorEntry.snap.source_group==='colorChecker'));
+ if(colorUsesHcfrSlots&&colors.length>=24){
   const slotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan'];
   const byName=new Map(colors.map(rd=>[String(rd.name||'').toLowerCase(),rd]));
   colorCheckerItems=slotNames.map((name,index)=>{const rd=byName.get(name.toLowerCase());return rd?{...rd,index:index}:null;}).filter(Boolean);
@@ -42537,8 +42540,11 @@ function meterBuildHcfrExportModel(){
   colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
   free.push(...colors.slice(2,6));
  }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
- const rgbRange=(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())?'limited':'full';
- return {model:{preferences:meterHcfrPreferenceModel(mode,white,black),generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:nearBlack.length?nearBlack:Array(5).fill(null),nearWhite:nearWhite.length?nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,nearBlack:nearBlack.length,nearWhite:nearWhite.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
+ const importedContextEntry=[greyEntry,satEntry,colorEntry].find(e=>e&&e.snap&&e.snap.source_format==='hcfr-chc'&&e.snap.hcfr_preferences)||null;
+ const preferences=importedContextEntry?{...meterHcfrPreferenceModel(mode,white,black),...importedContextEntry.snap.hcfr_preferences}:meterHcfrPreferenceModel(mode,white,black);
+ const importedRangeEntry=entries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_session_id===activeImportedSession&&['limited','full'].includes(e.snap.source_rgb_range));
+ const rgbRange=importedRangeEntry?importedRangeEntry.snap.source_rgb_range:((typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())?'limited':'full');
+ return {model:{preferences:preferences,generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:nearBlack.length?nearBlack:Array(5).fill(null),nearWhite:nearWhite.length?nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,nearBlack:nearBlack.length,nearWhite:nearWhite.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 
 function meterExportHcfrChc(){
@@ -42566,7 +42572,7 @@ function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange,cont
  readings.forEach(rd=>{rd.series_type=type;rd.signal_mode=mode;if(ctx.target_gamma)rd.target_gamma=ctx.target_gamma;if(ctx.max_luma)rd.max_luma=ctx.max_luma;});
  const steps=readings.map(rd=>{const step={...rd,plot_ire:rd.ire,nominal_ire:rd.ire,series_type:type,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,measurement_only:true};['X','Y','Z','x','y','luminance','raw_X','raw_Y','raw_Z','lux','spectrum','source_format'].forEach(key=>delete step[key]);return step;});
  const white=(type==='greyscale')?readings.reduce((best,rd)=>!best||Number(rd.ire)>Number(best.ire)?rd:best,null):null;
- meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,updated_at:Date.now()};
+ meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null,updated_at:Date.now()};
  return key;
 }
 
@@ -42590,7 +42596,7 @@ async function meterImportHcfrChcFile(input){
   if(!window.PGeneratorHcfrChc)throw new Error('CHC module did not load');
   const parsed=window.PGeneratorHcfrChc.parseHcfrChc(await file.arrayBuffer()),sum=window.PGeneratorHcfrChc.summarizeHcfrChc(parsed);
   const mode=parsed.preferences.gammaOffsetType===5?'hdr10':(parsed.preferences.gammaOffsetType===7?'hlg':([8,9].includes(parsed.preferences.gammaOffsetType)?'dv':'sdr'));
-  const importContext={target_gamma:mode==='hdr10'||mode==='dv'?'st2084':(mode==='hlg'?'hlg':null),max_luma:Number(parsed.preferences.masterMaxLuminance)||null};
+  const importContext={target_gamma:mode==='hdr10'||mode==='dv'?'st2084':(mode==='hlg'?'hlg':null),max_luma:Number(parsed.preferences.masterMaxLuminance)||null,hcfr_preferences:{...parsed.preferences}};
   const sourceRange=(parsed.generator&&parsed.generator.rgbRange)||'unknown';
   const groupLines=Object.entries(sum.groups).filter(([,g])=>g.valid).map(([name,g])=>name+': '+g.valid);
   const warning=mode!==String(meterChartSignalMode()||'sdr').toLowerCase()?'\n\nThe imported analysis mode is '+mode.toUpperCase()+'; output settings will NOT be changed or restarted.':'';

@@ -62,6 +62,10 @@ assert(source.includes("8:'bt2020'"), 'HDR CHC import must decode HCFR color sta
 assert(source.includes("const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled()"), 'SDR fixed GCD variants must not replace HDR color-series exports');
 assert(source.includes("meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma})"), 'HDR CHC import must activate PQ context before rebuilding chart steps');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
+assert(source.includes('hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null'), 'CHC import must preserve HDR preference metadata for lossless re-export');
+assert(source.includes("colorEntry.snap.source_format==='hcfr-chc'&&colorEntry.snap.source_group==='colorChecker'"), 'CHC re-export must retain all 24 imported ColorChecker slots');
+assert(source.includes("satEntry.snap.source_format!=='hcfr-chc'"), 'imported HCFR saturation groups must not receive the native PGenerator sweep warning');
+assert(source.includes('const importedRangeEntry=entries.find'), 'CHC re-export must preserve the imported limited/full generator range');
 assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');
 assert(source.includes('rd.series_type=type;rd.signal_mode=mode'), 'imported CHC readings must be classified for chart filtering');
