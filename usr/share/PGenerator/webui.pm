@@ -20428,6 +20428,17 @@ function meterBoostPlotColor(css,satBoost,lightBoost){
  return 'rgb('+rr+','+gg+','+bb+')';
 }
 
+function meterCieLightMode(){
+ return (typeof pgThemeMode!=='undefined'&&pgThemeMode==='light')||document.documentElement.getAttribute('data-theme')==='light';
+}
+
+// The CIE wash is intentionally pale in light mode, so raw preview colors
+// (especially yellow, cyan and pastel ColorChecker patches) need substantially
+// darker ink than they do on the dark chart background.
+function meterCiePlotColor(css){
+ return meterCieLightMode()?meterBoostPlotColor(css,1.30,-0.23):meterBoostPlotColor(css);
+}
+
 function meterReadingIsGreyscale(reading){
  if(!reading) return false;
  if(String(reading.series_type||'').toLowerCase()==='greyscale') return true;
@@ -41450,10 +41461,10 @@ function drawCIEChart(readings){
      : targetChromaticityXY(s.r,s.g,s.b);
    }catch(e){ tgt=null; }
    if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
-   const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
-   const sq=3.5;
+   const pc=meterCiePlotColor(meterPreviewColorForStep(s));
+   const sq=meterCieLightMode()?4.2:3.5;
    ctx.save();
-   ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
+   ctx.strokeStyle=pc;ctx.lineWidth=meterCieLightMode()?2:1.4;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
    ctx.restore();
   });
  }
@@ -41467,9 +41478,9 @@ function drawCIEChart(readings){
   const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
   const lumInfo=meterColorLuminanceInfo(rd);
   const mx=hasMeasuredXY?rd.x:null, my=hasMeasuredXY?rd.y:null;
-  const targetColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const targetColor=meterCiePlotColor(meterPreviewColorForReading(rd,'target'));
   const targetStrokeColor=meterSelectedCIETargetColor(rd,targetColor);
-  const measuredColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const measuredColor=meterCiePlotColor(meterPreviewColorForReading(rd,'measured'));
   const tx=tgt?toX(tgt.x):null, ty=tgt?toY(tgt.y):null;
   const px=hasMeasuredXY?toX(mx):null, py=hasMeasuredXY?toY(my):null;
   if(tgt&&hasMeasuredXY){
@@ -41480,9 +41491,9 @@ function drawCIEChart(readings){
   }
   // Target: crisp hollow square
   if(tgt){
-   const sq=3.5;
+   const sq=meterCieLightMode()?4.2:3.5;
    ctx.save();
-   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+   ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=meterCieLightMode()?2:1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
    ctx.restore();
   }
   // Luminance-error ring ONLY when Include luminance error is checked.
@@ -41493,8 +41504,9 @@ function drawCIEChart(readings){
   if(hasMeasuredXY){
    ctx.save();
    ctx.fillStyle=measuredColor;ctx.beginPath();
-   ctx.arc(px,py,2.8,0,Math.PI*2);
+   ctx.arc(px,py,meterCieLightMode()?3.8:2.8,0,Math.PI*2);
    ctx.fill();
+   if(meterCieLightMode()){ctx.strokeStyle='rgba(24,32,43,0.72)';ctx.lineWidth=0.9;ctx.stroke();}
    ctx.restore();
   }
  });
@@ -41641,7 +41653,7 @@ function drawCIETargetInset(ctx,readings,geom){
  }catch(e){}
  // Mid-read (target only): draw the live patch's target square at the inset centre.
  if(!hasMeasured){
-  const tColor=meterBoostPlotColor(meterPreviewColorForReading(focus,'target'));
+  const tColor=meterCiePlotColor(meterPreviewColorForReading(focus,'target'));
   const sq=5;
   ctx.save();
   ctx.strokeStyle=tColor;ctx.lineWidth=1.8;
@@ -41655,9 +41667,9 @@ function drawCIETargetInset(ctx,readings,geom){
   const rt=meterTargetChromaticityForReading(rd);
   const lumInfo=meterColorLuminanceInfo(rd);
   if(!rt) return;
-  const tColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'target'));
+  const tColor=meterCiePlotColor(meterPreviewColorForReading(rd,'target'));
   const tStrokeColor=meterSelectedCIETargetColor(rd,tColor);
-  const mColor=meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const mColor=meterCiePlotColor(meterPreviewColorForReading(rd,'measured'));
   const tInside=rt.x>=xMn&&rt.x<=xMx&&rt.y>=yMn&&rt.y<=yMx;
   const mInside=rd.x>=xMn&&rd.x<=xMx&&rd.y>=yMn&&rd.y<=yMx;
   if(!tInside&&!mInside&&!isFocus) return;
@@ -41765,11 +41777,11 @@ function drawCIEChartPreset(steps){
     : targetChromaticityXY(s.r,s.g,s.b);
   }catch(e){ tgt=null; }
   if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
-  const pc=meterBoostPlotColor(meterPreviewColorForStep(s));
-  const sq=3.5;
+  const pc=meterCiePlotColor(meterPreviewColorForStep(s));
+  const sq=meterCieLightMode()?4.2:3.5;
   const tx=toX(tgt.x), ty=toY(tgt.y);
   ctx.save();
-  ctx.strokeStyle=pc;ctx.lineWidth=1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
+  ctx.strokeStyle=pc;ctx.lineWidth=meterCieLightMode()?2:1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
   ctx.restore();
  });
  ctx.restore(); // end plot clip
