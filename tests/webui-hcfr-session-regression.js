@@ -121,5 +121,6 @@ assert(source.includes('id="meterConfigToggle"')&&source.includes('function mete
 assert(source.includes("#meterCard.meter-config-collapsed > .meter-card-header-row")&&source.includes("#meterCard.meter-config-collapsed > #meterSettingsGrid"), 'Calibration collapse must hide settings without hiding series controls');
 assert(source.includes('.meter-inline-value input:not([type=checkbox])'), 'inline number-field sizing must not create oversized checkbox spacing');
 assert(source.includes('#meterSettingsGrid #meterHdrDiffuseWhite{width:84px}'), 'Diffuse White input must be wide enough to display its decimal precision');
+assert(source.includes('[data-theme="light"] .meter-workflow-progress{background:var(--surface-inset)'), 'AutoCal workflow progress track must use the light-theme surface instead of its dark default');
 
 console.log('webui HCFR Session workspace regression OK');
