@@ -42439,9 +42439,16 @@ function meterHcfrPreferenceModel(mode,white,black){
  const checked=id=>!!((document.getElementById(id)||{}).checked);
  const gamut=text('meterTargetGamut','auto').toLowerCase();
  const gamma=text('meterTargetGamma','bt1886').toLowerCase();
- // HCFR v17 color standards: 8 is UHDTV/BT.2020 (used by HDR sessions).
- // Keep P3 on its P3 enum instead of conflating HDR P3 with BT.2020.
- const gamutMap={bt709:2,bt2020:8,p3d65:6,p3dci:6};
+ // HCFR distinguishes a native P3 signal from P3 targets carried inside a
+ // BT.2020 UHDTV signal. PGenerator stores those as two independent controls,
+ // so derive the HCFR standard from output colorimetry + analysis target.
+ const outputColorimetry=text('colorimetry','').toLowerCase();
+ const outputIsBt2020=outputColorimetry==='9'||outputColorimetry.includes('2020');
+ const outputIsP3=outputColorimetry.includes('p3');
+ let colorStandard=mode==='sdr'?2:7;
+ if(gamut==='bt709') colorStandard=2;
+ else if(gamut==='bt2020') colorStandard=7;
+ else if(gamut==='p3d65'||gamut==='p3dci') colorStandard=outputIsBt2020?8:(outputIsP3?6:2);
  const gammaMap={bt1886:4,'2.2':0,'2.4':0,st2084:5,srgb:0};
  const greyMap={absolute:0,eotf:1,relative:2};
  const deMap={deluv76:0,de76lab:1,de94:2,de2000:3,decmc:4,de2000_jnd:5,deitp:6};
@@ -42457,7 +42464,7 @@ function meterHcfrPreferenceModel(mode,white,black){
   useToneMap:checked('meterHdrApplyBT2390'),overrideTargets:!checked('meterTargetWhiteUseMeasured')||!checked('meterTargetBlackUseMeasured'),
   diffuseLuminance:value('meterHdrDiffuseWhite',94.3784),nearWhiteClipColumn:101,
   whiteTarget:gamut==='p3dci'?9:(checked('meterCustomD65Enabled')?10:0),colorCheckerMode:0,
-  colorStandard:gamutMap[gamut]||(mode==='sdr'?2:7),
+  colorStandard:colorStandard,
   deltaEFormula:deMap[text('meterColorDeltaEForm','de2000')]!=null?deMap[text('meterColorDeltaEForm','de2000')]:3,
   grayscaleDeltaE:greyMap[text('meterGreyRefMode','relative')],grayWorldWeight:gw===0.15?1:(gw===0.05?2:0),
   gammaOffsetType:mode==='hdr10'||mode==='dv'?5:(mode==='hlg'?7:(gammaMap[gamma]!=null?gammaMap[gamma]:0)),
@@ -42591,7 +42598,7 @@ function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange,cont
 function meterApplyHcfrAnalysisPreferences(p){
  const set=(id,value)=>{const e=document.getElementById(id);if(e&&value!=null)e.value=value;};
  const check=(id,value)=>{const e=document.getElementById(id);if(e)e.checked=!!value;};
- const gamut={2:'bt709',3:'bt709',6:'p3d65',7:'p3d65',8:'bt2020',9:'bt709'}[p.colorStandard];if(gamut)set('meterTargetGamut',gamut);
+ const gamut={2:'bt709',3:'bt709',6:'p3d65',7:'bt2020',8:'p3d65',9:'bt709'}[p.colorStandard];if(gamut)set('meterTargetGamut',gamut);
  const gamma={4:'bt1886',5:'st2084',7:'st2084'}[p.gammaOffsetType]||(Math.abs(Number(p.gammaReference)-2.4)<0.05?'2.4':'2.2');set('meterTargetGamma',gamma);
  set('meterGreyRefMode',({0:'absolute',1:'eotf',2:'relative'})[p.grayscaleDeltaE]||'relative');
  set('meterGrayWorld',({0:'1',1:'0.15',2:'0.05'})[p.grayWorldWeight]||'1');
