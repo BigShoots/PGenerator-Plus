@@ -27938,7 +27938,7 @@ function meterLatticeGenSyncReadout(){
 }
 
 function meterOpenLatticeGenerator(id){
- const modal=document.getElementById('meterLatticeGenModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterLatticeGenModal'));
  if(!modal) return;
  const existing=(id!=null)?meterCustomSeriesById(id):null;
  meterLatticeGenEditingId=(existing&&existing.kind==='lattice')?existing.id:null;
@@ -28937,7 +28937,7 @@ function meterOpenCustomSeriesEditor(category,id){
  meterCustomSeriesEditor=existing
   ?{id:existing.id,category:existing.category,mode:existing.mode,range:existing.range,patches:existing.patches.map(p=>Object.assign({},p))}
   :{id:null,category:(category==='color')?'color':'greyscale',mode:meterCustomSeriesModeKey(),range:meterCurrentOutputRangeKey(),patches:[meterCustomSeriesSanitizePatch({},0)]};
- const modal=document.getElementById('meterCustomSeriesModal');
+ const modal=meterEnsureModalOnBody(document.getElementById('meterCustomSeriesModal'));
  if(!modal) return;
  const title=document.getElementById('meterCustomSeriesModalTitle');
  if(title) title.textContent=(existing?'Edit ':'New ')+'Custom '+(meterCustomSeriesEditor.category==='color'?'Color':'Greyscale')+' Series';
@@ -29360,7 +29360,7 @@ function meterOpenImportWizard(){
  if(body) body.innerHTML='<div style="font-size:.78rem;color:var(--text2)">Pick a format above, then choose a file.</div>';
  const act=document.getElementById('meterImportWizardActions'); if(act) act.style.display='none';
  const fn=document.getElementById('meterImportWizardFileName'); if(fn) fn.textContent='';
- const m=document.getElementById('meterImportWizardModal'); if(m){ m.style.display='flex'; uiSyncBodyScrollLock(); }
+ const m=meterEnsureModalOnBody(document.getElementById('meterImportWizardModal')); if(m){ m.style.display='flex'; uiSyncBodyScrollLock(); }
 }
 function meterCloseImportWizard(){
  const m=document.getElementById('meterImportWizardModal'); if(m) m.style.display='none';
