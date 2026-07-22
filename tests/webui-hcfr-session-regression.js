@@ -42,6 +42,8 @@ assert(source.includes('["Dark Skin","hcfr_rgb",45.20,31.96,26.03]'), 'server HC
 assert(source.includes('id="meterHcfrFixedCodes"'), 'normal built-in series controls need the HCFR fixed-code checkbox');
 assert(source.includes('aria-label="HCFR fixed GCD video codes help"'), 'HCFR fixed-code checkbox help tooltip is missing');
 assert(source.includes('Sat Sweep uses HCFR constant-luminance encoding'), 'HCFR checkbox tooltip must explain its chart encoding effect');
+assert(source.includes('function meterHcfrFixedCodesAvailable()')&&source.includes(".toLowerCase()==='sdr'")&&source.includes("wrap.style.display=available?'inline-flex':'none'")&&source.includes('checkbox.disabled=!available'), 'HCFR fixed-code controls must be hidden and disabled outside SDR');
+assert(source.includes('function updateModeVisibility()')&&source.includes('meterSyncHcfrFixedCodesUi();'), 'HCFR fixed-code visibility must follow display output mode changes');
 assert(source.includes("meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30)"), 'ColorChecker button must select the checkbox-backed variant');
 assert(source.includes("meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24)"), 'Sat Sweep button must select the checkbox-backed variant');
 assert(source.includes("(points===25||count===25||stepCount===25)?25:24"), 'shared status recovery must preserve HCFR saturation identity');

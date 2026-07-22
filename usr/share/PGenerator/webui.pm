@@ -13627,6 +13627,7 @@ function updateModeVisibility(){
  const sm=getVal('signal_mode');
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
  document.getElementById('dvCard').style.display=(sm==='dv')?'':'none';
+ meterSyncHcfrFixedCodesUi();
  syncDvOutputEotfState();
  meterSyncTargetGammaControl();
  updateDiagAvsHd709Visibility();
@@ -29876,12 +29877,20 @@ function meterDefaultTargetsForColorSeries(type,points){
 }
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
+function meterHcfrFixedCodesAvailable(){
+ return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
+}
 function meterHcfrFixedCodesEnabled(){
  const el=document.getElementById('meterHcfrFixedCodes');
- return !!(el&&el.checked);
+ return !!(meterHcfrFixedCodesAvailable()&&el&&el.checked);
 }
 function meterSyncHcfrFixedCodesUi(){
- const enabled=meterHcfrFixedCodesEnabled();
+ const available=meterHcfrFixedCodesAvailable();
+ const wrap=document.getElementById('meterHcfrFixedCodesWrap');
+ const checkbox=document.getElementById('meterHcfrFixedCodes');
+ if(wrap) wrap.style.display=available?'inline-flex':'none';
+ if(checkbox) checkbox.disabled=!available;
+ const enabled=available&&!!(checkbox&&checkbox.checked);
  const colorBtn=document.getElementById('meterColorCheckerSeriesBtn');
  const satBtn=document.getElementById('meterSaturationSeriesBtn');
  if(colorBtn){colorBtn.dataset.series='colors-'+(enabled?29:30);colorBtn.title=enabled?'HCFR Classic GCD fixed video-level ColorChecker':'PGenerator native xyY ColorChecker';}
