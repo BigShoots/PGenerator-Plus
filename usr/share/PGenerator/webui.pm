@@ -24473,6 +24473,10 @@ function meterSetTargetLevels(){
  else if(!black.hasAttribute('placeholder')){ black.setAttribute('placeholder','auto'); }
  const wVal=Number(white.value); const bVal=Number(black.value);
  const oled=meterDisplayTypeIsOledClass();
+ // A self-emissive OLED target has a zero black floor. Do not let a stale
+ // LCD-era saved preference or clicking Use measured replace that reference
+ // with a noisy/timed-out meter black reading.
+ if(oled){ bUm.checked=false; black.value='0'; black.disabled=false; black.classList.remove('meter-input-disabled'); }
  const wDef={useMeasured:true,value:null};
  const bDef=oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
  const wUseMeasured=!!wUm.checked;
@@ -24553,12 +24557,12 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
   wUm.checked=true; if(white) white.value='';
  }
  // Target Black: self-emissive -> 0 (manual), else measured.
- if(forceAll||!bOver){
-  if(oled){
-   bUm.checked=false; if(black) black.value='0';
-  }else{
+ if(oled){
+  // OLED black is always the mathematical zero target, even if an older
+  // browser state recorded Use measured as an explicit override.
+  bUm.checked=false; if(black) black.value='0';
+ }else if(forceAll||!bOver){
    bUm.checked=true; if(black) black.value='';
-  }
  }
  // A display-type change can flip Target Black between the manual OLED
  // default and Use Measured. Keep the input's disabled/placeholder state in
@@ -24574,14 +24578,12 @@ function meterTargetWhiteLevel(){
 }
 // Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
+ if(meterDisplayTypeIsOledClass()) return {useMeasured:false,value:0};
  const s=meterReadTargetLevelsState();
  if(s){
-  // Self-emissive with no saved override defaults black to 0.
-  if(!s.black.overridden&&meterDisplayTypeIsOledClass()) return {useMeasured:false,value:0};
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
  }
- const oled=meterDisplayTypeIsOledClass();
- return oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
+ return {useMeasured:true,value:null};
 }
 // Build the override payload spread into meter request bodies. Only emits
 // keys when the operator has entered a manual value.
