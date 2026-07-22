@@ -68,6 +68,9 @@ assert(source.includes("meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?dif
 assert(source.includes('hdr_diffuse_white hdr_diffuse_white_auto'), 'Diffuse-white Auto/manual settings must be accepted by persistent meter settings');
 assert(/id="meterHdrApplyBT2390"[^>]*checked/.test(source), 'BT.2390 must be enabled by default');
 assert(source.includes("meterChartBt2390Enabled()?'PQ + BT.2390':'PQ'"), 'PQ chart legend must identify an active BT.2390 target');
+assert(source.includes("if(typeof meterChartBt2390Enabled==='function'&&!meterChartBt2390Enabled())"), 'Native PQ charts must target mastering peak when BT.2390 is disabled');
+assert(source.includes('return (master>0)?master:displayPeak;'), 'Unchecked BT.2390 must not retain the measured display-peak roll-off');
+assert(source.includes('bt2390Tonemap(Math.min(raw,master),master,peak)'), 'BT.2390 must map the authored mastering curve instead of extrapolating above it');
 assert(source.includes("const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled()"), 'SDR fixed GCD variants must not replace HDR color-series exports');
 assert(source.includes("meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma})"), 'HDR CHC import must activate PQ context before rebuilding chart steps');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');

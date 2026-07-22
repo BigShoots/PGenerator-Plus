@@ -21541,10 +21541,20 @@ function meterGreyTargetPeak(refWhite){
  // rather than the authored mastering-peak label.
  if(meterChartIsDv()) return meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartMasterPeak());
  // HDR10/PQ greyscale charts should keep the same target-curve shape but
- // normalize it to the actual measured white so the target luminance and
- // EOTF views line up with the display's real peak after a series run.
+ // use two distinct peaks: native PQ (BT.2390 off) targets the mastering
+ // peak, while BT.2390 maps that authored curve toward the measured/manual
+ // display peak. Previously both modes returned measured white here, so the
+ // unchecked target still hard-clipped at the panel peak and looked rolled
+ // off even though tone mapping was disabled.
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
- if(usesPqTarget) return meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
+ if(usesPqTarget){
+  const displayPeak=meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
+  if(typeof meterChartBt2390Enabled==='function'&&!meterChartBt2390Enabled()){
+   const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():meterChartHdrPeak();
+   return (master>0)?master:displayPeak;
+  }
+  return displayPeak;
+ }
  return (refWhite>0)?refWhite:100;
 }
 
@@ -22008,7 +22018,7 @@ function meterChartHdrCodeLuminance(v,clipPeak){
  const raw=meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1);
  if(meterChartBt2390Enabled()){
   const master=meterChartMasterPeak();
-  return bt2390Tonemap(raw,master,peak);
+  return bt2390Tonemap(Math.min(raw,master),master,peak);
  }
  return Math.min(raw,peak);
 }
