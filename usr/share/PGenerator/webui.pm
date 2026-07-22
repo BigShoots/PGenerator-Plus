@@ -11882,6 +11882,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div class="meter-3dlut-measure-track"><div id="meterBuild3dLutMeasureFill" class="meter-3dlut-measure-fill"></div></div>
     <div id="meterBuild3dLutCieHost"></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+     <button type="button" class="btn btn-sm btn-danger" id="meterBuild3dLutMeasureCancelBtn" onclick="meterStop()">Cancel measurement</button>
+    </div>
    </div>
   </div>
   <div id="lutSolveDoneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
