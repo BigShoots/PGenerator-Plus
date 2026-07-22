@@ -11645,7 +11645,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <span>CCT: <strong id="meterCCT">--</strong>K <span class="meter-live-tgt" id="meterCCTTgt" title="Target CCT (from target white point)"></span></span>
      <span>CIE x: <strong id="meterCIEx">--</strong> <span class="meter-live-tgt" id="meterCIExTgt" title="Target CIE x"></span></span>
      <span>CIE y: <strong id="meterCIEy">--</strong> <span class="meter-live-tgt" id="meterCIEyTgt" title="Target CIE y"></span></span>
-     <span>RGB: <strong id="meterLiveRgbMeasured" class="meter-live-rgb-triplet">--</strong> <span class="meter-live-tgt" title="Target RGB">Target: <span id="meterLiveRgbTarget" class="meter-live-rgb-triplet">--</span></span></span>
+     <span><span id="meterLiveRgbLabel">RGB</span>: <strong id="meterLiveRgbMeasured" class="meter-live-rgb-triplet">--</strong> <span class="meter-live-tgt" title="Target RGB patch code">Target: <span id="meterLiveRgbTarget" class="meter-live-rgb-triplet">--</span></span></span>
     </div>
     <div class="meter-live-desktop-details" aria-label="Detailed live measurement values">
      <span class="meter-live-detail-label">Measured XYZ</span><strong id="meterLiveXyzMeasured">--</strong>
@@ -23701,14 +23701,10 @@ function meterLiveTargetRgbCodes(src){
   return Number(code);
  });
  if(!raw.every(Number.isFinite)) return null;
- let normalized;
- if(meterReadingIsGreyscale(step)){
-  normalized=raw.map(meterGreySignalFractionFromCode);
- }else{
-  const range=meterColorTargetCodeRange();
-  normalized=raw.map(code=>Math.max(0,Math.min(1,(code-range.min)/range.span)));
- }
- return normalized.map(value=>Math.round(255*Math.max(0,Math.min(1,value))));
+ // Show the actual 8-bit-equivalent patch code, not a range-normalized value
+ // and not the tone-mapped output luminance. PGenerator's 10-bit codes use
+ // the exact 4x video-code mapping (Limited 940 -> 235; Full 1023 -> 255).
+ return raw.map(code=>Math.max(0,Math.min(255,Math.round(code>255?code/4:code))));
 }
 
 function meterLiveXyzRgbCodes(xyz){
@@ -23741,12 +23737,13 @@ function meterUpdateLiveReadingDetails(src,isMeasured){
  const setRgb=(id,value)=>{ const el=document.getElementById(id); if(el) el.innerHTML=meterLiveRgbMarkup(value); };
  const target=src?meterTargetXYZForReading(src):null;
  const measured=isMeasured?meterReadingXYZ(src):null;
+ const rgbLabel=document.getElementById('meterLiveRgbLabel');
+ if(rgbLabel){
+  const gamma=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||'').toLowerCase():'';
+  rgbLabel.textContent=(gamma==='st2084')?'RGB PQe':'RGB';
+ }
  setRgb('meterLiveRgbMeasured',measured?meterLiveMeasuredRgbCodes(src):null);
- // Target RGB is the expected DISPLAY output derived from target XYZ. This
- // matters above an HDR roll-off: an 80% input stimulus is code 204, but a
- // BT.2390 target near 750 nits is PQ code ~184. Showing the raw stimulus next
- // to output-derived measured RGB would make correct tone mapping look wrong.
- setRgb('meterLiveRgbTarget',target?meterLiveXyzRgbCodes(target):(src?meterLiveTargetRgbCodes(src):null));
+ setRgb('meterLiveRgbTarget',src?meterLiveTargetRgbCodes(src):null);
  const xyzText=xyz=>xyz?[xyz.X,xyz.Y,xyz.Z].map(value=>Number(value).toFixed(3)).join(', '):'--';
  set('meterLiveXyzMeasured',xyzText(measured));
  set('meterLiveXyzTarget',xyzText(target));
