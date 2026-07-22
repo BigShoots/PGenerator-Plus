@@ -42502,10 +42502,14 @@ function meterBuildHcfrExportModel(){
  try{chromaWhiteScale=meterSaturationStimulusLinearLevel('White');}catch(e){}
  if(!(Number.isFinite(chromaWhiteScale)&&chromaWhiteScale>0)) chromaWhiteScale=1;
  fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white;fixed.ansiBlack=null;fixed.ansiWhite=null;
- const used=new Set([greyEntry&&greyEntry.key,satEntry&&satEntry.key,colorEntry&&colorEntry.key].filter(Boolean));
- const free=[];entries.filter(e=>!used.has(e.key)).forEach(e=>free.push(...valid(e.snap)));
+ // Do not dump every unselected cache snapshot into HCFR Free Measurements.
+ // Alternate greyscale lengths, the opposite HCFR/native color variants and
+ // 3D LUT/custom caches are separate workspaces, not part of this export.
+ // Preserve only a Free Measurements group that explicitly came from HCFR.
+ const free=[];
+ entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' unmatched readings stored as free measurements; stimulus RGB is not retained by CHC.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' imported HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
  // HCFR GCD aligns the 18 chromatic patches plus PGenerator's full black and
  // white anchors. The four PGenerator neutral chips use different stimuli
  // from GCD's named grays, so preserve them as free measurements instead of
