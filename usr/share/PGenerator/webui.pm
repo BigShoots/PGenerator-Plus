@@ -11551,7 +11551,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
 	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
       <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom greyscale series">Custom Series</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager('greyscale')" title="Load, create, edit, import and export custom greyscale series">Custom Series</button>
       <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
@@ -11561,7 +11561,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed GCD Video Codes
       <span class="meter-help-tip" title="Use this before measuring ColorChecker or Sat Sweep when the results will be exported to HCFR. ColorChecker emits HCFR Classic GCD fixed video levels instead of PGenerator's xyY-derived patches, and Sat Sweep uses HCFR constant-luminance encoding instead of holding the maximum RGB channel fixed. The levels are quantized into the active Limited or Full output range. Enabling this also turns on luminance error so PGenerator's CIE2000 result is comparable to HCFR's full Lab Delta E. Native and HCFR measurements are stored separately, and CHC export follows this checkbox." aria-label="HCFR fixed GCD video codes help">?</span>
      </label>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom colour series">Custom Series</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager('color')" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <span id="meter3dLutSeriesHome" hidden></span>
@@ -11572,7 +11572,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
            picker that reuses the standalone 3D LUT AutoCal method chooser and
            its descriptions. The LUT cube visual lives in LUT Tools. -->
       <button class="btn btn-sm btn-secondary" id="meter3dLutSelectSeriesBtn" onclick="meterOpenLg3dSelectSeriesModal()" title="Choose a 3D LUT profiling series to measure (lattice / skeleton / hybrid) — same method chooser and descriptions as the standalone 3D LUT AutoCal">Select series&hellip;</button>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager()" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
+      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtn3dLut" onclick="meterOpenCustomSeriesManager('3dlut')" title="Load, create, edit, import and export custom lattice series">Custom Series</button>
       <button class="btn btn-sm btn-primary" id="meter3dLutWorkspaceBuildBtn" onclick="meterDesktop3dLutBuildFlow()">Build 3D LUT</button>
       <span id="meterCustomSeriesLoaded3dLut" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
       <button class="btn btn-sm btn-secondary" id="meterLutToolsBtn" onclick="meterOpenLutTools()" style="margin-left:auto" title="View, import and download 3D LUTs">LUT Tools</button>
@@ -11767,15 +11767,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div id="meterCustomSeriesManagerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(940px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-     <div style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
+     <div id="meterCustomSeriesManagerTitle" style="font-size:.95rem;font-weight:700;color:#eee">Custom Series</div>
      <button class="btn btn-sm btn-secondary" onclick="meterCloseCustomSeriesManager()">Close</button>
     </div>
     <div id="meterCustomSeriesManagerStatus" style="display:none;margin:0 0 10px;padding:8px 10px;border:1px solid var(--status-error);border-radius:6px;background:rgba(198,40,40,.12);color:var(--text-primary);font-size:.76rem;line-height:1.4"></div>
     <div class="btn-row" style="margin:0 0 12px 0">
-     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
-     <button class="btn btn-sm btn-primary" onclick="meterManagerNewSeries('color')">New Color</button>
-     <button class="btn btn-sm btn-primary" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
-     <button class="btn btn-sm btn-secondary" onclick="meterOpenImportWizard()" title="Import patch series from a CalMAN CSV, ColourSpace CSV, or CalMAN CCFX (multiple series)">Import&hellip;</button>
+     <button class="btn btn-sm btn-primary" id="meterCustomSeriesNewGrey" onclick="meterManagerNewSeries('greyscale')">New Greyscale</button>
+     <button class="btn btn-sm btn-primary" id="meterCustomSeriesNewColor" onclick="meterManagerNewSeries('color')">New Color</button>
+     <button class="btn btn-sm btn-primary" id="meterCustomSeriesNew3dLut" onclick="meterOpenLatticeGenerator()">New 3D LUT Lattice&hellip;</button>
+     <button class="btn btn-sm btn-secondary" id="meterCustomSeriesImport" onclick="meterOpenImportWizard()" title="Import patch series from a CalMAN CSV, ColourSpace CSV, or CalMAN CCFX (multiple series)">Import&hellip;</button>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 8px 0">
      <div id="meterCustomSeriesManagerScope" style="font-size:.72rem;color:var(--text2)"></div>
@@ -27697,7 +27697,18 @@ async function meterRefreshCustomSeriesFromServer(){
  return false;
 }
 
-async function meterOpenCustomSeriesManager(){
+let meterCustomSeriesManagerCategory='greyscale';
+function meterCustomSeriesManagerCategoryLabel(category){
+ return category==='3dlut'?'3D LUT':(category==='color'?'Color':'Greyscale');
+}
+function meterCustomSeriesMatchesManagerCategory(series){
+ if(!series) return false;
+ if(meterCustomSeriesManagerCategory==='3dlut') return series.kind==='lattice';
+ if(meterCustomSeriesManagerCategory==='color') return series.category==='color'&&series.kind!=='lattice';
+ return series.category!=='color'&&series.kind!=='lattice';
+}
+async function meterOpenCustomSeriesManager(category){
+ if(category==='greyscale'||category==='color'||category==='3dlut') meterCustomSeriesManagerCategory=category;
  const modal=meterEnsureModalOnBody(document.getElementById('meterCustomSeriesManagerModal'));
  if(!modal) return;
  const status=document.getElementById('meterCustomSeriesManagerStatus');
@@ -27705,6 +27716,14 @@ async function meterOpenCustomSeriesManager(){
  meterCustomSeriesReturnToManager=false;
  const showAllEl=document.getElementById('meterCustomSeriesManagerShowAll');
  if(showAllEl) showAllEl.checked=meterCustomSeriesManagerShowAll;
+ const categoryLabel=meterCustomSeriesManagerCategoryLabel(meterCustomSeriesManagerCategory);
+ const title=document.getElementById('meterCustomSeriesManagerTitle');
+ if(title) title.textContent=categoryLabel+' Custom Series';
+ const setVisible=(id,on)=>{const el=document.getElementById(id);if(el)el.style.display=on?'':'none';};
+ setVisible('meterCustomSeriesNewGrey',meterCustomSeriesManagerCategory==='greyscale');
+ setVisible('meterCustomSeriesNewColor',meterCustomSeriesManagerCategory==='color');
+ setVisible('meterCustomSeriesNew3dLut',meterCustomSeriesManagerCategory==='3dlut');
+ setVisible('meterCustomSeriesImport',meterCustomSeriesManagerCategory!=='3dlut');
  meterRenderCustomSeriesManager();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -27758,21 +27777,28 @@ function meterRenderCustomSeriesManager(){
  const modeKey=meterCustomSeriesModeKey();
  const rangeKey=meterCurrentOutputRangeKey();
  const showAll=meterCustomSeriesManagerShowAll;
- const listed=showAll?state.series.slice()
-  :state.series.filter(series=>series.mode===modeKey&&meterSeriesMatchesCurrentRange(series));
+ const scoped=state.series.filter(meterCustomSeriesMatchesManagerCategory);
+ const listed=showAll?scoped.slice()
+  :scoped.filter(series=>series.mode===modeKey&&meterSeriesMatchesCurrentRange(series));
  const scope=document.getElementById('meterCustomSeriesManagerScope');
  if(scope){
-  const hidden=state.series.length-listed.length;
+  const hidden=scoped.length-listed.length;
+  const categoryLabel=meterCustomSeriesManagerCategoryLabel(meterCustomSeriesManagerCategory);
   scope.textContent=showAll
-   ?('Showing all '+state.series.length+' custom series (every mode and range).')
-   :('Showing '+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+' series for your current output'
+   ?('Showing all '+scoped.length+' '+categoryLabel+' series (every mode and range).')
+   :('Showing '+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+' '+categoryLabel+' series for your current output'
      +(hidden>0?(' — '+hidden+' other-mode/range series hidden (tick “Show all”).'):'.'));
  }
  if(!listed.length){
+  const createHint=meterCustomSeriesManagerCategory==='3dlut'
+   ?'Use New 3D LUT Lattice to create one.'
+   :(meterCustomSeriesManagerCategory==='color'
+     ?'Use New Color or Import to create one.'
+     :'Use New Greyscale or Import to create one.');
   body.innerHTML='<tr><td colspan="6" style="padding:10px;color:var(--text2)">'
    +(showAll
-     ?'No custom series yet. Use New Greyscale, New Color, New 3D LUT Lattice or Import to create one.'
-     :'No custom series match your current output ('+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+'). Tick “Show all modes &amp; ranges” to see series for other displays, or create/import one.')
+     ?'No '+meterCustomSeriesManagerCategoryLabel(meterCustomSeriesManagerCategory)+' custom series yet. '+createHint
+     :'No '+meterCustomSeriesManagerCategoryLabel(meterCustomSeriesManagerCategory)+' custom series match your current output ('+modeKey.toUpperCase()+' · '+(rangeKey==='full'?'Full':'Limited')+'). Tick “Show all modes &amp; ranges” to see series for other displays, or create one.')
    +'</td></tr>';
   return;
  }
@@ -27785,7 +27811,7 @@ function meterRenderCustomSeriesManager(){
   const rangeLbl=isLattice?'Any':meterCustomSeriesRangeLabel(series.range);
   return '<tr style="border-bottom:1px solid #1a1a28">'
    +'<td style="padding:6px">'+esc(series.name)+'</td>'
-   +'<td style="padding:6px">'+(series.category==='color'?'Color':'Greyscale')+'</td>'
+   +'<td style="padding:6px">'+(series.kind==='lattice'?'3D LUT':(series.category==='color'?'Color':'Greyscale'))+'</td>'
    +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px">'+series.mode.toUpperCase()+'</span></td>'
    +'<td style="padding:6px"><span style="font-size:.68rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px" title="'+(isLattice?'Lattice codes are re-derived for the current range at read time':'Signal range these patch codes are authored for')+'">'+rangeLbl+'</span></td>'
    +'<td style="padding:6px">'+patchInfo+'</td>'
