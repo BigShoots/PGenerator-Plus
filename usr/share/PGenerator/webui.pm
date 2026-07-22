@@ -42474,6 +42474,20 @@ function meterBuildHcfrExportModel(){
  const colors=valid(colorEntry&&colorEntry.snap), fixed={};
  const fixedMap=[['redPrimary',24],['greenPrimary',25],['bluePrimary',26],['cyanSecondary',27],['magentaSecondary',28],['yellowSecondary',29]];
  fixedMap.forEach(([name,index])=>{fixed[name]=colors[index]||null;});
+ // HCFR stores its primary/secondary measurements separately from the
+ // saturation arrays even though the 100% saturation endpoints use the same
+ // stimuli. When no ColorChecker endpoint was measured, mirror the matching
+ // Sat Sweep 100% reading into the fixed slot so HCFR can draw a complete CIE
+ // gamut triangle. Never replace a ColorChecker reading when both exist.
+ const saturationFixedFallback={
+  redPrimary:'redSaturation',greenPrimary:'greenSaturation',bluePrimary:'blueSaturation',
+  cyanSecondary:'cyanSaturation',magentaSecondary:'magentaSaturation',yellowSecondary:'yellowSaturation'
+ };
+ Object.entries(saturationFixedFallback).forEach(([fixedName,groupName])=>{
+  if(fixed[fixedName]) return;
+  const endpoint=[...(satGroups[groupName]||[])].reverse().find(rd=>rd&&Number(rd.sat_pct!=null?rd.sat_pct:rd.ire)>=99.5);
+  if(endpoint) fixed[fixedName]=endpoint;
+ });
  const black=grey.find(rd=>rd&&Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
  const white=[...grey].reverse().find(rd=>rd&&Number(meterReadingPlotIre(rd)||0)>=99)||null;
  // HCFR grades primary and saturation luminance against primeWhite: a white

@@ -45,6 +45,9 @@ assert(source.includes('includeLum.checked=true')&&source.includes('meterOnColor
 assert(source.includes("localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0')"), 'HCFR fixed-code preference must persist');
 assert(source.includes("Number(e.snap.points)===(preferHcfr?29:30)"), 'CHC export must follow the ColorChecker checkbox variant');
 assert(source.includes("Number(e.snap.points)===(preferHcfr?25:24)"), 'CHC export must follow the saturation checkbox variant');
+assert(source.includes("redPrimary:'redSaturation'")&&source.includes("yellowSecondary:'yellowSaturation'"), 'CHC export must map Sat Sweep endpoints to missing fixed primary/secondary slots');
+assert(source.includes('if(fixed[fixedName]) return;'), 'Sat Sweep fallback must not overwrite ColorChecker primary/secondary readings');
+assert(source.includes('Number(rd.sat_pct!=null?rd.sat_pct:rd.ire)>=99.5'), 'CHC fixed-color fallback must use only 100% saturation endpoints');
 assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export must serialize the active RGB range');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
 assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');
