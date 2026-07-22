@@ -11460,7 +11460,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="field field-hdr" id="meterHdrConfig" style="display:none">
     <label>HDR Roll-off</label>
     <label class="meter-toggle" title="Apply ITU-R BT.2390 tone-mapping so HDR/PQ targets model display roll-off instead of hard clipping to the selected peak">
-     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()"> BT.2390
+     <input id="meterHdrApplyBT2390" type="checkbox" onchange="meterOnGreyRefChange()" checked> BT.2390
     </label>
    </div>
   <div class="field field-hdr" id="meterHdrDiffuseConfig" style="display:none">
@@ -21562,9 +21562,9 @@ function meterTargetGammaLabel(){
 	  if(tgt==='srgb') return 'sRGB';
 	  return 'ST 2084';
 	 }
-	 if(!sel) return usesPqTarget ? 'PQ' : 'Gamma';
+	 if(!sel) return usesPqTarget ? (meterChartBt2390Enabled()?'PQ + BT.2390':'PQ') : 'Gamma';
  const opt=sel.options[sel.selectedIndex];
- if(usesPqTarget) return 'PQ';
+ if(usesPqTarget) return meterChartBt2390Enabled()?'PQ + BT.2390':'PQ';
  return opt&&opt.textContent?opt.textContent.trim():'Gamma';
 }
 

@@ -66,6 +66,8 @@ assert(source.includes('id="meterHdrDiffuseWhiteAuto"')&&source.includes('aria-l
 assert(source.includes("meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator grayscale PQ target decoding');
 assert(source.includes("meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1)"), 'Diffuse white must scale PGenerator ColorChecker and saturation PQ target decoding');
 assert(source.includes('hdr_diffuse_white hdr_diffuse_white_auto'), 'Diffuse-white Auto/manual settings must be accepted by persistent meter settings');
+assert(/id="meterHdrApplyBT2390"[^>]*checked/.test(source), 'BT.2390 must be enabled by default');
+assert(source.includes("meterChartBt2390Enabled()?'PQ + BT.2390':'PQ'"), 'PQ chart legend must identify an active BT.2390 target');
 assert(source.includes("const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled()"), 'SDR fixed GCD variants must not replace HDR color-series exports');
 assert(source.includes("meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma})"), 'HDR CHC import must activate PQ context before rebuilding chart steps');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
