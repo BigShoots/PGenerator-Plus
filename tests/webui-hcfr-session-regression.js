@@ -53,6 +53,10 @@ assert(source.includes("redPrimary:'redSaturation'")&&source.includes("yellowSec
 assert(source.includes('if(fixed[fixedName]) return;'), 'Sat Sweep fallback must not overwrite ColorChecker primary/secondary readings');
 assert(source.includes('Number(rd.sat_pct!=null?rd.sat_pct:rd.ire)>=99.5'), 'CHC fixed-color fallback must use only 100% saturation endpoints');
 assert(source.includes("generator:{type:'gdi',rgbRange:rgbRange}"), 'CHC export must serialize the active RGB range');
+assert(source.includes("const gamutMap={bt709:2,bt2020:8,p3d65:6,p3dci:6}"), 'HDR CHC export must encode BT.2020 as HCFR color standard 8');
+assert(source.includes("8:'bt2020'"), 'HDR CHC import must decode HCFR color standard 8 as BT.2020');
+assert(source.includes("const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled()"), 'SDR fixed GCD variants must not replace HDR color-series exports');
+assert(source.includes("meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma})"), 'HDR CHC import must activate PQ context before rebuilding chart steps');
 assert(source.includes("source_rgb_range:sourceRange||null"), 'CHC import must preserve the source generator range');
 assert(source.includes('Output range will NOT be changed'), 'CHC import must disclose that generator range is not applied');
 assert(source.includes("source_format:'hcfr-chc'"), 'imported snapshots must retain their source format');

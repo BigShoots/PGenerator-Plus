@@ -42426,7 +42426,9 @@ function meterHcfrPreferenceModel(mode,white,black){
  const checked=id=>!!((document.getElementById(id)||{}).checked);
  const gamut=text('meterTargetGamut','auto').toLowerCase();
  const gamma=text('meterTargetGamma','bt1886').toLowerCase();
- const gamutMap={bt709:2,bt2020:7,p3d65:(mode==='sdr'?6:8),p3dci:6};
+ // HCFR v17 color standards: 8 is UHDTV/BT.2020 (used by HDR sessions).
+ // Keep P3 on its P3 enum instead of conflating HDR P3 with BT.2020.
+ const gamutMap={bt709:2,bt2020:8,p3d65:6,p3dci:6};
  const gammaMap={bt1886:4,'2.2':0,'2.4':0,st2084:5,srgb:0};
  const greyMap={absolute:0,eotf:1,relative:2};
  const deMap={deluv76:0,de76lab:1,de94:2,de2000:3,decmc:4,de2000_jnd:5,deitp:6};
@@ -42467,7 +42469,9 @@ function meterBuildHcfrExportModel(){
  // variant keeps its own cache key, so toggling never re-labels measurements.
  // Do not fall back to the opposite built-in variant when the selected cache
  // was cleared; that would resurrect measurements the operator removed.
- const preferHcfr=meterHcfrFixedCodesEnabled();
+ // Fixed GCD video-code variants describe HCFR's SDR series. HDR/PQ exports
+ // always consume the native HDR ColorChecker and saturation snapshots.
+ const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled();
  const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
  const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
@@ -42560,7 +42564,7 @@ function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange,cont
 function meterApplyHcfrAnalysisPreferences(p){
  const set=(id,value)=>{const e=document.getElementById(id);if(e&&value!=null)e.value=value;};
  const check=(id,value)=>{const e=document.getElementById(id);if(e)e.checked=!!value;};
- const gamut={2:'bt709',3:'bt709',6:'p3d65',7:'bt2020',8:'p3d65',9:'bt709'}[p.colorStandard];if(gamut)set('meterTargetGamut',gamut);
+ const gamut={2:'bt709',3:'bt709',6:'p3d65',7:'p3d65',8:'bt2020',9:'bt709'}[p.colorStandard];if(gamut)set('meterTargetGamut',gamut);
  const gamma={4:'bt1886',5:'st2084',7:'st2084'}[p.gammaOffsetType]||(Math.abs(Number(p.gammaReference)-2.4)<0.05?'2.4':'2.2');set('meterTargetGamma',gamma);
  set('meterGreyRefMode',({0:'absolute',1:'eotf',2:'relative'})[p.grayscaleDeltaE]||'relative');
  set('meterGrayWorld',({0:'1',1:'0.15',2:'0.05'})[p.grayWorldWeight]||'1');
@@ -42583,6 +42587,10 @@ async function meterImportHcfrChcFile(input){
   const warning=mode!==String(meterChartSignalMode()||'sdr').toLowerCase()?'\n\nThe imported analysis mode is '+mode.toUpperCase()+'; output settings will NOT be changed or restarted.':'';
   if(!window.confirm('Import '+file.name+'?\n\nFormat v'+parsed.fileVersion+', measurements v'+parsed.measurementVersion+'\nGenerator RGB range: '+sourceRange.toUpperCase()+'\n'+groupLines.join('\n')+'\nFixed readings: '+Object.values(sum.fixed).filter(Boolean).length+warning+'\n\nAnalysis preferences will be applied. Output range will NOT be changed. Existing sessions will be preserved.'))return;
   meterApplyHcfrAnalysisPreferences(parsed.preferences);
+  // Activate the imported analysis context before constructing saturation and
+  // ColorChecker steps. Their PQ encoding, target luminance and gamut helpers
+  // otherwise inherit the live output mode (often SDR) during import.
+  meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma});
   const stamp=Date.now(),keys=[];importContext.session_id=stamp;meterActiveHcfrSessionId=stamp;
   const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
   const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode,sourceRange,importContext,'grayscale');if(gkey)keys.push(gkey);
