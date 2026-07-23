@@ -1381,8 +1381,16 @@ sub pattern_daemon {
      my %calman_applied_mode_keys=%{$main::calman_applied_mode_keys{$connection} || {}};
      my $calman_mode_key_snapshot = sub {
       my %k=();
+      # dv_map_mode is included because the pattern renderer only
+      # loads it from conf at process start (main.cpp → ofApp /
+      # ofxRPI4Window). CONF_DV Absolute↔Relative/Perceptual must
+      # therefore force a stop+start; treating it as a non-mode
+      # conf write left the wire on the previous map mode while
+      # conf already said Absolute/Relative (operator saw no
+      # change on PGen when flipping Calman DV map mode).
       for my $k (qw(mode_idx signal_mode is_hdr is_sdr eotf colorimetry
-                    color_format max_bpc dv_status is_ll_dovi is_std_dovi)) {
+                    color_format max_bpc dv_status is_ll_dovi is_std_dovi
+                    dv_map_mode)) {
        $k{$k}="$pgenerator_conf{$k}";
       }
       return \%k;
