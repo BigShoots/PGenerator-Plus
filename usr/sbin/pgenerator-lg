@@ -3222,6 +3222,26 @@ sub lg_hdr_picture_reset_apply_dynamic_contrast_off (@) {
  return (0,\@attempts);
 }
 
+# Dolby Vision profile measurement requires the panel's own picture
+# processing held still: AI Picture/AI Brightness and Energy Saving all vary
+# backlight/tone response in ways that would corrupt the black/white
+# luminance measurement. Mirrors lg_hdr_picture_reset_apply_dynamic_contrast_off's
+# contract: a key genuinely unsupported on this picture mode (fingerprinted
+# via lg_settings_error_is_unsupported_key) is not treated as a failure.
+sub lg_dv_profile_preflight_settings_off (@) {
+ my ($session,$connect_timeout)=@_;
+ my @attempts;
+ my $all_ok=1;
+ for my $key (qw(aiPicture energySaving)) {
+  my $resp=&lg_request($session,"dv_profile_preflight_$key","settings/setSystemSettings",{ category => "picture", settings => { $key => "off" } },$connect_timeout + 3);
+  my ($failed,$message)=&response_is_app_failure($resp);
+  my $unsupported=$failed && &lg_settings_error_is_unsupported_key($message);
+  push(@attempts,{ key => $key, failed => &json_bool($failed && !$unsupported), unsupported => &json_bool($unsupported), message => $message//"" });
+  $all_ok=0 if($failed && !$unsupported);
+ }
+ return ($all_ok,\@attempts);
+}
+
 sub lg_hdr_calman_reset_workflow (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode,$tv_input)=@_;
  return &json_error("Connect / Pair the LG TV before resetting HDR calibration data",{ ip => $ip }) if($client_key eq "");
@@ -3828,6 +3848,9 @@ sub lg_dv_profile_upload_workflow (@) {
   &websocket_close($session);
   return &json_error("Dolby Vision profile upload requires a writable picture mode (dolby_hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
+ my ($preflight_ok,$preflight_attempts)=&lg_dv_profile_preflight_settings_off($session,$connect_timeout);
+ # Non-fatal: a picture mode that genuinely lacks these keys still proceeds
+ # (matches the dynamicContrast precedent) -- only surfaced as diagnostics.
  my $descriptor=&lg_dv_profile_descriptor(
   picture_mode => int($measurements->{"picture_mode"}//0),
   white_luminance => $measurements->{"white_luminance"},
@@ -3867,6 +3890,7 @@ sub lg_dv_profile_upload_workflow (@) {
    raw_response => $upload,
    cal_start_response => $start,
    cal_end_response => $end,
+   preflight => $preflight_attempts,
   });
  }
  return &json_ok({
@@ -3881,6 +3905,7 @@ sub lg_dv_profile_upload_workflow (@) {
   cal_end_response => $end,
   message => "LG Dolby Vision panel profile uploaded.",
   calibration_mode => &json_bool($keep_calibration_mode),
+  preflight => $preflight_attempts,
  });
 }
 
