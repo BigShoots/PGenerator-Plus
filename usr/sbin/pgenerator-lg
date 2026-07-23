@@ -2042,7 +2042,12 @@ foreach my $attempt (@panel_payloads) {
 ###############################################
 $DIAG_LOG_PATH="/var/lib/PGenerator/lg/last-write.log";
 $DIAG_LOG_MAX_BYTES=131072;
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolby_hdr_cinema|dolby_hdr_cinema_bright|dolby_hdr_game)$';
+# dolby_hdr_[a-z_]+ is a general catch-all so any Dolby Vision preset name
+# lg_picture_mode_for_calibration derives (including ones not spelled out
+# below, e.g. dolby_hdr_cinema_dark, which was missing here entirely until
+# this fix) is recognized as writable -- matches how that function itself
+# now falls back to an algorithmic derivation instead of a fixed name list.
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolby_hdr_[a-z_]+)$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;
@@ -2247,7 +2252,21 @@ sub lg_picture_mode_for_calibration (@) {
   "dolbyhdrcinemadark" => "dolby_hdr_cinema_dark",
   "dolbyhdrgame" => "dolby_hdr_game",
  );
- return $map{$mode_lc}||"";
+ return $map{$mode_lc} if(defined($map{$mode_lc}));
+ # Fallback for any Dolby Vision preset name not in the static map above --
+ # polled straight from the TV (lg_current_picture_mode), not guessed. LG's
+ # raw webOS pictureMode names for DV are camelCase with no separators (e.g.
+ # "dolbyHdrCinemaBright"), so split on camelCase boundaries after stripping
+ # the "dolbyHdr" prefix, rather than requiring every preset name to be
+ # pre-enumerated by hand (hw fact 2026-07-23: a hand-guessed table missed
+ # real presets and produced the wrong internal name for ones it did have).
+ if($picture_mode =~ /^dolbyhdr(.*)$/i) {
+  my $suffix=$1;
+  $suffix=~s/([a-z0-9])([A-Z])/$1_$2/g;
+  $suffix=lc($suffix);
+  return "dolby_hdr_$suffix" if($suffix ne "");
+ }
+ return "";
 }
 
 sub lg_dv_profile_format_xy (@) {
