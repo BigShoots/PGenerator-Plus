@@ -1214,6 +1214,20 @@ sub pattern_daemon {
 	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
 	       return;
 	      }
+	      # Skip no-op writes. calman_apply always calls
+	      # calman_force_dv_rgb, which re-asserts the DV RGB
+	      # transport keys (is_hdr/eotf/color_format/max_bpc/
+	      # rgb_quant_range/primaries). Without this guard each
+	      # of those re-saves set calman_settings_dirty even when
+	      # the value already matched, so the apply while-loop
+	      # never exited: it spun replaying SPECIALTY:ALIGNMENT
+	      # forever and starved the GCI socket of RGB_S / 100% /
+	      # 109% pattern commands (DV Autocal stuck on alignment).
+	      my $new_val=defined($conf_val) ? "$conf_val" : "";
+	      my $cur_val=defined($pgenerator_conf{$conf_key}) ? "$pgenerator_conf{$conf_key}" : "";
+	      if($cur_val eq $new_val) {
+	       return;
+	      }
 	      &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_val);
 	      $pgenerator_conf{$conf_key}="$conf_val";
 	      &sync_pattern_bits_default();
