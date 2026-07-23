@@ -10721,7 +10721,9 @@ body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding
 .meter-3dlut-workspace-label{margin-bottom:9px;color:var(--text2);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .meter-3dlut-workspace-status{margin-top:9px;color:var(--text2);font-size:.74rem}
 body.layout-desktop #meter3dLutWorkspaceCard #meterSeriesGroup3dLut{display:flex!important;width:100%;align-items:center}
-body.layout-desktop #meter3dLutWorkspaceCard #meter3dLutSelectSeriesBtn{display:none!important}
+/* Keep both profiling entry points available in the desktop workspace: Select
+ * series chooses a built-in method, while Custom Series opens user lattices. */
+body.layout-desktop #meter3dLutWorkspaceCard #meter3dLutSelectSeriesBtn{display:inline-flex!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsBtn{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceBuildBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
