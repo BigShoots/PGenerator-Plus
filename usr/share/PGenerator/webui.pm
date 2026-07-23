@@ -4389,6 +4389,16 @@ sub webui_meter_lg_autocal_body_with_defaults (@) {
   $body=~s/\}\s*\z/,"lg_autocal_hdr20_dpg_mode":true}/;
   return $body;
  }
+ # Route Dolby Vision greyscale autocal through the SAME 1D-DPG convergence
+ # loop as HDR10: the panel's DV engine is calibrated in a fixed
+ # pass-through mode against a plain 2.2 gamma target (see
+ # target_gamma_linear in meter_lg_autocal.pl), so it shares the HDR20 DDC
+ # ladder end to end rather than needing its own convergence path.
+ if($body=~/"signal_mode"\s*:\s*"dv"/i) {
+  return $body if($body=~/"lg_autocal_hdr20_dpg_mode"\s*:/);
+  $body=~s/\}\s*\z/,"lg_autocal_hdr20_dpg_mode":true}/;
+  return $body;
+ }
  # Route SDR26 greyscale autocal through the 1D-DPG convergence loop
  # (test/opt-in; no third-party software names). Mirrors the HDR20 routing
  # above; SDR26 uses BT.709/D65 + gamma 2.2 instead of HDR's BT.2020/PQ.

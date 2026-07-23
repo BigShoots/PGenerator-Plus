@@ -358,7 +358,11 @@ sub format_percent {
 sub ddc_layout_for_signal_mode {
  my ($signal_mode)=@_;
  $signal_mode=lc($signal_mode||"sdr");
- return "hdr20" if($signal_mode eq "hdr10");
+ # Dolby Vision greyscale is calibrated with the panel's DV engine held in a
+ # fixed pass-through/"Relative" metadata mode (see target_gamma_linear's
+ # existing dv+st2084 -> plain 2.2 branch): the same 20-point HDR DDC ladder
+ # and 1D-DPG convergence loop used for HDR10 applies unchanged.
+ return "hdr20" if($signal_mode eq "hdr10" || $signal_mode eq "dv");
  return "sdr26";
 }
 
