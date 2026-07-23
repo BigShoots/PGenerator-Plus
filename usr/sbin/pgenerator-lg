@@ -2240,9 +2240,11 @@ sub lg_picture_mode_for_calibration (@) {
   "hdrfilmmakermode" => "hdr_filmMaker",
   "dolby_hdr_cinema" => "dolby_hdr_cinema",
   "dolby_hdr_cinema_bright" => "dolby_hdr_cinema_bright",
+  "dolby_hdr_cinema_dark" => "dolby_hdr_cinema_dark",
   "dolby_hdr_game" => "dolby_hdr_game",
   "dolbyhdrcinema" => "dolby_hdr_cinema",
   "dolbyhdrcinemabright" => "dolby_hdr_cinema_bright",
+  "dolbyhdrcinemadark" => "dolby_hdr_cinema_dark",
   "dolbyhdrgame" => "dolby_hdr_game",
  );
  return $map{$mode_lc}||"";
@@ -2291,6 +2293,22 @@ sub lg_dv_profile_descriptor (@) {
  return join("\n",@lines)."\n";
 }
 
+# $cal_mode uses a "dolby_hdr_*" spelling internally (signal-mode
+# auto-detection and the writable-picture-mode allow-list both key off that
+# exact prefix elsewhere in this file) -- but the wire picMode value the TV
+# firmware actually accepts for Dolby Vision drops "hdr" entirely. Hardware
+# fact, from a real Calman capture (2026-07-23): the dark DV preset's wire
+# picMode is "dolby_cinema_dark", not "dolby_hdr_cinema_dark". Sending the
+# unstranslated "dolby_hdr_*" value made the TV reject CAL_START outright
+# (errorCode 20, "Driver error while executing the command"). Translate only
+# at the wire boundary; every other use of $cal_mode is unaffected.
+sub lg_wire_pic_mode (@) {
+ my ($cal_mode)=@_;
+ return $cal_mode if(!defined($cal_mode) || $cal_mode eq "");
+ (my $wire=$cal_mode)=~s/^dolby_hdr_/dolby_/;
+ return $wire;
+}
+
 sub lg_calibration_request (@) {
  my ($session,$id,$command,$data,$data_opt,$picture_mode,$timeout)=@_;
  my $payload={
@@ -2301,7 +2319,7 @@ sub lg_calibration_request (@) {
  # LG's calibration session is bound to the picture mode by CAL_START.  The
  # follow-up enable/upload commands should be sent inside that active session
  # without repeating picMode, matching the public webOS calibration API usage.
- $payload->{"picMode"}=$picture_mode if($command eq "CAL_START" && defined($picture_mode) && $picture_mode ne "");
+ $payload->{"picMode"}=&lg_wire_pic_mode($picture_mode) if($command eq "CAL_START" && defined($picture_mode) && $picture_mode ne "");
  if(ref($data) eq "ARRAY") {
   my $packed=pack("v*",@{$data});
   $payload->{"data"}=encode_base64($packed,"");
