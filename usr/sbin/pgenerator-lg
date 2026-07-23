@@ -3235,6 +3235,12 @@ sub lg_dv_profile_preflight_settings_off (@) {
  for my $key (qw(aiPicture energySaving)) {
   my $resp=&lg_request($session,"dv_profile_preflight_$key","settings/setSystemSettings",{ category => "picture", settings => { $key => "off" } },$connect_timeout + 3);
   my ($failed,$message)=&response_is_app_failure($resp);
+  # A non-HASH response (e.g. a dropped connection) must count as failed --
+  # response_is_app_failure() alone treats "not a hash" as "not failed",
+  # which would silently report success on a write the TV never
+  # acknowledged. Mirrors lg_hdr_picture_reset_apply_dynamic_contrast_off's
+  # own success gate, which additionally requires ref($response) eq "HASH".
+  $failed=1 if(ref($resp) ne "HASH");
   my $unsupported=$failed && &lg_settings_error_is_unsupported_key($message);
   push(@attempts,{ key => $key, failed => &json_bool($failed && !$unsupported), unsupported => &json_bool($unsupported), message => $message//"" });
   $all_ok=0 if($failed && !$unsupported);
@@ -3849,8 +3855,10 @@ sub lg_dv_profile_upload_workflow (@) {
   return &json_error("Dolby Vision profile upload requires a writable picture mode (dolby_hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
  my ($preflight_ok,$preflight_attempts)=&lg_dv_profile_preflight_settings_off($session,$connect_timeout);
- # Non-fatal: a picture mode that genuinely lacks these keys still proceeds
- # (matches the dynamicContrast precedent) -- only surfaced as diagnostics.
+ if(!$preflight_ok) {
+  &websocket_close($session);
+  return &json_error("Preflight settings write failed.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, preflight => $preflight_attempts });
+ }
  my $descriptor=&lg_dv_profile_descriptor(
   picture_mode => int($measurements->{"picture_mode"}//0),
   white_luminance => $measurements->{"white_luminance"},
@@ -3872,7 +3880,7 @@ sub lg_dv_profile_upload_workflow (@) {
  }
  if($start_failed || ref($start) ne "HASH") {
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for Dolby Vision profile upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start });
+  return &json_error($start_message||"LG TV rejected calibration mode start for Dolby Vision profile upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, preflight => $preflight_attempts });
  }
  my $upload=&lg_calibration_request($session,"dv_profile_upload","DOLBY_CFG_DATA",&lg_force_pic_mode_payload({ text => $descriptor }),undef,$cal_mode,$connect_timeout + 8);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
