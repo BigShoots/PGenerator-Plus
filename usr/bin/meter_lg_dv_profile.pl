@@ -84,42 +84,62 @@ sub fixture_reading_for_patch {
  return { x=>$xy{$kind}[0], y=>$xy{$kind}[1], luminance=>$y, timestamp=>time() };
 }
 
+# Measures one patch via a SINGLE /api/meter/read call -- that endpoint sets
+# the pattern itself from patch_r/patch_g/patch_b (there is no separate
+# /api/pattern step), exactly matching the established convention in
+# meter_lg_3d_autocal.pl's read_step_once, which this mirrors. Returns
+# ($reading,undef) on success, or (undef,$error) where $error is the literal
+# string "cancelled" when the stop file appeared, distinct from any other
+# failure message, so the caller can report a clean "stopped" state instead
+# of a generic error.
 sub read_patch {
  my ($patch,$config)=@_;
  my $fixture=fixture_reading_for_patch($patch,$config);
- return $fixture if($fixture);
- my $set=api_json("POST","/api/pattern",{ name=>"custom", r=>$patch->{"r"}, g=>$patch->{"g"}, b=>$patch->{"b"} },10);
- return undef if(($set->{"status"}||"") eq "error");
- select(undef,undef,undef,1.8); # settle delay, matches the greyscale/3D-LUT workers
- my $start=api_json("POST","/api/meter/read",{
-  patch_r=>$patch->{"r"}, patch_g=>$patch->{"g"}, patch_b=>$patch->{"b"},
-  name=>$patch->{"name"}, input_max=>$input_max,
-  signal_mode=>"dv",
- },55);
- return undef if(($start->{"status"}||"") eq "error");
+ return ($fixture,undef) if($fixture);
+ return (undef,"cancelled") if(cancelled());
+ my $payload={
+  display_type => $config->{"display_type"}||"lcd",
+  ccss_override => $config->{"ccss_override"}||"",
+  patch_r => int($patch->{"r"}||0),
+  patch_g => int($patch->{"g"}||0),
+  patch_b => int($patch->{"b"}||0),
+  name => $patch->{"name"},
+  input_max => $input_max,
+  delay_ms => int($config->{"delay_ms"}||1800),
+  signal_range => $config->{"pattern_signal_range"}||$config->{"signal_range"}||"1",
+  transport_signal_range => $config->{"transport_signal_range"}||$config->{"signal_range"}||"1",
+  signal_mode => "dv",
+ };
+ my $start=api_json("POST","/api/meter/read",$payload,55);
+ return (undef,"cancelled") if(cancelled());
+ return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
  my $deadline=time()+60;
  while(time() < $deadline) {
-  return undef if(cancelled());
+  return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
   if((($result->{"status"}||"") eq "ok") && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
-   return $result->{"readings"}[0];
+   return ($result->{"readings"}[0],undef);
   }
-  return undef if(($result->{"status"}||"") eq "error");
+  return (undef,$result->{"message"}||"Meter read failed") if(($result->{"status"}||"") eq "error");
   select(undef,undef,undef,0.35);
  }
- return undef;
+ return (undef,"Meter read timed out");
 }
 
 my @steps;
 my %by_kind;
 for my $patch (@patches) {
  if(cancelled()) {
-  write_state(status=>"error",message=>"Dolby Vision profile measurement cancelled",steps=>\@steps);
+  write_state(status=>"cancelled",message=>"Dolby Vision profile measurement cancelled",steps=>\@steps);
   exit(1);
  }
- my $reading=read_patch($patch,$config);
+ my ($reading,$err)=read_patch($patch,$config);
  if(!$reading) {
-  write_state(status=>"error",message=>"Meter read failed for patch \"".$patch->{"name"}."\"",steps=>\@steps);
+  if(defined($err) && $err eq "cancelled") {
+   write_state(status=>"cancelled",message=>"Dolby Vision profile measurement cancelled",steps=>\@steps);
+   exit(1);
+  }
+  write_state(status=>"error",message=>($err||"Meter read failed for patch \"".$patch->{"name"}."\""),steps=>\@steps);
   exit(1);
  }
  my $step={ name=>$patch->{"name"}, kind=>$patch->{"kind"}, x=>$reading->{"x"}, y=>$reading->{"y"}, luminance=>$reading->{"luminance"} };
