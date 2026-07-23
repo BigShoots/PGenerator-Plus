@@ -35436,6 +35436,9 @@ function meterFullAutoCalComplete(touchupStatus,options){
  const skipTouchup=!!(options&&options.skipTouchup);
  const post3dPolish=String(touchupStatus&&touchupStatus.full_autocal_phase||'')==='post-3d-polish';
  const dvProfileComplete=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase()==='dv';
+ if(dvProfileComplete){
+  try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
+ }
  if(!skipTouchup||post3dPolish) meterFullAutoCalResults.touchup=touchupStatus||null;
  meterFullAutoCalLoadReportData();
  const offerPostReport=true;
@@ -35722,7 +35725,13 @@ async function meterStartAutoCal(options){
  const fail=(message)=>{
   meterAutoCalWizardContextActive=false;
   if(message) toast(message,true);
-  if(fullWorkflow) meterFullAutoCalResetState(false);
+  if(fullWorkflow){
+   const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
+   meterFullAutoCalResetState(false);
+   if(wasDvSignal){
+    try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
+   }
+  }
   return false;
  };
 	 if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||(!fullWorkflow&&meterFullAutoCalRunning)) return fail('Meter operation already in progress');
