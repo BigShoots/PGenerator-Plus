@@ -1205,12 +1205,20 @@ sub pattern_daemon {
 	      # sent (typically Full for HDR), and the next poll
 	      # flips the UI back. The reference RPC plugin never
 	      # sets $calman_gci, so the RPC path is unaffected.
+	      # dv_map_mode / dv_metadata are allow-listed so CONF_DV
+	      # (PERCEPTUAL / ABSOLUTE / RELATIVE) can switch the
+	      # renderer map mode under GCI. Without them Absolute
+	      # was silently dropped and the conf stayed on the last
+	      # WebUI map mode while the wire still looked like HDR10
+	      # (dv_status never reached 1 either — see the explicit
+	      # coherence call at the end of calman_set_dv_rgb).
 	      if($calman_gci{$connection} &&
 	        $conf_key ne "primaries" && $conf_key ne "eotf" && $conf_key ne "is_hdr" &&
 	        $conf_key ne "color_format" && $conf_key ne "max_bpc" &&
 	        $conf_key ne "min_luma" && $conf_key ne "max_luma" &&
 	        $conf_key ne "max_cll" && $conf_key ne "max_fall" &&
-	        $conf_key ne "rgb_quant_range") {
+	        $conf_key ne "rgb_quant_range" &&
+	        $conf_key ne "dv_map_mode" && $conf_key ne "dv_metadata") {
 	       &log("Calman GCI: suppressed save $conf_key=$conf_val (WebUI owns this key)");
 	       return;
 	      }
@@ -1332,6 +1340,10 @@ sub pattern_daemon {
        $calman_rgb_quant_range=2;
        &apply_source_rgb_quant_range("calman",2);
       }
+      # Same as calman_set_dv_rgb: re-assert DV coherence even when
+      # the is_hdr/eotf/primaries writes were no-ops, so an apply
+      # mid-DV session cannot leave dv_status=0 / signal_mode=hdr10.
+      $calman_enforce_mode_coherence->() if($calman_gci{$connection});
       $calman_dv_transition_active=0;
      };
      #
@@ -1521,6 +1533,17 @@ sub pattern_daemon {
       $dv_metadata=$calman_dv_metadata_for_map_mode->((defined $dv_map_mode && $dv_map_mode ne "") ? $dv_map_mode : $pgenerator_conf{"dv_map_mode"});
      }
      $calman_save_setting->("dv_metadata","$dv_metadata");
+     # Always run mode coherence before clearing the transition
+     # flag. calman_save_setting only triggers coherence when an
+     # allow-listed key actually changes; under GCI, CONF_DV after
+     # HDR_ENABLE often re-asserts is_hdr=1 / eotf=2 / primaries=1
+     # as no-ops, so coherence never ran, the GCI gate kept
+     # suppressing dv_status/signal_mode, and the conf stayed
+     # HDR10 (dv_status=0, signal_mode=hdr10) even though Calman
+     # asked for DV. Force the daemon-derived write while the
+     # transition flag still tells coherence to set signal_mode=dv
+     # and dv_status=1.
+     $calman_enforce_mode_coherence->() if($calman_gci{$connection});
      # End of DV transition — clear the flag so subsequent non-DV
      # saves in the same connection fall back to the standard
      # dv_status=0 reset path.
