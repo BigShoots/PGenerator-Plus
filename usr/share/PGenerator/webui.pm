@@ -43145,7 +43145,11 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
   document.getElementById('meterReadSeriesBtn').style.display='none';
   document.getElementById('meterCharts').style.display='none';
  }
- if(meterActiveSeriesType) meterSetSeriesTab(meterSeriesTabForType(meterActiveSeriesType),true);
+ // A background shared-series cleanup may be clearing an old greyscale
+ // session from another browser. Do not let that stale chart context eject an
+ // operator who has explicitly moved to the local 3D LUT workspace.
+ if(meterSeriesTab==='3dlut') meterUpdateSeriesTabUi();
+ else if(meterActiveSeriesType) meterSetSeriesTab(meterSeriesTabForType(meterActiveSeriesType),true);
  else meterUpdateSeriesTabUi();
  meterUpdateReadButtons();
  if(showToastMsg) toast('Chart data cleared');
