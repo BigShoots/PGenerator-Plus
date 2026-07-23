@@ -9761,7 +9761,33 @@ sub webui_pattern_diag_video_sequence_dir (@) {
  my $name=lc("".shift);
  $name=~s/[^a-z0-9_]+/_/g;
  return "" if($name eq "");
+ # Optional second arg: "full" selects the full-range (0-255) companion
+ # set under diagseq_full/. Stock AVS frames in diagseq/ are limited-authored
+ # (16-235) for YCbCr / Limited links; RGB Full needs the expanded set so
+ # black is code 0 instead of a raised 16.
+ my $range_kind=lc("".(shift // ""));
+ $range_kind="" if($range_kind ne "full" && $range_kind ne "limited");
+ return "$var_dir/diagseq_full/$name" if($range_kind eq "full");
  return "$var_dir/diagseq/$name";
+}
+
+# Bundled AVS HD 709 sequences live in two forms:
+#   diagseq/       limited-authored (black=16) — correct for YCbCr
+#   diagseq_full/  full-authored    (black=0)  — correct for RGB
+#
+# Why RGB always uses full frames (Limited and Full quant alike):
+# solid RGB diagnostics and meter SOURCE_RANGE expansion put full-span
+# codes in the framebuffer (black=0). The IMAGE path is bit-exact and does
+# not remap texels, so limited-coded frames read as raised blacks on RGB
+# (code 16 on a 0-black framebuffer) regardless of the AVI quant flag.
+# YCbCr keeps limited-authored frames so legal luma is not crushed.
+sub webui_pattern_diag_video_sequence_range_kind (@) {
+ my $color_format=int(shift // 0);
+ # optional quant_range arg kept for callers/logging; not used for the
+ # RGB-vs-YCbCr split above.
+ my $quant_range=int(shift // 2);
+ return "limited" if($color_format != 0);
+ return "full";
 }
 
 sub webui_pattern_frame_sequence_pattern (@) {
@@ -9793,8 +9819,18 @@ sub webui_pattern_diag_video_sequence_pattern (@) {
  my $name=shift;
  my $w=int(shift);
  my $h=int(shift);
- my $dir=&webui_pattern_diag_video_sequence_dir($name);
- return &webui_pattern_frame_sequence_pattern($dir,$w,$h);
+ my $color_format=int(shift // 0);
+ my $quant_range=int(shift // 2);
+ my $range_kind=&webui_pattern_diag_video_sequence_range_kind($color_format,$quant_range);
+ my $dir=&webui_pattern_diag_video_sequence_dir($name,$range_kind);
+ my $pat=&webui_pattern_frame_sequence_pattern($dir,$w,$h);
+ # Fall back to limited stock set if the full companion is missing (older
+ # installs / partial OTA), so patterns still play.
+ if($pat eq "" && $range_kind eq "full") {
+  $dir=&webui_pattern_diag_video_sequence_dir($name,"limited");
+  $pat=&webui_pattern_frame_sequence_pattern($dir,$w,$h);
+ }
+ return $pat;
 }
 
 sub webui_pattern_uploaded_diag_video_sequence_pattern (@) {
@@ -9859,9 +9895,11 @@ my $diag_video=&webui_pattern_diag_video_path($name);
  my $gray50_rgb=&webui_pattern_scale_triplet(128,128,128,255,$pat_bits);
  if($diag_video ne "") {
   return '{"status":"error","message":"AVS HD 709 videos are available only in SDR"}' if($signal_mode ne "sdr");
-  my $diag_sequence=&webui_pattern_diag_video_sequence_pattern($name,$w,$h);
+  my $diag_quant_range=int($transport_signal_range || $pattern_signal_range || 2);
+  my $diag_sequence=&webui_pattern_diag_video_sequence_pattern($name,$w,$h,$pattern_color_format,$diag_quant_range);
   if($diag_sequence ne "") {
-   &log("WebUI: AVS HD 709 using renderer sequence for $name");
+   my $diag_range_kind=&webui_pattern_diag_video_sequence_range_kind($pattern_color_format,$diag_quant_range);
+   &log("WebUI: AVS HD 709 using renderer sequence for $name (frames=$diag_range_kind color_format=$pattern_color_format quant=$diag_quant_range)");
    $pat=$diag_sequence;
    $pat_bits=&webui_pattern_effective_bits("IMAGE",$signal_mode);
    $diag_video="";
@@ -14444,7 +14482,7 @@ const DIAG_DESCRIPTIONS={
  color_bars:'<b>Color Bars</b> &mdash; 75% Rec.709 bars with a mid reference strip and a bottom PLUGE/white section for quick color and level checks. Use this pattern with HDMI output set to RGB.',
  gray_ramp:'<b>Gray Ramp</b> &mdash; Smooth black-to-white ramp across the top with 11 stepped gray bars underneath. Use HDMI RGB output and check for smooth transitions, neutral grayscale, and no banding.',
  overscan:'<b>Overscan</b> &mdash; Border lines at 0%, 2.5%, and 5% from screen edges with corner L-brackets and center crosshair. Use HDMI RGB output, and all lines should be visible &mdash; if not, disable overscan in your TV settings.',
- avs_hd_709_black_clipping:'<b>AVS HD 709 - Black Clipping</b> &mdash; SDR-only AVS HD 709 video version of the black clipping pattern. Use it to set Brightness with near-black bars just above video black.',
+ avs_hd_709_black_clipping:'<b>AVS HD 709 - Black Clipping</b> &mdash; SDR-only AVS HD 709 video version of the black clipping pattern. Use RGB output to set Brightness with near-black bars just above black. Frame codes follow the active color format (full-range RGB black=0, limited YCbCr black=16).',
  avs_hd_709_apl_clipping:'<b>AVS HD 709 - APL Clipping</b> &mdash; SDR-only AVS HD 709 APL clipping video for checking level behavior with an average picture level load on screen.',
  avs_hd_709_white_clipping:'<b>AVS HD 709 - White Clipping</b> &mdash; SDR-only AVS HD 709 video version of the white clipping pattern. Use it to set Contrast so near-white detail is not crushed.',
  avs_hd_709_flashing_color_bars:'<b>AVS HD 709 - Flashing Color Bars</b> &mdash; SDR-only AVS HD 709 flashing color bars video for color and tint checks with blue-only or filter workflows.',
