@@ -2316,10 +2316,10 @@ sub lg_calibration_request (@) {
   profileNo => 0,
   programID => 1,
  };
- # LG's calibration session is bound to the picture mode by CAL_START.  The
- # follow-up enable/upload commands should be sent inside that active session
- # without repeating picMode, matching the public webOS calibration API usage.
- $payload->{"picMode"}=&lg_wire_pic_mode($picture_mode) if($command eq "CAL_START" && defined($picture_mode) && $picture_mode ne "");
+ # Every externalpq command in a real Calman capture carries picMode, not
+ # just CAL_START (hw-verified 2026-07-23: CAL_START, CAL_END, and the data
+ # commands in between all repeat the same picMode/profileNo/programID).
+ $payload->{"picMode"}=&lg_wire_pic_mode($picture_mode) if(defined($picture_mode) && $picture_mode ne "");
  if(ref($data) eq "ARRAY") {
   my $packed=pack("v*",@{$data});
   $payload->{"data"}=encode_base64($packed,"");
@@ -3884,16 +3884,17 @@ sub lg_dv_profile_upload_workflow (@) {
   blue_x => $measurements->{"blue_x"}, blue_y => $measurements->{"blue_y"},
   model_info => $generation->{"model_name"}||"",
  );
- # Dolby Vision does NOT go through CAL_START/CAL_END at all (hw-verified
- # 2026-07-23: CAL_START is rejected outright, errorCode 20, while a DV
- # picture mode is active, regardless of payload -- and the reference
- # calibration app's own DV script never sends CAL_START either; its native
- # driver dispatches DOLBY_CFG_DATA through a separate code path with no
- # CAL_START/CAL_END bracket). Send the profile write standalone.
- my $start={ type => "skipped", payload => { returnValue => &json_true() }, reason => "dv_no_cal_start_bracket" };
+ # CAL_START reliably errors (errorCode 20, "Driver error while executing
+ # the command") for EVERY picture mode on this firmware, not just Dolby
+ # Vision -- hw-verified 2026-07-23 via a real Calman capture: its own
+ # CAL_START gets the identical error for plain "cinema" AND for
+ # "dolby_cinema_dark", and Calman just ignores the failure and proceeds to
+ # send the real data commands (which succeed). So CAL_START/CAL_END are
+ # sent for parity with the real protocol, but their outcome is never fatal.
+ my $start=&lg_calibration_request($session,"dv_profile_upload_cal_start","CAL_START",&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" }),1,$cal_mode,$connect_timeout + 4);
  my $upload=&lg_calibration_request($session,"dv_profile_upload","DOLBY_CFG_DATA",&lg_force_pic_mode_payload({ text => $descriptor }),undef,$cal_mode,$connect_timeout + 8);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
- my $end={ type => "skipped", payload => { returnValue => &json_true() }, reason => "dv_no_cal_start_bracket" };
+ my $end=&lg_calibration_request($session,"dv_profile_upload_cal_end","CAL_END",&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" }),1,$cal_mode,$connect_timeout + 4);
  &websocket_close($session);
  if($upload_failed || ref($upload) ne "HASH") {
   return &json_error($upload_message||"LG TV rejected the Dolby Vision profile upload.",{
