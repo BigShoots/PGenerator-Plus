@@ -43315,15 +43315,22 @@ function meterExportCSV(){
  const Lb=meterChartBlackLevel(meterReadings);
  const colorRefMode=meterColorRefMode();
  const greyMode=meterGreyRefMode();
- let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dE2000\n';
+ // ΔE columns each get an adjacent luminance-error column (signed ΔY % vs
+ // target, matching meterColorLuminanceInfo / the live patch inspector).
+ // dEITP is the chart-path ΔE ITP so greyscale and color exports match the UI.
+ let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dEuv_Yerr%,dE2000,dE2000_Yerr%,dEITP,dEITP_Yerr%\n';
  // Helper: is this reading a neutral-grey patch (greyscale sweep) vs a chroma
  // patch (colors / saturations)? Greyscale uses the hcfr greyRef path; chroma
  // uses the per-color target so each patch gets its own ΔE instead of a
  // single IRE-keyed value.
  const isGrey=rd=>(rd.r_code||0)===(rd.g_code||0)&&(rd.g_code||0)===(rd.b_code||0);
+ const fmtYerr=(pct)=>{
+  if(pct==null||!Number.isFinite(Number(pct))) return '';
+  return Number(pct).toFixed(2);
+ };
  sorted.forEach((rd,i)=>{
   const X=rd.X||0,Y=rd.Y||0,Z=rd.Z||0;
-  let dE=0,dE2k=0;
+  let dE=0,dE2k=0,dEitp=0;
 	  if(Y>0){
 	   if(isGrey(rd)){
 	    let targetYOverride=null;
@@ -43337,6 +43344,10 @@ function meterExportCSV(){
     const labM=xyzToLab(X,Y,Z, wp2.X*ref.YWhite, ref.YWhite, wp2.Z*ref.YWhite);
     const labR=xyzToLab(ref.refX,ref.refY,ref.refZ, wp2.X*ref.YWhiteRef, ref.YWhiteRef, wp2.Z*ref.YWhiteRef);
     dE2k=deltaE2000(labM,labR);
+    try{
+     const greyItp=meterGreyDeltaResult(rd,greyMode,'deitp');
+     if(greyItp&&Number.isFinite(greyItp.value)) dEitp=greyItp.value;
+    }catch(e){}
    } else {
       // Color / sat-sweep patch: use the per-patch target generated from the
       // active gamut so export matches the live charts.
@@ -43345,15 +43356,25 @@ function meterExportCSV(){
     const dv=9*(rd.y||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-9*tgt.y/(-2*tgt.x+12*tgt.y+3);
     dE=Math.sqrt(du*du+dv*dv)*1000; // scaled u'v' distance — rough dEuv stand-in
     dE2k=meterColorDeltaE2000(rd,colorRefMode);
+    try{
+     const v=meterColorDeltaE2000(rd,colorRefMode,'deitp');
+     if(Number.isFinite(v)) dEitp=v;
+    }catch(e){}
    }
   }
+  let yerrPct=null;
+  try{
+   const lumInfo=meterColorLuminanceInfo(rd);
+   if(lumInfo&&lumInfo.deltaPct!=null&&Number.isFinite(Number(lumInfo.deltaPct))) yerrPct=Number(lumInfo.deltaPct);
+  }catch(e){}
+  const yerrCell=fmtYerr(yerrPct);
   const g=effectiveGamma(rd.luminance,Lw,rd.ire);
   const bal=whiteR?rgbBalance(rd,whiteR,greyMode):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
    rd.cct||'',g!==null?g.toFixed(2):'',bal.R.toFixed(1),bal.G.toFixed(1),bal.B.toFixed(1),
-   dE.toFixed(2),dE2k.toFixed(2)
+   dE.toFixed(2),yerrCell,dE2k.toFixed(2),yerrCell,Number(dEitp||0).toFixed(2),yerrCell
   ].join(',')+'\n';
  });
  const blob=new Blob([csv],{type:'text/csv'});
