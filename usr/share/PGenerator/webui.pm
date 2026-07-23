@@ -34684,9 +34684,10 @@ async function meterFullAutoCalGeneratePostReport(){
    // solves against the same curve the operator sees during the run. The
    // post-cal report is a VERIFICATION read against the panel's normal
    // content-viewing curve, so switch back to Absolute before capturing it
-   // (operator-confirmed requirement, 2026-07-23). This is also the point
-   // that leaves dv_map_mode on Absolute for good -- nothing after this
-   // switches it back.
+   // (operator-confirmed requirement, 2026-07-23). meterFullAutoCalComplete
+   // already restores Absolute unconditionally as soon as the run finishes
+   // (so skipping this optional report still leaves the panel correct) --
+   // this call is now a harmless, idempotent restatement before the read.
    await meterDvAutoCalSetMapMode('1');
   }
  let reportCompleted=false;
