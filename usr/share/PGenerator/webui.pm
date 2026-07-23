@@ -17129,6 +17129,13 @@ function meterSharedSeriesShouldRecover(status,opts){
  const serverId=String(status.series_id||'');
  const localId=String(meterSharedSeriesId||'');
  const serverKey=meterSharedSeriesStatusKey(status);
+ // Series selection is browser-local. Do not let the periodic shared-status
+ // poll replace an idle 3D LUT workspace with another browser's ordinary
+ // greyscale/color session (and repeatedly redraw its stale chart data).
+ // A series actually running in this browser still follows the normal sync.
+ const serverMeta=serverKey&&typeof meterParseSeriesKey==='function'?meterParseSeriesKey(serverKey):null;
+ if(meterSeriesTab==='3dlut'&&!meterSeriesRunning&&!meterActionPending&&serverMeta
+   &&meterSeriesTabForSeries(serverMeta.type,serverMeta.points)!=='3dlut') return false;
  const serverCount=meterSeriesLuminanceReadingCount(status.readings);
  const localCount=meterSeriesLuminanceReadingCount(meterReadings);
  const serverTs=meterSeriesStatusLatestTimestamp(status);
