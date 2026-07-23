@@ -2329,6 +2329,14 @@ sub lg_calibration_request (@) {
   $payload->{"data"}=encode_base64($packed,"");
   $payload->{"dataCount"}=scalar(@{$values});
   $payload->{"dataOpt"}=defined($data->{"data_opt"}) ? int($data->{"data_opt"}) : (defined($data->{"dataOpt"}) ? int($data->{"dataOpt"}) : (defined($data_opt) ? int($data_opt) : 1));
+ } elsif(ref($data) eq "HASH" && defined($data->{"text"})) {
+  my $text=$data->{"text"};
+  $payload->{"picMode"}=$picture_mode if($data->{"force_pic_mode"} && defined($picture_mode) && $picture_mode ne "");
+  $payload->{"data"}=encode_base64($text,"");
+  $payload->{"dataCount"}=length($text);
+  # Text payload encoding -- hypothesis pending hardware confirmation (Task 11)
+  $payload->{"dataType"}=$data->{"data_type"}||$data->{"dataType"}||"ascii";
+  $payload->{"dataOpt"}=defined($data->{"data_opt"}) ? int($data->{"data_opt"}) : (defined($data_opt) ? int($data_opt) : 1);
  }
  return &lg_request($session,$id,"externalpq/setExternalPqData",$payload,$timeout);
 }
