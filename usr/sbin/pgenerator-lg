@@ -3866,30 +3866,16 @@ sub lg_dv_profile_upload_workflow (@) {
   blue_x => $measurements->{"blue_x"}, blue_y => $measurements->{"blue_y"},
   model_info => $generation->{"model_name"}||"",
  );
- my $start;
- if($calibration_mode_active) {
-  $start={ type => "skipped", payload => { returnValue => &json_true() }, calibration_mode_active => &json_true() };
- } else {
-  # A bare undef CAL_START payload was rejected by C2/webOS4.1.0 firmware
-  # (errorCode 20, "Driver error while executing the command", hw-verified
-  # 2026-07-23). Every other CAL_START in this file sends an explicit
-  # payload (SDR: 9-float identity 3x3; HDR: lg_hdr_calman_float_payload()).
-  # Match the SDR shape here.
-  $start=&lg_calibration_request($session,"dv_profile_upload_cal_start","CAL_START",&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" }),1,$cal_mode,$connect_timeout + 4);
- }
- my ($start_failed,$start_message)=(0,"");
- if(!$calibration_mode_active) {
-  ($start_failed,$start_message)=&response_is_app_failure($start);
- }
- if($start_failed || ref($start) ne "HASH") {
-  &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for Dolby Vision profile upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, raw_response => $start, preflight => $preflight_attempts });
- }
+ # Dolby Vision does NOT go through CAL_START/CAL_END at all (hw-verified
+ # 2026-07-23: CAL_START is rejected outright, errorCode 20, while a DV
+ # picture mode is active, regardless of payload -- and the reference
+ # calibration app's own DV script never sends CAL_START either; its native
+ # driver dispatches DOLBY_CFG_DATA through a separate code path with no
+ # CAL_START/CAL_END bracket). Send the profile write standalone.
+ my $start={ type => "skipped", payload => { returnValue => &json_true() }, reason => "dv_no_cal_start_bracket" };
  my $upload=&lg_calibration_request($session,"dv_profile_upload","DOLBY_CFG_DATA",&lg_force_pic_mode_payload({ text => $descriptor }),undef,$cal_mode,$connect_timeout + 8);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
- my $end=$keep_calibration_mode
-  ? { type => "skipped", payload => { returnValue => &json_true() }, keep_calibration_mode => &json_true() }
-  : &lg_calibration_request($session,"dv_profile_upload_cal_end","CAL_END",&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" }),1,"",$connect_timeout + 4);
+ my $end={ type => "skipped", payload => { returnValue => &json_true() }, reason => "dv_no_cal_start_bracket" };
  &websocket_close($session);
  if($upload_failed || ref($upload) ne "HASH") {
   return &json_error($upload_message||"LG TV rejected the Dolby Vision profile upload.",{
