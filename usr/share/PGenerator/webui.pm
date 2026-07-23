@@ -9773,15 +9773,13 @@ sub webui_pattern_diag_video_sequence_dir (@) {
 }
 
 # Bundled AVS HD 709 sequences live in two forms:
-#   diagseq/       limited-authored (black=16) — correct for YCbCr
-#   diagseq_full/  full-authored    (black=0)  — correct for RGB
-#
-# Why RGB always uses full frames (Limited and Full quant alike):
-# solid RGB diagnostics and meter SOURCE_RANGE expansion put full-span
-# codes in the framebuffer (black=0). The IMAGE path is bit-exact and does
-# not remap texels, so limited-coded frames read as raised blacks on RGB
-# (code 16 on a 0-black framebuffer) regardless of the AVI quant flag.
-# YCbCr keeps limited-authored frames so legal luma is not crushed.
+#   diagseq/       limited re-author (2.8.4 full→16..235) — YCbCr crush workaround
+#   diagseq_full/  re-extracted from the original AVS MP4s with studio levels
+#                  preserved (Y used as-is; superblacks 2..15 and bars 17..25
+#                  survive). Used for RGB so PLUGE below 16 is still visible
+#                  when brightness is raised. Do NOT rebuild diagseq_full by
+#                  expanding diagseq/ limited PNGs — that irreversibly crushes
+#                  below-black detail.
 sub webui_pattern_diag_video_sequence_range_kind (@) {
  my $color_format=int(shift // 0);
  # optional quant_range arg kept for callers/logging; not used for the
