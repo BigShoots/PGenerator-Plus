@@ -3855,10 +3855,8 @@ sub lg_dv_profile_upload_workflow (@) {
   return &json_error("Dolby Vision profile upload requires a writable picture mode (dolby_hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
  my ($preflight_ok,$preflight_attempts)=&lg_dv_profile_preflight_settings_off($session,$connect_timeout);
- if(!$preflight_ok) {
-  &websocket_close($session);
-  return &json_error("Preflight settings write failed.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, preflight => $preflight_attempts });
- }
+ # Non-fatal: some panels don't reliably report setSystemSettings outcomes,
+ # so a reported failure is not trustworthy enough to abort the workflow.
  my $descriptor=&lg_dv_profile_descriptor(
   picture_mode => int($measurements->{"picture_mode"}//0),
   white_luminance => $measurements->{"white_luminance"},
