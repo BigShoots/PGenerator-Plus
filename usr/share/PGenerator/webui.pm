@@ -9762,30 +9762,33 @@ sub webui_pattern_diag_video_sequence_dir (@) {
  my $name=lc("".shift);
  $name=~s/[^a-z0-9_]+/_/g;
  return "" if($name eq "");
- # Optional second arg: "full" selects the full-range (0-255) companion
- # set under diagseq_full/. Stock AVS frames in diagseq/ are limited-authored
- # (16-235) for YCbCr / Limited links; RGB Full needs the expanded set so
- # black is code 0 instead of a raised 16.
+ # range_kind:
+ #   full   -> diagseq_full/   (studio levels, superblacks 2..15 intact)
+ #   clip16 -> diagseq_clip16/ (same as full but RGB hard-clipped to >=16)
+ #   limited-> diagseq/        (legacy 2.8.4 limited re-author; fallback only)
  my $range_kind=lc("".(shift // ""));
- $range_kind="" if($range_kind ne "full" && $range_kind ne "limited");
+ $range_kind="" if($range_kind ne "full" && $range_kind ne "limited" && $range_kind ne "clip16");
  return "$var_dir/diagseq_full/$name" if($range_kind eq "full");
+ return "$var_dir/diagseq_clip16/$name" if($range_kind eq "clip16");
  return "$var_dir/diagseq/$name";
 }
 
-# Bundled AVS HD 709 sequences live in two forms:
-#   diagseq/       limited re-author (2.8.4 full→16..235) — YCbCr crush workaround
-#   diagseq_full/  re-extracted from the original AVS MP4s with studio levels
-#                  preserved (Y used as-is; superblacks 2..15 and bars 17..25
-#                  survive). Used for RGB so PLUGE below 16 is still visible
-#                  when brightness is raised. Do NOT rebuild diagseq_full by
-#                  expanding diagseq/ limited PNGs — that irreversibly crushes
-#                  below-black detail.
+# Bundled AVS HD 709 sequences:
+#   diagseq_full/   re-extracted from original AVS MP4s with studio levels
+#                   preserved (superblacks 2..15 + bars 17..25). Used for
+#                   RGB Full and YCbCr so below-black PLUGE still works.
+#   diagseq_clip16/ same frames with every channel hard-clipped to min 16.
+#                   Used for RGB Limited: legal black is 16, so sub-16 bars
+#                   must not flash (they would be superblack on a limited
+#                   link). Do NOT rebuild full by expanding diagseq/ limited
+#                   PNGs — that irreversibly crushes below-black detail.
+#   diagseq/        legacy 2.8.4 limited re-author; fallback only.
 sub webui_pattern_diag_video_sequence_range_kind (@) {
  my $color_format=int(shift // 0);
- # optional quant_range arg kept for callers/logging; not used for the
- # RGB-vs-YCbCr split above.
  my $quant_range=int(shift // 2);
- return "limited" if($color_format != 0);
+ # RGB Limited: legal black=16, clip superblacks out of the pattern.
+ return "clip16" if($color_format == 0 && $quant_range == 1);
+ # RGB Full + YCbCr: keep studio superblacks for PLUGE.
  return "full";
 }
 
@@ -9823,9 +9826,12 @@ sub webui_pattern_diag_video_sequence_pattern (@) {
  my $range_kind=&webui_pattern_diag_video_sequence_range_kind($color_format,$quant_range);
  my $dir=&webui_pattern_diag_video_sequence_dir($name,$range_kind);
  my $pat=&webui_pattern_frame_sequence_pattern($dir,$w,$h);
- # Fall back to limited stock set if the full companion is missing (older
- # installs / partial OTA), so patterns still play.
- if($pat eq "" && $range_kind eq "full") {
+ # Fallbacks for older installs / partial OTA.
+ if($pat eq "" && $range_kind eq "clip16") {
+  $dir=&webui_pattern_diag_video_sequence_dir($name,"full");
+  $pat=&webui_pattern_frame_sequence_pattern($dir,$w,$h);
+ }
+ if($pat eq "" && ($range_kind eq "full" || $range_kind eq "clip16")) {
   $dir=&webui_pattern_diag_video_sequence_dir($name,"limited");
   $pat=&webui_pattern_frame_sequence_pattern($dir,$w,$h);
  }
