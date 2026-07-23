@@ -25734,21 +25734,21 @@ function meterHideSeriesControlsForAutoCal(){
 }
 
 function meterAutoCalControlsAllowedForSignal(){
- // Dolby Vision and HLG have no supported AutoCal pipeline (no DV/HLG
- // greyscale/3D-LUT calibration workspace). Hide every AutoCal control —
- // the Auto Cal / Full Auto Cal / LG 3D buttons and the AutoCal tab.
+ // HLG has no supported AutoCal pipeline (no greyscale/3D-LUT calibration
+ // workspace) and stays hidden. Dolby Vision now has one (see the
+ // dv-profile-upload endpoints) -- reusing the same HDR20 greyscale ladder
+ // plus a one-shot panel-profile upload in place of a 3D LUT -- so it is no
+ // longer excluded here.
  const sm=(getVal('signal_mode')||'sdr');
- return sm!=='dv' && sm!=='hlg';
+ return sm!=='hlg';
 }
 
 function meterAutoCalSeriesAvailable(){
- // LG AutoCal requires a paired LG TV. Also gate on signal mode — only
- // SDR/HDR10 have a calibration workspace (DV/HLG are excluded by
- // meterAutoCalControlsAllowedForSignal, but mirror it here so the tab
- // and series choice controls hide too).
+ // LG AutoCal requires a paired LG TV. HLG has no calibration workspace
+ // (mirrors meterAutoCalControlsAllowedForSignal); dv is allowed through.
  const lgPaired=(typeof meterGreyTvControlsActive==='function')&&meterGreyTvControlsActive();
  const sm=(getVal('signal_mode')||'sdr');
- const signalAllowed=(sm!=='dv'&&sm!=='hlg');
+ const signalAllowed=(sm!=='hlg');
  return !!(lgPaired&&signalAllowed);
 }
 
