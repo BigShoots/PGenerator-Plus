@@ -34144,6 +34144,7 @@ function meterFullAutoCalResetState(keepResults){
 }
 
 function meterFullAutoCalAbort(message,isError){
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  meterAutoCalWizardContextActive=false;
  const text=message||'Full Auto Cal stopped';
  // The greyscale stage HOLDS LG calibration mode open for the 3D-LUT stage,
@@ -34153,6 +34154,9 @@ function meterFullAutoCalAbort(message,isError){
  // abort so the TV always returns to normal viewing. Fire-and-forget so the
  // UI teardown below is not blocked on the TV round-trip.
  try{ meterFullAutoCalEnsureCalibrationModeOff('Full Auto Cal stop').catch(function(){}); }catch(e){}
+ if(wasDvSignal){
+  try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
+ }
  try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}).catch(function(){}); }catch(e){}
  meterFullAutoCalResetState(false);
  meterActionPending=false;
@@ -34754,7 +34758,7 @@ async function meterStartFullAutoCal(){
  const dvSignal=(String(getVal('signal_mode')||'').toLowerCase()==='dv');
  // HDR: Calman only supports matrix 3D LUT — restore old wizard (no type picker).
  const hdrMatrixOnly=(signalMode==='hdr10');
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showProfilingChoice:!hdrMatrixOnly});
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showProfilingChoice:!hdrMatrixOnly&&!dvSignal});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
@@ -35087,6 +35091,7 @@ async function meterDvAutoCalUploadProfile(profileStatus){
 }
 
 async function meterStopDvAutoCalProfile(){
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  meterAutoCalSetOverlay(false,null);
  meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'dv-profile');
  if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
@@ -35103,6 +35108,9 @@ async function meterStopDvAutoCalProfile(){
   meterStopModalHide();
   meterHideWorkflowProgress();
   meterUpdateReadButtons();
+ }
+ if(wasDvSignal){
+  try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
  toast('Dolby Vision profile measurement stopped');
 }
@@ -36323,6 +36331,7 @@ async function meterAutoCalConfirmAndStart(){
 }
 
 async function meterStopAutoCal(){
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  meterAutoCalWizardContextActive=false;
  if(meterAutoCalSpectroSetupActive){
   meterAutoCalSpectroSetupActive=false;
@@ -36368,6 +36377,9 @@ async function meterStopAutoCal(){
   meterStopModalHide();
   meterHideWorkflowProgress();
   meterUpdateReadButtons();
+ }
+ if(wasDvSignal){
+  try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
  toast('LG Auto Cal stopped');
 }
