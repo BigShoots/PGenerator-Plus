@@ -1962,6 +1962,112 @@ sub webui_lg_dv_profile_upload (@) {
  return &lg_encode_json($result);
 }
 
+# Dolby Vision profile measurement worker (Task 7's meter_lg_dv_profile.pl):
+# a short, one-shot spawn/poll pair mirroring webui_meter_lg_autocal_start /
+# webui_meter_lg_autocal_status (usr/share/PGenerator/webui.pm), but without
+# that pair's greyscale-specific config rewriting -- the worker only reads
+# the handful of fields it already knows about (input_max, display_type,
+# ccss_override, delay_ms, pattern_signal_range/signal_range,
+# transport_signal_range, picture_mode, upload, fixture_mode/*), so the
+# client-supplied body is written to the config file as-is.
+my $_meter_lg_dv_profile_file="/tmp/meter_lg_dv_profile.json";
+my $_meter_lg_dv_profile_config_file="/tmp/meter_lg_dv_profile_config.json";
+my $_meter_lg_dv_profile_stop_file="/tmp/meter_lg_dv_profile.stop";
+my $_meter_lg_dv_profile_log_file="/tmp/meter_lg_dv_profile.log";
+
+sub webui_meter_lg_dv_profile_running (@) {
+ my $alive=`pgrep -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null`;
+ return ($alive=~/\d/) ? 1 : 0;
+}
+
+sub webui_meter_lg_dv_profile_mark_cancelled (@) {
+ return unless(-f $_meter_lg_dv_profile_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_dv_profile_file)) { local $/; $json=<$fh>; close($fh); }
+ return if($json eq "");
+ if($json=~/"status"\s*:\s*"[^"]*"/) {
+  $json=~s/"status"\s*:\s*"[^"]*"/"status":"cancelled"/;
+ } else {
+  $json=~s/\}\s*\z/,"status":"cancelled"}/;
+ }
+ if($json=~/"message"\s*:\s*"[^"]*"/) {
+  $json=~s/"message"\s*:\s*"[^"]*"/"message":"Dolby Vision profile measurement stopped"/;
+ } else {
+  $json=~s/\}\s*\z/,"message":"Dolby Vision profile measurement stopped"}/;
+ }
+ if(open(my $fh,">",$_meter_lg_dv_profile_file)) { print $fh $json; close($fh); chmod(0666,$_meter_lg_dv_profile_file); }
+}
+
+sub webui_meter_lg_dv_profile_kill (@) {
+ my $mark=shift;
+ if(open(my $fh,">",$_meter_lg_dv_profile_stop_file)) { print $fh time(); close($fh); chmod(0666,$_meter_lg_dv_profile_stop_file); }
+ system("sudo pkill -TERM -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null");
+ select(undef,undef,undef,0.4);
+ system("sudo pkill -9 -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null") if(&webui_meter_lg_dv_profile_running());
+ &webui_meter_lg_dv_profile_mark_cancelled() if($mark);
+}
+
+sub webui_meter_lg_dv_profile_start (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Dolby Vision profile payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
+ return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
+ return '{"status":"error","message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
+ # Clean up any stale session/meter state before the worker starts its own
+ # /api/meter/read calls -- same reasoning as webui_meter_lg_3d_autocal_start
+ # calling this at the greyscale-to-3D handoff.
+ &webui_meter_stop();
+ unlink($_meter_lg_dv_profile_stop_file);
+ if(-e $_meter_lg_dv_profile_stop_file) {
+  system("sudo rm -f ".quotemeta($_meter_lg_dv_profile_stop_file)." 2>/dev/null");
+  unlink($_meter_lg_dv_profile_stop_file);
+ }
+ if(open(my $fh,">",$_meter_lg_dv_profile_config_file)) {
+  print $fh $body;
+  close($fh);
+  chmod(0666,$_meter_lg_dv_profile_config_file);
+ } else {
+  return '{"status":"error","message":"Unable to prepare the Dolby Vision profile config"}';
+ }
+ my $init='{"status":"running","message":"Starting Dolby Vision profile measurement","steps":[]}';
+ if(open(my $sf,">",$_meter_lg_dv_profile_file)) { print $sf $init; close($sf); chmod(0666,$_meter_lg_dv_profile_file); }
+ my $log_file=&webui_prepare_tmp_worker_log($_meter_lg_dv_profile_log_file,"meter_lg_dv_profile");
+ my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_dv_profile.pl '$_meter_lg_dv_profile_config_file' '$_meter_lg_dv_profile_file' '$_meter_lg_dv_profile_stop_file' </dev/null >'$log_file' 2>&1 &";
+ system($cmd);
+ return '{"status":"started","message":"Dolby Vision profile measurement started"}';
+}
+
+sub webui_meter_lg_dv_profile_status (@) {
+ return '{"status":"idle","message":"No Dolby Vision profile measurement has run yet","steps":[]}' if(!-f $_meter_lg_dv_profile_file);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_dv_profile_file)) { local $/; $json=<$fh>; close($fh); }
+ return '{"status":"idle","message":"No Dolby Vision profile measurement has run yet","steps":[]}' if($json eq "");
+ # The worker is a short, one-shot ~5-patch run -- a single liveness check is
+ # enough to catch a killed/crashed process. The long-running greyscale/3D
+ # workers need a multi-poll debounce to ride out meter-session bounces
+ # (see webui_meter_lg_3d_autocal_status); this one does not run long enough
+ # to need that extra bookkeeping.
+ if($json=~/"status"\s*:\s*"running"/ && !&webui_meter_lg_dv_profile_running()) {
+  $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+  if($json=~/"message"\s*:\s*"[^"]*"/) {
+   $json=~s/"message"\s*:\s*"[^"]*"/"message":"Dolby Vision profile measurement process ended unexpectedly"/;
+  } else {
+   $json=~s/\}\s*\z/,"message":"Dolby Vision profile measurement process ended unexpectedly"}/;
+  }
+ }
+ return $json;
+}
+
+sub webui_meter_lg_dv_profile_stop (@) {
+ &webui_meter_lg_dv_profile_kill(1);
+ # Strip full-workflow keys from the greyscale status so a refresh right
+ # after Stop cannot re-adopt the already-finished greyscale stage as an
+ # ongoing Full DV AutoCal (same reasoning as webui_meter_lg_3d_autocal_stop).
+ &webui_meter_lg_autocal_clear_full_workflow_state();
+ &webui_meter_stop();
+ return '{"status":"ok","message":"Dolby Vision profile measurement stopped"}';
+}
+
 sub webui_lg_hdr_calman_reset (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
@@ -2084,6 +2190,15 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/dv-profile/upload" && $method eq "POST") {
   return &webui_lg_dv_profile_upload($body);
+ }
+ if($path eq "/api/lg/dv-profile/start" && $method eq "POST") {
+  return &webui_meter_lg_dv_profile_start($body);
+ }
+ if($path eq "/api/lg/dv-profile/status" && $method eq "GET") {
+  return &webui_meter_lg_dv_profile_status();
+ }
+ if($path eq "/api/lg/dv-profile/stop" && $method eq "POST") {
+  return &webui_meter_lg_dv_profile_stop();
  }
  if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
   return &webui_lg_1d_dpg_read($body);

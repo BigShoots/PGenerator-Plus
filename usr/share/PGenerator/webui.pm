@@ -5069,6 +5069,7 @@ sub webui_meter_stop (@) {
  &webui_pattern_stop_guard_set("meter_stop");
  &webui_meter_lg_3d_autocal_kill(1) if(&webui_meter_lg_3d_autocal_running());
  &webui_meter_lg_autocal_kill(1) if(&webui_meter_lg_autocal_running());
+ &webui_meter_lg_dv_profile_kill(1) if(defined(&webui_meter_lg_dv_profile_running) && &webui_meter_lg_dv_profile_running());
  # Stop the persistent session daemon first (graceful, then force).
  &webui_meter_session_stop() if(&webui_meter_session_alive());
  my $series_was_alive=&webui_meter_series_alive();
@@ -16371,6 +16372,10 @@ let meterLg3dAutoCalRunning=false;
 let meterLg3dAutoCalPolling=null;
 let meterLg3dAutoCalPollInFlight=false;
 let meterLg3dAutoCalPollErrors=0;
+let meterDvAutoCalProfileRunning=false;
+let meterDvAutoCalProfilePolling=null;
+let meterDvAutoCalProfilePollInFlight=false;
+let meterDvAutoCalProfilePollErrors=0;
 let meterAutoCalWatchdogInFlight=false;
 let meterFullAutoCalRunning=false;
 let meterFullAutoCalPhase='';
@@ -24811,10 +24816,18 @@ function meterFullAutoCalStageIndex(){
 
 function meterFullAutoCalStageOrder(){
  const skipPre=!!(meterFullAutoCalConfig&&meterFullAutoCalConfig.preCalSkipped);
+ const dvSignal=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase()==='dv';
  const stages=[];
  if(!skipPre) stages.push('precal-report');
- stages.push('first-greyscale','3d-lut');
+ stages.push('first-greyscale');
+ if(dvSignal){
+  // Dolby Vision has no 3D LUT / committed-polish / touch-up concept --
+  // the panel-profile upload (Task 6/7) is the whole "color" stage.
+  stages.push('dv-profile');
+ }else{
+  stages.push('3d-lut');
   if(meterFullAutoCalPostCommitPolishEnabled()) stages.push('post-3d-polish');
+ }
   stages.push('postcal-report','complete');
   return stages;
  }
@@ -24824,6 +24837,7 @@ function meterFullAutoCalStageLabel(){
 	  case 'precal-report': return 'Pre-Cal measurements';
 		  case 'first-greyscale': return 'Greyscale';
 		  case '3d-lut': return '3D LUT';
+		  case 'dv-profile': return 'Dolby Vision profile';
 		  case 'touchup-greyscale': return 'Greyscale touch-up';
 		  case 'post-3d-polish': return 'Committed polish';
 	  case 'postcal-report': return 'Post-Cal measurements';
@@ -24889,6 +24903,7 @@ function meterFullAutoCalStageWeights(){
   'first-greyscale':80,
   'touchup-greyscale':20,
   '3d-lut':15+latticeReads+shadowReads,
+  'dv-profile':5,
   'post-3d-polish':20,
   'postcal-report':reportReads,
   'complete':0
@@ -25511,6 +25526,9 @@ function meterResumeContinuousAfterPriorityWrite(pauseState){
 
 async function meterStop(){
  const fullReportSeriesActive=!!(meterFullAutoCalRunning&&meterSeriesRunning&&!meterLg3dAutoCalRunning&&!meterAutoCalRunning);
+ if(meterDvAutoCalProfileRunning){
+  return meterStopDvAutoCalProfile();
+ }
  if(meterLg3dAutoCalRunning){
   return meterStopLg3dAutoCal();
  }
@@ -34658,6 +34676,16 @@ async function meterFullAutoCalGeneratePostReport(){
     if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
     if(typeof saveMeterSettings==='function') saveMeterSettings();
    }
+  } else if(_sm==='dv'){
+   // The Full DV AutoCal run (greyscale + profile upload) drives the panel's
+   // Dolby Vision engine in Relative (pass-through 2.2) so the calibration
+   // solves against the same curve the operator sees during the run. The
+   // post-cal report is a VERIFICATION read against the panel's normal
+   // content-viewing curve, so switch back to Absolute before capturing it
+   // (operator-confirmed requirement, 2026-07-23). This is also the point
+   // that leaves dv_map_mode on Absolute for good -- nothing after this
+   // switches it back.
+   await meterDvAutoCalSetMapMode('1');
   }
  let reportCompleted=false;
  try{
@@ -34718,6 +34746,12 @@ async function meterStartFullAutoCal(){
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const signalMode=meterLgAutoCalRequestedSignalMode();
+ // meterLgAutoCalRequestedSignalMode() only distinguishes hdr10 vs
+ // everything-else (it feeds the HDR10-matrix-only / target-gamma branches
+ // below, which Dolby Vision does not participate in) -- read the live
+ // signal mode directly for the DV-specific phase-machine/map-mode wiring
+ // added for DV AutoCal.
+ const dvSignal=(String(getVal('signal_mode')||'').toLowerCase()==='dv');
  // HDR: Calman only supports matrix 3D LUT — restore old wizard (no type picker).
  const hdrMatrixOnly=(signalMode==='hdr10');
 	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showProfilingChoice:!hdrMatrixOnly});
@@ -34758,10 +34792,18 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
+ if(dvSignal){
+  // DV map-mode requirement (operator-confirmed 2026-07-23): Absolute for
+  // the pre-cal report (a verification read against the normal viewing
+  // curve), Relative for the AutoCal run itself. When the pre-cal report
+  // is skipped, greyscale is about to start immediately, so go straight to
+  // Relative here instead of switching twice.
+  await meterDvAutoCalSetMapMode(skipPreCal?'2':'1');
+ }
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 	 meterFullAutoCalConfig={
 		  ...meterFullAutoCalDefaultConfig(),
-		  signalMode:signalMode,
+		  signalMode:(dvSignal?'dv':signalMode),
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
 		  shadowFixEnabled:shadowFixEnabled,
@@ -34785,6 +34827,12 @@ async function meterStartFullAutoCal(){
    try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
    meterFullAutoCalAbort((e&&e.message)||'Pre-cal report measurements failed',true);
    return;
+  }
+  if(dvSignal){
+   // The pre-cal report just ran in Absolute; switch to Relative before
+   // greyscale starts. (When the pre-cal report was skipped, the earlier
+   // switch above already set Relative.)
+   await meterDvAutoCalSetMapMode('2');
   }
  }
  meterFullAutoCalPhase='first-greyscale';
@@ -34862,6 +34910,201 @@ async function meterFullAutoCalStart3d(firstStatus){
   started=await meterStartLg3dAutoCal(start3dOptions);
  }
  if(!started) meterFullAutoCalAbort('Full Auto Cal could not start 3D LUT AutoCal',true);
+}
+
+// Switches the panel's Dolby Vision engine between Absolute ("1", the normal
+// content-viewing curve, used for the pre/post-cal verification reports) and
+// Relative ("2", plain 2.2 pass-through, used for the AutoCal run itself --
+// greyscale + the profile-upload stage). dv_map_mode is an ordinary conf key
+// (usr/share/PGenerator/command.pm lists it as a restart key -- writing it
+// bounces the renderer), so mirror meterAutoCalUseCaseContinue's output-
+// format switch: POST /api/config, then wait for /api/ping if a restart
+// was triggered.
+async function meterDvAutoCalSetMapMode(mode){
+ const value=(String(mode)==='1')?'1':'2';
+ let r=null;
+ try{
+  r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dv_map_mode:value})});
+ }catch(e){ r=null; }
+ const ok=!!(r&&r.status==='ok');
+ if(ok&&r.restart){
+  const t0=Date.now();
+  while(Date.now()-t0<25000){
+   await new Promise(res=>setTimeout(res,1500));
+   const ping=await fetchJSON('/api/ping',{_quiet:true,_timeoutMs:3000}).catch(()=>null);
+   if(ping&&ping.ok&&(Date.now()-t0)>=8000) break;
+  }
+ }
+ return ok;
+}
+
+// Shared greyscale-completion advance, called from both
+// meterPollAutoCal completion branches. HDR10/SDR move into the 3D LUT
+// stage (meterFullAutoCalStart3d); Dolby Vision has no 3D LUT, so it moves
+// into the panel-profile-upload stage instead (meterFullAutoCalStageOrder).
+async function meterFullAutoCalAdvancePastGreyscale(status){
+ if(String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase()==='dv'){
+  await meterDvAutoCalStartProfile(status);
+ }else{
+  await meterFullAutoCalStart3d(status);
+ }
+}
+
+// Dolby Vision counterpart of meterFullAutoCalStart3d: greyscale AutoCal just
+// completed, and DV has no 3D LUT / committed-polish / touch-up stage, so the
+// next (and last) color stage is the panel-profile measurement (Task 7's
+// meter_lg_dv_profile.pl) followed by the upload (Task 6's
+// /api/lg/dv-profile/upload). dv_map_mode is already Relative here (set in
+// meterStartFullAutoCal before greyscale started) and stays Relative through
+// this stage.
+async function meterDvAutoCalStartProfile(firstStatus){
+ if(!meterFullAutoCalRunning) return;
+ meterFullAutoCalResults.first=firstStatus||null;
+ const firstRunId=firstStatus&&(firstStatus.full_autocal_run_id||firstStatus.run_id);
+ if(firstRunId) meterFullAutoCalRunId=firstRunId;
+ if(!meterFullAutoCalRunId) meterFullAutoCalRunId=meterFullAutoCalNewRunId();
+ meterFullAutoCalMarkCompletionHandled(firstStatus);
+ meterFullAutoCalMergeConfigFromGreyscaleStatus(firstStatus);
+ meterFullAutoCalPhase='dv-profile';
+ meterFullAutoCalSaveState();
+ meterAutoCalRunning=false;
+ meterAutoCalPhase='';
+ meterAutoCalPendingConfig=null;
+ meterAutoCalSetOverlay(false,null);
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:5,current_name:'Starting Dolby Vision profile measurement'},{workflow:'full',label:'Starting Dolby Vision profile measurement'});
+ meterUpdateReadButtons();
+ if(!(await meterEnsureDetected())){
+  meterFullAutoCalAbort('No meter detected',true);
+  return;
+ }
+ const cfg=meterFullAutoCalConfig||{};
+ const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
+ const range=(cfg.patternSignalRange==='1'||cfg.patternSignalRange==='2')?cfg.patternSignalRange:String(getVal('rgb_quant_range')||'2');
+ const payload={
+  input_max:(bitDepth===10)?1023:255,
+  display_type:cfg.dtype||getEffectiveDisplayType(),
+  ccss_override:(cfg.ccss_override!=null)?cfg.ccss_override:((typeof getCcssOverride==='function')?getCcssOverride():''),
+  delay_ms:meterDelayMs(),
+  pattern_signal_range:range,
+  signal_range:range,
+  transport_signal_range:range,
+  picture_mode:meterLgPictureModeValue(),
+  upload:false,
+  keep_calibration_mode:true,
+  calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
+ };
+ let started=null;
+ try{
+  started=await fetchJSON('/api/lg/dv-profile/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15000});
+ }catch(e){ started=null; }
+ if(!started||started.status==='error'){
+  meterFullAutoCalAbort((started&&started.message)||'Full Auto Cal could not start the Dolby Vision profile measurement',true);
+  return;
+ }
+ meterDvAutoCalProfileRunning=true;
+ meterDvAutoCalProfilePollErrors=0;
+ if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+ meterDvAutoCalProfilePolling=setInterval(meterDvAutoCalPollProfile,1500);
+ await meterDvAutoCalPollProfile({initial:true});
+}
+
+async function meterDvAutoCalPollProfile(options){
+ if(meterDvAutoCalProfilePollInFlight) return;
+ if(meterFullAutoCalReportPhaseActive()){
+  if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+  meterDvAutoCalProfileRunning=false;
+  meterUpdateReadButtons();
+  return;
+ }
+ const initial=options===true||!!(options&&options.initial);
+ meterDvAutoCalProfilePollInFlight=true;
+ try{
+  const r=await fetchJSON('/api/lg/dv-profile/status',{_quiet:true,_timeoutMs:5000});
+  if(!r) return;
+  meterDvAutoCalProfilePollErrors=0;
+  const steps=Array.isArray(r.steps)?r.steps:[];
+  if(r.status==='running'||initial){
+   meterSetWorkflowProgress({status:'running',current_step:steps.length,total_steps:5,current_name:r.message||'Measuring Dolby Vision profile'},{workflow:'full',label:r.message||'Measuring Dolby Vision profile'});
+  }
+  if(r.status==='running'&&!meterDvAutoCalProfilePolling){
+   meterDvAutoCalProfilePolling=setInterval(meterDvAutoCalPollProfile,1500);
+  }
+  if(r.status==='complete'||r.status==='error'||r.status==='cancelled'){
+   if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+   meterDvAutoCalProfileRunning=false;
+   if(r.status==='complete'){
+    await meterDvAutoCalUploadProfile(r);
+   }else if(r.status==='error'){
+    meterFullAutoCalAbort(r.message||'Dolby Vision profile measurement failed',true);
+   }
+   // cancelled: the Stop flow (meterStopDvAutoCalProfile) already reset the
+   // wizard state and notified the operator -- nothing further to do here.
+  }
+ }catch(e){
+  meterDvAutoCalProfilePollErrors++;
+  if(!meterDvAutoCalProfilePolling) meterDvAutoCalProfilePolling=setInterval(meterDvAutoCalPollProfile,1500);
+  if(meterDvAutoCalProfilePollErrors>=6){
+   if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+   meterDvAutoCalProfileRunning=false;
+   meterFullAutoCalAbort('Lost contact with the Dolby Vision profile worker',true);
+  }
+ }finally{
+  meterDvAutoCalProfilePollInFlight=false;
+ }
+}
+
+// Final step of the dv-profile phase: hand the worker's five measured
+// patches (black/white/red/green/blue) to Task 6's upload endpoint, then
+// reuse the shared completion path (meterFullAutoCalComplete) so the
+// operator sees the same "offer post-cal report" overlay HDR10/SDR runs end
+// on -- there is no separate DV "complete" screen to build.
+async function meterDvAutoCalUploadProfile(profileStatus){
+ const measurements=profileStatus&&profileStatus.measurements;
+ if(!measurements||measurements.white_luminance==null){
+  meterFullAutoCalAbort('Dolby Vision profile measurement did not return usable readings',true);
+  return;
+ }
+ meterSetWorkflowProgress({status:'running',current_step:5,total_steps:5,current_name:'Uploading Dolby Vision profile'},{workflow:'full',label:'Uploading Dolby Vision profile'});
+ let upload=null;
+ try{
+  upload=await fetchJSON('/api/lg/dv-profile/upload',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    picture_mode:meterLgPictureModeValue(),
+    measurements:measurements,
+    keep_calibration_mode:true,
+    calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
+   }),
+   _timeoutMs:30000
+  });
+ }catch(e){ upload=null; }
+ if(!upload||upload.status!=='ok'){
+  meterFullAutoCalAbort((upload&&upload.message)||'Dolby Vision profile upload failed',true);
+  return;
+ }
+ meterFullAutoCalComplete({...profileStatus,full_autocal_phase:'dv-profile',dv_profile_uploaded:true,completed_at:Date.now()},{skipTouchup:true});
+}
+
+async function meterStopDvAutoCalProfile(){
+ meterAutoCalSetOverlay(false,null);
+ meterStopModalShow(meterFullAutoCalRunning?'full-autocal':'dv-profile');
+ if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+ const wasFullWorkflow=!!meterFullAutoCalRunning;
+ meterFullAutoCalResetState(false);
+ meterDvAutoCalProfileRunning=false;
+ meterActionPending=true;
+ try{
+  await fetchJSON('/api/lg/dv-profile/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
+ }catch(e){}
+ try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Dolby Vision profile measurement stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ finally{
+  meterActionPending=false;
+  meterStopModalHide();
+  meterHideWorkflowProgress();
+  meterUpdateReadButtons();
+ }
+ toast('Dolby Vision profile measurement stopped');
 }
 
 function meterFullAutoCalTouchupTargetDelta(){
@@ -35186,6 +35429,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
 function meterFullAutoCalComplete(touchupStatus,options){
  const skipTouchup=!!(options&&options.skipTouchup);
  const post3dPolish=String(touchupStatus&&touchupStatus.full_autocal_phase||'')==='post-3d-polish';
+ const dvProfileComplete=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase()==='dv';
  if(!skipTouchup||post3dPolish) meterFullAutoCalResults.touchup=touchupStatus||null;
  meterFullAutoCalLoadReportData();
  const offerPostReport=true;
@@ -35209,7 +35453,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
 	  touchup_skipped:skipTouchup,
 	  phase:'complete',
 	  current_name:'Full Auto Cal complete',
-		  message:(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.')),
+		  message:(dvProfileComplete?'Greyscale and Dolby Vision profile upload complete.':(post3dPolish?'Greyscale, 3D LUT, and committed polish complete.':(skipTouchup?'Greyscale and 3D LUT complete.':'Greyscale, 3D LUT, and greyscale touch-up complete.'))),
   first_greyscale:meterFullAutoCalResults.first,
   lut3d:meterFullAutoCalResults.lut3d,
 	  touchup:(skipTouchup&&!post3dPolish)?null:(touchupStatus||null)
@@ -35308,7 +35552,7 @@ async function meterPollAutoCal(options){
 	   meterAutoCalRunning=false;
 	   meterAutoCalPhase='';
 	   meterAutoCalPendingConfig=null;
-	   await meterFullAutoCalStart3d(r);
+	   await meterFullAutoCalAdvancePastGreyscale(r);
 	   return;
 	  }
 	  if(r.status==='complete'&&meterFullAutoCalEnsureStatusPhase(r,'post-3d-polish')){
@@ -35355,7 +35599,7 @@ async function meterPollAutoCal(options){
 	     meterAutoCalRunning=false;
 	     meterAutoCalPhase='';
 	     meterAutoCalPendingConfig=null;
-	     await meterFullAutoCalStart3d(r);
+	     await meterFullAutoCalAdvancePastGreyscale(r);
 	     return;
 	    }
 		    if(meterFullAutoCalEnsureStatusPhase(r,'touchup-greyscale')){
