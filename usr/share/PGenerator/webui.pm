@@ -15746,8 +15746,8 @@ function meterSync3dLutWorkspaceUi(){
  if(button){
   const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterContinuousActive;
   const dirty=hasUnsavedSettings();
-  button.disabled=!meterDetected||dirty||busy;
-  button.title=!meterDetected?'Connect a meter first':dirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'Choose a profiling series and build a 3D LUT';
+  button.disabled=!selected||!meterDetected||dirty||busy;
+  button.title=!selected?'Select a built-in or custom 3D LUT profiling series first':!meterDetected?'Connect a meter first':dirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'Build a 3D LUT from the selected profiling series';
   button.textContent=(meterSeriesRunning||meterActionPending)?'Building…':'Build 3D LUT';
  }
 }
@@ -37414,11 +37414,9 @@ function meterDesktop3dLutBuildFlow(){
   meterDesktop3dLutBuildAfterSelect=false;
   return meterBuild3dLutSeries();
  }
- meterDesktop3dLutBuildAfterSelect=true;
- meterOpenLg3dSelectSeriesModal();
- const load=document.getElementById('meterLg3dSelSeriesLoadBtn');
- if(load) load.textContent='Continue';
- return true;
+ toast('Select a built-in or custom 3D LUT profiling series first',true);
+ try{ document.getElementById('meter3dLutSelectSeriesBtn').focus(); }catch(e){}
+ return false;
 }
 
 function meterBuild3dLutMeasureShow(){
