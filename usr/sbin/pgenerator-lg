@@ -3621,7 +3621,7 @@ sub lg_1d_dpg_upload_workflow_inner (@) {
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  $signal_mode=lc($signal_mode||"");
- $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg");
+ $signal_mode="" if($signal_mode ne "sdr" && $signal_mode ne "hdr10" && $signal_mode ne "hlg" && $signal_mode ne "dv");
  return &json_error("Connect / Pair the LG TV before uploading 1D DPG data",{ ip => $ip }) if($client_key eq "");
  return &json_error("1D DPG upload requires a 3072-value 3-channel x 1024-point uint16 array.",{ ip => $ip, data_count => (ref($dpg_data) eq "ARRAY") ? scalar(@{$dpg_data}) : -1, expected_count => 3072 }) if(ref($dpg_data) ne "ARRAY" || @{$dpg_data} != 3072);
  my @clamped;
@@ -3645,7 +3645,7 @@ sub lg_1d_dpg_upload_workflow_inner (@) {
  # otherwise SDR.
  my $effective_signal=$signal_mode;
  if($effective_signal eq "") {
-  $effective_signal=($cal_mode =~ /^(hdr_|dolby_hdr_)/) ? "hdr10" : "sdr";
+  $effective_signal=($cal_mode =~ /^(dolby_hdr_)/) ? "dv" : (($cal_mode =~ /^(hdr_)/) ? "hdr10" : "sdr");
  }
  # CAL_START payload differs by signal mode. The reference SDR workflow
  # sends CAL_START with a 9-float all-zeros 3x3 matrix (data_type=float,

@@ -1907,6 +1907,7 @@ sub webui_lg_1d_dpg_upload (@) {
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
   dpg_data => \@normalized,
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
