@@ -15683,6 +15683,24 @@ function pgSyncDesktopPanels(){
   if(Number.isFinite(order)) panel.style.order=String(order);
  });
 }
+function pgSyncMeterDesktopWorkspaceAvailability(){
+ const nav=document.querySelector('.desktop-nav-btn[data-workspace-target="3d-lut"]');
+ const panel=document.getElementById('meter3dLutWorkspaceCard');
+ const desktop=document.body.classList.contains('layout-desktop');
+ if(!desktop){
+  if(nav){ nav.hidden=false; nav.removeAttribute('aria-hidden'); }
+  if(panel) panel.style.display='';
+  return;
+ }
+ const available=!!meterDetected;
+ if(nav){ nav.hidden=!available; nav.setAttribute('aria-hidden',available?'false':'true'); }
+ if(panel) panel.style.display=available?'':'none';
+ if(!available&&pgDesktopWorkspace==='3d-lut'){
+  pgSelectDesktopWorkspace('calibration');
+ }else{
+  pgSyncDesktopPanels();
+ }
+}
 function pgRefreshVisibleWorkspace(){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
@@ -15787,6 +15805,7 @@ function pgApplyLayout(options){
  pgLayoutEffective=(pgLayoutPreference==='desktop'&&pgWideEnoughForDesktop())?'desktop':'tablet';
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
+ pgSyncMeterDesktopWorkspaceAvailability();
  pgApplyDesktopZoom();
  meterPlaceCcssEditorForLayout();
  meterPlace3dLutWorkspaceForLayout();
@@ -23142,6 +23161,7 @@ async function meterCheckStatus(){
  if(r&&r.detected){
   meterStatusMisses=0;
   meterDetected=true;
+  pgSyncMeterDesktopWorkspaceAvailability();
   meterPopulateRoleSelects(r.meters||[],r.port_num);
   const selectedMeter=meterFindByPort(meterSelectedMeasurementPort());
     const detectedMeter=meterFindByPort(meterNormalizePortValue(r.port_num));
@@ -23170,6 +23190,7 @@ async function meterCheckStatus(){
    meterUpdateReadButtons();
   } else {
    meterDetected=false;
+    pgSyncMeterDesktopWorkspaceAvailability();
     meterPopulateRoleSelects([]);
    // Card stays visible in Patterns mode — always show series buttons + thumbs.
    document.getElementById('meterCard').style.display='';
