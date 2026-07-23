@@ -53,7 +53,7 @@ write_state(status=>"running",message=>"Starting Dolby Vision profile measuremen
 
 # Patch list: black at 0%, white/red/green/blue at peak (100%) code. Uses the
 # same 0..input_max code convention as the greyscale/3D-LUT workers so the
-# renderer's DV signal-generation path (already implemented; see CLAUDE.md)
+# renderer's already-implemented DV signal-generation path
 # receives ordinary RGB triplets.
 my $input_max=int($config->{"input_max"}||1023);
 my @patches=(
