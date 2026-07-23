@@ -1922,6 +1922,46 @@ sub webui_lg_1d_dpg_upload (@) {
  return &lg_encode_json($result);
 }
 
+sub webui_lg_dv_profile_upload (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $measurements=$payload->{"measurements"};
+ return &lg_encode_json({ status => "error", message => "Dolby Vision profile upload requires measured black/white luminance and R/G/B chromaticity." })
+  if(ref($measurements) ne "HASH"
+   || !defined($measurements->{"white_luminance"}) || !defined($measurements->{"black_luminance"})
+   || !defined($measurements->{"red_x"}) || !defined($measurements->{"red_y"})
+   || !defined($measurements->{"green_x"}) || !defined($measurements->{"green_y"})
+   || !defined($measurements->{"blue_x"}) || !defined($measurements->{"blue_y"}));
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before uploading a Dolby Vision profile.", needs_repair => &lg_json_true() });
+ }
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a Dolby Vision profile." }) if(&lg_clients_disconnected($clients));
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a Dolby Vision profile." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a Dolby Vision profile." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "dv_profile_upload",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  measurements => $measurements,
+  keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
+  calibration_mode_active => $payload->{"calibration_mode_active"} ? 1 : 0,
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the Dolby Vision profile upload again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_hdr_calman_reset (@) {
  my $body=shift;
  my $payload=&lg_decode_json($body);
@@ -2041,6 +2081,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/1d-dpg/upload" && $method eq "POST") {
   return &webui_lg_1d_dpg_upload($body);
+ }
+ if($path eq "/api/lg/dv-profile/upload" && $method eq "POST") {
+  return &webui_lg_dv_profile_upload($body);
  }
  if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
   return &webui_lg_1d_dpg_read($body);
