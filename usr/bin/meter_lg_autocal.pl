@@ -13879,7 +13879,12 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 );
 	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
 	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
-	 # any at or below the mean is held.
+	 # any at or below the mean is held (never pull the lowest further down).
+	 # First moves use the full raw reduction (caller may amplify with
+	 # white_move_mult). When the natural gains all collapse to ~1.0 while
+	 # dE is still high (post-overshoot deadlock), the greyscale loop calls
+	 # lg_autocal_26_hdr20_dpg_white_balance_midsize for a mid-size recovery
+	 # nudge instead of micro-thrashing meter noise.
 	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
 	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
 	 my $target=$sum/3.0;
@@ -13888,21 +13893,68 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  my $m=$mrgb[$ch];
 	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
 	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
-	  # (deficient). The panel can't push it above native, so hold (clamp
-	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
-	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
-	  # moves.
+	  # (deficient). Hold (clamp to 1.0) on the normal path -- recovery
+	  # after overshoot is handled by the midsize helper when stuck.
+	  # If the natural gain is < 1.0, the channel is ABOVE its D65 target
+	  # (excess) -- full reduction. Floor at 0.5 to bound per-iter moves.
 	  $g=0.5 if($g+0 < 0.5);
 	  $g=1.0 if($g+0 > 1.0);
 	  $g=1.0 if($g+0 != $g+0);
 	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
-	  # On a slightly warm panel the XYZ->P3 matrix makes R the highest
-	  # linear channel, so the mean-based gain would reduce R by 1-3%
-	  # per iter. Each R reduction drops peak luminance (R drives peak
-	  # on OLED) without a commensurate white-balance improvement. Hold
-	  # R and only reduce the excess G/B channels.
 	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
+	 }
+	 return ($gain[0],$gain[1],$gain[2]);
+	}
+
+# Staged white correction for 100% (mid / micro). Does NOT pull the lowest
+# channel further down: only reduce channels still above mean, and boost G/B
+# that fell below mean. R is never reduced (peak hold).
+# $tier: "mid" (~6-8% steps) or "micro" (~2% steps).
+sub lg_autocal_26_hdr20_dpg_white_balance_staged {
+	 my ($reading,$tier)=@_;
+	 $tier=lc($tier||"mid");
+	 $tier="mid" if($tier ne "mid" && $tier ne "micro");
+	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0;
+	   $mX=($rx/$ry)*$mY;
+	   $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0);
+	  }
+	 } else {
+	  $mX+=0; $mY+=0; $mZ+=0;
+	 }
+	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 my @mrgb=(
+	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
+	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
+	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
+	 );
+	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
+	 my $target=$sum/3.0;
+	 my ($reduce,$boost,$band)=($tier eq "micro")
+	  ? (0.98,1.02,0.002)   # ~2% micro polish
+	  : (0.94,1.07,0.005);  # ~6-8% mid recovery
+	 my @gain=(1.0,1.0,1.0);
+	 for my $ch (0..2) {
+	  my $m=$mrgb[$ch];
+	  next if(!($m+0 > 0) || !($target+0 > 0));
+	  my $ratio=$m/$target;
+	  if($ratio+0 > 1.0+$band) {
+	   $gain[$ch]=($ch == 0) ? 1.0 : $reduce;
+	  } elsif($ratio+0 < 1.0-$band) {
+	   $gain[$ch]=($ch == 0) ? 1.0 : $boost;
+	  }
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
@@ -14609,6 +14661,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my ($rs,$target,$idx,$label,$snum,$budget,$is_white)=@_;
 		my $converged=0;
 		my $last_reading=undef;
+		# 100% white move ladder: large (full raw cuts + mult) -> mid
+		# (staged ~6-8%) -> micro (staged ~2%). Body anchors ignore this.
+		my $white_stage=$is_white ? "large" : "";
+		my $white_stage_stall=0; # consecutive low-improvement iters in stage
+		my $white_stage_iters=0; # iters spent in current stage
 		# EOTF-aware damp state (per-anchor, persists across inner iters):
 		#   gamma_effective: current best estimate of the panel's local
 		#     code->light gamma at this anchor's IRE. Seeded from the
@@ -14973,8 +15030,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
-				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
-					&& defined($prev_de) && $de+0 > $prev_de+0) {
+				} elsif(!$is_white
+					&& ((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
+					&& defined($prev_de) && $de+0 > $prev_de+0
+					# Ignore meter-noise wiggles: require a real worsening before
+					# reverting. At the white peak a 0.05 dE blip was thrashing
+					# high-IRE revert + move_scaling=0.5 while gains were already
+					# ~1.0 (micro-adjust death spiral after G/B overshoot).
+					&& ($de+0) > ($prev_de+0) + 0.12)) {
 					# Descent-style revert: this iter's move made dE WORSE than the
 					# previous iter's dE (the state we were just at before applying
 					# the move). The earlier "de >= best_de" condition reverted on
@@ -14988,6 +15051,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
 					# (5-80%) uses the monotonic best_de improvement pattern instead,
 					# matching the prior behavior.
+					# 100% white is excluded: it self-targets Y and after the first
+					# big G/B cuts the residual is noise-scale; high-IRE revert only
+					# halved move_scaling into micro territory.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -15124,77 +15190,98 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			}
 			last if($conv_now && !$acceptance_pending);
 			# Reach the target (luminance AND white balance) with per-channel
-			# RGB gains: scaling all three together moves luminance, their ratio
-			# corrects chroma. Identical path for every anchor incl. 100% -- no
-			# separate luminance adjustment, no reduce-to-lowest.
-			# 100% white: reduce-to-lowest -- bring the high channels straight
-			# DOWN to the lowest-reading channel (big, direct moves) to neutral
-			# D65 at the achievable peak. Self-targeting (no impossible luminance
-			# to chase); converges in a few moves. Lower anchors: per-channel
-			# solve toward D65 at the 2.2 target luminance via RGB.
+			# RGB gains. Body anchors: lg_autocal_26_hdr20_dpg_gain.
+			# 100% white uses a LARGE -> MID -> MICRO ladder (see $white_stage).
 			($rg,$gg,$bg)=$is_white
 				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
 				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
-			# White takes larger steps (it only reduces + re-measures) so peak
-			# balance settles in a few moves instead of many tiny ones.
-			# For low IRE (default <5%) the DAMP floor is relaxed (default 0.5)
-			# to let each iter halve the DPG when needed; the 0.8 default
-			# floor is too conservative at <1 nit where meter noise is
-			# comparable to the per-iter move, causing oscillation instead
-			# of convergence.
+			# --- White stage machine (large > mid > micro) ---
+			# Promote when the current stage stops making useful progress while
+			# still above target. Never demote. Lowest channel is never pulled
+			# further down (mean-based hold); R never reduced.
+			if($is_white && defined($de)) {
+			 my $nat_span=0;
+			 for my $_g ($rg,$gg,$bg) {
+			  my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
+			  $nat_span=$d if($d > $nat_span);
+			 }
+			 my $de_improve=(defined($prev_de) ? (($prev_de+0)-($de+0)) : 999);
+			 $white_stage_iters++;
+			 # Stall = tiny/negative improvement this iter while still above target.
+			 if(($de+0) > ($_effective_target_de+0) && $de_improve < 0.12) {
+			  $white_stage_stall++;
+			 } else {
+			  $white_stage_stall=0;
+			 }
+			 my $promoted="";
+			 if($white_stage eq "large") {
+			  # Leave large when natural gains collapse (no big cut left) or
+			  # two stalled iters after at least one large move -- then mid
+			  # can recover overshot G/B instead of freezing at gains 1/1/1.
+			  if(($nat_span+0) < 0.03 && $i >= 2 && ($de+0) > ($_effective_target_de+0)) {
+			   $white_stage="mid"; $white_stage_stall=0; $white_stage_iters=0; $promoted="nat_span";
+			  } elsif($white_stage_stall >= 2 && $i >= 3 && ($de+0) > ($_effective_target_de+0)) {
+			   $white_stage="mid"; $white_stage_stall=0; $white_stage_iters=0; $promoted="stall";
+			  }
+			 } elsif($white_stage eq "mid") {
+			  if($white_stage_stall >= 2 && $white_stage_iters >= 2 && ($de+0) > ($_effective_target_de+0)) {
+			   $white_stage="micro"; $white_stage_stall=0; $white_stage_iters=0; $promoted="stall";
+			  }
+			 }
+			 if($promoted ne "") {
+			  log_line("HDR20 1D DPG greyscale: ".$label." white stage -> ".$white_stage." (reason=".$promoted.", dE=".sprintf("%.4f",$de+0).", nat_span=".sprintf("%.4f",$nat_span).")");
+			  $move_scaling=1.0; # never enter a new stage with halved micro scaling
+			 }
+			 if($white_stage eq "mid" || $white_stage eq "micro") {
+			  ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_staged($reading,$white_stage);
+			 }
+			 # Micro stage stuck: no staged move left either -- stop at best
+			 # instead of burning the budget on meter noise.
+			 if($white_stage eq "micro" && $white_stage_stall >= 2) {
+			  my $_ms=0;
+			  for my $_g ($rg,$gg,$bg) {
+			   my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
+			   $_ms=$d if($d > $_ms);
+			  }
+			  if(($_ms+0) < 0.015 && ($de+0) > ($_effective_target_de+0)) {
+			   log_line("HDR20 1D DPG greyscale: ".$label." white micro plateau (dE=".sprintf("%.4f",$de+0).", best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).") -- stopping at best");
+			   last;
+			  }
+			 }
+			}
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
-			# EOTF-aware damp: the exponent 1/gamma_effective is computed
-			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
-			# the 3rd arg to the damp closure, replacing the previous
-			# constant 0.5 (sqrt) with a value that follows the panel's
-			# actual code->light slope at this anchor's IRE.
-			# 100% white move multiplier: the white anchor only REDUCES the
-			# excess channels (G/B held-at-1 R is preserved, see
-			# lg_autocal_26_hdr20_dpg_white_balance_gain) and re-measures, so a
-			# larger per-iter move is safe and converges the peak in ~3-4 iters
-			# instead of 10-13. Field data 2026-06-19: with gamma_effective
-			# pinned at the 3.0 clamp, damp=gain^(1/3) squashes a 22% B
-			# correction down to an 8% move, halving dE only every ~1.5 iters.
-			# M=2.0 turns that into a 16% move (3x the convergence rate) with
-			# ZERO overshoot risk because the overshoot guard below clamps every
-			# reducing channel to never move below its raw gain (the
-			# mathematically-correct target). Lower anchors keep M=1.0.
+			# LARGE white stage: mult=2.0 (original first-move size).
+			# MID/MICRO: mult=1.0 so staged gains are not re-amplified into
+			# another slam; move_scaling forced to 1.0 on mid (no half-micro).
 			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
 			$white_move_mult=1.0 if($white_move_mult+0 < 1.0);
 			$white_move_mult=5.0 if($white_move_mult+0 > 5.0);
+			if($is_white && ($white_stage eq "mid" || $white_stage eq "micro")) {
+			 $white_move_mult=1.0;
+			 $move_scaling=1.0 if($white_stage eq "mid");
+			}
 			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0)
 				: (($_anchor_ire+0 >= $high_ire_threshold) ? ($high_ire_move_mult+0.0)
 				: 1.0));
-			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
-			# damp is unchanged. When it's 0.5, the move is half-magnitude
-			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
-			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			# The white move multiplier multiplies the (damp-1.0) move term
-			# BEFORE the move_scaling blend, so both compose: a white iter that
-			# reverted halves the already-doubled move. The high-IRE
-			# multiplier does the same composition for the >=80% anchors.
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
-			# per-IRE minimum step.
+			# For mid/micro white, apply staged gains more directly (light damp)
+			# so a 0.94 mid cut is not squashed into a micro move by damp^1/3.
+			my $use_white_direct=($is_white && ($white_stage eq "mid" || $white_stage eq "micro")) ? 1 : 0;
+			my $sr=$use_white_direct ? (1.0+(($rg//1.0)-1.0)*$move_scaling)
+			 : (1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult);
+			my $sg=$use_white_direct ? (1.0+(($gg//1.0)-1.0)*$move_scaling)
+			 : (1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult);
+			my $sb=$use_white_direct ? (1.0+(($bg//1.0)-1.0)*$move_scaling)
+			 : (1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult);
 			$sr=$floor if($sr+0 < $floor+0);
 			$sg=$floor if($sg+0 < $floor+0);
 			$sb=$floor if($sb+0 < $floor+0);
 			$sr=1.25 if($sr+0 > 1.25);
 			$sg=1.25 if($sg+0 > 1.25);
 			$sb=1.25 if($sb+0 > 1.25);
-			# Overshoot guard for the white anchor (where the move multiplier
-			# can exceed 1.0): a REDUCING channel (raw gain < 1.0, i.e. the
-			# channel measured ABOVE the D65 mean and needs attenuation) must
-			# NEVER be driven below its raw gain -- that would push it past the
-			# D65 target and swap which channel is in excess, causing a bounce.
-			# R is always held at 1.0 by lg_autocal_26_hdr20_dpg_white_balance_gain
-			# so it is never a reducing channel; this guard only binds for the
-			# excess G/B channels. max(applied, gain) lands the channel exactly
-			# on target at worst (never past it), so even a huge multiplier is
-			# monotonic and safe.
+			# Overshoot guard for white REDUCTIONS (large stage): never drive a
+			# reducing channel past its raw gain. Mid/micro recovery boosts
+			# (gain > 1 on G/B) pass through so overshot channels can climb back.
 			if($is_white) {
 			 $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
 			 $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
