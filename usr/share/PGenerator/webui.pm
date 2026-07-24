@@ -30376,13 +30376,23 @@ function meterEnsureAppliedGeneratorSettings(){
 }
 
 function meterLgAutoCalTransportReady(){
- // DV uses the same HDR10 transport values (eotf=2, primaries=2, colorimetry=9)
- // because its greyscale path rides the HDR20 1D-DPG ladder -- so the
- // "ready" check must accept hdr10 OR dv against the HDR10 transport, not
- // the SDR transport that meterLgAutoCalRequestedSignalMode() collapses
- // dv to (operator-reported 2026-07-24). Read the live signal mode.
+ // DV's proven "standard" transport is 8-bit RGB Full (color_format=0,
+ // max_bpc=8, rgb_quant_range=2, primaries=1) -- a DIFFERENT wire transport
+ // than HDR10's 10-bit YCbCr444 Limited (primaries=2). See
+ // normalize_dv_transport_conf() in command.pm for the authoritative values
+ // (operator-reported 2026-07-24: DV AutoCal was gated on the HDR10
+ // transport and never became "ready"). Read the live signal mode.
  const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
- const hdrRequest=(requested==='hdr10'||requested==='dv');
+ if(requested==='dv'){
+  return getVal('signal_mode')==='dv'
+   && getVal('max_bpc')==='8'
+   && getVal('color_format')==='0'
+   && getVal('rgb_quant_range')==='2'
+   && getVal('colorimetry')==='9'
+   && getVal('primaries')==='1'
+   && getVal('eotf')==='2';
+ }
+ const hdrRequest=(requested==='hdr10');
  const base=getVal('signal_mode')===requested
   && getVal('max_bpc')==='10'
   && getVal('color_format')==='1'
@@ -30402,15 +30412,35 @@ function meterLgAutoCalTransportAvailable(){
 }
 
 function meterSetLgAutoCalTransportValues(){
- // DV uses the HDR10 transport values (eotf=2, primaries=2, colorimetry=9)
- // because its greyscale path rides the HDR20 1D-DPG ladder -- but unlike
- // HDR10, DV must preserve its live signal_mode ('dv'), not be silently
- // rewritten to 'hdr10' (operator-reported 2026-07-24: the collapsing
- // helper forced DV runs to sdr transport values when the wizard had to
- // apply the HDR transport). Read the live signal mode.
+ // DV's proven "standard" transport is 8-bit RGB Full (primaries=1) -- a
+ // DIFFERENT wire transport than HDR10's 10-bit YCbCr444 Limited
+ // (primaries=2). See normalize_dv_transport_conf() in command.pm for the
+ // authoritative values (operator-reported 2026-07-24: DV AutoCal was
+ // pushing the HDR10 transport instead). Read the live signal mode.
  const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
- const hdrRequest=(requested==='hdr10'||requested==='dv');
  setVal('signal_mode',requested);
+ if(requested==='dv'){
+  setVal('eotf','2');
+  setVal('primaries','1');
+  setVal('colorimetry','9');
+  setVal('max_bpc','8');
+  setVal('color_format','0');
+  setVal('rgb_quant_range','2');
+  applyMeterTargetGamutDefault(true);
+  applyMeterTargetGammaDefault();
+  updateModeVisibility();
+  updateDropdowns();
+  setVal('max_bpc','8');
+  setVal('color_format','0');
+  setVal('rgb_quant_range','2');
+  setVal('colorimetry','9');
+  setVal('eotf','2');
+  setVal('primaries','1');
+  checkSettingsChanged();
+  saveMeterSettings();
+  return;
+ }
+ const hdrRequest=(requested==='hdr10');
  if(hdrRequest){
   setVal('eotf','2');
   setVal('primaries','2');
@@ -33455,16 +33485,22 @@ function meterFullAutoCalReportStatusText(stage){
 }
 
 function meterFullAutoCalPromptDefaults(){
- // DV's Full AutoCal has its own phase machine (dv-profile replaces the
- // 3D-LUT phase), so it doesn't show this generic prompt -- but a DV user
- // who reaches the 3D-LUT-only sub-dialog should still see HDR-style copy.
- // The collapse forced DV into the SDR "26-point" copy (operator-reported
- // 2026-07-24).
+ // This is the very first "Review the workflow" prompt shown before Full
+ // AutoCal starts -- DV DOES reach it, and needs its own copy: DV's transport
+ // is its own 8-bit RGB Full pinned mode (not "the HDR10 AutoCal video
+ // transport"), and DV's post-greyscale stage is a Dolby Vision calibration
+ // profile upload, not a 3D LUT (DV's phase machine replaces the 3D-LUT
+ // phase with dv-profile and never touches a 3D LUT baseline). Fixed after
+ // the operator reported this dialog describing an HDR10 3D-LUT workflow
+ // while running in DV (2026-07-24).
  const promptSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
- const hdrWorkflow=(promptSigMode==='hdr10'||promptSigMode==='dv');
+ const hdrWorkflow=(promptSigMode==='hdr10');
+ const dvWorkflow=(promptSigMode==='dv');
  return {
   title:'Full Auto Cal',
-		  message:hdrWorkflow
+		  message:dvWorkflow
+		   ? 'This will first switch PGenerator to the Dolby Vision AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state, run HDR greyscale AutoCal, then build and upload the Dolby Vision calibration profile to the TV.'
+		   : hdrWorkflow
 		   ? 'This will first switch PGenerator to the HDR10 AutoCal video transport and optionally measure the current HDR state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run HDR greyscale AutoCal, then run HDR10 matrix 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.'
 		   : 'This will first switch PGenerator to the AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run a fast LG 26-point greyscale AutoCal pass, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.',
   continueText:'\u25B6 Continue',
@@ -35972,8 +36008,23 @@ async function meterStartAutoCal(options){
  const useCaseSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  const hdrWorkflowLocal=(useCaseSigMode==='hdr10'||useCaseSigMode==='dv');
  meterAutoCalPendingNextEntry=fullWorkflow?'disclaimer':'options';
- // Both SDR and HDR wizards start with the use-case (output format) step,
- // then display type. HDR skips the gamma step - its target curve is fixed
+ // DV's transport is entirely pinned (8-bit RGB Full, see
+ // meterSetLgAutoCalTransportValues()) -- none of the PC/TV/Console output
+ // choices below apply (they are all 10-bit), and picking one would push
+ // the wrong bit depth onto a DV signal. Skip straight to Display Type,
+ // same as meterAutoCalUseCaseContinue()'s tail for a normal choice
+ // (operator-reported 2026-07-24: the use-case step showed up for DV runs).
+ if(useCaseSigMode==='dv'){
+  window._meterAutoCalUseCaseChoice='keep';
+  meterAutoCalDisplayTypePopulate();
+  meterAutoCalPhase='displaytype';
+  meterAutoCalSetOverlay(true,{phase:'displaytype',current_name:'Display Type',message:'Select the panel type / meter profile.'});
+  meterActionPending=true;
+  meterUpdateReadButtons();
+  return true;
+ }
+ // Both SDR and HDR10 wizards start with the use-case (output format) step,
+ // then display type. HDR10 skips the gamma step - its target curve is fixed
  // (2.2 cal-time / PQ verify) and is not operator-selectable.
  {
   const hdrNote=document.getElementById('meterAutoCalUseCaseHdrNote');
