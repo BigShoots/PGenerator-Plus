@@ -453,7 +453,11 @@ sub lg_autocal_26_hdr20_seed_enabled {
 	 my ($config)=@_;
 	 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 my $signal_mode=lc($config->{"signal_mode"}||"sdr");
-	 return 0 if($signal_mode ne "hdr10");
+	 # Dolby Vision rides the exact same HDR20 seed/spine + 1D DPG greyscale
+	 # path as HDR10 (ddc_layout_for_signal_mode already maps dv -> hdr20);
+	 # only the wire codes differ (DV's 8-bit tunnel via dv_series). Without
+	 # dv here, DV collapsed onto the SDR 26-pt ladder + SDR white-balance.
+	 return 0 if($signal_mode ne "hdr10" && $signal_mode ne "dv");
 	 my $layout=lc($config->{"ddc_layout"} || ddc_layout_for_signal_mode($signal_mode) || $LG_AUTOCAL_DDC_LAYOUT || "");
 	 return ($layout eq "hdr20") ? 1 : 0;
 }
@@ -3442,7 +3446,8 @@ sub lg_autocal_26_full_ddc_spine_anchor_seed_gate {
  my %decision=(accepted=>JSON::PP::true,reason=>"not_hdr_full_ddc_spine");
  return \%decision if(ref($config) ne "HASH" || !lg_autocal_26_full_ddc_spine_enabled($config));
  return \%decision if(ref($target) ne "HASH");
- return \%decision if(lc($config->{"signal_mode"}||"sdr") ne "hdr10");
+ # DV rides the HDR20 full-DDC-spine anchor seed too (see hdr20_seed_enabled).
+ return \%decision if(lc($config->{"signal_mode"}||"sdr") ne "hdr10" && lc($config->{"signal_mode"}||"sdr") ne "dv");
  return {
   accepted=>JSON::PP::true,
   reason=>"not_full_ddc_spine_anchor",
@@ -6326,7 +6331,7 @@ sub refresh_propagated_uncalibrated_26pt_slots {
 		 $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS=[];
 		 return 0 if(ref($config) ne "HASH" || !$config->{"lg_autocal_26"});
 	 my $hdr20_seed=lg_autocal_26_hdr20_seed_enabled($config);
-	 return 0 if(lc($config->{"signal_mode"}||"sdr") eq "hdr10" && !$hdr20_seed);
+	 return 0 if((lc($config->{"signal_mode"}||"sdr") eq "hdr10" || lc($config->{"signal_mode"}||"sdr") eq "dv") && !$hdr20_seed);
 	 my $minimum_anchors=3;
 	 my $source_slot_mask=$calibrated_slot_mask;
 	 if($hdr20_seed) {
@@ -20849,7 +20854,8 @@ sub restore_factory_levels_for_autocal {
 sub reset_hdr20_luminance_baseline_if_needed {
  my ($config,$state)=@_;
  return undef if(ref($config) ne "HASH");
- return undef if(lc(($config->{"signal_mode"}||"")) ne "hdr10");
+ # DV uses the same HDR20 luminance baseline zeroing as HDR10 before cal.
+ return undef if(lc(($config->{"signal_mode"}||"")) ne "hdr10" && lc(($config->{"signal_mode"}||"")) ne "dv");
  return undef if(autocal_config_is_touchup($config));
  # The HDR10 preflight (/api/lg/hdr-calman-reset -> lg_hdr_calman_reset_workflow)
  # resets the 1D DPG / 3D LUT / 3x3 matrix to unity, but it does NOT touch the
@@ -20917,7 +20923,9 @@ sub reset_ddc_baseline_for_autocal {
  # the first 0% meter read. The JS preflight already gates this, but
  # guard the worker path too in case a hand-edited config ever passes
  # reset_ddc_baseline=true for hdr10.
- return undef if(lc(($config->{"signal_mode"}||"")) eq "hdr10");
+ # DV also does its DDC/identity reset via the JS preflight (dv-calman-reset),
+ # so skip the worker-side reset here too and avoid racing the first read.
+ return undef if(lc(($config->{"signal_mode"}||"")) eq "hdr10" || lc(($config->{"signal_mode"}||"")) eq "dv");
 	 my @zero=map { 0 } (1..ddc_slot_count());
  my $picture_mode=$config->{"picture_mode"}||"";
  my $last_message="Unable to reset LG DDC baseline";
@@ -21062,7 +21070,7 @@ sub read_step_once {
 		 # panels in HDR10 settle in <1s, so the floor is 1000ms for hdr10
 		 # and 1800ms for SDR. This reduces time on the white patch (which
 		 # heats the panel and raises luminance, biasing subsequent reads).
-		 my $delay_floor=lc($config->{"signal_mode"}||"sdr") eq "hdr10" ? 1000 : 1800;
+		 my $delay_floor=(lc($config->{"signal_mode"}||"sdr") eq "hdr10" || lc($config->{"signal_mode"}||"sdr") eq "dv") ? 1000 : 1800;
 		 $delay_ms=$delay_floor if($delay_ms < $delay_floor);
 		 my $step_delay_ms=(ref($step) eq "HASH" && defined($step->{"read_delay_ms"})) ? int($step->{"read_delay_ms"}) : 0;
 		 $delay_ms=$step_delay_ms if($step_delay_ms > $delay_ms);
@@ -22426,7 +22434,7 @@ eval {
 				 } else {
 				  $state->{"sdr_dpg_greyscale_active"}=JSON::PP::false;
 				 }
-				 if(!cancelled() && ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_dpg_mode"} && lc($signal_mode) eq "hdr10") {
+				 if(!cancelled() && ref($config) eq "HASH" && $config->{"lg_autocal_hdr20_dpg_mode"} && (lc($signal_mode) eq "hdr10" || lc($signal_mode) eq "dv")) {
 				  log_line("autocal routing: entering HDR20 1D DPG greyscale branch");
 				  $state->{"current_name"}="HDR20 1D DPG greyscale";
 				  $state->{"phase"}="adjusting";

@@ -3053,7 +3053,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    @ire_vals=(0..100);
 			   } elsif($points==30 && $signal_mode eq "hdr10") {
 				    @ire_vals=(0,1,1.4,2,2.3,2.7,3,3.7,4,6,8,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
-				   } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
+				   } elsif($points==26 && $lg_autocal_26 && ($signal_mode eq "hdr10" || $signal_mode eq "dv")) {
 						    @ire_vals=(100,0,90,80,70,60,50,45,40,35,30,25,20,15,10,7,5,4,2.7,2,1.4);
 			   } elsif($points==26 && $lg_autocal_26) {
 					    # Limited: legal-expanded 26-pt with super-white 105/109.
@@ -3311,7 +3311,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my @ordered;
   if($points==2) {
    @ordered=((sort { $a <=> $b } @ire_vals)[1], (sort { $a <=> $b } @ire_vals)[0]);
-  } elsif($points==26 && $lg_autocal_26 && $signal_mode eq "hdr10") {
+  } elsif($points==26 && $lg_autocal_26 && ($signal_mode eq "hdr10" || $signal_mode eq "dv")) {
    # The hdr20 ladder ends at a REAL 100% DDC slot, so there is no separate
    # legal-white reference step (that is an SDR 99/105/109 headroom concept);
    # the worker derives its white reference from the hdr20 top slot itself.
@@ -26887,7 +26887,7 @@ function meterGreySeriesSlots(points){
  if(points===256) points=100;
  if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(Number(points)===26&&meterUseLgAutoCal26(points)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
+ if(Number(points)===26&&meterUseLgAutoCal26(points)&&(mode==='hdr10'||mode==='dv')) return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
  if(meterUseLgAutoCal26(points)){
   if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
   return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
@@ -26900,7 +26900,7 @@ function meterGreyProfileSlots(points){
  const normalized=(points===256)?100:Number(points);
  if(normalized===30) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(normalized===26&&meterUseLgAutoCal26(normalized)&&mode==='hdr10') return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
+ if(normalized===26&&meterUseLgAutoCal26(normalized)&&(mode==='hdr10'||mode==='dv')) return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
  if(meterUseLgAutoCal26(normalized)){
   if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
   return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
@@ -30549,7 +30549,10 @@ function meterGreyTvTarget(step,opts){
 	 const ire=Number(resolved.ire);
 	 if(!Number.isFinite(ire)) return null;
 	 const autoCal26=meterUseLgAutoCal26(meterActiveSeriesPoints);
-	 const autoCalHdr=autoCal26&&String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()==='hdr10';
+	 // DV shares HDR10's 0-100% HDR20 ladder (it rides the HDR20 1D DPG path);
+	 // only its wire codes differ. Without dv here the adjustable-point target
+	 // ladder collapsed to the SDR 0-109% body slots.
+	 const autoCalHdr=autoCal26&&['hdr10','dv'].indexOf(String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase())>=0;
 	 const stops=autoCal26?(autoCalHdr?[...METER_LG_GREY_HDR_AUTOCAL_SLOTS]:(typeof meterLgAutoCalSdr26BodySlots==='function'?[...meterLgAutoCalSdr26BodySlots()]:[...METER_LG_GREY_AUTOCAL_26_SLOTS])):meterGreyTvIreStops();
 		 let idx=stops.findIndex(v=>Math.abs(v-ire)<0.001);
 	 let patchStop=null;
