@@ -117,12 +117,23 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "dolby_hdr_vivid" => "dolbyHdrVivid",
   "dolbyhdrvivid" => "dolbyHdrVivid",
   "dolbyvivid" => "dolbyHdrVivid",
-  "dolbyvisionfilmmaker" => "dolbyHdrFilmMaker",
-  "dolby_hdr_filmmaker" => "dolbyHdrFilmMaker",
-  "dolbyhdrfilmmaker" => "dolbyHdrFilmMaker",
-  "dolbyfilmmaker" => "dolbyHdrFilmMaker",
-  "dolbyvisionfilmmakermode" => "dolbyHdrFilmMaker",
-  "dolbyhdrfilmmakermode" => "dolbyHdrFilmMaker",
+  # Operator-confirmed on real hardware (LG C2, webOS 4.1.0, 2026-07-24):
+  # the on-screen "Filmmaker" preset is NOT its own webOS picture mode --
+  # it is the same underlying mode webOS calls "CinemaDark" (Dolby's
+  # FILMMAKER MODE branding applied over LG's existing dark-room reference
+  # preset). Every "FilmMaker"-shaped label must resolve to dolbyHdrCinemaDark,
+  # not a literal "dolbyHdrFilmMaker" (confirmed NOT a valid webOS value --
+  # rejected outright, along with the "dolbyHdrFilmmaker" casing variant).
+  "dolbyvisionfilmmaker" => "dolbyHdrCinemaDark",
+  "dolby_hdr_filmmaker" => "dolbyHdrCinemaDark",
+  "dolbyhdrfilmmaker" => "dolbyHdrCinemaDark",
+  "dolbyfilmmaker" => "dolbyHdrCinemaDark",
+  "dolbyvisionfilmmakermode" => "dolbyHdrCinemaDark",
+  "dolbyhdrfilmmakermode" => "dolbyHdrCinemaDark",
+  "dolbyvisioncinemadark" => "dolbyHdrCinemaDark",
+  "dolby_hdr_cinema_dark" => "dolbyHdrCinemaDark",
+  "dolbyhdrcinemadark" => "dolbyHdrCinemaDark",
+  "dolbycinemadark" => "dolbyHdrCinemaDark",
   "dolbyvisionstandard" => "dolbyHdrStandard",
   "dolby_hdr_standard" => "dolbyHdrStandard",
   "dolbyhdrstandard" => "dolbyHdrStandard",

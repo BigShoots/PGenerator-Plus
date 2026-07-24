@@ -2698,6 +2698,16 @@ function lgPictureModeCanonicalValue(value){
   dolby_hdr_filmmaker:'dolbyVisionFilmMaker',
   dolbyvisionfilmmakermode:'dolbyVisionFilmMaker',
   dolbyhdrfilmmakermode:'dolbyVisionFilmMaker',
+  // Operator-confirmed on real hardware (LG C2, webOS 4.1.0, 2026-07-24):
+  // the TV's own "Filmmaker" preset lives under the webOS picture mode
+  // webOS itself calls "CinemaDark" -- so the TV reports "dolbyHdrCinemaDark"
+  // when it is actually sitting in Filmmaker mode, and that must canonicalize
+  // to dolbyVisionFilmMaker (not an orphaned "Cinema Dark" that has no
+  // corresponding dropdown entry).
+  dolbyvisioncinemadark:'dolbyVisionFilmMaker',
+  dolbyhdrcinemadark:'dolbyVisionFilmMaker',
+  dolby_hdr_cinema_dark:'dolbyVisionFilmMaker',
+  dolbycinemadark:'dolbyVisionFilmMaker',
   dolbyvisionstandard:'dolbyVisionStandard',
   dolbyhdrstandard:'dolbyVisionStandard',
   dolby_hdr_standard:'dolbyVisionStandard',
