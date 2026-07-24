@@ -2261,6 +2261,25 @@ sub lg_picture_mode_for_calibration (@) {
   "dolbyhdrcinemabright" => "dolby_hdr_cinema_bright",
   "dolbyhdrcinemadark" => "dolby_hdr_cinema_dark",
   "dolbyhdrgame" => "dolby_hdr_game",
+  # The WebUI's own picture-mode dropdown (LG_PICTURE_MODES_BY_SIGNAL.dv in
+  # lg.pm) uses a DIFFERENT canonical spelling than the raw webOS name this
+  # function was written for -- "dolbyVision*" not "dolbyHdr*". Whenever the
+  # client sends its own selected value (rather than an empty picture_mode
+  # that falls back to a live TV poll), only the fallback regex below ever
+  # ran, and it only matched "dolbyhdr*", so a client-selected DV mode never
+  # resolved to a dolby_hdr_* cal_mode -- the reset always failed with
+  # "requires an active Dolby Vision picture mode" (operator-reported
+  # 2026-07-24, root-caused after the fallback-label fix in lg.pm's
+  # lgPictureModeCanonicalValue turned out to be a separate, JS-only issue).
+  "dolbyvisioncinema" => "dolby_hdr_cinema",
+  "dolbyvisioncinemahome" => "dolby_hdr_cinema_bright",
+  "dolbyvisioncinemabright" => "dolby_hdr_cinema_bright",
+  "dolbyvisiongame" => "dolby_hdr_game",
+  "dolbyvisiongameoptimizer" => "dolby_hdr_game",
+  "dolbyvisionvivid" => "dolby_hdr_vivid",
+  "dolbyvisionfilmmaker" => "dolby_hdr_film_maker",
+  "dolbyvisionfilmmakermode" => "dolby_hdr_film_maker",
+  "dolbyvisionstandard" => "dolby_hdr_standard",
  );
  return $map{$mode_lc} if(defined($map{$mode_lc}));
  # Fallback for any Dolby Vision preset name not in the static map above --
@@ -2270,7 +2289,9 @@ sub lg_picture_mode_for_calibration (@) {
  # the "dolbyHdr" prefix, rather than requiring every preset name to be
  # pre-enumerated by hand (hw fact 2026-07-23: a hand-guessed table missed
  # real presets and produced the wrong internal name for ones it did have).
- if($picture_mode =~ /^dolbyhdr(.*)$/i) {
+ # Also accept the WebUI's own "dolbyVision*" canonical spelling the same
+ # way, for the client-selected-value case described above.
+ if($picture_mode =~ /^dolby(?:hdr|vision)(.*)$/i) {
   my $suffix=$1;
   $suffix=~s/([a-z0-9])([A-Z])/$1_$2/g;
   $suffix=lc($suffix);
