@@ -13908,6 +13908,77 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
+# Fine polish for 100% white after reduce-to-lowest has brought channels
+# near the lock (natural gains ~1) but residual dE remains. Hold the LOCK
+# channel (first-iter lowest -- may be R, G, or B; never hardcode G/B) and
+# touch a SINGLE other channel toward the Display-P3 mean. Small steps so
+# we can walk from ~0.7 toward 0 without the coarse mult=2 slam.
+# $tier: "fine" (~2%) or "micro" (~0.8%).
+# Returns (r,g,b,touched) touched=0/1/2 or undef.
+sub lg_autocal_26_hdr20_dpg_white_balance_fine {
+	 my ($reading,$tier,$lock_ref)=@_;
+	 $tier=lc($tier||"fine");
+	 $tier="fine" if($tier ne "fine" && $tier ne "micro");
+	 return (1.0,1.0,1.0,undef) unless(ref($reading) eq "HASH");
+	 my $mX=$reading->{"X"};
+	 my $mY=$reading->{"Y"};
+	 my $mZ=$reading->{"Z"};
+	 if(!(defined($mX) && defined($mY) && defined($mZ))) {
+	  my $rx=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+	  my $ry=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+	  my $rY=luminance($reading);
+	  if(defined($rx) && defined($ry) && defined($rY) && $ry+0 > 0 && $rY+0 > 0) {
+	   $mY=$rY+0; $mX=($rx/$ry)*$mY; $mZ=((1-$rx-$ry)/$ry)*$mY;
+	  } else {
+	   return (1.0,1.0,1.0,undef);
+	  }
+	 } else { $mX+=0; $mY+=0; $mZ+=0; }
+	 return (1.0,1.0,1.0,undef) if(!($mY+0 > 0));
+	 my @mrgb=(
+	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
+	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
+	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
+	 );
+	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
+	 return (1.0,1.0,1.0,undef) if(!($sum+0 > 0));
+	 my $mean=$sum/3.0;
+	 # Lock channel = first-iter lowest from coarse phase (any of R/G/B).
+	 # If missing, re-find live lowest so we never assume R is the lock.
+	 my $lock_idx;
+	 if(ref($lock_ref) eq "HASH" && defined($lock_ref->{"idx"})) {
+	  $lock_idx=int($lock_ref->{"idx"});
+	  $lock_idx=0 if($lock_idx < 0);
+	  $lock_idx=2 if($lock_idx > 2);
+	 } else {
+	  $lock_idx=0;
+	  my $lt=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lt+0) { $lt=$mrgb[$ch]+0; $lock_idx=$ch; }
+	  }
+	 }
+	 my ($reduce,$boost,$band)=($tier eq "micro")
+	  ? (0.992,1.008,0.0015)   # ~0.8% micro
+	  : (0.980,1.020,0.003);   # ~2% fine
+	 # Single worst NON-lock channel vs mean (the two that can still move).
+	 my ($worst_ch,$worst_dev);
+	 for my $ch (0..2) {
+	  next if($ch == $lock_idx);
+	  next if(!($mrgb[$ch]+0 > 0));
+	  my $dev=abs(($mrgb[$ch]/$mean)-1.0);
+	  if(!defined($worst_dev) || $dev+0 > $worst_dev+0) {
+	   $worst_dev=$dev+0; $worst_ch=$ch;
+	  }
+	 }
+	 return (1.0,1.0,1.0,undef) if(!defined($worst_ch) || $worst_dev+0 <= $band+0);
+	 my $ratio=$mrgb[$worst_ch]/$mean;
+	 my @gain=(1.0,1.0,1.0);
+	 # Lock stays at 1.0; only the worst free channel moves.
+	 if($ratio+0 > 1.0+$band) { $gain[$worst_ch]=$reduce; }
+	 elsif($ratio+0 < 1.0-$band) { $gain[$worst_ch]=$boost; }
+	 else { return (1.0,1.0,1.0,undef); }
+	 return ($gain[0],$gain[1],$gain[2],$worst_ch);
+	}
+
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my ($config,$state,$picture,$picture_mode,$white_y)=@_;
 	 log_line("HDR20 1D DPG queue: entered state=".((ref($state) eq "HASH")?"ok":"missing")." config_ddc_layout=".($config->{"ddc_layout"}//"")." state_ddc_layout=".($state->{"ddc_layout"}//"")." white_y=".($white_y//"undef")." defined_compute=".((defined(&lg_autocal_26_compute_hdr20_1d_dpg_data))?"yes":"no"));
@@ -14614,6 +14685,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# pattern as SDR26 peak white -- holds the lock for the whole anchor so
 		# the held channel does not flip and thrash.
 		my $white_lowest_lock={};
+		# coarse = reduce-to-lowest; fine/micro = small single-channel polish
+		my $white_phase="coarse";
+		my $white_last_move_span=0; # |applied-1| max of last upload; noise guard
 		# EOTF-aware damp state (per-anchor, persists across inner iters):
 		#   gamma_effective: current best estimate of the panel's local
 		#     code->light gamma at this anchor's IRE. Seeded from the
@@ -14980,18 +15054,24 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$move_scaling=1.0;
 				} elsif($is_white
 					&& defined($best_de)
-					&& ($de+0) > ($best_de+0) + 0.08) {
-					# WHITE: last reduce-to-lowest step overshot (dE worse than
-					# best). Restore best_dpg and HALVE move size for the next
-					# cut toward the locked lowest channel -- never reverse-
-					# boost the opposite way (that was the thrash).
+					&& ($de+0) > ($best_de+0) + 0.08
+					# Ignore pure meter noise when the last upload was a no-op
+					# (gains ~1) -- that was the "fine tune" death spiral where
+					# dE wiggled 0.70->0.82 with no DPG change and we burned
+					# the budget restoring best for nothing.
+					&& ($white_last_move_span+0) > 0.004) {
+					# WHITE: last real step overshot (dE worse than best). Restore
+					# best and HALVE step size. Promote coarse->fine so the next
+					# try is a small polish rather than another big dual cut.
 					my $worsened=$de+0;
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
 					$move_scaling*=0.5 if($move_scaling+0 > 0.125);
 					$move_scaling=0.125 if($move_scaling+0 < 0.125);
-					log_line("HDR20 1D DPG greyscale: ".$label." white overshoot restore best dE=".sprintf("%.4f",$best_de)." (was ".sprintf("%.4f",$worsened).", move_scaling=".sprintf("%.3f",$move_scaling).", lock=".($white_lowest_lock->{"name"}//"?").")");
+					if($white_phase eq "coarse") { $white_phase="fine"; }
+					elsif($white_phase eq "fine") { $white_phase="micro"; }
+					log_line("HDR20 1D DPG greyscale: ".$label." white overshoot restore best dE=".sprintf("%.4f",$best_de)." (was ".sprintf("%.4f",$worsened).", move_scaling=".sprintf("%.3f",$move_scaling).", phase=".$white_phase.", lock=".($white_lowest_lock->{"name"}//"?").")");
 					if($consecutive_reverts >= 4 || $move_scaling+0 <= 0.13) {
 						my ($bok,$bmsg)=$upload_dpg->($current_dpg);
 						my $_vd=undef;
@@ -15153,38 +15233,111 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			last if($conv_now && !$acceptance_pending);
 			# Reach the target (luminance AND white balance) with per-channel
 			# RGB gains. Body: lg_autocal_26_hdr20_dpg_gain.
-			# 100% white: reduce-to-lowest -- lock first-iter lowest Display-P3
-			# channel, pull the other two down to match (same as working SDR peak).
-			($rg,$gg,$bg)=$is_white
-				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading,$white_lowest_lock)
-				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
-			if($is_white && $i==1 && ref($white_lowest_lock) eq "HASH" && defined($white_lowest_lock->{"name"})) {
-				log_line("HDR20 1D DPG greyscale: ".$label." white reduce-to-lowest lock=".$white_lowest_lock->{"name"}." (idx=".$white_lowest_lock->{"idx"}.")");
+			# 100% white:
+			#   coarse -- reduce-to-lowest (lock first-iter lowest, cut others)
+			#   fine/micro -- once dE is low or coarse gains collapse to ~1 while
+			#   still above target, single-channel mean polish of the two non-lock
+			#   channels (lock = first-iter lowest R/G/B, not hard-coded).
+			my $white_direct=0;
+			my $white_touched=undef;
+			if($is_white) {
+			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_gain($reading,$white_lowest_lock);
+			 if($i==1 && ref($white_lowest_lock) eq "HASH" && defined($white_lowest_lock->{"name"})) {
+			  log_line("HDR20 1D DPG greyscale: ".$label." white reduce-to-lowest lock=".$white_lowest_lock->{"name"}." (idx=".$white_lowest_lock->{"idx"}.")");
+			 }
+			 my $coarse_span=0;
+			 for my $_g ($rg,$gg,$bg) {
+			  my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
+			  $coarse_span=$d if($d > $coarse_span);
+			 }
+			 # Enter fine when close, or when coarse has nothing left to cut.
+			 if($white_phase eq "coarse"
+			  && defined($de)
+			  && (($de+0) <= 2.0 || (($coarse_span+0) < 0.015 && ($de+0) > ($_effective_target_de+0)))) {
+			  $white_phase="fine";
+			  $move_scaling=1.0;
+			  log_line("HDR20 1D DPG greyscale: ".$label." white phase -> fine (dE=".sprintf("%.4f",$de+0).", coarse_span=".sprintf("%.4f",$coarse_span).")");
+			 }
+			 if($white_phase eq "fine" || $white_phase eq "micro") {
+			  my $tier=($white_phase eq "micro" || (defined($de) && ($de+0) < 0.6)) ? "micro" : "fine";
+			  $white_phase="micro" if($tier eq "micro" && $white_phase eq "fine");
+			  my $touched;
+			  ($rg,$gg,$bg,$touched)=lg_autocal_26_hdr20_dpg_white_balance_fine($reading,$tier,$white_lowest_lock);
+			  $white_touched=$touched;
+			  $white_direct=1;
+			  if(defined($touched)) {
+			   my $_n=(qw(R G B))[$touched]//"?";
+			   my $_g=($touched==0?$rg:($touched==1?$gg:$bg));
+			   log_line("HDR20 1D DPG greyscale: ".$label." white ".$white_phase." nudge ".$_n."=".sprintf("%.4f",$_g+0)." (lock=".($white_lowest_lock->{"name"}//"?").")");
+			  }
+			  # Nothing left to polish and still above target: stop at best.
+			  if(!defined($touched) && defined($de) && ($de+0) > ($_effective_target_de+0)) {
+			   log_line("HDR20 1D DPG greyscale: ".$label." white fine plateau (dE=".sprintf("%.4f",$de+0).", best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).", phase=".$white_phase.") -- stopping at best");
+			   @{$current_dpg}=@{$best_dpg} if(defined($best_de));
+			   @done=@{$best_anchors} if(defined($best_de));
+			   my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+			   my $_vd=undef;
+			   if($bok && !cancelled()) {
+			    my ($arr,$are)=read_step($config,$rs,$state);
+			    if(!$are && ref($arr) eq "HASH") {
+			     $last_reading=$arr;
+			     my $_tl=luminance($arr);
+			     $_tl=$white_ref if(!(defined($_tl) && $_tl+0 > 0));
+			     annotate_reading_target($arr,$_tl,$_tl,$target_x,$target_y);
+			     my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl);
+			     $_vd=$ade+0 if(defined($ade));
+			     $state->{"current_delta_e"}=$_vd if(defined($_vd));
+			    }
+			   }
+			   log_line("HDR20 1D DPG greyscale: ".$label." white fine stop at best dE=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($bok?", re-uploaded":"").(defined($_vd)?", verify dE=".sprintf("%.4f",$_vd):""));
+			   last;
+			  }
+			 }
+			} else {
+			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			}
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
-			# White move mult: large first cuts; halved via $move_scaling after overshoot.
+			# Coarse white: mult=2. Fine/micro: mult=1, apply gains more directly
+			# so a 0.98 micro cut is not squashed by damp^(1/3).
 			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
 			$white_move_mult=1.0 if($white_move_mult+0 < 1.0);
 			$white_move_mult=5.0 if($white_move_mult+0 > 5.0);
+			if($is_white && ($white_phase eq "fine" || $white_phase eq "micro")) {
+			 $white_move_mult=1.0;
+			}
 			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0)
 				: (($_anchor_ire+0 >= $high_ire_threshold) ? ($high_ire_move_mult+0.0)
 				: 1.0));
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			my ($sr,$sg,$sb);
+			if($white_direct) {
+			 $sr=1.0+(($rg//1.0)-1.0)*$move_scaling;
+			 $sg=1.0+(($gg//1.0)-1.0)*$move_scaling;
+			 $sb=1.0+(($bg//1.0)-1.0)*$move_scaling;
+			} else {
+			 $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			 $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			 $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			}
 			$sr=$floor if($sr+0 < $floor+0);
 			$sg=$floor if($sg+0 < $floor+0);
 			$sb=$floor if($sb+0 < $floor+0);
 			$sr=1.25 if($sr+0 > 1.25);
 			$sg=1.25 if($sg+0 > 1.25);
 			$sb=1.25 if($sb+0 > 1.25);
-			# Never reduce a channel past its raw reduce-to-lowest gain (overshoot
-			# guard). Gains are already <=1 so boosts are not an issue.
-			if($is_white) {
+			# Coarse overshoot guard: never cut past raw reduce-to-lowest gain.
+			if($is_white && !$white_direct) {
 			 $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
 			 $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
 			 $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+			}
+			# Track how large this applied move is (noise-guard for overshoot).
+			if($is_white) {
+			 $white_last_move_span=0;
+			 for my $_a ($sr,$sg,$sb) {
+			  my $d=abs(($_a+0)-1.0);
+			  $white_last_move_span=$d if($d > $white_last_move_span);
+			 }
 			}
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
