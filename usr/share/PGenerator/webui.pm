@@ -19834,7 +19834,17 @@ function meterTargetXYZForReading(reading){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;
   }
-  if(_activeColorSeries && meterChartIsHdr() && meterChartIsPq()){
+  // Dolby Vision is excluded from the PQ stimulus decode: DV ColorChecker
+  // patches are encoded with 2.2 (see $encode_linear's dv branch server-side
+  // and meterEncodeColorCheckerLinear here), NOT PQ. PQ-decoding a
+  // 2.2-encoded code yields an absurdly high luminance which then clamped to
+  // meterColorSeriesReferenceNits(), so EVERY grey reported the mastering peak
+  // as its target -- hardware, DV post-cal ColorChecker: White, Gray 35, 50,
+  // 65 and 80 all showed Tgt Y = 1000.0. Leaving _wrgbStimY null for DV lets
+  // the baked target_Yn drive the target, which is what DV bakes it for.
+  // Same isPq-and-not-dv idiom used by meterEncodeColorCheckerLinear and
+  // friends above.
+  if(_activeColorSeries && meterChartIsHdr() && meterChartIsPq() && !meterChartIsDv()){
    let _sy=meterWrgbStimulusTargetY(reading);
    if(_sy!=null){
     if(_greyReading){
@@ -19850,7 +19860,17 @@ function meterTargetXYZForReading(reading){
   // WHITE reference patch (target_Yn=1) must instead reference the display's
   // achieved white; otherwise the panel's normal peak rolloff reads as a
   // spurious white luminance error.
-  if(_activeColorSeries&&meterActiveChartSignalMode()==='hdr10'&&_greyReading){
+  // Dolby Vision needs this for the same reason HDR10 does. DV-Absolute pins
+  // meterColorSeriesReferenceNits() to the mastering peak so the CHROMATIC
+  // patches keep their baked "target_Yn * peak = Yn * 203" anchoring -- but a
+  // grey/white patch referenced to the mastering peak reports the panel's
+  // normal peak rolloff as a luminance error it cannot avoid. Hardware, DV
+  // post-cal: 100% White targeted 1000.0 against a 729.4 cd/m2 panel and
+  // scored dE 6.98 on a patch whose x,y were dead on (Dx -0.0000,
+  // Dy +0.0002). Greys reference the measured white; chromatic patches are
+  // untouched by this branch and keep the peak.
+  if(_activeColorSeries&&_greyReading
+   &&(meterActiveChartSignalMode()==='hdr10'||meterActiveChartSignalMode()==='dv')){
    const _whiteRef=meterFindMeasuredWhiteReading();
    const _whiteRefY=meterReadingLuminanceNits(_whiteRef);
    if(_whiteRefY>0) refY=_whiteRefY;
