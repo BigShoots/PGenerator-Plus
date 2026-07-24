@@ -16425,6 +16425,7 @@ const METER_FULL_AUTOCAL_REPORT_KEY='meterFullAutoCalReportData';
 const METER_FULL_AUTOCAL_COMPLETE_KEY='meterFullAutoCalCompleteToken';
 const METER_FULL_AUTOCAL_TOUCHUP_DISABLED=true;
 const METER_LG_HDR_CALMAN_RESET_ENDPOINT='/api/lg/hdr-calman-reset';
+const METER_LG_DV_CALMAN_RESET_ENDPOINT='/api/lg/dv-calman-reset';
 const METER_LG_SDR_CALMAN_RESET_ENDPOINT='/api/lg/sdr-calman-reset';
 const METER_AUTOCAL_STATE_KEY='meterAutoCalState';
 const METER_FULL_AUTOCAL_REPORT_SERIES=[
@@ -32548,7 +32549,9 @@ async function meterAutoCalResetDdc(){
  }
  let hdrCalmanReset=null;
  let sdrCalmanReset=null;
- if(hdrWorkflow){
+ if(resetSigMode==='dv'){
+  hdrCalmanReset=await meterAutoCalDvCalmanReset(pictureMode);
+ }else if(hdrWorkflow){
   hdrCalmanReset=await meterAutoCalHdrCalmanReset(pictureMode);
  }
  let response=null;
@@ -32665,6 +32668,40 @@ async function meterAutoCalHdrCalmanReset(pictureMode){
   if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
  }
  throw new Error(lastMessage||'Unable to run the LG HDR calibration reset.');
+}
+
+// Dolby Vision counterpart of meterAutoCalHdrCalmanReset -- a dedicated
+// function/endpoint/status text rather than a branch in the HDR one
+// (operator directive 2026-07-24: DV gets its own modal steps, the HDR
+// path/text stay untouched). Same CAL_START-bracketed identity reset DV
+// rides on the HDR20 mechanism for; server-side gate requires "dolby_hdr_*".
+async function meterAutoCalDvCalmanReset(pictureMode){
+ let response=null;
+ let lastMessage='Unable to run the LG Dolby Vision calibration reset.';
+ for(let attempt=1;attempt<=3;attempt++){
+  meterAutoCalSetOverlay(true,{current_name:'Performing LG Dolby Vision reset...',message:'Preparing Dolby Vision calibration state'+(attempt>1?' (retry '+attempt+'/3)':'')});
+  try{
+   response=await fetchJSON(METER_LG_DV_CALMAN_RESET_ENDPOINT,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+     picture_mode:pictureMode||meterLgPictureModeValue(),
+     action:'dv_calman_reset',
+     ddc_layout:'hdr20',
+     helper_timeout:170
+    }),
+    _quiet:true,
+    _timeoutMs:180000
+   });
+  }catch(e){
+   response=null;
+   lastMessage=(e&&e.message)?e.message:lastMessage;
+  }
+  if(response&&response.status==='ok') return response;
+  lastMessage=(response&&(response.repair_hint||response.message))||lastMessage;
+  if(attempt<3) await new Promise(resolve=>setTimeout(resolve,1200*attempt));
+ }
+ throw new Error(lastMessage||'Unable to run the LG Dolby Vision calibration reset.');
 }
 
 async function meterAutoCalSdrCalmanReset(pictureMode){
@@ -34927,21 +34964,20 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
- // Between the Pre-Cal choice closing and the next wizard step box showing,
- // meterDvAutoCalSetMapMode() below can sit in an up-to-25s restart-wait
- // (dv_map_mode is a restart key) with nothing on screen -- the wizard
- // overlay was left closed the whole time, so the operator saw the wizard
- // vanish with no indication anything was happening (operator-reported
- // 2026-07-24). Show a busy status for this setup stretch.
- meterAutoCalPhase='running';
- meterAutoCalSetOverlay(true,{phase:'running',current_name:'Preparing Full Auto Cal',message:dvSignal?'Switching the Dolby Vision map mode…':'Preparing to start…'});
  if(dvSignal){
   // DV map-mode requirement (operator-confirmed 2026-07-23): Absolute for
   // the pre-cal report (a verification read against the normal viewing
   // curve), Relative for the AutoCal run itself. When the pre-cal report
   // is skipped, greyscale is about to start immediately, so go straight to
-  // Relative here instead of switching twice.
-  await meterDvAutoCalSetMapMode(skipPreCal?'2':'1');
+  // Relative here instead of switching twice. dv_map_mode is a restart key
+  // and this can sit in an up-to-25s restart-wait with nothing on screen if
+  // left bare -- reuse the existing Apply Settings modal (same one shown
+  // for a manual output-format change) instead of leaving the wizard
+  // looking like it vanished (operator-reported 2026-07-24).
+  applySettingsModalShow();
+  const mapModeOk=await meterDvAutoCalSetMapMode(skipPreCal?'2':'1');
+  if(mapModeOk) applySettingsModalSuccess('Dolby Vision map mode updated.');
+  else{ applySettingsModalError('Failed to switch the Dolby Vision map mode.'); setTimeout(()=>applySettingsModalHide(),3000); }
   // The pre-cal report (when not skipped) always reads against PQ; greyscale
   // always calibrates against 2.2. Force whichever is about to run.
   meterDvAutoCalForceTargetGamma(skipPreCal?'2.2':'st2084');
@@ -34977,11 +35013,13 @@ async function meterStartFullAutoCal(){
   if(dvSignal){
    // The pre-cal report just ran in Absolute/PQ; switch to Relative and
    // force 2.2 before greyscale starts. (When the pre-cal report was
-   // skipped, the earlier switch above already set Relative/2.2.) Keep the
-   // busy status visible through this restart-key switch too, rather than
+   // skipped, the earlier switch above already set Relative/2.2.) Same
+   // Apply Settings modal treatment as the switch above, rather than
    // leaving the last pre-cal-report status line frozen on screen.
-   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Preparing Full Auto Cal',message:'Switching the Dolby Vision map mode…'});
-   await meterDvAutoCalSetMapMode('2');
+   applySettingsModalShow();
+   const mapModeOk2=await meterDvAutoCalSetMapMode('2');
+   if(mapModeOk2) applySettingsModalSuccess('Dolby Vision map mode updated.');
+   else{ applySettingsModalError('Failed to switch the Dolby Vision map mode.'); setTimeout(()=>applySettingsModalHide(),3000); }
    meterDvAutoCalForceTargetGamma('2.2');
   }
  }

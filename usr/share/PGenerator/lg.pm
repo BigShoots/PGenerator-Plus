@@ -2099,6 +2099,40 @@ sub webui_lg_hdr_calman_reset (@) {
  return &lg_encode_json($result);
 }
 
+# Dolby Vision counterpart of webui_lg_hdr_calman_reset -- kept as its own
+# route/handler rather than a branch in the HDR one (operator directive
+# 2026-07-24: DV gets its own path, the HDR path/text stay untouched).
+sub webui_lg_dv_calman_reset (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+	 if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+	  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing before resetting Dolby Vision calibration state.", needs_repair => &lg_json_true() });
+	 }
+	 return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting Dolby Vision calibration state." }) if(&lg_clients_disconnected($clients));
+	 my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting Dolby Vision calibration state." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting Dolby Vision calibration state." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "dv_calman_reset",
+  ip => $ip,
+  client_key => $client_key,
+  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  ddc_layout => $payload->{"ddc_layout"}||"hdr20",
+  helper_timeout => int($payload->{"helper_timeout"}||0),
+  connect_timeout => 5,
+ });
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the Dolby Vision calibration reset again.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
 sub webui_lg_sdr_calman_reset (@) {
  # SDR counterpart of webui_lg_hdr_calman_reset. The auto-cal wizard
  # calls /api/lg/sdr-calman-reset after the SDR picture-mode reset
@@ -2181,6 +2215,9 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/hdr-calman-reset" && $method eq "POST") {
   return &webui_lg_hdr_calman_reset($body);
+ }
+ if($path eq "/api/lg/dv-calman-reset" && $method eq "POST") {
+  return &webui_lg_dv_calman_reset($body);
  }
  if($path eq "/api/lg/sdr-calman-reset" && $method eq "POST") {
   return &webui_lg_sdr_calman_reset($body);
@@ -2642,9 +2679,12 @@ function lgPictureModeCanonicalValue(value){
   hdr_technicolorexpert:'hdrTechnicolorExpert',
   dolbyvisioncinema:'dolbyVisionCinema',
   dolby_hdr_cinema:'dolbyVisionCinema',
+  dolbyhdrcinema:'dolbyVisionCinema',
   dolbyvisioncinemahome:'dolbyVisionCinemaBright',
   dolbyvisioncinemabright:'dolbyVisionCinemaBright',
   dolby_hdr_cinema_bright:'dolbyVisionCinemaBright',
+  dolbyhdrcinemabright:'dolbyVisionCinemaBright',
+  dolbyhdrcinemahome:'dolbyVisionCinemaBright',
   dolbyhdrgame:'dolbyVisionGame',
   dolby_hdr_game:'dolbyVisionGame',
   dolbyvisiongame:'dolbyVisionGame',
