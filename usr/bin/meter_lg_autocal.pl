@@ -13907,15 +13907,20 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
-# Staged white correction for 100% (mid / micro). Does NOT pull the lowest
-# channel further down: only reduce channels still above mean, and boost G/B
-# that fell below mean. R is never reduced (peak hold).
+# Staged white correction for 100% (mid / micro).
+# Single-channel only: touch the worst off-mean G or B (never R, never both
+# at once). Simultaneous G-cut + B-boost was the thrash that walked away from
+# a best dE ~1.24 into flip-flop micro noise. Optional $exclude hashref
+# (keys 1=G / 2=B) skips a channel that just failed so the next iter tries
+# the other instead of replaying the same losing nudge.
 # $tier: "mid" (~6-8% steps) or "micro" (~2% steps).
+# Returns (r_gain, g_gain, b_gain, touched_ch) where touched_ch is 1, 2, or undef.
 sub lg_autocal_26_hdr20_dpg_white_balance_staged {
-	 my ($reading,$tier)=@_;
+	 my ($reading,$tier,$exclude)=@_;
 	 $tier=lc($tier||"mid");
 	 $tier="mid" if($tier ne "mid" && $tier ne "micro");
-	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+	 $exclude={} if(ref($exclude) ne "HASH");
+	 return (1.0,1.0,1.0,undef) unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
 	 my $mZ=$reading->{"Z"};
@@ -13928,35 +13933,46 @@ sub lg_autocal_26_hdr20_dpg_white_balance_staged {
 	   $mX=($rx/$ry)*$mY;
 	   $mZ=((1-$rx-$ry)/$ry)*$mY;
 	  } else {
-	   return (1.0,1.0,1.0);
+	   return (1.0,1.0,1.0,undef);
 	  }
 	 } else {
 	  $mX+=0; $mY+=0; $mZ+=0;
 	 }
-	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
+	 return (1.0,1.0,1.0,undef) if(!($mY+0 > 0));
 	 my @mrgb=(
 	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
 	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
-	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
+	 return (1.0,1.0,1.0,undef) if(!($sum+0 > 0));
 	 my $target=$sum/3.0;
 	 my ($reduce,$boost,$band)=($tier eq "micro")
 	  ? (0.98,1.02,0.002)   # ~2% micro polish
 	  : (0.94,1.07,0.005);  # ~6-8% mid recovery
-	 my @gain=(1.0,1.0,1.0);
-	 for my $ch (0..2) {
+	 # Pick the single worst G/B channel by |ratio-1|, skipping excluded.
+	 my ($worst_ch,$worst_dev);
+	 for my $ch (1,2) {
+	  next if($exclude->{$ch});
 	  my $m=$mrgb[$ch];
 	  next if(!($m+0 > 0) || !($target+0 > 0));
-	  my $ratio=$m/$target;
-	  if($ratio+0 > 1.0+$band) {
-	   $gain[$ch]=($ch == 0) ? 1.0 : $reduce;
-	  } elsif($ratio+0 < 1.0-$band) {
-	   $gain[$ch]=($ch == 0) ? 1.0 : $boost;
+	  my $dev=abs(($m/$target)-1.0);
+	  if(!defined($worst_dev) || $dev+0 > $worst_dev+0) {
+	   $worst_dev=$dev+0;
+	   $worst_ch=$ch;
 	  }
 	 }
-	 return ($gain[0],$gain[1],$gain[2]);
+	 return (1.0,1.0,1.0,undef) if(!defined($worst_ch) || !defined($worst_dev) || $worst_dev+0 <= $band+0);
+	 my $ratio=$mrgb[$worst_ch]/$target;
+	 my @gain=(1.0,1.0,1.0);
+	 if($ratio+0 > 1.0+$band) {
+	  $gain[$worst_ch]=$reduce;
+	 } elsif($ratio+0 < 1.0-$band) {
+	  $gain[$worst_ch]=$boost;
+	 } else {
+	  return (1.0,1.0,1.0,undef);
+	 }
+	 return ($gain[0],$gain[1],$gain[2],$worst_ch);
 	}
 
 sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
@@ -14662,10 +14678,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $converged=0;
 		my $last_reading=undef;
 		# 100% white move ladder: large (full raw cuts + mult) -> mid
-		# (staged ~6-8%) -> micro (staged ~2%). Body anchors ignore this.
+		# (single-channel ~6-8%) -> micro (single-channel ~2%). Body anchors ignore.
+		# Keep-best: any reading worse than best_de restores best_dpg to the wire
+		# before the next move; mid/micro only nudge one G/B channel so we never
+		# thrash with simultaneous opposite G/B nudges; fail streak promotes
+		# large→mid→micro and finally stops at the best snapshot.
 		my $white_stage=$is_white ? "large" : "";
 		my $white_stage_stall=0; # consecutive low-improvement iters in stage
 		my $white_stage_iters=0; # iters spent in current stage
+		my $white_fail_streak=0; # consecutive moves that failed to beat best
+		my $white_exclude={};    # G/B channels that just failed (skip next)
+		my $white_last_ch=undef; # last staged channel touched (1=G, 2=B)
+		my $best_reading=undef;  # reading that produced best_de (fallback)
 		# EOTF-aware damp state (per-anchor, persists across inner iters):
 		#   gamma_effective: current best estimate of the panel's local
 		#     code->light gamma at this anchor's IRE. Seeded from the
@@ -15015,7 +15039,15 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_de=$de+0;
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
+					$best_reading=$reading if(ref($reading) eq "HASH");
 					$consecutive_reverts=0;
+					# White: a true new best clears fail streak + channel excludes
+					# so mid/micro can freely pick the current worst G/B again.
+					if($is_white) {
+						$white_fail_streak=0;
+						$white_exclude={};
+						$white_last_ch=undef;
+					}
 					# Committed-max accumulator -- new-best path. A new best means
 					# this dE is the trajectory landmark for the anchor -- it is by
 					# construction WORSE than the previous best was, but it is the
@@ -15030,6 +15062,79 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
+				} elsif($is_white
+					&& defined($best_de)
+					# Ignore meter-noise blips (~0.05-0.08 dE at the peak).
+					&& ($de+0) > ($best_de+0) + 0.08) {
+					# WHITE keep-best: the last applied move made dE worse than the
+					# all-time best. Restore best_dpg to the wire, re-read from that
+					# state, exclude the channel that just failed, promote to a
+					# smaller stage, and fall through so the next move is a single
+					# smaller nudge FROM the best -- never keep thrashing on the
+					# worse DPG.
+					my $worsened_de=$de+0;
+					@{$current_dpg}=@{$best_dpg};
+					@done=@{$best_anchors};
+					$white_fail_streak++;
+					if(defined($white_last_ch)) {
+						$white_exclude->{$white_last_ch}=1;
+					}
+					my $promoted="";
+					if($white_stage eq "large") {
+						$white_stage="mid";
+						$white_stage_stall=0; $white_stage_iters=0;
+						$white_fail_streak=0; # each stage gets its own fail budget
+						$promoted="fail_to_mid";
+					} elsif($white_stage eq "mid" && $white_fail_streak >= 2) {
+						$white_stage="micro";
+						$white_stage_stall=0; $white_stage_iters=0;
+						$white_fail_streak=0;
+						$white_exclude={}; # fresh chance at micro step size
+						$promoted="fail_to_micro";
+					} elsif($white_stage eq "micro" && $white_fail_streak >= 2) {
+						log_line("HDR20 1D DPG greyscale: ".$label." white keep-best stop (dE=".sprintf("%.4f",$worsened_de)." > best=".sprintf("%.4f",$best_de)." +0.08, fail_streak=".$white_fail_streak.", stage=micro) -- leaving best on wire");
+						$move_scaling=1.0;
+						$prev_de=$best_de+0;
+						last;
+					}
+					$move_scaling=1.0;
+					my $_restored_ok=0;
+					my ($wuk,$wumsg)=$upload_dpg->($current_dpg);
+					if($wuk) {
+						my ($arr,$are)=read_step($config,$rs,$state);
+						if(!$are && ref($arr) eq "HASH") {
+							$reading=$arr;
+							$last_reading=$arr;
+							my $_tl_w=$is_white ? luminance($arr) : $tl;
+							$_tl_w=$white_ref if(!(defined($_tl_w) && $_tl_w+0 > 0));
+							annotate_reading_target($arr,($is_white ? $_tl_w : $white_ref),$_tl_w,$target_x,$target_y);
+							my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_w);
+							if(defined($ade)) {
+								$de=$ade+0;
+								$tl=$_tl_w;
+								$_restored_ok=1;
+							}
+						}
+					}
+					if(!$_restored_ok && ref($best_reading) eq "HASH") {
+						# Upload may have worked but re-read failed; still base
+						# the next gain on the reading that produced best_de.
+						$reading=$best_reading;
+						$de=$best_de+0;
+					} elsif(!$_restored_ok) {
+						$de=$best_de+0;
+					}
+					# Re-check convergence on the restored reading (the bad move's
+					# dE had already frozen $conv_now false for this iter).
+					if(defined($de) && $de+0 <= $_effective_target_de+0) {
+						$conv_now=1;
+						$converged=1;
+					}
+					$state->{"current_delta_e"}=(defined($de)?$de+0:$best_de+0);
+					write_state($state);
+					log_line("HDR20 1D DPG greyscale: ".$label." white keep-best restore (was dE=".sprintf("%.4f",$worsened_de).", best=".sprintf("%.4f",$best_de).", stage=".$white_stage.($promoted ne "" ? " promoted=".$promoted : "").", fail_streak=".$white_fail_streak.", exclude=[".join(",",sort keys %{$white_exclude})."], re-read=".($_restored_ok?"ok dE=".sprintf("%.4f",$de+0):"fallback").")");
+					# fall through: compute next (smaller / other-channel) move from restored state
+					# unless restored state already meets target (then last below).
 				} elsif(!$is_white
 					&& ((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
 					&& defined($prev_de) && $de+0 > $prev_de+0
@@ -15038,22 +15143,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# high-IRE revert + move_scaling=0.5 while gains were already
 					# ~1.0 (micro-adjust death spiral after G/B overshoot).
 					&& ($de+0) > ($prev_de+0) + 0.12)) {
-					# Descent-style revert: this iter's move made dE WORSE than the
-					# previous iter's dE (the state we were just at before applying
-					# the move). The earlier "de >= best_de" condition reverted on
-					# any non-improvement against the all-time best, which is right
-					# at low IRE (meter floor) but too eager at high IRE (panel
-					# sub-linear response + meter noise = the first iter that hits a
-					# lucky low-noise reading becomes best_de forever and every
-					# subsequent iter triggers revert). The new condition gates on
-					# a LOCAL direction change: the move had to have actually
-					# worsened the result, not just failed to improve the record.
-					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
-					# (5-80%) uses the monotonic best_de improvement pattern instead,
-					# matching the prior behavior.
-					# 100% white is excluded: it self-targets Y and after the first
-					# big G/B cuts the residual is noise-scale; high-IRE revert only
-					# halved move_scaling into micro territory.
+					# Descent-style revert for non-white low/high IRE anchors.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -15196,9 +15286,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
 				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			# --- White stage machine (large > mid > micro) ---
-			# Promote when the current stage stops making useful progress while
-			# still above target. Never demote. Lowest channel is never pulled
-			# further down (mean-based hold); R never reduced.
+			# Promote when natural large gains collapse or stall while still above
+			# target (fail-driven promote also happens in the keep-best branch).
+			# Never demote. Mid/micro: single worst G/B only (no dual thrash).
 			if($is_white && defined($de)) {
 			 my $nat_span=0;
 			 for my $_g ($rg,$gg,$bg) {
@@ -15217,7 +15307,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 if($white_stage eq "large") {
 			  # Leave large when natural gains collapse (no big cut left) or
 			  # two stalled iters after at least one large move -- then mid
-			  # can recover overshot G/B instead of freezing at gains 1/1/1.
+			  # can recover overshot G/B with single-channel steps.
 			  if(($nat_span+0) < 0.03 && $i >= 2 && ($de+0) > ($_effective_target_de+0)) {
 			   $white_stage="mid"; $white_stage_stall=0; $white_stage_iters=0; $promoted="nat_span";
 			  } elsif($white_stage_stall >= 2 && $i >= 3 && ($de+0) > ($_effective_target_de+0)) {
@@ -15226,6 +15316,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 } elsif($white_stage eq "mid") {
 			  if($white_stage_stall >= 2 && $white_stage_iters >= 2 && ($de+0) > ($_effective_target_de+0)) {
 			   $white_stage="micro"; $white_stage_stall=0; $white_stage_iters=0; $promoted="stall";
+			   $white_exclude={};
 			  }
 			 }
 			 if($promoted ne "") {
@@ -15233,19 +15324,30 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  $move_scaling=1.0; # never enter a new stage with halved micro scaling
 			 }
 			 if($white_stage eq "mid" || $white_stage eq "micro") {
-			  ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_staged($reading,$white_stage);
-			 }
-			 # Micro stage stuck: no staged move left either -- stop at best
-			 # instead of burning the budget on meter noise.
-			 if($white_stage eq "micro" && $white_stage_stall >= 2) {
-			  my $_ms=0;
-			  for my $_g ($rg,$gg,$bg) {
-			   my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
-			   $_ms=$d if($d > $_ms);
+			  my $touched;
+			  ($rg,$gg,$bg,$touched)=lg_autocal_26_hdr20_dpg_white_balance_staged($reading,$white_stage,$white_exclude);
+			  # If both G/B are excluded (or in-band), clear excludes once and retry.
+			  if(!defined($touched) && keys %{$white_exclude}) {
+			   $white_exclude={};
+			   ($rg,$gg,$bg,$touched)=lg_autocal_26_hdr20_dpg_white_balance_staged($reading,$white_stage,$white_exclude);
 			  }
-			  if(($_ms+0) < 0.015 && ($de+0) > ($_effective_target_de+0)) {
+			  $white_last_ch=$touched;
+			  # No single-channel move left at micro while still above target:
+			  # stop at best rather than burn budget on noise.
+			  if(!defined($touched) && $white_stage eq "micro" && ($de+0) > ($_effective_target_de+0)) {
 			   log_line("HDR20 1D DPG greyscale: ".$label." white micro plateau (dE=".sprintf("%.4f",$de+0).", best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).") -- stopping at best");
 			   last;
+			  }
+			  # Mid with nothing to move: promote to micro instead of spinning.
+			  if(!defined($touched) && $white_stage eq "mid" && ($de+0) > ($_effective_target_de+0)) {
+			   $white_stage="micro"; $white_stage_stall=0; $white_stage_iters=0; $white_exclude={};
+			   log_line("HDR20 1D DPG greyscale: ".$label." white stage -> micro (reason=no_mid_move, dE=".sprintf("%.4f",$de+0).")");
+			   ($rg,$gg,$bg,$touched)=lg_autocal_26_hdr20_dpg_white_balance_staged($reading,"micro",$white_exclude);
+			   $white_last_ch=$touched;
+			   if(!defined($touched)) {
+			    log_line("HDR20 1D DPG greyscale: ".$label." white micro plateau after mid empty (dE=".sprintf("%.4f",$de+0).", best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).") -- stopping at best");
+			    last;
+			   }
 			  }
 			 }
 			}
