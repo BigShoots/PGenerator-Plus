@@ -595,23 +595,17 @@ void ofApp::setColor(int red, int green, int blue) {
 }
 
 int ofApp::normalizeSourceValue(int value, int source_range_mode) {
- if(source_range_mode != 1)
-  return value;
- if(ofxRPI4Window::avi_info.output_format != 0)
-  return value;
- if(!ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.rgb_quant_range != 1)
-  return value;
- int bit_depth=ofxRPI4Window::bit_depth;
- int shift=bit_depth - 8;
- int limited_min=16 << shift;
- int limited_span=219 << shift;
- int max_value=(1 << bit_depth) - 1;
- int normalized=(int)(((long long)(value - limited_min) * max_value) / limited_span + 0.5);
- if(normalized < 0)
-  normalized=0;
- if(normalized > max_value)
-  normalized=max_value;
- return normalized;
+ /*
+  * Bit-perfect RGB Limited (phase 1):
+  * Pattern RGB codes are wire codes. Do not expand SOURCE_RANGE=LIMITED
+  * 16..235 into full-span 0..max when rgb_quant_range is Limited. That
+  * expand put black=0 in the FB while AVI still said Limited, which broke
+  * legal black (16) and PLUGE footroom.
+  *
+  * SOURCE_RANGE is retained for callers/metadata; all paths pass through.
+  */
+ (void)source_range_mode;
+ return value;
 }
 #if 0
 /*
