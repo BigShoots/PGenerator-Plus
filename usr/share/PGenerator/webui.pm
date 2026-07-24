@@ -11635,6 +11635,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <button class="btn btn-sm btn-secondary" id="meterFullAutoCalBtn" onclick="meterStartFullAutoCal()" style="display:none">&#9654; Full Auto Cal</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="greyscale" onclick="meterSelectAutoCalGreyscale()">Greyscale</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="3d-lut" onclick="meterSelectAutoCal3dLut()">3D LUT</button>
+      <!-- Dolby Vision replaces the 3D LUT stage with a panel-profile
+           (DOLBY_CFG_DATA) upload, so in DV signal mode this button takes the
+           3D LUT button's place and the 3D LUT button is hidden. -->
+      <button class="btn btn-sm btn-secondary" data-autocal-series="dv-profile" onclick="meterSelectAutoCalDvProfile()" style="display:none">DV Config</button>
       <button class="btn btn-sm btn-secondary" data-autocal-series="tone-map" onclick="meterSelectAutoCalToneMap()">Tone Map</button>
      </div>
     </div>
@@ -11672,6 +11676,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterOpenLg3dAutoCalModal()" style="display:none">&#9654; 3D LUT AutoCal</button>
     </span>
     <button class="btn btn-sm btn-primary" id="meterToneMapMeasureUploadBtn" onclick="meterStartToneMapMeasureUpload()" style="display:none" title="Measure 100% white peak and upload the HDR tone map">&#9654; Measure &amp; Upload</button>
+    <button class="btn btn-sm btn-primary" id="meterDvProfileMeasureUploadBtn" onclick="meterStartDvProfileStandalone()" style="display:none" title="Measure the panel profile (black, white, red, green, blue) and upload the Dolby Vision configuration to the TV">&#9654; Measure &amp; Upload DV Config</button>
     <button class="btn btn-sm btn-danger" id="meterStopBtn" onclick="meterStop()" style="display:none">&#9632; Stop</button>
     <button class="btn btn-sm btn-primary" id="meterDeviceReadyBtn" onclick="meterSignalDeviceReady()" style="display:none">Device Ready</button>
     <button class="btn btn-sm btn-primary" id="meterManualPromptBtn" onclick="meterSignalManualPromptReady()" style="display:none">Continue Meter Setup</button>
@@ -16376,6 +16381,11 @@ let meterLg3dAutoCalPolling=null;
 let meterLg3dAutoCalPollInFlight=false;
 let meterLg3dAutoCalPollErrors=0;
 let meterDvAutoCalProfileRunning=false;
+// True while the DV panel-profile measurement is running as its own pass
+// (AutoCal -> DV Config), i.e. NOT as the colour stage of a Full Auto Cal.
+// The measure/upload chain is shared; only the entry, failure and completion
+// handling differ.
+let meterDvProfileStandaloneRunning=false;
 let meterDvAutoCalProfilePolling=null;
 let meterDvAutoCalProfilePollInFlight=false;
 let meterDvAutoCalProfilePollErrors=0;
@@ -25847,6 +25857,21 @@ function meterAutoCalControlsAllowedForSignal(){
 }
 
 function meterAutoCalSeriesAvailable(){
+ // A run in flight OWNS the AutoCal tab. Both inputs below flap transiently
+ // while a worker holds the meter -- the DV profile worker in particular, and
+ // any LG status refresh that briefly reports not-connected. Because
+ // meterUpdateSeriesTabUi() switches the tab away from 'autocal' the moment
+ // this returns false, a flap re-derived the series context from the default
+ // greyscale ladder and the operator watched the live 26-point AutoCal
+ // results change and disappear mid-run (reported during the Dolby Vision
+ // config stage: the step row flipped from the 26-point ladder to the
+ // 21-point one and the Auto Cal tab vanished, then came back). Stay
+ // available for as long as something is actually running.
+ if((typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+  ||(typeof meterDvAutoCalProfileRunning!=='undefined'&&meterDvAutoCalProfileRunning)
+  ||(typeof meterDvProfileStandaloneRunning!=='undefined'&&meterDvProfileStandaloneRunning)) return true;
  // LG AutoCal requires a paired LG TV AND a connected meter -- without a
  // meter there is nothing to read, so the option must not even be
  // selectable (previously this only checked TV pairing + signal mode,
@@ -25952,6 +25977,39 @@ function meterUpdateReadButtons(){
    meterSetAutoCalSeriesChoice('greyscale');
   }
  }catch(e){}
+ // Dolby Vision has no 3D LUT stage -- its colour stage is the panel-profile
+ // (DOLBY_CFG_DATA) upload. Swap the two buttons by signal mode so DV shows
+ // "DV Config" where the other modes show "3D LUT", letting the operator run
+ // greyscale and the DV config as separate passes.
+ const dvSeriesOk=(String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='dv');
+ try{
+  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series="dv-profile"]').forEach(btn=>{
+   btn.style.display=dvSeriesOk?'':'none';
+   btn.hidden=!dvSeriesOk;
+   btn.disabled=!dvSeriesOk;
+  });
+  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series="3d-lut"]').forEach(btn=>{
+   btn.style.display=dvSeriesOk?'none':'';
+   btn.hidden=dvSeriesOk;
+   btn.disabled=dvSeriesOk;
+  });
+  const choiceNow=meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice);
+  if(dvSeriesOk&&choiceNow==='3d-lut') meterSetAutoCalSeriesChoice('greyscale');
+  if(!dvSeriesOk&&choiceNow==='dv-profile') meterSetAutoCalSeriesChoice('greyscale');
+ }catch(e){}
+ {
+  const dvProfileBtn=document.getElementById('meterDvProfileMeasureUploadBtn');
+  const showDvProfile=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive
+   &&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='dv-profile'&&dvSeriesOk&&!continuousUiActive;
+  if(dvProfileBtn){
+   dvProfileBtn.style.display=showDvProfile?'':'none';
+   dvProfileBtn.disabled=!showDvProfile||!meterDetected||settingsDirty||busy||!!meterDvProfileStandaloneRunning;
+   dvProfileBtn.title=!dvSeriesOk?'DV Config requires Dolby Vision signal mode'
+    :settingsDirty?'Apply & Restart first so measurements match the live signal mode'
+    :(busy||meterDvProfileStandaloneRunning)?'Meter operation already in progress'
+    :'Measure the panel profile (black, white, red, green, blue) and upload the Dolby Vision configuration';
+  }
+ }
  const showToneMap=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='tone-map'&&toneMapHdrOk&&!continuousUiActive;
  if(toneMapBtn){
   toneMapBtn.style.display=showToneMap?'':'none';
@@ -26021,7 +26079,12 @@ function meterNormalizeAutoCalSeriesChoice(choice){
  const c=String(choice||'').toLowerCase();
  if(c==='3d-lut'||c==='3dlut'||c==='lut') return '3d-lut';
  if(c==='tone-map'||c==='tonemap'||c==='tone_map'||c==='hdr-tone-map') return 'tone-map';
+ if(c==='dv-profile'||c==='dvprofile'||c==='dv-config'||c==='dvconfig'||c==='dv') return 'dv-profile';
  return 'greyscale';
+}
+
+function meterDvProfileSeriesAllowedForSignal(){
+ return String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='dv';
 }
 
 function meterSetAutoCalSeriesChoice(choice){
@@ -26030,6 +26093,9 @@ function meterSetAutoCalSeriesChoice(choice){
  if(next==='tone-map'&&typeof meterToneMapSeriesAllowedForSignal==='function'&&!meterToneMapSeriesAllowedForSignal()){
   next='greyscale';
  }
+ // DV Config series is Dolby-Vision-only, and DV has no 3D LUT stage.
+ if(next==='dv-profile'&&!meterDvProfileSeriesAllowedForSignal()) next='greyscale';
+ if(next==='3d-lut'&&meterDvProfileSeriesAllowedForSignal()) next='greyscale';
  meterAutoCalSeriesChoice=next;
  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series]').forEach(btn=>{
   const series=btn.dataset.autocalSeries||'';
@@ -26646,6 +26712,123 @@ function meterSelectAutoCal3dLut(){
  // 3D LUT charts are independent of ColorChecker — install the default
  // hybrid/volume shell (or last modal source) with empty readings.
  try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
+}
+
+// AutoCal -> DV Config. Dolby Vision's colour stage is a panel-profile
+// measurement (black/white/R/G/B) followed by a DOLBY_CFG_DATA upload, not a
+// 3D LUT -- this is the same stage Full Auto Cal runs after greyscale, exposed
+// on its own so greyscale and the DV config can be run as separate passes.
+function meterSelectAutoCalDvProfile(){
+ if(!meterDvProfileSeriesAllowedForSignal()){
+  try{ toast('DV Config series requires Dolby Vision signal mode',true); }catch(e){}
+  meterSelectAutoCalGreyscale();
+  return;
+ }
+ meterSeriesTab='autocal';
+ meterSetAutoCalSeriesChoice('dv-profile');
+ meterUpdateSeriesTabUi();
+ // Minimal series context: the five profile patches the worker reads. Nothing
+ // is parked on the panel here -- the worker drives its own patches, and
+ // leaving full-field white up while the operator reads the screen would both
+ // stress an OLED and skew the peak read.
+ meterActiveSeriesType='greyscale';
+ meterActiveSeriesPoints=1;
+ try{
+  if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false);
+  fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(()=>{});
+ }catch(e){}
+ meterUpdateReadButtons();
+}
+
+// Standalone entry for the DV panel profile. Reuses the shared measure/poll/
+// upload chain (meterDvAutoCalPollProfile / meterDvAutoCalUploadProfile); the
+// only differences are that no Full Auto Cal wizard is running, so failure
+// must not tear down a wizard that does not exist, and completion reports
+// directly instead of opening the post-cal report overlay.
+async function meterStartDvProfileStandalone(){
+ if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterDvProfileStandaloneRunning||meterDvAutoCalProfileRunning){
+  toast('Meter operation already in progress',true); return;
+ }
+ if(!meterDvProfileSeriesAllowedForSignal()){ toast('DV Config requires Dolby Vision signal mode',true); return; }
+ if(!(await meterEnsureDetected())){ toast('No meter detected',true); return; }
+ if(typeof meterFullAutoCalAvailable==='function'&&!meterFullAutoCalAvailable()){
+  toast('Connect an LG TV before running the DV Config pass',true); return;
+ }
+ if(!(await meterEnsureLgAutoCalTransport('DV Config'))) return;
+ if(!meterEnsureAppliedGeneratorSettings()) return;
+ // The profile is measured with the panel's DV engine in Relative (the same
+ // state Full Auto Cal holds it in for this stage). meterDvProfileFinishStandalone
+ // restores Absolute when the pass ends, however it ends.
+ applySettingsModalShow();
+ const mapOk=await meterDvAutoCalSetMapMode('2');
+ if(mapOk) applySettingsModalSuccess('Dolby Vision map mode updated.');
+ else{ applySettingsModalError('Failed to switch the Dolby Vision map mode.'); setTimeout(()=>applySettingsModalHide(),3000); return; }
+ meterDvAutoCalForceTargetGamma('2.2');
+ // A minimal config so the shared chain has the same fields it reads out of a
+ // Full Auto Cal run (dtype / ccss / range / signalMode).
+ meterFullAutoCalConfig={
+  signalMode:'dv',
+  dtype:getEffectiveDisplayType(),
+  ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():'',
+  patternSignalRange:String(getVal('rgb_quant_range')||'2')
+ };
+ meterDvProfileStandaloneRunning=true;
+ meterActionPending=false;
+ meterSetWorkflowProgress({status:'running',current_step:0,total_steps:5,current_name:'Starting Dolby Vision profile measurement'},{workflow:'dv-profile',label:'Starting Dolby Vision profile measurement'});
+ meterUpdateReadButtons();
+ const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
+ const range=meterFullAutoCalConfig.patternSignalRange;
+ const payload={
+  input_max:(bitDepth===10)?1023:255,
+  display_type:meterFullAutoCalConfig.dtype,
+  ccss_override:meterFullAutoCalConfig.ccss_override,
+  delay_ms:meterDelayMs(),
+  pattern_signal_range:range,
+  signal_range:range,
+  transport_signal_range:range,
+  picture_mode:meterLgPictureModeValue(),
+  upload:false,
+  keep_calibration_mode:true,
+  calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
+ };
+ let started=null;
+ try{
+  started=await fetchJSON('/api/lg/dv-profile/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15000});
+ }catch(e){ started=null; }
+ if(!started||started.status==='error'){
+  meterDvProfileFail((started&&started.message)||'Could not start the Dolby Vision profile measurement');
+  return;
+ }
+ meterDvAutoCalProfileRunning=true;
+ meterDvAutoCalProfilePollErrors=0;
+ if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+ meterDvAutoCalProfilePolling=setInterval(meterDvAutoCalPollProfile,1500);
+ await meterDvAutoCalPollProfile({initial:true});
+}
+
+// Route a DV-profile failure to whichever flow owns the run.
+function meterDvProfileFail(message){
+ if(meterDvProfileStandaloneRunning){
+  meterDvProfileFinishStandalone(false,message||'Dolby Vision profile pass failed');
+  return;
+ }
+ meterFullAutoCalAbort(message||'Dolby Vision profile stage failed',true);
+}
+
+// End a standalone DV Config pass. Always restores the DV engine to Absolute
+// (the normal viewing curve) and the PQ report curve, mirroring what
+// meterFullAutoCalComplete does at the end of a full run.
+async function meterDvProfileFinishStandalone(ok,message){
+ if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
+ meterDvAutoCalProfileRunning=false;
+ meterDvProfileStandaloneRunning=false;
+ meterHideWorkflowProgress();
+ try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
+ try{ meterDvAutoCalForceTargetGamma('st2084'); }catch(e){}
+ meterActionPending=false;
+ meterUpdateReadButtons();
+ toast(message||(ok?'Dolby Vision configuration uploaded':'Dolby Vision profile pass failed'),!ok);
 }
 
 function meterSelectAutoCalToneMap(){
@@ -35317,7 +35500,7 @@ async function meterDvAutoCalPollProfile(options){
   meterDvAutoCalProfilePollErrors=0;
   const steps=Array.isArray(r.steps)?r.steps:[];
   if(r.status==='running'||initial){
-   meterSetWorkflowProgress({status:'running',current_step:steps.length,total_steps:5,current_name:r.message||'Measuring Dolby Vision profile'},{workflow:'full',label:r.message||'Measuring Dolby Vision profile'});
+   meterSetWorkflowProgress({status:'running',current_step:steps.length,total_steps:5,current_name:r.message||'Measuring Dolby Vision profile'},{workflow:meterDvProfileStandaloneRunning?'dv-profile':'full',label:r.message||'Measuring Dolby Vision profile'});
   }
   if(r.status==='running'&&!meterDvAutoCalProfilePolling){
    meterDvAutoCalProfilePolling=setInterval(meterDvAutoCalPollProfile,1500);
@@ -35328,7 +35511,7 @@ async function meterDvAutoCalPollProfile(options){
    if(r.status==='complete'){
     await meterDvAutoCalUploadProfile(r);
    }else if(r.status==='error'){
-    meterFullAutoCalAbort(r.message||'Dolby Vision profile measurement failed',true);
+    meterDvProfileFail(r.message||'Dolby Vision profile measurement failed');
    }
    // cancelled: the Stop flow (meterStopDvAutoCalProfile) already reset the
    // wizard state and notified the operator -- nothing further to do here.
@@ -35354,10 +35537,10 @@ async function meterDvAutoCalPollProfile(options){
 async function meterDvAutoCalUploadProfile(profileStatus){
  const measurements=profileStatus&&profileStatus.measurements;
  if(!measurements||measurements.white_luminance==null){
-  meterFullAutoCalAbort('Dolby Vision profile measurement did not return usable readings',true);
+  meterDvProfileFail('Dolby Vision profile measurement did not return usable readings');
   return;
  }
- meterSetWorkflowProgress({status:'running',current_step:5,total_steps:5,current_name:'Uploading Dolby Vision profile'},{workflow:'full',label:'Uploading Dolby Vision profile'});
+ meterSetWorkflowProgress({status:'running',current_step:5,total_steps:5,current_name:'Uploading Dolby Vision profile'},{workflow:meterDvProfileStandaloneRunning?'dv-profile':'full',label:'Uploading Dolby Vision profile'});
  let upload=null;
  try{
   upload=await fetchJSON('/api/lg/dv-profile/upload',{
@@ -35373,7 +35556,13 @@ async function meterDvAutoCalUploadProfile(profileStatus){
   });
  }catch(e){ upload=null; }
  if(!upload||upload.status!=='ok'){
-  meterFullAutoCalAbort((upload&&upload.message)||'Dolby Vision profile upload failed',true);
+  meterDvProfileFail((upload&&upload.message)||'Dolby Vision profile upload failed');
+  return;
+ }
+ if(meterDvProfileStandaloneRunning){
+  // Standalone DV Config pass: no Full Auto Cal wizard to complete, so report
+  // directly rather than opening the post-cal report overlay.
+  await meterDvProfileFinishStandalone(true,'Dolby Vision configuration measured and uploaded');
   return;
  }
  meterFullAutoCalComplete({...profileStatus,full_autocal_phase:'dv-profile',dv_profile_uploaded:true,completed_at:Date.now()},{skipTouchup:true});
@@ -35387,6 +35576,7 @@ async function meterStopDvAutoCalProfile(){
  const wasFullWorkflow=!!meterFullAutoCalRunning;
  meterFullAutoCalResetState(false);
  meterDvAutoCalProfileRunning=false;
+ meterDvProfileStandaloneRunning=false;
  meterActionPending=true;
  try{
   await fetchJSON('/api/lg/dv-profile/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
