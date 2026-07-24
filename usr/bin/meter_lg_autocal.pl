@@ -13831,17 +13831,11 @@ my @vals=($mrgb[0]+0, $mrgb[1]+0, $mrgb[2]+0);
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
 
-# Peak white-balance gains: HDR20/DV 100% -- reduce-to-lowest (same idea as
-# SDR26 lg_autocal_26_sdr26_dpg_white_balance_gain). Project measured XYZ to
-# linear Display-P3 (D65 => R=G=B). Find the LOWEST of the three channels,
-# HOLD it (gain 1.0), pull the other two DOWN to match:
-#   gain = lowest / measured   (clamped to [0.5, 1.0], reduce only).
-# Lock the first-iter lowest channel so the lock does not flip between iters
-# and thrash. No boosts, no reverse-half dart throwing, no R-only special
-# case -- whichever channel is lowest is the lock, the other two come down.
-sub lg_autocal_26_hdr20_dpg_white_balance_gain {
-	 my ($reading,$lock_ref)=@_;
-	 return (1.0,1.0,1.0) unless(ref($reading) eq "HASH");
+# Project a measured reading to linear Display-P3, where D65 white is exactly
+# R=G=B. Shared by the peak white-balance learn/gain pair below.
+sub lg_autocal_26_hdr20_dpg_white_linear_rgb {
+	 my ($reading)=@_;
+	 return () unless(ref($reading) eq "HASH");
 	 my $mX=$reading->{"X"};
 	 my $mY=$reading->{"Y"};
 	 my $mZ=$reading->{"Z"};
@@ -13854,60 +13848,145 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	   $mX=($rx/$ry)*$mY;
 	   $mZ=((1-$rx-$ry)/$ry)*$mY;
 	  } else {
-	   return (1.0,1.0,1.0);
+	   return ();
 	  }
 	 } else {
 	  $mX+=0; $mY+=0; $mZ+=0;
 	 }
-	 return (1.0,1.0,1.0) if(!($mY+0 > 0));
-	 # Display-P3 inverse (D65). Same matrix as the rest of the HDR20 path.
-	 my @mrgb=(
+	 return () if(!($mY+0 > 0));
+	 return (
 	  2.4934969*$mX + -0.9313836*$mY + -0.4027108*$mZ,
 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
-	 my ($lowest_idx,$lowest_target);
-	 if(ref($lock_ref) eq "HASH" && defined($lock_ref->{"idx"})) {
-	  $lowest_idx=int($lock_ref->{"idx"});
-	  $lowest_idx=0 if($lowest_idx < 0);
-	  $lowest_idx=2 if($lowest_idx > 2);
-	  # Live measured value of the locked channel is what the others match.
-	  $lowest_target=$mrgb[$lowest_idx]+0;
-	  if(!($lowest_target+0 > 0) && defined($lock_ref->{"value"})) {
-	   $lowest_target=$lock_ref->{"value"}+0;
-	  }
-	 } else {
-	  $lowest_idx=0;
-	  $lowest_target=$mrgb[0]+0;
-	  for my $ch (1..2) {
-	   if($mrgb[$ch]+0 < $lowest_target+0) {
-	    $lowest_target=$mrgb[$ch]+0;
-	    $lowest_idx=$ch;
+	}
+
+# Learn each channel's local DPG-code -> light response exponent from the move
+# that was actually just applied, so the NEXT move can be sized from measured
+# panel behaviour instead of a tuned constant. Call once per iteration with
+# the reading and the DPG codes that produced it, BEFORE computing the gain.
+#
+# The commanded quantity is a ratio on the DPG code; the observed quantity is
+# the resulting linear-P3 channel ratio. Their log-log slope is the exponent:
+#     k = ln(m_after/m_before) / ln(dpg_after/dpg_before)
+# k near 1 means this channel's DPG is effectively linear in light; a
+# gamma-ish channel lands near its local gamma. Same idea as the body
+# anchors' gamma_effective, but per channel, because the three channels do
+# not have to share a response.
+sub lg_autocal_26_hdr20_dpg_white_learn_response {
+	 my ($learn,$mrgb,$dpg)=@_;
+	 return unless(ref($learn) eq "HASH" && ref($mrgb) eq "ARRAY" && ref($dpg) eq "ARRAY");
+	 return unless(@$mrgb == 3 && @$dpg == 3);
+	 $learn->{"k"}=[1.0,1.0,1.0] if(ref($learn->{"k"}) ne "ARRAY");
+	 $learn->{"m"}=[undef,undef,undef] if(ref($learn->{"m"}) ne "ARRAY");
+	 $learn->{"d"}=[undef,undef,undef] if(ref($learn->{"d"}) ne "ARRAY");
+	 $learn->{"n"}=[0,0,0] if(ref($learn->{"n"}) ne "ARRAY");
+	 for my $ch (0..2) {
+	  my $m_now=$mrgb->[$ch];
+	  my $d_now=$dpg->[$ch];
+	  my $m_was=$learn->{"m"}[$ch];
+	  my $d_was=$learn->{"d"}[$ch];
+	  if(defined($m_was) && defined($d_was) && defined($m_now) && defined($d_now)
+	     && $m_was+0 > 0 && $d_was+0 > 0 && $m_now+0 > 0 && $d_now+0 > 0) {
+	   my $cmd=($d_now+0)/($d_was+0);
+	   my $obs=($m_now+0)/($m_was+0);
+	   # Only a move big enough to clear meter/quantisation noise carries
+	   # usable slope information (>=0.5% commanded).
+	   if($cmd > 0 && $obs > 0 && abs(log($cmd)) > 0.005) {
+	    my $k=log($obs)/log($cmd);
+	    if($k == $k && $k > 0 && $k < 1e6) {
+	     $k=0.3 if($k < 0.3);
+	     $k=4.0 if($k > 4.0);
+	     # The first real observation REPLACES the seed (the seed is an
+	     # assumption, not a measurement). Later ones blend, so one noisy
+	     # read cannot throw the model.
+	     $learn->{"k"}[$ch]=($learn->{"n"}[$ch] ? (0.5*$k)+(0.5*($learn->{"k"}[$ch]+0)) : $k);
+	     $learn->{"n"}[$ch]++;
+	    }
 	   }
 	  }
+	  $learn->{"m"}[$ch]=defined($m_now) ? $m_now+0 : undef;
+	  $learn->{"d"}[$ch]=defined($d_now) ? $d_now+0 : undef;
+	 }
+	 return;
+	}
+
+# Peak white-balance gains: HDR20/DV 100%.
+#
+# Contract: LOCK the lowest linear channel at the FIRST read and hold it at
+# gain 1.0 for the whole anchor; drive the other two to MATCH the lock, in as
+# few moves as possible, with no panel-specific constants. Holding the lowest
+# is what respects the panel's native ceiling (no channel is ever asked to go
+# above where it already is at 100%) and gives peak luminance a fixed floor
+# instead of ratcheting down.
+#
+# Why the previous revision stalled: it clamped every non-lock gain to
+# "reduce only, never boost". The first move overshot both free channels BELOW
+# the lock, so every later iteration computed a >1.0 correction, clamped it to
+# exactly 1.0, and moved nothing -- a stable fixed point that is not the
+# target. Hardware, DV 100%: dE 21.8 -> 9.36 on move 1, then 15 consecutive
+# no-op iterations with the DPG frozen while dE drifted 9.36..9.02 on meter
+# noise alone. Non-lock channels must be free to move in BOTH directions to
+# match the lock; only the LOCK is never boosted.
+#
+# Move sizing is learned, not tuned -- see
+# lg_autocal_26_hdr20_dpg_white_learn_response. gain = need**(1/k) lands the
+# required ratio in one move once k is known. k is seeded at 1.0 (treat the
+# DPG ratio as the light ratio), which is what produced the known-good large
+# first moves, then refined from the panel's own measured response.
+sub lg_autocal_26_hdr20_dpg_white_balance_gain {
+	 my ($reading,$lock_ref,$learn,$dpg)=@_;
+	 my @mrgb=lg_autocal_26_hdr20_dpg_white_linear_rgb($reading);
+	 return (1.0,1.0,1.0) if(scalar(@mrgb) != 3);
+	 my $lock_idx;
+	 if(ref($lock_ref) eq "HASH" && defined($lock_ref->{"idx"})) {
+	  $lock_idx=int($lock_ref->{"idx"});
+	  $lock_idx=0 if($lock_idx < 0);
+	  $lock_idx=2 if($lock_idx > 2);
+	 } else {
+	  $lock_idx=0;
+	  my $lt=$mrgb[0]+0;
+	  for my $ch (1..2) {
+	   if($mrgb[$ch]+0 < $lt+0) { $lt=$mrgb[$ch]+0; $lock_idx=$ch; }
+	  }
 	  if(ref($lock_ref) eq "HASH") {
-	   $lock_ref->{"idx"}=$lowest_idx;
-	   $lock_ref->{"value"}=$lowest_target+0;
-	   $lock_ref->{"name"}=(qw(R G B))[$lowest_idx];
+	   $lock_ref->{"idx"}=$lock_idx;
+	   $lock_ref->{"value"}=$lt+0;
+	   $lock_ref->{"name"}=(qw(R G B))[$lock_idx];
 	  }
 	 }
-	 return (1.0,1.0,1.0) if(!($lowest_target+0 > 0));
-	 my @gain;
-	 for my $ch (0..2) {
-	  if($ch == $lowest_idx) {
-	   push @gain,1.0; # lock held
-	   next;
+	 # Match the free channels to the lock's LIVE value. The lock is held at
+	 # gain 1.0 so this target only moves by meter noise, but reading it live
+	 # keeps the match honest if the panel drifts mid-anchor.
+	 my $target=$mrgb[$lock_idx]+0;
+	 return (1.0,1.0,1.0) if(!($target > 0));
+	 my @k=(1.0,1.0,1.0);
+	 if(ref($learn) eq "HASH" && ref($learn->{"k"}) eq "ARRAY") {
+	  for my $ch (0..2) {
+	   my $kk=$learn->{"k"}[$ch];
+	   $k[$ch]=$kk+0 if(defined($kk) && $kk+0 > 0);
 	  }
+	 }
+	 my @gain=(1.0,1.0,1.0);
+	 for my $ch (0..2) {
+	  next if($ch == $lock_idx); # lock held, never boosted
 	  my $m=$mrgb[$ch]+0;
-	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
-	  # Cap per-iter cut at 20% (gain >= 0.80). A single-shot cut to 0.63
-	  # on B (raw reduce-to-lowest) overshot dE 21->26 and then forced a
-	  # multi-minute 2% crawl. Two ~20% steps land near the same place
-	  # without the overshoot detour.
-	  $g=0.80 if($g+0 < 0.80);
-	  $g=1.0 if($g+0 > 1.0); # reduce only -- never boost
-	  $g=1.0 if($g+0 != $g+0);
-	  push @gain,$g+0;
+	  next if(!($m > 0));
+	  my $need=$target/$m;
+	  next if(abs($need-1.0) < 0.002); # already matched within meter noise
+	  my $g=$need ** (1.0/($k[$ch]+0.0));
+	  $g=1.0 if($g != $g); # NaN guard
+	  # Per-iteration bound: generous and symmetric, so an honest large first
+	  # move is allowed (that is what makes the first moves land) while a wild
+	  # reading is still bounded. Deliberately not panel-specific.
+	  $g=0.5 if($g < 0.5);
+	  $g=2.0 if($g > 2.0);
+	  # Never command past the 1D_DPG_DATA domain ceiling.
+	  if(ref($dpg) eq "ARRAY" && defined($dpg->[$ch]) && $dpg->[$ch]+0 > 0) {
+	   my $max_g=32767.0/($dpg->[$ch]+0);
+	   $g=$max_g if($g > $max_g);
+	  }
+	  $gain[$ch]=$g+0;
 	 }
 	 return ($gain[0],$gain[1],$gain[2]);
 	}
@@ -14238,6 +14317,11 @@ sub lg_autocal_expected_gamma_for_signal_mode_and_ire {
   return $g_lo+($g_hi-$g_lo)*$f;
  }
  if($signal_mode eq "sdr") { return 2.2; }
+ # Dolby Vision calibrates in 2.2 (the panel linearizes 2.2 in cal mode and
+ # re-applies its own transfer with cal mode off) -- same as SDR, and NOT the
+ # PQ table above. Listed explicitly so a DV run does not fall through to the
+ # "unknown signal_mode" warning below for what is a fully supported mode.
+ if($signal_mode eq "dv") { return 2.2; }
  if($signal_mode eq "hlg") { return 2.4; }
  if(!defined($LG_AUTOCAL_PQ_GAMMA_TABLE{"__warned"})) {
   $LG_AUTOCAL_PQ_GAMMA_TABLE{"__warned"}=1;
@@ -14685,11 +14769,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my ($rs,$target,$idx,$label,$snum,$budget,$is_white)=@_;
 		my $converged=0;
 		my $last_reading=undef;
-		# 100% white reduce-to-lowest lock (first-iter lowest channel). Same
-		# pattern as SDR26 peak white -- holds the lock for the whole anchor so
-		# the held channel does not flip and thrash.
+		# 100% white lock (first-iter LOWEST channel). Held at gain 1.0 for the
+		# whole anchor so it cannot flip and thrash, and so peak luminance has a
+		# fixed floor; the other two are matched to it.
 		my $white_lowest_lock={};
-		# coarse = reduce-to-lowest; fine/micro = small single-channel polish
+		# Per-channel learned DPG-code -> light response for the white anchor.
+		# Seeded at k=1 and refined from each applied move, so the move size
+		# comes from this panel's measured behaviour rather than a constant.
+		my $white_learn={};
+		# Retained for the non-white damp path below; the white path is now
+		# driven directly by the learned model (no coarse/fine staging).
 		my $white_phase="coarse";
 		my $white_last_move_span=0; # |applied-1| max of last upload; noise guard
 		# EOTF-aware damp state (per-anchor, persists across inner iters):
@@ -15249,60 +15338,57 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			my $white_direct=0;
 			my $white_touched=undef;
 			if($is_white) {
-			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_gain($reading,$white_lowest_lock);
+			 # Learn this panel's per-channel response from the move that
+			 # produced THIS reading, then size the next move from it.
+			 my @_dpg_now=($current_dpg->[$idx],$current_dpg->[$idx+1024],$current_dpg->[$idx+2048]);
+			 my @_mrgb_now=lg_autocal_26_hdr20_dpg_white_linear_rgb($reading);
+			 lg_autocal_26_hdr20_dpg_white_learn_response($white_learn,\@_mrgb_now,\@_dpg_now)
+			  if(scalar(@_mrgb_now) == 3);
+			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_gain($reading,$white_lowest_lock,$white_learn,\@_dpg_now);
+			 # The model already sizes the move: apply it as computed, with no
+			 # damp, no white move multiplier and no overshoot guard. Those were
+			 # compensating for an unsized move and only slow convergence here.
+			 $white_direct=1;
 			 if($i==1 && ref($white_lowest_lock) eq "HASH" && defined($white_lowest_lock->{"name"})) {
-			  log_line("HDR20 1D DPG greyscale: ".$label." white reduce-to-lowest lock=".$white_lowest_lock->{"name"}." (idx=".$white_lowest_lock->{"idx"}.")");
+			  log_line("HDR20 1D DPG greyscale: ".$label." white lock=".$white_lowest_lock->{"name"}." (idx=".$white_lowest_lock->{"idx"}."), matching the other two to it");
 			 }
-			 my $coarse_span=0;
+			 my $white_span=0;
 			 for my $_g ($rg,$gg,$bg) {
 			  my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
-			  $coarse_span=$d if($d > $coarse_span);
+			  $white_span=$d if($d > $white_span);
 			 }
-			 # Enter fine only when already close (dE<=2) or coarse gains are
-			 # exhausted near target. Never enter fine at high dE -- that is
-			 # the multi-minute 2% crawl after a failed first slam.
-			 if($white_phase eq "coarse"
-			  && defined($de)
-			  && ((($de+0) <= 2.0)
-			   || (($coarse_span+0) < 0.015 && ($de+0) <= 3.0 && ($de+0) > ($_effective_target_de+0)))) {
-			  $white_phase="fine";
-			  $move_scaling=1.0;
-			  log_line("HDR20 1D DPG greyscale: ".$label." white phase -> fine (dE=".sprintf("%.4f",$de+0).", coarse_span=".sprintf("%.4f",$coarse_span).")");
+			 {
+			  my @_kn=map {
+			   sprintf("%.3f",(ref($white_learn->{"k"}) eq "ARRAY" && defined($white_learn->{"k"}[$_])) ? $white_learn->{"k"}[$_]+0 : 1.0)
+			  } (0..2);
+			  log_line(sprintf("HDR20 1D DPG greyscale: %s white move R=%.4f G=%.4f B=%.4f (learned k R=%s G=%s B=%s, lock=%s)",
+			   $label,($rg//1.0)+0,($gg//1.0)+0,($bg//1.0)+0,$_kn[0],$_kn[1],$_kn[2],($white_lowest_lock->{"name"}//"?")));
 			 }
-			 if($white_phase eq "fine" || $white_phase eq "micro") {
-			  my $tier=($white_phase eq "micro" || (defined($de) && ($de+0) < 0.6)) ? "micro" : "fine";
-			  $white_phase="micro" if($tier eq "micro" && $white_phase eq "fine");
-			  my $touched;
-			  ($rg,$gg,$bg,$touched)=lg_autocal_26_hdr20_dpg_white_balance_fine($reading,$tier,$white_lowest_lock);
-			  $white_touched=$touched;
-			  $white_direct=1;
-			  if(defined($touched)) {
-			   my $_n=(qw(R G B))[$touched]//"?";
-			   my $_g=($touched==0?$rg:($touched==1?$gg:$bg));
-			   log_line("HDR20 1D DPG greyscale: ".$label." white ".$white_phase." nudge ".$_n."=".sprintf("%.4f",$_g+0)." (lock=".($white_lowest_lock->{"name"}//"?").")");
-			  }
-			  # Nothing left to polish and still above target: stop at best.
-			  if(!defined($touched) && defined($de) && ($de+0) > ($_effective_target_de+0)) {
-			   log_line("HDR20 1D DPG greyscale: ".$label." white fine plateau (dE=".sprintf("%.4f",$de+0).", best=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).", phase=".$white_phase.") -- stopping at best");
-			   @{$current_dpg}=@{$best_dpg} if(defined($best_de));
-			   @done=@{$best_anchors} if(defined($best_de));
-			   my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-			   my $_vd=undef;
-			   if($bok && !cancelled()) {
-			    my ($arr,$are)=read_step($config,$rs,$state);
-			    if(!$are && ref($arr) eq "HASH") {
-			     $last_reading=$arr;
-			     my $_tl=luminance($arr);
-			     $_tl=$white_ref if(!(defined($_tl) && $_tl+0 > 0));
-			     annotate_reading_target($arr,$_tl,$_tl,$target_x,$target_y);
-			     my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl);
-			     $_vd=$ade+0 if(defined($ade));
-			     $state->{"current_delta_e"}=$_vd if(defined($_vd));
-			    }
+			 # Both free channels already match the lock within meter noise while
+			 # dE is still above target: that is the physical limit of holding the
+			 # lock, not a stall. Stop at best rather than burning the remaining
+			 # budget re-reading an unchanged panel (the old code had no such
+			 # exit and spent 15 iterations doing exactly that).
+			 if($white_span < 0.002 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
+			  log_line("HDR20 1D DPG greyscale: ".$label." white matched to lock (span=".sprintf("%.5f",$white_span).") with dE=".sprintf("%.4f",$de+0)." above target -- stopping at best ".sprintf("%.4f",defined($best_de)?$best_de+0:-1));
+			  @{$current_dpg}=@{$best_dpg} if(defined($best_de));
+			  @done=@{$best_anchors} if(defined($best_de));
+			  my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+			  my $_vd=undef;
+			  if($bok && !cancelled()) {
+			   my ($arr,$are)=read_step($config,$rs,$state);
+			   if(!$are && ref($arr) eq "HASH") {
+			    $last_reading=$arr;
+			    my $_tl=luminance($arr);
+			    $_tl=$white_ref if(!(defined($_tl) && $_tl+0 > 0));
+			    annotate_reading_target($arr,$_tl,$_tl,$target_x,$target_y);
+			    my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl);
+			    $_vd=$ade+0 if(defined($ade));
+			    $state->{"current_delta_e"}=$_vd if(defined($_vd));
 			   }
-			   log_line("HDR20 1D DPG greyscale: ".$label." white fine stop at best dE=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($bok?", re-uploaded":"").(defined($_vd)?", verify dE=".sprintf("%.4f",$_vd):""));
-			   last;
 			  }
+			  log_line("HDR20 1D DPG greyscale: ".$label." white stop at best dE=".sprintf("%.4f",defined($best_de)?$best_de+0:-1).($bok?", re-uploaded":"").(defined($_vd)?", verify dE=".sprintf("%.4f",$_vd):""));
+			  last;
 			 }
 			} else {
 			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
