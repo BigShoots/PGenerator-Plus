@@ -110,6 +110,23 @@ sub read_patch {
   transport_signal_range => $config->{"transport_signal_range"}||$config->{"signal_range"}||"1",
   signal_mode => "dv",
  };
+ # Measure with the SAME patch geometry the greyscale pass used, or the
+ # profile characterises a different operating point than the calibration it
+ # belongs to. This worker previously sent no patch_size and no pattern
+ # insertion, so white was read full-field: on a WRGB OLED that engages ABL
+ # and reads far below the windowed peak. Hardware: the greyscale measured
+ # 100% white at 729-730 cd/m2 with patch_size 10 + insertion, while this
+ # worker measured 531.47 -- and that low value was then written into the
+ # uploaded DV config as Tmax, telling the TV the panel is ~27% dimmer than it
+ # is. Forward whatever the caller stamped (patch size, refresh rate and the
+ # whole patch_insert* group) instead of silently taking the endpoint default.
+ $payload->{"patch_size"}=int($config->{"patch_size"}) if(defined $config->{"patch_size"} && $config->{"patch_size"} ne "");
+ $payload->{"refresh_rate"}=$config->{"refresh_rate"} if(defined $config->{"refresh_rate"} && $config->{"refresh_rate"} ne "");
+ foreach my $k (keys %{$config}) {
+  next unless($k =~ /^patch_insert/);
+  next unless(defined $config->{$k});
+  $payload->{$k}=$config->{$k};
+ }
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,"cancelled") if(cancelled());
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");

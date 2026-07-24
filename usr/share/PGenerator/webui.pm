@@ -26821,6 +26821,14 @@ async function meterStartDvProfileStandalone(){
   signal_range:range,
   transport_signal_range:range,
   picture_mode:meterLgPictureModeValue(),
+  // Measure the profile with the SAME patch geometry the greyscale pass used
+  // (10% window + pattern insertion on OLED). Without these the worker read
+  // white full-field, ABL pulled it down, and that low value became the
+  // uploaded DV config's Tmax -- hardware: 531.47 here vs 729-730 from the
+  // greyscale on the same panel.
+  patch_size:(typeof getMeterPatchSize==='function')?getMeterPatchSize():undefined,
+  refresh_rate:(typeof getMeterRefreshRate==='function')?(getMeterRefreshRate()||undefined):undefined,
+  ...((typeof meterPatternInsertionPayload==='function')?meterPatternInsertionPayload():{}),
   upload:false,
   keep_calibration_mode:true,
   calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
@@ -35499,6 +35507,14 @@ async function meterDvAutoCalStartProfile(firstStatus){
   signal_range:range,
   transport_signal_range:range,
   picture_mode:meterLgPictureModeValue(),
+  // Measure the profile with the SAME patch geometry the greyscale pass used
+  // (10% window + pattern insertion on OLED). Without these the worker read
+  // white full-field, ABL pulled it down, and that low value became the
+  // uploaded DV config's Tmax -- hardware: 531.47 here vs 729-730 from the
+  // greyscale on the same panel.
+  patch_size:(typeof getMeterPatchSize==='function')?getMeterPatchSize():undefined,
+  refresh_rate:(typeof getMeterRefreshRate==='function')?(getMeterRefreshRate()||undefined):undefined,
+  ...((typeof meterPatternInsertionPayload==='function')?meterPatternInsertionPayload():{}),
   upload:false,
   keep_calibration_mode:true,
   calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
