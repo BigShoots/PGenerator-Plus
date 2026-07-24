@@ -2299,8 +2299,15 @@ sub lg_picture_mode_for_calibration (@) {
   "dolbyvisiongame" => "dolby_hdr_game",
   "dolbyvisiongameoptimizer" => "dolby_hdr_game",
   "dolbyvisionvivid" => "dolby_hdr_vivid",
-  "dolbyvisionfilmmaker" => "dolby_hdr_film_maker",
-  "dolbyvisionfilmmakermode" => "dolby_hdr_film_maker",
+  # Operator-confirmed on real hardware (2026-07-24, real captured
+  # calibration traffic spanning SDR Cinema -> HDR Filmmaker -> DV Cinema
+  # Home -> DV Filmmaker): the on-screen "Filmmaker" preset is the same
+  # underlying mode as "Cinema Dark" -- CAL_START's picMode was
+  # "dolby_cinema_dark" every time the TV was actually in DV Filmmaker,
+  # never "dolby_film_maker". This corrects an earlier guess made before
+  # that was confirmed.
+  "dolbyvisionfilmmaker" => "dolby_hdr_cinema_dark",
+  "dolbyvisionfilmmakermode" => "dolby_hdr_cinema_dark",
   "dolbyvisionstandard" => "dolby_hdr_standard",
  );
  return $map{$mode_lc} if(defined($map{$mode_lc}));
