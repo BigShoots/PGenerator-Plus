@@ -15342,6 +15342,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 # produced THIS reading, then size the next move from it.
 			 my @_dpg_now=($current_dpg->[$idx],$current_dpg->[$idx+1024],$current_dpg->[$idx+2048]);
 			 my @_mrgb_now=lg_autocal_26_hdr20_dpg_white_linear_rgb($reading);
+			 # Seed the per-channel response from the anchor's gamma estimate
+			 # (signal-mode/IRE seeded, then EMA-refined) rather than from 1.0.
+			 # The DPG is NOT linear in light: seeding k=1 makes the very first
+			 # move over-cut badly -- commanding B x0.63 on a gamma~2.2 channel
+			 # delivers x0.36, which on hardware took dE 21.9 -> 26.9 in one
+			 # move. Seeding k from the real gamma makes that same first move
+			 # land on the lock instead, which is the whole point of doing this
+			 # in as few moves as possible.
+			 if(ref($white_learn->{"k"}) ne "ARRAY") {
+			  my $_kseed=$gamma_effective+0;
+			  $_kseed=1.0 if(!($_kseed > 0));
+			  $white_learn->{"k"}=[$_kseed,$_kseed,$_kseed];
+			 }
 			 lg_autocal_26_hdr20_dpg_white_learn_response($white_learn,\@_mrgb_now,\@_dpg_now)
 			  if(scalar(@_mrgb_now) == 3);
 			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_white_balance_gain($reading,$white_lowest_lock,$white_learn,\@_dpg_now);
@@ -15357,20 +15370,53 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
 			  $white_span=$d if($d > $white_span);
 			 }
+			 # Residual mismatch against the lock, measured in LIGHT. This is the
+			 # real convergence signal; the gains are not, because a gain can be
+			 # forced to ~1.0 by the DPG ceiling while the channels are still far
+			 # apart (at 100% the identity slot is 32736 of 32767, so a channel
+			 # needing a boost cannot get one). Reading the gains alone made a
+			 # ceiling-clamped no-op look like a perfect match and abandoned the
+			 # anchor at identity.
+			 my $white_resid=0;
+			 if(scalar(@_mrgb_now) == 3 && ref($white_lowest_lock) eq "HASH" && defined($white_lowest_lock->{"idx"})) {
+			  my $_li=int($white_lowest_lock->{"idx"});
+			  $_li=0 if($_li < 0); $_li=2 if($_li > 2);
+			  my $_lv=$_mrgb_now[$_li]+0;
+			  if($_lv > 0) {
+			   for my $_c (0..2) {
+			    next if($_c == $_li);
+			    next if(!($_mrgb_now[$_c]+0 > 0));
+			    my $_d=abs(($_mrgb_now[$_c]/$_lv)-1.0);
+			    $white_resid=$_d if($_d > $white_resid);
+			   }
+			  }
+			 }
 			 {
 			  my @_kn=map {
 			   sprintf("%.3f",(ref($white_learn->{"k"}) eq "ARRAY" && defined($white_learn->{"k"}[$_])) ? $white_learn->{"k"}[$_]+0 : 1.0)
 			  } (0..2);
-			  log_line(sprintf("HDR20 1D DPG greyscale: %s white move R=%.4f G=%.4f B=%.4f (learned k R=%s G=%s B=%s, lock=%s)",
-			   $label,($rg//1.0)+0,($gg//1.0)+0,($bg//1.0)+0,$_kn[0],$_kn[1],$_kn[2],($white_lowest_lock->{"name"}//"?")));
+			  log_line(sprintf("HDR20 1D DPG greyscale: %s white move R=%.4f G=%.4f B=%.4f (k R=%s G=%s B=%s, lock=%s, residual=%.4f%%)",
+			   $label,($rg//1.0)+0,($gg//1.0)+0,($bg//1.0)+0,$_kn[0],$_kn[1],$_kn[2],($white_lowest_lock->{"name"}//"?"),$white_resid*100));
 			 }
-			 # Both free channels already match the lock within meter noise while
-			 # dE is still above target: that is the physical limit of holding the
-			 # lock, not a stall. Stop at best rather than burning the remaining
-			 # budget re-reading an unchanged panel (the old code had no such
-			 # exit and spent 15 iterations doing exactly that).
-			 if($white_span < 0.002 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
-			  log_line("HDR20 1D DPG greyscale: ".$label." white matched to lock (span=".sprintf("%.5f",$white_span).") with dE=".sprintf("%.4f",$de+0)." above target -- stopping at best ".sprintf("%.4f",defined($best_de)?$best_de+0:-1));
+			 # Genuinely matched in light while dE is still above target: that is
+			 # the physical limit of holding the lock, not a stall. Stop at best
+			 # rather than burning the remaining budget re-reading an unchanged
+			 # panel (the pre-fix code had no such exit and spent 15 iterations
+			 # doing exactly that).
+			 my $_white_stop=0;
+			 my $_white_stop_why="";
+			 if($white_resid <= 0.004 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
+			  $_white_stop=1;
+			  $_white_stop_why=sprintf("matched to lock in light (residual=%.4f%%)",$white_resid*100);
+			 } elsif($white_span < 0.002 && $white_resid > 0.004 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
+			  # Still mismatched but no move is available -- the free channels
+			  # need a boost and the DPG is already at the domain ceiling.
+			  $_white_stop=1;
+			  $_white_stop_why=sprintf("cannot correct further: residual=%.4f%% needs a boost but the DPG is at the ceiling (R=%d G=%d B=%d of 32767)",
+			   $white_resid*100,$_dpg_now[0],$_dpg_now[1],$_dpg_now[2]);
+			 }
+			 if($_white_stop) {
+			  log_line("HDR20 1D DPG greyscale: ".$label." white ".$_white_stop_why." with dE=".sprintf("%.4f",$de+0)." above target -- stopping at best ".sprintf("%.4f",defined($best_de)?$best_de+0:-1));
 			  @{$current_dpg}=@{$best_dpg} if(defined($best_de));
 			  @done=@{$best_anchors} if(defined($best_de));
 			  my ($bok,$bmsg)=$upload_dpg->($current_dpg);
