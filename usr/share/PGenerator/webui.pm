@@ -3734,12 +3734,26 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        # DV Absolute chromatic: drive patches to Yn*203 nits as a fraction
        # of the mastering peak (matching DV-Absolute sat-sweep encoding).
        # Bake target_Yn so target_Yn * peak = Yn * 203.
+       #
+       # The per-channel fractions below are LINEAR light and must be run
+       # through DV's OETF before becoming codes -- the same 1/2.2 encode
+       # $encode_linear applies for DV and that the client's
+       # meterEncodeColorCheckerLinear() uses. This branch previously wrote the
+       # linear fraction straight into the code, which is always far too dark
+       # and squashed every chromatic patch into a narrow near-black range:
+       # hardware, DV post-cal ColorChecker, Bluish Green was sent as
+       # 12,25,21 and measured 0.46 cd/m2 against a 240.76 cd/m2 target, and
+       # the patches all looked alike. Greys were unaffected (different
+       # branch), which is why only the chromatic rows collapsed.
+       # target_Yn is the LINEAR target and is unchanged by this -- the fix
+       # makes the displayed patch match the target, it does not move it.
+       my $dv_oetf=sub { my ($v)=@_; return ($v>0) ? $v**(1/2.2) : 0; };
        my $rf=$rl*$bt2408_ref_white_nits/$dv_peak; $rf=0 if($rf<0); $rf=1 if($rf>1);
        my $gf=$gl*$bt2408_ref_white_nits/$dv_peak; $gf=0 if($gf<0); $gf=1 if($gf>1);
        my $bf=$bl*$bt2408_ref_white_nits/$dv_peak; $bf=0 if($bf<0); $bf=1 if($bf>1);
-       $r=int($min_code+$rf*$span_code+.5);
-       $g=int($min_code+$gf*$span_code+.5);
-       $b=int($min_code+$bf*$span_code+.5);
+       $r=int($min_code+$dv_oetf->($rf)*$span_code+.5);
+       $g=int($min_code+$dv_oetf->($gf)*$span_code+.5);
+       $b=int($min_code+$dv_oetf->($bf)*$span_code+.5);
        $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$dv_peak;
       } else {
        # SDR / HLG / DV-Relative: unchanged chromatic encoding, with the
