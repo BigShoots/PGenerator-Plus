@@ -34927,6 +34927,14 @@ async function meterStartFullAutoCal(){
  meterFullAutoCalRunId=meterFullAutoCalNewRunId();
  meterFullAutoCalStartedAt=Date.now();
  meterFullAutoCalPhase=skipPreCal?'first-greyscale':'precal-report';
+ // Between the Pre-Cal choice closing and the next wizard step box showing,
+ // meterDvAutoCalSetMapMode() below can sit in an up-to-25s restart-wait
+ // (dv_map_mode is a restart key) with nothing on screen -- the wizard
+ // overlay was left closed the whole time, so the operator saw the wizard
+ // vanish with no indication anything was happening (operator-reported
+ // 2026-07-24). Show a busy status for this setup stretch.
+ meterAutoCalPhase='running';
+ meterAutoCalSetOverlay(true,{phase:'running',current_name:'Preparing Full Auto Cal',message:dvSignal?'Switching the Dolby Vision map mode…':'Preparing to start…'});
  if(dvSignal){
   // DV map-mode requirement (operator-confirmed 2026-07-23): Absolute for
   // the pre-cal report (a verification read against the normal viewing
@@ -34969,7 +34977,10 @@ async function meterStartFullAutoCal(){
   if(dvSignal){
    // The pre-cal report just ran in Absolute/PQ; switch to Relative and
    // force 2.2 before greyscale starts. (When the pre-cal report was
-   // skipped, the earlier switch above already set Relative/2.2.)
+   // skipped, the earlier switch above already set Relative/2.2.) Keep the
+   // busy status visible through this restart-key switch too, rather than
+   // leaving the last pre-cal-report status line frozen on screen.
+   meterAutoCalSetOverlay(true,{phase:'running',current_name:'Preparing Full Auto Cal',message:'Switching the Dolby Vision map mode…'});
    await meterDvAutoCalSetMapMode('2');
    meterDvAutoCalForceTargetGamma('2.2');
   }

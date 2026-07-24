@@ -3382,7 +3382,14 @@ sub lg_hdr_calman_reset_workflow (@) {
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
  my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
- if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
+ # Dolby Vision's calibration-mode names resolve to "dolby_hdr_*" (see
+ # lg_picture_mode_for_calibration), not "hdr_*" -- DV rides this same HDR
+ # reference reset (its greyscale calibration uses the HDR20 1D-DPG
+ # mechanism), so the active-mode gate must accept both prefixes, matching
+ # lg_sdr_calman_reset_workflow's own guard below. Fixed after DV Full
+ # AutoCal reported "HDR reset requires an active HDR picture mode" on every
+ # run (operator-reported 2026-07-24).
+ if($cal_mode eq "" || $cal_mode !~ /^(hdr_|dolby_hdr_)/) {
   &websocket_close($session);
   return &json_error("HDR reset requires an active HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
  }
