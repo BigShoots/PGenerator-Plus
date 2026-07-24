@@ -2443,9 +2443,9 @@ sub lg_dv_profile_descriptor (@) {
 # auto-detection and the writable-picture-mode allow-list both key off that
 # exact prefix elsewhere in this file) -- but the wire picMode value the TV
 # firmware actually accepts for Dolby Vision drops "hdr" entirely. Hardware
-# fact, from a real Calman capture (2026-07-23): the dark DV preset's wire
-# picMode is "dolby_cinema_dark", not "dolby_hdr_cinema_dark". Sending the
-# unstranslated "dolby_hdr_*" value made the TV reject CAL_START outright
+# fact (2026-07-23, real captured calibration traffic): the dark DV preset's
+# wire picMode is "dolby_cinema_dark", not "dolby_hdr_cinema_dark". Sending
+# the untranslated "dolby_hdr_*" value made the TV reject CAL_START outright
 # (errorCode 20, "Driver error while executing the command"). Translate only
 # at the wire boundary; every other use of $cal_mode is unaffected.
 sub lg_wire_pic_mode (@) {
@@ -4141,11 +4141,12 @@ sub lg_dv_profile_upload_workflow (@) {
  );
  # CAL_START reliably errors (errorCode 20, "Driver error while executing
  # the command") for EVERY picture mode on this firmware, not just Dolby
- # Vision -- hw-verified 2026-07-23 via a real Calman capture: its own
- # CAL_START gets the identical error for plain "cinema" AND for
- # "dolby_cinema_dark", and Calman just ignores the failure and proceeds to
- # send the real data commands (which succeed). So CAL_START/CAL_END are
- # sent for parity with the real protocol, but their outcome is never fatal.
+ # Vision -- hw-verified 2026-07-23 via real captured calibration traffic:
+ # the same CAL_START gets the identical error for plain "cinema" AND for
+ # "dolby_cinema_dark", and the reference tool just ignores the failure and
+ # proceeds to send the real data commands (which succeed). So CAL_START/
+ # CAL_END are sent for parity with the real protocol, but their outcome is
+ # never fatal.
  my $start=&lg_calibration_request($session,"dv_profile_upload_cal_start","CAL_START",&lg_force_pic_mode_payload({ values => [0,0,0,0,0,0,0,0,0], data_type => "float" }),1,$cal_mode,$connect_timeout + 4);
  my $upload=&lg_calibration_request($session,"dv_profile_upload","DOLBY_CFG_DATA",&lg_force_pic_mode_payload({ text => $descriptor }),undef,$cal_mode,$connect_timeout + 8);
  my ($upload_failed,$upload_message)=&response_is_app_failure($upload);
