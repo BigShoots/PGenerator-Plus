@@ -23922,7 +23922,19 @@ function meterLiveXyzRgbCodes(xyz,step){
  const linear=xyzToLinRgb(xyz.X,xyz.Y,xyz.Z,meterAnalysisGamut().xyzToRgb);
  let signal;
  if(meterChartIsPq() && (!meterChartIsDv() || meterDvUsesPqTargetCurve())){
-  signal=linear.map(channel=>meterChartPqEncodeNormalized(Math.max(0,channel)));
+  // Normalise to the reference white before PQ-encoding, so this row is a
+  // BALANCE readout on the same scale as the patch target code beside it --
+  // which is what every other branch here already does (the SDR/else branch
+  // divides by the reference, HLG passes it as the peak). The PQ branch alone
+  // encoded raw absolute nits, so on a panel whose white measures 724 cd/m2 a
+  // 100% white patch read 183 against a target of 255 and looked like a large
+  // error when the panel was in fact on target. Referencing the measured white
+  // makes measured==target at 100% and leaves the R/G/B spread (the actual
+  // point of the row) intact. Reported for HDR10 RGB Full; applies to DV
+  // Absolute too since both take this branch.
+  const pqRef=Math.max(0.0001,meterColorSeriesReferenceNits());
+  const pqScale=(pqRef>0)?(10000/pqRef):1;
+  signal=linear.map(channel=>meterChartPqEncodeNormalized(Math.max(0,channel)*pqScale));
  }else if(meterChartIsHlg()){
   const peak=Math.max(1,meterColorSeriesReferenceNits());
   signal=linear.map(channel=>hlgInverseEotfSignal(Math.max(0,channel),meterChartMasterMin(),peak));
