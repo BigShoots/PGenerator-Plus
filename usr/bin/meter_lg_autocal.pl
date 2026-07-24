@@ -20864,8 +20864,15 @@ sub restore_factory_levels_for_autocal {
 sub reset_hdr20_luminance_baseline_if_needed {
  my ($config,$state)=@_;
  return undef if(ref($config) ne "HASH");
- # DV uses the same HDR20 luminance baseline zeroing as HDR10 before cal.
- return undef if(lc(($config->{"signal_mode"}||"")) ne "hdr10" && lc(($config->{"signal_mode"}||"")) ne "dv");
+ # HDR10 ONLY. This zeroes the 22-pt whiteBalance / adjustingLuminance
+ # baseline via the SDR-style DDC write path (set_picture_values) and
+ # verifies it against the TV readback. Dolby Vision picture modes do NOT
+ # accept/verify a 22-pt whiteBalance DDC write (they calibrate via the 1D
+ # DPG only), so running this for DV fails the readback verify every time
+ # ("LG DDC 1D LUT upload did not verify"). DV's baseline is already cleared
+ # by the JS dv-calman-reset preflight (identity 1D DPG + BT2020 matrix), so
+ # DV must skip this exactly like SDR does.
+ return undef if(lc(($config->{"signal_mode"}||"")) ne "hdr10");
  return undef if(autocal_config_is_touchup($config));
  # The HDR10 preflight (/api/lg/hdr-calman-reset -> lg_hdr_calman_reset_workflow)
  # resets the 1D DPG / 3D LUT / 3x3 matrix to unity, but it does NOT touch the
