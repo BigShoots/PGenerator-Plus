@@ -13877,22 +13877,12 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  -0.8294890*$mX + 1.7626641*$mY +  0.0236247*$mZ,
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
-	 # D65 has R=G=B in linear Display-P3. Neutralize the peak by bringing the
-	 # higher channels straight DOWN to the LOWEST-reading channel
-	 # (reduce-to-lowest, matching the 100%-white strategy documented at the
-	 # call site) -- NOT to the mean. Reducing only to the mean leaves the
-	 # excess channels still above the darkest one, so each iteration lowers
-	 # the mean a little and white converges only asymptotically, stalling
-	 # inside the iteration budget (observed on DV Filmmaker: 100% stuck at
-	 # dE ~5.6 after 16 iters). On an OLED the channels can only be attenuated
-	 # (never boosted), so the lowest-reading channel is the achievable neutral
-	 # peak; targeting it makes the excess channels move there in a few direct
-	 # steps. R is still held at 1.0 below (peak-luminance preservation).
+	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
+	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
+	 # any at or below the mean is held.
 	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
 	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
-	 my $target=$mrgb[0];
-	 $target=$mrgb[1] if($mrgb[1]+0 < $target+0);
-	 $target=$mrgb[2] if($mrgb[2]+0 < $target+0);
+	 my $target=$sum/3.0;
 	 my @gain;
 	 for my $ch (0..2) {
 	  my $m=$mrgb[$ch];
