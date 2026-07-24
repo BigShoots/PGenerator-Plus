@@ -25801,12 +25801,16 @@ function meterAutoCalControlsAllowedForSignal(){
 }
 
 function meterAutoCalSeriesAvailable(){
- // LG AutoCal requires a paired LG TV. HLG has no calibration workspace
- // (mirrors meterAutoCalControlsAllowedForSignal); dv is allowed through.
+ // LG AutoCal requires a paired LG TV AND a connected meter -- without a
+ // meter there is nothing to read, so the option must not even be
+ // selectable (previously this only checked TV pairing + signal mode,
+ // letting AutoCal show as a pickable series with no meter attached in any
+ // picture mode). HLG has no calibration workspace (mirrors
+ // meterAutoCalControlsAllowedForSignal); dv is allowed through.
  const lgPaired=(typeof meterGreyTvControlsActive==='function')&&meterGreyTvControlsActive();
  const sm=(getVal('signal_mode')||'sdr');
  const signalAllowed=(sm!=='hlg');
- return !!(lgPaired&&signalAllowed);
+ return !!(lgPaired&&signalAllowed&&meterDetected);
 }
 
 // Standalone Tone Map series is HDR10-only (PQ peak + LG HDR tone-map
