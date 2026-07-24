@@ -29771,7 +29771,13 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  const slot=METER_LG_GREY_AUTOCAL_26_SLOTS.find(v=>Math.abs(v-ire)<0.001);
 	  if(slot!=null&&step.autocal_slot_locked&&meterLgDdcStepHasCustomStimulus(step,slot)) inputByDdcSlot[String(slot)]=step;
 	 });
-	 if(mode==='hdr10'){
+	 if(mode==='hdr10'||mode==='dv'){
+	  // Dolby Vision uses the SAME HDR20 0-100% ladder + 1D DPG path as HDR10
+	  // (it has a REAL 100% top slot, so the worker gets a live white_y
+	  // reference -- unlike the SDR ladder's reference-only 100%). The ONLY
+	  // difference is the wire code: DV tunnels plain N-bit RGB, so its codes
+	  // come from the DV-aware meterCodeFromSignalPercentWithOptions, not the
+	  // HDR10 PQ-domain tables (see the mode==='dv' branch in makeHdrStep).
 	  const makeHdrStep=(slot)=>{
 		   const hdrIdx=METER_LG_GREY_HDR_AUTOCAL_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
 		   // Pick the HDR greyscale code table by bit-depth + quant range.
@@ -29780,7 +29786,13 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   // panel (clipped/over-driven). See METER_LG_GREY_HDR_AUTOCAL_*
 		   // definitions at webui.pm ~18305.
 		   let code;
-		   if(hdrIdx>=0){
+		   if(mode==='dv'){
+		    // Dolby Vision tunnels the pattern as plain N-bit RGB with no PQ
+		    // code table; meterCodeFromSignalPercentWithOptions is DV-aware and
+		    // returns the correct tunnel code (8-bit full 0..255 / limited
+		    // 16..235) for this HDR20-ladder slot.
+		    code=meterCodeFromSignalPercentWithOptions(slot,null);
+		   } else if(hdrIdx>=0){
 		    // HDR20 step code table selection follows meterPatchBitDepth(),
 		    // which reads the WebUI Bit Depth dropdown (max_bpc). 8-bit
 		    // → 8-bit codes (limited 16..235 or full 0..255); 10-bit →
