@@ -2445,8 +2445,13 @@ sub lg_calibration_request (@) {
   $payload->{"picMode"}=$picture_mode if($data->{"force_pic_mode"} && defined($picture_mode) && $picture_mode ne "");
   $payload->{"data"}=encode_base64($text,"");
   $payload->{"dataCount"}=length($text);
-  # Text payload encoding -- hypothesis pending hardware confirmation (Task 11)
-  $payload->{"dataType"}=$data->{"data_type"}||$data->{"dataType"}||"ascii";
+  # "unsigned char" matches this file's other dataType values ("float",
+  # "unsigned integer16" -- always a C-type name, never a generic word like
+  # the "ascii" this previously guessed) and is a literal string found
+  # alongside DOLBY_CFG_DATA in lgrest.dll's string table (minimax decompile
+  # search, 2026-07-23) -- still unconfirmed on the wire, but better-grounded
+  # than the prior guess.
+  $payload->{"dataType"}=$data->{"data_type"}||$data->{"dataType"}||"unsigned char";
   $payload->{"dataOpt"}=defined($data->{"data_opt"}) ? int($data->{"data_opt"}) : (defined($data_opt) ? int($data_opt) : 1);
  }
  return &lg_request($session,$id,"externalpq/setExternalPqData",$payload,$timeout);
