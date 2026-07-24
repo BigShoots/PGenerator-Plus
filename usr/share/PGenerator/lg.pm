@@ -2679,7 +2679,14 @@ function lgPictureModeCanonicalValue(value){
   hdr_technicolorexpert:'hdrTechnicolorExpert',
   dolbyvisioncinema:'dolbyVisionCinema',
   dolby_hdr_cinema:'dolbyVisionCinema',
-  dolbyhdrcinema:'dolbyVisionCinema',
+  // The raw webOS read-back for the dark DV cinema mode is bare
+  // "dolbyHdrCinema", which on this generation IS the on-screen "Filmmaker"
+  // preset (there is no separate plain DV Cinema in the menu -- Cinema Home
+  // is dolbyHdrCinemaBright). Canonicalize it to the real dropdown entry
+  // dolbyVisionFilmMaker so a polled/reloaded read-back shows Filmmaker and
+  // drives calibration as Filmmaker, instead of an orphan "dolbyVisionCinema"
+  // that has no dropdown entry and mis-resolves the calibration picMode.
+  dolbyhdrcinema:'dolbyVisionFilmMaker',
   dolbyvisioncinemahome:'dolbyVisionCinemaBright',
   dolbyvisioncinemabright:'dolbyVisionCinemaBright',
   dolby_hdr_cinema_bright:'dolbyVisionCinemaBright',

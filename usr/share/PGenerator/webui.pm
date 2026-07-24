@@ -34976,10 +34976,22 @@ async function meterStartFullAutoCal(){
   // left bare -- reuse the existing Apply Settings modal (same one shown
   // for a manual output-format change) instead of leaving the wizard
   // looking like it vanished (operator-reported 2026-07-24).
-  applySettingsModalShow();
-  const mapModeOk=await meterDvAutoCalSetMapMode(skipPreCal?'2':'1');
-  if(mapModeOk) applySettingsModalSuccess('Dolby Vision map mode updated.');
-  else{ applySettingsModalError('Failed to switch the Dolby Vision map mode.'); setTimeout(()=>applySettingsModalHide(),3000); }
+  //
+  // Only touch dv_map_mode when it is not ALREADY the value about to be
+  // used. The /api/config POST re-applies (and re-saves) the whole DV
+  // output block and pops the Apply Settings modal; when the operator was
+  // already in the correct mode (e.g. DV Relative 8-bit RGB Full and they
+  // skip pre-cal, which wants Relative) that reads as the wizard needlessly
+  // "applying picture settings" for a no-op (operator-reported 2026-07-24).
+  // Mirror the no-op guard meterDvAutoCalForceTargetGamma already uses below.
+  const dvTargetMap=skipPreCal?'2':'1';
+  const dvCurrentMap=String(getVal('dv_map_mode')||(typeof config!=='undefined'&&config&&config.dv_map_mode)||'2');
+  if(dvCurrentMap!==dvTargetMap){
+   applySettingsModalShow();
+   const mapModeOk=await meterDvAutoCalSetMapMode(dvTargetMap);
+   if(mapModeOk) applySettingsModalSuccess('Dolby Vision map mode updated.');
+   else{ applySettingsModalError('Failed to switch the Dolby Vision map mode.'); setTimeout(()=>applySettingsModalHide(),3000); }
+  }
   // The pre-cal report (when not skipped) always reads against PQ; greyscale
   // always calibrates against 2.2. Force whichever is about to run.
   meterDvAutoCalForceTargetGamma(skipPreCal?'2.2':'st2084');

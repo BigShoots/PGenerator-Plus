@@ -117,23 +117,30 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "dolby_hdr_vivid" => "dolbyHdrVivid",
   "dolbyhdrvivid" => "dolbyHdrVivid",
   "dolbyvivid" => "dolbyHdrVivid",
-  # Operator-confirmed on real hardware (LG C2, webOS 4.1.0, 2026-07-24):
-  # the on-screen "Filmmaker" preset is NOT its own webOS picture mode --
-  # it is the same underlying mode webOS calls "CinemaDark" (Dolby's
-  # FILMMAKER MODE branding applied over LG's existing dark-room reference
-  # preset). Every "FilmMaker"-shaped label must resolve to dolbyHdrCinemaDark,
-  # not a literal "dolbyHdrFilmMaker" (confirmed NOT a valid webOS value --
-  # rejected outright, along with the "dolbyHdrFilmmaker" casing variant).
-  "dolbyvisionfilmmaker" => "dolbyHdrCinemaDark",
-  "dolby_hdr_filmmaker" => "dolbyHdrCinemaDark",
-  "dolbyhdrfilmmaker" => "dolbyHdrCinemaDark",
-  "dolbyfilmmaker" => "dolbyHdrCinemaDark",
-  "dolbyvisionfilmmakermode" => "dolbyHdrCinemaDark",
-  "dolbyhdrfilmmakermode" => "dolbyHdrCinemaDark",
-  "dolbyvisioncinemadark" => "dolbyHdrCinemaDark",
-  "dolby_hdr_cinema_dark" => "dolbyHdrCinemaDark",
-  "dolbyhdrcinemadark" => "dolbyHdrCinemaDark",
-  "dolbycinemadark" => "dolbyHdrCinemaDark",
+  # Hardware fact (LG C2, webOS 4.1.0), established 2026-07-24 by probing
+  # every candidate value against the live TV's settings/setSystemSettings:
+  # the on-screen "Filmmaker" preset IS webOS's dark Dolby Vision cinema
+  # mode, and the ONLY value the TV accepts to select it is "dolbyHdrCinema".
+  # This generation's DV menu has no separate plain "Cinema": Cinema Home is
+  # "dolbyHdrCinemaBright" and the dark reference mode Filmmaker rides on is
+  # "dolbyHdrCinema" (no suffix). "dolbyHdrCinemaDark" is only a read-back
+  # label webOS reports; writing it -- like "dolbyHdrFilmMaker", "filmMaker",
+  # "cinemaDark" or "dolby_cinema_dark" -- is rejected outright with
+  # "There is No matched extended item: pictureMode" (that exact rejection
+  # was why the Picture Mode dropdown could switch to every DV preset EXCEPT
+  # Filmmaker). Every FilmMaker/CinemaDark-shaped label therefore resolves to
+  # the write value "dolbyHdrCinema"; the calibration wire still uses
+  # "dolby_cinema_dark" (see lg_picture_mode_for_calibration + lg_wire_pic_mode).
+  "dolbyvisionfilmmaker" => "dolbyHdrCinema",
+  "dolby_hdr_filmmaker" => "dolbyHdrCinema",
+  "dolbyhdrfilmmaker" => "dolbyHdrCinema",
+  "dolbyfilmmaker" => "dolbyHdrCinema",
+  "dolbyvisionfilmmakermode" => "dolbyHdrCinema",
+  "dolbyhdrfilmmakermode" => "dolbyHdrCinema",
+  "dolbyvisioncinemadark" => "dolbyHdrCinema",
+  "dolby_hdr_cinema_dark" => "dolbyHdrCinema",
+  "dolbyhdrcinemadark" => "dolbyHdrCinema",
+  "dolbycinemadark" => "dolbyHdrCinema",
   "dolbyvisionstandard" => "dolbyHdrStandard",
   "dolby_hdr_standard" => "dolbyHdrStandard",
   "dolbyhdrstandard" => "dolbyHdrStandard",
@@ -2279,7 +2286,14 @@ sub lg_picture_mode_for_calibration (@) {
   "dolby_hdr_cinema_bright" => "dolby_hdr_cinema_bright",
   "dolby_hdr_cinema_dark" => "dolby_hdr_cinema_dark",
   "dolby_hdr_game" => "dolby_hdr_game",
-  "dolbyhdrcinema" => "dolby_hdr_cinema",
+  # webOS reports the dark DV cinema mode (on-screen "Filmmaker") as the
+  # bare read-back "dolbyHdrCinema" (see map_picture_mode_label_to_ddc_name):
+  # its calibration wire picMode is dolby_cinema_dark, NOT dolby_cinema --
+  # a real capture of a DV Filmmaker calibration used picMode
+  # "dolby_cinema_dark" every time. Resolve the polled read-back the same as
+  # the WebUI's "dolbyVisionFilmMaker" selection so a live poll targets the
+  # same mode the operator picked.
+  "dolbyhdrcinema" => "dolby_hdr_cinema_dark",
   "dolbyhdrcinemabright" => "dolby_hdr_cinema_bright",
   "dolbyhdrcinemadark" => "dolby_hdr_cinema_dark",
   "dolbyhdrgame" => "dolby_hdr_game",
@@ -3546,13 +3560,20 @@ sub lg_dv_calman_reset_workflow (@) {
  }
  my @steps=();
  my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
+ # CAL_START reliably errors (errorCode 20, "Driver error while executing
+ # the command") for EVERY picture mode on this firmware -- see
+ # lg_dv_profile_upload_workflow, which already established this and
+ # tolerates it by design, always sending the matching CAL_END regardless.
+ # This function used to abort here instead, which meant a rejected
+ # CAL_START silently skipped every step below INCLUDING CAL_END, leaving
+ # the TV's calibration session open with no closing command -- the
+ # operator observed the picture going progressively dark across repeated
+ # runs, the same symptom documented for the reference tool when a
+ # CAL_START/CAL_END pair isn't matched (operator-reported 2026-07-24).
+ # Record the failure but proceed; CAL_END is now unconditional below.
  my $start=&lg_calibration_request($session,"dv_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
- if($start_failed || ref($start) ne "HASH") {
-  &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected Dolby Vision calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
- }
 
  foreach my $item (
   ["1D_2_2_EN",0],
@@ -3602,7 +3623,24 @@ sub lg_dv_calman_reset_workflow (@) {
  push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
  &websocket_close($session);
 
- my @failed=grep { $_->{"failed"} } @steps;
+ # On this firmware the DV picture modes reject the calibration SESSION and
+ # UI-control commands -- CAL_START, CAL_END, the 1D gamma-enable toggles,
+ # and the *_UI_DATA brightness/contrast/backlight/color restores -- with the
+ # generic errorCode 20 "Driver error while executing the command"
+ # (hw-observed 2026-07-24 on a live DV Filmmaker reset: exactly those fail,
+ # every time, while the calibration data below is accepted). They do not
+ # clear or determine the calibration state, so they must NOT fail the reset
+ # -- unlike the HDR path (lg_hdr_calman_reset_workflow), where these same
+ # commands succeed and its all-steps gate is therefore safe. The reset's
+ # real work is the identity/unity calibration data (BT2020_3BY3_GAMUT_DATA,
+ # BT2020_3D_LUT_DATA, 1D_DPG_DATA) plus dynamicContrast off; gate only on
+ # those (mirrors how the DV profile upload already tolerates CAL_START).
+ my %dv_tolerated_rejections=map { $_ => 1 } (
+  "CAL_START","CAL_END",
+  "1D_2_2_EN","1D_0_45_EN",
+  "BRIGHTNESS_UI_DATA","CONTRAST_UI_DATA","BACKLIGHT_UI_DATA","COLOR_UI_DATA",
+ );
+ my @failed=grep { $_->{"failed"} && !$dv_tolerated_rejections{$_->{"command"}} } @steps;
  if(@failed) {
   return &json_error("LG Dolby Vision reset completed with one or more rejected commands.",{
    ip => $ip,
