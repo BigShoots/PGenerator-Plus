@@ -13878,8 +13878,10 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  0.0358458*$mX + -0.0761724*$mY +  0.9568845*$mZ,
 	 );
 	 # D65 has R=G=B in linear Display-P3, so the per-channel D65 target
-	 # is the mean of @mrgb. Any channel above the mean needs attenuation;
-	 # any at or below the mean is held.
+	 # is the mean of @mrgb. BIDIRECTIONAL for G/B: above mean → reduce,
+	 # below mean → boost. (The old "hold deficient at 1.0" rule left white
+	 # stuck after the first two good cuts overshot -- gains collapsed to
+	 # 1/1/1 with no reverse path.) R stays held at 1.0 (peak luminance).
 	 my $sum=$mrgb[0]+$mrgb[1]+$mrgb[2];
 	 return (1.0,1.0,1.0) if(!($sum+0 > 0));
 	 my $target=$sum/3.0;
@@ -13887,20 +13889,12 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	 for my $ch (0..2) {
 	  my $m=$mrgb[$ch];
 	  my $g=($m+0 > 0) ? ($target/$m) : 1.0;
-	  # If the natural gain is > 1.0, the channel is BELOW its D65 target
-	  # (deficient). The panel can't push it above native, so hold (clamp
-	  # to 1.0). If the natural gain is < 1.0, the channel is ABOVE its
-	  # D65 target (excess) -- reduce it. Floor at 0.5 to bound per-iter
-	  # moves.
+	  # Bound per-iter moves: [0.5, 1.25]. Allows recovery boosts after
+	  # overshoot without letting a single iter slam the channel.
 	  $g=0.5 if($g+0 < 0.5);
-	  $g=1.0 if($g+0 > 1.0);
+	  $g=1.25 if($g+0 > 1.25);
 	  $g=1.0 if($g+0 != $g+0);
-	  # Preserve R (channel 0) at 100% white: never reduce R below 1.0.
-	  # On a slightly warm panel the XYZ->P3 matrix makes R the highest
-	  # linear channel, so the mean-based gain would reduce R by 1-3%
-	  # per iter. Each R reduction drops peak luminance (R drives peak
-	  # on OLED) without a commensurate white-balance improvement. Hold
-	  # R and only reduce the excess G/B channels.
+	  # Preserve R (channel 0) at 100% white: never reduce or boost R.
 	  $g=1.0 if($ch == 0);
 	  push @gain,$g+0;
 	 }
@@ -14609,6 +14603,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my ($rs,$target,$idx,$label,$snum,$budget,$is_white)=@_;
 		my $converged=0;
 		my $last_reading=undef;
+		# 100% white overshoot recovery: remember the last applied per-channel
+		# gains. When a move worsens dE past best, restore best_dpg and apply
+		# a HALF-SIZE move in the OPPOSITE direction (binary line search).
+		# Without this the two good large cuts overshoot and natural gains
+		# freeze at 1/1/1 with no way back.
+		my $white_last_sr=1.0;
+		my $white_last_sg=1.0;
+		my $white_last_sb=1.0;
+		my $white_rev_sr=undef;
+		my $white_rev_sg=undef;
+		my $white_rev_sb=undef;
+		my $white_use_reverse=0;
+		my $white_reverse_streak=0;
 		# EOTF-aware damp state (per-anchor, persists across inner iters):
 		#   gamma_effective: current best estimate of the panel's local
 		#     code->light gamma at this anchor's IRE. Seeded from the
@@ -14959,6 +14966,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
 					$consecutive_reverts=0;
+					$white_reverse_streak=0 if($is_white);
 					# Committed-max accumulator -- new-best path. A new best means
 					# this dE is the trajectory landmark for the anchor -- it is by
 					# construction WORSE than the previous best was, but it is the
@@ -14973,21 +14981,63 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# is computed fresh from the new Y, so a fresh full-size move is
 					# the right starting point.
 					$move_scaling=1.0;
-				} elsif((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
-					&& defined($prev_de) && $de+0 > $prev_de+0) {
-					# Descent-style revert: this iter's move made dE WORSE than the
-					# previous iter's dE (the state we were just at before applying
-					# the move). The earlier "de >= best_de" condition reverted on
-					# any non-improvement against the all-time best, which is right
-					# at low IRE (meter floor) but too eager at high IRE (panel
-					# sub-linear response + meter noise = the first iter that hits a
-					# lucky low-noise reading becomes best_de forever and every
-					# subsequent iter triggers revert). The new condition gates on
-					# a LOCAL direction change: the move had to have actually
-					# worsened the result, not just failed to improve the record.
-					# Low IRE (<5%) and high IRE (>=80%) both enable this; mid IRE
-					# (5-80%) uses the monotonic best_de improvement pattern instead,
-					# matching the prior behavior.
+				} elsif($is_white
+					&& defined($best_de)
+					&& ($de+0) > ($best_de+0) + 0.08) {
+					# WHITE overshoot: last move made dE worse than best. Restore
+					# best_dpg and schedule a HALF-SIZE move in the OPPOSITE
+					# direction of the last applied gains (binary line search).
+					# Works both ways: over-cut G/B → half boost; over-boost → half cut.
+					my $worsened=$de+0;
+					@{$current_dpg}=@{$best_dpg};
+					@done=@{$best_anchors};
+					$white_reverse_streak++;
+					# Reverse half of last applied: rev = 1 - 0.5*(last-1).
+					# last=0.90 (10% cut) → rev=1.05 (5% boost); last=1.10 → rev=0.95.
+					$white_rev_sr=1.0 - 0.5*(($white_last_sr+0)-1.0);
+					$white_rev_sg=1.0 - 0.5*(($white_last_sg+0)-1.0);
+					$white_rev_sb=1.0 - 0.5*(($white_last_sb+0)-1.0);
+					# R always held.
+					$white_rev_sr=1.0;
+					$white_rev_sg=0.5 if($white_rev_sg+0 < 0.5);
+					$white_rev_sg=1.25 if($white_rev_sg+0 > 1.25);
+					$white_rev_sb=0.5 if($white_rev_sb+0 < 0.5);
+					$white_rev_sb=1.25 if($white_rev_sb+0 > 1.25);
+					my $rev_span=0;
+					for my $_g ($white_rev_sg,$white_rev_sb) {
+					 my $d=abs(($_g+0)-1.0);
+					 $rev_span=$d if($d > $rev_span);
+					}
+					# Nothing left to reverse (last move was ~identity) or too many
+					# reverse attempts without a new best → stop at best on wire.
+					if(($rev_span+0) < 0.005 || $white_reverse_streak >= 4) {
+						my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+						my $_vd=undef;
+						if($bok && !cancelled()) {
+							my ($arr,$are)=read_step($config,$rs,$state);
+							if(!$are && ref($arr) eq "HASH") {
+								$last_reading=$arr;
+								my $_tl=luminance($arr);
+								$_tl=$white_ref if(!(defined($_tl) && $_tl+0 > 0));
+								annotate_reading_target($arr,$_tl,$_tl,$target_x,$target_y);
+								my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl);
+								$_vd=$ade+0 if(defined($ade));
+								$state->{"current_delta_e"}=$_vd if(defined($_vd));
+							}
+						}
+						log_line("HDR20 1D DPG greyscale: ".$label." white overshoot stop at best dE=".sprintf("%.4f",$best_de)." (was ".sprintf("%.4f",$worsened).", rev_span=".sprintf("%.4f",$rev_span).", streak=".$white_reverse_streak.($bok?", re-uploaded":", re-upload FAILED").(defined($_vd)?", verify dE=".sprintf("%.4f",$_vd):"").")");
+						$prev_de=$best_de+0;
+						last;
+					}
+					$white_use_reverse=1;
+					$move_scaling=1.0; # reverse gains already half-sized
+					log_line("HDR20 1D DPG greyscale: ".$label." white overshoot reverse-half (was dE=".sprintf("%.4f",$worsened).", best=".sprintf("%.4f",$best_de).", last G/B=".sprintf("%.4f/%.4f",$white_last_sg,$white_last_sb).", rev G/B=".sprintf("%.4f/%.4f",$white_rev_sg,$white_rev_sb).")");
+
+				} elsif(!$is_white
+					&& ((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
+					&& defined($prev_de) && $de+0 > $prev_de+0
+					&& ($de+0) > ($prev_de+0) + 0.12)) {
+					# Descent-style revert for non-white low/high IRE anchors.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
@@ -15124,81 +15174,65 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			}
 			last if($conv_now && !$acceptance_pending);
 			# Reach the target (luminance AND white balance) with per-channel
-			# RGB gains: scaling all three together moves luminance, their ratio
-			# corrects chroma. Identical path for every anchor incl. 100% -- no
-			# separate luminance adjustment, no reduce-to-lowest.
-			# 100% white: reduce-to-lowest -- bring the high channels straight
-			# DOWN to the lowest-reading channel (big, direct moves) to neutral
-			# D65 at the achievable peak. Self-targeting (no impossible luminance
-			# to chase); converges in a few moves. Lower anchors: per-channel
-			# solve toward D65 at the 2.2 target luminance via RGB.
-			($rg,$gg,$bg)=$is_white
-				? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
-				: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
-			# White takes larger steps (it only reduces + re-measures) so peak
-			# balance settles in a few moves instead of many tiny ones.
-			# For low IRE (default <5%) the DAMP floor is relaxed (default 0.5)
-			# to let each iter halve the DPG when needed; the 0.8 default
-			# floor is too conservative at <1 nit where meter noise is
-			# comparable to the per-iter move, causing oscillation instead
-			# of convergence.
+			# RGB gains. Body: lg_autocal_26_hdr20_dpg_gain.
+			# 100% white: mean-based bidirectional G/B (R held). If the last
+			# move made dE worse than best, $white_use_reverse is set and we
+			# apply half of that last move in the opposite direction from
+			# best_dpg (already restored above) -- binary line search.
+			my $white_this_is_reverse=0;
+			if($is_white && $white_use_reverse && defined($white_rev_sg) && defined($white_rev_sb)) {
+				($rg,$gg,$bg)=(1.0,$white_rev_sg+0,$white_rev_sb+0);
+				$white_use_reverse=0;
+				$white_this_is_reverse=1;
+			} else {
+				($rg,$gg,$bg)=$is_white
+					? lg_autocal_26_hdr20_dpg_white_balance_gain($reading)
+					: lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
+			}
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
-			# EOTF-aware damp: the exponent 1/gamma_effective is computed
-			# at the top of the iter (clamped to [1.5, 3.0]) and passed as
-			# the 3rd arg to the damp closure, replacing the previous
-			# constant 0.5 (sqrt) with a value that follows the panel's
-			# actual code->light slope at this anchor's IRE.
-			# 100% white move multiplier: the white anchor only REDUCES the
-			# excess channels (G/B held-at-1 R is preserved, see
-			# lg_autocal_26_hdr20_dpg_white_balance_gain) and re-measures, so a
-			# larger per-iter move is safe and converges the peak in ~3-4 iters
-			# instead of 10-13. Field data 2026-06-19: with gamma_effective
-			# pinned at the 3.0 clamp, damp=gain^(1/3) squashes a 22% B
-			# correction down to an 8% move, halving dE only every ~1.5 iters.
-			# M=2.0 turns that into a 16% move (3x the convergence rate) with
-			# ZERO overshoot risk because the overshoot guard below clamps every
-			# reducing channel to never move below its raw gain (the
-			# mathematically-correct target). Lower anchors keep M=1.0.
+			# 100% white move multiplier: large first cuts (M=2). Reverse-half
+			# gains are already sized -- apply them directly, no re-amplify.
 			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
 			$white_move_mult=1.0 if($white_move_mult+0 < 1.0);
 			$white_move_mult=5.0 if($white_move_mult+0 > 5.0);
 			my $anchor_move_mult=($is_white ? ($white_move_mult+0.0)
 				: (($_anchor_ire+0 >= $high_ire_threshold) ? ($high_ire_move_mult+0.0)
 				: 1.0));
-			# Apply the per-iter move-scaling: when $move_scaling is 1.0, the
-			# damp is unchanged. When it's 0.5, the move is half-magnitude
-			# (interpolated toward 1.0). When it's 0.25, quarter-magnitude.
-			# The formula is: scaled = 1.0 + (damp - 1.0) * move_scaling.
-			# The white move multiplier multiplies the (damp-1.0) move term
-			# BEFORE the move_scaling blend, so both compose: a white iter that
-			# reverted halves the already-doubled move. The high-IRE
-			# multiplier does the same composition for the >=80% anchors.
-			my $sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			my $sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
-			# Clamp to [floor, 1.25] so a tiny move_scaling still respects the
-			# per-IRE minimum step.
+			my ($sr,$sg,$sb);
+			if($white_this_is_reverse) {
+				# Already half of last move, opposite sign; apply as-is on best_dpg.
+				$sr=1.0;
+				$sg=$gg+0;
+				$sb=$bg+0;
+				$white_rev_sg=undef;
+				$white_rev_sb=undef;
+			} else {
+				$sr=1.0+($damp->($rg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+				$sg=1.0+($damp->($gg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+				$sb=1.0+($damp->($bg,$floor,$damp_exp)-1.0)*$move_scaling*$anchor_move_mult;
+			}
 			$sr=$floor if($sr+0 < $floor+0);
 			$sg=$floor if($sg+0 < $floor+0);
 			$sb=$floor if($sb+0 < $floor+0);
 			$sr=1.25 if($sr+0 > 1.25);
 			$sg=1.25 if($sg+0 > 1.25);
 			$sb=1.25 if($sb+0 > 1.25);
-			# Overshoot guard for the white anchor (where the move multiplier
-			# can exceed 1.0): a REDUCING channel (raw gain < 1.0, i.e. the
-			# channel measured ABOVE the D65 mean and needs attenuation) must
-			# NEVER be driven below its raw gain -- that would push it past the
-			# D65 target and swap which channel is in excess, causing a bounce.
-			# R is always held at 1.0 by lg_autocal_26_hdr20_dpg_white_balance_gain
-			# so it is never a reducing channel; this guard only binds for the
-			# excess G/B channels. max(applied, gain) lands the channel exactly
-			# on target at worst (never past it), so even a huge multiplier is
-			# monotonic and safe.
-			if($is_white) {
+			# Forward white path: never drive a channel past its raw mean-based
+			# gain (both reduce and boost). Reverse path skips this.
+			if($is_white && !$white_this_is_reverse) {
 			 $sr=$rg if(defined($rg) && $rg+0 < 1.0 && $sr+0 < $rg+0);
 			 $sg=$gg if(defined($gg) && $gg+0 < 1.0 && $sg+0 < $gg+0);
 			 $sb=$bg if(defined($bg) && $bg+0 < 1.0 && $sb+0 < $bg+0);
+			 $sr=$rg if(defined($rg) && $rg+0 > 1.0 && $sr+0 > $rg+0);
+			 $sg=$gg if(defined($gg) && $gg+0 > 1.0 && $sg+0 > $gg+0);
+			 $sb=$bg if(defined($bg) && $bg+0 > 1.0 && $sb+0 > $bg+0);
+			}
+			# Remember applied gains so the next overshoot can reverse-half them.
+			if($is_white) {
+			 $white_last_sr=$sr+0;
+			 $white_last_sg=$sg+0;
+			 $white_last_sb=$sb+0;
 			}
 			my @anchors_for_build=(@done,{idx=>$idx,r_gain=>$sr,g_gain=>$sg,b_gain=>$sb});
 			$current_dpg=lg_autocal_26_build_hdr20_1d_dpg($current_dpg,\@anchors_for_build);
