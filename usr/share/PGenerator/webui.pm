@@ -9763,32 +9763,34 @@ sub webui_pattern_diag_video_sequence_dir (@) {
  $name=~s/[^a-z0-9_]+/_/g;
  return "" if($name eq "");
  # range_kind:
- #   full    -> diagseq_full/  (full-span black=0, for RGB Full)
- #   limited -> diagseq/       (studio codes incl. footroom 2..15, for
- #                              RGB Limited and YCbCr Limited)
+ #   limited -> diagseq/       (studio codes; default for all AVS now)
+ #   full    -> diagseq_full/  (legacy expanded companion; unused by
+ #                              selection but kept for fallback/OTA)
  my $range_kind=lc("".(shift // ""));
  $range_kind="" if($range_kind ne "full" && $range_kind ne "limited");
  return "$var_dir/diagseq_full/$name" if($range_kind eq "full");
  return "$var_dir/diagseq/$name";
 }
 
-# Bundled AVS HD 709 sequences:
-#   diagseq_full/  limited stock expanded to full-span (black=0, near-black
-#                  bars). Used for RGB Full only — no true superblack PLUGE.
-#   diagseq/       re-extracted from original AVS MP4s with studio levels
-#                  preserved (codes 2..15 footroom + 17..25 above black).
-#                  Used for RGB Limited and YCbCr so raising brightness can
-#                  reveal below-16 bars. Requires Limited wire + TV black
-#                  level Limited/Auto for footroom to stay invisible at a
-#                  correct default brightness. Do not hard-clip to 16 and do
-#                  not rebuild full by expanding these frames (destroys
-#                  footroom).
+# Bundled AVS HD 709 sequences always use studio-level frames in diagseq/
+# (re-extracted from original AVS MP4s: footroom 2..15 + bars 17..25).
+# That is the same content that works for YCbCr Limited PLUGE.
+#
+# RGB Full: same studio codes on a full-span link — all near-black bars
+# (including labeled below-16) sit above digital black 0 and are visible;
+# raising brightness only lifts the whole image (no separate "hidden
+# footroom" on Full — Full has no legal black at 16).
+# RGB Limited / YCbCr Limited: same codes with Limited signaling — legal
+# black is 16 so 2..15 stay invisible at correct brightness and appear
+# when Brightness is raised. TV HDMI black level must be Limited (or Auto
+# that follows AVI), not forced Full/PC, or RGB Limited will look like Full.
+#
+# diagseq_full/ is the old expanded set (black=0, footroom destroyed); kept
+# only as emergency fallback, not selected for normal play.
 sub webui_pattern_diag_video_sequence_range_kind (@) {
  my $color_format=int(shift // 0);
  my $quant_range=int(shift // 2);
- # RGB Full only: full-span companion.
- return "full" if($color_format == 0 && $quant_range != 1);
- # RGB Limited + any YCbCr: studio PLUGE with footroom.
+ # Always studio PLUGE for AVS (match working YCbCr Limited behaviour).
  return "limited";
 }
 
@@ -14484,7 +14486,7 @@ const DIAG_DESCRIPTIONS={
  color_bars:'<b>Color Bars</b> &mdash; 75% Rec.709 bars with a mid reference strip and a bottom PLUGE/white section for quick color and level checks. Use this pattern with HDMI output set to RGB.',
  gray_ramp:'<b>Gray Ramp</b> &mdash; Smooth black-to-white ramp across the top with 11 stepped gray bars underneath. Use HDMI RGB output and check for smooth transitions, neutral grayscale, and no banding.',
  overscan:'<b>Overscan</b> &mdash; Border lines at 0%, 2.5%, and 5% from screen edges with corner L-brackets and center crosshair. Use HDMI RGB output, and all lines should be visible &mdash; if not, disable overscan in your TV settings.',
- avs_hd_709_black_clipping:'<b>AVS HD 709 - Black Clipping</b> &mdash; SDR-only AVS HD 709 black clipping / PLUGE. RGB Full uses full-span codes (black=0). RGB Limited and YCbCr use studio codes (footroom 2-15 + bars 17-25); set TV black level to Limited so below-16 stays invisible at correct brightness and appears when Brightness is raised.',
+ avs_hd_709_black_clipping:'<b>AVS HD 709 - Black Clipping</b> &mdash; SDR-only AVS HD 709 PLUGE (studio codes 2-25). YCbCr Limited / RGB Limited: set TV HDMI black level to Limited — bars 17-25 flash at correct Brightness; raise Brightness to reveal 2-15. RGB Full has no legal black at 16 so below-16 codes are already above digital black 0.',
  avs_hd_709_apl_clipping:'<b>AVS HD 709 - APL Clipping</b> &mdash; SDR-only AVS HD 709 APL clipping video for checking level behavior with an average picture level load on screen.',
  avs_hd_709_white_clipping:'<b>AVS HD 709 - White Clipping</b> &mdash; SDR-only AVS HD 709 video version of the white clipping pattern. Use it to set Contrast so near-white detail is not crushed.',
  avs_hd_709_flashing_color_bars:'<b>AVS HD 709 - Flashing Color Bars</b> &mdash; SDR-only AVS HD 709 flashing color bars video for color and tint checks with blue-only or filter workflows.',
