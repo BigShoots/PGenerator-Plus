@@ -5520,6 +5520,41 @@ sub lg_picture_set_workflow (@) {
   return &json_error("LG TV did not acknowledge picture settings update",{ ip => $ip });
  }
  my ($failed,$failure_message)=&response_is_app_failure($response);
+ # A Dolby Vision compound-word preset name (e.g. "FilmMaker",
+ # "TechnicolorExpert") may not have the same internal capitalization on
+ # the TV's own webOS pictureMode enum as our "dolbyHdr"-prefixed guess --
+ # unlike the single-word presets (Cinema, CinemaBright, Game, Vivid,
+ # Standard), which this hw generation confirmed match exactly. Rather than
+ # fail outright (or require yet another hand-guessed table entry per TV
+ # generation), retry once with the second word lowercased before giving up
+ # (operator-reported 2026-07-24: "dolbyHdrFilmMaker" rejected by this C2's
+ # webOS 4.1.0 with "No matched extended item: pictureMode").
+ if($failed && $picture_mode_only && $failure_message =~ /no\s+matched\s+extended\s+item/i
+    && $active_picture_mode =~ /^dolbyHdr([A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+)$/) {
+  my $suffix=$1;
+  (my $alt_suffix=$suffix) =~ s/(?<=[a-z0-9])([A-Z])(?=[a-z])/lc($1)/ge;
+  my $alt_mode="dolbyHdr".$alt_suffix;
+  if($alt_mode ne $active_picture_mode) {
+   my $alt_settings={ %{$settings_to_apply} };
+   $alt_settings->{"pictureMode"}=$alt_mode;
+   my $alt_payload={ %{$set_payload} };
+   $alt_payload->{"settings"}=$alt_settings;
+   $alt_payload->{"dimension"}={ pictureMode => $alt_mode } if(ref($set_payload->{"dimension"}) eq "HASH");
+   my $alt_response=&lg_request($session,"set_picture_settings_alt_case","settings/setSystemSettings",$alt_payload,$connect_timeout + 2);
+   my ($alt_failed,$alt_failure_message)=&response_is_app_failure($alt_response);
+   if(!$alt_failed && ref($alt_response) eq "HASH") {
+    &diag_log_append("picture_set:alt-case-ok",{ ip => $ip, picture_mode => $active_picture_mode, alt_picture_mode => $alt_mode, response => $alt_response });
+    $response=$alt_response;
+    $failed=0;
+    $failure_message="";
+    $active_picture_mode=$alt_mode;
+    $settings_to_apply=$alt_settings;
+    $set_payload=$alt_payload;
+   } else {
+    &diag_log_append("picture_set:alt-case-failure",{ ip => $ip, picture_mode => $active_picture_mode, alt_picture_mode => $alt_mode, response => $alt_response, message => $alt_failure_message });
+   }
+  }
+ }
 	  if($failed) {
 	  &diag_log_append("picture_set:failure",{ ip => $ip, picture_mode => $active_picture_mode, response => $response, message => $failure_message });
 	  if($panel_light_only) {
