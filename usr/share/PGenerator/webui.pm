@@ -30327,9 +30327,16 @@ function meterAutoCalTargetGammaValue(){
 }
 
 function meterLgAutoCalGreyscaleTargetGammaValue(){
- // LG HDR autocal always calibrates against a 2.2 power target; SDR
+ // LG HDR autocal always calibrates against a 2.2 power target; Dolby Vision
+ // greyscale reuses the same HDR20 1D-DPG mechanism and must ALSO always
+ // calibrate against 2.2, regardless of whatever the Target Gamma dropdown
+ // shows (operator-reported bug 2026-07-24: meterLgAutoCalRequestedSignalMode()
+ // collapses dv->'sdr', so this used to fall through to the dropdown's raw
+ // value -- meaning DV greyscale calibrated against whatever gamma was left
+ // selected from a prior SDR/HDR10 run instead of always pinning 2.2). SDR
  // series honor the dropdown like meterAutoCalTargetGammaValue().
- return meterLgAutoCalRequestedSignalMode()==='hdr10'?'2.2':meterAutoCalTargetGammaValue();
+ const dvSignal=(String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()==='dv');
+ return (dvSignal||meterLgAutoCalRequestedSignalMode()==='hdr10')?'2.2':meterAutoCalTargetGammaValue();
 }
 
 function meterAutoCalTargetGamutValue(){
@@ -34696,6 +34703,13 @@ async function meterFullAutoCalGeneratePostReport(){
    // (so skipping this optional report still leaves the panel correct) --
    // this call is now a harmless, idempotent restatement before the read.
    await meterDvAutoCalSetMapMode('1');
+   // The post-cal (Absolute) read always grades against PQ -- unlike SDR/
+   // HDR10, DV never lets the operator pick a different curve here (there is
+   // no meaningful "power-gamma chart view" of an Absolute-mode DV signal).
+   // Force it unconditionally (operator-reported bug 2026-07-24: previously
+   // left whatever the dropdown had, which could be a stale value from a
+   // prior SDR/HDR10 run).
+   meterDvAutoCalForceTargetGamma('st2084');
   }
  let reportCompleted=false;
  try{
@@ -34809,6 +34823,9 @@ async function meterStartFullAutoCal(){
   // is skipped, greyscale is about to start immediately, so go straight to
   // Relative here instead of switching twice.
   await meterDvAutoCalSetMapMode(skipPreCal?'2':'1');
+  // The pre-cal report (when not skipped) always reads against PQ; greyscale
+  // always calibrates against 2.2. Force whichever is about to run.
+  meterDvAutoCalForceTargetGamma(skipPreCal?'2.2':'st2084');
  }
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 	 meterFullAutoCalConfig={
@@ -34839,10 +34856,11 @@ async function meterStartFullAutoCal(){
    return;
   }
   if(dvSignal){
-   // The pre-cal report just ran in Absolute; switch to Relative before
-   // greyscale starts. (When the pre-cal report was skipped, the earlier
-   // switch above already set Relative.)
+   // The pre-cal report just ran in Absolute/PQ; switch to Relative and
+   // force 2.2 before greyscale starts. (When the pre-cal report was
+   // skipped, the earlier switch above already set Relative/2.2.)
    await meterDvAutoCalSetMapMode('2');
+   meterDvAutoCalForceTargetGamma('2.2');
   }
  }
  meterFullAutoCalPhase='first-greyscale';
@@ -34946,6 +34964,22 @@ async function meterDvAutoCalSetMapMode(mode){
   }
  }
  return ok;
+}
+
+// Dolby Vision never lets the operator's Target Gamma dropdown decide the
+// curve at any phase of a Full DV AutoCal run -- unlike SDR/HDR10, which
+// honor whatever the operator picked, DV always calibrates against 2.2 and
+// always reads pre/post-cal reports against PQ (operator-reported bug
+// 2026-07-24: the dropdown's stale value from a prior SDR/HDR10 run was
+// silently used instead, at every phase, since nothing forced it for DV).
+// Force unconditionally; a no-op when already correct.
+function meterDvAutoCalForceTargetGamma(value){
+ const cur=String(getVal('meterTargetGamma')||'');
+ if(cur===value) return;
+ setVal('meterTargetGamma',value);
+ meterActiveSeriesTargetGamma=value;
+ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
+ if(typeof saveMeterSettings==='function') saveMeterSettings();
 }
 
 // Shared greyscale-completion advance, called from both
