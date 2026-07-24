@@ -23817,7 +23817,33 @@ function meterLiveTargetRgbCodes(src){
  return raw.map(code=>Math.max(0,Math.min(255,Math.round(tenBit?code/4:code))));
 }
 
-function meterLiveXyzRgbCodes(xyz){
+// Pick the code scale the measured value must be expressed on so that it is
+// actually comparable to the patch target code beside it. Inferred from the
+// patch itself rather than from the transport flag: Dolby Vision runs an RGB
+// FULL transport but its patch ladder is limited-coded, and the panel decodes
+// it as limited. Hardware, DV 15%: the patch code is 49, whose limited decode
+// predicts 11.30 cd/m2 and whose full decode would predict 19.30 -- the panel
+// measured 11.13. Trusting meterPatchUsesVideoRange() (i.e. the transport)
+// put the measured number on a full 0..255 scale against a limited-coded
+// target, so the two were never on the same scale.
+function meterLiveCodeRangeForStep(step){
+ const fallback=(typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())
+  ? {min:16,span:219} : {min:0,span:255};
+ if(!step) return fallback;
+ const pct=[step.signal_r_pct,step.stimulus,step.ire]
+  .map(Number).find(v=>Number.isFinite(v)&&v>0);
+ const codeRaw=Number(step.r_code!=null?step.r_code:step.r);
+ if(!Number.isFinite(pct)||!Number.isFinite(codeRaw)) return fallback;
+ const inputMax=Number(step.input_max);
+ const code=(inputMax===1023||codeRaw>255)?codeRaw/4:codeRaw;
+ const f=Math.max(0,Math.min(1,pct/100));
+ // Whichever standard range better predicts this patch's own code is the
+ // ladder the patch was built on.
+ return (Math.abs(code-(16+219*f)) <= Math.abs(code-(255*f)))
+  ? {min:16,span:219} : {min:0,span:255};
+}
+
+function meterLiveXyzRgbCodes(xyz,step){
  if(!xyz) return null;
  const linear=xyzToLinRgb(xyz.X,xyz.Y,xyz.Z,meterAnalysisGamut().xyzToRgb);
  let signal;
@@ -23828,18 +23854,32 @@ function meterLiveXyzRgbCodes(xyz){
   signal=linear.map(channel=>hlgInverseEotfSignal(Math.max(0,channel),meterChartMasterMin(),peak));
  }else{
   const reference=Math.max(0.0001,meterColorSeriesReferenceNits());
-  signal=linear.map(channel=>meterTargetLinearToSignal(Math.max(0,channel)/reference));
+  // DV outside the PQ target curve encodes linear -> signal with 2.2, the
+  // same convention meterEncodeColorCheckerLinear() uses for DV. It must NOT
+  // go through meterTargetLinearToSignal(), which returns the fraction
+  // UNENCODED for DV because its other callers hand it an already-encoded
+  // signal fraction. Skipping the encode compared linear light against a
+  // gamma-encoded target code: at DV 15% the measured value rendered as 4
+  // beside a target of 49 (255 * 11.13/726.8 = 3.9) while luminance and x,y
+  // were both on target.
+  const dvGamma22=(typeof meterChartIsDv==='function'&&meterChartIsDv())
+   && !(typeof meterDvUsesPqTargetCurve==='function'&&meterDvUsesPqTargetCurve());
+  signal=linear.map(channel=>{
+   const frac=Math.max(0,channel)/reference;
+   return dvGamma22
+    ? Math.pow(Math.max(0,Math.min(1,frac)),1/2.2)
+    : meterTargetLinearToSignal(frac);
+  });
  }
  // Put calculated measured RGB on the same 8-bit-equivalent wire scale as
- // the patch target. Limited-range output is 16..235, not full-range 0..255.
- const limited=(typeof meterPatchUsesVideoRange==='function')?meterPatchUsesVideoRange():false;
- const codeMin=limited?16:0;
- const codeSpan=limited?219:255;
- return signal.map(value=>Math.round(codeMin+codeSpan*Math.max(0,Math.min(1,value))));
+ // the patch target.
+ const range=meterLiveCodeRangeForStep(step);
+ return signal.map(value=>Math.round(range.min+range.span*Math.max(0,Math.min(1,value))));
 }
 
 function meterLiveMeasuredRgbCodes(reading){
- return meterLiveXyzRgbCodes(meterReadingXYZ(reading));
+ return meterLiveXyzRgbCodes(meterReadingXYZ(reading),
+  (typeof meterCanonicalSeriesStep==='function'?(meterCanonicalSeriesStep(reading)||reading):reading));
 }
 
 function meterLiveRgbMarkup(values){
