@@ -3382,14 +3382,16 @@ void ofxRPI4Window::ResetConnectorProperties()
 		colorimetry = 0; 
 		drm_mode_atomic_set_property(device, req, "Colorimetry", connectorId, prop_id, colorimetry, prop, 0);
     }	
-	//set rgb_quant_range, set to full as default
+	// Keep conf quant range (do NOT force Full). Reset used to hardcode
+	// Full=2 on every flip, which made RGB Limited PLUGE show superblacks
+	// (codes 2-15) as near-black — all bars flash at default brightness.
 	ok = drm_mode_get_property(device, connectorId, DRM_MODE_OBJECT_CONNECTOR, "rgb quant range", &prop_id, &rgb_quant_range, &prop);
 
 	if (!ok || !(rgb_quant_range >=0)) { 
 		ofLogError() << "DRM: Unable to find RGB Quant Range";
 	} else {
-		
-		rgb_quant_range = 2; //set to full as default
+		rgb_quant_range = (avi_info.rgb_quant_range == 1 || avi_info.rgb_quant_range == 2)
+			? (uint64_t)avi_info.rgb_quant_range : 2;
 		drm_mode_atomic_set_property(device, req, "rgb quant range" , connectorId, prop_id, rgb_quant_range, prop, 0);
 	}		
 
