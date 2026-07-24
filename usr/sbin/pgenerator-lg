@@ -106,6 +106,16 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "dolby_hdr_vivid" => "dolbyVisionVivid",
   "dolbyhdrvivid" => "dolbyVisionVivid",
   "dolbyvivid" => "dolbyVisionVivid",
+  "dolbyvisionfilmmaker" => "dolbyVisionFilmMaker",
+  "dolby_hdr_filmmaker" => "dolbyVisionFilmMaker",
+  "dolbyhdrfilmmaker" => "dolbyVisionFilmMaker",
+  "dolbyfilmmaker" => "dolbyVisionFilmMaker",
+  "dolbyvisionfilmmakermode" => "dolbyVisionFilmMaker",
+  "dolbyhdrfilmmakermode" => "dolbyVisionFilmMaker",
+  "dolbyvisionstandard" => "dolbyVisionStandard",
+  "dolby_hdr_standard" => "dolbyVisionStandard",
+  "dolbyhdrstandard" => "dolbyVisionStandard",
+  "dolbystandard" => "dolbyVisionStandard",
   "aps" => "standard",
   "eco" => "standard",
   "normal" => "standard",
@@ -182,7 +192,7 @@ sub lg_picture_mode_signal_examples (@) {
  $signal_mode=lc($signal_mode);
  return ("cinema","filmMaker","game") if($signal_mode eq "sdr");
  return ("hdrCinema","hdrFilmMaker","hdrGame") if($signal_mode eq "hdr10" || $signal_mode eq "hlg");
- return ("dolbyVisionCinema","dolbyVisionCinemaBright","dolbyVisionGame") if($signal_mode eq "dv");
+ return ("dolbyVisionCinemaBright","dolbyVisionFilmMaker","dolbyVisionGame") if($signal_mode eq "dv");
  return ();
 }
 
@@ -2047,7 +2057,7 @@ $DIAG_LOG_MAX_BYTES=131072;
 # below, e.g. dolby_hdr_cinema_dark, which was missing here entirely until
 # this fix) is recognized as writable -- matches how that function itself
 # now falls back to an algorithmic derivation instead of a fixed name list.
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolby_hdr_[a-z_]+)$';
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolbyVisionVivid|dolbyVisionFilmMaker|dolbyVisionStandard|dolby_hdr_[a-z_]+)$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;

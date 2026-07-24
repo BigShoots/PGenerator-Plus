@@ -17879,7 +17879,7 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
  {
   const seriesTarget=String((typeof meterActiveSeriesTargetGamma!=='undefined'&&meterActiveSeriesTargetGamma)||'').toLowerCase();
   const seriesMode=String((typeof meterActiveSeriesSignalMode!=='undefined'&&meterActiveSeriesSignalMode)||'').toLowerCase();
-  if(seriesTarget==='2.2' && seriesMode==='hdr10' && meterActiveSeriesType==='greyscale' && (calActive||dropdownGamma==='2.2')) return true;
+  if(seriesTarget==='2.2' && (seriesMode==='hdr10'||seriesMode==='dv') && meterActiveSeriesType==='greyscale' && (calActive||dropdownGamma==='2.2')) return true;
  }
  if(statusRunning){
   const target=String(status.target_gamma||'').toLowerCase();
@@ -17888,7 +17888,10 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
   return (target===''||target==='2.2')&&(layout==='hdr20'||signal==='hdr10');
  }
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(mode!=='hdr10') return false;
+ // DV runs through the same HDR20 greyscale mechanism as HDR10 with a pinned
+ // 2.2 target -- meterLgAutoCalRequestedSignalMode() collapses dv->'sdr',
+ // so do not gate this branch on hdr10 alone (operator-reported 2026-07-24).
+ if(mode!=='hdr10'&&mode!=='dv') return false;
  if(meterActiveSeriesType!=='greyscale') return false;
  if(typeof meterUseLgAutoCal26==='function'&&!meterUseLgAutoCal26(meterActiveSeriesPoints)) return false;
  if(typeof meterHdrAutoCalChartContextHeld!=='undefined'&&meterHdrAutoCalChartContextHeld) return true;
@@ -17902,8 +17905,8 @@ function meterHdrAutoCalUsesPowerGammaChartMath(){
   statusRunning);
  if(!active) return false;
  if(!lgCalibrationMode&&!(typeof meterAutoCalPendingConfig!=='undefined'&&meterAutoCalPendingConfig)) return false;
- const requested=(typeof meterLgAutoCalRequestedSignalMode==='function')?meterLgAutoCalRequestedSignalMode():mode;
- return requested==='hdr10';
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||mode).toLowerCase();
+ return requested==='hdr10'||requested==='dv';
 }
 
 function meterGreyChartTargetGammaSelection(){
@@ -30323,7 +30326,11 @@ function meterAutoCalTargetGammaValue(){
  const el=document.getElementById('meterTargetGamma');
  const selected=String((el&&el.value) || '');
  if(selected) return selected;
- return meterLgAutoCalRequestedSignalMode()==='hdr10'?'st2084':'bt1886';
+ // DV pre/post verification reports grade against PQ (st2084) just like
+ // HDR10, so the empty-dropdown fallback must include dv alongside hdr10
+ // (meterLgAutoCalRequestedSignalMode() collapses dv->'sdr' -- read live).
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ return (requested==='hdr10'||requested==='dv')?'st2084':'bt1886';
 }
 
 function meterLgAutoCalGreyscaleTargetGammaValue(){
@@ -30350,8 +30357,11 @@ function meterAutoCalTargetGamutValue(){
 }
 
 function meterAutoCalUseFullDdcSpine(){
- const mode=meterLgAutoCalRequestedSignalMode();
- return mode==='sdr'||mode==='hdr10';
+ // DV greyscale uses the same HDR20 20-point DDC ladder as HDR10 (the
+ // collapse in meterLgAutoCalRequestedSignalMode() used to return false for
+ // dv and the wizard skipped the spine -- read the live signal mode).
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ return requested==='sdr'||requested==='hdr10'||requested==='dv';
 }
 
 function meterEnsureAppliedGeneratorSettings(){
@@ -30366,13 +30376,19 @@ function meterEnsureAppliedGeneratorSettings(){
 }
 
 function meterLgAutoCalTransportReady(){
- const requested=meterLgAutoCalRequestedSignalMode();
+ // DV uses the same HDR10 transport values (eotf=2, primaries=2, colorimetry=9)
+ // because its greyscale path rides the HDR20 1D-DPG ladder -- so the
+ // "ready" check must accept hdr10 OR dv against the HDR10 transport, not
+ // the SDR transport that meterLgAutoCalRequestedSignalMode() collapses
+ // dv to (operator-reported 2026-07-24). Read the live signal mode.
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrRequest=(requested==='hdr10'||requested==='dv');
  const base=getVal('signal_mode')===requested
   && getVal('max_bpc')==='10'
   && getVal('color_format')==='1'
   && getVal('rgb_quant_range')==='1';
  if(!base) return false;
- if(requested==='hdr10'){
+ if(hdrRequest){
   return getVal('colorimetry')==='9'&&getVal('primaries')==='2'&&getVal('eotf')==='2';
  }
  return getVal('colorimetry')==='2'&&getVal('eotf')==='0';
@@ -30386,9 +30402,16 @@ function meterLgAutoCalTransportAvailable(){
 }
 
 function meterSetLgAutoCalTransportValues(){
- const requested=meterLgAutoCalRequestedSignalMode();
+ // DV uses the HDR10 transport values (eotf=2, primaries=2, colorimetry=9)
+ // because its greyscale path rides the HDR20 1D-DPG ladder -- but unlike
+ // HDR10, DV must preserve its live signal_mode ('dv'), not be silently
+ // rewritten to 'hdr10' (operator-reported 2026-07-24: the collapsing
+ // helper forced DV runs to sdr transport values when the wizard had to
+ // apply the HDR transport). Read the live signal mode.
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrRequest=(requested==='hdr10'||requested==='dv');
  setVal('signal_mode',requested);
- if(requested==='hdr10'){
+ if(hdrRequest){
   setVal('eotf','2');
   setVal('primaries','2');
   setVal('colorimetry','9');
@@ -30407,7 +30430,7 @@ function meterSetLgAutoCalTransportValues(){
  setVal('max_bpc','10');
  setVal('color_format','1');
  setVal('rgb_quant_range','1');
- if(requested==='hdr10'){
+ if(hdrRequest){
   setVal('colorimetry','9');
   setVal('eotf','2');
   setVal('primaries','2');
@@ -31918,7 +31941,12 @@ function meterAutoCalSetupOverlayActive(){
 }
 
 function meterAutoCalRequiresLuminanceSetup(){
- return meterLgAutoCalRequestedSignalMode()!=='hdr10';
+ // HDR10 and DV both use the HDR20 1D-DPG ladder with panel-decided peak
+ // luminance -- the operator-driven luminance-setup step is SDR-only.
+ // meterLgAutoCalRequestedSignalMode() collapsed dv->'sdr' and forced DV
+ // through the SDR luminance setup (operator-reported 2026-07-24).
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ return requested!=='hdr10'&&requested!=='dv';
 }
 
 function meterAutoCalTargetDeltaValue(){
@@ -31949,7 +31977,11 @@ function meterAutoCalHeadroomTargetYValue(setupY){
 }
 
 function meterAutoCalHeadroomTargetRatio(){
- if(meterLgAutoCalRequestedSignalMode()==='hdr10') return 1;
+ // HDR10 and DV both use the panel's native peak (100% = measured peak,
+ // no super-white headroom); SDR uses the 109% IRE headroom reference.
+ // Read the live signal mode -- the collapse used to give DV the SDR ratio.
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ if(requested==='hdr10'||requested==='dv') return 1;
  const steps=(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length)?meterSeriesSteps:meterBuildStepsJS('greyscale',26);
  const peak=(steps||[]).find(step=>step&&Number(step.ire)>=108.5);
  const ire=peak?Number(peak.ire):109;
@@ -32063,7 +32095,10 @@ function meterAutoCalShowConfirm(){
  const setupY=meterAutoCalSetupYValue();
  const targetY=meterAutoCalTargetYValue();
  const headroomY=meterAutoCalHeadroomTargetYValue(setupY);
- const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ // HDR10 + DV both use the HDR-style confirm summary; the collapse forced
+ // DV runs into the SDR "109% headroom" copy (operator-reported 2026-07-24).
+ const confirmSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrWorkflow=(confirmSigMode==='hdr10'||confirmSigMode==='dv');
  meterAutoCalSetGreyscaleOptionControls();
  if(description) description.textContent=hdrWorkflow
   ? 'The active LG picture mode has been reset. HDR Auto Cal will calibrate 100% first and use that measured peak as the ST 2084 reference, then calibrate the LG greyscale DDC slots from top to bottom without the SDR super-white spine. 0% is read for black level/charts. The closest result is kept when the target cannot be reached.'
@@ -32083,7 +32118,10 @@ function meterAutoCalWhiteStep(){
  const existing=(meterSeriesSteps||[]).find(step=>meterSeriesStepIsGreyscale(step)&&Math.abs((Number(step.ire)||0)-100)<0.001);
  if(existing) return existing;
  if(meterUseLgAutoCal26(meterActiveSeriesPoints)){
-  if(meterLgAutoCalRequestedSignalMode()==='hdr10'){
+  // HDR10 and DV both use the HDR-style 100% white step (the panel decodes
+  // DV 100% white the same way as HDR10 100% white). Read live signal mode.
+  const whiteStepSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+  if(whiteStepSigMode==='hdr10'||whiteStepSigMode==='dv'){
    const code=meterCodeFromSignalPercentWithOptions(100,null);
    return {
     ire:100,
@@ -32421,7 +32459,11 @@ async function meterAutoCalRunLevelPreflight(){
 }
 
 async function meterAutoCalResetDdc(){
- const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ // DV uses the HDR20 DDC ladder + HDR-style picture-mode reset, same as
+ // HDR10 -- the collapse forced DV into the SDR 26-point ladder + SDR-style
+ // picture-settings reset (operator-reported 2026-07-24).
+ const resetSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrWorkflow=(resetSigMode==='hdr10'||resetSigMode==='dv');
  const ddcSlots=hdrWorkflow?METER_LG_GREY_HDR_AUTOCAL_SLOTS:METER_LG_GREY_AUTOCAL_26_SLOTS;
  const zero=ddcSlots.map(()=>0);
 	 const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
@@ -32625,7 +32667,11 @@ async function meterAutoCalSdrCalmanReset(pictureMode){
 }
 
 async function meterAutoCalReset3dLutBaseline(){
- const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ // DV writes a BT.2020 unity 3D LUT baseline just like HDR10 (the panel's
+ // 3D LUT slot holds BT.2020 for both signal modes). Read live signal mode
+ // so the collapse to 'sdr' doesn't send an SDR unity baseline to a DV run.
+ const lutResetSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrWorkflow=(lutResetSigMode==='hdr10'||lutResetSigMode==='dv');
  const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
  let response=null;
  let lastMessage='Unable to reset LG 3D LUT.';
@@ -32709,13 +32755,18 @@ async function meterAutoCalRunPreflightReset(){
  meterActionPending=true;
  try{
   const cfg=meterAutoCalPendingConfig||{};
+  // Tell the server the ACTUAL live signal mode ('hdr10' / 'sdr' / 'dv'),
+  // not the collapsed hdr10-or-sdr return of meterLgAutoCalRequestedSignalMode
+  // (operator-reported 2026-07-24: a DV run was being launched with
+  // signal_mode='sdr' on the wire).
+  const runBeginSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
   await fetchJSON('/api/lg/autocal/run/begin',{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
     ip:(cfg.ip||''),
     workflow:(cfg.fullWorkflow?'full':'greyscale2pt'),
     config:{
-     signal_mode:meterLgAutoCalRequestedSignalMode(),
+     signal_mode:runBeginSigMode,
      picture_mode:meterLgPictureModeValue(),
      target_gamma:(cfg.gamma||''),
      target_gamut:(cfg.gamut||''),
@@ -33209,11 +33260,16 @@ function meterFullAutoCalLoadReportData(){
 }
 
 function meterFullAutoCalSaveReportData(){
+ // Stamp the report with the live signal_mode so DV runs persist 'dv'
+ // (not 'sdr' from the collapsing helper). Used by the post-cal report
+ // viewer and any archive dump -- a DV run stamped as 'sdr' would be
+ // misidentified as SDR in the WebUI's history.
+ const reportSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  try{
   meterFullAutoCalReportData.updated_at=Date.now();
   if(!meterFullAutoCalReportData.run_id&&meterFullAutoCalRunId) meterFullAutoCalReportData.run_id=meterFullAutoCalRunId;
   if(!meterFullAutoCalReportData.started_at&&meterFullAutoCalStartedAt) meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt;
-  if(!meterFullAutoCalReportData.signal_mode) meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||meterLgAutoCalRequestedSignalMode();
+  if(!meterFullAutoCalReportData.signal_mode) meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||reportSigMode||meterLgAutoCalRequestedSignalMode();
   if(!meterFullAutoCalReportData.stages||typeof meterFullAutoCalReportData.stages!=='object') meterFullAutoCalReportData.stages={};
   localStorage.setItem(METER_FULL_AUTOCAL_REPORT_KEY,JSON.stringify(meterFullAutoCalReportData));
  }catch(e){}
@@ -33225,10 +33281,11 @@ function meterFullAutoCalClearReportData(){
 }
 
 function meterFullAutoCalBeginReportData(skipPreCal){
+ const beginSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  meterFullAutoCalReportData=meterFullAutoCalDefaultReportData();
  meterFullAutoCalReportData.run_id=meterFullAutoCalRunId||null;
  meterFullAutoCalReportData.started_at=meterFullAutoCalStartedAt||Date.now();
- meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||meterLgAutoCalRequestedSignalMode();
+ meterFullAutoCalReportData.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||beginSigMode||meterLgAutoCalRequestedSignalMode();
  meterFullAutoCalReportData.pre_cal_skipped=!!skipPreCal;
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData('started');
@@ -33247,6 +33304,7 @@ function meterFullAutoCalBeginReportData(skipPreCal){
 // the wizard Pre-Cal step never loses its before charts. Idempotent: after
 // anchoring, started_at == the run start, so it will not fire again.
 function meterFullAutoCalEnsureReportRun(runId,runStartedAt){
+ const ensureSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  var d=meterFullAutoCalLoadReportData();
  if(!d) return;
  var runStart=Number(runStartedAt)||Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults&&meterFullAutoCalResults.first||{}).started_at)||0;
@@ -33256,7 +33314,7 @@ function meterFullAutoCalEnsureReportRun(runId,runStartedAt){
   var fresh=meterFullAutoCalDefaultReportData();
   fresh.run_id=runId||meterFullAutoCalRunId||d.run_id||null;
   fresh.started_at=runStart||Date.now();
-  fresh.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||d.signal_mode||meterLgAutoCalRequestedSignalMode();
+  fresh.signal_mode=(meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||d.signal_mode||ensureSigMode||meterLgAutoCalRequestedSignalMode();
   if(d.post) fresh.post=d.post;
   if(d.stages&&typeof d.stages==='object') fresh.stages=d.stages;
   meterFullAutoCalReportData=fresh;
@@ -33397,7 +33455,13 @@ function meterFullAutoCalReportStatusText(stage){
 }
 
 function meterFullAutoCalPromptDefaults(){
- const hdrWorkflow=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ // DV's Full AutoCal has its own phase machine (dv-profile replaces the
+ // 3D-LUT phase), so it doesn't show this generic prompt -- but a DV user
+ // who reaches the 3D-LUT-only sub-dialog should still see HDR-style copy.
+ // The collapse forced DV into the SDR "26-point" copy (operator-reported
+ // 2026-07-24).
+ const promptSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrWorkflow=(promptSigMode==='hdr10'||promptSigMode==='dv');
  return {
   title:'Full Auto Cal',
 		  message:hdrWorkflow
@@ -33411,11 +33475,15 @@ function meterFullAutoCalPromptDefaults(){
 }
 
 function meterFullAutoCalDefaultConfig(){
+ // Stamp the wizard config with the LIVE signal mode ('hdr10'/'sdr'/'dv'),
+ // not the collapsing helper's hdr10-or-sdr return -- a DV wizard launched
+ // from this config would otherwise be mis-stamped as SDR throughout.
+ const cfgSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  // HDR10: Calman matrix-only — never default Full AutoCal to hybrid/lattice.
  const hdr=typeof meterLg3dHdrMatrixOnly==='function'&&meterLg3dHdrMatrixOnly();
  if(hdr){
   return {
-   signalMode:meterLgAutoCalRequestedSignalMode(),
+   signalMode:cfgSigMode||meterLgAutoCalRequestedSignalMode(),
    method:'matrix',
    profileSource:'matrix',
    latticeSeriesId:null,
@@ -33434,7 +33502,7 @@ function meterFullAutoCalDefaultConfig(){
  }
  const resolved=meterLg3dResolveProfilingChoice('hybrid3',null);
  return {
-  signalMode:meterLgAutoCalRequestedSignalMode(),
+  signalMode:cfgSigMode||meterLgAutoCalRequestedSignalMode(),
   method:(resolved&&resolved.method)||'hybrid',
   profileSource:'hybrid3',
   latticeSeriesId:(resolved&&resolved.series&&resolved.series.id!=null)?Math.round(Number(resolved.series.id)):923,
@@ -33517,10 +33585,14 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 		}
 
 function meterFullAutoCalHdrWorkflowActive(){
+ // A DV run is still an HDR20-rail workflow for any consumer of this flag
+ // (tone-map upload gating, HDR-style prompt copy, ...). The collapse
+ // forced DV into the SDR branch wherever this was checked (2026-07-24).
  const cfgMode=String((meterFullAutoCalConfig&&meterFullAutoCalConfig.signalMode)||'').toLowerCase();
  const reportMode=String((meterFullAutoCalReportData&&meterFullAutoCalReportData.signal_mode)||'').toLowerCase();
- const requested=(typeof meterLgAutoCalRequestedSignalMode==='function')?String(meterLgAutoCalRequestedSignalMode()||'').toLowerCase():'';
- return cfgMode==='hdr10'||reportMode==='hdr10'||requested==='hdr10';
+ const requested=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase()
+  ||((typeof meterLgAutoCalRequestedSignalMode==='function')?String(meterLgAutoCalRequestedSignalMode()||'').toLowerCase():'');
+ return cfgMode==='hdr10'||cfgMode==='dv'||reportMode==='hdr10'||reportMode==='dv'||requested==='hdr10'||requested==='dv';
 }
 
 function meterFullAutoCalToneMapPeakLuminance(status){
@@ -33719,7 +33791,10 @@ function meterAutoCalRecordHdrToneMapReport(payload){
 // existing pattern + meter session. Returns the measured Y in nits (cd/m^2),
 // or null if no usable reading was returned.
 async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
- const sigMode=String(signalMode||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'hdr10')||'hdr10').toLowerCase();
+ // Read the LIVE signal mode here -- DV uses the same HDR20 100% code
+ // (10-bit PQ) as HDR10, so a DV run must take the HDR10 branch below
+ // even though meterLgAutoCalRequestedSignalMode() would collapse to 'sdr'.
+ const sigMode=String(signalMode||(typeof getVal==='function'?getVal('signal_mode'):'')||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'hdr10')||'hdr10').toLowerCase();
  let step=null;
  try{
   if(typeof meterAutoCalWhiteStep==='function') step=meterAutoCalWhiteStep();
@@ -33732,7 +33807,7 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
   // 940 sends ~94% of full-scale, the panel clips there, and the autocal
   // sets the white reference too low (see webui.pm 18305 comment for the
   // matching per-IRE table).
-  if(sigMode==='hdr10'){
+  if(sigMode==='hdr10'||sigMode==='dv'){
    const hdr100=meterLgHdrHundredPercentCodeForRange();
    step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:hdr100,g:hdr100,b:hdr100,input_max:1023,name:'100%'};
   }else{
@@ -35248,7 +35323,11 @@ function meterFullAutoCalTouchupTargetY(){
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
-    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+    // Only true SDR runs get the 109%-headroom reference; HDR10 and DV both
+    // use the panel's native peak (headroom ratio pinned to 1), so this must
+    // read the live signal mode rather than the hdr10-or-sdr collapsing
+    // helper, which would otherwise send a headroom target for DV too.
+    headroom_target_luminance:(String(getVal('signal_mode')||'').toLowerCase()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
     target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
@@ -35407,7 +35486,11 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
-    headroom_target_luminance:(meterLgAutoCalRequestedSignalMode()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
+    // Only true SDR runs get the 109%-headroom reference; HDR10 and DV both
+    // use the panel's native peak (headroom ratio pinned to 1), so this must
+    // read the live signal mode rather than the hdr10-or-sdr collapsing
+    // helper, which would otherwise send a headroom target for DV too.
+    headroom_target_luminance:(String(getVal('signal_mode')||'').toLowerCase()==='sdr'&&Number.isFinite(headroomY)&&headroomY>0)?headroomY:undefined,
     target_gamma:meterLgAutoCalGreyscaleTargetGammaValue(),
     target_white:{x:wp.x,y:wp.y},
     picture_mode:meterLgPictureModeValue(),
@@ -35883,7 +35966,11 @@ async function meterStartAutoCal(options){
  // (showComplete) reads from these.
  meterAutoCalCapturedMeasurementPort=meterAutoCalPendingConfig.measurementMeterPort||'';
  meterAutoCalCapturedMeasurementLabel=meterAutoCalPendingConfig.measurementMeterLabel||'';
- const hdrWorkflowLocal=meterLgAutoCalRequestedSignalMode()==='hdr10';
+ // HDR10 + DV both skip the gamma step (their 2.2 target is fixed, not
+ // operator-selectable). The collapse forced DV into the SDR wizard copy
+ // (operator-reported 2026-07-24). Read the live signal mode.
+ const useCaseSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const hdrWorkflowLocal=(useCaseSigMode==='hdr10'||useCaseSigMode==='dv');
  meterAutoCalPendingNextEntry=fullWorkflow?'disclaimer':'options';
  // Both SDR and HDR wizards start with the use-case (output format) step,
  // then display type. HDR skips the gamma step - its target curve is fixed
@@ -36060,7 +36147,14 @@ function meterAutoCalDisplayTypeContinue(){
   }
   if(typeof saveMeterSettings==='function') saveMeterSettings();
  }
- const sdrWizard=(meterLgAutoCalRequestedSignalMode()!=='hdr10');
+ // meterLgAutoCalRequestedSignalMode() only distinguishes hdr10 vs
+ // everything-else, so it collapses dv into "sdr" here (operator-reported
+ // bug 2026-07-24: the wizard showed the SDR "Choose the gamma target"
+ // step, with BT.1886/2.2/sRGB radio choices, for a Dolby Vision run --
+ // none of which are meaningful for DV, which pins 2.2 automatically the
+ // same way HDR10 does). Check the live signal mode directly instead.
+ const requestedSignalMode=String(getVal('signal_mode')||'').toLowerCase();
+ const sdrWizard=(requestedSignalMode!=='hdr10'&&requestedSignalMode!=='dv');
  if(sdrWizard){
   // SDR runs walk through the gamma target step too. Pre-select the radio
   // from the earlier use-case choice (window._meterAutoCalUseCaseChoice) or
@@ -36072,7 +36166,8 @@ function meterAutoCalDisplayTypeContinue(){
   meterAutoCalPhase='gammatarget';
   meterAutoCalSetOverlay(true,{phase:'gammatarget',current_name:'Gamma Target',message:'Pick the curve the greyscale will be calibrated to.'});
  } else {
-  // HDR keeps its pinned gamma; skip the gamma step and proceed.
+  // HDR10 and DV both keep their pinned gamma (2.2); skip the gamma step
+  // and proceed straight through.
   meterAutoCalGammaTargetProceed();
  }
 }
@@ -36146,8 +36241,13 @@ async function meterAutoCalConfirmAndStart(){
 	 const target=meterAutoCalTargetDeltaValue();
 	 const deltaEFormula='deitp';
 	 const fullWorkflow=!!(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow);
-	 const signalMode=meterLgAutoCalRequestedSignalMode();
-	 const hdrWorkflow=signalMode==='hdr10';
+	 // Use the LIVE signal mode for the workflow branching (HDR-style vs
+	 // SDR-style), and read it separately from the wire's signal_mode
+	 // carried downstream. The collapse forced DV into SDR-style gamma
+	 // handling and SDR-style anchor sets (operator-reported 2026-07-24).
+ const confirmStartSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const signalMode=confirmStartSigMode||String(meterLgAutoCalRequestedSignalMode()||'').toLowerCase();
+ const hdrWorkflow=(signalMode==='hdr10'||signalMode==='dv');
 	 // HDR greyscale is calibrated to a 2.2 power target -> set the TARGET
 	 // GAMMA selector to 2.2 as the autocal starts so the charts grade against
 	 // the curve we calibrate to. SDR keeps the operator's choice.
@@ -37413,7 +37513,12 @@ async function meterAutoCalStatusWatchdog(){
 
 async function meterStartLg3dAutoCal(options){
  const fullWorkflow=!!(options&&options.fullWorkflow);
- const signalMode=meterLgAutoCalRequestedSignalMode();
+ // Read the LIVE signal mode -- the collapse made DV silently enter the
+ // SDR 3D-LUT path (DV has its own dv-profile phase and should never hit
+ // this function; if it does, fail with a clear message instead of running
+ // an SDR 3D LUT on a DV signal).
+ const start3dSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ const signalMode=start3dSigMode||String(meterLgAutoCalRequestedSignalMode()||'').toLowerCase();
  const fail=(message)=>{
   if(message) toast(message,true);
   if(fullWorkflow) meterFullAutoCalResetState(false);
@@ -37448,6 +37553,10 @@ async function meterStartLg3dAutoCal(options){
  if(!meterLg3dAutoCalAvailable()) return fail('Connect an LG TV before starting 3D LUT AutoCal');
  if(!(await meterEnsureLgAutoCalTransport('LG 3D LUT AutoCal'))) return fail('');
  if(!meterEnsureAppliedGeneratorSettings()) return fail('');
+ // DV never enters this function under normal flow (the wizard routes DV
+ // to the dv-profile phase) -- if it reaches here via a direct call or
+ // edge case, fail clearly instead of silently running an SDR 3D LUT.
+ if(signalMode==='dv') return fail('DV uses the dedicated Dolby Vision profile phase, not the 3D LUT AutoCal');
  if(signalMode!=='sdr'&&signalMode!=='hdr10') return fail('LG 3D LUT AutoCal supports SDR and HDR10 only');
  if(signalMode==='hdr10'&&method!=='matrix'&&method!=='imported') return fail('HDR10 3D LUT AutoCal is matrix-only (Calman parity)');
  // Volume profiling: expand the chosen series to percent triplets now.

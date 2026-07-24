@@ -2519,11 +2519,18 @@ const LG_PICTURE_MODES_BY_SIGNAL={
   ['hdrVivid','HLG Vivid'],
   ['hdrTechnicolorExpert','HLG Technicolor Expert']
  ],
+ // Operator-confirmed real preset list for this generation's Dolby Vision
+ // menu (2026-07-24, LG C2/webOS4.1.0): Cinema Home, Filmmaker, Game
+ // Optimizer, Vivid, Standard -- no separate "Cinema" distinct from "Cinema
+ // Home" exists. The prior list (DV Cinema / DV Cinema Home / DV Game
+ // Optimizer / DV Vivid) was an unconfirmed guess that included a
+ // non-existent "Cinema" entry and was missing Filmmaker and Standard.
  dv:[
-  ['dolbyVisionCinema','DV Cinema'],
   ['dolbyVisionCinemaBright','DV Cinema Home'],
+  ['dolbyVisionFilmMaker','DV Filmmaker'],
   ['dolbyVisionGame','DV Game Optimizer'],
-  ['dolbyVisionVivid','DV Vivid']
+  ['dolbyVisionVivid','DV Vivid'],
+  ['dolbyVisionStandard','DV Standard']
  ]
 };
 
@@ -2646,6 +2653,14 @@ function lgPictureModeCanonicalValue(value){
   dolbyvisionvivid:'dolbyVisionVivid',
   dolbyhdrvivid:'dolbyVisionVivid',
   dolby_hdr_vivid:'dolbyVisionVivid',
+  dolbyvisionfilmmaker:'dolbyVisionFilmMaker',
+  dolbyhdrfilmmaker:'dolbyVisionFilmMaker',
+  dolby_hdr_filmmaker:'dolbyVisionFilmMaker',
+  dolbyvisionfilmmakermode:'dolbyVisionFilmMaker',
+  dolbyhdrfilmmakermode:'dolbyVisionFilmMaker',
+  dolbyvisionstandard:'dolbyVisionStandard',
+  dolbyhdrstandard:'dolbyVisionStandard',
+  dolby_hdr_standard:'dolbyVisionStandard',
   aps:'standard',
   eco:'standard',
   normal:'standard',
