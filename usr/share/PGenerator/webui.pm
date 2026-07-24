@@ -30362,10 +30362,13 @@ function meterLgAutoCalGreyscaleTargetGammaValue(){
 }
 
 function meterAutoCalTargetGamutValue(){
- const mode=meterLgAutoCalRequestedSignalMode();
- // HDR10 AutoCal + post-cal series solve in the P3-D65 target gamut
- // (consumer HDR is mastered to P3, not the BT.2020 container).
- if(mode==='hdr10') return 'p3d65';
+ // HDR10 + DV AutoCal / post-cal series solve in the P3-D65 target gamut
+ // (consumer content is mastered to P3). Read the LIVE signal_mode because
+ // meterLgAutoCalRequestedSignalMode() collapses dv->'sdr' and used to force
+ // DV through the SDR bt709 fallback.
+ const live=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
+ if(live==='hdr10'||live==='dv'||meterLgAutoCalRequestedSignalMode()==='hdr10') return 'p3d65';
+ if(live==='hlg') return 'bt2020';
  const raw=String((document.getElementById('meterTargetGamut')||{}).value||'auto').toLowerCase();
  if(raw==='bt709'||raw==='bt2020'||raw==='p3d65'||raw==='p3dci') return raw;
  return 'bt709';
@@ -36049,15 +36052,16 @@ async function meterStartAutoCal(options){
  meterLastChartCount=0;
  meterLastChartSignature='';
  meterActiveSeriesType='greyscale';
-// HDR10 AutoCal + post-cal series solve in the P3-D65 target gamut
-  // (consumer HDR is mastered to P3, not the BT.2020 container); SDR solves
-  // in BT.709. Set the dropdown at wizard start so every series read
-  // (autocal, post-cal report, manual) grades against the mode's gamut.
-  if((getVal('signal_mode')||'sdr')==='hdr10'){
-   setVal('meterTargetGamut','p3d65');
-  } else {
-   setVal('meterTargetGamut','bt709');
-  }
+// Pin Target Colorspace at wizard start so every series read (autocal,
+  // post-cal report, manual) grades against the mode's gamut:
+  //   HDR10 / DV -> P3-D65 (consumer content is mastered to P3)
+  //   HLG        -> BT.2020
+  //   SDR        -> BT.709
+  // DV used to fall into the SDR branch and force bt709, which desaturated
+  // every chart/ΔE target against Rec.709 while the wire is still DV/P3.
+  setVal('meterTargetGamut', (typeof meterDefaultTargetGamutForMode==='function')
+   ? meterDefaultTargetGamutForMode()
+   : (((getVal('signal_mode')||'sdr')==='sdr') ? 'bt709' : 'p3d65'));
   if(typeof saveMeterSettings==='function') saveMeterSettings();
  meterSetActiveSeriesChartContext();
  document.getElementById('meterExportRow').style.display='';
