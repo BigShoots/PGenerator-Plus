@@ -3716,7 +3716,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       # (unchanged) and chromatic patches anchor to 203 cd/m^2 in HDR10 and
       # DV-Absolute. SDR / DV-Relative / HLG keep the original behavior.
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      my $dv_peak=(($max_luma+0)>0)?($max_luma+0):10000;
+      # DV-Absolute anchors chromatic patches to 203 cd/m^2 (BT.2408) exactly
+      # like HDR10, and references the MEASURED peak -- not the mastering peak.
+      # Referencing max_luma meant a patch encoded as "fraction rl*203/1000 of
+      # peak" rendered rl*203*(measured/1000) instead of rl*203, so on a panel
+      # measuring 708 every chromatic patch under-delivered by ~0.71x before
+      # WRGB ceiling losses. series_target_white_y is the measured white the
+      # client stamps (same value $cc_white uses for the grey cascade).
+      my $dv_peak=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
       my $r;
       my $g;
       my $b;
@@ -18845,12 +18852,13 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
- if(meterChartIsDv() && meterDvMapModeValue()==='1'){
-  // DV Absolute target luminance stays anchored to mastering peak. The
-  // white pre-read is still useful diagnostically, but it is not the target
-  // Y reference for color or saturation patches in absolute mode.
-  return Math.max(1,meterColorReferenceNits());
- }
+ // DV-Absolute used to pin this to the mastering peak. It now falls through to
+ // the measured-white cascade below (which already clamps DV to the mastering
+ // peak), so the chart references the MEASURED peak. That is what makes the
+ // target agree with the patch: the server bakes DV chromatic target_Yn as
+ // Yn*203/measured_peak, so target_Yn * measured_peak = Yn*203, the same
+ // BT.2408 anchor HDR10 uses. Referencing the mastering peak instead made
+ // every chromatic target ~0.71x too small on a 708 cd/m2 panel.
  const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  const explicitLgTarget=activeColorSeries?null:meterExplicitLgTargetWhiteReferenceNits(meterReadings);
  if(explicitLgTarget>0) return Math.max(1,explicitLgTarget);
@@ -19830,7 +19838,15 @@ function meterTargetXYZForReading(reading){
   // PQ stimulus-decode path below is independent of any measurement so it
   // produces correct target Y from the first read, before the WRGB white
   // and 100% primaries have been measured.
-  if(_activeColorSeries && meterChartIsHdr() && !_greyReading && meterWrgbChromaticReferenceNits()>0){
+  // Dolby Vision is excluded: the WRGB additive reference corrects targets that
+  // are RELATIVE to measured white (they over-drive ~1.785x on a white-subpixel
+  // panel). DV chromatic target_Yn is absolute (Yn*203/measured_peak), so
+  // swapping in the additive sum corrects a second time and collapses the
+  // target -- hardware: every chromatic patch resolved a reference of ~271
+  // instead of the measured peak, so all of them targeted roughly half of the
+  // intended value while the greys, which do reference measured white, agreed.
+  if(_activeColorSeries && meterChartIsHdr() && !_greyReading && !meterChartIsDv()
+   && meterWrgbChromaticReferenceNits()>0){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;
   }
@@ -26771,7 +26787,52 @@ function meterSelectAutoCalDvProfile(){
   if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false);
   fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(()=>{});
  }catch(e){}
+ // CIE chart only, same presentation as the standalone 3D LUT pass: the DV
+ // profile measures black/white/R/G/B to characterise the panel, so the
+ // greyscale chart suite has nothing to show for it.
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ try{
+  const gw=document.getElementById('chartsGreyscaleWrap');
+  const cw=document.getElementById('chartsColorWrap');
+  if(gw) gw.style.display='none';
+  if(cw) cw.style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+  else { const mc=document.getElementById('meterCharts'); if(mc) mc.style.display=''; }
+ }catch(e){}
  meterUpdateReadButtons();
+}
+
+// Completion notice for a standalone DV Config pass. meterShowChoiceModal
+// always renders a cancel button, which reads wrong for "this finished
+// successfully", so this is a single-action notice in the same visual
+// language.
+function meterDvProfileShowCompleteModal(ok,message){
+ try{
+  const existing=document.getElementById('meterDvProfileCompleteModal');
+  if(existing) existing.remove();
+  const root=document.createElement('div');
+  root.id='meterDvProfileCompleteModal';
+  root.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:100001;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+  const card=document.createElement('div');
+  card.style.cssText='background:var(--panel,#0f1320);border:1px solid var(--border,#1d2230);border-radius:10px;max-width:460px;width:100%;padding:20px;color:var(--text,#e3e6ef);box-shadow:0 18px 60px rgba(0,0,0,0.6)';
+  const title=document.createElement('div');
+  title.style.cssText='font-size:1.0rem;font-weight:700;margin-bottom:10px;color:'+(ok?'var(--ok,#4ade80)':'var(--err,#f87171)');
+  title.textContent=ok?'Dolby Vision configuration uploaded':'Dolby Vision configuration failed';
+  const body=document.createElement('div');
+  body.style.cssText='font-size:.85rem;color:var(--text2,#a8b0c0);line-height:1.5;margin-bottom:16px;white-space:pre-line';
+  body.textContent=String(message||'');
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;justify-content:flex-end;gap:8px';
+  const closeBtn=document.createElement('button');
+  closeBtn.className='btn btn-sm btn-primary';
+  closeBtn.textContent='Close';
+  closeBtn.onclick=()=>{ try{ root.remove(); }catch(e){} };
+  row.appendChild(closeBtn);
+  card.appendChild(title); card.appendChild(body); card.appendChild(row);
+  root.appendChild(card);
+  document.body.appendChild(root);
+  try{ closeBtn.focus(); }catch(e){}
+ }catch(e){}
 }
 
 // Standalone entry for the DV panel profile. Reuses the shared measure/poll/
@@ -26871,6 +26932,11 @@ async function meterDvProfileFinishStandalone(ok,message){
  meterActionPending=false;
  meterUpdateReadButtons();
  toast(message||(ok?'Dolby Vision configuration uploaded':'Dolby Vision profile pass failed'),!ok);
+ // Explicit completion notice so the operator knows the pass finished and
+ // whether the upload actually landed, rather than only a corner toast.
+ meterDvProfileShowCompleteModal(!!ok,message||(ok
+  ? 'The panel profile was measured and the Dolby Vision configuration was uploaded to the TV. The DV engine has been returned to Absolute.'
+  : 'The Dolby Vision profile pass did not complete. The DV engine has been returned to Absolute.'));
 }
 
 function meterSelectAutoCalToneMap(){
