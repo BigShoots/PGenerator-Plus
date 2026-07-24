@@ -13900,7 +13900,11 @@ sub lg_autocal_26_hdr20_dpg_white_balance_gain {
 	  }
 	  my $m=$mrgb[$ch]+0;
 	  my $g=($m+0 > 0) ? ($lowest_target/$m) : 1.0;
-	  $g=0.5 if($g+0 < 0.5);
+	  # Cap per-iter cut at 20% (gain >= 0.80). A single-shot cut to 0.63
+	  # on B (raw reduce-to-lowest) overshot dE 21->26 and then forced a
+	  # multi-minute 2% crawl. Two ~20% steps land near the same place
+	  # without the overshoot detour.
+	  $g=0.80 if($g+0 < 0.80);
 	  $g=1.0 if($g+0 > 1.0); # reduce only -- never boost
 	  $g=1.0 if($g+0 != $g+0);
 	  push @gain,$g+0;
@@ -15061,16 +15065,20 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# the budget restoring best for nothing.
 					&& ($white_last_move_span+0) > 0.004) {
 					# WHITE: last real step overshot (dE worse than best). Restore
-					# best and HALVE step size. Promote coarse->fine so the next
-					# try is a small polish rather than another big dual cut.
+					# best and HALVE step size. Stay in coarse while dE is still
+					# high -- promoting coarse->fine at dE~21 made a 2% crawl
+					# that took minutes (last run: i2..i13 still at dE 5 after
+					# 90s of B=0.98 nudges). Fine only via dE<=2 path below.
 					my $worsened=$de+0;
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
 					$consecutive_reverts++;
 					$move_scaling*=0.5 if($move_scaling+0 > 0.125);
 					$move_scaling=0.125 if($move_scaling+0 < 0.125);
-					if($white_phase eq "coarse") { $white_phase="fine"; }
-					elsif($white_phase eq "fine") { $white_phase="micro"; }
+					# Only shrink fine->micro on overshoot when already polishing.
+					if($white_phase eq "fine" && ($best_de+0) <= 2.0) {
+					 $white_phase="micro";
+					}
 					log_line("HDR20 1D DPG greyscale: ".$label." white overshoot restore best dE=".sprintf("%.4f",$best_de)." (was ".sprintf("%.4f",$worsened).", move_scaling=".sprintf("%.3f",$move_scaling).", phase=".$white_phase.", lock=".($white_lowest_lock->{"name"}//"?").")");
 					if($consecutive_reverts >= 4 || $move_scaling+0 <= 0.13) {
 						my ($bok,$bmsg)=$upload_dpg->($current_dpg);
@@ -15250,10 +15258,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  my $d=defined($_g) ? abs(($_g+0)-1.0) : 0;
 			  $coarse_span=$d if($d > $coarse_span);
 			 }
-			 # Enter fine when close, or when coarse has nothing left to cut.
+			 # Enter fine only when already close (dE<=2) or coarse gains are
+			 # exhausted near target. Never enter fine at high dE -- that is
+			 # the multi-minute 2% crawl after a failed first slam.
 			 if($white_phase eq "coarse"
 			  && defined($de)
-			  && (($de+0) <= 2.0 || (($coarse_span+0) < 0.015 && ($de+0) > ($_effective_target_de+0)))) {
+			  && ((($de+0) <= 2.0)
+			   || (($coarse_span+0) < 0.015 && ($de+0) <= 3.0 && ($de+0) > ($_effective_target_de+0)))) {
 			  $white_phase="fine";
 			  $move_scaling=1.0;
 			  log_line("HDR20 1D DPG greyscale: ".$label." white phase -> fine (dE=".sprintf("%.4f",$de+0).", coarse_span=".sprintf("%.4f",$coarse_span).")");
