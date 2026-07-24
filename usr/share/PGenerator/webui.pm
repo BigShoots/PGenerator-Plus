@@ -3478,6 +3478,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my %primaries=%{&webui_meter_gamut_definitions()};
     my $colorimetry=int($series_colorimetry);
     my $primaries_idx=int($series_primaries);
+    # DV-Absolute (map mode "1") must take the hdr10 code path in the
+    # colours+saturation ENCODE and TARGET logic (both PQ and BT.2408 are
+    # hdr10 mechanics). DV-Relative (map mode "2") keeps the existing
+    # 2.2-relative behaviour. SDR / HDR10 / HLG are untouched. This alias
+    # is local to the colours/saturation builder and only the encode+target
+    # branches below read it; transport, dv_interface, DV picture-mode
+    # selection, and all greyscale/DPG paths keep using the real $signal_mode.
+    my $color_signal_mode=($signal_mode eq "dv" && $dv_map_mode eq "1") ? "hdr10" : $signal_mode;
     my $container_key="bt709";
     if($signal_mode eq "dv") {
      $container_key="bt2020";
@@ -3487,9 +3495,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      $container_key="bt2020";
     }
     my $auto_target_key=$container_key;
-    if($signal_mode eq "dv") {
+    if($color_signal_mode eq "dv") {
      $auto_target_key="p3d65";
-    } elsif($signal_mode eq "hdr10") {
+    } elsif($color_signal_mode eq "hdr10") {
       # HDR10 targets P3-D65 by default (consumer HDR is mastered to P3 inside
       # the BT.2020 container); an explicit DCI primaries pick selects P3-DCI.
       $auto_target_key="p3d65";
@@ -3508,8 +3516,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # is told): express the P3 target chromaticities as BT.2020 RGB so the TV
     # decodes BT.2020 and the cube (also BT.2020) reproduces them. Solving in
     # P3 emitted P3 RGB onto a BT.2020 wire -> wrong saturation. target_key
-    # stays the scoring/sweep gamut.
-    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+    # stays the scoring/sweep gamut. DV-Absolute joins hdr10 here.
+    my $solve_key=($color_signal_mode eq "hlg" || $color_signal_mode eq "hdr10") ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -3529,12 +3537,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
-     if($signal_mode eq "dv") {
+     # DV-Absolute (map mode "1") takes the hdr10 code path; DV-Relative
+     # keeps the legacy 2.2 tuning. $color_signal_mode was set above to
+     # "hdr10" for DV-Absolute, so the only branch that still uses
+     # $signal_mode eq "dv" is the DV-Relative one.
+     if($color_signal_mode eq "dv") {
       $linear*=$dv_classic_scale;
       $linear=1 if($linear > 1);
      }
       my $encoded=0;
-      if($signal_mode eq "hdr10") {
+      if($color_signal_mode eq "hdr10") {
        # Reference ColorChecker patch luminance to the MEASURED white (passed
        # by the client as series_target_white_y) instead of a fixed 100-nit
        # diffuse, so the displayed patch matches the measured-white chart
@@ -3545,7 +3557,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
        my $ref=(defined $ref_nits_override && $ref_nits_override>0)?$ref_nits_override:$cc_ref;
        $encoded=&webui_pattern_pq_encode_normalized($linear*$ref);
-      } elsif($signal_mode eq "dv") {
+      } elsif($color_signal_mode eq "dv") {
         $encoded=$linear>0 ? $linear**(1/2.2) : 0;
       } else {
        $encoded=$target_linear_to_signal->($linear);
@@ -3556,10 +3568,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($signal)=@_;
      $signal=0 if(!defined $signal || $signal < 0);
      $signal=1 if($signal > 1);
-     if($signal_mode eq "hdr10") {
+     if($color_signal_mode eq "hdr10") {
       return &webui_pattern_pq_decode_normalized($signal)/100;
      }
-     if($signal_mode eq "dv") {
+     if($color_signal_mode eq "dv") {
       return ($signal**2.2)/$dv_classic_scale;
      }
      return $target_signal_to_linear->($signal);
@@ -3573,7 +3585,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     } (0,1,2);
     my $remap_relative_dv_color_xy=sub {
      my ($sx,$sy)=@_;
-     return ($sx,$sy) unless($signal_mode eq "dv" && $dv_map_mode ne "1");
+     # DV-Absolute is folded into the hdr10 path via $color_signal_mode,
+     # so this guard fires only for DV-Relative.
+     return ($sx,$sy) unless($color_signal_mode eq "dv");
          my ($wx,$wy)=($solve_wx,$solve_wy);
      my ($dx,$dy)=($sx-$wx,$sy-$wy);
      return ($sx,$sy) if(abs($dx)<1e-9 && abs($dy)<1e-9);
@@ -3601,31 +3615,15 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     };
     my $remap_absolute_dv_color_xy=sub {
      my ($sx,$sy)=@_;
-     return ($sx,$sy) unless($signal_mode eq "dv" && $dv_map_mode eq "1");
-      my ($wx,$wy)=($solve_wx,$solve_wy);
-     my ($dx,$dy)=($sx-$wx,$sy-$wy);
-     return ($sx,$sy) if(abs($dx)<1e-9 && abs($dy)<1e-9);
-     my $best_t;
-     for(my $idx=0;$idx<@solve_xy;$idx++) {
-      my ($ax,$ay)=@{$solve_xy[$idx]};
-      my ($bx,$by)=@{$solve_xy[($idx+1)%@solve_xy]};
-      my ($ex,$ey)=($bx-$ax,$by-$ay);
-      my ($qx,$qy)=($ax-$wx,$ay-$wy);
-      my $den=$dx*$ey-$dy*$ex;
-      next if(abs($den)<1e-9);
-      my $t=($qx*$ey-$qy*$ex)/$den;
-      my $u=($qx*$dy-$qy*$dx)/$den;
-      next unless($t>0 && $u>=-1e-9 && $u<=1+1e-9);
-      $best_t=$t if(!defined $best_t || $t<$best_t);
-     }
-     return ($sx,$sy) unless(defined $best_t && $best_t>0);
-     my $f=1/$best_t;
-     $f=0 if($f<0);
-     $f=1 if($f>1);
-     return ($wx,$wy) unless($f>1e-9);
-    my $compressed=$f-0.32*$f*(1-$f);
-     my $scale=$compressed/$f;
-     return ($wx+$dx*$scale,$wy+$dy*$scale);
+     # DV-Absolute is now folded into the hdr10 code path -- the saturation
+     # axis is a straight line from white to the primary/secondary, exactly
+     # as hdr10 does. The old "absolute remap" was an f+0.32*f*(1-f) bend
+     # that pushed every saturation above the true geometry and made the
+     # targets land above the rendered patches. The remap is now a no-op
+     # for every code path; the helper is kept as a stub so the call site
+     # stays readable. DV-Relative has its own remap_relative_dv_color_xy
+     # helper above.
+     return ($sx,$sy);
     };
     my @classic=(
     ["Gray 35","gray",0.090],
@@ -3690,7 +3688,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      my $code=$encode_linear->($level);
 	      my $ire=int($level*100 + .5);
 	      my $target_Yn_for_step=$level;
-	      if($signal_mode eq "dv" && $span_code>0) {
+	      if($color_signal_mode eq "dv" && $span_code>0) {
 	       my $norm=($code-$min_code)/$span_code;
 	       $norm=0 if($norm < 0); $norm=1 if($norm > 1);
 	       $target_Yn_for_step=$decode_linear->($norm);
@@ -3716,59 +3714,31 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       # (unchanged) and chromatic patches anchor to 203 cd/m^2 in HDR10 and
       # DV-Absolute. SDR / DV-Relative / HLG keep the original behavior.
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      # DV-Absolute anchors chromatic patches to 203 cd/m^2 (BT.2408) exactly
-      # like HDR10, and references the MEASURED peak -- not the mastering peak.
-      # Referencing max_luma meant a patch encoded as "fraction rl*203/1000 of
-      # peak" rendered rl*203*(measured/1000) instead of rl*203, so on a panel
-      # measuring 708 every chromatic patch under-delivered by ~0.71x before
-      # WRGB ceiling losses. series_target_white_y is the measured white the
-      # client stamps (same value $cc_white uses for the grey cascade).
-      my $dv_peak=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
       my $r;
       my $g;
       my $b;
       my $target_Yn_for_step=$Yn;
-      if($signal_mode eq "hdr10") {
-       # HDR10 chromatic: anchor encode to 203 cd/m^2 (BT.2408 HDR Ref White)
-       # so the chart stimulus is the recognized HDR reference rather than
-       # the measured white. Bake target_Yn so target_Yn * measured_white
-       # still equals the absolute luminance the stimulus drives (Yn * 203).
+      if($color_signal_mode eq "hdr10") {
+       # HDR10 / DV-Absolute chromatic: anchor encode to 203 cd/m^2
+       # (BT.2408 HDR Ref White) so the chart stimulus is the recognized
+       # HDR reference rather than the measured white. Bake target_Yn so
+       # target_Yn * measured_white still equals the absolute luminance
+       # the stimulus drives (Yn * 203). DV-Absolute flows through this
+       # branch by virtue of $color_signal_mode eq "hdr10" -- the legacy
+       # hand-rolled 2.2 DV OETF path was removed because DV-Absolute
+       # patches must PQ-encode like hdr10 for the targets to land on the
+       # rendered patches.
        $r=$encode_linear->($rl,$bt2408_ref_white_nits);
        $g=$encode_linear->($gl,$bt2408_ref_white_nits);
        $b=$encode_linear->($bl,$bt2408_ref_white_nits);
        $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
-      } elsif($signal_mode eq "dv" && $dv_map_mode eq "1") {
-       # DV Absolute chromatic: drive patches to Yn*203 nits as a fraction
-       # of the mastering peak (matching DV-Absolute sat-sweep encoding).
-       # Bake target_Yn so target_Yn * peak = Yn * 203.
-       #
-       # The per-channel fractions below are LINEAR light and must be run
-       # through DV's OETF before becoming codes -- the same 1/2.2 encode
-       # $encode_linear applies for DV and that the client's
-       # meterEncodeColorCheckerLinear() uses. This branch previously wrote the
-       # linear fraction straight into the code, which is always far too dark
-       # and squashed every chromatic patch into a narrow near-black range:
-       # hardware, DV post-cal ColorChecker, Bluish Green was sent as
-       # 12,25,21 and measured 0.46 cd/m2 against a 240.76 cd/m2 target, and
-       # the patches all looked alike. Greys were unaffected (different
-       # branch), which is why only the chromatic rows collapsed.
-       # target_Yn is the LINEAR target and is unchanged by this -- the fix
-       # makes the displayed patch match the target, it does not move it.
-       my $dv_oetf=sub { my ($v)=@_; return ($v>0) ? $v**(1/2.2) : 0; };
-       my $rf=$rl*$bt2408_ref_white_nits/$dv_peak; $rf=0 if($rf<0); $rf=1 if($rf>1);
-       my $gf=$gl*$bt2408_ref_white_nits/$dv_peak; $gf=0 if($gf<0); $gf=1 if($gf>1);
-       my $bf=$bl*$bt2408_ref_white_nits/$dv_peak; $bf=0 if($bf<0); $bf=1 if($bf>1);
-       $r=int($min_code+$dv_oetf->($rf)*$span_code+.5);
-       $g=int($min_code+$dv_oetf->($gf)*$span_code+.5);
-       $b=int($min_code+$dv_oetf->($bf)*$span_code+.5);
-       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$dv_peak;
       } else {
        # SDR / HLG / DV-Relative: unchanged chromatic encoding, with the
        # existing DV-Relative target_Yn recompute block below.
        $r=$encode_linear->($rl);
        $g=$encode_linear->($gl);
        $b=$encode_linear->($bl);
-       if($signal_mode eq "dv" && $span_code>0) {
+       if($color_signal_mode eq "dv" && $span_code>0) {
         my $r_norm=($r-$min_code)/$span_code;
         my $g_norm=($g-$min_code)/$span_code;
         my $b_norm=($b-$min_code)/$span_code;
@@ -3790,32 +3760,34 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
-  my $series_level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : (($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
+  # DV-Absolute is folded into hdr10; the only "dv" branch here is DV-Relative,
+  # so use $color_signal_mode consistently.
+  my $series_level_pct=($color_signal_mode eq "hdr10") ? 100 : (($color_signal_mode eq "dv") ? 50 : 75);
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
     $linear=0 if(!defined $linear || $linear < 0);
     $linear=1 if($linear > 1);
-    if($signal_mode eq "hdr10") {
+    if($color_signal_mode eq "hdr10") {
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
-	   if($signal_mode eq "dv") {
+	   if($color_signal_mode eq "dv") {
 	    return int($min_code + $linear*$span_code + .5);
 	   }
     return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
    };
    my $series_level_request=$series_level_pct/100;
   my $series_level_code=0;
-  if($signal_mode eq "dv" && $dv_map_mode eq "1") {
+  if($color_signal_mode eq "hdr10") {
    $series_level_code=int($min_code + $series_level_request*$span_code + .5);
   } else {
    my $series_level_encoded=$series_level_request;
-   if($signal_mode eq "dv" && $target_gamma ne "st2084") {
+   if($color_signal_mode eq "dv" && $target_gamma ne "st2084") {
     $series_level_encoded=$target_linear_to_signal->($series_level_request);
    }
    $series_level_code=int($min_code + $series_level_encoded*$span_code + .5);
    }
    my $series_level_signal=$span_code>0?($series_level_code-$min_code)/$span_code:0;
-	  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
+	  my $series_level_linear=($color_signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -3872,6 +3844,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my %primaries=%{&webui_meter_gamut_definitions()};
   my $colorimetry=int($series_colorimetry);
   my $primaries_idx=int($series_primaries);
+  # DV-Absolute (map mode "1") takes the hdr10 code path in the
+  # saturation sweep's ENCODE and TARGET logic. DV-Relative (map mode "2")
+  # keeps the existing 2.2-relative behaviour. SDR / HDR10 / HLG are
+  # untouched. Alias is local to the saturations builder; outside this
+  # block the real $signal_mode is used.
+  my $color_signal_mode=($signal_mode eq "dv" && $dv_map_mode eq "1") ? "hdr10" : $signal_mode;
   my $container_key="bt709";
   if($signal_mode eq "dv") {
    $container_key="bt2020";
@@ -3881,9 +3859,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $container_key="bt2020";
   }
   my $auto_target_key=$container_key;
-  if($signal_mode eq "dv") {
+  if($color_signal_mode eq "dv") {
    $auto_target_key="p3d65";
-  } elsif($signal_mode eq "hdr10") {
+  } elsif($color_signal_mode eq "hdr10") {
     # HDR10 targets P3-D65 by default (consumer HDR is mastered to P3 inside
     # the BT.2020 container); an explicit DCI primaries pick selects P3-DCI.
     $auto_target_key="p3d65";
@@ -3902,7 +3880,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # told): express the P3 target chromaticities as BT.2020 RGB so the TV decodes
   # BT.2020 and the cube (also BT.2020) reproduces them. Solving in P3 emitted
   # P3 RGB onto a BT.2020 wire -> wrong saturation. target_key stays scoring.
-  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+  # DV-Absolute joins hdr10 in solving through the BT.2020 container, so use
+  # $color_signal_mode instead of $signal_mode here.
+  my $solve_key=($color_signal_mode eq "hlg" || $color_signal_mode eq "hdr10") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
@@ -3912,7 +3892,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # clip to white. Driving the sweep at full level (100%) pushes every channel
   # to the top of PQ where the panel clips, crushing the saturation ratio to
   # white for every patch except the pure 100%-saturation primaries.
-  my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
+  # DV-Absolute is folded into the hdr10 path; only "hdr10" and "dv" (the
+  # latter is DV-Relative) remain after switching to $color_signal_mode.
+  # DV-Relative keeps its 50% sub-peak level (legacy gamma-2.2 behaviour).
+  my $level_pct=($color_signal_mode eq "hdr10") ? 100 : (($color_signal_mode eq "dv") ? 50 : 75);
   my $hcfr_constant_luminance=($points==25)?1:0;
   # $max_code is the outer-scope bit-depth-aware $chroma_max_code set
   # at the top of the step-build; no need to recompute here.
@@ -3922,36 +3905,30 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    my ($linear,$color_name)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
    $linear=1 if($linear > 1);
-   if($signal_mode eq "hdr10") {
+   if($color_signal_mode eq "hdr10") {
     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
-	   if($signal_mode eq "dv") {
+	   if($color_signal_mode eq "dv") {
 	    return int($min_code + $linear*$span_code + .5);
 	   }
    return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
   };
   # Match frontend meterActualSignalPercent()/meterCodeFromSignalPercent().
-  # In DV + ST2084 target mode the requested level is treated as a direct
-  # tunnel code percentage first, then decoded back through the active DV
-  # tunnel EOTF to get the actual linear stimulus after quantization.
+  # In DV-Absolute (folded into hdr10 here) the requested level is treated as
+  # a direct tunnel code percentage first, then decoded back through the
+  # active PQ EOTF to get the actual linear stimulus after quantization.
   my $level_request=$level_pct/100;
   my $level_code=0;
-  if($signal_mode eq "dv" && $dv_map_mode eq "1") {
+  if($color_signal_mode eq "hdr10") {
    $level_code=int($min_code + $level_request*$span_code + .5);
   } else {
    my $level_encoded=$level_request;
-   if($signal_mode eq "dv" && $target_gamma ne "st2084") {
+   if($color_signal_mode eq "dv" && $target_gamma ne "st2084") {
     $level_encoded=$target_linear_to_signal->($level_request);
    }
    $level_code=int($min_code + $level_encoded*$span_code + .5);
   }
   my $level_signal=$span_code>0?($level_code-$min_code)/$span_code:0;
-  my $dv_absolute_sat_fraction=sub {
-   my ($color_name,$sat_frac)=@_;
-   $sat_frac=0 if(!defined $sat_frac || $sat_frac < 0);
-   $sat_frac=1 if($sat_frac > 1);
-    return $sat_frac + 0.8*$sat_frac*(1-$sat_frac);
-  };
   # Reference sat-sweep target_Yn to measured white so target_Yn*measured = the
   # patch's reachable absolute luminance (sweep runs sub-peak/50% so it is
   # reachable) and the white patch (target_Yn=1) targets the measured peak
@@ -3960,7 +3937,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $sat_white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
-	    my $level_linear=($signal_mode eq "hdr10")
+	    my $level_linear=($color_signal_mode eq "hdr10")
 	     ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
 	     : $target_signal_to_linear->($level_signal);
     my $mix_X=$AXIS_RGB_TO_XYZ[0][0]*$r_mix+$AXIS_RGB_TO_XYZ[0][1]*$g_mix+$AXIS_RGB_TO_XYZ[0][2]*$b_mix;
@@ -3971,8 +3948,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $py=$mix_sum>0?$mix_Y/$mix_sum:$target_wy;
    foreach my $sat (25,50,75,100) {
     my $f=$sat/100;
-    if($signal_mode eq "dv") {
-     $f=($dv_map_mode eq "1") ? $dv_absolute_sat_fraction->($name,$f) : ($f-(0.8*$f*$f*(1-$f)));
+    # DV-Absolute is folded into hdr10 (no remap, straight line from white to
+    # primary/secondary). DV-Relative keeps its 2.2-relative compression
+    # (f - 0.8*f*f*(1-f)) so the DV-Relative sweep still agrees with its
+    # legacy behaviour.
+    if($color_signal_mode eq "dv") {
+     $f=$f-(0.8*$f*$f*(1-$f));
     }
     my $tx=$target_wx+$f*($px-$target_wx);
     my $ty=$target_wy+$f*($py-$target_wy);
@@ -17686,6 +17667,32 @@ function meterDvMapModeValue(){
  return String((el&&el.value) || (config&&config.dv_map_mode) || '2');
 }
 
+// Dolby Vision in ABSOLUTE map mode behaves EXACTLY like signal_mode
+// "hdr10" in the ColorChecker + saturation-sweep colour encode and target
+// paths. DV-Relative (map mode "2") keeps its 2.2-relative behaviour. SDR
+// / HDR10 / HLG are untouched. Use these helpers in the colour/saturation
+// encode + target logic so the rule is applied uniformly rather than
+// scattered through ~27 ad-hoc checks. Outside the colour/saturation path
+// the real meterChartIsDv() / meterChartIsHdr() / meterChartIsHlg() must
+// be used (transport, dv_interface, DV picture-mode selection, greyscale
+// 1D-DPG, etc.).
+// True when the colour/saturation path should behave as hdr10 (PQ). Must be
+// built on the PQ test, NOT meterChartIsHdr(): meterChartIsHdr() is
+// "not sdr", so it includes HLG, and HLG must keep its own OETF here. The
+// sites this replaces were all guarded by meterChartIsPq() && !meterChartIsDv(),
+// i.e. hdr10 only -- so this returns true for hdr10 and for DV-Absolute (which
+// is PQ-referenced) and false for hlg, sdr and DV-Relative.
+function meterColorPathIsHdr10(){
+ const sm=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode():'sdr';
+ if(sm==='hdr10') return true;
+ if(sm==='dv') return (typeof meterDvMapModeValue==='function') && meterDvMapModeValue()==='1';
+ return false;
+}
+
+function meterIsDvRelative(){
+ return (typeof meterChartIsDv==='function' && meterChartIsDv()) && meterDvMapModeValue()==='2';
+}
+
 function meterDvInterfaceValue(){
  return '0';
 }
@@ -19205,15 +19212,23 @@ function meterDvUsesPqTargetCurve(){
 function meterTargetLinearToSignal(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
- if(meterChartIsDv()){
-  // Relative DV treats the signal fraction as the linear target directly
-  // (the DV engine applies its own tonemap on top of a 2.2-encoded signal).
-  // ST 2084 / absolute DV should follow the PQ OETF, so honor the operator's
-  // Target Gamma dropdown selection outside an active calibration.
-  if(meterDvUsesPqTargetCurve()) return meterChartPqEncodeNormalized(c*10000);
+ // DV-Relative treats the signal fraction as the linear target directly
+ // (the DV engine applies its own tonemap on top of a 2.2-encoded signal).
+ // DV-Absolute is folded into the hdr10 path so it follows the PQ OETF
+ // exactly when the chart is PQ (honoring the operator's Target Gamma
+ // dropdown selection outside an active calibration -- but inside the
+ // colour/saturation path DV-Absolute and hdr10 are identical regardless).
+ // DV-Relative (map mode "2") keeps the identity path.
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()){
   return c;
  }
  if(meterChartIsHlg()) return hlgOetf(c);
+ // PQ path: hdr10 always; DV-Absolute when its checked target curve is PQ.
+ // DV-Absolute chroma/sat encode uses meterChartPqEncodeNormalized() directly
+ // (see meterEncodeColorCheckerLinear) so the same predicate is intentional.
+ if(meterColorPathIsHdr10() && (typeof meterGreyChartUsesPqTarget==='function' ? meterGreyChartUsesPqTarget() : (typeof meterChartIsPq==='function' && meterChartIsPq()))){
+  return meterChartPqEncodeNormalized(c*10000);
+ }
  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.0031308 ? 12.92*c : 1.055*Math.pow(c,1/2.4)-0.055;
  const g=(sel==='bt1886')?2.4:(parseFloat(sel)||2.2);
@@ -19222,16 +19237,19 @@ function meterTargetLinearToSignal(v){
 function meterTargetSignalToLinear(v){
  const c=Math.max(0,Math.min(1,v||0));
  if(c<=0) return 0;
- if(meterChartIsDv()){
-  // See meterTargetLinearToSignal: relative DV is identity; ST 2084/absolute
-  // follows the PQ EOTF when the operator selects it (outside calibration).
-  if(meterDvUsesPqTargetCurve()) return meterChartPqDecodeNormalized(c);
+ // DV-Relative is identity (see meterTargetLinearToSignal). DV-Absolute
+ // follows the PQ EOTF when the chart is PQ; honoured both for hdr10 and
+ // DV-Absolute through the same predicate.
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()){
   return c;
  }
  if(meterChartIsHlg()){
   const peak=meterChartHdrPeak();
   const minY=meterChartMasterMin();
   return hlgSignalToDisplayLinear(c,minY,peak);
+ }
+ if(meterColorPathIsHdr10() && (typeof meterGreyChartUsesPqTarget==='function' ? meterGreyChartUsesPqTarget() : (typeof meterChartIsPq==='function' && meterChartIsPq()))){
+  return meterChartPqDecodeNormalized(c);
  }
  const sel=(typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():(((document.getElementById('meterTargetGamma')||{}).value||'bt1886'));
  if(sel==='srgb') return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4);
@@ -19255,10 +19273,13 @@ function meterDvClassicColorCheckerScale(){
 }
 
 function meterEncodeColorCheckerLinear(linear){
+ // The classic HSV 0.68 scale is a DV-Relative artefact (the legacy 2.2
+ // tunnel also used it); DV-Absolute is folded into the hdr10 path so it
+ // uses the natural [0,1] range that PQ encodes linearly.
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  let clamped=Math.max(0,Math.min(1,linear||0));
- if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()) clamped*=meterDvClassicColorCheckerScale();
  // HDR PQ encode must use the same peak-luminance reference the server uses
  // (cc_ref = max_luma in webui_meter_series_start, typically 1000). Previously
  // hardcoded to *100 nits, which produced dimmer preview codes than the actual
@@ -19271,20 +19292,21 @@ function meterEncodeColorCheckerLinear(linear){
  // back to meterChartHdrPeak() (config/live peak). Without an active series
  // peak the fallback still uses 100 (the SDR-style assumption), matching the
  // historical behavior for non-HDR builds.
- if(meterChartIsPq()&&!meterChartIsDv()){
+ // DV-Absolute (map mode "1") flows through this branch via meterColorPathIsHdr10().
+ if(meterColorPathIsHdr10()){
   const active=(typeof meterActiveSeriesMaxLuma!=='undefined'&&Number(meterActiveSeriesMaxLuma)>0)?Number(meterActiveSeriesMaxLuma):0;
   const peak=(active>0)?active:((typeof meterChartHdrPeak==='function')?meterChartHdrPeak():0);
   const ref=(peak>0)?peak:100;
   return Math.round(min+meterChartPqEncodeNormalized(clamped*ref)*span);
  }
- if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
 function meterDecodeColorCheckerSignal(signal){
  let clamped=Math.max(0,Math.min(1,signal||0));
- if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(clamped)/100;
- if(meterChartIsDv()) return Math.pow(clamped,2.2)/meterDvClassicColorCheckerScale();
+ if(meterColorPathIsHdr10()) return meterChartPqDecodeNormalized(clamped)/100;
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()) return Math.pow(clamped,2.2)/meterDvClassicColorCheckerScale();
  return meterTargetSignalToLinear(clamped);
 }
 
@@ -19292,7 +19314,7 @@ function meterEncodeColorCheckerFullSatChannel(active){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  if(!active) return min;
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
+ if(meterColorPathIsHdr10()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
  return min+span;
 }
 
@@ -19301,22 +19323,27 @@ function meterFullSatChannelIsActive(linear){
 }
 
 function meterEncodeSaturationLinear(linear,colorName){
+ // Root cause 1 of the DV-Absolute bug: this function previously wrote the
+ // LINEAR value straight into a code when the chart was DV. The new rule
+ // (DV-Absolute == hdr10 in the colour/saturation path) means DV-Absolute
+ // also PQ-encodes here, while DV-Relative keeps its identity (linear
+ // fraction) write because the DV engine applies its own tonemap on top.
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
- if(meterChartIsDv()) return Math.round(min+clamped*span);
+ if(meterColorPathIsHdr10()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()) return Math.round(min+clamped*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
 function meterGamutStimulusLinearLevel(){
- if(meterChartIsPq()&&!meterChartIsDv()) return 1;
+ if(meterColorPathIsHdr10()) return 1;
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
- if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
+ if(meterColorPathIsHdr10()) return meterChartPqDecodeNormalized(actualPercent)/10000;
  return meterTargetSignalToLinear(actualPercent);
 }
 
@@ -19337,12 +19364,16 @@ function meterGamutColorIsSecondary(colorName){
 }
 
 function meterDvAbsoluteSaturationFraction(colorName,sat){
+ // DV-Absolute is folded into the hdr10 path, so the saturation axis is a
+ // straight line from white to the primary/secondary -- no remap. The
+ // helper is kept as a stub so the call sites stay readable. DV-Relative
+ // uses meterDvRelativeSaturationFraction below.
  const s=Math.max(0,Math.min(1,sat||0));
- return s + 0.8*s*(1-s);
+ return s;
 }
 
 function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
- if(!(meterChartIsDv() && meterDvMapModeValue()!=='1')) return {x,y};
+ if(typeof meterIsDvRelative!=='function' || !meterIsDvRelative()) return {x,y};
  const solveGamut=gamut||meterAnalysisGamut();
  const wp=meterTargetWhitePoint();
  const wx=wp.x, wy=wp.y;
@@ -19373,38 +19404,17 @@ function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
 }
 
 function meterRemapAbsoluteDvColorCheckerChromaticity(x,y,gamut){
- if(!(meterChartIsDv() && meterDvMapModeValue()==='1')) return {x,y};
- const solveGamut=gamut||meterAnalysisGamut();
- const wp=meterTargetWhitePoint();
- const wx=wp.x, wy=wp.y;
- const dx=(x||0)-wx;
- const dy=(y||0)-wy;
- if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
- const verts=[solveGamut.primaries.R,solveGamut.primaries.G,solveGamut.primaries.B];
- let bestT=null;
- for(let i=0;i<verts.length;i++){
-  const a=verts[i];
-  const b=verts[(i+1)%verts.length];
-  const ex=b.x-a.x;
-  const ey=b.y-a.y;
-  const qx=a.x-wx;
-  const qy=a.y-wy;
-  const den=dx*ey-dy*ex;
-  if(Math.abs(den)<1e-9) continue;
-  const t=(qx*ey-qy*ex)/den;
-  const u=(qx*dy-qy*dx)/den;
-  if(t>0 && u>=-1e-9 && u<=1+1e-9 && (bestT==null || t<bestT)) bestT=t;
- }
- if(!(bestT>0)) return {x,y};
- const frac=Math.max(0,Math.min(1,1/bestT));
- if(!(frac>1e-9)) return {x:wx,y:wy};
- const compressed=frac-0.32*frac*(1-frac);
- const scale=compressed/frac;
- return {x:wx+dx*scale,y:wy+dy*scale};
+ // DV-Absolute is folded into the hdr10 path so the absolute remap is a
+ // no-op: the chromaticity is used as-is. The helper is kept as a stub so
+ // the call sites stay readable and the function remains in the exportable
+ // surface. DV-Relative has its own remap helper above.
+ return {x,y};
 }
 
 function meterSaturationSolveGamut(){
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
+ // DV-Absolute and DV-Relative both solve in the active target gamut; the
+ // two branches collapse together once DV-Absolute is folded into the hdr10
+ // path. Non-DV follows the standard stimulus-solve gamut.
  if(meterChartIsDv()) return meterAnalysisGamut();
  return meterStimulusSolveGamut();
 }
@@ -19486,7 +19496,15 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
  const axisGamut=meterSaturationAxisGamut();
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
- if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
+ // Root cause 2 of the DV-Absolute bug: the saturation axis was being
+ // remapped (f + 0.8*f*(1-f)) which pushed targets above the rendered
+ // patches. DV-Absolute is now folded into the hdr10 path, so the axis
+ // is a straight line from white to the primary/secondary. DV-Relative
+ // keeps its 2.2-relative compression (f - 0.8*f*f*(1-f)) so it still
+ // matches its legacy behaviour.
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()){
+  sat=meterDvRelativeSaturationFraction(sat);
+ }
  const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
  const wp=meterTargetWhitePoint();
  const x=wp.x+sat*(endpoint.x-wp.x);
@@ -19586,7 +19604,9 @@ function meterColorTargetCodeRange(){
 function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
- if(meterChartIsPq()&&!meterChartIsDv()){
+ // DV-Absolute decodes colour target codes as PQ, same as hdr10 (see
+ // meterColorPathIsHdr10); DV-Relative keeps the 2.2 path below.
+ if(meterColorPathIsHdr10()){
   const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
   const nits=meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1);
   // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,
@@ -19838,29 +19858,20 @@ function meterTargetXYZForReading(reading){
   // PQ stimulus-decode path below is independent of any measurement so it
   // produces correct target Y from the first read, before the WRGB white
   // and 100% primaries have been measured.
-  // Dolby Vision is excluded: the WRGB additive reference corrects targets that
-  // are RELATIVE to measured white (they over-drive ~1.785x on a white-subpixel
-  // panel). DV chromatic target_Yn is absolute (Yn*203/measured_peak), so
-  // swapping in the additive sum corrects a second time and collapses the
-  // target -- hardware: every chromatic patch resolved a reference of ~271
-  // instead of the measured peak, so all of them targeted roughly half of the
-  // intended value while the greys, which do reference measured white, agreed.
-  if(_activeColorSeries && meterChartIsHdr() && !_greyReading && !meterChartIsDv()
+  // DV-Absolute is folded into the hdr10 path here; DV-Relative is excluded
+  // because it preserves the legacy 2.2-relative behavior.
+  if(_activeColorSeries && meterColorPathIsHdr10() && !_greyReading
    && meterWrgbChromaticReferenceNits()>0){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;
   }
-  // Dolby Vision is excluded from the PQ stimulus decode: DV ColorChecker
-  // patches are encoded with 2.2 (see $encode_linear's dv branch server-side
-  // and meterEncodeColorCheckerLinear here), NOT PQ. PQ-decoding a
-  // 2.2-encoded code yields an absurdly high luminance which then clamped to
-  // meterColorSeriesReferenceNits(), so EVERY grey reported the mastering peak
-  // as its target -- hardware, DV post-cal ColorChecker: White, Gray 35, 50,
-  // 65 and 80 all showed Tgt Y = 1000.0. Leaving _wrgbStimY null for DV lets
-  // the baked target_Yn drive the target, which is what DV bakes it for.
-  // Same isPq-and-not-dv idiom used by meterEncodeColorCheckerLinear and
-  // friends above.
-  if(_activeColorSeries && meterChartIsHdr() && meterChartIsPq() && !meterChartIsDv()){
+  // DV-Relative is excluded from the PQ stimulus decode: DV-Relative
+  // ColorChecker patches are encoded with 2.2 (see the legacy $encode_linear
+  // dv branch server-side and meterEncodeColorCheckerLinear here), NOT PQ.
+  // PQ-decoding a 2.2-encoded code yields an absurdly high luminance which
+  // then clamped to meterColorSeriesReferenceNits(). DV-Absolute flows
+  // through this branch via meterColorPathIsHdr10() because it is PQ-encoded.
+  if(_activeColorSeries && meterColorPathIsHdr10() && meterChartIsPq()){
    let _sy=meterWrgbStimulusTargetY(reading);
    if(_sy!=null){
     if(_greyReading){
@@ -19999,7 +20010,10 @@ function meterColorDeltaTargetXYZ(reading,inclLum){
 }
 
 function meterGreyDeltaTargetXYZ(reading,inclLum){
- if(!(meterChartIsDv()&&meterReadingIsGreyscale(reading))) return meterColorDeltaTargetXYZ(reading,inclLum);
+ // DV-Absolute is folded into the hdr10 path here, so DV-Absolute greys
+ // follow the standard color-delta target math (same as hdr10). Only
+ // DV-Relative keeps the legacy DV-Relative-grey-delta branch.
+ if(!(typeof meterIsDvRelative==='function' && meterIsDvRelative() && meterReadingIsGreyscale(reading))) return meterColorDeltaTargetXYZ(reading,inclLum);
  const target=meterGreyChartTargetXYZForReading(reading);
  const measured=meterReadingXYZ(reading);
  if(inclLum||!measured||!(measured.Y>0)) return target;
