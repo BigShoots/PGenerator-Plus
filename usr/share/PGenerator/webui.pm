@@ -30545,12 +30545,22 @@ function meterAutoCalDdcResetReadbackKeys(){
 }
 
 function meterLgPictureModeValue(fallback){
+ const configured=(typeof lgSignalModeKey==='function')?lgSignalModeKey():String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase();
+ const matches=(v)=>{
+  if(!v) return '';
+  if(typeof lgPictureModeCanonicalValue==='function') v=lgPictureModeCanonicalValue(v)||v;
+  if(typeof lgPictureModeMatchesSignal==='function' && !lgPictureModeMatchesSignal(v,configured)) return '';
+  return v;
+ };
  if(typeof lgSelectedPictureModeValue==='function'){
-  const selected=lgSelectedPictureModeValue();
+  const selected=matches(lgSelectedPictureModeValue());
   if(selected) return selected;
  }
- if(typeof lgPictureModeValue!=='undefined'&&lgPictureModeValue) return lgPictureModeValue;
- return fallback||'';
+ if(typeof lgPictureModeValue!=='undefined'&&lgPictureModeValue){
+  const cur=matches(lgPictureModeValue);
+  if(cur) return cur;
+ }
+ return matches(fallback)||'';
 }
 
 function meterGreyTvTarget(step,opts){
@@ -32515,6 +32525,13 @@ async function meterAutoCalResetDdc(){
  const ddcSlots=hdrWorkflow?METER_LG_GREY_HDR_AUTOCAL_SLOTS:METER_LG_GREY_AUTOCAL_26_SLOTS;
  const zero=ddcSlots.map(()=>0);
 	 const pictureMode=meterLgPictureModeValue((meterLgGreyState&&meterLgGreyState.picture&&meterLgGreyState.picture.pictureMode)||'');
+ if(!pictureMode){
+  throw new Error(resetSigMode==='dv'
+   ? 'Select a Dolby Vision picture mode on the LG display card (e.g. DV Filmmaker or DV Cinema Home) before Auto Cal reset.'
+   : (hdrWorkflow
+    ? 'Select an HDR picture mode on the LG display card before Auto Cal reset.'
+    : 'Select an LG picture mode on the display card before Auto Cal reset.'));
+ }
  meterAutoCalResetNotice='';
  let pictureModeReset=null;
  let pictureResetMessage='Unable to reset LG picture mode.';

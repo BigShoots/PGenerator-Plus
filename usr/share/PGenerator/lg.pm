@@ -2802,13 +2802,33 @@ function lgPopulatePictureModeSelect(current){
  const select=document.getElementById('lgPictureMode');
  if(!select) return;
  const state=window.lgStatusState||{};
- const selected=lgPictureModeCanonicalValue(current);
- const signal=lgPictureModeEffectiveSignal(selected);
- const options=lgPictureModeOptions(signal,selected);
+ // Options always follow the OUTPUT signal_mode (sdr/hdr10/dv/hlg), not the
+ // family of whatever picture mode string is currently cached. A stale
+ // "cinema" selection while signal_mode=dv previously forced the SDR list
+ // (and AutoCal reset then hit SDR Cinema and failed the DV reset path).
+ const configured=lgSignalModeKey();
+ let selected=lgPictureModeCanonicalValue(current!=null?current:lgPictureModeValue);
+ if(selected && !lgPictureModeMatchesSignal(selected,configured)){
+  selected='';
+ }
+ if(!selected){
+  const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(configured));
+  if(stored && lgPictureModeMatchesSignal(stored,configured)) selected=stored;
+ }
+ const options=lgPictureModeOptions(configured,selected);
  let html='<option value="">Select mode</option>';
  options.forEach(item=>{html+='<option value="'+lgEscapeHtml(item[0])+'">'+lgEscapeHtml(item[1])+'</option>';});
  select.innerHTML=html;
- select.value=options.some(item=>item[0]===selected)?selected:'';
+ if(selected && options.some(item=>item[0]===selected)){
+  select.value=selected;
+  lgPictureModeValue=selected;
+ } else {
+  select.value='';
+  // Drop a stale cross-signal value so meterLgPictureModeValue() cannot
+  // hand AutoCal "cinema" while the output is DV.
+  if(!selected || !lgPictureModeMatchesSignal(selected,configured)) lgPictureModeValue='';
+ }
+ lgPictureModeSignalMode=configured;
  select.disabled=lgPictureModePending||!lgStatusConnected(state);
 }
 
@@ -3792,17 +3812,19 @@ async function lgStartPinPairing(){
 
 async function lgRefreshPictureMode(force){
  const state=window.lgStatusState||{};
- let signal=lgPictureModeEffectiveSignal(lgPictureModeValue);
+ const configured=lgSignalModeKey();
+ let signal=configured;
 			 if(!lgStatusConnected(state)){
 		  lgPictureModeValue='';
-		  lgPictureModeSignalMode=signal;
+		  lgPictureModeSignalMode=configured;
 		  lgPopulatePictureModeSelect('');
 		  lgDisplayControlInvalidate();
 		  return;
 		 }
 	 if(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy()) return;
 	 if(lgPictureModePending) return;
- if(!force&&lgPictureModeValue&&lgPictureModeSignalMode===signal){
+ if(!force&&lgPictureModeValue&&lgPictureModeSignalMode===configured
+    && lgPictureModeMatchesSignal(lgPictureModeValue,configured)){
   lgPopulatePictureModeSelect(lgPictureModeValue);
   return;
  }
@@ -3817,14 +3839,22 @@ async function lgRefreshPictureMode(force){
    _timeoutMs:9000
   });
   if(r&&r.status==='ok'&&r.picture_settings){
-   const mode=r.picture_settings.pictureMode||'';
-   signal=lgPictureModeEffectiveSignal(mode);
-   lgPictureModeValue=mode;
-   lgPictureModeSignalMode=signal;
-   if(mode){
-    lgRememberPictureMode(mode,signal);
+   const mode=lgPictureModeCanonicalValue(r.picture_settings.pictureMode||'');
+   // Only accept a TV readback that matches the configured output signal.
+   // When HDMI is DV but the TV still reports SDR "cinema" (wrong input,
+   // latch, or pre-switch read), pinning that value collapses the card to
+   // the SDR list and AutoCal DV reset fails.
+   if(mode && lgPictureModeMatchesSignal(mode,configured)){
+    lgPictureModeValue=mode;
+    lgPictureModeSignalMode=configured;
+    lgRememberPictureMode(mode,configured);
     lgDisplayControlInvalidate();
     setTimeout(()=>lgDisplayControlRefresh(true),650);
+   } else if(mode){
+    // Keep DV/HDR options visible; fall back to per-signal stored preference.
+    const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(configured));
+    lgPictureModeValue=(stored&&lgPictureModeMatchesSignal(stored,configured))?stored:'';
+    lgPictureModeSignalMode=configured;
    }
 	  }
  }catch(e){
