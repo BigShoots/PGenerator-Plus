@@ -11686,8 +11686,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="field field-refresh">
     <label>Refresh Rate</label>
     <select id="meterRefreshRate">
-     <option value="auto" selected>Auto (meter detects)</option>
-     <option value="">Match Display Setting</option>
+     <option value="auto">Auto (meter detects)</option>
+     <option value="" selected>Match Display Setting</option>
      <option value="23.976">23.976 Hz</option>
      <option value="24">24 Hz</option>
      <option value="25">25 Hz</option>
