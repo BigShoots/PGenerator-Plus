@@ -1955,6 +1955,13 @@ sub webui_lg_dv_profile_upload (@) {
   connect_timeout => 5,
  });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(($result->{"status"}||"") eq "ok") {
+  eval {
+   &_lg_cal_hist_archive_dv($measurements,{
+    picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+   });
+  };
+ }
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the Dolby Vision profile upload again.";
   $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
@@ -2202,6 +2209,7 @@ sub webui_lg_sdr_calman_reset (@) {
 # --- Calibration history: final uploaded 1D DPGs, 3D LUTs, DV configs ---
 my $_lg_cal_hist_runs="/var/lib/PGenerator/lg/autocal-runs";
 my $_lg_cal_hist_luts="/var/lib/PGenerator/lg/luts";
+my $_lg_cal_hist_dir="/var/lib/PGenerator/lg/calibration-history";
 
 sub _lg_cal_hist_json_escape {
  my ($s)=@_;
@@ -2224,9 +2232,122 @@ sub _lg_cal_hist_read_json_file {
 #  - 1D: autocal-runs/*/grey-state with final_1d_lut_uploaded + hdr20_1d_dpg_data
 #  - 3D: /var/lib/PGenerator/lg/luts/*.bin with companion .json (export_lut triple)
 #  - DV: runs whose stages.ndjson have a successful dv_profile_upload
+
+sub _lg_cal_hist_ensure_dir {
+ system("mkdir -p ".quotemeta($_lg_cal_hist_dir)."/1d ".quotemeta($_lg_cal_hist_dir)."/dv 2>/dev/null");
+ system("chmod 0777 ".quotemeta($_lg_cal_hist_dir)." ".quotemeta($_lg_cal_hist_dir)."/1d ".quotemeta($_lg_cal_hist_dir)."/dv 2>/dev/null");
+}
+
+sub _lg_cal_hist_write_json {
+ my ($path,$data)=@_;
+ return 0 unless(defined($path) && ref($data) eq "HASH");
+ &_lg_cal_hist_ensure_dir();
+ my $json=&lg_encode_json($data);
+ return 0 if(!defined($json) || $json eq "");
+ if(open(my $fh,">",$path)) { print $fh $json; close($fh); chmod(0666,$path); return 1; }
+ return 0;
+}
+
+sub _lg_cal_hist_archive_1d {
+ my ($dpg_data,$meta)=@_;
+ return 0 unless(ref($dpg_data) eq "ARRAY" && scalar(@$dpg_data)==3072);
+ $meta={} if(ref($meta) ne "HASH");
+ &_lg_cal_hist_ensure_dir();
+ my ($sec,$min,$hour,$mday,$mon,$year)=localtime(time());
+ my $stamp=sprintf("%04d%02d%02d_%02d%02d%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec);
+ my $pm=$meta->{"picture_mode"}||"mode"; $pm=~s/[^A-Za-z0-9._-]+/_/g;
+ my $sm=$meta->{"signal_mode"}||"sig"; $sm=~s/[^A-Za-z0-9._-]+/_/g;
+ my $id="${stamp}_${sm}_${pm}";
+ return _lg_cal_hist_write_json("$_lg_cal_hist_dir/1d/${id}.json",{
+  id => "1dfile:$id",
+  type => "1d",
+  picture_mode => $meta->{"picture_mode"}||"",
+  signal_mode => $meta->{"signal_mode"}||"",
+  de => $meta->{"de"},
+  archived_at => time()+0,
+  dpg_data => $dpg_data,
+  source_run => $meta->{"run_id"}||"",
+ });
+}
+
+sub _lg_cal_hist_archive_dv {
+ my ($measurements,$meta)=@_;
+ return 0 unless(ref($measurements) eq "HASH" && defined($measurements->{"white_luminance"}));
+ $meta={} if(ref($meta) ne "HASH");
+ &_lg_cal_hist_ensure_dir();
+ my ($sec,$min,$hour,$mday,$mon,$year)=localtime(time());
+ my $stamp=sprintf("%04d%02d%02d_%02d%02d%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec);
+ my $pm=$meta->{"picture_mode"}||"dolbyVision";
+ my $pm_safe=$pm; $pm_safe=~s/[^A-Za-z0-9._-]+/_/g;
+ my $id="${stamp}_${pm_safe}";
+ my $current="";
+ if(open(my $fh,"<","$_lg_cal_hist_runs/current")) { local $/; $current=<$fh>; close($fh); chomp($current); $current=~s/[^A-Za-z0-9._-]//g; }
+ if($current ne "" && -d "$_lg_cal_hist_runs/$current") {
+  _lg_cal_hist_write_json("$_lg_cal_hist_runs/$current/dv-profile-measurements.json",{
+   measurements => $measurements,
+   picture_mode => $pm,
+   signal_mode => "dv",
+   archived_at => time()+0,
+  });
+ }
+ return _lg_cal_hist_write_json("$_lg_cal_hist_dir/dv/${id}.json",{
+  id => "dvfile:$id",
+  type => "dv",
+  picture_mode => $pm,
+  signal_mode => "dv",
+  archived_at => time()+0,
+  measurements => $measurements,
+  source_run => $current||($meta->{"run_id"}||""),
+ });
+}
+
 sub webui_lg_calibration_history_list (@) {
  my @items;
- # 1D from runs
+ # Durable archive (preferred — reuploadable snapshots written on successful upload)
+ if(opendir(my $dh,"$_lg_cal_hist_dir/1d")) {
+  foreach my $f (sort { $b cmp $a } readdir($dh)) {
+   next unless($f =~ /^([A-Za-z0-9._-]+)\.json$/);
+   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/1d/$f");
+   next unless(ref($meta) eq "HASH" && ref($meta->{"dpg_data"}) eq "ARRAY" && @{$meta->{"dpg_data"}}==3072);
+   my $id=$meta->{"id"} || "1dfile:$1";
+   my $mtime=(stat("$_lg_cal_hist_dir/1d/$f"))[9] || ($meta->{"archived_at"}||0);
+   my $pm=$meta->{"picture_mode"}||"";
+   my $sm=$meta->{"signal_mode"}||"";
+   push @items,{
+    id => $id,
+    type => "1d",
+    label => "$1 1D ".($sm||"?")." ".($pm||""),
+    picture_mode => $pm,
+    signal_mode => $sm,
+    mtime => $mtime+0,
+    de => defined($meta->{"de"}) ? ($meta->{"de"}+0) : undef,
+    source => "archive",
+   };
+  }
+  closedir($dh);
+ }
+ if(opendir(my $dh,"$_lg_cal_hist_dir/dv")) {
+  foreach my $f (sort { $b cmp $a } readdir($dh)) {
+   next unless($f =~ /^([A-Za-z0-9._-]+)\.json$/);
+   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/dv/$f");
+   next unless(ref($meta) eq "HASH" && ref($meta->{"measurements"}) eq "HASH");
+   my $id=$meta->{"id"} || "dvfile:$1";
+   my $mtime=(stat("$_lg_cal_hist_dir/dv/$f"))[9] || ($meta->{"archived_at"}||0);
+   my $pm=$meta->{"picture_mode"}||"dolbyVision";
+   push @items,{
+    id => $id,
+    type => "dv",
+    label => "$1 DV config $pm",
+    picture_mode => $pm,
+    signal_mode => "dv",
+    mtime => $mtime+0,
+    reuploadable => 1,
+    source => "archive",
+   };
+  }
+  closedir($dh);
+ }
+ # 1D from autocal runs (final only) — skip if already archived with same run
  if(opendir(my $dh,$_lg_cal_hist_runs)) {
   foreach my $run (sort { $b cmp $a } readdir($dh)) {
    next if($run eq "." || $run eq ".." || $run eq "current");
@@ -2254,7 +2375,7 @@ sub webui_lg_calibration_history_list (@) {
     signal_mode => $sm,
     mtime => $mtime+0,
     de => defined($state->{"hdr20_1d_dpg_best_de"}) ? ($state->{"hdr20_1d_dpg_best_de"}+0) : (defined($state->{"hdr20_1d_dpg_final_de"}) ? ($state->{"hdr20_1d_dpg_final_de"}+0) : undef),
-    download => "/api/lg/calibration-history/download?id=1d%3A$run",
+    source => "run",
    };
   }
   closedir($dh);
@@ -2283,42 +2404,44 @@ sub webui_lg_calibration_history_list (@) {
     mtime => $mtime+0,
     has_cube => (-f "$_lg_cal_hist_luts/$base.cube") ? 1 : 0,
     download => (-f "$_lg_cal_hist_luts/$base.cube") ? "/api/3d-lut/cube?file=${base}.cube" : "",
+    source => "luts",
    };
   }
   closedir($dh);
  }
- # DV: last successful dv_profile_upload per run (measurements often only in 3d-state or grey-state)
+ # DV from runs — only when measurements are available (reuploadable)
  if(opendir(my $dh,$_lg_cal_hist_runs)) {
   foreach my $run (sort { $b cmp $a } readdir($dh)) {
    next if($run eq "." || $run eq ".." || $run eq "current");
    next if($run !~ /^[A-Za-z0-9._-]+$/);
    my $dir="$_lg_cal_hist_runs/$run";
+   my $meas_path="$dir/dv-profile-measurements.json";
+   my $meas;
+   if(-f $meas_path) {
+    my $wrap=_lg_cal_hist_read_json_file($meas_path) || {};
+    $meas=$wrap->{"measurements"} if(ref($wrap->{"measurements"}) eq "HASH");
+    $meas=$wrap if(!$meas && defined($wrap->{"white_luminance"}));
+   }
+   if(ref($meas) ne "HASH") {
+    my $state=_lg_cal_hist_read_json_file("$dir/grey-state.json") || {};
+    my $state3=_lg_cal_hist_read_json_file("$dir/3d-state.json") || {};
+    $meas=$state->{"dv_profile_measurements"} || $state3->{"dv_profile_measurements"} || $state3->{"measurements"};
+   }
+   next unless(ref($meas) eq "HASH" && defined($meas->{"white_luminance"}));
+   my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
+   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+   my $pm=$cfg->{"picture_mode"} || "";
+   # Prefer DV picture modes when labeling
    my $stages_path="$dir/stages.ndjson";
-   next unless(-f $stages_path);
-   my $has_dv=0;
-   my $pm="";
-   if(open(my $fh,"<",$stages_path)) {
+   if(-f $stages_path && open(my $fh,"<",$stages_path)) {
     while(my $line=<$fh>) {
-     next unless($line =~ /"stage"\s*:\s*"dv_profile_upload"/);
-     next unless($line =~ /"ok"\s*:\s*true/);
-     $has_dv=1;
+     next unless($line =~ /"stage"\s*:\s*"dv_profile_upload"/ && $line =~ /"ok"\s*:\s*true/);
      $pm=$1 if($line =~ /"picture_mode"\s*:\s*"([^"]*)"/);
     }
     close($fh);
    }
-   next unless($has_dv);
-   # Prefer saved measurements snapshot if present
-   my $meas_path="$dir/dv-profile-measurements.json";
-   my $has_meas=(-f $meas_path) ? 1 : 0;
-   # Also accept measurements embedded in grey/3d state under known keys
-   my $state=_lg_cal_hist_read_json_file("$dir/grey-state.json") || {};
-   my $state3=_lg_cal_hist_read_json_file("$dir/3d-state.json") || {};
-   my $meas=$state->{"dv_profile_measurements"} || $state3->{"dv_profile_measurements"} || $state3->{"measurements"};
-   $has_meas=1 if(ref($meas) eq "HASH" && defined($meas->{"white_luminance"}));
-   my $mtime=(stat($stages_path))[9] || 0;
-   my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
-   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
-   $pm=$cfg->{"picture_mode"} || $pm || "dolbyVision";
+   $pm=$pm || "dolbyVision";
+   my $mtime=(-f $meas_path) ? ((stat($meas_path))[9]||0) : ((stat($stages_path))[9]||0);
    push @items,{
     id => "dv:$run",
     type => "dv",
@@ -2327,8 +2450,8 @@ sub webui_lg_calibration_history_list (@) {
     picture_mode => $pm,
     signal_mode => "dv",
     mtime => $mtime+0,
-    reuploadable => $has_meas ? 1 : 0,
-    note => $has_meas ? "" : "Measurements not archived; reupload unavailable",
+    reuploadable => 1,
+    source => "run",
    };
   }
   closedir($dh);
@@ -2337,7 +2460,7 @@ sub webui_lg_calibration_history_list (@) {
  my @json;
  foreach my $it (@items) {
   my @pairs;
-  for my $k (qw(id type label run_id base picture_mode signal_mode method download note)) {
+  for my $k (qw(id type label run_id base picture_mode signal_mode method download note source)) {
    next unless(defined($it->{$k}) && $it->{$k} ne "");
    push @pairs,"\"$k\":\""._lg_cal_hist_json_escape($it->{$k})."\"";
   }
@@ -2369,6 +2492,18 @@ sub webui_lg_calibration_history_download (@) {
  if($id =~ /^3d:([A-Za-z0-9._-]+)$/) {
   my $base=$1;
   return &lg_encode_json({ status => "ok", type => "3d", redirect => "/api/3d-lut/cube?file=${base}.cube" });
+ }
+ if($id =~ /^1dfile:([A-Za-z0-9._-]+)$/) {
+  my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/1d/$1.json");
+  return &lg_encode_json({ status => "error", message => "1D archive not found" })
+   unless(ref($meta) eq "HASH" && ref($meta->{"dpg_data"}) eq "ARRAY");
+  return &lg_encode_json({ status => "ok", type => "1d", dpg_data => $meta->{"dpg_data"}, picture_mode => $meta->{"picture_mode"}||"", signal_mode => $meta->{"signal_mode"}||"" });
+ }
+ if($id =~ /^dvfile:([A-Za-z0-9._-]+)$/) {
+  my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/dv/$1.json");
+  return &lg_encode_json({ status => "error", message => "DV archive not found" })
+   unless(ref($meta) eq "HASH" && ref($meta->{"measurements"}) eq "HASH");
+  return &lg_encode_json({ status => "ok", type => "dv", measurements => $meta->{"measurements"}, picture_mode => $meta->{"picture_mode"}||"" });
  }
  return &lg_encode_json({ status => "error", message => "Unknown id" });
 }
@@ -2407,6 +2542,17 @@ sub webui_lg_calibration_history_reupload (@) {
    helper_timeout => 90,
   });
   my $result_json=&webui_lg_1d_dpg_upload($up_body);
+  eval {
+   my $decoded=&lg_decode_json($result_json);
+   if(ref($decoded) eq "HASH" && ($decoded->{"status"}||"") eq "ok") {
+    &_lg_cal_hist_archive_1d($state->{"hdr20_1d_dpg_data"},{
+     picture_mode => $picture_mode,
+     signal_mode => $signal_mode,
+     de => $state->{"hdr20_1d_dpg_best_de"}||$state->{"hdr20_1d_dpg_final_de"},
+     run_id => $run,
+    });
+   }
+  };
   if($disable_cal) {
    my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
     _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
@@ -2438,6 +2584,57 @@ sub webui_lg_calibration_history_reupload (@) {
   if($disable_cal) {
    my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
     _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($off_body); };
+  }
+  return $result_json;
+ }
+
+ if($id =~ /^1dfile:([A-Za-z0-9._-]+)$/) {
+  my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/1d/$1.json");
+  return &lg_encode_json({ status => "error", message => "1D archive not found" })
+   unless(ref($meta) eq "HASH" && ref($meta->{"dpg_data"}) eq "ARRAY" && @{$meta->{"dpg_data"}}==3072);
+  $picture_mode ||= $meta->{"picture_mode"} || "";
+  $signal_mode ||= $meta->{"signal_mode"} || "";
+  if($enable_cal) {
+   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($on_body); };
+  }
+  my $up_body=&lg_encode_json({
+   dpg_data => $meta->{"dpg_data"},
+   picture_mode => $picture_mode,
+   signal_mode => $signal_mode,
+   keep_calibration_mode => 1,
+   calibration_mode_active => 1,
+   helper_timeout => 90,
+  });
+  my $result_json=&webui_lg_1d_dpg_upload($up_body);
+  if($disable_cal) {
+   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($off_body); };
+  }
+  return $result_json;
+ }
+
+ if($id =~ /^dvfile:([A-Za-z0-9._-]+)$/) {
+  my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/dv/$1.json");
+  return &lg_encode_json({ status => "error", message => "DV archive not found" })
+   unless(ref($meta) eq "HASH" && ref($meta->{"measurements"}) eq "HASH");
+  $picture_mode ||= $meta->{"picture_mode"} || "dolbyVisionFilmMaker";
+  if($enable_cal) {
+   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"dv"}',_lg_cal_hist_json_escape($picture_mode));
+   eval { &webui_lg_calibration_mode($on_body); };
+  }
+  my $up_body=&lg_encode_json({
+   measurements => $meta->{"measurements"},
+   picture_mode => $picture_mode,
+   signal_mode => "dv",
+   keep_calibration_mode => 1,
+  });
+  my $result_json=&webui_lg_dv_profile_upload($up_body);
+  if($disable_cal) {
+   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"dv"}',_lg_cal_hist_json_escape($picture_mode));
    eval { &webui_lg_calibration_mode($off_body); };
   }
   return $result_json;
