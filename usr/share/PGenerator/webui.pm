@@ -18962,6 +18962,31 @@ function meterWrgbPrimaryCeilings(){
 // subpixel makes white exceed the primary sum), not here.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
+
+// Dolby Vision patch codes are GAMMA-2.2 encoded in BOTH map modes (the DV
+// classic linear scale, meterDvClassicColorCheckerScale, is already baked into
+// the code by the encoder), so a DV target luminance must be decoded with that
+// same curve. Routing DV through the PQ decode was wrong twice over:
+//   * wrong curve -- the codes were never PQ-encoded, and
+//   * wrong unit -- meterChartPqDecodeNormalized returns ABSOLUTE NITS
+//     (0..10000), which meterDecodeColorTargetChannel then multiplied by the
+//     reference white a second time.
+// The result was ~124x targets (hardware: Orange target 88388.9 cd/m^2 against
+// a 101.2 cd/m^2 measurement, dY -99.9%) while chromaticity stayed correct,
+// because only norm 0 and norm 1 are fixed points of the bad decode -- i.e.
+// white and black read perfectly and everything between them was garbage.
+// Verified against measurement rather than assumed: decoding the ColorChecker
+// greys as pct^2.2 * 0.68 * measured-white predicts Gray 80 = 0.414 and
+// Gray 65 = 0.265 of white, and the panel measured 0.447 and 0.259 (the
+// residual is the panel's own low-end gamma error). A PQ encode would instead
+// have predicted 0.79 for Gray 80.
+function meterDvStimulusLinearChannel(code){
+ const rng=meterColorTargetCodeRange();
+ const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
+ if(norm<=0) return 0;
+ return Math.pow(norm,2.2)*Math.max(1,meterColorSeriesReferenceNits());
+}
+
 function meterWrgbStimulusTargetY(reading){
  if(!reading||!meterChartIsPq()) return null;
  let r=(reading.r_code!=null)?reading.r_code:reading.r;
@@ -18976,9 +19001,10 @@ function meterWrgbStimulusTargetY(reading){
   }
  }
  if(r==null||g==null||b==null) return null;
- let dr=meterDecodeColorTargetChannel(r);
- let dg=meterDecodeColorTargetChannel(g);
- let db=meterDecodeColorTargetChannel(b);
+ const _dvLum=meterChartIsDv();
+ let dr=_dvLum?meterDvStimulusLinearChannel(r):meterDecodeColorTargetChannel(r);
+ let dg=_dvLum?meterDvStimulusLinearChannel(g):meterDecodeColorTargetChannel(g);
+ let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  // Per-primary ceiling clamp. ONLY applied to full-saturation primaries and
  // secondaries (sat_pct>=99.5) whose chromaticity sits on the gamut boundary
  // (a full-code 100% Cyan in HDR PQ would otherwise decode to ~peak per
