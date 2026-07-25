@@ -5576,7 +5576,13 @@ sub lg_picture_set_workflow (@) {
   return &json_error($ddc_message,$extra);
  }
 
- my $response=&lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
+ # current_app is a Luna settings-service parameter, not part of the public
+ # SSAP settings schema. Send picture-mode transitions through the existing
+ # authenticated Luna bridge so WebOS applies them to the active HDMI app.
+ # Other picture controls continue to use the normal SSAP route.
+ my $response=$picture_mode_only
+  ? &lg_luna_request($session,"set_picture_mode_active_app","com.webos.settingsservice/setSystemSettings",$set_payload,$connect_timeout + 2)
+  : &lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
  if(ref($response) ne "HASH") {
   &websocket_close($session);
   &diag_log_append("picture_set:no-response",{ ip => $ip, picture_mode => $active_picture_mode });
