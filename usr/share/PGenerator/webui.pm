@@ -3005,6 +3005,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
+   return &webui_pattern_pq_encode_normalized($v*10000) if($dv_map_mode eq "1");
    return $v;
   }
   if($target_gamma eq "srgb") {
@@ -3020,6 +3021,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
+   return &webui_pattern_pq_decode_normalized($v)/10000 if($dv_map_mode eq "1");
    return $v;
   }
   if($target_gamma eq "srgb") {
@@ -3629,12 +3631,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
-     if($signal_mode eq "dv") {
+     if($signal_mode eq "dv" && $dv_map_mode ne "1") {
       $linear*=$dv_classic_scale;
       $linear=1 if($linear > 1);
      }
       my $encoded=0;
-      if($signal_mode eq "hdr10") {
+      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
        # Reference ColorChecker patch luminance to the MEASURED white (passed
        # by the client as series_target_white_y) instead of a fixed 100-nit
        # diffuse, so the displayed patch matches the measured-white chart
@@ -3656,7 +3658,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($signal)=@_;
      $signal=0 if(!defined $signal || $signal < 0);
      $signal=1 if($signal > 1);
-     if($signal_mode eq "hdr10") {
+     if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
       return &webui_pattern_pq_decode_normalized($signal)/100;
      }
      if($signal_mode eq "dv") {
@@ -3796,8 +3798,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my $g;
       my $b;
       my $target_Yn_for_step=$Yn;
-      if($signal_mode eq "hdr10") {
-       # HDR10 chromatic: anchor encode to 203 cd/m^2 (BT.2408 HDR Ref White)
+      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+       # HDR10 and DV-Absolute chromatic patches anchor to 203 cd/m^2
+       # (BT.2408 HDR Reference White) and use PQ code values.
        # so the chart stimulus is the recognized HDR reference rather than
        # the measured white. Bake target_Yn so target_Yn * measured_white
        # still equals the absolute luminance the stimulus drives (Yn * 203).
@@ -3806,16 +3809,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        $b=$encode_linear->($bl,$bt2408_ref_white_nits);
        $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
       } else {
-       # SDR / HLG / DV (both map modes): encode through $encode_linear, with
-       # the DV target_Yn recompute below.
-       #
-       # DV-Absolute previously had its own branch here that wrote the LINEAR
-       # fraction straight into a code with no OETF, which crushes every
-       # chromatic patch toward black. DV colour read-back has always worked in
-       # RELATIVE, because Relative falls through to this branch and encodes
-       # properly; the broken branch only became reachable once reports started
-       # switching the panel to Absolute. Both map modes now use the path that
-       # was already known good, so read-back does not depend on map mode.
+       # SDR / HLG / DV-Relative use their mode-specific encoder. Relative DV
+       # retains the classic 0.68 scale and gamma-2.2 tunnel.
        $r=$encode_linear->($rl);
        $g=$encode_linear->($gl);
        $b=$encode_linear->($bl);
@@ -3841,14 +3836,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
-  # DV uses one level for both map modes; the Absolute-only 75 went with the
-  # raw-linear write that has been removed.
-  my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
+  my $series_level_pct=(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
     $linear=0 if(!defined $linear || $linear < 0);
     $linear=1 if($linear > 1);
-    if($signal_mode eq "hdr10") {
+    if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
 	   if($signal_mode eq "dv") {
@@ -3863,10 +3856,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    my $series_level_request=$series_level_pct/100;
   my $series_level_code=0;
   {
-   # DV-Absolute used to write the LINEAR level request straight into a code
-   # here, with no OETF -- the same defect the ColorChecker chromatic branch
-   # had, and it darkens the whole sweep. Both DV map modes now take the
-   # encoded path that DV-Relative (the known-good read-back) always used.
    my $series_level_encoded=$series_level_request;
    if($signal_mode eq "dv") {
     $series_level_encoded=$target_linear_to_signal->($series_level_request);
@@ -3874,7 +3863,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $series_level_code=int($min_code + $series_level_encoded*$span_code + .5);
    }
    my $series_level_signal=$span_code>0?($series_level_code-$min_code)/$span_code:0;
-	  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
+	  my $series_level_linear=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -3981,7 +3970,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    my ($linear,$color_name)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
    $linear=1 if($linear > 1);
-   if($signal_mode eq "hdr10") {
+   if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
 	   if($signal_mode eq "dv") {
@@ -4012,8 +4001,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $level_request=$level_pct/100;
   my $level_code=0;
   {
-   # Same fix as the series-level code above: no raw linear write for
-   # DV-Absolute; both map modes use the encoded path.
    my $level_encoded=$level_request;
    if($signal_mode eq "dv") {
     $level_encoded=$target_linear_to_signal->($level_request);
@@ -4040,7 +4027,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $sat_white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
-	    my $level_linear=($signal_mode eq "hdr10")
+	    my $level_linear=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1"))
 	     ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
 	     : $target_signal_to_linear->($level_signal);
     my $mix_X=$AXIS_RGB_TO_XYZ[0][0]*$r_mix+$AXIS_RGB_TO_XYZ[0][1]*$g_mix+$AXIS_RGB_TO_XYZ[0][2]*$b_mix;
@@ -19184,27 +19171,19 @@ function meterWrgbTargetCompensationSelected(){
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
-// Dolby Vision patch codes are GAMMA-2.2 encoded in BOTH map modes (the DV
-// classic linear scale, meterDvClassicColorCheckerScale, is already baked into
-// the code by the encoder), so a DV target luminance must be decoded with that
-// same curve. Routing DV through the PQ decode was wrong twice over:
-//   * wrong curve -- the codes were never PQ-encoded, and
-//   * wrong unit -- meterChartPqDecodeNormalized returns ABSOLUTE NITS
-//     (0..10000), which meterDecodeColorTargetChannel then multiplied by the
-//     reference white a second time.
-// The result was ~124x targets (hardware: Orange target 88388.9 cd/m^2 against
-// a 101.2 cd/m^2 measurement, dY -99.9%) while chromaticity stayed correct,
-// because only norm 0 and norm 1 are fixed points of the bad decode -- i.e.
-// white and black read perfectly and everything between them was garbage.
-// Verified against measurement rather than assumed: decoding the ColorChecker
-// greys as pct^2.2 * 0.68 * measured-white predicts Gray 80 = 0.414 and
-// Gray 65 = 0.265 of white, and the panel measured 0.447 and 0.259 (the
-// residual is the panel's own low-end gamma error). A PQ encode would instead
-// have predicted 0.79 for Gray 80.
+// DV-Absolute uses the same PQ stimulus-to-nits decode as HDR10. DV-Relative
+// alone uses the classic gamma-2.2 tunnel referenced to measured white.
 function meterDvStimulusLinearChannel(code){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
  if(norm<=0) return 0;
+ if(meterDvMapModeValue()==='1'){
+  const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
+  return Math.min(
+   meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1),
+   meterChartHdrPeak()
+  );
+ }
  return Math.pow(norm,2.2)*Math.max(1,meterColorSeriesReferenceNits());
 }
 
@@ -19229,8 +19208,8 @@ function meterWrgbStimulusTargetY(reading){
  const gamut=meterAnalysisGamut();
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
- if(_dvLum && meterWrgbTargetCompensationSelected()){
-  // Standard DV is gamma-2.2 RGB relative to the measured white. On a WRGB
+ if(_dvLum && meterDvMapModeValue()!=='1' && meterWrgbTargetCompensationSelected()){
+  // Relative DV is gamma-2.2 RGB referenced to measured white. On a WRGB
   // OLED, the equal part of R/G/B is emitted by the unfiltered W subpixel,
   // while the chromatic residual comes from the less-efficient filtered
   // subpixels. Treating the whole triplet as additive RGB makes DV chromatic
@@ -19483,7 +19462,8 @@ function meterEncodeColorCheckerLinear(linear){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  let clamped=Math.max(0,Math.min(1,linear||0));
- if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
+ const dvAbsolute=meterChartIsDv()&&meterDvMapModeValue()==='1';
+ if(meterChartIsDv()&&!dvAbsolute) clamped*=meterDvClassicColorCheckerScale();
  // HDR PQ encode must use the same peak-luminance reference the server uses
  // (cc_ref = max_luma in webui_meter_series_start, typically 1000). Previously
  // hardcoded to *100 nits, which produced dimmer preview codes than the actual
@@ -19496,7 +19476,7 @@ function meterEncodeColorCheckerLinear(linear){
  // back to meterChartHdrPeak() (config/live peak). Without an active series
  // peak the fallback still uses 100 (the SDR-style assumption), matching the
  // historical behavior for non-HDR builds.
- if(meterChartIsPq()&&!meterChartIsDv()){
+ if(meterChartIsPq()&&(!meterChartIsDv()||dvAbsolute)){
   const active=(typeof meterActiveSeriesMaxLuma!=='undefined'&&Number(meterActiveSeriesMaxLuma)>0)?Number(meterActiveSeriesMaxLuma):0;
   const peak=(active>0)?active:((typeof meterChartHdrPeak==='function')?meterChartHdrPeak():0);
   const ref=(peak>0)?peak:100;
@@ -19508,7 +19488,7 @@ function meterEncodeColorCheckerLinear(linear){
 
 function meterDecodeColorCheckerSignal(signal){
  let clamped=Math.max(0,Math.min(1,signal||0));
- if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(clamped)/100;
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return meterChartPqDecodeNormalized(clamped)/100;
  if(meterChartIsDv()) return Math.pow(clamped,2.2)/meterDvClassicColorCheckerScale();
  return meterTargetSignalToLinear(clamped);
 }
@@ -19517,7 +19497,7 @@ function meterEncodeColorCheckerFullSatChannel(active){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  if(!active) return min;
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
  return min+span;
 }
 
@@ -19529,19 +19509,19 @@ function meterEncodeSaturationLinear(linear,colorName){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
- if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
  if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
 function meterGamutStimulusLinearLevel(){
- if(meterChartIsPq()&&!meterChartIsDv()) return 1;
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return 1;
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
- if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return meterChartPqDecodeNormalized(actualPercent)/10000;
  return meterTargetSignalToLinear(actualPercent);
 }
 
@@ -19680,7 +19660,7 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
  const axisGamut=meterSaturationAxisGamut();
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
- if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
+ if(meterChartIsDv()&&meterDvMapModeValue()!=='1') sat=meterDvRelativeSaturationFraction(sat);
  const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
  const wp=meterTargetWhitePoint();
  const x=wp.x+sat*(endpoint.x-wp.x);
@@ -19777,7 +19757,7 @@ function meterColorTargetCodeRange(){
 function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
- if(meterChartIsPq()&&!meterChartIsDv()){
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')){
   const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
   const nits=meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1);
   // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,

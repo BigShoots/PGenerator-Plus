@@ -26,11 +26,15 @@ const P3=[
 ];
 const whiteY=726.776262;
 let technology='oled_generic';
+let dvMapMode='2';
 const context={
  document:{getElementById:()=>({value:technology})},
  getDisplayTechnology:()=>technology,
  meterChartIsPq:()=>true,
  meterChartIsDv:()=>true,
+ meterDvMapModeValue:()=>dvMapMode,
+ meterChartHdrPeak:()=>1000,
+ meterHdrDiffuseScale:()=>1,
  meterAnalysisGamut:()=>({rgbToXyz:P3}),
  meterActiveChartSignalMode:()=> 'dv',
  meterColorTargetCodeRange:()=>({min:256,span:3504}),
@@ -59,6 +63,7 @@ context.meterReadings=[
 vm.createContext(context);
 vm.runInContext([
  extractFunction('meterWrgbTargetCompensationSelected'),
+ extractFunction('meterChartPqDecodeNormalized'),
  extractFunction('meterDvStimulusLinearChannel'),
  extractFunction('meterWrgbStimulusTargetY')
 ].join('\n'),context);
@@ -121,5 +126,21 @@ const yellow={r_code:2925,g_code:2567,b_code:1114};
 close(context.meterWrgbStimulusTargetY(yellow),rawY(yellow),1e-9,'QD-OLED bypasses WRGB compensation');
 technology='lcd_wled';
 close(context.meterWrgbStimulusTargetY(yellow),rawY(yellow),1e-9,'LCD bypasses WRGB compensation');
+
+// Absolute DV is PQ, exactly like HDR10 target decoding. WRGB's relative-mode
+// filtered-primary model must not alter the PQ signal target.
+dvMapMode='1';
+technology='oled_generic';
+const absolute={r_code:1900,g_code:1500,b_code:1000};
+const absoluteNorm=[absolute.r_code,absolute.g_code,absolute.b_code]
+ .map(code=>(code-256)/3504);
+const absoluteExpected=context.linRgbToXyz(
+ Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[0]),1000),
+ Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[1]),1000),
+ Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[2]),1000),
+ P3
+).Y;
+close(context.meterWrgbStimulusTargetY(absolute),absoluteExpected,1e-9,
+ 'DV Absolute uses unmodified HDR/PQ target luminance');
 
 console.log('wrgb color target response regression OK');
