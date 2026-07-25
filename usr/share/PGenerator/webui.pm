@@ -17709,10 +17709,16 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // DV Absolute color-series patches must solve in the active target gamut.
- // Solving them in the BT.2020 tunnel widens chromaticities and makes
- // ColorChecker patches read oversaturated against the selected target.
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
+ // DV-Absolute follows hdr10 and solves in the CONTAINER gamut. It used to
+ // solve in the active target gamut instead, which was the last place
+ // DV-Absolute still diverged from hdr10 in the colour path: interior
+ // ColorChecker patches are solved through the gamut matrix, so a different
+ // gamut moves every one of them, while the 100% primaries/secondaries drive
+ // their channels full-on and are gamut-independent. That is exactly the
+ // reported pattern on DV RGB Full -- White 0.47 and all six 100% patches
+ // 0.39..1.98, but every interior patch 11..14 dE with avg Dx 0.028 /
+ // Dy 0.020 -- while the same series in hdr10 read correctly.
+ // DV-Relative keeps the container gamut it already used.
  if(meterChartIsDv()) return meterContainerGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
 }
@@ -19412,10 +19418,11 @@ function meterRemapAbsoluteDvColorCheckerChromaticity(x,y,gamut){
 }
 
 function meterSaturationSolveGamut(){
- // DV-Absolute and DV-Relative both solve in the active target gamut; the
- // two branches collapse together once DV-Absolute is folded into the hdr10
- // path. Non-DV follows the standard stimulus-solve gamut.
- if(meterChartIsDv()) return meterAnalysisGamut();
+ // Same rule as meterStimulusSolveGamut: DV-Absolute follows hdr10 (the
+ // stimulus-solve gamut, i.e. the container on a PQ chart) so sweep patches
+ // are solved in the same space hdr10 uses. Only DV-Relative keeps the active
+ // target gamut it was tuned against.
+ if(typeof meterIsDvRelative==='function' && meterIsDvRelative()) return meterAnalysisGamut();
  return meterStimulusSolveGamut();
 }
 
