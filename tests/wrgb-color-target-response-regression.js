@@ -24,7 +24,7 @@ const P3=[
  [0.22897456,0.69173852,0.07928691],
  [0.00000000,0.04511331,1.04394437]
 ];
-const whiteY=717.870725;
+const whiteY=726.776262;
 let technology='oled_generic';
 const context={
  document:{getElementById:()=>({value:technology})},
@@ -67,10 +67,17 @@ const rawY=reading=>{
  const channels=[reading.r_code,reading.g_code,reading.b_code].map(context.meterDvStimulusLinearChannel);
  return context.linRgbToXyz(channels[0],channels[1],channels[2],P3).Y;
 };
+const wrgbY=reading=>{
+ const channels=[reading.r_code,reading.g_code,reading.b_code].map(context.meterDvStimulusLinearChannel);
+ const common=Math.min(...channels);
+ const chromatic=P3[1].reduce((sum,weight,index)=>sum+weight*Math.max(0,channels[index]-common),0);
+ return common*P3[1].reduce((sum,weight)=>sum+weight,0)+0.65*chromatic;
+};
 const close=(actual,expected,tolerance,message)=>
  assert(Math.abs(actual-expected)<=tolerance,`${message}: got ${actual}, expected ${expected} ±${tolerance}`);
 
-// Neutral patches stay on measured-white tracking.
+// Neutral patches stay on measured-white tracking because their chromatic
+// residual is zero.
 const grey={r_code:1664,g_code:1664,b_code:1664};
 close(context.meterWrgbStimulusTargetY(grey),rawY(grey),1e-9,'WRGB grey target unchanged');
 
@@ -91,7 +98,21 @@ context.meterReadings=[
 const after=samples.map(rd=>context.meterWrgbStimulusTargetY(rd));
 assert.deepStrictEqual(Array.from(after),Array.from(before),
  'ColorChecker and saturation targets are invariant after arbitrary R/G/B reads');
-samples.forEach((rd,index)=>close(before[index],rawY(rd),1e-9,`${rd.name} uses authored signal target`));
+samples.forEach((rd,index)=>close(before[index],wrgbY(rd),1e-9,`${rd.name} uses immediate DV WRGB model`));
+
+// Independent completed LG C2 DV ColorChecker run. These patches occur before
+// the full-saturation R/G/B series endpoints, so they prove the Display Type
+// model produces the right target immediately rather than learning it later.
+for(const [name,codes,measured] of [
+ ['Light Skin',[2409,2002,1782],155.269687],
+ ['Orange',[2595,1703,959],100.824969],
+ ['Orange Yellow',[2785,2155,1084],151.013947],
+ ['Yellow',[2925,2567,1114],205.864757],
+ ['Magenta',[2244,1282,1913],78.955700]
+]){
+ const target=context.meterWrgbStimulusTargetY({name,r_code:codes[0],g_code:codes[1],b_code:codes[2]});
+ assert(Math.abs(target/measured-1)<0.03,`${name} immediate WRGB target ${target} vs measured ${measured}`);
+}
 
 // QD-OLED and every other additive display type keep the signal target even
 // if old WRGB endpoint readings remain in browser memory.

@@ -19228,7 +19228,31 @@ function meterWrgbStimulusTargetY(reading){
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=meterAnalysisGamut();
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
- return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
+ if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
+ if(_dvLum && meterWrgbTargetCompensationSelected()){
+  // Standard DV is gamma-2.2 RGB relative to the measured white. On a WRGB
+  // OLED, the equal part of R/G/B is emitted by the unfiltered W subpixel,
+  // while the chromatic residual comes from the less-efficient filtered
+  // subpixels. Treating the whole triplet as additive RGB makes DV chromatic
+  // targets roughly 1.5x too bright even though neutral targets are correct.
+  //
+  // Use a technology model selected by Display Type from the first patch:
+  // split out the common (white) component, then apply the WRGB filtered-RGB
+  // efficiency only to the residual. This is deterministic and deliberately
+  // does not inspect any current-series measurement. The 0.65 ratio is the
+  // generic LG-style WRGB filtered-primary/additive-white response; explicit
+  // per-patch custom target nits remain authoritative in the caller.
+  const common=Math.min(dr,dg,db);
+  const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
+  const commonY=common*(Number(Yrow[0])+Number(Yrow[1])+Number(Yrow[2]));
+  const chromaticY=
+   Number(Yrow[0])*Math.max(0,dr-common)+
+   Number(Yrow[1])*Math.max(0,dg-common)+
+   Number(Yrow[2])*Math.max(0,db-common);
+  const wrgbFilteredRgbEfficiency=0.65;
+  return commonY+wrgbFilteredRgbEfficiency*chromaticY;
+ }
+ return xyz.Y;
 }
 
 // Reference mode for lattice/cube chart targets. 'display' (default) judges
