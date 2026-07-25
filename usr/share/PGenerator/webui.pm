@@ -3005,7 +3005,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
-   return &webui_pattern_pq_encode_normalized($v*10000) if($dv_map_mode eq "1");
    return $v;
   }
   if($target_gamma eq "srgb") {
@@ -3021,7 +3020,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return 0 if(!defined $v || $v<=0);
   $v=1 if($v>1);
   if($signal_mode eq "dv") {
-   return &webui_pattern_pq_decode_normalized($v)/10000 if($dv_map_mode eq "1");
    return $v;
   }
   if($target_gamma eq "srgb") {
@@ -3631,12 +3629,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
-     if($signal_mode eq "dv" && $dv_map_mode ne "1") {
+     if($signal_mode eq "dv") {
       $linear*=$dv_classic_scale;
       $linear=1 if($linear > 1);
      }
       my $encoded=0;
-      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+      if($signal_mode eq "hdr10") {
        # Reference ColorChecker patch luminance to the MEASURED white (passed
        # by the client as series_target_white_y) instead of a fixed 100-nit
        # diffuse, so the displayed patch matches the measured-white chart
@@ -3658,7 +3656,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($signal)=@_;
      $signal=0 if(!defined $signal || $signal < 0);
      $signal=1 if($signal > 1);
-     if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+     if($signal_mode eq "hdr10") {
       return &webui_pattern_pq_decode_normalized($signal)/100;
      }
      if($signal_mode eq "dv") {
@@ -3798,8 +3796,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my $g;
       my $b;
       my $target_Yn_for_step=$Yn;
-      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
-       # HDR10 and DV-Absolute chromatic patches anchor to 203 cd/m^2
+      if($signal_mode eq "hdr10") {
+       # HDR10 chromatic patches anchor to 203 cd/m^2
        # (BT.2408 HDR Reference White) and use PQ code values.
        # so the chart stimulus is the recognized HDR reference rather than
        # the measured white. Bake target_Yn so target_Yn * measured_white
@@ -3809,8 +3807,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        $b=$encode_linear->($bl,$bt2408_ref_white_nits);
        $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
       } else {
-       # SDR / HLG / DV-Relative use their mode-specific encoder. Relative DV
-       # retains the classic 0.68 scale and gamma-2.2 tunnel.
+       # SDR / HLG / DV use their mode-specific encoder. Standard DV retains
+       # its classic 0.68 scale and gamma-2.2 patch tunnel in both map modes.
        $r=$encode_linear->($rl);
        $g=$encode_linear->($gl);
        $b=$encode_linear->($bl);
@@ -3836,12 +3834,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
-  my $series_level_pct=(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 100 : (($signal_mode eq "dv") ? 50 : 75));
+  my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
     $linear=0 if(!defined $linear || $linear < 0);
     $linear=1 if($linear > 1);
-    if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+    if($signal_mode eq "hdr10") {
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
 	   if($signal_mode eq "dv") {
@@ -3863,7 +3861,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $series_level_code=int($min_code + $series_level_encoded*$span_code + .5);
    }
    my $series_level_signal=$span_code>0?($series_level_code-$min_code)/$span_code:0;
-	  my $series_level_linear=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
+	  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -3970,7 +3968,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    my ($linear,$color_name)=@_;
    $linear=0 if(!defined $linear || $linear < 0);
    $linear=1 if($linear > 1);
-   if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+   if($signal_mode eq "hdr10") {
     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
 	   if($signal_mode eq "dv") {
@@ -4027,7 +4025,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $sat_white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):10000);
   foreach my $color (["Red",1,0,0],["Green",0,1,0],["Blue",0,0,1],["Cyan",0,1,1],["Magenta",1,0,1],["Yellow",1,1,0]) {
    my ($name,$r_mix,$g_mix,$b_mix)=@$color;
-	    my $level_linear=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1"))
+	    my $level_linear=($signal_mode eq "hdr10")
 	     ? (&webui_pattern_pq_decode_normalized($level_signal)/10000)
 	     : $target_signal_to_linear->($level_signal);
     my $mix_X=$AXIS_RGB_TO_XYZ[0][0]*$r_mix+$AXIS_RGB_TO_XYZ[0][1]*$g_mix+$AXIS_RGB_TO_XYZ[0][2]*$b_mix;
@@ -19462,8 +19460,7 @@ function meterEncodeColorCheckerLinear(linear){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  let clamped=Math.max(0,Math.min(1,linear||0));
- const dvAbsolute=meterChartIsDv()&&meterDvMapModeValue()==='1';
- if(meterChartIsDv()&&!dvAbsolute) clamped*=meterDvClassicColorCheckerScale();
+ if(meterChartIsDv()) clamped*=meterDvClassicColorCheckerScale();
  // HDR PQ encode must use the same peak-luminance reference the server uses
  // (cc_ref = max_luma in webui_meter_series_start, typically 1000). Previously
  // hardcoded to *100 nits, which produced dimmer preview codes than the actual
@@ -19476,7 +19473,7 @@ function meterEncodeColorCheckerLinear(linear){
  // back to meterChartHdrPeak() (config/live peak). Without an active series
  // peak the fallback still uses 100 (the SDR-style assumption), matching the
  // historical behavior for non-HDR builds.
- if(meterChartIsPq()&&(!meterChartIsDv()||dvAbsolute)){
+ if(meterChartIsPq()&&!meterChartIsDv()){
   const active=(typeof meterActiveSeriesMaxLuma!=='undefined'&&Number(meterActiveSeriesMaxLuma)>0)?Number(meterActiveSeriesMaxLuma):0;
   const peak=(active>0)?active:((typeof meterChartHdrPeak==='function')?meterChartHdrPeak():0);
   const ref=(peak>0)?peak:100;
@@ -19488,7 +19485,7 @@ function meterEncodeColorCheckerLinear(linear){
 
 function meterDecodeColorCheckerSignal(signal){
  let clamped=Math.max(0,Math.min(1,signal||0));
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return meterChartPqDecodeNormalized(clamped)/100;
+ if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(clamped)/100;
  if(meterChartIsDv()) return Math.pow(clamped,2.2)/meterDvClassicColorCheckerScale();
  return meterTargetSignalToLinear(clamped);
 }
@@ -19497,7 +19494,7 @@ function meterEncodeColorCheckerFullSatChannel(active){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  if(!active) return min;
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(100)*span);
  return min+span;
 }
 
@@ -19509,19 +19506,19 @@ function meterEncodeSaturationLinear(linear,colorName){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
+ if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
  if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
 function meterGamutStimulusLinearLevel(){
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return 1;
+ if(meterChartIsPq()&&!meterChartIsDv()) return 1;
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')) return meterChartPqDecodeNormalized(actualPercent)/10000;
+ if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
  return meterTargetSignalToLinear(actualPercent);
 }
 
@@ -19660,7 +19657,7 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
  const axisGamut=meterSaturationAxisGamut();
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
- if(meterChartIsDv()&&meterDvMapModeValue()!=='1') sat=meterDvRelativeSaturationFraction(sat);
+ if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
  const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
  const wp=meterTargetWhitePoint();
  const x=wp.x+sat*(endpoint.x-wp.x);
