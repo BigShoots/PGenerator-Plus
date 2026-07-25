@@ -2967,7 +2967,7 @@ sub webui_lg_card_html (@) {
   <div id="lgCalHistoryDesktop">
    <h3 style="margin:0 0 8px;font-size:.9rem;color:var(--text)">Calibration History</h3>
    <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal artifacts only. Reupload enables calibration mode, uploads, then disables it.</p>
-   <div id="lgCalHistoryBodyDesktop" class="lg-cal-hist-root">Loading history...</div>
+   <div id="lgCalHistoryBodyDesktop" class="lg-cal-hist-root">History loads when you open this workspace.</div>
   </div>
  </div>
  <div id="lgCalHistoryModal" onclick="if(event.target===this) lgCloseCalHistoryModal()">
@@ -2977,7 +2977,7 @@ sub webui_lg_card_html (@) {
     <button class="btn btn-sm btn-secondary" type="button" onclick="lgCloseCalHistoryModal()">Close</button>
    </div>
    <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal 1D LUTs, 3D LUTs, and DV configs. Reupload uses the same TV upload paths as AutoCal.</p>
-   <div id="lgCalHistoryBodyModal" class="lg-cal-hist-root">Loading history...</div>
+   <div id="lgCalHistoryBodyModal" class="lg-cal-hist-root">Open History to load.</div>
   </div>
  </div>
  <div id="lgDisplayControlModal" onclick="if(event.target===this) lgCloseDisplayControl()">
@@ -4612,6 +4612,13 @@ function lgCloseCalHistoryModal(){
  const m=document.getElementById('lgCalHistoryModal');
  if(m){ m.style.display='none'; m.setAttribute('aria-hidden','true'); }
 }
+// Desktop: load history only when entering the LG Display workspace.
+function lgMaybeRefreshCalHistoryForDesktopWorkspace(workspace,workspaceChanged){
+ if(workspace!=='display-control') return;
+ if(!workspaceChanged) return;
+ if(!document.body.classList.contains('layout-desktop')) return;
+ try{ lgRefreshCalHistory(); }catch(e){}
+}
 
 function lgCalHistoryTypeLabel(t){
  if(t==='1d') return '1D LUT';
@@ -4719,19 +4726,25 @@ async function lgCalHistoryDownload(id){
  }catch(e){ toast('Download failed','err'); }
 }
 
-// load history when LG card is shown / on init
+// Calibration history loads only on demand:
+// - tablet: History button -> lgOpenCalHistoryModal()
+// - desktop: navigating to LG Display workspace (pgSelectDesktopWorkspace)
 
 LG_JS
 }
 
 sub webui_lg_load_info_js (@) {
- return 'lgBindDisplayModeControl();lgDisplayControlRender();loadLgStatus(true);setTimeout(()=>lgRefreshCalHistory(),900);';
+ # Do not refresh calibration history here — loadInfo runs on a 30s poll and
+ # was blanking the history list ("Loading history...") every cycle.
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();loadLgStatus(true);';
 }
 
 sub webui_lg_init_js (@) {
  # Saved TVs render immediately; the full first-start scan runs in a sibling
  # daemon thread and is consumed asynchronously without blocking meter status.
- return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);setTimeout(()=>lgStartupAutoDetect(),1400);setTimeout(()=>lgRefreshCalHistory(),1800);';
+ # History is not loaded on init — only when the operator opens History (tablet)
+ # or enters the LG Display workspace (desktop).
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);setTimeout(()=>lgStartupAutoDetect(),1400);';
 }
 
 return 1;

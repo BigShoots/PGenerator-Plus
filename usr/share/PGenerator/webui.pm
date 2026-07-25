@@ -16009,6 +16009,8 @@ function pgSelectDesktopWorkspace(workspace,options){
   // returns to a measurement workspace; no page reload should be required.
   try{ meterRefreshCustomSeriesFromServer(); }catch(e){}
  }
+ // LG calibration history: only when entering LG Display, not on loadInfo poll.
+ try{ if(typeof lgMaybeRefreshCalHistoryForDesktopWorkspace==='function') lgMaybeRefreshCalHistoryForDesktopWorkspace(workspace,workspaceChanged); }catch(e){}
  pgRefreshVisibleWorkspace();
  if(options&&options.focus&&title){
   try{ title.focus({preventScroll:true}); }catch(e){ title.focus(); }
