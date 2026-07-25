@@ -19202,19 +19202,13 @@ function meterWrgbStimulusTargetY(reading){
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
  if(_dvLum && meterWrgbTargetCompensationSelected()){
-  // Standard DV color RGB is gamma-2.2 and referenced to measured white in
-  // both map modes. On a WRGB
-  // OLED, the equal part of R/G/B is emitted by the unfiltered W subpixel,
-  // while the chromatic residual comes from the less-efficient filtered
-  // subpixels. Treating the whole triplet as additive RGB makes DV chromatic
-  // targets roughly 1.5x too bright even though neutral targets are correct.
-  //
-  // Use a technology model selected by Display Type from the first patch:
-  // split out the common (white) component, then apply the WRGB filtered-RGB
-  // efficiency only to the residual. This is deterministic and deliberately
-  // does not inspect any current-series measurement. The 0.65 ratio is the
-  // generic LG-style WRGB filtered-primary/additive-white response; explicit
-  // per-patch custom target nits remain authoritative in the caller.
+  // Match the HDR WRGB target behavior: sub-peak/low-saturation content tracks
+  // the authored signal, while saturated high-drive content rolls toward the
+  // filtered-primary response. The previous DV-only model applied the 0.65
+  // primary efficiency to every chromatic residual, which under-targeted
+  // ColorChecker mixtures. This blend is the same saturation×drive² shape the
+  // established HDR path used, but its endpoint factor comes from Display Type
+  // so targets are stable from the first patch and never learn from the run.
   const common=Math.min(dr,dg,db);
   const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
   const commonY=common*(Number(Yrow[0])+Number(Yrow[1])+Number(Yrow[2]));
@@ -19222,17 +19216,17 @@ function meterWrgbStimulusTargetY(reading){
    Number(Yrow[0])*Math.max(0,dr-common)+
    Number(Yrow[1])*Math.max(0,dg-common)+
    Number(Yrow[2])*Math.max(0,db-common);
-  // The cyan axis gains some W-subpixel contribution when a neutral/common
-  // component is present. A single fixed 0.65 filtered-RGB efficiency is
-  // correct at pure cyan but increasingly under-targets the 25/50/75%
-  // cyan mixtures. Keep the pure-axis endpoint at 0.65 and blend a modest
-  // common-component contribution only when G and B are the equal dominant
-  // channels. This is stimulus-derived and remains measurement independent.
-  const maxChannel=Math.max(dr,dg,db);
-  const cyanAxis=maxChannel>0&&dg>dr&&db>dr&&Math.abs(dg-db)<=maxChannel*0.002;
-  const commonFraction=maxChannel>0?common/maxChannel:0;
-  const wrgbFilteredRgbEfficiency=0.65+(cyanAxis?0.20*commonFraction:0);
-  return commonY+wrgbFilteredRgbEfficiency*chromaticY;
+  const endpointY=commonY+0.65*chromaticY;
+  const rng=meterColorTargetCodeRange();
+  const signal=[r,g,b].map(code=>Math.max(0,Math.min(1,(Number(code)-rng.min)/rng.span)));
+  const hi=Math.max(signal[0],signal[1],signal[2]);
+  const lo=Math.min(signal[0],signal[1],signal[2]);
+  if(!(hi>0)) return xyz.Y;
+  const saturation=(hi-lo)/hi;
+  const standardDvEndpointSignal=(2813-256)/(3760-256);
+  const drive=hi/standardDvEndpointSignal;
+  const weight=Math.max(0,Math.min(1,saturation*drive*drive));
+  return xyz.Y+(endpointY-xyz.Y)*weight;
  }
  return xyz.Y;
 }

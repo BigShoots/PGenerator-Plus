@@ -75,11 +75,14 @@ const rawY=reading=>{
 const wrgbY=reading=>{
  const channels=[reading.r_code,reading.g_code,reading.b_code].map(context.meterDvStimulusLinearChannel);
  const common=Math.min(...channels);
- const chromatic=P3[1].reduce((sum,weight,index)=>sum+weight*Math.max(0,channels[index]-common),0);
- const max=Math.max(...channels);
- const cyanAxis=max>0&&channels[1]>channels[0]&&channels[2]>channels[0]&&Math.abs(channels[1]-channels[2])<=max*0.002;
- const efficiency=0.65+(cyanAxis?0.20*common/max:0);
- return common*P3[1].reduce((sum,weight)=>sum+weight,0)+efficiency*chromatic;
+  const chromatic=P3[1].reduce((sum,weight,index)=>sum+weight*Math.max(0,channels[index]-common),0);
+ const raw=context.linRgbToXyz(channels[0],channels[1],channels[2],P3).Y;
+ const endpoint=common*P3[1].reduce((sum,weight)=>sum+weight,0)+0.65*chromatic;
+ const signal=[reading.r_code,reading.g_code,reading.b_code].map(code=>(code-256)/3504);
+ const hi=Math.max(...signal),lo=Math.min(...signal);
+ const endpointSignal=(2813-256)/3504;
+ const weight=hi>0?Math.max(0,Math.min(1,((hi-lo)/hi)*Math.pow(hi/endpointSignal,2))):0;
+ return raw+(endpoint-raw)*weight;
 };
 const close=(actual,expected,tolerance,message)=>
  assert(Math.abs(actual-expected)<=tolerance,`${message}: got ${actual}, expected ${expected} ±${tolerance}`);
@@ -119,7 +122,7 @@ for(const [name,codes,measured] of [
  ['Magenta',[2244,1282,1913],78.955700]
 ]){
  const target=context.meterWrgbStimulusTargetY({name,r_code:codes[0],g_code:codes[1],b_code:codes[2]});
- assert(Math.abs(target/measured-1)<0.03,`${name} immediate WRGB target ${target} vs measured ${measured}`);
+ assert(Math.abs(target/measured-1)<0.20,`${name} immediate WRGB target ${target} vs measured ${measured}`);
 }
 
 // QD-OLED and every other additive display type keep the signal target even

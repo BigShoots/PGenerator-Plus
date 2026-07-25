@@ -5,6 +5,8 @@ const {chromium}=require('playwright');
 
 const base=process.env.PGEN_URL||'http://192.168.1.166';
 const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
+const seriesKind=String(process.env.PGEN_SERIES||'saturations').toLowerCase();
+const colorChecker=seriesKind==='colors'||seriesKind==='colorchecker';
 
 (async()=>{
  const launch={headless:true};
@@ -32,11 +34,12 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
   await page.selectOption('#meterColorDeltaEForm','de2000');
   await page.check('#meterColorIncludeLumError');
   await page.click('[data-series-tab="color"]');
-  await page.click('#meterSaturationSeriesBtn');
+  await page.click(colorChecker?'#meterColorCheckerSeriesBtn':'#meterSaturationSeriesBtn');
   await page.waitForFunction(()=>{
    const b=document.getElementById('meterReadSeriesBtn');
-   return b&&b.style.display!=='none'&&!b.disabled&&meterActiveSeriesType==='saturations';
-  });
+   return b&&b.style.display!=='none'&&!b.disabled&&
+    (meterActiveSeriesType==='saturations'||meterActiveSeriesType==='colors');
+  },null);
 
   const preview=await page.evaluate(()=>({
    type:meterActiveSeriesType,
@@ -46,8 +49,11 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
    steps:(meterSeriesSteps||[]).map(s=>({name:s.name,r:s.r,g:s.g,b:s.b,target_Yn:s.target_Yn}))
   }));
   process.stdout.write(`${JSON.stringify({phase:'preview',...preview})}\n`);
-  const apiColorSteps=((initial.series&&initial.series.steps)||[]).filter(s=>s&&s.series_color&&s.sat_pct!=null);
-  if(apiColorSteps.length===24){
+  const expectedType=colorChecker?'colors':'saturations';
+  const apiColorSteps=String((initial.series&&initial.series.type)||'')===expectedType
+   ?((initial.series&&initial.series.steps)||[])
+   :[];
+  if(apiColorSteps.length===preview.steps.length){
    const apiByName=new Map(apiColorSteps.map(s=>[s.name,s]));
    const mismatches=preview.steps.filter(step=>{
     const api=apiByName.get(step.name);
@@ -85,7 +91,12 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
   await page.waitForFunction(()=>Array.isArray(meterReadings)&&meterReadings.length>=24,null,{timeout:30000});
   const result=await page.evaluate(()=>{
    const mode='eotf';
-   const rows=(meterReadings||[]).filter(rd=>rd&&rd.series_color&&rd.sat_pct!=null).map(rd=>{
+   const rows=(meterReadings||[]).filter(rd=>{
+    if(!rd) return false;
+    if(meterActiveSeriesType==='saturations') return rd.series_color&&rd.sat_pct!=null;
+    const name=String(rd.name||'').toLowerCase();
+    return name!=='white'&&name!=='black';
+   }).map(rd=>{
     const target=meterTargetXYZForReading(rd);
     return {
      name:rd.name,
@@ -103,7 +114,8 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
    };
   });
   process.stdout.write(`${JSON.stringify({phase:'result',...result})}\n`);
-  if(!(result.rows.length===24)) throw new Error(`expected 24 saturation readings, got ${result.rows.length}`);
+  const expectedRows=colorChecker?28:24;
+  if(!(result.rows.length===expectedRows)) throw new Error(`expected ${expectedRows} readings, got ${result.rows.length}`);
   if(!(result.maxDeltaE<=3)) throw new Error(`maximum Delta E is ${result.maxDeltaE}, expected <= 3`);
  }finally{
   try{
