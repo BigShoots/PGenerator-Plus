@@ -2734,6 +2734,14 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  $series_target_white_y=$1 if($body=~/"series_target_white_y"\s*:\s*"?([0-9.]+)"?/);
  my $series_target_white_y_provided=($body=~/"series_target_white_y"\s*:/) ? 1 : 0;
  my $series_target_white_y_num=($series_target_white_y ne "") ? ($series_target_white_y+0) : 0;
+ # DV-only measured peak. Colour series do not send series_target_white_y (that
+ # is scoped to the LG greyscale ladder), so $cc_white falls back to max_luma --
+ # which is correct for hdr10 but leaves DV encoding against 1000 cd/m^2 on a
+ # panel that peaks near 713, driving every chromatic patch ~0.72x its intended
+ # absolute luminance. Carried as its own field so hdr10 behaviour is untouched.
+ my $dv_measured_peak_y="";
+ $dv_measured_peak_y=$1 if($body=~/"dv_measured_peak_y"\s*:\s*"?([0-9.]+)"?/);
+ my $dv_measured_peak_y_num=($dv_measured_peak_y ne "") ? ($dv_measured_peak_y+0) : 0;
  # Target White / Target Black overrides from the calibration card. A manual
  # white value forces the series white reference; a manual black value is
  # stamped onto every step so chart/server target math anchors to it.
@@ -3544,16 +3552,37 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
      $linear=1 if($linear > 1);
-     # DV-Absolute (map mode "1") takes the hdr10 code path; DV-Relative
-     # keeps the legacy 2.2 tuning. $color_signal_mode was set above to
-     # "hdr10" for DV-Absolute, so the only branch that still uses
-     # $signal_mode eq "dv" is the DV-Relative one.
-     if($color_signal_mode eq "dv") {
+     # ENCODE keys off the REAL $signal_mode, not $color_signal_mode: the DV
+     # tunnel is gamma-encoded, so patch codes must be 2.2-encoded even in
+     # Absolute mode. Verified against hardware -- PQ-encoding the codes and
+     # letting the panel decode them as 2.2 predicts the measured greys almost
+     # exactly (Gray 35 predicted 154 vs 160 measured, Gray 50 212 vs 229,
+     # Gray 65 270 vs 301), i.e. the panel is a 2.2 device for these patches.
+     # Only the TARGET side (203 cd/m^2 anchor, measured peak, level
+     # percentages, saturation axis) follows hdr10 via $color_signal_mode.
+     if($signal_mode eq "dv") {
       $linear*=$dv_classic_scale;
       $linear=1 if($linear > 1);
      }
       my $encoded=0;
-      if($color_signal_mode eq "hdr10") {
+      if($signal_mode eq "dv") {
+       # 2.2 encode, honouring the same $ref_nits_override contract hdr10 uses:
+       # chromatic patches pass 203 cd/m^2 (BT.2408) and greys pass nothing.
+       # The override is converted to a FRACTION of the reference white before
+       # encoding, so a chromatic patch lands on Yn*203 and a grey lands on its
+       # own relative level -- on a panel that decodes these codes as 2.2.
+       # Ignoring the override here dropped the 203 anchor and drove every
+       # chromatic patch at full relative level instead.
+       my $dv_ref=($dv_measured_peak_y_num>0)?$dv_measured_peak_y_num
+        :(($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100));
+       my $dv_frac=$linear;
+       if(defined $ref_nits_override && $ref_nits_override>0 && $dv_ref>0) {
+        $dv_frac=$linear*$ref_nits_override/$dv_ref;
+       }
+       $dv_frac=0 if($dv_frac < 0);
+       $dv_frac=1 if($dv_frac > 1);
+       $encoded=$dv_frac>0 ? $dv_frac**(1/2.2) : 0;
+      } elsif($color_signal_mode eq "hdr10") {
        # Reference ColorChecker patch luminance to the MEASURED white (passed
        # by the client as series_target_white_y) instead of a fixed 100-nit
        # diffuse, so the displayed patch matches the measured-white chart
@@ -3564,8 +3593,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
        my $ref=(defined $ref_nits_override && $ref_nits_override>0)?$ref_nits_override:$cc_ref;
        $encoded=&webui_pattern_pq_encode_normalized($linear*$ref);
-      } elsif($color_signal_mode eq "dv") {
-        $encoded=$linear>0 ? $linear**(1/2.2) : 0;
       } else {
        $encoded=$target_linear_to_signal->($linear);
       }
@@ -3575,11 +3602,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($signal)=@_;
      $signal=0 if(!defined $signal || $signal < 0);
      $signal=1 if($signal > 1);
+     # Inverse of $encode_linear: DV decodes 2.2 (real $signal_mode), because the
+     # DV tunnel is gamma-encoded even in Absolute mode.
+     if($signal_mode eq "dv") {
+      return ($signal**2.2)/$dv_classic_scale;
+     }
      if($color_signal_mode eq "hdr10") {
       return &webui_pattern_pq_decode_normalized($signal)/100;
-     }
-     if($color_signal_mode eq "dv") {
-      return ($signal**2.2)/$dv_classic_scale;
      }
      return $target_signal_to_linear->($signal);
     };
@@ -3738,7 +3767,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        $r=$encode_linear->($rl,$bt2408_ref_white_nits);
        $g=$encode_linear->($gl,$bt2408_ref_white_nits);
        $b=$encode_linear->($bl,$bt2408_ref_white_nits);
-       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
+       # Same denominator the DV encode used, so target_Yn * reference lands on
+       # the Yn*203 the patch actually drives.
+       my $tyn_ref=($signal_mode eq "dv" && $dv_measured_peak_y_num>0)?$dv_measured_peak_y_num:$cc_white;
+       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$tyn_ref;
       } else {
        # SDR / HLG / DV-Relative: unchanged chromatic encoding, with the
        # existing DV-Relative target_Yn recompute block below.
@@ -19877,7 +19909,15 @@ function meterTargetXYZForReading(reading){
   // and 100% primaries have been measured.
   // DV-Absolute is folded into the hdr10 path here; DV-Relative is excluded
   // because it preserves the legacy 2.2-relative behavior.
+  // DV is excluded here as well as DV-Relative: the WRGB additive sum corrects
+  // targets expressed RELATIVE to measured white, but DV chromatic target_Yn is
+  // ABSOLUTE (Yn*203/measured_peak). Substituting the additive sum corrects a
+  // second time and under-reports every chromatic target, which is the
+  // "understated results" symptom -- targets landing near half the value the
+  // patch actually drives. DV chromatic therefore references measured white,
+  // matching the denominator the server baked target_Yn with.
   if(_activeColorSeries && meterColorPathIsHdr10() && !_greyReading
+   && !(typeof meterChartIsDv==='function' && meterChartIsDv())
    && meterWrgbChromaticReferenceNits()>0){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;
@@ -38674,7 +38714,7 @@ async function meterRunSeries(){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,dv_measured_peak_y:((typeof meterChartIsDv==='function'&&meterChartIsDv())?(meterReadingLuminanceNits(meterFindMeasuredWhiteReading())||undefined):undefined),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
 		  if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
