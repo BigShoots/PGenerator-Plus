@@ -5455,6 +5455,18 @@ sub lg_picture_set_workflow (@) {
 	  category => "picture",
 	  settings => $settings_to_apply,
 	 };
+ if($picture_mode_only) {
+  # Bind the Luna write to the foreground HDMI application. A bare
+  # pictureMode database write changes the reported preset but can leave the
+  # active Dolby Vision video pipeline detached on the C2. current_app alone
+  # is insufficient there; the input dimension identifies the live pipeline
+  # that must perform the mode transition.
+  $set_payload->{"current_app"}=&json_true();
+  $set_payload->{"dimension"}={
+   input => $tv_input,
+   "_3dStatus" => "2d",
+  } if($tv_input ne "");
+ }
  my $panel_light_category=($panel_light_only && $tv_input ne "" && $active_picture_mode ne "") ? "picture\$".$tv_input.".".$active_picture_mode.".2d.x" : "";
  $set_payload->{"dimension"}={ pictureMode => $active_picture_mode } if($active_picture_mode ne "" && !$picture_mode_only && !$panel_light_only);
 
@@ -5583,6 +5595,7 @@ sub lg_picture_set_workflow (@) {
   return &json_error("LG TV did not acknowledge picture settings update",{ ip => $ip });
  }
  my ($failed,$failure_message)=&response_is_app_failure($response);
+ select(undef,undef,undef,0.65) if(!$failed && $picture_mode_only);
  # A Dolby Vision compound-word preset name (e.g. "FilmMaker",
  # "TechnicolorExpert") may not have the same internal capitalization on
  # the TV's own webOS pictureMode enum as our "dolbyHdr"-prefixed guess --
