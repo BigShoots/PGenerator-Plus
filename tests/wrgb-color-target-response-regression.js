@@ -1,8 +1,7 @@
 // WRGB ColorChecker/saturation target-Y regression.
 //
-// A selected WRGB OLED must use the current series' measured R/G/B endpoints
-// to scale chromatic luminance while leaving neutral luminance on measured
-// white. Additive display selections must retain the signal-defined target.
+// Every color target must be determined before measurement. A selected WRGB
+// OLED must not learn target luminance from the current series' R/G/B results.
 const assert=require('assert');
 const fs=require('fs');
 const vm=require('vm');
@@ -61,8 +60,6 @@ vm.createContext(context);
 vm.runInContext([
  extractFunction('meterWrgbTargetCompensationSelected'),
  extractFunction('meterDvStimulusLinearChannel'),
- extractFunction('meterWrgbSeriesEndpointResponse'),
- extractFunction('meterWrgbCompensatedTargetY'),
  extractFunction('meterWrgbStimulusTargetY')
 ].join('\n'),context);
 
@@ -77,53 +74,24 @@ const close=(actual,expected,tolerance,message)=>
 const grey={r_code:1664,g_code:1664,b_code:1664};
 close(context.meterWrgbStimulusTargetY(grey),rawY(grey),1e-9,'WRGB grey target unchanged');
 
-// Each primary endpoint targets the measured chromatic capability at this
-// series level, rather than the impossible white-referenced primary value.
-for(const [name,code,measured] of [
- ['red',[2813,256,256],51.329963],
- ['green',[256,2813,256],165.594962],
- ['blue',[256,256,2813],17.592354]
-]){
- const rd={series_color:name,sat_pct:100,r_code:code[0],g_code:code[1],b_code:code[2]};
- close(context.meterWrgbStimulusTargetY(rd),measured,0.02,`${name} endpoint uses measured response`);
-}
-
-// Real C2 DV ColorChecker samples: the response model removes the large
-// impossible-target error without making target Y equal to the measured patch.
-let sweepRawError=0;
-let sweepCompensatedError=0;
-for(const [name,code,measured,maxError] of [
- ['Orange',[2595,1703,959],99.929959,0.12],
- ['Orange Yellow',[2785,2155,1084],149.715289,0.10],
- ['Yellow',[2925,2567,1114],203.931187,0.08],
- ['Cyan',[725,1770,2110],80.302263,0.06]
-]){
- const rd={name,r_code:code[0],g_code:code[1],b_code:code[2]};
- const target=context.meterWrgbStimulusTargetY(rd);
- assert(Math.abs(target/measured-1)<=maxError,`${name} compensated target ${target} vs measured ${measured}`);
- assert(target<rawY(rd),`${name} compensation must reduce the impossible raw target`);
-}
-
-// Independent 25-point DV saturation sweep from the same panel. These are
-// intermediate points, not the R/G/B measurements used to build the response.
-// The endpoint-derived model must improve each old raw-stimulus target.
-for(const [name,code,measured,maxError] of [
- ['Red 25%',[2813,1968,1968],163.328729,0.07],
- ['Green 50%',[1613,2813,1613],228.112587,0.04],
- ['Blue 50%',[1742,1742,2813],120.79113,0.12],
- ['Cyan 50%',[2004,2813,2813],298.311275,0.08],
- ['Magenta 50%',[2813,1944,2813],185.582339,0.03],
- ['Yellow 50%',[2813,2813,1865],284.731581,0.06]
-]){
- const rd={name,r_code:code[0],g_code:code[1],b_code:code[2]};
- const raw=rawY(rd);
- const target=context.meterWrgbStimulusTargetY(rd);
- assert(Math.abs(target/measured-1)<=maxError,`${name} compensated target ${target} vs measured ${measured}`);
- sweepRawError+=Math.abs(raw/measured-1);
- sweepCompensatedError+=Math.abs(target/measured-1);
-}
-assert(sweepCompensatedError<sweepRawError*0.55,
- `saturation compensation must cut aggregate target error by at least 45% (${sweepRawError} -> ${sweepCompensatedError})`);
+const samples=[
+ {name:'Orange',r_code:2595,g_code:1703,b_code:959},
+ {name:'Orange Yellow',r_code:2785,g_code:2155,b_code:1084},
+ {name:'Red 25%',r_code:2813,g_code:1968,b_code:1968},
+ {name:'Cyan 50%',r_code:2004,g_code:2813,b_code:2813}
+];
+context.meterReadings=[];
+const before=samples.map(rd=>context.meterWrgbStimulusTargetY(rd));
+context.meterReadings=[
+ {name:'White',r_code:3760,g_code:3760,b_code:3760,Y:whiteY,signal_mode:'dv'},
+ {series_color:'Red',sat_pct:100,r_code:2813,g_code:256,b_code:256,Y:1,signal_mode:'dv'},
+ {series_color:'Green',sat_pct:100,r_code:256,g_code:2813,b_code:256,Y:999,signal_mode:'dv'},
+ {series_color:'Blue',sat_pct:100,r_code:256,g_code:256,b_code:2813,Y:7,signal_mode:'dv'}
+];
+const after=samples.map(rd=>context.meterWrgbStimulusTargetY(rd));
+assert.deepStrictEqual(Array.from(after),Array.from(before),
+ 'ColorChecker and saturation targets are invariant after arbitrary R/G/B reads');
+samples.forEach((rd,index)=>close(before[index],rawY(rd),1e-9,`${rd.name} uses authored signal target`));
 
 // QD-OLED and every other additive display type keep the signal target even
 // if old WRGB endpoint readings remain in browser memory.

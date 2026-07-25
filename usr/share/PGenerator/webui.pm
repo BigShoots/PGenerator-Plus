@@ -19151,35 +19151,11 @@ function meterColorSeriesReferenceNits(){
 }
 
 function meterWrgbChromaticReferenceNits(){
- // WRGB OLED chromatic reference (mirrors meter_lg_3d_autocal.pl's
- // chromatic_white_y). Display Type gates this path; comparing the raw
- // sub-peak endpoint sum with peak white is not valid auto-detection.
- // A white-subpixel OLED forms
- // white with its W subpixel, so measured white is brighter than the additive
- // R+G+B sum. Chromatic content is produced WITHOUT the W subpixel and can
- // only reach that additive sum; referencing chromatic targets to measured
- // white over-drives every sub-saturation node (~1.785x on the C2). On an
- // additive RGB displays bypass this function entirely.
- if(!meterChartIsHdr()) return null;
- if(!meterWrgbTargetCompensationSelected()) return null;
- const white=meterFindMeasuredWhiteReading();
- const whiteY=white?meterReadingLuminanceNits(white):0;
- if(!(whiteY>0)) return null;
- const prim={};
- const curMode=String(meterActiveChartSignalMode()||'').toLowerCase();
- (Array.isArray(meterReadings)?meterReadings:[]).forEach(r=>{
-  if(!r||!r.series_color) return;
-  const c=String(r.series_color).toLowerCase();
-  if(c!=='red'&&c!=='green'&&c!=='blue') return;
-  if(Number(r.sat_pct) < 99.5) return;
-  const rdMode=String(r.signal_mode||'').toLowerCase();
-  if(rdMode && rdMode!==curMode) return;
-  const y=meterReadingLuminanceNits(r);
-  if(y>0 && !(prim[c]>0)) prim[c]=y;
- });
- const addY=(prim.red||0)+(prim.green||0)+(prim.blue||0);
- if(!(addY>0)) return null;
- if(addY < whiteY*0.98) return addY;
+ // Deprecated compatibility hook. A chart target must not be constructed
+ // from current-series primary measurements: doing so changes prior targets
+ // as R/G/B arrive and grades the display against its own output. All modes
+ // and all built-in/custom color series now use their authored signal target
+ // plus the run's white reference instead.
  return null;
 }
 
@@ -19197,87 +19173,14 @@ function meterWrgbTargetCompensationSelected(){
  return tech==='oled_generic'||/\b(?:wrgb|woled)\b/.test(tech);
 }
 
-function meterWrgbSeriesEndpointResponse(){
- // Build the response at the exact stimulus level used by this series. White
- // uses the W subpixel, while saturated colours use filtered RGB subpixels;
- // the run's own R/G/B endpoints are therefore the correct chromatic scale.
- if(!meterWrgbTargetCompensationSelected()) return null;
- const gamut=meterAnalysisGamut();
- const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
- const idx={red:0,green:1,blue:2};
- const factors={};
- const endpointSignals=[];
- const curMode=String(meterActiveChartSignalMode()||'').toLowerCase();
- const rng=meterColorTargetCodeRange();
- const isDv=meterChartIsDv();
- (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
-  if(!rd||Number(rd.sat_pct)<99.5||rd.series_color==null) return;
-  const color=String(rd.series_color).toLowerCase();
-  if(!(color in idx)||factors[idx[color]]>0) return;
-  const rdMode=String(rd.signal_mode||'').toLowerCase();
-  if(rdMode&&curMode&&rdMode!==curMode) return;
-  const codes=[
-   (rd.r_code!=null)?rd.r_code:rd.r,
-   (rd.g_code!=null)?rd.g_code:rd.g,
-   (rd.b_code!=null)?rd.b_code:rd.b
-  ];
-  if(codes.some(v=>v==null)) return;
-  const i=idx[color];
-  const channel=isDv?meterDvStimulusLinearChannel(codes[i]):meterDecodeColorTargetChannel(codes[i]);
-  const predicted=Number(Yrow[i])*Number(channel);
-  const measured=meterReadingLuminanceNits(rd);
-  if(!(predicted>0&&measured>0)) return;
-  factors[i]=Math.max(0.2,Math.min(2.0,measured/predicted));
-  const sig=Math.max(0,Math.min(1,(Number(codes[i])-rng.min)/rng.span));
-  if(sig>0) endpointSignals.push(sig);
- });
- if(!(factors[0]>0&&factors[1]>0&&factors[2]>0&&endpointSignals.length===3)) return null;
- return {
-  factors,
-  signalLevel:endpointSignals.reduce((sum,v)=>sum+v,0)/endpointSignals.length
- };
-}
-
-function meterWrgbCompensatedTargetY(reading,channels,rawY){
- if(!(rawY>0)||!reading||meterReadingIsGreyscale(reading)) return rawY;
- const response=meterWrgbSeriesEndpointResponse();
- if(!response||!(response.signalLevel>0)) return rawY;
- const gamut=meterAnalysisGamut();
- const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
- const adjusted=
-  Number(Yrow[0])*Number(channels[0])*response.factors[0]+
-  Number(Yrow[1])*Number(channels[1])*response.factors[1]+
-  Number(Yrow[2])*Number(channels[2])*response.factors[2];
- if(!(adjusted>=0)) return rawY;
-
- const rng=meterColorTargetCodeRange();
- const codes=[
-  (reading.r_code!=null)?reading.r_code:reading.r,
-  (reading.g_code!=null)?reading.g_code:reading.g,
-  (reading.b_code!=null)?reading.b_code:reading.b
- ];
- if(codes.some(v=>v==null)) return rawY;
- const signal=codes.map(code=>Math.max(0,Math.min(1,(Number(code)-rng.min)/rng.span)));
- const hi=Math.max(signal[0],signal[1],signal[2]);
- const lo=Math.min(signal[0],signal[1],signal[2]);
- if(!(hi>0)) return rawY;
-
- // W engagement falls as chroma and drive rise. Blend from measured-white
- // response at neutral/low drive to the measured RGB response at the series
- // endpoint. Signal-domain saturation works for SDR, PQ and DV's 2.2 tunnel;
- // equal XYZ scaling preserves the requested target x/y.
- const saturation=(hi-lo)/hi;
- const drive=hi/response.signalLevel;
- const weight=Math.max(0,Math.min(1,saturation*drive*drive));
- return rawY+(adjusted-rawY)*weight;
-}
-
 // Target luminance derived from the patch STIMULUS rather than a measured
-// reference (additive primary sum / measured white). Decode each channel from
-// the actual stimulus, form target Y in the selected analysis gamut, then let
-// meterWrgbCompensatedTargetY blend chromatic luminance toward the measured
-// series endpoints when WRGB OLED is selected. Other display types retain the
-// signal-defined target. Greys remain referenced to measured white.
+// response. Decode each channel from the actual stimulus and form target Y in
+// the selected analysis gamut. This reference target must never be learned
+// from the measurements it grades: using current-series R/G/B endpoint reads
+// made ColorChecker and saturation targets change partway through the run and
+// circularly erased the endpoints' own luminance error. WRGB Display Type
+// selects WRGB handling elsewhere, but it does not redefine a standard target
+// from measured results. Greys remain referenced to measured white.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
@@ -19325,8 +19228,7 @@ function meterWrgbStimulusTargetY(reading){
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=meterAnalysisGamut();
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
- if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
- return meterWrgbCompensatedTargetY(reading,[dr,dg,db],xyz.Y);
+ return (xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)?xyz.Y:null;
 }
 
 // Reference mode for lattice/cube chart targets. 'display' (default) judges
@@ -19400,22 +19302,8 @@ function meterLatticeDisplayTargetY(rawY,reading){
  if(meterLatticeDisplayReference()!=='display') return rawY;
  const refs=meterLatticeCornerRefs();
  let y=rawY;
- if(!meterReadingIsGreyscale(reading)){
-  const r=(reading&&reading.r_code!=null)?reading.r_code:(reading?reading.r:null);
-  const g=(reading&&reading.g_code!=null)?reading.g_code:(reading?reading.g:null);
-  const b=(reading&&reading.b_code!=null)?reading.b_code:(reading?reading.b:null);
-  if(r!=null&&g!=null&&b!=null&&(refs.ceil[0]>0||refs.ceil[1]>0||refs.ceil[2]>0)){
-   let dr=meterDecodeColorTargetChannel(r);
-   let dg=meterDecodeColorTargetChannel(g);
-   let db=meterDecodeColorTargetChannel(b);
-   if(refs.ceil[0]>0) dr=Math.min(dr,refs.ceil[0]);
-   if(refs.ceil[1]>0) dg=Math.min(dg,refs.ceil[1]);
-   if(refs.ceil[2]>0) db=Math.min(db,refs.ceil[2]);
-   const gamut=meterAnalysisGamut();
-   const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
-   if(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0) y=Math.min(y,xyz.Y);
-  }
- }
+ // Do not cap chromatic nodes from R/G/B corners measured in this run.
+ // Custom/lattice targets must be stable before and after those corners.
  let peak=refs.white;
  // Mid-run fallback chain: the run's own white reading (worker measures white
  // for target Y before the lattice), then any measured white in the readings.
@@ -19823,13 +19711,6 @@ function meterSaturationTargetXYZ(colorName,satPercent){
   // patches so saturation sweeps and color series stay aligned.
   let scale=meterWrgbChromaticReferenceNits();
   if(!(scale>0)) scale=meterColorSeriesReferenceNits();
- if(!(meterChartIsPq()&&!meterChartIsDv()) && !meterChartIsHdr()){
-  const white=meterFindMeasuredWhiteReading();
-  if(!(white&&white.Y>0)){
-   const inferred=meterInferSdrSatReferenceNits();
-   if(inferred>0) scale=inferred;
-  }
- }
  return {X:xyz.X*scale,Y:xyz.Y*scale,Z:xyz.Z*scale};
 }
 
