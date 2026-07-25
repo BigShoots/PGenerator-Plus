@@ -4896,7 +4896,9 @@ sub apply_pattern_insert_before_read {
   select(undef,undef,undef,$dur_s);
   # Step 2: dead black screen to reset panel ABL / pixel charge between
   # the insertion flash and the measurement patch.
-  my $black_payload={%{$base_payload},input_max=>$input_max,r=>0,g=>0,b=>0};
+  my $black_payload=(lc($config->{"signal_mode"}||"sdr") eq "dv")
+   ? {%{$base_payload},input_max=>4095,r=>256,g=>256,b=>256}
+   : {%{$base_payload},input_max=>$input_max,r=>0,g=>0,b=>0};
   my $black_result=api_json("POST","/api/pattern",$black_payload,10);
   return $black_result->{"message"}||"Unable to display black insertion patch" if(($black_result->{"status"}||"") eq "error");
   select(undef,undef,undef,0.5);

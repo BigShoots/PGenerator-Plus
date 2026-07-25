@@ -580,7 +580,7 @@ def percent_from_step(step, channel):
     return 0.0
 
 def code_range_for_step(step):
-    return 16, 219
+    return 256, 3504
 
 def code_for_absolute_percent(step, percent):
     stim = max(0.0, min(1.0, float(percent) / 100.0))
@@ -603,6 +603,7 @@ for step in steps:
         if step.get(channel) != code:
             changed = True
         step[channel] = code
+    step["input_max"] = 4095
     _, target_y = code_for_absolute_percent(step, percent_from_step(step, "g"))
     step["dv_absolute_white_y"] = white_y
     step["dv_absolute_st2084_precomp"] = True

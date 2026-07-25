@@ -3101,12 +3101,20 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # Measurement order: WHITE first (reference), then 0%→95% ascending
  my @steps;
  my $dv_series=($signal_mode eq "dv") ? 1 : 0;
+ if($dv_series) {
+  # Standard DV carries legal-range 12-bit source RGB inside an RGB 8-bit
+  # Full tunnel. Use that source domain for every generated/custom colour.
+  $chroma_min_code=256;
+  $chroma_span_code=3504;
+  $chroma_max_code=3760;
+  $chroma_input_max=4095;
+ }
  my $dv_greyscale_tunnel_codes=($dv_series && $type eq "greyscale") ? 1 : 0;
- my $dv_series_code_bits=8;
- my $dv_series_code_max=255;
- my $dv_series_full_range=$dv_series && !$dv_greyscale_tunnel_codes && int($pattern_signal_range || $signal_range || $transport_signal_range || 2)==2 ? 1 : 0;
- my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
- my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? 255 : 219) : 255;
+ my $dv_series_code_bits=$dv_series ? 12 : 8;
+ my $dv_series_code_max=$dv_series ? 4095 : 255;
+ my $dv_series_full_range=0;
+ my $dv_series_code_min=$dv_series ? 256 : 0;
+ my $dv_series_code_span=$dv_series ? 3504 : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  my @custom_series_steps=&webui_lattice_series_steps_from_body($body,$chroma_min_code,$chroma_span_code,$chroma_input_max);
  @custom_series_steps=&webui_custom_series_steps_from_body($body) if(!scalar(@custom_series_steps));
@@ -3466,7 +3474,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    $extra.=",\"final_white_refresh\":true" if($points==21 && !$lg_greyscale_21 && !$lg_autocal_26 && abs($v-100)<0.001);
 	    $extra.=",\"analysis_ire\":$analysis_ire,\"target_ire\":$analysis_ire,\"transport_stimulus\":$stim" if($points==21 && $lg_greyscale_21);
 		    $extra.=",\"input_max\":1023" if($lg_autocal_26_codes);
-		    $extra.=",\"input_max\":1023" if($dv_series && $dv_series_code_bits == 10);
+		    $extra.=",\"input_max\":4095" if($dv_series && $dv_series_code_bits == 12);
 		    # HDR10 26pt: input_max follows max_bpc. 10 → input_max=1023 (10-bit codes);
 		    # 8 → input_max=255 (8-bit codes; matches the 1.6 WORKING
 		    # YCbCr limited 8-bit A/B test). meter_series.sh / patch_request_body
@@ -9077,7 +9085,7 @@ sub webui_pattern_pq_encode_normalized (@) {
 #   extended_sdr_codes 0/1    use extended (16..255) SDR range
 #   legal_sdr_ddc_codes 0/1   use legal (16..235) SDR range
 #   dv_series       0/1        use DV tunnel branch
-#   dv_series_code_bits 8/10  tunnel bit depth
+#   dv_series_code_bits 8/10/12  source-code precision inside the tunnel
 #   dv_series_full_range 0/1  use full tunnel range
 sub webui_grey_code_for_stimulus (@) {
  my ($stimulus_pct,$signal_mode,$target_gamma,$signal_range,$opts_hr)=@_;
@@ -9102,12 +9110,13 @@ sub webui_grey_code_for_stimulus (@) {
  my $lg_legal_sdr_ddc_codes=$opts_hr->{"legal_sdr_ddc_codes"} ? 1 : 0;
  my $dv_series=$opts_hr->{"dv_series"} ? 1 : 0;
  my $dv_series_code_bits=$opts_hr->{"dv_series_code_bits"};
- $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10));
+ $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10 && $dv_series_code_bits!=12));
  my $dv_series_full_range=$opts_hr->{"dv_series_full_range"} ? 1 : 0;
- my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : 16) : 0;
- my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? ($dv_series_code_bits==10?1023:255) : ($dv_series_code_bits==10?940:219)) : 255;
+ my $dv_series_code_max=($dv_series_code_bits==12) ? 4095 : (($dv_series_code_bits==10) ? 1023 : 255);
+ my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : ($dv_series_code_bits==12?256:($dv_series_code_bits==10?64:16))) : 0;
+ my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? $dv_series_code_max : ($dv_series_code_bits==12?3504:($dv_series_code_bits==10?876:219))) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- $input_max=($dv_series_code_bits==10) ? 1023 : 255 if($dv_series);
+ $input_max=$dv_series_code_max if($dv_series);
  if($lg_autocal_26_codes) {
   # 8-bit link: no headroom and no 10-bit legal-expanded ladder. Drive plain
   # 8-bit codes that match the worker's patch_code_for_stimulus 8-bit path
@@ -9990,22 +9999,27 @@ sub webui_pattern (@) {
  &apply_source_rgb_quant_range("webui",$transport_signal_range);
  my ($color_format_body)=$body=~/"color_format"\s*:\s*"?(\d+)"?/;
  my $pattern_color_format=defined($color_format_body) ? int($color_format_body) : int($pgenerator_conf{"color_format"} || 0);
-	 my $source_range=(int($pattern_signal_range || 0) == 1) ? "LIMITED" : "FULL";
+	 # Standard DV's outer HDMI tunnel is RGB Full, but its inner source
+	 # components are legal-range. SOURCE_RANGE describes those authored
+	 # components; transport_signal_range remains the wire setting.
+	 my $source_range=($signal_mode eq "dv" || int($pattern_signal_range || 0) == 1) ? "LIMITED" : "FULL";
 	 local $webui_pattern_image_source_range=($pattern_color_format == 0) ? $source_range : "FULL";
 	 my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("",$signal_mode);
+ my $pattern_source_bits=($signal_mode eq "dv") ? 12 : $pat_bits;
+ my $pattern_source_max=&webui_pattern_target_max($pattern_source_bits);
  my $pattern_debug_extra="";
 my $diag_video=&webui_pattern_diag_video_path($name);
  my $diag_video_fallback=&webui_pattern_diag_video_fallback_name($name);
- my $white_rgb=&webui_pattern_scale_triplet(255,255,255,255,$pat_bits);
- my $black_rgb=&webui_pattern_scale_triplet(0,0,0,255,$pat_bits);
- my $red_rgb=&webui_pattern_scale_triplet(255,0,0,255,$pat_bits);
- my $green_rgb=&webui_pattern_scale_triplet(0,255,0,255,$pat_bits);
- my $blue_rgb=&webui_pattern_scale_triplet(0,0,255,255,$pat_bits);
- my $cyan_rgb=&webui_pattern_scale_triplet(0,255,255,255,$pat_bits);
- my $magenta_rgb=&webui_pattern_scale_triplet(255,0,255,255,$pat_bits);
- my $yellow_rgb=&webui_pattern_scale_triplet(255,255,0,255,$pat_bits);
- my $gray50_rgb=&webui_pattern_scale_triplet(128,128,128,255,$pat_bits);
+ my $white_rgb=($signal_mode eq "dv") ? "3760,3760,3760" : &webui_pattern_scale_triplet(255,255,255,255,$pat_bits);
+ my $black_rgb=($signal_mode eq "dv") ? "256,256,256" : &webui_pattern_scale_triplet(0,0,0,255,$pat_bits);
+ my $red_rgb=($signal_mode eq "dv") ? "3760,256,256" : &webui_pattern_scale_triplet(255,0,0,255,$pat_bits);
+ my $green_rgb=($signal_mode eq "dv") ? "256,3760,256" : &webui_pattern_scale_triplet(0,255,0,255,$pat_bits);
+ my $blue_rgb=($signal_mode eq "dv") ? "256,256,3760" : &webui_pattern_scale_triplet(0,0,255,255,$pat_bits);
+ my $cyan_rgb=($signal_mode eq "dv") ? "256,3760,3760" : &webui_pattern_scale_triplet(0,255,255,255,$pat_bits);
+ my $magenta_rgb=($signal_mode eq "dv") ? "3760,256,3760" : &webui_pattern_scale_triplet(255,0,255,255,$pat_bits);
+ my $yellow_rgb=($signal_mode eq "dv") ? "3760,3760,256" : &webui_pattern_scale_triplet(255,255,0,255,$pat_bits);
+ my $gray50_rgb=($signal_mode eq "dv") ? "2008,2008,2008" : &webui_pattern_scale_triplet(128,128,128,255,$pat_bits);
  if($diag_video ne "") {
   return '{"status":"error","message":"AVS HD 709 videos are available only in SDR"}' if($signal_mode ne "sdr");
   my $diag_quant_range=int($transport_signal_range || $pattern_signal_range || 2);
@@ -10126,19 +10140,21 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
   my ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
   my ($imax)=$body=~/"input_max"\s*:\s*(\d+)/;
   my $input_max=$imax ? int($imax) : 255;
-  my $target_max=&webui_pattern_target_max($pat_bits);
+  my $target_bits=($signal_mode eq "dv") ? 12 : $pat_bits;
+  my $target_max=&webui_pattern_target_max($target_bits);
   $input_max=$target_max if(!$imax && ($pr > 255 || $pg > 255 || $pb > 255));
   $input_max=$target_max if($input_max <= 255 && ($pr > 255 || $pg > 255 || $pb > 255));
-  $pr=&webui_pattern_scale_value($pr,$input_max,$pat_bits);
-  $pg=&webui_pattern_scale_value($pg,$input_max,$pat_bits);
-  $pb=&webui_pattern_scale_value($pb,$input_max,$pat_bits);
+  $pr=&webui_pattern_scale_value($pr,$input_max,$target_bits);
+  $pg=&webui_pattern_scale_value($pg,$input_max,$target_bits);
+  $pb=&webui_pattern_scale_value($pb,$input_max,$target_bits);
   $pattern_debug_extra=" raw_rgb=$raw_pr,$raw_pg,$raw_pb scaled_rgb=$pr,$pg,$pb input_max=$input_max";
   my $win_pct=int($sz);
   my $bg_rgb=$black_rgb;
   if($sz >= 101 && $sz <= 998) {
    my $apl_pct=$sz - 100;
    $win_pct=10;
-   $bg_rgb=&webui_pattern_apl_bg_triplet($pr,$pg,$pb,$pat_bits,$win_pct,$apl_pct,$signal_range,$black_rgb);
+   my $apl_signal_range=($signal_mode eq "dv") ? 1 : $signal_range;
+   $bg_rgb=&webui_pattern_apl_bg_triplet($pr,$pg,$pb,$target_bits,$win_pct,$apl_pct,$apl_signal_range,$black_rgb);
   }
   if($win_pct>=100) {
    $pat="DRAW=RECTANGLE\nDIM=$w,$h\nRGB=$pr,$pg,$pb\nBG=$bg_rgb\nPOSITION=0,0\nEND=1\n";
@@ -10172,8 +10188,9 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
    close($dfh);
   }
  }
- # Write the pattern
- $pat="PATTERN_NAME=$name\nBITS=$pat_bits\n".$pat."FRAME=$frame_default\n";
+ # Write the pattern. SOURCE_MAX is independent of BITS: standard DV keeps
+ # an 8-bit framebuffer/wire while its tunnel shader consumes 12-bit codes.
+ $pat="PATTERN_NAME=$name\nBITS=$pat_bits\nSOURCE_MAX=$pattern_source_max\n".$pat."FRAME=$frame_default\n";
  open(my $fh,">","$command_file.tmp");
  print $fh $pat;
  close($fh);
@@ -18046,6 +18063,7 @@ function meterGreyscaleUsesFullSourceRange(){
 }
 
 function meterPatchUsesVideoRange(){
+ if(typeof meterChartIsDv==='function'&&meterChartIsDv()) return true;
  return meterIsLimitedRange();
 }
 
@@ -18083,12 +18101,14 @@ function meterSdrRgbChromaUsesFullSourceRange(){
 
 function meterChromaPatchRangeMin(){
  const base=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
- return meterPatchBitDepth()===10?Math.round(base*4):base;
+ const bits=meterPatchBitDepth();
+ return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
 }
 
 function meterChromaPatchRangeSpan(){
  const base=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
- return meterPatchBitDepth()===10?Math.round(base*4):base;
+ const bits=meterPatchBitDepth();
+ return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
@@ -18215,7 +18235,7 @@ function meterGreyCodeRange(){
  // generated by meterCodeFromSignalPercent are 10-bit (0-1023 full,
  // 64-940 limited) so the autocal's per-anchor patches match the panel's
  // 10-bit transport. 8-bit modes still use 16-235 (limited) or 0-255 (full).
- if(meterChartIsDv()) return meterPatchBitDepth()===10?{min:64,span:876}:{min:16,span:219};
+ if(meterChartIsDv()) return {min:256,span:3504};
  if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:956}:{min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:876}:{min:16,span:219};
  const eightBitRange=(meterGreyscaleUsesFullSourceRange()||!meterPatchUsesVideoRange())?{min:0,span:255}:{min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
@@ -18228,8 +18248,14 @@ function meterGreyCodeRange(){
 }
 
 function meterPatchBitDepth(){
+ if(typeof meterChartIsDv==='function'&&meterChartIsDv()) return 12;
  const bpc=parseInt(getVal('max_bpc')||'8',10);
  return bpc===12?10:bpc;
+}
+
+function meterPatchInputMax(){
+ const bits=meterPatchBitDepth();
+ return bits===12?4095:(bits===10?1023:255);
 }
 
 // HDR10 (10-bit PQ) 100% white code depends on the panel's quant range.
@@ -24719,7 +24745,7 @@ function meterStepInputMax(step){
  // shift it to 256 (10-bit), which lifts black to ~22% signal. Mirror the
  // 26pt SDR branch for any greyscale step on a 10-bit transport.
  if(isGreyStep&&meterPatchBitDepth()===10) return 1023;
- return meterPatchBitDepth()===10?1023:255;
+ return meterPatchInputMax();
 }
 
 function meterApplySingleReadResult(result,requestedStep){
@@ -27084,14 +27110,15 @@ function meterSelectAutoCal3dLut(){
 // the wrong charts: there is no greyscale ladder anywhere in this pass.
 function meterDvProfileChartSteps(){
  const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
- const max=(bitDepth===10)?1023:255;
+ const min=256;
+ const max=3760;
  return [
-  {kind:'black',name:'black',r:0,g:0,b:0},
+  {kind:'black',name:'black',r:min,g:min,b:min},
   {kind:'white',name:'white',r:max,g:max,b:max},
-  {kind:'red',name:'red',r:max,g:0,b:0},
-  {kind:'green',name:'green',r:0,g:max,b:0},
-  {kind:'blue',name:'blue',r:0,g:0,b:max}
- ].map(p=>Object.assign({ire:(p.kind==='black')?0:100},p,
+  {kind:'red',name:'red',r:max,g:min,b:min},
+  {kind:'green',name:'green',r:min,g:max,b:min},
+  {kind:'blue',name:'blue',r:min,g:min,b:max}
+ ].map(p=>Object.assign({ire:(p.kind==='black')?0:100,input_max:4095},p,
    meterLg3dMatrixProfileTarget({kind:p.kind,level:100})));
 }
 
@@ -27213,7 +27240,7 @@ async function meterStartDvProfileStandalone(){
  const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
  const range=meterFullAutoCalConfig.patternSignalRange;
  const payload={
-  input_max:(bitDepth===10)?1023:255,
+  input_max:4095,
   display_type:meterFullAutoCalConfig.dtype,
   ccss_override:meterFullAutoCalConfig.ccss_override,
   delay_ms:meterDelayMs(),
@@ -30391,7 +30418,7 @@ function meterBuildStepsJS(type,points){
    // (webui_pattern) doesn't interpret e.g. 0%->code 64 as 8-bit and lift
    // the black to ~22% signal, and so the patch-thumbnail swatch shows
    // the correct 0-255 normalized preview instead of the raw 10-bit code.
-   const stepInputMax=meterPatchBitDepth()===10?1023:255;
+   const stepInputMax=meterPatchInputMax();
    const previewForCode=(code)=>{
     const numeric=Number(code);
     if(!Number.isFinite(numeric)) return 0;
@@ -30464,7 +30491,7 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  // SDR autocal26 chart step input_max + preview follow the link's bit
  // depth (8-bit -> 255, 10-bit -> 1023) so Full-range codes in 8-bit
  // are not scaled to ~24% on a 10-bit wire.
- const stepInputMax=meterPatchBitDepth()===10?1023:255;
+ const stepInputMax=meterPatchInputMax();
  // Range decides CODES (zero 0 vs 64, white peak vs legal 940); the
  // super-white predicate decides SHAPE. RGB Limited has Limited codes but
  // the Full 24-anchor shape (no 99/105/109 - the renderer clamps above
@@ -30544,8 +30571,8 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	    name:meterFormatPercentValue(slot)+'%',
 	    series_type:'greyscale',
 	    autocal_code:code,
-	    input_max:meterPatchBitDepth()===10?1023:255,
-	    ...previewCodesForCode(code,meterPatchBitDepth()===10?1023:255),
+	    input_max:meterPatchInputMax(),
+	    ...previewCodesForCode(code,meterPatchInputMax()),
 		    ddc_slot_locked:true,
 		    autocal_slot_locked:true,
 		    ddc_layout:'hdr20',
@@ -30555,9 +30582,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 		   };
 		  };
 	  const zeroCode=meterCodeFromSignalPercentWithOptions(0,null);
-	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===10?1023:255,name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchBitDepth()===10?1023:255,name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchBitDepth()===10?1023:255),autocal_slot_locked:false,autocal_read_only:true};
+	  const zero=black?{...black,ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchInputMax(),name:'0%',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchInputMax()),autocal_slot_locked:false,autocal_read_only:true}:{ire:0,stimulus:0,signal_r_pct:0,signal_g_pct:0,signal_b_pct:0,r:zeroCode,g:zeroCode,b:zeroCode,input_max:meterPatchInputMax(),name:'0%',series_type:'greyscale',autocal_code:zeroCode,...previewCodesForCode(zeroCode,meterPatchInputMax()),autocal_slot_locked:false,autocal_read_only:true};
 	  const whiteCode=meterCodeFromSignalPercentWithOptions(100,null);
-	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:meterPatchBitDepth()===10?1023:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,meterPatchBitDepth()===10?1023:255),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
+	  const white={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:meterPatchInputMax(),name:'100%',series_type:'greyscale',autocal_code:whiteCode,...previewCodesForCode(whiteCode,meterPatchInputMax()),read_delay_ms:3000,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_target_label:'100% HDR white'};
 	  // hdr20 (HDR10) carries a REAL 100% DDC slot at the top of the body
 	  // (METER_LG_GREY_HDR_AUTOCAL_SLOTS[0]===100), so the pre-loop
 	  // "100% HDR white" anchor would duplicate the 100% point in the
@@ -32900,7 +32927,7 @@ function meterAutoCalWhiteStep(){
     r:code,
     g:code,
     b:code,
-    input_max:meterPatchBitDepth()===10?1023:255,
+    input_max:meterPatchInputMax(),
     name:'100%',
     series_type:'greyscale',
     autocal_white_reference:true,
@@ -34624,7 +34651,9 @@ async function meterAutoCalMeasureHdrPeakLuminance(pictureMode,signalMode){
   // 940 sends ~94% of full-scale, the panel clips there, and the autocal
   // sets the white reference too low (see webui.pm 18305 comment for the
   // matching per-IRE table).
-  if(sigMode==='hdr10'||sigMode==='dv'){
+  if(sigMode==='dv'){
+   step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:3760,g:3760,b:3760,input_max:4095,name:'100%'};
+  }else if(sigMode==='hdr10'){
    const hdr100=meterLgHdrHundredPercentCodeForRange();
    step={ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:hdr100,g:hdr100,b:hdr100,input_max:1023,name:'100%'};
   }else{
@@ -35946,7 +35975,7 @@ async function meterDvAutoCalStartProfile(firstStatus){
  const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
  const range=(cfg.patternSignalRange==='1'||cfg.patternSignalRange==='2')?cfg.patternSignalRange:String(getVal('rgb_quant_range')||'2');
  const payload={
-  input_max:(bitDepth===10)?1023:255,
+  input_max:4095,
   display_type:cfg.dtype||getEffectiveDisplayType(),
   ccss_override:(cfg.ccss_override!=null)?cfg.ccss_override:((typeof getCcssOverride==='function')?getCcssOverride():''),
   delay_ms:meterDelayMs(),

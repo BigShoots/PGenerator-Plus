@@ -52,17 +52,18 @@ die "Empty/invalid config\n" if(ref($config) ne "HASH");
 
 write_state(status=>"running",message=>"Starting Dolby Vision profile measurement",steps=>[]);
 
-# Patch list: black at 0%, white/red/green/blue at peak (100%) code. Uses the
-# same 0..input_max code convention as the greyscale/3D-LUT workers so the
-# renderer's already-implemented DV signal-generation path
-# receives ordinary RGB triplets.
-my $input_max=int($config->{"input_max"}||1023);
+# Standard DV uses legal-range 12-bit source RGB inside the packed RGB
+# 8-bit Full transport. Measure the profile with the same exact source
+# domain as the greyscale and colour-series paths.
+my $input_max=4095;
+my $black_code=256;
+my $white_code=3760;
 my @patches=(
- { name=>"black", r=>0,         g=>0,         b=>0,         kind=>"black" },
- { name=>"white", r=>$input_max, g=>$input_max, b=>$input_max, kind=>"white" },
- { name=>"red",   r=>$input_max, g=>0,          b=>0,          kind=>"red" },
- { name=>"green", r=>0,          g=>$input_max, b=>0,          kind=>"green" },
- { name=>"blue",  r=>0,          g=>0,          b=>$input_max, kind=>"blue" },
+ { name=>"black", r=>$black_code, g=>$black_code, b=>$black_code, kind=>"black" },
+ { name=>"white", r=>$white_code, g=>$white_code, b=>$white_code, kind=>"white" },
+ { name=>"red",   r=>$white_code, g=>$black_code, b=>$black_code, kind=>"red" },
+ { name=>"green", r=>$black_code, g=>$white_code, b=>$black_code, kind=>"green" },
+ { name=>"blue",  r=>$black_code, g=>$black_code, b=>$white_code, kind=>"blue" },
 );
 
 # --- Pattern insertion -------------------------------------------------------
@@ -166,7 +167,7 @@ sub apply_pattern_insert_before_read {
   my $flash=api_json("POST","/api/pattern",{%{$base},input_max=>$input_max,r=>(0+$code),g=>(0+$code),b=>(0+$code)},10);
   return ($flash->{"message"}||"Unable to display pattern insertion patch") if(($flash->{"status"}||"") eq "error");
   select(undef,undef,undef,$ins->{"duration_ms"}/1000.0);
-  my $black=api_json("POST","/api/pattern",{%{$base},input_max=>$input_max,r=>0,g=>0,b=>0},10);
+  my $black=api_json("POST","/api/pattern",{%{$base},input_max=>4095,r=>256,g=>256,b=>256},10);
   return ($black->{"message"}||"Unable to display black insertion patch") if(($black->{"status"}||"") eq "error");
   select(undef,undef,undef,0.5);
  }
