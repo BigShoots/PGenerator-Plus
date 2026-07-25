@@ -3697,34 +3697,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $scale=$compressed/$f;
      return ($wx+$dx*$scale,$wy+$dy*$scale);
     };
-    my $remap_absolute_dv_color_xy=sub {
-     my ($sx,$sy)=@_;
-     return ($sx,$sy) unless($signal_mode eq "dv" && $dv_map_mode eq "1");
-      my ($wx,$wy)=($solve_wx,$solve_wy);
-     my ($dx,$dy)=($sx-$wx,$sy-$wy);
-     return ($sx,$sy) if(abs($dx)<1e-9 && abs($dy)<1e-9);
-     my $best_t;
-     for(my $idx=0;$idx<@solve_xy;$idx++) {
-      my ($ax,$ay)=@{$solve_xy[$idx]};
-      my ($bx,$by)=@{$solve_xy[($idx+1)%@solve_xy]};
-      my ($ex,$ey)=($bx-$ax,$by-$ay);
-      my ($qx,$qy)=($ax-$wx,$ay-$wy);
-      my $den=$dx*$ey-$dy*$ex;
-      next if(abs($den)<1e-9);
-      my $t=($qx*$ey-$qy*$ex)/$den;
-      my $u=($qx*$dy-$qy*$dx)/$den;
-      next unless($t>0 && $u>=-1e-9 && $u<=1+1e-9);
-      $best_t=$t if(!defined $best_t || $t<$best_t);
-     }
-     return ($sx,$sy) unless(defined $best_t && $best_t>0);
-     my $f=1/$best_t;
-     $f=0 if($f<0);
-     $f=1 if($f>1);
-     return ($wx,$wy) unless($f>1e-9);
-    my $compressed=$f-0.32*$f*(1-$f);
-     my $scale=$compressed/$f;
-     return ($wx+$dx*$scale,$wy+$dy*$scale);
-    };
     my @classic=(
     ["Gray 35","gray",0.090],
     ["Gray 50","gray",0.198],
@@ -3800,7 +3772,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my ($target_x,$target_y,$Yn)=@vals;
       my ($emit_x,$emit_y)=($target_x,$target_y);
       ($emit_x,$emit_y)=$remap_relative_dv_color_xy->($emit_x,$emit_y);
-      ($emit_x,$emit_y)=$remap_absolute_dv_color_xy->($emit_x,$emit_y);
+      # Absolute DV uses the requested ColorChecker chromaticity directly.
+      # The former inward pre-compression moved every patch toward white
+      # before RGB solving, so a correctly tracking display necessarily
+      # measured undersaturated against the uncompressed chart target.
         my $X=$emit_x/$emit_y*$Yn;
      my $Y=$Yn;
         my $Z=(1-$emit_x-$emit_y)/$emit_y*$Yn;
@@ -3875,7 +3850,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
     }
 	   if($signal_mode eq "dv") {
-	    return int($min_code + $linear*$span_code + .5);
+	    # The standard-DV tunnel declares Tgamma=2.2. Encode linear RGB
+	    # through that transfer function, matching the saturation-series
+	    # builder below; a raw-linear code is decoded by the TV a second
+	    # time and makes these ColorChecker gamut endpoints far too dim.
+	    return int($min_code + ($linear ** (1/2.2))*$span_code + .5);
 	   }
     return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
    };
@@ -19598,7 +19577,7 @@ function meterEncodeSaturationLinear(linear,colorName){
  const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,linear||0));
  if(meterChartIsPq()&&!meterChartIsDv()) return Math.round(min+meterChartPqEncodeNormalized(clamped*10000)*span);
- if(meterChartIsDv()) return Math.round(min+clamped*span);
+ if(meterChartIsDv()) return Math.round(min+Math.pow(clamped,1/2.2)*span);
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
@@ -19661,37 +19640,6 @@ function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
  const frac=Math.max(0,Math.min(1,1/bestT));
  const compressed=meterDvRelativeSaturationFraction(frac);
  if(!(frac>1e-9)) return {x:wx,y:wy};
- const scale=compressed/frac;
- return {x:wx+dx*scale,y:wy+dy*scale};
-}
-
-function meterRemapAbsoluteDvColorCheckerChromaticity(x,y,gamut){
- if(!(meterChartIsDv() && meterDvMapModeValue()==='1')) return {x,y};
- const solveGamut=gamut||meterAnalysisGamut();
- const wp=meterTargetWhitePoint();
- const wx=wp.x, wy=wp.y;
- const dx=(x||0)-wx;
- const dy=(y||0)-wy;
- if(Math.abs(dx)<1e-9 && Math.abs(dy)<1e-9) return {x,y};
- const verts=[solveGamut.primaries.R,solveGamut.primaries.G,solveGamut.primaries.B];
- let bestT=null;
- for(let i=0;i<verts.length;i++){
-  const a=verts[i];
-  const b=verts[(i+1)%verts.length];
-  const ex=b.x-a.x;
-  const ey=b.y-a.y;
-  const qx=a.x-wx;
-  const qy=a.y-wy;
-  const den=dx*ey-dy*ex;
-  if(Math.abs(den)<1e-9) continue;
-  const t=(qx*ey-qy*ex)/den;
-  const u=(qx*dy-qy*dx)/den;
-  if(t>0 && u>=-1e-9 && u<=1+1e-9 && (bestT==null || t<bestT)) bestT=t;
- }
- if(!(bestT>0)) return {x,y};
- const frac=Math.max(0,Math.min(1,1/bestT));
- if(!(frac>1e-9)) return {x:wx,y:wy};
- const compressed=frac-0.32*frac*(1-frac);
  const scale=compressed/frac;
  return {x:wx+dx*scale,y:wy+dy*scale};
 }
@@ -19869,6 +19817,10 @@ function meterParseSaturationReading(reading){
 // genuinely 8-bit series (white code <=255) on the 8-bit range even when the
 // conf reports max_bpc=10, matching the greyscale path.
 function meterColorTargetCodeRange(){
+ // Standard Dolby Vision carries legal 12-bit source codes inside its
+ // 8-bit RGB tunnel. The wire max_bpc is therefore not the source-code
+ // precision: every DV color/saturation series uses 256..3760.
+ if(meterChartIsDv()) return {min:256,span:3504};
  const limited=meterPatchUsesVideoRange();
  const tenBit=(meterPatchBitDepth()===10) &&
   !(typeof meterActiveSeriesCodesAre8Bit==='function' && meterActiveSeriesCodesAre8Bit());
@@ -20687,7 +20639,9 @@ function meterBuildColorCheckerStepsJS(){
 	   return;
 	  }
     let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
-    emitXY=meterRemapAbsoluteDvColorCheckerChromaticity(emitXY.x,emitXY.y,solveGamut);
+    // Do not pre-compress Absolute-DV ColorChecker chromaticity. Targets and
+    // emitted RGB must describe the same xy point; otherwise the display is
+    // scored against a saturation it was never asked to produce.
     const X=(emitXY.x/emitXY.y)*src.Yn;
   const Y=src.Yn;
     const Z=((1-emitXY.x-emitXY.y)/emitXY.y)*src.Yn;
