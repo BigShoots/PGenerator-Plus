@@ -90,6 +90,8 @@ for(const [name,code,measured] of [
 
 // Real C2 DV ColorChecker samples: the response model removes the large
 // impossible-target error without making target Y equal to the measured patch.
+let sweepRawError=0;
+let sweepCompensatedError=0;
 for(const [name,code,measured,maxError] of [
  ['Orange',[2595,1703,959],99.929959,0.12],
  ['Orange Yellow',[2785,2155,1084],149.715289,0.10],
@@ -101,6 +103,27 @@ for(const [name,code,measured,maxError] of [
  assert(Math.abs(target/measured-1)<=maxError,`${name} compensated target ${target} vs measured ${measured}`);
  assert(target<rawY(rd),`${name} compensation must reduce the impossible raw target`);
 }
+
+// Independent 25-point DV saturation sweep from the same panel. These are
+// intermediate points, not the R/G/B measurements used to build the response.
+// The endpoint-derived model must improve each old raw-stimulus target.
+for(const [name,code,measured,maxError] of [
+ ['Red 25%',[2813,1968,1968],163.328729,0.07],
+ ['Green 50%',[1613,2813,1613],228.112587,0.04],
+ ['Blue 50%',[1742,1742,2813],120.79113,0.12],
+ ['Cyan 50%',[2004,2813,2813],298.311275,0.08],
+ ['Magenta 50%',[2813,1944,2813],185.582339,0.03],
+ ['Yellow 50%',[2813,2813,1865],284.731581,0.06]
+]){
+ const rd={name,r_code:code[0],g_code:code[1],b_code:code[2]};
+ const raw=rawY(rd);
+ const target=context.meterWrgbStimulusTargetY(rd);
+ assert(Math.abs(target/measured-1)<=maxError,`${name} compensated target ${target} vs measured ${measured}`);
+ sweepRawError+=Math.abs(raw/measured-1);
+ sweepCompensatedError+=Math.abs(target/measured-1);
+}
+assert(sweepCompensatedError<sweepRawError*0.55,
+ `saturation compensation must cut aggregate target error by at least 45% (${sweepRawError} -> ${sweepCompensatedError})`);
 
 // QD-OLED and every other additive display type keep the signal target even
 // if old WRGB endpoint readings remain in browser memory.
