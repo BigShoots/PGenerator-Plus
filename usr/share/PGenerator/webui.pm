@@ -3730,20 +3730,17 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        $g=$encode_linear->($gl,$bt2408_ref_white_nits);
        $b=$encode_linear->($bl,$bt2408_ref_white_nits);
        $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
-      } elsif($signal_mode eq "dv" && $dv_map_mode eq "1") {
-       # DV Absolute chromatic: drive patches to Yn*203 nits as a fraction
-       # of the mastering peak (matching DV-Absolute sat-sweep encoding).
-       # Bake target_Yn so target_Yn * peak = Yn * 203.
-       my $rf=$rl*$bt2408_ref_white_nits/$dv_peak; $rf=0 if($rf<0); $rf=1 if($rf>1);
-       my $gf=$gl*$bt2408_ref_white_nits/$dv_peak; $gf=0 if($gf<0); $gf=1 if($gf>1);
-       my $bf=$bl*$bt2408_ref_white_nits/$dv_peak; $bf=0 if($bf<0); $bf=1 if($bf>1);
-       $r=int($min_code+$rf*$span_code+.5);
-       $g=int($min_code+$gf*$span_code+.5);
-       $b=int($min_code+$bf*$span_code+.5);
-       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$dv_peak;
       } else {
-       # SDR / HLG / DV-Relative: unchanged chromatic encoding, with the
-       # existing DV-Relative target_Yn recompute block below.
+       # SDR / HLG / DV (both map modes): encode through $encode_linear, with
+       # the DV target_Yn recompute below.
+       #
+       # DV-Absolute previously had its own branch here that wrote the LINEAR
+       # fraction straight into a code with no OETF, which crushes every
+       # chromatic patch toward black. DV colour read-back has always worked in
+       # RELATIVE, because Relative falls through to this branch and encodes
+       # properly; the broken branch only became reachable once reports started
+       # switching the panel to Absolute. Both map modes now use the path that
+       # was already known good, so read-back does not depend on map mode.
        $r=$encode_linear->($rl);
        $g=$encode_linear->($gl);
        $b=$encode_linear->($bl);
@@ -3769,7 +3766,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
   my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
-  my $series_level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : (($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
+  # DV uses one level for both map modes; the Absolute-only 75 went with the
+  # raw-linear write that has been removed.
+  my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
     $linear=0 if(!defined $linear || $linear < 0);
@@ -3784,11 +3783,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    };
    my $series_level_request=$series_level_pct/100;
   my $series_level_code=0;
-  if($signal_mode eq "dv" && $dv_map_mode eq "1") {
-   $series_level_code=int($min_code + $series_level_request*$span_code + .5);
-  } else {
+  {
+   # DV-Absolute used to write the LINEAR level request straight into a code
+   # here, with no OETF -- the same defect the ColorChecker chromatic branch
+   # had, and it darkens the whole sweep. Both DV map modes now take the
+   # encoded path that DV-Relative (the known-good read-back) always used.
    my $series_level_encoded=$series_level_request;
-   if($signal_mode eq "dv" && $target_gamma ne "st2084") {
+   if($signal_mode eq "dv") {
     $series_level_encoded=$target_linear_to_signal->($series_level_request);
    }
    $series_level_code=int($min_code + $series_level_encoded*$span_code + .5);
@@ -3891,7 +3892,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # clip to white. Driving the sweep at full level (100%) pushes every channel
   # to the top of PQ where the panel clips, crushing the saturation ratio to
   # white for every patch except the pure 100%-saturation primaries.
-  my $level_pct=(($signal_mode eq "dv") && ($dv_map_mode eq "1")) ? 75 : ((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
+  my $level_pct=((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
   my $hcfr_constant_luminance=($points==25)?1:0;
   # $max_code is the outer-scope bit-depth-aware $chroma_max_code set
   # at the top of the step-build; no need to recompute here.
@@ -3915,11 +3916,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # tunnel EOTF to get the actual linear stimulus after quantization.
   my $level_request=$level_pct/100;
   my $level_code=0;
-  if($signal_mode eq "dv" && $dv_map_mode eq "1") {
-   $level_code=int($min_code + $level_request*$span_code + .5);
-  } else {
+  {
+   # Same fix as the series-level code above: no raw linear write for
+   # DV-Absolute; both map modes use the encoded path.
    my $level_encoded=$level_request;
-   if($signal_mode eq "dv" && $target_gamma ne "st2084") {
+   if($signal_mode eq "dv") {
     $level_encoded=$target_linear_to_signal->($level_request);
    }
    $level_code=int($min_code + $level_encoded*$span_code + .5);
