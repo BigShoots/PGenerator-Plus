@@ -18832,11 +18832,20 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
- if(meterChartIsDv() && meterDvMapModeValue()==='1'){
-  // DV Absolute target luminance stays anchored to mastering peak. The
-  // white pre-read is still useful diagnostically, but it is not the target
-  // Y reference for color or saturation patches in absolute mode.
-  return Math.max(1,meterColorReferenceNits());
+ // DV Absolute used to short-circuit to the mastering peak here, ignoring the
+ // measured white entirely. With Target White = "Use measured" that produced
+ // absurd targets on a ~713 cd/m2 panel (observed: Moderate Red targeting
+ // 48359 cd/m2, dY -99.8%), because the DV target_Yn recompute can exceed 1
+ // and was then multiplied by the 10000 cd/m2 PQ reference. When the operator
+ // has asked for the measured white, honour it: fall through to the
+ // measured-white cascade below, which already clamps DV to the mastering
+ // peak so an absolute target can never exceed what the panel can show.
+ {
+  const _umw=document.getElementById('meterTargetWhiteUseMeasured');
+  const _useMeasuredWhite=_umw?(_umw.checked!==false):true;
+  if(meterChartIsDv() && meterDvMapModeValue()==='1' && !_useMeasuredWhite){
+   return Math.max(1,meterColorReferenceNits());
+  }
  }
  const activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  const explicitLgTarget=activeColorSeries?null:meterExplicitLgTargetWhiteReferenceNits(meterReadings);
