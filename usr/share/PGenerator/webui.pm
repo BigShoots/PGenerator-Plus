@@ -19222,7 +19222,16 @@ function meterWrgbStimulusTargetY(reading){
    Number(Yrow[0])*Math.max(0,dr-common)+
    Number(Yrow[1])*Math.max(0,dg-common)+
    Number(Yrow[2])*Math.max(0,db-common);
-  const wrgbFilteredRgbEfficiency=0.65;
+  // The cyan axis gains some W-subpixel contribution when a neutral/common
+  // component is present. A single fixed 0.65 filtered-RGB efficiency is
+  // correct at pure cyan but increasingly under-targets the 25/50/75%
+  // cyan mixtures. Keep the pure-axis endpoint at 0.65 and blend a modest
+  // common-component contribution only when G and B are the equal dominant
+  // channels. This is stimulus-derived and remains measurement independent.
+  const maxChannel=Math.max(dr,dg,db);
+  const cyanAxis=maxChannel>0&&dg>dr&&db>dr&&Math.abs(dg-db)<=maxChannel*0.002;
+  const commonFraction=maxChannel>0?common/maxChannel:0;
+  const wrgbFilteredRgbEfficiency=0.65+(cyanAxis?0.20*commonFraction:0);
   return commonY+wrgbFilteredRgbEfficiency*chromaticY;
  }
  return xyz.Y;
@@ -19509,12 +19518,14 @@ function meterEncodeSaturationLinear(linear,colorName){
 
 function meterGamutStimulusLinearLevel(){
  if(meterChartIsPq()&&!meterChartIsDv()) return 1;
+ if(meterChartIsDv()) return Math.max(0,Math.min(1,meterColorLevelPercent()/100));
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
+ if(meterChartIsDv()) return Math.max(0,Math.min(1,actualPercent));
  return meterTargetSignalToLinear(actualPercent);
 }
 
@@ -19653,7 +19664,7 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const solveGamut=meterSaturationSolveGamut();
  const axisGamut=meterSaturationAxisGamut();
  let sat=Math.max(0,Math.min(100,satPercent||0))/100;
- if(meterChartIsDv()) sat=(meterDvMapModeValue()==='1') ? meterDvAbsoluteSaturationFraction(colorName,sat) : meterDvRelativeSaturationFraction(sat);
+ if(meterChartIsDv()&&meterDvMapModeValue()!=='1') sat=meterDvRelativeSaturationFraction(sat);
  const endpoint=meterGamutColorEndpointXY(colorName,axisGamut);
  const wp=meterTargetWhitePoint();
  const x=wp.x+sat*(endpoint.x-wp.x);

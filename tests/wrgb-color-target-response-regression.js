@@ -76,7 +76,10 @@ const wrgbY=reading=>{
  const channels=[reading.r_code,reading.g_code,reading.b_code].map(context.meterDvStimulusLinearChannel);
  const common=Math.min(...channels);
  const chromatic=P3[1].reduce((sum,weight,index)=>sum+weight*Math.max(0,channels[index]-common),0);
- return common*P3[1].reduce((sum,weight)=>sum+weight,0)+0.65*chromatic;
+ const max=Math.max(...channels);
+ const cyanAxis=max>0&&channels[1]>channels[0]&&channels[2]>channels[0]&&Math.abs(channels[1]-channels[2])<=max*0.002;
+ const efficiency=0.65+(cyanAxis?0.20*common/max:0);
+ return common*P3[1].reduce((sum,weight)=>sum+weight,0)+efficiency*chromatic;
 };
 const close=(actual,expected,tolerance,message)=>
  assert(Math.abs(actual-expected)<=tolerance,`${message}: got ${actual}, expected ${expected} ±${tolerance}`);
