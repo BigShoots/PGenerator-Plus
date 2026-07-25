@@ -1,5 +1,5 @@
-// DV Absolute keeps the standard-DV patch tunnel unchanged, but its error
-// target luminance is decoded as ST 2084.
+// DV Absolute keeps the standard-DV color patch tunnel and measured-white
+// luminance reference unchanged. PQ remains the greyscale/EOTF target curve.
 const assert=require('assert');
 const fs=require('fs');
 const vm=require('vm');
@@ -65,8 +65,8 @@ assert.strictEqual(satAbs,
 const absoluteCode=1900;
 const absoluteNorm=(absoluteCode-min)/span;
 close(context.meterDvStimulusLinearChannel(absoluteCode),
- Math.min(context.meterChartPqDecodeNormalized(absoluteNorm),1000),1e-9,
- 'DV Absolute error target luminance uses HDR/PQ decode');
+ Math.pow(absoluteNorm,2.2)*700,1e-9,
+ 'DV Absolute color target luminance uses measured-white scaling');
 
 // Relative retains its classic 0.68 scale and gamma-2.2 tunnel.
 mapMode='2';

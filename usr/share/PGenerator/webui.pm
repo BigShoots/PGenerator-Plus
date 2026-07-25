@@ -19169,19 +19169,14 @@ function meterWrgbTargetCompensationSelected(){
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
-// DV-Absolute uses the same PQ stimulus-to-nits decode as HDR10. DV-Relative
-// alone uses the classic gamma-2.2 tunnel referenced to measured white.
+// Standard-DV color patches use the classic gamma-2.2 tunnel in both map
+// modes. Absolute DV still uses PQ for greyscale/EOTF targets, but color and
+// saturation target luminance follows the authored patch convention and is
+// referenced to the measured series white.
 function meterDvStimulusLinearChannel(code){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
  if(norm<=0) return 0;
- if(meterDvMapModeValue()==='1'){
-  const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
-  return Math.min(
-   meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1),
-   meterChartHdrPeak()
-  );
- }
  return Math.pow(norm,2.2)*Math.max(1,meterColorSeriesReferenceNits());
 }
 
@@ -19206,8 +19201,9 @@ function meterWrgbStimulusTargetY(reading){
  const gamut=meterAnalysisGamut();
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
- if(_dvLum && meterDvMapModeValue()!=='1' && meterWrgbTargetCompensationSelected()){
-  // Relative DV is gamma-2.2 RGB referenced to measured white. On a WRGB
+ if(_dvLum && meterWrgbTargetCompensationSelected()){
+  // Standard DV color RGB is gamma-2.2 and referenced to measured white in
+  // both map modes. On a WRGB
   // OLED, the equal part of R/G/B is emitted by the unfiltered W subpixel,
   // while the chromatic residual comes from the less-efficient filtered
   // subpixels. Treating the whole triplet as additive RGB makes DV chromatic
@@ -19754,7 +19750,7 @@ function meterColorTargetCodeRange(){
 function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
- if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')){
+ if(meterChartIsPq()&&!meterChartIsDv()){
   const diffuseScale=(typeof meterHdrDiffuseScale==='function')?meterHdrDiffuseScale():1;
   const nits=meterChartPqDecodeNormalized(norm)*((diffuseScale>0)?diffuseScale:1);
   // The per-channel clamp to the HDR peak keeps LUMINANCE targets bounded,

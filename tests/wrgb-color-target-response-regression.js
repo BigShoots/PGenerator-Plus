@@ -127,20 +127,14 @@ close(context.meterWrgbStimulusTargetY(yellow),rawY(yellow),1e-9,'QD-OLED bypass
 technology='lcd_wled';
 close(context.meterWrgbStimulusTargetY(yellow),rawY(yellow),1e-9,'LCD bypasses WRGB compensation');
 
-// Absolute DV is PQ, exactly like HDR10 target decoding. WRGB's relative-mode
-// filtered-primary model must not alter the PQ signal target.
+// Absolute DV greyscale is PQ, but color-series stimulus target Y remains
+// referenced to measured white because the standard-DV color patches retain
+// their classic gamma-2.2 encoding.
 dvMapMode='1';
 technology='oled_generic';
 const absolute={r_code:1900,g_code:1500,b_code:1000};
-const absoluteNorm=[absolute.r_code,absolute.g_code,absolute.b_code]
- .map(code=>(code-256)/3504);
-const absoluteExpected=context.linRgbToXyz(
- Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[0]),1000),
- Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[1]),1000),
- Math.min(context.meterChartPqDecodeNormalized(absoluteNorm[2]),1000),
- P3
-).Y;
+const absoluteExpected=wrgbY(absolute);
 close(context.meterWrgbStimulusTargetY(absolute),absoluteExpected,1e-9,
- 'DV Absolute uses unmodified HDR/PQ target luminance');
+ 'DV Absolute color target uses measured-white WRGB response');
 
 console.log('wrgb color target response regression OK');
