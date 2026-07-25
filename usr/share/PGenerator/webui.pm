@@ -3517,7 +3517,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # decodes BT.2020 and the cube (also BT.2020) reproduces them. Solving in
     # P3 emitted P3 RGB onto a BT.2020 wire -> wrong saturation. target_key
     # stays the scoring/sweep gamut. DV-Absolute joins hdr10 here.
-    my $solve_key=($color_signal_mode eq "hlg" || $color_signal_mode eq "hdr10") ? $container_key : $target_key;
+    # Solve gamut is the ONE place Dolby Vision must NOT follow hdr10: keyed off
+    # the real $signal_mode, not $color_signal_mode. DV tunnels its own
+    # colorimetry, so solving patches in the BT.2020 container widens every
+    # chromaticity and makes ColorChecker interiors read oversaturated against
+    # the fixed spec targets (operator-observed: avg Dx 0.028 / Dy 0.020 on the
+    # interiors while White and the 100% primaries, which are gamut-independent,
+    # were correct). hdr10 / hlg keep the container.
+    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -3882,7 +3889,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # P3 RGB onto a BT.2020 wire -> wrong saturation. target_key stays scoring.
   # DV-Absolute joins hdr10 in solving through the BT.2020 container, so use
   # $color_signal_mode instead of $signal_mode here.
-  my $solve_key=($color_signal_mode eq "hlg" || $color_signal_mode eq "hdr10") ? $container_key : $target_key;
+  # Solve gamut is the ONE place Dolby Vision must NOT follow hdr10: keyed off
+    # the real $signal_mode, not $color_signal_mode. DV tunnels its own
+    # colorimetry, so solving patches in the BT.2020 container widens every
+    # chromaticity and makes ColorChecker interiors read oversaturated against
+    # the fixed spec targets (operator-observed: avg Dx 0.028 / Dy 0.020 on the
+    # interiors while White and the 100% primaries, which are gamut-independent,
+    # were correct). hdr10 / hlg keep the container.
+    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
@@ -17709,16 +17723,12 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // DV-Absolute follows hdr10 and solves in the CONTAINER gamut. It used to
- // solve in the active target gamut instead, which was the last place
- // DV-Absolute still diverged from hdr10 in the colour path: interior
- // ColorChecker patches are solved through the gamut matrix, so a different
- // gamut moves every one of them, while the 100% primaries/secondaries drive
- // their channels full-on and are gamut-independent. That is exactly the
- // reported pattern on DV RGB Full -- White 0.47 and all six 100% patches
- // 0.39..1.98, but every interior patch 11..14 dE with avg Dx 0.028 /
- // Dy 0.020 -- while the same series in hdr10 read correctly.
- // DV-Relative keeps the container gamut it already used.
+ // Solve gamut is the ONE place Dolby Vision must NOT follow hdr10. DV tunnels
+ // its own colorimetry, so solving patches in the BT.2020 container widens
+ // every chromaticity and makes ColorChecker interiors read oversaturated
+ // against the fixed spec targets. DV-Absolute therefore solves in the active
+ // target gamut; DV-Relative keeps the container it was tuned against.
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
  if(meterChartIsDv()) return meterContainerGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
 }
