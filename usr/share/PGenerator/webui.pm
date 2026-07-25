@@ -23747,6 +23747,22 @@ function meterCacheSeriesState(status,options){
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const prev=meterSeriesCache[meterActiveSeriesKey]||null;
  const readings=JSON.parse(JSON.stringify(meterReadings||[]));
+ // Never downgrade a COMPLETE snapshot to a partial in-progress one. The chart
+ // is driven by live meterReadings while a series runs, so the cache only
+ // matters on restore -- and letting a mid-run write land meant selecting that
+ // series later showed a handful of points instead of the finished set.
+ // Reported after a Full Auto Cal: the post-cal report measures Greyscale 21pt
+ // first, and afterwards re-selecting the 21pt series showed only a few of its
+ // readings. An explicit clear is unaffected: meterClearResults marks the
+ // snapshot cleared, which is handled by the branch below.
+ if(prev && String(prev.status||'').toLowerCase()==='complete'
+  && !meterSeriesSnapshotIsCleared(prev)
+  && String(status||'').toLowerCase()==='running'
+  && Array.isArray(prev.readings)
+  && readings.length < prev.readings.length
+  && Array.isArray(prev.steps) && prev.steps.length===meterSeriesSteps.length){
+  return;
+ }
  if(readings.length===0&&prev&&meterSeriesSnapshotIsCleared(prev)&&String(status||'').toLowerCase()!=='running'){
   meterSeriesCache[meterActiveSeriesKey]={...prev,updated_at:Date.now()};
   if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
@@ -35012,7 +35028,12 @@ async function meterFullAutoCalCaptureReportSet(stage){
   let status=null;
   meterInternalSeriesWorkflow={workflow:'full',label:reportLabel};
   try{
-   meterSelectSeries(item.type,item.points);
+   // meterSelectSeries is async (it can cache the outgoing series, rebuild the
+   // chart context and even await a modal). Firing it without await and hoping
+   // a 100ms sleep covered it let meterRunSeries start mid-switch, so the
+   // series-cache write for the OUTGOING series could land after the next
+   // series had begun accumulating readings.
+   await meterSelectSeries(item.type,item.points);
    await meterFullAutoCalSleep(100);
    const started=await meterRunSeries();
    if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
