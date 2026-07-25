@@ -5376,6 +5376,25 @@ sub lg_picture_set_workflow (@) {
  $caller_picture_mode=$mapped_caller_picture_mode;
  my $picture_mode_only=($caller_picture_mode ne "" && scalar(keys(%{$settings}))==1) ? 1 : 0;
  my $active_picture_mode=$caller_picture_mode || $fallback_picture_mode;
+ if($picture_mode_only
+    && ($generation->{"series"}||"") eq "C2"
+    && $signal_mode eq "dv"
+    && $active_picture_mode =~ /^dolbyHdr(?:CinemaBright|Vivid|Standard)$/) {
+  &websocket_close($session);
+  &diag_log_append("picture_set:remote-required",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   signal_mode => $signal_mode,
+   model_name => $generation->{"model_name"}||"",
+  });
+  return &json_error("This LG C2 accepts the WebOS picture-mode command but blanks the active Dolby Vision HDMI pipeline for this preset. Select the preset with the TV remote, then click Refresh in PGenerator.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   requested_picture_mode => $caller_picture_mode,
+   error_code => "picture-mode-remote-required",
+   repair_hint => "Use the LG TV remote to select this Dolby Vision picture mode, then click Refresh.",
+  });
+ }
  if($picture_mode_only && $generation->{"ddc_only_white_balance"}) {
   my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
   $picture_settings->{"pictureMode"}=$active_picture_mode if($active_picture_mode ne "");

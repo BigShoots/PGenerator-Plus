@@ -4413,12 +4413,28 @@ async function lgSetPictureMode(){
  if(!value) return;
  const state=window.lgStatusState||{};
  const signal=lgPictureModeEffectiveSignal(value);
- lgRememberPictureMode(value,signal);
 	 if(!lgStatusConnected(state)){
   toast('Connect the LG TV first','err');
   lgPopulatePictureModeSelect(lgPictureModeValue);
   return;
 	 }
+	 // The C2 accepts WebOS pictureMode writes for every advertised DV
+	 // preset, but Cinema Home, Vivid, and Standard leave its active HDMI
+	 // Dolby Vision video pipeline black. Selecting those same presets with
+	 // the TV remote works, while WebOS writes for Filmmaker and Game
+	 // Optimizer are safe. Refuse the known-bad writes instead of silently
+	 // breaking pattern display; Refresh will pick up the remote selection.
+	 const model=String(state.model_name||state.stored_name||'').toUpperCase();
+	 const canonical=lgPictureModeCanonicalValue(value);
+	 const c2UnsafeDvMode=/OLED\d+C2/.test(model)&&lgSignalModeKey()==='dv'&&[
+	  'dolbyVisionCinemaBright','dolbyVisionVivid','dolbyVisionStandard'
+	 ].includes(canonical);
+	 if(c2UnsafeDvMode){
+	  toast('On LG C2, switch '+lgPictureModeLabel(canonical)+' with the TV remote, then click Refresh. The WebOS mode write blanks Dolby Vision patterns.','err');
+	  lgPopulatePictureModeSelect(lgPictureModeValue);
+	  return;
+	 }
+ lgRememberPictureMode(value,signal);
 	 lgPictureModePending=true;
 	 select.disabled=true;
 	 const commandHandle=lgBeginCommand('Changing LG picture mode');
