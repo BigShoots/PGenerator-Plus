@@ -1849,6 +1849,38 @@ sub webui_meter_session_send_command (@) {
  return 0;
 }
 
+# Wait for spotread to be really gone after a kill, instead of assuming a fixed
+# sleep is long enough.
+#
+# A SIGKILLed spotread does not release its USB claim on the colorimeter the
+# instant the signal is delivered -- the kernel still has to tear down the
+# libusb handle. Spawning a new spotread inside that window is how a stalled
+# read happens: the new process cannot talk to the instrument, Argyll reports
+# "Spot read failed due to communication problem", and dmesg is completely
+# clean (no -71/-32) because nothing is wrong electrically -- the device claim
+# is simply still held. The session layer then sits on its read timeout
+# (90s normal / 120s <=25 IRE / 140s <=5 IRE, +30s for the comm retry) with the
+# measurement patch parked on screen, and meter_series.sh layers two more
+# retries on top, so ONE contention event can hold a single patch for minutes.
+# Observed on hardware 2026-07-25: session 20485 (04:08:16) was killed without
+# its cleanup ever running -- no "STOP received", no "cleanup: tearing down
+# spotread" in meter_session.log, unlike every other transition in that log --
+# then session 24582 spawned a second spotread at 04:11:27 and the next 100%
+# read died after the full 120s.
+sub webui_meter_spotread_settled (@) {
+ my ($limit_ms)=@_;
+ $limit_ms=4000 if(!defined($limit_ms) || $limit_ms <= 0);
+ my $waited=0;
+ while($waited < $limit_ms) {
+  my $still=`pgrep -x spotread 2>/dev/null`;
+  return 1 if(!defined($still) || $still!~/\d/);
+  Time::HiRes::sleep(0.1);
+  $waited+=100;
+ }
+ &log("WebUI: spotread still present ${limit_ms}ms after kill -- starting a new session anyway may stall the next read");
+ return 0;
+}
+
 sub webui_meter_session_stop (@) {
 	 my $state=&webui_meter_read_state_read();
 	 my $setup_blocked=($state=~/"status"\s*:\s*"setup"/i || $state=~/"setup_busy"\s*:\s*true/i) ? 1 : 0;
@@ -1884,6 +1916,10 @@ sub webui_meter_session_stop (@) {
 	 system("sudo pkill -9 -x spotread 2>/dev/null");
 	 system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
 	 system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+		 # Do not return until the instrument is actually free: the next request
+		 # may start a new session immediately, and an overlapping spotread is a
+		 # multi-minute stall (see webui_meter_spotread_settled).
+		 &webui_meter_spotread_settled(4000);
 		 &webui_meter_session_ready_cleanup();
 		 unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
 	}
@@ -1893,6 +1929,7 @@ sub webui_meter_session_stop_only (@) {
  system("sudo pkill -9 -x spotread 2>/dev/null");
  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+ &webui_meter_spotread_settled(4000);
  &webui_meter_session_ready_cleanup();
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"idle","message":"Meter session reset"}');
@@ -2166,7 +2203,13 @@ sub webui_meter_read (@) {
      unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo, "/tmp/meter_session.lock");
      my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
      unlink(@stale) if @stale;
-     select(undef,undef,undef,0.3);
+     # This is the path that produced the observed stall: the session PID was
+     # gone (its cleanup never ran, so it was SIGKILLed) while its spotread was
+     # still holding the instrument. A fixed 300ms is not long enough for the
+     # kernel to release a SIGKILLed process's USB claim, and the new spotread
+     # spawned below then cannot talk to the meter -- a clean-dmesg
+     # "communication problem" and a multi-minute parked patch. Confirm instead.
+     &webui_meter_spotread_settled(4000);
   }
   &webui_meter_read_state_write('{"status":"starting"}');
   # The refresh-display (-y c) startup path can ask for an 80% white patch
