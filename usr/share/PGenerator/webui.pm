@@ -17734,38 +17734,88 @@ function meterUseMeasuredWhiteTarget(){
 const GAMUT_PRESETS=__PG_GAMUT_PRESETS__;
 
 
-// Measured gamut outline from full-code primaries (and secondaries when present).
-// Used on CIE 2D charts as a thin solid triangle (primaries) / polygon (with secondaries).
+// Measured gamut outline: ONLY 100% primaries (R/G/B) and 100% secondaries (C/M/Y).
+// Used on CIE 2D charts as a thin solid triangle (primaries) / hexagon (with secondaries).
+//
+// Earlier matching treated bare ColorChecker names ("Red","Green",…) and first-wins
+// sat-sweep midpoints as primaries, so the outline sat on the wrong interior patches.
+function meterReadingGamutCornerKey(rd){
+ if(!rd) return null;
+ if(typeof meterReadingIsGreyscale==='function' && meterReadingIsGreyscale(rd)) return null;
+ const name=String(rd.name||'').toLowerCase().trim();
+ const kind=String(rd.kind||'').toLowerCase().trim();
+ const sc=String(rd.series_color||'').toLowerCase().trim();
+ const sat=Number(rd.sat_pct);
+ const fullSat=isFinite(sat) && sat>=99.5;
+ // Explicit 100% labels: "100% Red" / "Red 100%" / "Red 100"
+ const labelMap=[
+  ['R',/^100%\s*red$/],['R',/^red\s*100%?$/],
+  ['G',/^100%\s*green$/],['G',/^green\s*100%?$/],
+  ['B',/^100%\s*blue$/],['B',/^blue\s*100%?$/],
+  ['C',/^100%\s*cyan$/],['C',/^cyan\s*100%?$/],
+  ['M',/^100%\s*magenta$/],['M',/^magenta\s*100%?$/],
+  ['Y',/^100%\s*yellow$/],['Y',/^yellow\s*100%?$/]
+ ];
+ for(let i=0;i<labelMap.length;i++){
+  if(labelMap[i][1].test(name)) return {key:labelMap[i][0],score:100};
+ }
+ // series_color + full saturation (sat sweep / color-series endpoints)
+ const scMap={red:'R',green:'G',blue:'B',cyan:'C',magenta:'M',yellow:'Y'};
+ if(fullSat && scMap[sc]) return {key:scMap[sc],score:90+(sat/100)};
+ // DV/matrix profile kinds (full-drive primaries only; no secondaries)
+ if(kind==='red') return {key:'R',score:85};
+ if(kind==='green') return {key:'G',score:85};
+ if(kind==='blue') return {key:'B',score:85};
+ // Pure channel-code fallback: full-drive R/G/B/C/M/Y stimulus (not ColorChecker "Red")
+ const r=Number(rd.r_code!=null?rd.r_code:(rd.r!=null?rd.r:NaN));
+ const g=Number(rd.g_code!=null?rd.g_code:(rd.g!=null?rd.g:NaN));
+ const b=Number(rd.b_code!=null?rd.b_code:(rd.b!=null?rd.b:NaN));
+ if([r,g,b].every(isFinite)){
+  let minC=Math.min(r,g,b), span=Math.max(r,g,b)-minC;
+  try{
+   if(typeof meterChromaPatchRangeMin==='function' && typeof meterChromaPatchRangeSpan==='function'){
+    minC=meterChromaPatchRangeMin();
+    span=meterChromaPatchRangeSpan();
+   }
+  }catch(e){}
+  if(span>0){
+   const rn=(r-minC)/span, gn=(g-minC)/span, bn=(b-minC)/span;
+   const hi=0.92, lo=0.08;
+   const peak=Math.max(rn,gn,bn);
+   // Only treat as a gamut corner when the drive is near full (avoid dim pure patches)
+   if(peak>=0.92){
+    if(rn>=hi && gn<=lo && bn<=lo) return {key:'R',score:50+peak*10};
+    if(gn>=hi && rn<=lo && bn<=lo) return {key:'G',score:50+peak*10};
+    if(bn>=hi && rn<=lo && gn<=lo) return {key:'B',score:50+peak*10};
+    if(rn<=lo && gn>=hi && bn>=hi) return {key:'C',score:50+peak*10};
+    if(rn>=hi && gn<=lo && bn>=hi) return {key:'M',score:50+peak*10};
+    if(rn>=hi && gn>=hi && bn<=lo) return {key:'Y',score:50+peak*10};
+   }
+  }
+ }
+ return null;
+}
 function meterMeasuredGamutOutlinePoints(readings){
  const list=Array.isArray(readings)?readings:[];
- const byKey={};
- const take=(key,rd)=>{
-  if(!rd||byKey[key]) return;
-  const x=(rd.x!=null)?Number(rd.x):(rd.raw_x!=null?Number(rd.raw_x):NaN);
-  const y=(rd.y!=null)?Number(rd.y):(rd.raw_y!=null?Number(rd.raw_y):NaN);
-  if(!isFinite(x)||!isFinite(y)) return;
-  byKey[key]={x,y,name:rd.name||key};
- };
+ const best={};
  list.forEach(rd=>{
   if(!rd) return;
-  const n=String(rd.name||rd.kind||rd.series_color||'').toLowerCase();
-  const kind=String(rd.kind||'').toLowerCase();
-  if(kind==='red'||/^100%\s*red$/.test(n)||n==='red'||n==='r'||(rd.series_color==='Red'&&Number(rd.sat_pct)>=99.5)) take('R',rd);
-  else if(kind==='green'||/^100%\s*green$/.test(n)||n==='green'||n==='g'||(rd.series_color==='Green'&&Number(rd.sat_pct)>=99.5)) take('G',rd);
-  else if(kind==='blue'||/^100%\s*blue$/.test(n)||n==='blue'||n==='b'||(rd.series_color==='Blue'&&Number(rd.sat_pct)>=99.5)) take('B',rd);
-  else if(/^100%\s*yellow$/.test(n)||n==='yellow'||(rd.series_color==='Yellow'&&Number(rd.sat_pct)>=99.5)) take('Y',rd);
-  else if(/^100%\s*cyan$/.test(n)||n==='cyan'||(rd.series_color==='Cyan'&&Number(rd.sat_pct)>=99.5)) take('C',rd);
-  else if(/^100%\s*magenta$/.test(n)||n==='magenta'||(rd.series_color==='Magenta'&&Number(rd.sat_pct)>=99.5)) take('M',rd);
+  const hit=meterReadingGamutCornerKey(rd);
+  if(!hit) return;
+  const x=(rd.x!=null)?Number(rd.x):(rd.raw_x!=null?Number(rd.raw_x):NaN);
+  const y=(rd.y!=null)?Number(rd.y):(rd.raw_y!=null?Number(rd.raw_y):NaN);
+  if(!isFinite(x)||!isFinite(y)||!(x>0)||!(y>0)) return;
+  const prev=best[hit.key];
+  if(!prev || hit.score>prev.score) best[hit.key]={x,y,name:rd.name||hit.key,score:hit.score};
  });
- // Prefer primaries triangle; if secondaries exist, walk R-Y-G-C-B-M
+ // Prefer primaries triangle; if secondaries exist, walk R-Y-G-C-B-M (hue order)
  const orderPrim=['R','G','B'];
  const orderFull=['R','Y','G','C','B','M'];
- const hasSec=orderFull.some(k=>k!=='R'&&k!=='G'&&k!=='B'&&byKey[k]);
+ const hasSec=orderFull.some(k=>k!=='R'&&k!=='G'&&k!=='B'&&best[k]);
  const order=hasSec?orderFull:orderPrim;
- const pts=order.map(k=>byKey[k]).filter(Boolean);
+ const pts=order.map(k=>best[k]).filter(Boolean);
  if(pts.length<3) return null;
- // Need at least R,G,B for a triangle
- if(!byKey.R||!byKey.G||!byKey.B) return null;
+ if(!best.R||!best.G||!best.B) return null;
  return pts;
 }
 function meterStrokeMeasuredGamut(ctx,toX,toY,readings){
