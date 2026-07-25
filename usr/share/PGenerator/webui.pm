@@ -2072,6 +2072,47 @@ sub webui_meter_read (@) {
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $measurement_meter_usb_id="";
  $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
+ # Session identity stickiness: an ABSENT field means "unspecified", not
+ # "changed".
+ #
+ # The spotread session is meant to be long-lived -- FIFO-driven, 900s idle --
+ # and should only respawn when a spotread SPAWN-TIME argument genuinely
+ # changes (-y display type, -X ccss, -Y R:refresh, -c port, averaging),
+ # because Argyll gives no way to change any of those on a live process. But
+ # those fields are part of the identity key and only SOME callers populate
+ # them: the browser sends measurement_meter_port AND measurement_meter_usb_id,
+ # meter_lg_autocal.pl / meter_lg_3d_autocal.pl send the port but no usb_id,
+ # and meter_lg_dv_profile.pl / meter_series.sh send neither. Every handoff
+ # between the browser and a worker therefore built a DIFFERENT key for the
+ # SAME physical meter and respawned spotread. That is both slow (a respawn
+ # costs 35-90s on OLED) and the contention window behind the stalled reads --
+ # see webui_meter_spotread_settled. It also silently changed measurement
+ # conditions: a respawn with an empty refresh_rate drops -Y R: altogether, so
+ # spotread stops refresh-syncing mid-run. meter_session.log shows refresh
+ # flipping between "", 24.00 and 120.00, and port between "" and 1, for one
+ # unchanged physical setup.
+ # Inherit ONLY what this caller left unspecified; a field the caller actually
+ # sends still wins, so changing meter / CCSS / refresh in the UI respawns
+ # exactly as it did before.
+ if(&webui_meter_session_alive()) {
+  my $live_config="";
+  if(open(my $sfh,"<",$_meter_session_config_file)) { local $/; $live_config=<$sfh>; close($sfh); }
+  $live_config="" if(!defined($live_config));
+  chomp($live_config);
+  if($live_config ne "") {
+   my @live=split(/\|/,$live_config,-1);
+   my $live_port=defined($live[4]) ? $live[4] : "";
+   $refresh_rate=$live[2] if($refresh_rate eq "" && defined($live[2]) && $live[2] ne "");
+   $measurement_meter_port=$live_port if($measurement_meter_port eq "" && $live_port ne "");
+   # Adopt the live usb_id ONLY while this request still refers to the same
+   # port. Pairing a caller-specified NEW port with the previous meter's
+   # usb_id would let the stale usb_id win at read time and land on the wrong
+   # instrument -- precisely the failure the usb_id pinning exists to prevent.
+   $measurement_meter_usb_id=$live[7]
+    if($measurement_meter_usb_id eq "" && defined($live[7]) && $live[7] ne ""
+       && $measurement_meter_port eq $live_port);
+  }
+ }
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
