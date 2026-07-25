@@ -1615,6 +1615,22 @@ sub webui_lg_picture_settings_set (@) {
 		  helper_timeout => int($payload->{"helper_timeout"}||0),
 	  connect_timeout => 5,
 	 });
+ # A native webOS picture-mode write can reset the sink's HDMI pipeline
+ # while vc4 has a page flip outstanding.  Older renderers then remain
+ # alive in an unbounded drmHandleEvent() read and the TV keeps showing
+ # the previous patch.  A direct picture-mode selection is an idle/display
+ # control operation (the calibration writers send larger settings maps),
+ # so resynchronise the renderer immediately and come back on black.
+ if(($result->{"status"}||"") eq "ok"
+    && exists($settings->{"pictureMode"})
+    && scalar(keys(%{$settings})) == 1) {
+  &pattern_generator_stop();
+  &pattern_generator_start();
+  $result->{"renderer_resynced"}=&pattern_generator_is_running() ? &lg_json_true() : &lg_json_false();
+  if(!$result->{"renderer_resynced"}) {
+   $result->{"message"}=($result->{"message"}||"LG picture mode changed.")." Pattern renderer did not restart.";
+  }
+ }
  my $updated_clients=$clients;
  $updated_clients=&lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
 	 if(($result->{"status"}||"") eq "ok" && $ddc_white_balance && ($result->{"ddc_1d_lut"} || exists($result->{"calibration_mode"}))) {

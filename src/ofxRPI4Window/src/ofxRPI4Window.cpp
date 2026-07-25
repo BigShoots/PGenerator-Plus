@@ -2,6 +2,7 @@
 #include "igt_edid.h"
 
 #include <fcntl.h>
+#include <poll.h>
 // O_CLOEXEC
 //#include <asm-generic/fcntl.h>
 
@@ -3184,10 +3185,31 @@ void ofxRPI4Window::swapBuffers()
 
 	}
 #endif
+	/*
+	 * A sink-side picture-mode transition can briefly reset the HDMI
+	 * pipeline after the atomic commit has been queued. On vc4 that can
+	 * discard the corresponding page-flip event without killing the DRM
+	 * client. Never enter an unbounded DRM read in that state.
+	 */
+	struct pollfd page_flip_fd = { device, POLLIN, 0 };
+	int ready;
+	do {
+		ready = poll(&page_flip_fd, 1, 1000);
+	} while (ready < 0 && errno == EINTR);
+	if (ready <= 0 || !(page_flip_fd.revents & POLLIN)) {
+		if (ready == 0)
+			ofLogError() << "DRM: timed out waiting for page flip completion; restarting renderer";
+		else
+			ofLogError() << "DRM: page flip wait failed: " << strerror(errno);
+		ofExit(1);
+		return;
+	}
+
 	int ret = drmHandleEvent(device, &evctx);
 	if (ret) {
 		ofLogError() << "DRM: Failed to wait for page flip completion";
-		
+		ofExit(1);
+		return;
 	}
 
     if (previousBo)
