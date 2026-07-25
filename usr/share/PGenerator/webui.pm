@@ -2102,7 +2102,13 @@ sub webui_meter_read (@) {
   if($live_config ne "") {
    my @live=split(/\|/,$live_config,-1);
    my $live_port=defined($live[4]) ? $live[4] : "";
-   $refresh_rate=$live[2] if($refresh_rate eq "" && defined($live[2]) && $live[2] ne "");
+   # refresh_rate is deliberately NOT inherited. It is an operator-selected
+   # MEASUREMENT option (the meter refresh-rate dropdown) that becomes
+   # spotread's -Y R: flag, not part of the meter's identity: an empty value
+   # means "the operator did not ask for refresh sync". Inheriting it would
+   # silently resurrect -Y R: from an earlier session after the operator turned
+   # it off, which changes how the instrument integrates. Only the meter
+   # identity fields below are safe to carry forward.
    $measurement_meter_port=$live_port if($measurement_meter_port eq "" && $live_port ne "");
    # Adopt the live usb_id ONLY while this request still refers to the same
    # port. Pairing a caller-specified NEW port with the previous meter's
@@ -3990,7 +3996,23 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
    }
 	   if($signal_mode eq "dv") {
-	    return int($min_code + $linear*$span_code + .5);
+	    # Dolby Vision patches ride a GAMMA 2.2 tunnel (Tgamma = 2.2 in the
+	    # DOLBY_CFG_DATA we upload), so a linear channel value has to be
+	    # gamma-encoded like every other mode encodes for its own transfer
+	    # function. This used to write the raw LINEAR value straight into the
+	    # code -- the same bug class as the three raw-linear series/level writes
+	    # removed earlier -- and $target_linear_to_signal is identity for DV, so
+	    # falling through would not have fixed it either.
+	    #
+	    # Effect on hardware: the panel applied 2.2 to a value that was already
+	    # linear, crushing the two minor channels of every saturation patch and
+	    # pushing it out to the gamut edge. A DV RGB-Full sweep measured Red
+	    # 50/75/100% at x=0.6783 -- identical to 4dp, i.e. all three sitting on
+	    # the red primary -- with under 0.3 cd/m2 between them. Modelling the raw
+	    # linear write predicts those measurements to mean |dxy| 0.0149 against
+	    # 0.0787 for a correct encode, and reproduces the collapse exactly
+	    # (predicted Red 50/75/100 = 0.6720/0.6795/0.6800).
+	    return int($min_code + ($linear ** (1/2.2))*$span_code + .5);
 	   }
    return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
   };
@@ -4010,12 +4032,17 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $level_code=int($min_code + $level_encoded*$span_code + .5);
   }
   my $level_signal=$span_code>0?($level_code-$min_code)/$span_code:0;
-  my $dv_absolute_sat_fraction=sub {
-   my ($color_name,$sat_frac)=@_;
-   $sat_frac=0 if(!defined $sat_frac || $sat_frac < 0);
-   $sat_frac=1 if($sat_frac > 1);
-    return $sat_frac + 0.8*$sat_frac*(1-$sat_frac);
-  };
+  # The two DV saturation-fraction remaps that used to live here are gone.
+  # Absolute applied  f + 0.8*f*(1-f)  and Relative  f - 0.8*f*f*(1-f), so a
+  # patch labelled "Red 25%" actually targeted 40% saturation (25/50/75/100 ->
+  # 40/70/90/100), which is what a DV RGB-Full sweep measured its targets
+  # sitting at. Both were empirical pre-distortions compensating for the
+  # raw-linear channel encode fixed above in $encode_channel: they bent the
+  # TARGET toward the broken measurement instead of correcting the signal, so
+  # the sweep was neither a true saturation sweep nor comparable with any other
+  # tool. With the encode correct, DV uses the same f = sat/100 as every other
+  # signal mode, and any residual DV-engine error now shows up as measured
+  # error rather than being hidden inside the target.
   # Reference sat-sweep target_Yn to measured white so target_Yn*measured = the
   # patch's reachable absolute luminance (sweep runs sub-peak/50% so it is
   # reachable) and the white patch (target_Yn=1) targets the measured peak
@@ -4035,9 +4062,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my $py=$mix_sum>0?$mix_Y/$mix_sum:$target_wy;
    foreach my $sat (25,50,75,100) {
     my $f=$sat/100;
-    if($signal_mode eq "dv") {
-     $f=($dv_map_mode eq "1") ? $dv_absolute_sat_fraction->($name,$f) : ($f-(0.8*$f*$f*(1-$f)));
-    }
     my $tx=$target_wx+$f*($px-$target_wx);
     my $ty=$target_wy+$f*($py-$target_wy);
     my ($r,$g,$b)=($min_code,$min_code,$min_code);
