@@ -99,8 +99,9 @@ sub sanitize_count {
 # Returns ($code,$input_max) for one insertion type. The webui start handler
 # precomputes a mode-correct code via webui_grey_code_for_stimulus so the
 # insertion flash matches the level the greyscale ladder would emit for the
-# same stimulus in the active output mode; the plain percentage of full scale
-# is the fallback for older callers that do not inject the pair.
+# same stimulus in the active output mode. Older callers do not inject the
+# pair, so their fallback is generated directly in standard-DV's legal 12-bit
+# source domain rather than rounded through an 8-bit percentage first.
 sub patch_insert_resolve {
  my ($config,$kind,$level)=@_;
  my $code_key="patch_insert_".$kind."_code";
@@ -113,7 +114,7 @@ sub patch_insert_resolve {
  my $pct=$level+0;
  $pct=0 if($pct < 0);
  $pct=100 if($pct > 100);
- return (int(($pct/100.0)*255.0 + 0.5),255);
+ return (int(256.0+($pct/100.0)*3504.0+0.5),4095);
 }
 
 # Grey flash -> black -> settle, before the caller measures. Unlike the

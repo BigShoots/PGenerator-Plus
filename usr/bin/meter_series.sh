@@ -705,14 +705,24 @@ patch_insert_code_for_level() {
  local level="${1:-25}" precomputed="${2:-}"
  # Prefer the webui-precomputed "<code>:<input_max>" payload so the insertion
  # patch matches the greyscale-series code for the same stimulus in the
- # active output mode (SDR/HDR10/DV/HLG). Fall back to the legacy linear
- # 0..255 formula only when the precomputed payload is empty (older webui).
+ # active output mode (SDR/HDR10/DV/HLG). Older WebUI callers do not supply
+ # the pair, so retain their fallback while keeping DV in its native legal
+ # 12-bit source domain instead of rounding through 8-bit first.
  if [[ -n "$precomputed" && "$precomputed" == *:* ]]; then
   local pre_code="${precomputed%%:*}"
   if is_number "$pre_code"; then
    echo "$pre_code"
    return 0
   fi
+ fi
+ if [[ "${SIGNAL_MODE,,}" == "dv" ]]; then
+  awk -v level="$level" 'BEGIN {
+   value = int(256.0 + (level / 100.0) * 3504.0 + 0.5)
+   if (value < 256) value = 256
+   if (value > 3760) value = 3760
+   print value
+  }'
+  return 0
  fi
  awk -v level="$level" 'BEGIN {
   value = int((level / 100.0) * 255.0 + 0.5)
@@ -730,6 +740,10 @@ patch_insert_input_max_for_level() {
    echo "$im"
    return 0
   fi
+ fi
+ if [[ "${SIGNAL_MODE,,}" == "dv" ]]; then
+  echo 4095
+  return 0
  fi
  echo 255
 }

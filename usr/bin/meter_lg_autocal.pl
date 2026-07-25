@@ -4814,7 +4814,8 @@ sub _patch_insert_code_for_level {
 sub _patch_insert_resolve {
  # Returns ($code,$input_max) for a single insertion type. Prefers the
  # webui-precomputed pair (mode-correct, matches the greyscale ladder);
- # falls back to the legacy _patch_insert_code_for_level + 255 when absent.
+ # falls back to a mode-correct code when absent. Standard DV must stay in
+ # its native legal 12-bit source domain instead of rounding through 8-bit.
  my ($config,$kind,$level)=@_;
  my $code_key="patch_insert_".$kind."_code";
  my $im_key="patch_insert_".$kind."_input_max";
@@ -4822,6 +4823,12 @@ sub _patch_insert_resolve {
   my $im=int($config->{$im_key} // 255);
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
+ }
+ if(defined($config->{"signal_mode"}) && lc($config->{"signal_mode"}) eq "dv") {
+  my $pct=$level+0;
+  $pct=0 if($pct < 0);
+  $pct=100 if($pct > 100);
+  return (int(256.0+($pct/100.0)*3504.0+0.5),4095);
  }
  return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
 }

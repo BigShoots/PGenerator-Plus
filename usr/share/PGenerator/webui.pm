@@ -2676,7 +2676,9 @@ sub webui_custom_series_steps_from_body (@) {
    $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
-  my $input_max=(defined $num{"input_max"} && int($num{"input_max"})==1023) ? 1023 : 255;
+  my $input_max=(defined $num{"input_max"} && int($num{"input_max"})==4095)
+   ? 4095
+   : ((defined $num{"input_max"} && int($num{"input_max"})==1023) ? 1023 : 255);
   foreach my $ch (qw(r g b)) {
    $num{$ch}=int($num{$ch}+0.5);
    $num{$ch}=0 if($num{$ch}<0);
@@ -4186,6 +4188,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    autocal_26_codes => (($type eq "greyscale" && $points==26 && $lg_autocal_26 && $signal_mode eq "sdr") ? 1 : 0),
    extended_sdr_codes => (($type eq "greyscale" && !$lg_autocal_26_codes && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21)) && $signal_mode eq "sdr") ? 1 : 0),
    dv_series => (($signal_mode eq "dv") ? 1 : 0),
+   dv_series_code_bits => (($signal_mode eq "dv") ? 12 : 8),
   );
   ($insert_patch_code,$insert_patch_input_max)=&webui_grey_code_for_stimulus($patch_insert_patch_level,$signal_mode,$target_gamma,$greyscale_patch_limited,\%series_opts) if($patch_insert_patch_enabled);
   ($insert_time_code,$insert_time_input_max)=&webui_grey_code_for_stimulus($patch_insert_time_level,$signal_mode,$target_gamma,$greyscale_patch_limited,\%series_opts) if($patch_insert_time_enabled);
@@ -4658,6 +4661,7 @@ my $_ac_target_gamma="bt1886";
   # as ~23% signal on a 10-bit wire.
   max_bpc => (defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : "",
   dv_series => (($_ac_signal_mode eq "dv") ? 1 : 0),
+  dv_series_code_bits => (($_ac_signal_mode eq "dv") ? 12 : 8),
  );
  my $_ac_insert_patch_code="";
  my $_ac_insert_patch_input_max=255;
