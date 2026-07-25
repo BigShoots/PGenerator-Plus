@@ -24051,9 +24051,37 @@ function meterUpdateLiveReadingTargets(src){
  set('meterCIEyTgt', tXY?('Target: '+tXY.y.toFixed(4)):'');
 }
 
+// Display scale for the calculated RGB row (the "RGB"/"RGB PQe" readout).
+//
+// That row is a SIMULATED value -- the measured XYZ re-encoded back to a signal
+// -- shown beside the signal the patch asked for. Both columns therefore belong
+// on the OPERATOR'S selected range, not on whatever range the patch ladder
+// happens to be coded in. They used to be pinned to the ladder's range, so on
+// an RGB FULL transport a 100% white patch displayed as 235 / target 235 and 0%
+// as 16 / target 16, because the HDR and DV greyscale ladders are limited-coded.
+//
+// This is a PRESENTATION scale only. The emitted patch codes are deliberately
+// left exactly as they were -- the ladders are a separate, hardware-driven
+// concern and changing them is not what this row is reporting.
+function meterLiveDisplayCodeRange(){
+ return (typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())
+  ? {min:16,span:219} : {min:0,span:255};
+}
+
 function meterLiveTargetRgbCodes(src){
  if(!src) return null;
  const step=meterCanonicalSeriesStep(src)||src;
+ const disp=meterLiveDisplayCodeRange();
+ const toDisplay=(frac)=>Math.round(disp.min+disp.span*Math.max(0,Math.min(1,frac)));
+ // The patch's own per-channel signal percentage is the honest source for this
+ // row: it is what the patch ASKED for, independent of how the ladder encoded
+ // it. Greyscale steps stamp signal_r/g/b_pct on both the server
+ // (webui_meter_series_start) and the client (makeHdrStep), so 0% -> range min
+ // and 100% -> range max regardless of the ladder's coding.
+ const pct=['r','g','b'].map(channel=>Number(step['signal_'+channel+'_pct']));
+ if(pct.every(value=>Number.isFinite(value)&&value>=0)){
+  return pct.map(value=>toDisplay(value/100));
+ }
  const raw=['r','g','b'].map(channel=>{
   const code=step[channel+'_code']!=null?step[channel+'_code']:step[channel];
   return Number(code);
@@ -24067,9 +24095,13 @@ function meterLiveTargetRgbCodes(src){
  const tenBit=inputMax===1023 || raw.some(code=>code>255) ||
   ((typeof meterPatchBitDepth==='function'&&meterPatchBitDepth()===10) &&
    !(typeof meterActiveSeriesCodesAre8Bit==='function'&&meterActiveSeriesCodesAre8Bit()));
- // Show 8-bit-equivalent wire codes. PGenerator's 10-bit ladders use the
- // exact 4x mapping (Limited 64..940 -> 16..235; Full 0..1023 -> 0..255).
- return raw.map(code=>Math.max(0,Math.min(255,Math.round(tenBit?code/4:code))));
+ // No per-channel signal pct (colour / saturation patches, legacy snapshots):
+ // reduce the 10-bit code to its 8-bit equivalent using the exact 4x mapping
+ // (Limited 64..940 -> 16..235; Full 0..1023 -> 0..255), then convert it off
+ // the ladder it was built on and onto the display range.
+ const code8=raw.map(code=>Math.max(0,Math.min(1023,tenBit?code/4:code)));
+ const ladder=meterLiveCodeRangeForStep(step);
+ return code8.map(code=>toDisplay(ladder.span>0?((code-ladder.min)/ladder.span):0));
 }
 
 // Pick the code scale the measured value must be expressed on so that it is
@@ -24138,9 +24170,11 @@ function meterLiveXyzRgbCodes(xyz,step){
     : meterTargetLinearToSignal(frac);
   });
  }
- // Put calculated measured RGB on the same 8-bit-equivalent wire scale as
- // the patch target.
- const range=meterLiveCodeRangeForStep(step);
+ // Put the calculated measured RGB on the SAME scale meterLiveTargetRgbCodes
+ // uses for the target beside it -- the operator's selected range -- or the two
+ // columns are not comparable. Previously both sides used the ladder-inferred
+ // range, which is why an RGB FULL run reported 235/235 at 100% and 16/16 at 0%.
+ const range=meterLiveDisplayCodeRange();
  return signal.map(value=>Math.round(range.min+range.span*Math.max(0,Math.min(1,value))));
 }
 
