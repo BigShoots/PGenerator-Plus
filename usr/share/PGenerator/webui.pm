@@ -12945,7 +12945,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   </div>
   <div class="apply-settings-title" id="dvProfileDoneTitle">Dolby Vision configuration uploaded</div>
   <div class="apply-settings-status" id="dvProfileDoneStatus"></div>
-  <div style="margin-top:16px"><button class="btn btn-primary" id="dvProfileDoneOk" onclick="meterDvProfileDoneModalHide()">OK</button></div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+   <button type="button" class="btn btn-sm btn-primary" id="dvProfileDoneOk" onclick="meterDvProfileDoneModalHide()">OK</button>
+  </div>
  </div>
 </div>
 
@@ -27005,6 +27007,17 @@ function meterDvProfileFail(message){
 // operator dismisses it -- a timed auto-hide would let a failure message vanish
 // unread, which is exactly the problem the corner toast had.
 function meterDvProfileDoneModalShow(ok,message){
+ // STANDALONE ONLY. A Full Auto Cal run ends on its own completion modal
+ // (meterFullAutoCalComplete -> meterAutoCalSetOverlay, phase 'complete'),
+ // which already reports the DV profile upload in its message. Popping this
+ // one as well would mean two completion modals for one run, and mid-run for
+ // the DV stage rather than at the end. The call sites are already gated on
+ // meterDvProfileStandaloneRunning; this is the belt-and-braces guard so a
+ // stale flag can never surface it inside a wizard run.
+ if((typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+  ||(typeof meterFullAutoCalReportPhaseActive==='function'&&meterFullAutoCalReportPhaseActive())){
+  return;
+ }
  const overlay=document.getElementById('dvProfileDoneOverlay');
  if(!overlay){
   // No modal in the DOM (older cached page): fall back to the toast so the
