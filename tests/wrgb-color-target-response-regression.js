@@ -63,7 +63,6 @@ vm.runInContext([
  extractFunction('meterDvStimulusLinearChannel'),
  extractFunction('meterWrgbSeriesEndpointResponse'),
  extractFunction('meterWrgbCompensatedTargetY'),
- extractFunction('meterOrderWrgbTargetAnchors'),
  extractFunction('meterWrgbStimulusTargetY')
 ].join('\n'),context);
 
@@ -77,29 +76,6 @@ const close=(actual,expected,tolerance,message)=>
 // Neutral patches stay on measured-white tracking.
 const grey={r_code:1664,g_code:1664,b_code:1664};
 close(context.meterWrgbStimulusTargetY(grey),rawY(grey),1e-9,'WRGB grey target unchanged');
-
-const ordered=context.meterOrderWrgbTargetAnchors([
- {name:'Gray 35'},{name:'Dark Skin'},{name:'100% Green'},
- {name:'White'},{name:'100% Blue'},{name:'Black'},{name:'100% Red'},
- {name:'Orange'}
-]);
-assert.deepStrictEqual(
- Array.from(ordered,name=>name.name),
- ['White','Black','100% Red','100% Green','100% Blue','Gray 35','Dark Skin','Orange'],
- 'WRGB response anchors are measured before the test body'
-);
-assert(
- source.includes('my $wrgb_target_series=') &&
- source.includes('100%\\s+Red|Red\\s+100%') &&
- source.includes('100%\\s+Green|Green\\s+100%') &&
- source.includes('100%\\s+Blue|Blue\\s+100%'),
- 'backend series worker order is gated by WRGB Display Type and promotes all three anchors'
-);
-technology='qdoled';
-const additiveOrder=context.meterOrderWrgbTargetAnchors([{name:'Orange'},{name:'White'},{name:'100% Red'}]);
-assert.deepStrictEqual(Array.from(additiveOrder,name=>name.name),['Orange','White','100% Red'],
- 'additive display series order is unchanged');
-technology='oled_generic';
 
 // Each primary endpoint targets the measured chromatic capability at this
 // series level, rather than the impossible white-referenced primary value.

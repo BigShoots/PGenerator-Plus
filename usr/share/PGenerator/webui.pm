@@ -4085,31 +4085,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	  }
 	 }
 
-	 # WRGB target compensation needs the current run's sub-peak R/G/B
-	 # responses. Display Type decides whether the model is enabled; these
-	 # three measurements supply the panel/picture-mode-specific coefficients.
-	 # Measure the anchors before the ColorChecker/saturation body so chart
-	 # targets do not switch models near the end of the run. This is a stable
-	 # reorder of existing patches, not three additional measurements.
-	 my $wrgb_target_series=(lc($display_type_key) eq "oled_generic" || $display_type_key=~/\b(?:wrgb|woled)\b/i) ? 1 : 0;
-	 if($wrgb_target_series && ($type eq "colors" || $type eq "saturations")) {
-	  my $anchor_rank=sub {
-	   my ($step)=@_;
-	   my $name="";
-	   $name=$1 if($step=~/"name"\s*:\s*"([^"]+)"/);
-	   return 0 if(lc($name) eq "white");
-	   return 1 if(lc($name) eq "black");
-	   return 2 if($name=~/^(?:100%\s+Red|Red\s+100%)$/i);
-	   return 3 if($name=~/^(?:100%\s+Green|Green\s+100%)$/i);
-	   return 4 if($name=~/^(?:100%\s+Blue|Blue\s+100%)$/i);
-	   return 100;
-	  };
-	  my $idx=0;
-	  @steps=map { $_->[1] }
-	   sort { $a->[0] <=> $b->[0] || $a->[2] <=> $b->[2] }
-	   map { [$anchor_rank->($_),$_,$idx++] } @steps;
-	 }
-
 	 my $stamp_series_target_white_y=0;
 	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
 	 # read. AutoCal-derived white is useful audit context, but stamping it as
@@ -19297,23 +19272,6 @@ function meterWrgbCompensatedTargetY(reading,channels,rawY){
  return rawY+(adjusted-rawY)*weight;
 }
 
-function meterOrderWrgbTargetAnchors(steps){
- const input=Array.isArray(steps)?steps:[];
- if(!meterWrgbTargetCompensationSelected()) return input;
- const rank=step=>{
-  const name=String((step&&step.name)||'').trim().toLowerCase();
-  if(name==='white') return 0;
-  if(name==='black') return 1;
-  if(name==='100% red'||name==='red 100%') return 2;
-  if(name==='100% green'||name==='green 100%') return 3;
-  if(name==='100% blue'||name==='blue 100%') return 4;
-  return 100;
- };
- return input.map((step,index)=>({step,index,rank:rank(step)}))
-  .sort((a,b)=>(a.rank-b.rank)||(a.index-b.index))
-  .map(item=>item.step);
-}
-
 // Target luminance derived from the patch STIMULUS rather than a measured
 // reference (additive primary sum / measured white). Decode each channel from
 // the actual stimulus, form target Y in the selected analysis gamut, then let
@@ -20555,11 +20513,7 @@ function meterEnsureDeltaECache(readings){
 		].join('@'):'none';
 		// Include color_incl_lum so toggling CIE ΔY% / color ΔE mode never reuses a stale pair.
 		const colorInclLum=meterColorIncludeLum()?'1':'0';
-		const wrgbResponse=(typeof meterWrgbSeriesEndpointResponse==='function')?meterWrgbSeriesEndpointResponse():null;
-		const wrgbResponseStamp=wrgbResponse
-		 ? wrgbResponse.factors.map(v=>Number(v).toFixed(8)).join(',')+'@'+Number(wrgbResponse.signalLevel).toFixed(8)
-		 : 'none';
-		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp+':'+wrgbResponseStamp;
+		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp;
 	readings.forEach(rd=>{
 	 if(!rd) return;
 	 if(rd._dE_cache_key===key) return;
@@ -30516,11 +30470,6 @@ function meterBuildStepsJS(type,points){
    });
   });
  }
-	 if(type==='colors'||type==='saturations'){
-	  const ordered=meterOrderWrgbTargetAnchors(steps);
-	  steps.length=0;
-	  steps.push(...ordered);
-	 }
 	 return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 }
 
