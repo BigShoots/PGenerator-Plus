@@ -17766,12 +17766,16 @@ function meterReadingGamutCornerKey(rd){
  if(kind==='red') return {key:'R',score:85};
  if(kind==='green') return {key:'G',score:85};
  if(kind==='blue') return {key:'B',score:85};
- // Pure channel-code fallback: full-drive R/G/B/C/M/Y stimulus (not ColorChecker "Red")
+ // Pure channel-code fallback. Sat sweeps run at a SUB-PEAK level (≈75% SDR /
+ // ≈50% HDR), so 100% endpoints are pure in chroma but not full-scale codes.
+ // Detect purity by "dominant channel(s) high, others at range floor" rather
+ // than requiring near-100% code. ColorChecker "Red" etc. keep residual G/B
+ // and are rejected. Mid-sat mixes also fail the floor test.
  const r=Number(rd.r_code!=null?rd.r_code:(rd.r!=null?rd.r:NaN));
  const g=Number(rd.g_code!=null?rd.g_code:(rd.g!=null?rd.g:NaN));
  const b=Number(rd.b_code!=null?rd.b_code:(rd.b!=null?rd.b:NaN));
  if([r,g,b].every(isFinite)){
-  let minC=Math.min(r,g,b), span=Math.max(r,g,b)-minC;
+  let minC=0, span=Math.max(r,g,b,1);
   try{
    if(typeof meterChromaPatchRangeMin==='function' && typeof meterChromaPatchRangeSpan==='function'){
     minC=meterChromaPatchRangeMin();
@@ -17779,17 +17783,23 @@ function meterReadingGamutCornerKey(rd){
    }
   }catch(e){}
   if(span>0){
-   const rn=(r-minC)/span, gn=(g-minC)/span, bn=(b-minC)/span;
-   const hi=0.92, lo=0.08;
+   const rn=Math.max(0,Math.min(1,(r-minC)/span));
+   const gn=Math.max(0,Math.min(1,(g-minC)/span));
+   const bn=Math.max(0,Math.min(1,(b-minC)/span));
+   const lo=0.08;
    const peak=Math.max(rn,gn,bn);
-   // Only treat as a gamut corner when the drive is near full (avoid dim pure patches)
-   if(peak>=0.92){
-    if(rn>=hi && gn<=lo && bn<=lo) return {key:'R',score:50+peak*10};
-    if(gn>=hi && rn<=lo && bn<=lo) return {key:'G',score:50+peak*10};
-    if(bn>=hi && rn<=lo && gn<=lo) return {key:'B',score:50+peak*10};
-    if(rn<=lo && gn>=hi && bn>=hi) return {key:'C',score:50+peak*10};
-    if(rn>=hi && gn<=lo && bn>=hi) return {key:'M',score:50+peak*10};
-    if(rn>=hi && gn>=hi && bn<=lo) return {key:'Y',score:50+peak*10};
+   // Dim greys / near-black: not a gamut corner
+   if(peak>=0.25){
+    const satBoost=fullSat?30:0;
+    const score=40+peak*20+satBoost;
+    // Primaries: one channel at peak, other two at floor
+    if(rn>=peak*0.95 && gn<=lo && bn<=lo) return {key:'R',score:score};
+    if(gn>=peak*0.95 && rn<=lo && bn<=lo) return {key:'G',score:score};
+    if(bn>=peak*0.95 && rn<=lo && gn<=lo) return {key:'B',score:score};
+    // Secondaries: two channels at peak, one at floor
+    if(rn<=lo && gn>=peak*0.95 && bn>=peak*0.95) return {key:'C',score:score};
+    if(gn<=lo && rn>=peak*0.95 && bn>=peak*0.95) return {key:'M',score:score};
+    if(bn<=lo && rn>=peak*0.95 && gn>=peak*0.95) return {key:'Y',score:score};
    }
   }
  }
