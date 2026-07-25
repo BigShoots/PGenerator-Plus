@@ -19518,14 +19518,17 @@ function meterEncodeSaturationLinear(linear,colorName){
 
 function meterGamutStimulusLinearLevel(){
  if(meterChartIsPq()&&!meterChartIsDv()) return 1;
- if(meterChartIsDv()) return Math.max(0,Math.min(1,meterColorLevelPercent()/100));
+ // The server authors both standard-DV color map modes at a fixed 50%
+ // linear level. Do not use the generic 75% UI level or the browser preview
+ // and single-patch reread will differ from the series actually measured.
+ if(meterChartIsDv()) return 0.5;
  return meterTargetSignalToLinear(meterColorLevelPercent()/100);
 }
 
 function meterSaturationStimulusLinearLevel(colorName){
  const actualPercent=meterActualSignalPercent(meterColorLevelPercent())/100;
  if(meterChartIsPq()&&!meterChartIsDv()) return meterChartPqDecodeNormalized(actualPercent)/10000;
- if(meterChartIsDv()) return Math.max(0,Math.min(1,actualPercent));
+ if(meterChartIsDv()) return 0.5;
  return meterTargetSignalToLinear(actualPercent);
 }
 

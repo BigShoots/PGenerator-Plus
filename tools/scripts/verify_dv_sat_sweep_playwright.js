@@ -22,7 +22,7 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
   const initial=await page.evaluate(async()=>{
    const config=await (await fetch('/api/config')).json();
    const status=await (await fetch('/api/meter/series/status')).json();
-   return {config,status:String(status.status||'')};
+   return {config,status:String(status.status||''),series:status};
   });
   if(initial.status==='running'||initial.status==='setup') throw new Error(`meter series already ${initial.status}`);
   if(String(initial.config.dv_map_mode)!=='1') throw new Error(`DV map mode is ${initial.config.dv_map_mode}, expected Absolute (1)`);
@@ -46,6 +46,17 @@ const timeoutMs=Number(process.env.PGEN_SWEEP_TIMEOUT_MS||240000);
    steps:(meterSeriesSteps||[]).map(s=>({name:s.name,r:s.r,g:s.g,b:s.b,target_Yn:s.target_Yn}))
   }));
   process.stdout.write(`${JSON.stringify({phase:'preview',...preview})}\n`);
+  const apiColorSteps=((initial.series&&initial.series.steps)||[]).filter(s=>s&&s.series_color&&s.sat_pct!=null);
+  if(apiColorSteps.length===24){
+   const apiByName=new Map(apiColorSteps.map(s=>[s.name,s]));
+   const mismatches=preview.steps.filter(step=>{
+    const api=apiByName.get(step.name);
+    return !api||Number(step.r)!==Number(api.r)||Number(step.g)!==Number(api.g)||Number(step.b)!==Number(api.b);
+   });
+   process.stdout.write(`${JSON.stringify({phase:'preview-api-parity',mismatches})}\n`);
+   if(mismatches.length) throw new Error(`${mismatches.length} browser preview patches differ from API series steps`);
+  }
+  if(process.env.PGEN_PREVIEW_ONLY==='1') return;
 
   await page.click('#meterReadSeriesBtn');
   await page.waitForFunction(async()=>{
