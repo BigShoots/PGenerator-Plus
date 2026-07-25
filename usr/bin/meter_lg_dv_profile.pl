@@ -9,6 +9,7 @@ use warnings;
 use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request;
+use Time::HiRes ();
 
 my ($config_file,$state_file,$stop_file)=@ARGV;
 die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_file) || !defined($state_file) || !defined($stop_file));
@@ -63,6 +64,120 @@ my @patches=(
  { name=>"green", r=>0,          g=>$input_max, b=>0,          kind=>"green" },
  { name=>"blue",  r=>0,          g=>0,          b=>$input_max, kind=>"blue" },
 );
+
+# --- Pattern insertion -------------------------------------------------------
+# This worker previously forwarded the patch_insert* config keys to
+# /api/meter/read and assumed that was enough. It is not: that endpoint does
+# not consume them. Pattern insertion is driven by the WORKER in this codebase
+# (see apply_pattern_insert_before_read in meter_lg_autocal.pl), so forwarding
+# the keys was silently a no-op and the DV profile measured with no insertion
+# at all -- on a WRGB OLED that lets ABL/pixel-charge history accumulate across
+# the five patches, and the white peak it records becomes the uploaded DV
+# config's Tmax. Same class of error as the missing patch_size/refresh_rate.
+our $_patch_insert_counter=0;
+our $_patch_insert_last_time_ts=0;
+
+sub sanitize_ms {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=0; $max//=120000;
+ $raw=int($raw//0);
+ $raw=$fallback if($raw < 0);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+sub sanitize_count {
+ my ($raw,$fallback,$max)=@_;
+ $fallback//=1; $max//=999;
+ $raw=int($raw//1);
+ $raw=$fallback if($raw < 1);
+ $raw=$max if($raw > $max);
+ return $raw;
+}
+
+# Returns ($code,$input_max) for one insertion type. The webui start handler
+# precomputes a mode-correct code via webui_grey_code_for_stimulus so the
+# insertion flash matches the level the greyscale ladder would emit for the
+# same stimulus in the active output mode; the plain percentage of full scale
+# is the fallback for older callers that do not inject the pair.
+sub patch_insert_resolve {
+ my ($config,$kind,$level)=@_;
+ my $code_key="patch_insert_".$kind."_code";
+ my $im_key="patch_insert_".$kind."_input_max";
+ if(defined($config->{$code_key}) && $config->{$code_key} ne "") {
+  my $im=int($config->{$im_key} // 255);
+  $im=255 if($im <= 0);
+  return (int($config->{$code_key}+0),$im);
+ }
+ my $pct=$level+0;
+ $pct=0 if($pct < 0);
+ $pct=100 if($pct > 100);
+ return (int(($pct/100.0)*255.0 + 0.5),255);
+}
+
+# Grey flash -> black -> settle, before the caller measures. Unlike the
+# greyscale worker there is no "restore the measurement patch" step: read_patch
+# measures through /api/meter/read, which posts the measurement pattern itself.
+# The 15s time-frequency cap the greyscale worker applies to its inner loops is
+# deliberately NOT applied here -- this is a five-patch one-shot run, so the
+# operator's own frequency setting is the right granularity, and patch-mode
+# insertion (default: every patch) is what actually conditions the panel.
+sub apply_pattern_insert_before_read {
+ my ($config,$patch)=@_;
+ return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});
+ my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
+ my $transport_range=$config->{"transport_signal_range"}||$config->{"signal_range"}||"";
+ my $patch_enabled=$config->{"patch_insert_patch_enabled"} ? 1 : 0;
+ my $patch_every=sanitize_count($config->{"patch_insert_patch_every"},1,999);
+ my $patch_duration_ms=sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
+ my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
+ my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
+ my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
+ my $time_duration_ms=sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
+ my $time_level=($config->{"patch_insert_time_level"}//25)+0;
+ my @inserts;
+ my $now=int(Time::HiRes::time()*1000);
+ if($time_enabled && ($_patch_insert_last_time_ts == 0 || ($now - $_patch_insert_last_time_ts) >= $time_frequency_ms)) {
+  push @inserts,{ level => $time_level, duration_ms => $time_duration_ms, kind => "time" };
+  $_patch_insert_last_time_ts=$now;
+ }
+ if($patch_enabled) {
+  $_patch_insert_counter++;
+  push @inserts,{ level => $patch_level, duration_ms => $patch_duration_ms, kind => "patch" }
+   if(($_patch_insert_counter % $patch_every) == 0);
+ }
+ return undef unless(@inserts);
+ my $base={
+  name => "patch",
+  size => 100,
+  input_max => 255,
+  signal_mode => "dv",
+  max_luma => $config->{"max_luma"}||1000,
+  # The meter session holds a pattern stop guard while a read is in progress;
+  # without allow_after_stop the renderer answers {"pattern":"stop"} and the
+  # insertion flash never reaches the panel.
+  allow_after_stop => JSON::PP::true,
+ };
+ $base->{"signal_range"}=$pattern_range if($pattern_range ne "");
+ $base->{"transport_signal_range"}=$transport_range if($transport_range ne "");
+ for my $ins (@inserts) {
+  return "cancelled" if(cancelled());
+  my ($code,$input_max)=patch_insert_resolve($config,$ins->{"kind"},$ins->{"level"});
+  my $flash=api_json("POST","/api/pattern",{%{$base},input_max=>$input_max,r=>(0+$code),g=>(0+$code),b=>(0+$code)},10);
+  return ($flash->{"message"}||"Unable to display pattern insertion patch") if(($flash->{"status"}||"") eq "error");
+  select(undef,undef,undef,$ins->{"duration_ms"}/1000.0);
+  my $black=api_json("POST","/api/pattern",{%{$base},input_max=>$input_max,r=>0,g=>0,b=>0},10);
+  return ($black->{"message"}||"Unable to display black insertion patch") if(($black->{"status"}||"") eq "error");
+  select(undef,undef,undef,0.5);
+ }
+ # Let the panel leave the black reset before /api/meter/read posts the
+ # measurement patch and immediately starts counting its own delay_ms.
+ my $settle_ms=defined($config->{"patch_insert_post_settle_ms"}) ? int($config->{"patch_insert_post_settle_ms"}) : 400;
+ $settle_ms=0 if($settle_ms < 0);
+ $settle_ms=5000 if($settle_ms > 5000);
+ select(undef,undef,undef,$settle_ms/1000.0) if($settle_ms > 0);
+ return undef;
+}
 
 sub fixture_reading_for_patch {
  my ($patch,$config)=@_;
@@ -122,11 +237,9 @@ sub read_patch {
  # whole patch_insert* group) instead of silently taking the endpoint default.
  $payload->{"patch_size"}=int($config->{"patch_size"}) if(defined $config->{"patch_size"} && $config->{"patch_size"} ne "");
  $payload->{"refresh_rate"}=$config->{"refresh_rate"} if(defined $config->{"refresh_rate"} && $config->{"refresh_rate"} ne "");
- foreach my $k (keys %{$config}) {
-  next unless($k =~ /^patch_insert/);
-  next unless(defined $config->{$k});
-  $payload->{$k}=$config->{$k};
- }
+ # Pattern insertion is NOT forwarded to /api/meter/read -- that endpoint does
+ # not implement it. apply_pattern_insert_before_read (called by the patch loop)
+ # drives it here, the same way the greyscale worker does.
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,"cancelled") if(cancelled());
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
@@ -149,6 +262,17 @@ for my $patch (@patches) {
  if(cancelled()) {
   write_state(status=>"cancelled",message=>"Dolby Vision profile measurement cancelled",steps=>\@steps);
   exit(1);
+ }
+ if(!$config->{"fixture_mode"}) {
+  my $ins_err=apply_pattern_insert_before_read($config,$patch);
+  if(defined($ins_err)) {
+   if($ins_err eq "cancelled") {
+    write_state(status=>"cancelled",message=>"Dolby Vision profile measurement cancelled",steps=>\@steps);
+    exit(1);
+   }
+   write_state(status=>"error",message=>$ins_err,steps=>\@steps);
+   exit(1);
+  }
  }
  my ($reading,$err)=read_patch($patch,$config);
  if(!$reading) {

@@ -2022,6 +2022,31 @@ sub webui_meter_lg_dv_profile_start (@) {
   system("sudo rm -f ".quotemeta($_meter_lg_dv_profile_stop_file)." 2>/dev/null");
   unlink($_meter_lg_dv_profile_stop_file);
  }
+ # Precompute the pattern-insertion flash codes, exactly as the greyscale
+ # AutoCal start handler does, so the DV profile conditions the panel with the
+ # same insertion levels the greyscale pass used. Without this the worker falls
+ # back to a plain percentage of full scale, which is not the code the DV
+ # ladder emits for that stimulus.
+ my $_dv_ins_body=&lg_decode_json($body);
+ if(ref($_dv_ins_body) eq "HASH" && $_dv_ins_body->{"patch_insert"}) {
+  my $_dv_range=$_dv_ins_body->{"pattern_signal_range"}||$_dv_ins_body->{"signal_range"}||"";
+  my %_dv_opts=( dv_series => 1 );
+  my ($p_code,$p_im)=("",255);
+  my ($t_code,$t_im)=("",255);
+  if($_dv_ins_body->{"patch_insert_patch_enabled"}) {
+   ($p_code,$p_im)=&webui_grey_code_for_stimulus($_dv_ins_body->{"patch_insert_patch_level"},"dv","2.2",$_dv_range,\%_dv_opts);
+  }
+  if($_dv_ins_body->{"patch_insert_time_enabled"}) {
+   ($t_code,$t_im)=&webui_grey_code_for_stimulus($_dv_ins_body->{"patch_insert_time_level"},"dv","2.2",$_dv_range,\%_dv_opts);
+  }
+  # Normalise to valid JSON integers -- an empty code would emit
+  # "patch_insert_patch_code":, and the worker would fail to parse its config.
+  $p_code=0 if(!defined($p_code) || $p_code !~ /^-?\d+$/);
+  $t_code=0 if(!defined($t_code) || $t_code !~ /^-?\d+$/);
+  $p_im=255 if(!defined($p_im) || $p_im !~ /^-?\d+$/);
+  $t_im=255 if(!defined($t_im) || $t_im !~ /^-?\d+$/);
+  $body=~s/\}\s*\z/,"patch_insert_patch_code":$p_code,"patch_insert_patch_input_max":$p_im,"patch_insert_time_code":$t_code,"patch_insert_time_input_max":$t_im}/;
+ }
  if(open(my $fh,">",$_meter_lg_dv_profile_config_file)) {
   print $fh $body;
   close($fh);

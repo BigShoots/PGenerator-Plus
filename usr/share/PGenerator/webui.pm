@@ -26420,6 +26420,9 @@ function meterIs3dLutProfileChartContext(){
  const key=String(meterActiveSeriesKey||'');
  if(key.indexOf('lg-3d-lattice-profile-')===0) return true;
  if(key==='lg-3d-matrix-profile') return true;
+ // The DV Config pass is the Dolby Vision equivalent of the matrix profile
+ // (five native primary/white/black reads) and wants the same CIE-only view.
+ if(key==='lg-dv-profile') return true;
  if(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries()) return true;
  return false;
 }
@@ -26778,6 +26781,72 @@ function meterSelectAutoCal3dLut(){
  try{ meterLg3dPrepareChartContext({clearReadings:true}); }catch(e){}
 }
 
+// The DV Config pass reads five patches -- black/white/red/green/blue at peak
+// code -- which is the SAME W/R/G/B/K primary shape as the 3D LUT matrix
+// profile, so it reuses that target/step machinery and gets the same CIE-only
+// presentation (meterIs3dLutProfileChartContext covers both keys, so the
+// Delta-E bars stay hidden). The greyscale charts this used to show were simply
+// the wrong charts: there is no greyscale ladder anywhere in this pass.
+function meterDvProfileChartSteps(){
+ const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
+ const max=(bitDepth===10)?1023:255;
+ return [
+  {kind:'black',name:'black',r:0,g:0,b:0},
+  {kind:'white',name:'white',r:max,g:max,b:max},
+  {kind:'red',name:'red',r:max,g:0,b:0},
+  {kind:'green',name:'green',r:0,g:max,b:0},
+  {kind:'blue',name:'blue',r:0,g:0,b:max}
+ ].map(p=>Object.assign({ire:(p.kind==='black')?0:100},p,
+   meterLg3dMatrixProfileTarget({kind:p.kind,level:100})));
+}
+
+// Worker status.steps -> chart readings. The worker reports {name,kind,x,y,
+// luminance} per measured patch, so the plots appear one at a time as it works.
+function meterDvProfileChartReadings(status){
+ const list=(status&&Array.isArray(status.steps))?status.steps:[];
+ return list.filter(st=>st&&(st.x!=null||st.luminance!=null)).map(st=>{
+  const kind=String(st.kind||'').toLowerCase();
+  return Object.assign({
+   name:st.name||kind||'patch',
+   kind:kind,
+   x:st.x,
+   y:st.y,
+   luminance:st.luminance,
+   ire:(kind==='black')?0:100,
+   signal_mode:'dv'
+  },meterLg3dMatrixProfileTarget({kind:kind,level:100}));
+ });
+}
+
+function meterDvProfileApplyChartStatus(status){
+ const readings=meterDvProfileChartReadings(status);
+ meterActiveSeriesType='colors';
+ meterActiveSeriesPoints=5;
+ meterActiveSeriesKey='lg-dv-profile';
+ try{ meterSetActiveSeriesChartContext(status||{signal_mode:'dv'}); }catch(e){}
+ meterSeriesSteps=meterDvProfileChartSteps();
+ meterReadings=readings;
+ const whiteRd=readings.find(rd=>String(rd.kind||'')==='white'&&meterReadingHasLuminance(rd));
+ if(whiteRd) meterWhiteReading=whiteRd;
+ try{ meterResetSeriesButtons(); }catch(e){}
+ // resetSeriesButtons re-applies the stored choice on the autocal tab; force
+ // DV Config back so a previous greyscale/3D LUT choice cannot stick.
+ try{ meterSetAutoCalSeriesChoice('dv-profile'); }catch(e){}
+ try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
+ try{
+  const gw=document.getElementById('chartsGreyscaleWrap'); if(gw) gw.style.display='none';
+  const cw=document.getElementById('chartsColorWrap'); if(cw) cw.style.display='';
+  if(typeof meterSetMeterChartsVisible==='function') meterSetMeterChartsVisible(true);
+  else{ const mc=document.getElementById('meterCharts'); if(mc) mc.style.display=''; }
+ }catch(e){}
+ try{ if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(true); }catch(e){}
+ try{
+  const completed=new Set(readings.map(rd=>meterStepNameKey(rd)));
+  meterBuildPatchThumbs(meterSeriesSteps,completed,readings.length?meterStepNameKey(readings[readings.length-1]):null);
+ }catch(e){}
+ try{ drawAllCharts(readings); }catch(e){}
+}
+
 // AutoCal -> DV Config. Dolby Vision's colour stage is a panel-profile
 // measurement (black/white/R/G/B) followed by a DOLBY_CFG_DATA upload, not a
 // 3D LUT -- this is the same stage Full Auto Cal runs after greyscale, exposed
@@ -26791,14 +26860,12 @@ function meterSelectAutoCalDvProfile(){
  meterSeriesTab='autocal';
  meterSetAutoCalSeriesChoice('dv-profile');
  meterUpdateSeriesTabUi();
- // Minimal series context: the five profile patches the worker reads. Nothing
- // is parked on the panel here -- the worker drives its own patches, and
- // leaving full-field white up while the operator reads the screen would both
- // stress an OLED and skew the peak read.
- meterActiveSeriesType='greyscale';
- meterActiveSeriesPoints=1;
+ // Empty CIE shell for the five profile patches. Nothing is parked on the
+ // panel here -- the worker drives its own patches, and leaving full-field
+ // white up while the operator reads the screen would both stress an OLED and
+ // skew the peak read.
+ meterDvProfileApplyChartStatus(null);
  try{
-  if(typeof meterSetThumbsVisible==='function') meterSetThumbsVisible(false);
   fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(()=>{});
  }catch(e){}
  meterUpdateReadButtons();
@@ -26838,6 +26905,9 @@ async function meterStartDvProfileStandalone(){
  };
  meterDvProfileStandaloneRunning=true;
  meterActionPending=false;
+ // Clean CIE shell for this run: the five patches plot as the worker reads
+ // them (meterDvAutoCalPollProfile feeds status.steps back in).
+ meterDvProfileApplyChartStatus(null);
  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:5,current_name:'Starting Dolby Vision profile measurement'},{workflow:'dv-profile',label:'Starting Dolby Vision profile measurement'});
  meterUpdateReadButtons();
  const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
@@ -35584,6 +35654,11 @@ async function meterDvAutoCalPollProfile(options){
   if(!r) return;
   meterDvAutoCalProfilePollErrors=0;
   const steps=Array.isArray(r.steps)?r.steps:[];
+  // Plot the patches live on the CIE chart. Standalone only -- during a Full
+  // Auto Cal the wizard owns the charts and must not be redrawn under it.
+  if(meterDvProfileStandaloneRunning){
+   try{ meterDvProfileApplyChartStatus(r); }catch(e){}
+  }
   if(r.status==='running'||initial){
    meterSetWorkflowProgress({status:'running',current_step:steps.length,total_steps:5,current_name:r.message||'Measuring Dolby Vision profile'},{workflow:meterDvProfileStandaloneRunning?'dv-profile':'full',label:r.message||'Measuring Dolby Vision profile'});
   }
