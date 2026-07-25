@@ -19216,6 +19216,17 @@ function meterWrgbStimulusTargetY(reading){
    Number(Yrow[0])*Math.max(0,dr-common)+
    Number(Yrow[1])*Math.max(0,dg-common)+
    Number(Yrow[2])*Math.max(0,db-common);
+  // The dedicated saturation sweep is authored at one fixed 50% drive and
+  // has a directly validated endpoint response. Keep that sweep model
+  // separate from ColorChecker/HDR reflectance blending.
+  const isSaturationSweep=(typeof meterActiveSeriesType!=='undefined'&&meterActiveSeriesType==='saturations');
+  if(isSaturationSweep){
+   const maxChannel=Math.max(dr,dg,db);
+   const cyanAxis=maxChannel>0&&dg>dr&&db>dr&&Math.abs(dg-db)<=maxChannel*0.002;
+   const commonFraction=maxChannel>0?common/maxChannel:0;
+   const efficiency=0.65+(cyanAxis?0.20*commonFraction:0);
+   return commonY+efficiency*chromaticY;
+  }
   const endpointY=commonY+0.65*chromaticY;
   const rng=meterColorTargetCodeRange();
   const signal=[r,g,b].map(code=>Math.max(0,Math.min(1,(Number(code)-rng.min)/rng.span)));

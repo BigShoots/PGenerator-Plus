@@ -32,6 +32,7 @@ const context={
  getDisplayTechnology:()=>technology,
  meterChartIsPq:()=>true,
  meterChartIsDv:()=>true,
+ meterActiveSeriesType:'colors',
  meterDvMapModeValue:()=>dvMapMode,
  meterChartHdrPeak:()=>1000,
  meterHdrDiffuseScale:()=>1,
@@ -84,6 +85,13 @@ const wrgbY=reading=>{
  const weight=hi>0?Math.max(0,Math.min(1,((hi-lo)/hi)*Math.pow(hi/endpointSignal,2))):0;
  return raw+(endpoint-raw)*weight;
 };
+const saturationWrgbY=reading=>{
+ const channels=[reading.r_code,reading.g_code,reading.b_code].map(context.meterDvStimulusLinearChannel);
+ const common=Math.min(...channels),max=Math.max(...channels);
+ const chromatic=P3[1].reduce((sum,weight,index)=>sum+weight*Math.max(0,channels[index]-common),0);
+ const cyan=max>0&&channels[1]>channels[0]&&channels[2]>channels[0]&&Math.abs(channels[1]-channels[2])<=max*0.002;
+ return common*P3[1].reduce((sum,weight)=>sum+weight,0)+(0.65+(cyan?0.20*common/max:0))*chromatic;
+};
 const close=(actual,expected,tolerance,message)=>
  assert(Math.abs(actual-expected)<=tolerance,`${message}: got ${actual}, expected ${expected} ±${tolerance}`);
 
@@ -110,6 +118,12 @@ const after=samples.map(rd=>context.meterWrgbStimulusTargetY(rd));
 assert.deepStrictEqual(Array.from(after),Array.from(before),
  'ColorChecker and saturation targets are invariant after arbitrary R/G/B reads');
 samples.forEach((rd,index)=>close(before[index],wrgbY(rd),1e-9,`${rd.name} uses immediate DV WRGB model`));
+
+context.meterActiveSeriesType='saturations';
+const cyan50={name:'Cyan 50%',r_code:2004,g_code:2813,b_code:2813};
+close(context.meterWrgbStimulusTargetY(cyan50),saturationWrgbY(cyan50),1e-9,
+ 'fixed-level saturation sweep keeps its validated WRGB response');
+context.meterActiveSeriesType='colors';
 
 // Independent completed LG C2 DV ColorChecker run. These patches occur before
 // the full-saturation R/G/B series endpoints, so they prove the Display Type

@@ -64,28 +64,40 @@ const colorChecker=seriesKind==='colors'||seriesKind==='colorchecker';
   }
   if(process.env.PGEN_PREVIEW_ONLY==='1') return;
 
-  await page.click('#meterReadSeriesBtn');
-  await page.waitForFunction(async()=>{
-   try{
-    const status=await (await fetch('/api/meter/series/status')).json();
-    return status.status==='running'||status.status==='setup';
-   }catch(_e){return false;}
-  },null,{timeout:30000});
+  if(process.env.PGEN_REUSE_COMPLETED==='1'){
+   if(initial.status!=='complete'||!Array.isArray(initial.series.readings)) throw new Error('no completed API series to reuse');
+   await page.evaluate(series=>{
+    meterSetActiveSeriesChartContext(series);
+    meterActiveSeriesType=String(series.type||'');
+    meterActiveSeriesPoints=Number(series.points)||0;
+    meterSeriesSteps=Array.isArray(series.steps)?series.steps:[];
+    meterReadings=meterAttachSeriesMeta(Array.isArray(series.readings)?series.readings:[]);
+    meterWhiteReading=meterFindSeriesWhiteReading(meterReadings);
+   },initial.series);
+  }else{
+   await page.click('#meterReadSeriesBtn');
+   await page.waitForFunction(async()=>{
+    try{
+     const status=await (await fetch('/api/meter/series/status')).json();
+     return status.status==='running'||status.status==='setup';
+    }catch(_e){return false;}
+   },null,{timeout:30000});
 
-  const deadline=Date.now()+timeoutMs;
-  let lastStep=-1;
-  for(;;){
-   const status=await page.evaluate(async()=>await (await fetch('/api/meter/series/status')).json());
-   if(Number(status.current_step)!==lastStep){
-    lastStep=Number(status.current_step);
-    process.stdout.write(`${JSON.stringify({phase:'progress',status:status.status,current:status.current_step,total:status.total_steps,name:status.current_name})}\n`);
+   const deadline=Date.now()+timeoutMs;
+   let lastStep=-1;
+   for(;;){
+    const status=await page.evaluate(async()=>await (await fetch('/api/meter/series/status')).json());
+    if(Number(status.current_step)!==lastStep){
+     lastStep=Number(status.current_step);
+     process.stdout.write(`${JSON.stringify({phase:'progress',status:status.status,current:status.current_step,total:status.total_steps,name:status.current_name})}\n`);
+    }
+    if(status.status==='complete') break;
+    if(status.status==='error'||status.status==='stopped'||status.status==='cleared'){
+     throw new Error(`series ended with ${status.status}: ${status.message||''}`);
+    }
+    if(Date.now()>deadline) throw new Error(`series timed out after ${timeoutMs}ms`);
+    await page.waitForTimeout(1000);
    }
-   if(status.status==='complete') break;
-   if(status.status==='error'||status.status==='stopped'||status.status==='cleared'){
-    throw new Error(`series ended with ${status.status}: ${status.message||''}`);
-   }
-   if(Date.now()>deadline) throw new Error(`series timed out after ${timeoutMs}ms`);
-   await page.waitForTimeout(1000);
   }
 
   await page.waitForFunction(()=>Array.isArray(meterReadings)&&meterReadings.length>=24,null,{timeout:30000});
