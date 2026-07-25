@@ -10519,6 +10519,7 @@ transition:all .3s;z-index:999;pointer-events:none}
 #applySettingsOverlay{z-index:9102}
 #lgConnectOverlay{z-index:9101}
 #meterStopOverlay{z-index:9103}
+#dvProfileDoneOverlay{z-index:9104}
 /* Per-overlay visibility triggers. Each modal has its own body class
    so showing one doesn't show the other. Both modes still dim the
    dashboard underneath via the shared .apply-settings-active rules
@@ -10526,9 +10527,11 @@ transition:all .3s;z-index:999;pointer-events:none}
 body.apply-settings-active #applySettingsOverlay{display:flex}
 body.lg-connect-active #lgConnectOverlay{display:flex}
 body.meter-stop-active #meterStopOverlay{display:flex}
+body.dv-profile-done-active #dvProfileDoneOverlay{display:flex}
 body.apply-settings-active .dashboard,body.apply-settings-active .site-footer,
 body.lg-connect-active .dashboard,body.lg-connect-active .site-footer,
-body.meter-stop-active .dashboard,body.meter-stop-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
+body.meter-stop-active .dashboard,body.meter-stop-active .site-footer,
+body.dv-profile-done-active .dashboard,body.dv-profile-done-active .site-footer{filter:grayscale(.25);opacity:.42;pointer-events:none;user-select:none}
 .apply-settings-card{width:min(420px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:22px 20px;text-align:center}
 .apply-settings-icon{position:relative;width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center}
 .apply-settings-spinner{width:38px;height:38px;border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);border-radius:50%;animation:apply-settings-spin .9s linear infinite}
@@ -10552,6 +10555,13 @@ body.apply-settings-success .apply-settings-spinner{display:none}
 body.apply-settings-success .apply-settings-title,body.apply-settings-success .apply-settings-status{color:var(--green)}
 body.apply-settings-error .apply-settings-title{color:var(--red)}
 body.apply-settings-error .apply-settings-status{color:#e08184}
+/* DV Config completion modal: the green check is gated on
+   body.apply-settings-success for the Apply Settings flow, so this modal needs
+   its own trigger. Failure hides the check and reddens the text. */
+body.dv-profile-done-active #dvProfileDoneOverlay .apply-settings-check{display:block}
+body.dv-profile-done-error #dvProfileDoneOverlay .apply-settings-check{display:none}
+body.dv-profile-done-error #dvProfileDoneTitle{color:var(--red)}
+body.dv-profile-done-error #dvProfileDoneStatus{color:#e08184}
 @keyframes apply-settings-spin{to{transform:rotate(360deg)}}
 @keyframes apply-settings-draw{to{stroke-dashoffset:0}}
 /* LG Connect modal: reuses the .apply-settings-* skeleton above (same
@@ -12918,6 +12928,24 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div class="apply-settings-title" id="applySettingsTitle">Apply Settings</div>
   <div class="apply-settings-status" id="applySettingsStatus">Saving and restarting the renderer&hellip;</div>
   <div class="apply-settings-hint" id="applySettingsHint" style="display:none">The display will go black for a moment while the new signal mode is applied.</div>
+ </div>
+</div>
+
+<!-- DV Config completion modal. A standalone DV Config pass ends by writing
+     DOLBY_CFG_DATA to the TV, and the operator needs an unambiguous
+     confirmation that it landed: the corner toast this used to rely on
+     scrolls off the visible area on long calibration sessions, so the pass
+     looked like it just stopped. Reuses the Apply Settings card styling and
+     its green check; dismissed by the operator rather than on a timer, so a
+     failure message cannot disappear before it is read. -->
+<div class="apply-settings-mask" id="dvProfileDoneOverlay" aria-hidden="true">
+ <div class="apply-settings-card">
+  <div class="apply-settings-icon" id="dvProfileDoneIcon" aria-hidden="true">
+   <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
+  </div>
+  <div class="apply-settings-title" id="dvProfileDoneTitle">Dolby Vision configuration uploaded</div>
+  <div class="apply-settings-status" id="dvProfileDoneStatus"></div>
+  <div style="margin-top:16px"><button class="btn btn-primary" id="dvProfileDoneOk" onclick="meterDvProfileDoneModalHide()">OK</button></div>
  </div>
 </div>
 
@@ -26161,10 +26189,18 @@ function meterSetAutoCalSeriesChoice(choice){
  if(next==='dv-profile'&&!meterDvProfileSeriesAllowedForSignal()) next='greyscale';
  if(next==='3d-lut'&&meterDvProfileSeriesAllowedForSignal()) next='greyscale';
  meterAutoCalSeriesChoice=next;
+ // Signal-mode gating here MUST match the DV / 3D LUT swap in
+ // meterUpdateReadButtons. This loop used to gate only the tone-map button and
+ // force every other one visible, so each call re-showed "3D LUT" in DV mode
+ // (and "DV Config" outside DV) until the next meterUpdateReadButtons hid it
+ // again -- a visible flap, once per poll for the whole of a DV Config run.
+ const dvSeriesMode=meterDvProfileSeriesAllowedForSignal();
  document.querySelectorAll('#meterSeriesGroupAutoCal button[data-autocal-series]').forEach(btn=>{
   const series=btn.dataset.autocalSeries||'';
-  const toneMapBtn=series==='tone-map';
-  const allowed=!toneMapBtn||(typeof meterToneMapSeriesAllowedForSignal==='function'?meterToneMapSeriesAllowedForSignal():false);
+  let allowed=true;
+  if(series==='tone-map') allowed=(typeof meterToneMapSeriesAllowedForSignal==='function')?meterToneMapSeriesAllowedForSignal():false;
+  else if(series==='dv-profile') allowed=dvSeriesMode;
+  else if(series==='3d-lut') allowed=!dvSeriesMode;
   btn.style.display=allowed?'':'none';
   btn.hidden=!allowed;
   btn.disabled=!allowed;
@@ -26820,6 +26856,9 @@ function meterDvProfileChartReadings(status){
 
 function meterDvProfileApplyChartStatus(status){
  const readings=meterDvProfileChartReadings(status);
+ // Live poll updates only need the readings and a redraw; re-running the whole
+ // button/choice install every 1.5s is pure churn.
+ const alreadyInstalled=(String(meterActiveSeriesKey||'')==='lg-dv-profile');
  meterActiveSeriesType='colors';
  meterActiveSeriesPoints=5;
  meterActiveSeriesKey='lg-dv-profile';
@@ -26828,10 +26867,12 @@ function meterDvProfileApplyChartStatus(status){
  meterReadings=readings;
  const whiteRd=readings.find(rd=>String(rd.kind||'')==='white'&&meterReadingHasLuminance(rd));
  if(whiteRd) meterWhiteReading=whiteRd;
- try{ meterResetSeriesButtons(); }catch(e){}
- // resetSeriesButtons re-applies the stored choice on the autocal tab; force
- // DV Config back so a previous greyscale/3D LUT choice cannot stick.
- try{ meterSetAutoCalSeriesChoice('dv-profile'); }catch(e){}
+ if(!alreadyInstalled){
+  try{ meterResetSeriesButtons(); }catch(e){}
+  // resetSeriesButtons re-applies the stored choice on the autocal tab; force
+  // DV Config back so a previous greyscale/3D LUT choice cannot stick.
+  try{ meterSetAutoCalSeriesChoice('dv-profile'); }catch(e){}
+ }
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
  try{
   const gw=document.getElementById('chartsGreyscaleWrap'); if(gw) gw.style.display='none';
@@ -26960,6 +27001,37 @@ function meterDvProfileFail(message){
 // End a standalone DV Config pass. Always restores the DV engine to Absolute
 // (the normal viewing curve) and the PQ report curve, mirroring what
 // meterFullAutoCalComplete does at the end of a full run.
+// Completion notice for a standalone DV Config pass. Persists until the
+// operator dismisses it -- a timed auto-hide would let a failure message vanish
+// unread, which is exactly the problem the corner toast had.
+function meterDvProfileDoneModalShow(ok,message){
+ const overlay=document.getElementById('dvProfileDoneOverlay');
+ if(!overlay){
+  // No modal in the DOM (older cached page): fall back to the toast so the
+  // operator is still told the outcome.
+  try{ toast(message||(ok?'Dolby Vision configuration uploaded':'Dolby Vision profile pass failed'),!ok); }catch(e){}
+  return;
+ }
+ // Only one full-screen mask at a time.
+ try{ if(typeof applySettingsModalHide==='function') applySettingsModalHide(); }catch(e){}
+ try{ if(typeof lgConnectModalHide==='function') lgConnectModalHide(); }catch(e){}
+ const title=document.getElementById('dvProfileDoneTitle');
+ const status=document.getElementById('dvProfileDoneStatus');
+ if(title) title.textContent=ok?'Dolby Vision configuration uploaded':'DV Config pass failed';
+ if(status) status.textContent=message||(ok
+  ?'The panel profile was measured and DOLBY_CFG_DATA was written to the TV.'
+  :'The Dolby Vision profile pass did not complete.');
+ document.body.classList.add('dv-profile-done-active');
+ document.body.classList.toggle('dv-profile-done-error',!ok);
+ overlay.setAttribute('aria-hidden','false');
+}
+
+function meterDvProfileDoneModalHide(){
+ const overlay=document.getElementById('dvProfileDoneOverlay');
+ if(overlay) overlay.setAttribute('aria-hidden','true');
+ document.body.classList.remove('dv-profile-done-active','dv-profile-done-error');
+}
+
 async function meterDvProfileFinishStandalone(ok,message){
  if(meterDvAutoCalProfilePolling){clearInterval(meterDvAutoCalProfilePolling);meterDvAutoCalProfilePolling=null;}
  meterDvAutoCalProfileRunning=false;
@@ -26970,7 +27042,7 @@ async function meterDvProfileFinishStandalone(ok,message){
  try{ meterDvAutoCalForceTargetGamma('st2084'); }catch(e){}
  meterActionPending=false;
  meterUpdateReadButtons();
- toast(message||(ok?'Dolby Vision configuration uploaded':'Dolby Vision profile pass failed'),!ok);
+ meterDvProfileDoneModalShow(ok,message);
 }
 
 function meterSelectAutoCalToneMap(){
