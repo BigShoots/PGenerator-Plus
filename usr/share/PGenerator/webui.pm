@@ -12462,6 +12462,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <h2><span class="drag-handle">&#9776;</span>Session</h2>
   <div class="session-actions">
    <span class="session-button-wrap">
+    <button class="btn btn-sm btn-warning" type="button" onclick="meterNewSession()" title="Clear all chart series and start a fresh measurement session">New Session</button>
+    <span class="meter-help-tip" tabindex="0" title="Clears all chart measurements and series so you can start a clean session. Does not change generator output or TV calibration." aria-label="New session help">?</span>
+   </span>
+   <span class="session-button-wrap">
     <button class="btn btn-sm btn-primary" type="button" onclick="meterExportHcfrChc()">Export</button>
     <span class="meter-help-tip" tabindex="0" title="Export measurements matching the active signal mode as a current HCFR CHC session. Grayscale, saturation, ColorChecker and unmatched readings are mapped automatically." aria-label="HCFR session export help">?</span>
    </span>
@@ -17618,6 +17622,55 @@ function meterUseMeasuredWhiteTarget(){
 }
 
 const GAMUT_PRESETS=__PG_GAMUT_PRESETS__;
+
+
+// Measured gamut outline from full-code primaries (and secondaries when present).
+// Used on CIE 2D charts as a thin solid triangle (primaries) / polygon (with secondaries).
+function meterMeasuredGamutOutlinePoints(readings){
+ const list=Array.isArray(readings)?readings:[];
+ const byKey={};
+ const take=(key,rd)=>{
+  if(!rd||byKey[key]) return;
+  const x=(rd.x!=null)?Number(rd.x):(rd.raw_x!=null?Number(rd.raw_x):NaN);
+  const y=(rd.y!=null)?Number(rd.y):(rd.raw_y!=null?Number(rd.raw_y):NaN);
+  if(!isFinite(x)||!isFinite(y)) return;
+  byKey[key]={x,y,name:rd.name||key};
+ };
+ list.forEach(rd=>{
+  if(!rd) return;
+  const n=String(rd.name||rd.kind||rd.series_color||'').toLowerCase();
+  const kind=String(rd.kind||'').toLowerCase();
+  if(kind==='red'||/^100%\s*red$/.test(n)||n==='red'||n==='r'||(rd.series_color==='Red'&&Number(rd.sat_pct)>=99.5)) take('R',rd);
+  else if(kind==='green'||/^100%\s*green$/.test(n)||n==='green'||n==='g'||(rd.series_color==='Green'&&Number(rd.sat_pct)>=99.5)) take('G',rd);
+  else if(kind==='blue'||/^100%\s*blue$/.test(n)||n==='blue'||n==='b'||(rd.series_color==='Blue'&&Number(rd.sat_pct)>=99.5)) take('B',rd);
+  else if(/^100%\s*yellow$/.test(n)||n==='yellow'||(rd.series_color==='Yellow'&&Number(rd.sat_pct)>=99.5)) take('Y',rd);
+  else if(/^100%\s*cyan$/.test(n)||n==='cyan'||(rd.series_color==='Cyan'&&Number(rd.sat_pct)>=99.5)) take('C',rd);
+  else if(/^100%\s*magenta$/.test(n)||n==='magenta'||(rd.series_color==='Magenta'&&Number(rd.sat_pct)>=99.5)) take('M',rd);
+ });
+ // Prefer primaries triangle; if secondaries exist, walk R-Y-G-C-B-M
+ const orderPrim=['R','G','B'];
+ const orderFull=['R','Y','G','C','B','M'];
+ const hasSec=orderFull.some(k=>k!=='R'&&k!=='G'&&k!=='B'&&byKey[k]);
+ const order=hasSec?orderFull:orderPrim;
+ const pts=order.map(k=>byKey[k]).filter(Boolean);
+ if(pts.length<3) return null;
+ // Need at least R,G,B for a triangle
+ if(!byKey.R||!byKey.G||!byKey.B) return null;
+ return pts;
+}
+function meterStrokeMeasuredGamut(ctx,toX,toY,readings){
+ const pts=meterMeasuredGamutOutlinePoints(readings);
+ if(!pts||pts.length<3) return;
+ ctx.save();
+ ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,0.92)');
+ ctx.lineWidth=1.0;
+ ctx.setLineDash([]);
+ ctx.beginPath();
+ pts.forEach((p,i)=>{ const X=toX(p.x), Y=toY(p.y); if(i===0) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); });
+ ctx.closePath();
+ ctx.stroke();
+ ctx.restore();
+}
 
 const M_XYZ_TO_RGB=GAMUT_PRESETS.bt709.xyzToRgb;
 const M_RGB_TO_XYZ=GAMUT_PRESETS.bt709.rgbToXyz;
@@ -42394,8 +42447,16 @@ function drawCIEChart3D(readings,opts){
    cie3dProject(prim.B.x,prim.B.y,0,layout)
   ];
   prims.push({z:cie3dAvgZ(gPts), draw:()=>{
-   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
    cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
+   try{
+    const mpts=meterMeasuredGamutOutlinePoints(typeof readings!=='undefined'?readings:(typeof meterReadings!=='undefined'?meterReadings:[]));
+    if(mpts&&mpts.length>=3){
+     const mProj=mpts.map(pt=>cie3dProject(pt.x,pt.y,0,layout));
+     ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,0.92)');ctx.lineWidth=1.0;ctx.setLineDash([]);
+     cie3dStrokePoly(ctx,mProj,true);
+    }
+   }catch(e){}
    ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
    ctx.textAlign='left';ctx.fillText('R',gPts[0].sx+4,gPts[0].sy-4);
    ctx.fillText('G',gPts[1].sx-12,gPts[1].sy-6);
@@ -42827,13 +42888,14 @@ function drawCIEChart(readings){
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  if(meterCieViewOpts.gamut){
-  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
   ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+  try{ meterStrokeMeasuredGamut(ctx,toX,toY,readings); }catch(e){}
  }
  // D65 white point
  ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
@@ -43158,11 +43220,12 @@ function drawCIEChartPreset(steps){
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  if(meterCieViewOpts.gamut){
-  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.7;ctx.setLineDash([5,3]);
+  ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
   ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
+  try{ meterStrokeMeasuredGamut(ctx,toX,toY,steps||readings||[]); }catch(e){}
  }
  // D65
  ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
@@ -44307,6 +44370,17 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
  else meterUpdateSeriesTabUi();
  meterUpdateReadButtons();
  if(showToastMsg) toast('Chart data cleared');
+}
+
+function meterNewSession(){
+ if(meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterSeriesRunning){
+  toast('Stop the active measurement first','err');
+  return;
+ }
+ if(!window.confirm('Start a new session? This clears all chart data and series.')) return;
+ try{ meterClearResults(); }catch(e){}
+ try{ if(typeof meterClearWorkflowProgress==='function') meterClearWorkflowProgress(); }catch(e){}
+ toast('New session — charts cleared');
 }
 
 async function meterClearResults(){

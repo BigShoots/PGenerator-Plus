@@ -2198,6 +2198,288 @@ sub webui_lg_sdr_calman_reset (@) {
  return &lg_encode_json($result);
 }
 
+
+# --- Calibration history: final uploaded 1D DPGs, 3D LUTs, DV configs ---
+my $_lg_cal_hist_runs="/var/lib/PGenerator/lg/autocal-runs";
+my $_lg_cal_hist_luts="/var/lib/PGenerator/lg/luts";
+
+sub _lg_cal_hist_json_escape {
+ my ($s)=@_;
+ $s="" if(!defined $s);
+ $s=~s/\\/\\\\/g; $s=~s/"/\\"/g; $s=~s/\n/\\n/g; $s=~s/\r/\\r/g; $s=~s/\t/\\t/g;
+ return $s;
+}
+
+sub _lg_cal_hist_read_json_file {
+ my ($path)=@_;
+ return undef unless(defined($path) && -f $path);
+ my $raw="";
+ if(open(my $fh,"<",$path)) { local $/; $raw=<$fh>; close($fh); }
+ return undef if($raw eq "" || $raw!~/^\s*\{/);
+ return &lg_decode_json($raw) if(defined(&lg_decode_json));
+ return undef;
+}
+
+# List final autocal uploads only:
+#  - 1D: autocal-runs/*/grey-state with final_1d_lut_uploaded + hdr20_1d_dpg_data
+#  - 3D: /var/lib/PGenerator/lg/luts/*.bin with companion .json (export_lut triple)
+#  - DV: runs whose stages.ndjson have a successful dv_profile_upload
+sub webui_lg_calibration_history_list (@) {
+ my @items;
+ # 1D from runs
+ if(opendir(my $dh,$_lg_cal_hist_runs)) {
+  foreach my $run (sort { $b cmp $a } readdir($dh)) {
+   next if($run eq "." || $run eq ".." || $run eq "current");
+   next if($run !~ /^[A-Za-z0-9._-]+$/);
+   my $dir="$_lg_cal_hist_runs/$run";
+   next unless(-d $dir);
+   my $state=_lg_cal_hist_read_json_file("$dir/grey-state.json");
+   next unless(ref($state) eq "HASH");
+   my $uploaded=($state->{"final_1d_lut_uploaded"} || $state->{"hdr20_1d_dpg_uploaded"}) ? 1 : 0;
+   my $dpg=$state->{"hdr20_1d_dpg_data"};
+   next unless($uploaded && ref($dpg) eq "ARRAY" && scalar(@$dpg) == 3072);
+   my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
+   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+   my $pm=$cfg->{"picture_mode"} || $state->{"picture_mode"} || "";
+   my $sm=$cfg->{"signal_mode"} || $state->{"signal_mode"} || "";
+   my $mtime=(stat("$dir/grey-state.json"))[9] || 0;
+   my $label=$run." 1D ".($sm||"?")." ".($pm||"");
+   $label=~s/\s+$//;
+   push @items,{
+    id => "1d:$run",
+    type => "1d",
+    label => $label,
+    run_id => $run,
+    picture_mode => $pm,
+    signal_mode => $sm,
+    mtime => $mtime+0,
+    de => defined($state->{"hdr20_1d_dpg_best_de"}) ? ($state->{"hdr20_1d_dpg_best_de"}+0) : (defined($state->{"hdr20_1d_dpg_final_de"}) ? ($state->{"hdr20_1d_dpg_final_de"}+0) : undef),
+    download => "/api/lg/calibration-history/download?id=1d%3A$run",
+   };
+  }
+  closedir($dh);
+ }
+ # 3D LUTs with LG .bin (final upload payload)
+ if(opendir(my $dh,$_lg_cal_hist_luts)) {
+  foreach my $f (sort { $b cmp $a } readdir($dh)) {
+   next unless($f =~ /^([A-Za-z0-9._-]+)\.bin$/);
+   my $base=$1;
+   next unless(-f "$_lg_cal_hist_luts/$base.bin");
+   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_luts/$base.json") || {};
+   my $mtime=(stat("$_lg_cal_hist_luts/$base.bin"))[9] || 0;
+   my $pm=$meta->{"picture_mode"} || "";
+   my $sm=$meta->{"signal_mode"} || "";
+   my $method=$meta->{"method"} || "";
+   my $label=$base;
+   $label=$meta->{"title"} if(defined($meta->{"title"}) && $meta->{"title"} ne "");
+   push @items,{
+    id => "3d:$base",
+    type => "3d",
+    label => $label,
+    base => $base,
+    picture_mode => $pm,
+    signal_mode => $sm,
+    method => $method,
+    mtime => $mtime+0,
+    has_cube => (-f "$_lg_cal_hist_luts/$base.cube") ? 1 : 0,
+    download => (-f "$_lg_cal_hist_luts/$base.cube") ? "/api/3d-lut/cube?file=${base}.cube" : "",
+   };
+  }
+  closedir($dh);
+ }
+ # DV: last successful dv_profile_upload per run (measurements often only in 3d-state or grey-state)
+ if(opendir(my $dh,$_lg_cal_hist_runs)) {
+  foreach my $run (sort { $b cmp $a } readdir($dh)) {
+   next if($run eq "." || $run eq ".." || $run eq "current");
+   next if($run !~ /^[A-Za-z0-9._-]+$/);
+   my $dir="$_lg_cal_hist_runs/$run";
+   my $stages_path="$dir/stages.ndjson";
+   next unless(-f $stages_path);
+   my $has_dv=0;
+   my $pm="";
+   if(open(my $fh,"<",$stages_path)) {
+    while(my $line=<$fh>) {
+     next unless($line =~ /"stage"\s*:\s*"dv_profile_upload"/);
+     next unless($line =~ /"ok"\s*:\s*true/);
+     $has_dv=1;
+     $pm=$1 if($line =~ /"picture_mode"\s*:\s*"([^"]*)"/);
+    }
+    close($fh);
+   }
+   next unless($has_dv);
+   # Prefer saved measurements snapshot if present
+   my $meas_path="$dir/dv-profile-measurements.json";
+   my $has_meas=(-f $meas_path) ? 1 : 0;
+   # Also accept measurements embedded in grey/3d state under known keys
+   my $state=_lg_cal_hist_read_json_file("$dir/grey-state.json") || {};
+   my $state3=_lg_cal_hist_read_json_file("$dir/3d-state.json") || {};
+   my $meas=$state->{"dv_profile_measurements"} || $state3->{"dv_profile_measurements"} || $state3->{"measurements"};
+   $has_meas=1 if(ref($meas) eq "HASH" && defined($meas->{"white_luminance"}));
+   my $mtime=(stat($stages_path))[9] || 0;
+   my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
+   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+   $pm=$cfg->{"picture_mode"} || $pm || "dolbyVision";
+   push @items,{
+    id => "dv:$run",
+    type => "dv",
+    label => "$run DV config $pm",
+    run_id => $run,
+    picture_mode => $pm,
+    signal_mode => "dv",
+    mtime => $mtime+0,
+    reuploadable => $has_meas ? 1 : 0,
+    note => $has_meas ? "" : "Measurements not archived; reupload unavailable",
+   };
+  }
+  closedir($dh);
+ }
+ @items=sort { ($b->{"mtime"}||0) <=> ($a->{"mtime"}||0) } @items;
+ my @json;
+ foreach my $it (@items) {
+  my @pairs;
+  for my $k (qw(id type label run_id base picture_mode signal_mode method download note)) {
+   next unless(defined($it->{$k}) && $it->{$k} ne "");
+   push @pairs,"\"$k\":\""._lg_cal_hist_json_escape($it->{$k})."\"";
+  }
+  for my $k (qw(mtime de has_cube reuploadable)) {
+   next unless(defined($it->{$k}));
+   my $v=$it->{$k};
+   if($k eq "de") { push @pairs,"\"de\":".sprintf("%.4f",$v+0); }
+   else { push @pairs,"\"$k\":".(int($v+0)); }
+  }
+  push @json,"{".join(",",@pairs)."}";
+ }
+ return "{\"status\":\"ok\",\"items\":[".join(",",@json)."]}";
+}
+
+sub webui_lg_calibration_history_download (@) {
+ my ($body)=@_;
+ my $payload=ref($body) eq "HASH" ? $body : &lg_decode_json($body||"{}");
+ my $id="";
+ if(ref($payload) eq "HASH") { $id=$payload->{"id"}||""; }
+ if($id eq "" && defined($body) && !ref($body) && $body=~/id=([^&]+)/) { $id=$1; $id=~s/%3A/:/gi; $id=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge; }
+ return &lg_encode_json({ status => "error", message => "id required" }) if($id eq "");
+ if($id =~ /^1d:([A-Za-z0-9._-]+)$/) {
+  my $run=$1;
+  my $state=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/grey-state.json");
+  return &lg_encode_json({ status => "error", message => "1D data not found" })
+   unless(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY");
+  return &lg_encode_json({ status => "ok", type => "1d", run_id => $run, dpg_data => $state->{"hdr20_1d_dpg_data"} });
+ }
+ if($id =~ /^3d:([A-Za-z0-9._-]+)$/) {
+  my $base=$1;
+  return &lg_encode_json({ status => "ok", type => "3d", redirect => "/api/3d-lut/cube?file=${base}.cube" });
+ }
+ return &lg_encode_json({ status => "error", message => "Unknown id" });
+}
+
+sub webui_lg_calibration_history_reupload (@) {
+ my ($body)=@_;
+ my $payload=&lg_decode_json($body);
+ my $id=$payload->{"id"} || "";
+ return &lg_encode_json({ status => "error", message => "id required" }) if($id eq "");
+ my $picture_mode=$payload->{"picture_mode"} || "";
+ my $signal_mode=$payload->{"signal_mode"} || "";
+ my $enable_cal=($payload->{"enable_calibration"} // 1) ? 1 : 0;
+ my $disable_cal=($payload->{"disable_calibration"} // 1) ? 1 : 0;
+
+ if($id =~ /^1d:([A-Za-z0-9._-]+)$/) {
+  my $run=$1;
+  my $state=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/grey-state.json");
+  return &lg_encode_json({ status => "error", message => "1D DPG data not found for run $run" })
+   unless(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY" && @{$state->{"hdr20_1d_dpg_data"}}==3072);
+  my $manifest=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/manifest.json") || {};
+  my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+  $picture_mode ||= $cfg->{"picture_mode"} || $state->{"picture_mode"} || "";
+  $signal_mode ||= $cfg->{"signal_mode"} || $state->{"signal_mode"} || "";
+  # Optional cal-mode bookends via existing calibration-mode endpoint helpers
+  if($enable_cal) {
+   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($on_body); };
+  }
+  my $up_body=&lg_encode_json({
+   dpg_data => $state->{"hdr20_1d_dpg_data"},
+   picture_mode => $picture_mode,
+   signal_mode => $signal_mode,
+   keep_calibration_mode => 1,
+   calibration_mode_active => 1,
+   helper_timeout => 90,
+  });
+  my $result_json=&webui_lg_1d_dpg_upload($up_body);
+  if($disable_cal) {
+   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($off_body); };
+  }
+  return $result_json;
+ }
+
+ if($id =~ /^3d:([A-Za-z0-9._-]+)$/) {
+  my $base=$1;
+  my $bin="$_lg_cal_hist_luts/$base.bin";
+  return &lg_encode_json({ status => "error", message => "3D LUT payload missing: $base.bin" }) unless(-f $bin);
+  my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_luts/$base.json") || {};
+  $picture_mode ||= $meta->{"picture_mode"} || "";
+  $signal_mode ||= $meta->{"signal_mode"} || "";
+  if($enable_cal) {
+   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($on_body); };
+  }
+  my $up_body=&lg_encode_json({
+   payload_path => $bin,
+   picture_mode => $picture_mode,
+   signal_mode => $signal_mode,
+   keep_calibration_mode => 1,
+   helper_timeout => 120,
+  });
+  my $result_json=&webui_lg_3d_lut_upload($up_body);
+  if($disable_cal) {
+   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"%s"}',
+    _lg_cal_hist_json_escape($picture_mode),_lg_cal_hist_json_escape($signal_mode));
+   eval { &webui_lg_calibration_mode($off_body); };
+  }
+  return $result_json;
+ }
+
+ if($id =~ /^dv:([A-Za-z0-9._-]+)$/) {
+  my $run=$1;
+  my $meas;
+  my $meas_path="$_lg_cal_hist_runs/$run/dv-profile-measurements.json";
+  $meas=_lg_cal_hist_read_json_file($meas_path) if(-f $meas_path);
+  if(ref($meas) ne "HASH") {
+   my $state=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/grey-state.json") || {};
+   my $state3=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/3d-state.json") || {};
+   $meas=$state->{"dv_profile_measurements"} || $state3->{"dv_profile_measurements"} || $state3->{"measurements"};
+  }
+  return &lg_encode_json({ status => "error", message => "DV profile measurements not archived for this run; cannot reupload." })
+   unless(ref($meas) eq "HASH" && defined($meas->{"white_luminance"}));
+  my $manifest=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/manifest.json") || {};
+  my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+  $picture_mode ||= $cfg->{"picture_mode"} || "dolbyVisionFilmMaker";
+  $signal_mode ||= "dv";
+  if($enable_cal) {
+   my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"dv"}',_lg_cal_hist_json_escape($picture_mode));
+   eval { &webui_lg_calibration_mode($on_body); };
+  }
+  my $up_body=&lg_encode_json({
+   measurements => $meas,
+   picture_mode => $picture_mode,
+   signal_mode => "dv",
+   keep_calibration_mode => 1,
+  });
+  my $result_json=&webui_lg_dv_profile_upload($up_body);
+  if($disable_cal) {
+   my $off_body=sprintf('{"enabled":false,"picture_mode":"%s","signal_mode":"dv"}',_lg_cal_hist_json_escape($picture_mode));
+   eval { &webui_lg_calibration_mode($off_body); };
+  }
+  return $result_json;
+ }
+
+ return &lg_encode_json({ status => "error", message => "Unknown history id" });
+}
+
 sub webui_lg_api (@) {
  my $path=shift;
  my $method=shift;
@@ -2264,6 +2546,15 @@ sub webui_lg_api (@) {
  }
  if($path eq "/api/lg/1d-dpg/read" && $method eq "POST") {
   return &webui_lg_1d_dpg_read($body);
+ }
+ if($path eq "/api/lg/calibration-history" && $method eq "GET") {
+  return &webui_lg_calibration_history_list();
+ }
+ if($path eq "/api/lg/calibration-history/download" && $method eq "POST") {
+  return &webui_lg_calibration_history_download($body);
+ }
+ if($path eq "/api/lg/calibration-history/reupload" && $method eq "POST") {
+  return &webui_lg_calibration_history_reupload($body);
  }
  if($path eq "/api/lg/pair-pin/start" && $method eq "POST") {
   return &webui_lg_pin_pair_start($body);
@@ -2391,7 +2682,20 @@ sub webui_lg_card_html (@) {
 	   #lgCardTitle::after{margin-left:0}
 	   .lg-display-control-open-desktop{display:none}
 	   body.layout-desktop #lgDisplayControlOpenBtn{display:none}
+	   body.layout-desktop #lgCalHistoryOpenBtn{display:none}
 	   body.layout-desktop .lg-display-control-open-desktop{display:inline-flex;margin:0 0 8px}
+	   body.layout-desktop #lgCalHistoryDesktop{display:block}
+	   #lgCalHistoryDesktop{display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+	   .lg-cal-hist-section{margin-bottom:12px}
+	   .lg-cal-hist-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin:0 0 6px}
+	   .lg-cal-hist-list{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+	   .lg-cal-hist-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface-inset)}
+	   .lg-cal-hist-meta{flex:1;min-width:140px;font-size:.76rem;color:var(--text);line-height:1.35}
+	   .lg-cal-hist-meta small{display:block;color:var(--text2);font-size:.68rem}
+	   .lg-cal-hist-actions{display:flex;gap:5px;flex-wrap:wrap}
+	   .lg-cal-hist-empty{font-size:.74rem;color:var(--text2);padding:4px 0}
+	   #lgCalHistoryModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgCalHistoryPanel{width:min(720px,calc(100vw - 36px));max-height:min(780px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;box-sizing:border-box}
 	   #lgDisplayControlModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
 	   #lgDisplayControlPanel{width:min(920px,calc(100vw - 36px));max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px;box-sizing:border-box;scrollbar-color:#525264 #232330;scrollbar-width:auto;scrollbar-gutter:stable}
 	   #lgDisplayControlPanel::-webkit-scrollbar{width:14px;height:14px}
@@ -2414,7 +2718,7 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
 	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
 	  </style>
-	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" style="margin-left:auto" onclick="lgOpenDisplayControl()">Display Control</button></h2>
+	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><span style="margin-left:auto;display:inline-flex;gap:6px"><button class="btn btn-sm btn-secondary" id="lgCalHistoryOpenBtn" type="button" onclick="lgOpenCalHistoryModal()">History</button><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" type="button" onclick="lgOpenDisplayControl()">Display Control</button></span></h2>
   <button class="btn btn-sm btn-secondary lg-display-control-open-desktop" type="button" onclick="lgOpenDisplayControl()">Display Control</button>
   <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
    <span class="spinner"></span>
@@ -2463,6 +2767,21 @@ sub webui_lg_card_html (@) {
    <button class="btn btn-sm btn-danger" onclick="lgForgetClient()">Forget Pairing</button>
   </div>
     <div id="lgWorkflowHint" style="font-size:.75rem;color:var(--text2);margin-top:8px;line-height:1.45">Display detection is checking for an LG TV.</div>
+  <div id="lgCalHistoryDesktop">
+   <h3 style="margin:0 0 8px;font-size:.9rem;color:var(--text)">Calibration History</h3>
+   <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal artifacts only. Reupload enables calibration mode, uploads, then disables it.</p>
+   <div id="lgCalHistoryBodyDesktop" class="lg-cal-hist-root">Loading history...</div>
+  </div>
+ </div>
+ <div id="lgCalHistoryModal" onclick="if(event.target===this) lgCloseCalHistoryModal()">
+  <div id="lgCalHistoryPanel">
+   <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+    <h2 style="margin:0;font-size:1rem">Calibration History</h2>
+    <button class="btn btn-sm btn-secondary" type="button" onclick="lgCloseCalHistoryModal()">Close</button>
+   </div>
+   <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal 1D LUTs, 3D LUTs, and DV configs. Reupload uses the same TV upload paths as AutoCal.</p>
+   <div id="lgCalHistoryBodyModal" class="lg-cal-hist-root">Loading history...</div>
+  </div>
  </div>
  <div id="lgDisplayControlModal" onclick="if(event.target===this) lgCloseDisplayControl()">
   <div id="lgDisplayControlPanel">
@@ -4082,17 +4401,140 @@ async function lgDisconnectClient(){
   if(button) button.disabled=!lgStatusConnected(fresh)||!lgStatusHasSavedKey(fresh)||!!fresh.pinPending;
  }
 }
+
+// --- Calibration history (final AutoCal uploads) ---
+let lgCalHistoryCache=[];
+let lgCalHistoryBusy=false;
+
+function lgOpenCalHistoryModal(){
+ const m=document.getElementById('lgCalHistoryModal');
+ if(m){ m.style.display='flex'; m.setAttribute('aria-hidden','false'); }
+ lgRefreshCalHistory();
+}
+function lgCloseCalHistoryModal(){
+ const m=document.getElementById('lgCalHistoryModal');
+ if(m){ m.style.display='none'; m.setAttribute('aria-hidden','true'); }
+}
+
+function lgCalHistoryTypeLabel(t){
+ if(t==='1d') return '1D LUT';
+ if(t==='3d') return '3D LUT';
+ if(t==='dv') return 'DV Config';
+ return t||'?';
+}
+
+function lgCalHistoryFormatTime(mtime){
+ if(!mtime) return '';
+ try{ return new Date(mtime*1000).toLocaleString(); }catch(e){ return ''; }
+}
+
+function lgRenderCalHistoryInto(el){
+ if(!el) return;
+ if(!lgCalHistoryCache.length){
+  el.innerHTML='<div class="lg-cal-hist-empty">No final uploaded AutoCal artifacts found yet.</div>';
+  return;
+ }
+ const groups={ '1d':[], '3d':[], 'dv':[] };
+ lgCalHistoryCache.forEach(it=>{ if(groups[it.type]) groups[it.type].push(it); else groups['1d'].push(it); });
+ let html='';
+ [['1d','1D LUTs'],['3d','3D LUTs'],['dv','DV Configs']].forEach(([type,title])=>{
+  const list=groups[type]||[];
+  html+='<div class="lg-cal-hist-section"><div class="lg-cal-hist-title">'+title+' ('+list.length+')</div>';
+  if(!list.length){ html+='<div class="lg-cal-hist-empty">None</div></div>'; return; }
+  html+='<div class="lg-cal-hist-list">';
+  list.forEach(it=>{
+   const de=(it.de!=null&&isFinite(it.de))?' · best dE '+Number(it.de).toFixed(3):'';
+   const note=it.note?('<small style="color:var(--orange)">'+String(it.note).replace(/</g,'&lt;')+'</small>'):'';
+   const canUp=!(it.type==='dv'&&it.reuploadable===0);
+   html+='<div class="lg-cal-hist-item" data-id="'+String(it.id||'').replace(/"/g,'&quot;')+'">'
+    +'<div class="lg-cal-hist-meta"><strong>'+lgCalHistoryTypeLabel(it.type)+'</strong> '
+    +String(it.label||it.id||'').replace(/</g,'&lt;')
+    +'<small>'+lgCalHistoryFormatTime(it.mtime)
+    +(it.signal_mode?(' · '+it.signal_mode):'')
+    +(it.picture_mode?(' · '+it.picture_mode):'')
+    +de+'</small>'+note+'</div>'
+    +'<div class="lg-cal-hist-actions">'
+    +(canUp?('<button type="button" class="btn btn-sm btn-primary" onclick="lgCalHistoryReupload(\''+String(it.id).replace(/'/g,"\\'")+'\')">Reupload</button>'):'')
+    +((it.download||it.type==='1d'||(it.type==='3d'&&it.has_cube))?('<button type="button" class="btn btn-sm btn-secondary" onclick="lgCalHistoryDownload(\''+String(it.id).replace(/'/g,"\\'")+'\')">Download</button>'):'')
+    +'</div></div>';
+  });
+  html+='</div></div>';
+ });
+ el.innerHTML=html;
+}
+
+async function lgRefreshCalHistory(){
+ const hosts=[document.getElementById('lgCalHistoryBodyDesktop'),document.getElementById('lgCalHistoryBodyModal')];
+ hosts.forEach(h=>{ if(h) h.innerHTML='Loading history...'; });
+ try{
+  const r=await fetchJSON('/api/lg/calibration-history?_='+Date.now(),{_quiet:true,_timeoutMs:12000,cache:'no-store'});
+  lgCalHistoryCache=(r&&r.status==='ok'&&Array.isArray(r.items))?r.items:[];
+ }catch(e){
+  lgCalHistoryCache=[];
+  hosts.forEach(h=>{ if(h) h.innerHTML='<div class="lg-cal-hist-empty">Unable to load history.</div>'; });
+  return;
+ }
+ hosts.forEach(h=>lgRenderCalHistoryInto(h));
+}
+
+async function lgCalHistoryReupload(id){
+ if(lgCalHistoryBusy) return;
+ const item=lgCalHistoryCache.find(x=>x&&x.id===id);
+ if(!item){ toast('History item not found','err'); return; }
+ if(item.type==='dv'&&item.reuploadable===0){ toast(item.note||'Cannot reupload this DV config','err'); return; }
+ if(!window.confirm('Reupload this '+lgCalHistoryTypeLabel(item.type)+' to the TV?\n\nCalibration mode will be enabled, the payload uploaded, then calibration mode disabled.')) return;
+ lgCalHistoryBusy=true;
+ try{
+  if(typeof lgBeginCommand==='function') lgBeginCommand('Reuploading '+lgCalHistoryTypeLabel(item.type));
+  const body={id:id,picture_mode:item.picture_mode||'',signal_mode:item.signal_mode||'',enable_calibration:true,disable_calibration:true};
+  const r=await fetchJSON('/api/lg/calibration-history/reupload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:180000});
+  if(r&&r.status==='ok') toast(lgCalHistoryTypeLabel(item.type)+' reuploaded to TV');
+  else toast((r&&r.message)||'Reupload failed','err');
+ }catch(e){ toast('Reupload failed','err'); }
+ finally{
+  lgCalHistoryBusy=false;
+  if(typeof lgEndCommand==='function') lgEndCommand();
+  try{ if(typeof loadLgStatus==='function') loadLgStatus(true); }catch(e){}
+ }
+}
+
+async function lgCalHistoryDownload(id){
+ const item=lgCalHistoryCache.find(x=>x&&x.id===id);
+ if(!item){ toast('History item not found','err'); return; }
+ try{
+  if(item.type==='3d'){
+   const href=item.download||('/api/3d-lut/cube?file='+encodeURIComponent((item.base||'')+'.cube'));
+   window.location.href=href;
+   return;
+  }
+  if(item.type==='1d'){
+   const r=await fetchJSON('/api/lg/calibration-history/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id}),_timeoutMs:60000});
+   if(!(r&&r.status==='ok'&&Array.isArray(r.dpg_data))){ toast((r&&r.message)||'Download failed','err'); return; }
+   const blob=new Blob([JSON.stringify(r,null,2)],{type:'application/json'});
+   const a=document.createElement('a');
+   a.href=URL.createObjectURL(blob);
+   a.download=(item.run_id||'1d')+'_dpg.json';
+   document.body.appendChild(a); a.click(); a.remove();
+   setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+   return;
+  }
+  toast('No download available for this item','err');
+ }catch(e){ toast('Download failed','err'); }
+}
+
+// load history when LG card is shown / on init
+
 LG_JS
 }
 
 sub webui_lg_load_info_js (@) {
- return 'lgBindDisplayModeControl();lgDisplayControlRender();loadLgStatus(true);';
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();loadLgStatus(true);setTimeout(()=>lgRefreshCalHistory(),900);';
 }
 
 sub webui_lg_init_js (@) {
  # Saved TVs render immediately; the full first-start scan runs in a sibling
  # daemon thread and is consumed asynchronously without blocking meter status.
- return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);setTimeout(()=>lgStartupAutoDetect(),1400);';
+ return 'lgBindDisplayModeControl();lgDisplayControlRender();setTimeout(()=>loadLgStatus(),750);setTimeout(()=>lgLoadSavedTvs(),1200);setTimeout(()=>lgStartupAutoDetect(),1400);setTimeout(()=>lgRefreshCalHistory(),1800);';
 }
 
 return 1;
