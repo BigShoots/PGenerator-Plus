@@ -13814,6 +13814,36 @@ function checkSettingsChanged(){
  if(typeof lgConnectModalHide==='function') lgConnectModalHide();
 }
 
+// Output changes can rebuild every patch thumbnail and chart. Running that
+// work in the same change event prevents the browser from painting the dirty
+// Apply bar until the rebuild finishes (signal mode also used to rebuild
+// twice, once here and once in its dedicated handler). Coalesce the dependent
+// calibration refresh and run it only after the browser has painted the
+// immediately-updated output controls.
+let meterOutputSettingsRefreshQueued=false;
+let meterOutputSettingsSaveQueued=false;
+function meterQueueOutputSettingsRefresh(saveMeterPrefs){
+ meterOutputSettingsSaveQueued=meterOutputSettingsSaveQueued||!!saveMeterPrefs;
+ if(meterOutputSettingsRefreshQueued) return;
+ meterOutputSettingsRefreshQueued=true;
+ const afterPaint=()=>{
+  setTimeout(()=>{
+   const savePrefs=meterOutputSettingsSaveQueued;
+   meterOutputSettingsRefreshQueued=false;
+   meterOutputSettingsSaveQueued=false;
+   meterGreySyncUi();
+   meterUpdateSeriesTabUi();
+   updateMeterTargetWhitepointVisibility();
+   meterRefreshActiveSeriesCharts();
+   meterUpdateReadButtons();
+   try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
+   if(savePrefs) saveMeterSettings();
+  },0);
+ };
+ if(typeof requestAnimationFrame==='function') requestAnimationFrame(afterPaint);
+ else afterPaint();
+}
+
 function updateModeVisibility(){
  const sm=getVal('signal_mode');
  document.getElementById('hdrCard').style.display=(sm==='hdr10'||sm==='hlg')?'':'none';
@@ -14031,20 +14061,16 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	 meterApplyPatternInsertionDefaults(false);
 	 updateModeVisibility();
  updateDropdowns();
- meterRefreshActiveSeriesCharts();
- try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
- saveMeterSettings();
  checkSettingsChanged();
+ meterQueueOutputSettingsRefresh(true);
 });
 
 document.getElementById('dv_map_mode').addEventListener('change',function(){
  if(getVal('signal_mode')!=='dv') return;
  syncDvOutputEotfState();
  applyMeterTargetGammaDefault();
- meterRefreshActiveSeriesCharts();
- try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
- saveMeterSettings();
  checkSettingsChanged();
+ meterQueueOutputSettingsRefresh(true);
 });
 
 async function loadModes(quiet){
@@ -46166,7 +46192,7 @@ meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
 ['signal_mode','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
  const el=document.getElementById(id);
- if(el) el.addEventListener('change',()=>{meterGreySyncUi();meterUpdateSeriesTabUi();updateMeterTargetWhitepointVisibility();meterRefreshActiveSeriesCharts();meterUpdateReadButtons();});
+ if(el) el.addEventListener('change',()=>meterQueueOutputSettingsRefresh(false));
 });
 
 function meterRefreshActiveSeriesCharts(){
