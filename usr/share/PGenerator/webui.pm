@@ -24109,24 +24109,45 @@ function meterLiveCodeRangeForStep(step){
   ? {min:16,span:219} : {min:0,span:255};
 }
 
+// Convert an absolute measured channel luminance back to the signal that
+// produces it on the ACTIVE PQ target curve. This is an inverse-EOTF readout,
+// not a normalization against panel peak. Scaling every channel by
+// 10000/measured_white makes only the endpoints look right and badly inflates
+// every intermediate value (2.4 cd/m2 became PQ code 103 instead of 51 on a
+// ~700-nit display).
+//
+// Inverting meterGreyTargetLuminance also preserves the selected BT.2390
+// roll-off. DV Absolute hard-clips at its measured peak, so retain the explicit
+// 100% reference-white endpoint rather than choosing the first code on that
+// flat clipped section.
+function meterLivePqEquivalentSignal(nits,step){
+ const y=Math.max(0,Number(nits)||0);
+ if(!(y>0)) return 0;
+ if(typeof meterIsReferenceWhiteStep==='function'&&meterIsReferenceWhiteStep(step)) return 1;
+ const reference=Math.max(0.0001,meterColorSeriesReferenceNits());
+ const peak=(typeof meterGreyTargetPeak==='function')
+  ? Math.max(0.0001,meterGreyTargetPeak(reference))
+  : reference;
+ const black=(typeof meterBlackReadingY==='function')?Math.max(0,Number(meterBlackReadingY())||0):0;
+ const targetAt=signal=>meterGreyTargetLuminance(signal*100,peak,black,null);
+ const top=Number(targetAt(1));
+ if(Number.isFinite(top)&&y>=top) return 1;
+ let lo=0,hi=1;
+ for(let i=0;i<36;i++){
+  const mid=(lo+hi)/2;
+  const target=Number(targetAt(mid));
+  if(Number.isFinite(target)&&target<y) lo=mid;
+  else hi=mid;
+ }
+ return Math.max(0,Math.min(1,(lo+hi)/2));
+}
+
 function meterLiveXyzRgbCodes(xyz,step){
  if(!xyz) return null;
  const linear=xyzToLinRgb(xyz.X,xyz.Y,xyz.Z,meterAnalysisGamut().xyzToRgb);
  let signal;
  if(meterChartIsPq() && (!meterChartIsDv() || meterDvUsesPqTargetCurve())){
-  // Normalise to the reference white before PQ-encoding, so this row is a
-  // BALANCE readout on the same scale as the patch target code beside it --
-  // which is what every other branch here already does (the SDR/else branch
-  // divides by the reference, HLG passes it as the peak). The PQ branch alone
-  // encoded raw absolute nits, so on a panel whose white measures 724 cd/m2 a
-  // 100% white patch read 183 against a target of 255 and looked like a large
-  // error when the panel was in fact on target. Referencing the measured white
-  // makes measured==target at 100% and leaves the R/G/B spread (the actual
-  // point of the row) intact. Reported for HDR10 RGB Full; applies to DV
-  // Absolute too since both take this branch.
-  const pqRef=Math.max(0.0001,meterColorSeriesReferenceNits());
-  const pqScale=(pqRef>0)?(10000/pqRef):1;
-  signal=linear.map(channel=>meterChartPqEncodeNormalized(Math.max(0,channel)*pqScale));
+  signal=linear.map(channel=>meterLivePqEquivalentSignal(channel,step));
  }else if(meterChartIsHlg()){
   const peak=Math.max(1,meterColorSeriesReferenceNits());
   signal=linear.map(channel=>hlgInverseEotfSignal(Math.max(0,channel),meterChartMasterMin(),peak));
