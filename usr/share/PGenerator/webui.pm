@@ -19186,14 +19186,49 @@ function meterWrgbTargetCompensationSelected(){
  return tech==='oled_generic'||/\b(?:wrgb|woled)\b/.test(tech);
 }
 
-// Target luminance derived from the patch STIMULUS rather than a measured
-// response. Decode each channel from the actual stimulus and form target Y in
-// the selected analysis gamut. This reference target must never be learned
-// from the measurements it grades: using current-series R/G/B endpoint reads
-// made ColorChecker and saturation targets change partway through the run and
-// circularly erased the endpoints' own luminance error. WRGB Display Type
-// selects WRGB handling elsewhere, but it does not redefine a standard target
-// from measured results. Greys remain referenced to measured white.
+// Per-primary HDR luminance ceilings derived from the current ColorChecker
+// run's full-drive R/G/B endpoint reads. This is deliberately not a general
+// chart reference: ordinary ColorChecker patches and saturation sweeps retain
+// their authored, measurement-independent target. The ceilings are consumed
+// only by the HDR ColorChecker 100% primary/secondary endpoint path below.
+function meterWrgbPrimaryCeilings(){
+ const out={};
+ if(typeof meterActiveSeriesType==='undefined'||meterActiveSeriesType!=='colors') return out;
+ if(!meterChartIsHdr()||meterChartIsDv()||!meterWrgbTargetCompensationSelected()) return out;
+ const gamut=meterAnalysisGamut();
+ const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
+ const idx={red:0,green:1,blue:2};
+ const rng=meterColorTargetCodeRange();
+ const fullDrive=rng.min+rng.span*0.9;
+ const curMode=(typeof meterActiveChartSignalMode==='function')
+  ?String(meterActiveChartSignalMode()||'').toLowerCase():'';
+ (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
+  if(!rd||!rd.series_color||Number(rd.sat_pct)<99.5) return;
+  const color=String(rd.series_color).toLowerCase();
+  if(!(color in idx)) return;
+  const rdMode=String(rd.signal_mode||'').toLowerCase();
+  if(curMode&&rdMode&&rdMode!==curMode) return;
+  const codes=[
+   (rd.r_code!=null)?rd.r_code:rd.r,
+   (rd.g_code!=null)?rd.g_code:rd.g,
+   (rd.b_code!=null)?rd.b_code:rd.b
+  ];
+  if(codes.some(v=>v==null)||Math.max(...codes)<fullDrive) return;
+  const i=idx[color];
+  const measuredY=meterReadingLuminanceNits(rd);
+  if(measuredY>0&&Yrow[i]>0&&!(out[i]>0)) out[i]=measuredY/Yrow[i];
+ });
+ return out;
+}
+
+// Target luminance normally comes directly from the authored patch stimulus:
+// decode each channel and form target Y in the selected analysis gamut.
+// Ordinary ColorChecker patches and saturation sweeps must not learn their
+// target from the measurements they grade. The one display-reference exception
+// is the six full-drive HDR ColorChecker endpoints on a selected WRGB OLED:
+// those are bounded by the run's measured filtered-primary ceilings because
+// the white-subpixel peak is physically unavailable to saturated colors.
+// Greys remain referenced to measured white.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
@@ -19227,6 +19262,23 @@ function meterWrgbStimulusTargetY(reading){
  let dg=_dvLum?meterDvStimulusLinearChannel(g):meterDecodeColorTargetChannel(g);
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=meterAnalysisGamut();
+ // A full-drive HDR ColorChecker endpoint on a WRGB OLED cannot reach the
+ // decoded PQ peak through its filtered color subpixels. Grade those six
+ // endpoint patches against the additive output established by the measured
+ // R/G/B endpoints. Keep this narrowly scoped: DV has its stable authored
+ // response model below, saturation sweeps use their own sub-peak stimulus,
+ // and ordinary ColorChecker patches remain independent of measured results.
+ const _hdrColorEndpoint=!_dvLum
+  && typeof meterActiveSeriesType!=='undefined'&&meterActiveSeriesType==='colors'
+  && meterChartIsHdr()&&meterWrgbTargetCompensationSelected()
+  && !meterReadingIsGreyscale(reading)
+  && reading.series_color!=null&&Number(reading.sat_pct)>=99.5;
+ if(_hdrColorEndpoint){
+  const ceil=meterWrgbPrimaryCeilings();
+  if(ceil[0]>0) dr=Math.min(dr,ceil[0]);
+  if(ceil[1]>0) dg=Math.min(dg,ceil[1]);
+  if(ceil[2]>0) db=Math.min(db,ceil[2]);
+ }
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
  if(_dvLum && meterWrgbTargetCompensationSelected()){
@@ -20033,22 +20085,19 @@ function meterTargetXYZForReading(reading){
   let _wrgbStimY=null;
   const _activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
   const _greyReading=meterReadingIsGreyscale(reading);
-  // WRGB OLED luminance. A white-subpixel panel TRACKS the PQ signal, so on a PQ
-  // panel EVERY color/sat patch (ColorChecker reflectance, saturation sweep, and
-  // the full-saturation primaries/secondaries alike) targets the absolute value
-  // the STIMULUS encodes (meterWrgbStimulusTargetY) -- chromaticity stays on
-  // target_x/target_y, only luminance comes from the decoded signal. The decode
-  // is clamped per-channel to the panel's measured primary ceilings, which is
-  // what keeps a full-code secondary (ColorChecker 100% cyan) from exceeding the
-  // achievable primary sum while leaving sub-peak sweep endpoints untouched.
+  // WRGB OLED luminance. A white-subpixel panel tracks the PQ signal, so
+  // ColorChecker reflectance patches and saturation sweeps target the absolute
+  // value their stimulus encodes. Only the six full-drive HDR ColorChecker
+  // endpoints are bounded by the measured filtered-primary ceilings, keeping a
+  // full-code secondary from exceeding the achievable additive primary sum.
+  // Chromaticity always stays on target_x/target_y.
   // Greys are clamped to measured white (white uses the W subpixel and exceeds
   // the primary sum). The additive reference (meterWrgbChromaticReferenceNits)
   // remains only as the non-PQ / no-codes fallback for chromatic patches.
   // WRGB OLED chromatic refY (additive primary sum) is ONLY used by the
   // chromatic-target fallback path (no stimulus codes / non-PQ). The
-  // PQ stimulus-decode path below is independent of any measurement so it
-  // produces correct target Y from the first read, before the WRGB white
-  // and 100% primaries have been measured.
+  // PQ stimulus-decode path below is measurement-independent for ordinary
+  // patches; the explicit full-drive endpoint exception is handled inside it.
   if(_activeColorSeries && meterChartIsHdr() && !_greyReading && meterWrgbChromaticReferenceNits()>0){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;

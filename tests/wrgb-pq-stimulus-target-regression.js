@@ -5,9 +5,10 @@
 // derives the target by PQ-decoding the patch's RGB stimulus codes and
 // forming XYZ in the analysis gamut, returning the decoded target Y.
 //
-// This test locks the new behaviour: the function returns the decoded
-// signal-target Y without consulting any measured color, or null when
-// the signal is not PQ or the codes are missing.
+// This test locks the new behaviour for ordinary reflectance patches: the
+// function returns the decoded signal-target Y without consulting any measured
+// color, or null when the signal is not PQ or the codes are missing. The six
+// full-drive HDR ColorChecker endpoints have a separate WRGB ceiling regression.
 const assert=require('assert');
 const fs=require('fs');
 const vm=require('vm');
@@ -33,6 +34,7 @@ vm.createContext(context);
 // Stubs for helpers that are not under test.
 context.meterChartIsPq=()=>true;
 context.meterChartIsDv=()=>false;
+context.meterChartIsHdr=()=>true;
 context.meterChartHdrPeak=()=>1000;
 context.meterPatchRangeMin=()=>16;
 context.meterPatchRangeSpan=()=>219;
@@ -43,6 +45,10 @@ context.meterPatchUsesVideoRange=()=>true;
 context.meterPatchBitDepth=()=>8;
 context.meterActiveSeriesCodesAre8Bit=()=>false;
 context.meterCanonicalSeriesStep=()=>null;
+context.meterWrgbTargetCompensationSelected=()=>true;
+context.meterReadingIsGreyscale=()=>false;
+context.meterActiveSeriesType=null;
+context.meterActiveChartSignalMode=()=>'hdr10';
 context.meterReadings=[];
 context.meterReadingLuminanceNits=(rd)=>(rd&&rd.luminance!=null)?rd.luminance:(rd&&rd.Y!=null?rd.Y:null);
 // P3-D65 matrix (analysis gamut target). The real meterAnalysisGamut()
@@ -55,6 +61,7 @@ context.meterAnalysisGamut=()=>({rgbToXyz:P3});
 
 vm.runInContext([
  extractFunction('meterWrgbStimulusTargetY'),
+ extractFunction('meterWrgbPrimaryCeilings'),
  extractFunction('targetColorXYZAbs'),
  extractFunction('meterColorTargetCodeRange'),
  extractFunction('meterDecodeColorTargetChannel'),
@@ -102,10 +109,12 @@ vm.runInContext([
  assert(Y>700,`Full-code 100% cyan raw PQ-decode Y must be > 700 (~771 expected), got ${Y}`);
 }
 
-// Adding complete R/G/B measurements must not revise the cyan target.
+// Adding complete R/G/B measurements must not revise an ordinary reflectance
+// cyan target. It has no series_color/sat_pct endpoint metadata, so the
+// HDR-only full-drive WRGB endpoint correction must not apply.
 {
  const saved=context.meterReadings;
- const reading={series_color:'Cyan',sat_pct:100,r_code:16,g_code:235,b_code:235};
+ const reading={name:'Cyan',r_code:121,g_code:145,b_code:156};
  context.meterReadings=[];
  const before=context.meterWrgbStimulusTargetY(reading);
  context.meterReadings=[
@@ -117,6 +126,32 @@ vm.runInContext([
  assert.strictEqual(after,before,
   `Full-code cyan target must not change after primary reads; before=${before}, after=${after}`);
  context.meterReadings=saved;
+}
+
+// === HDR WRGB full-drive ColorChecker endpoint ===
+// Unlike an ordinary reflectance patch, the six 100% endpoints are graded
+// against the filtered-primary output the run actually established. Cyan is
+// therefore the additive measured G+B luminance rather than the unattainable
+// white-subpixel PQ peak. This exception is limited to the colors chart.
+{
+ const savedReadings=context.meterReadings;
+ context.meterActiveSeriesType='colors';
+ context.meterReadings=[
+  {series_color:'Red',sat_pct:100,r_code:235,g_code:16,b_code:16,Y:87.83,signal_mode:'hdr10'},
+  {series_color:'Green',sat_pct:100,r_code:16,g_code:235,b_code:16,Y:290.87,signal_mode:'hdr10'},
+  {series_color:'Blue',sat_pct:100,r_code:16,g_code:16,b_code:235,Y:31.82,signal_mode:'hdr10'}
+ ];
+ const endpoint={series_color:'Cyan',sat_pct:100,r_code:16,g_code:235,b_code:235,signal_mode:'hdr10'};
+ const Y=context.meterWrgbStimulusTargetY(endpoint);
+ const expected=290.87+31.82;
+ assert(Math.abs(Y-expected)<0.01,
+  `HDR WRGB 100% cyan target must equal measured G+B (${expected}), got ${Y}`);
+ context.meterActiveSeriesType='saturations';
+ const sweepY=context.meterWrgbStimulusTargetY(endpoint);
+ assert(sweepY>700,
+  `Saturation sweep endpoint must keep its authored PQ target (>700), got ${sweepY}`);
+ context.meterActiveSeriesType=null;
+ context.meterReadings=savedReadings;
 }
 
 // === Non-PQ signal: returns null ===
