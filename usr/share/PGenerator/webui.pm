@@ -24498,7 +24498,7 @@ function drawDeltaBarsVertical(canvasId,spec){
    const dec=(spec.decimals!=null)?spec.decimals:1;
    const labelVal=(e.labelV!=null)?e.labelV:e.v;
    const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
-   ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='right';
+   ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 14px':'10px')+' sans-serif';ctx.textAlign='right';
    ctx.fillText(prefix+labelVal.toFixed(dec),W-padR,cy);
   });
   return;
@@ -24551,7 +24551,7 @@ function drawDeltaBarsVertical(canvasId,spec){
   // Themed color-series and 2-point RGB values use the same fixed footer row
   // as greyscale RGB balance instead of following the moving bar endpoint.
   if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
-  ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='center';
+  ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 14px':'10px')+' sans-serif';ctx.textAlign='center';
   const dec=(spec.decimals!=null)?spec.decimals:1;
   const labelVal=(e.labelV!=null)?e.labelV:e.v;
   const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
