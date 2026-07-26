@@ -2155,6 +2155,24 @@ sub lg_settings_error_is_unsupported_key (@) {
  return 0;
 }
 
+# Some LG firmware returns errorCode 20 for an externalpq CAL_START even
+# though the same socket continues to accept the calibration data commands.
+# Match this narrowly so authentication, transport, and unrelated command
+# errors remain fatal.
+sub lg_externalpq_error_is_expected_driver_rejection (@) {
+ my ($response,$message)=@_;
+ return 0 if(ref($response) ne "HASH");
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ return 0 if(!defined($payload->{"errorCode"}) || "$payload->{errorCode}" ne "20");
+ my $detail=lc(join(" ",
+  $message//"",
+  $response->{"error"}//"",
+  $payload->{"errorMessage"}//"",
+  $payload->{"errorText"}//"",
+ ));
+ return index($detail,"driver error while executing the command") >= 0 ? 1 : 0;
+}
+
 ###############################################
 #        LG Calibration / 1D LUT DDC          #
 ###############################################
@@ -3454,8 +3472,20 @@ sub lg_hdr_calman_reset_workflow (@) {
  my $cal_payload=&lg_force_pic_mode_payload(&lg_hdr_calman_float_payload());
  my $start=&lg_calibration_request($session,"hdr_calman_reset_cal_start","CAL_START",$cal_payload,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
- push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
- if($start_failed || ref($start) ne "HASH") {
+ # A real captured calibration workflow ignores errorCode 20 from
+ # CAL_START and continues on the same socket. The TV accepts the identity
+ # matrix/LUT/DPG writes that perform the reset, so treating this firmware
+ # handshake response as fatal made the wizard fail before doing any reset
+ # work. Keep every other CAL_START failure fatal.
+ my $start_tolerated=$start_failed && &lg_externalpq_error_is_expected_driver_rejection($start,$start_message);
+ push(@steps,{
+  command => "CAL_START",
+  response => $start,
+  failed => &json_bool($start_failed && !$start_tolerated),
+  tolerated => &json_bool($start_tolerated),
+  message => $start_tolerated ? "LG returned the expected CAL_START driver rejection; continuing with HDR reset data." : ($start_message||""),
+ });
+ if(($start_failed && !$start_tolerated) || ref($start) ne "HASH") {
   &websocket_close($session);
   return &json_error($start_message||"LG TV rejected HDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
  }
