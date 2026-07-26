@@ -10259,7 +10259,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 			.meter-lg-rgb-tv-input{width:34px;height:22px;min-width:0;padding:1px 2px;border-radius:5px;border:1px solid var(--border);background:#080a11;color:#eee;font-size:.58rem;text-align:center}
 			.meter-lg-rgb-tv-input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
 			.meter-lg-rgb-apply{width:16px;height:22px;min-width:16px;padding:0;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:.58rem;gap:0}
-			.meter-lg-rgb-live{font-size:.875rem;font-weight:700;line-height:1.15;color:#fff;white-space:nowrap}
+			.meter-lg-rgb-live{font-size:.75rem;font-weight:700;line-height:1.15;color:#fff;white-space:nowrap}
 			.meter-lg-rgb-luma{grid-column:1/-1;display:grid;grid-template-columns:24px minmax(0,1fr) 24px;grid-template-rows:auto 16px auto;gap:4px 6px;align-items:center;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,.09);background:#10131d}
 			.meter-lg-rgb-luma-label{grid-column:1/-1;font-size:.58rem;line-height:1.1;color:var(--text2);text-align:center;white-space:nowrap}
 		.meter-lg-rgb-luma-value{color:#eee;font-weight:700}
@@ -24498,7 +24498,7 @@ function drawDeltaBarsVertical(canvasId,spec){
    const dec=(spec.decimals!=null)?spec.decimals:1;
    const labelVal=(e.labelV!=null)?e.labelV:e.v;
    const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
-   ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 14px':'10px')+' sans-serif';ctx.textAlign='right';
+   ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='right';
    ctx.fillText(prefix+labelVal.toFixed(dec),W-padR,cy);
   });
   return;
@@ -24551,7 +24551,7 @@ function drawDeltaBarsVertical(canvasId,spec){
   // Themed color-series and 2-point RGB values use the same fixed footer row
   // as greyscale RGB balance instead of following the moving bar endpoint.
   if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
-  ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 14px':'10px')+' sans-serif';ctx.textAlign='center';
+  ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='center';
   const dec=(spec.decimals!=null)?spec.decimals:1;
   const labelVal=(e.labelV!=null)?e.labelV:e.v;
   const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
