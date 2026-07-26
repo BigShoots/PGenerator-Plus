@@ -11170,6 +11170,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    output card in the single mobile track so showing HDR/DV cannot widen or
    overlap the rest of the page. */
 @media(max-width:800px){
+ html,body{max-width:100%;overflow-x:hidden}
  body.layout-tablet .dashboard{grid-template-columns:minmax(0,1fr);max-width:100%;overflow-x:clip}
  body.layout-tablet #displaySettingsCard,
  body.layout-tablet #hdrCard,
