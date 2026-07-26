@@ -42,4 +42,22 @@ like(
  'HDR reset continues into the reset data sequence after the CAL_START gate',
 );
 
+like(
+ $helper,
+ qr/lg_hdr_calman_reset_workflow[\s\S]{0,4800}?my\s+\$tolerated=\$failed[\s\S]{0,300}?\$command\s*=~\s*\/\^\(\?:BRIGHTNESS\|CONTRAST\|BACKLIGHT\|COLOR\)_UI_DATA\$\/[\s\S]{0,300}?lg_externalpq_error_is_expected_driver_rejection\(\$response,\$message\)/s,
+ 'HDR reset tolerates the same narrowly matched driver rejection for optional UI-default commands',
+);
+
+like(
+ $helper,
+ qr/lg_hdr_calman_reset_workflow[\s\S]{0,5200}?failed\s*=>\s*&json_bool\(\$failed\s*&&\s*!\$tolerated\)[\s\S]{0,200}?tolerated\s*=>\s*&json_bool\(\$tolerated\)/s,
+ 'optional HDR UI defaults record expected rejections without failing the reset',
+);
+
+like(
+ $helper,
+ qr/lg_hdr_calman_reset_workflow[\s\S]{0,7600}?BT2020_3BY3_GAMUT_DATA[\s\S]{0,1200}?BT2020_3D_LUT_DATA[\s\S]{0,1200}?1D_DPG_DATA/s,
+ 'actual HDR reset data commands remain in the strictly checked workflow',
+);
+
 done_testing();
