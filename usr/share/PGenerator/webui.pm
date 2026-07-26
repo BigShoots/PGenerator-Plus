@@ -10153,7 +10153,13 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
  }
  # Write the pattern. SOURCE_MAX is independent of BITS: standard DV keeps
  # an 8-bit framebuffer/wire while its tunnel shader consumes 12-bit codes.
- $pat="PATTERN_NAME=$name\nBITS=$pat_bits\nSOURCE_MAX=$pattern_source_max\n".$pat."FRAME=$frame_default\n";
+ #
+ # Multi-frame sequences (AVS diagseq) already end each plate with FRAME=N.
+ # Appending FRAME=$frame_default after that creates an empty last frame
+ # (n_draw=0) which flashes the screen before the loop restarts. Only add
+ # the default FRAME for single-shot patterns that have none.
+ $pat="PATTERN_NAME=$name\nBITS=$pat_bits\nSOURCE_MAX=$pattern_source_max\n".$pat;
+ $pat.="FRAME=$frame_default\n" if($pat !~ /^FRAME=/m);
  open(my $fh,">","$command_file.tmp");
  print $fh $pat;
  close($fh);

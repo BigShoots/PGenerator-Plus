@@ -338,8 +338,12 @@ void ofApp::draw(){
  if(i< frame)
   ofApp::log("\n");
  if(i == frame) {
+  // Seamless loop: restart from frame 0 using already-parsed draw lists.
+  // Setting open_file=1 re-parsed operations.txt every cycle and combined
+  // with a trailing empty FRAME produced a visible flash on AVS/diagseq
+  // restarts. New patterns still force open_file via the return-file path.
   i=0;
-  open_file=1;
+  last_frame_time=0;
   save_images=0;
   if(first_done) {
    unlink(image_save.c_str());
