@@ -609,12 +609,20 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
   return value;
  if(ofxRPI4Window::avi_info.rgb_quant_range != 1)
   return value;
+ /*
+  * The vc4 HDMI CSC compresses the full-range RGB framebuffer to the
+  * configured Limited wire range. SOURCE_RANGE=LIMITED values are wire
+  * codes, so expand them to the full framebuffer domain first. Passing
+  * code 16 through unchanged would make the CSC output about code 30 and
+  * visibly lift black.
+  */
  int bit_depth=ofxRPI4Window::bit_depth;
  int shift=bit_depth - 8;
  int limited_min=16 << shift;
  int limited_span=219 << shift;
  int max_value=(1 << bit_depth) - 1;
- int normalized=(int)(((long long)(value - limited_min) * max_value) / limited_span + 0.5);
+ int normalized=(int)(((long long)(value - limited_min) * max_value +
+                       limited_span / 2) / limited_span);
  if(normalized < 0)
   normalized=0;
  if(normalized > max_value)
