@@ -11163,6 +11163,35 @@ body.layout-tablet .ui-choice:hover .ui-choice-description,body.layout-tablet .u
 body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-tablet .ui-choice:disabled:focus-visible .ui-choice-description{display:block}
 /* UI Settings uses the exact segmented control treatment from the title bar. */
 @media(max-width:420px){body.layout-tablet .ui-settings-sections{gap:8px}}
+/* Phone/tablet dashboard is one column. The tablet card-order rules above
+   normally put Display Settings and HDR Metadata beside each other, but an
+   explicit grid-column:2 creates an off-screen implicit column after the
+   <=800px dashboard breakpoint collapses to one column. Keep every conditional
+   output card in the single mobile track so showing HDR/DV cannot widen or
+   overlap the rest of the page. */
+@media(max-width:800px){
+ body.layout-tablet .dashboard{grid-template-columns:minmax(0,1fr);max-width:100%;overflow-x:clip}
+ body.layout-tablet #displaySettingsCard,
+ body.layout-tablet #hdrCard,
+ body.layout-tablet #dvCard,
+ body.layout-tablet #applyBar{grid-column:1 / -1;width:100%;max-width:100%}
+ /* Mobile modals may originate inside a dashboard card. Their open path moves
+    them to body; these constraints also keep wide tables/forms inside the
+    visual viewport and centered on phones with dynamic/safe-area viewports. */
+ body.layout-tablet [id$="Modal"][style*="position:fixed"],
+ body.layout-tablet #meterReportOverlay{
+  position:fixed!important;inset:0!important;width:100vw!important;
+  max-width:100vw!important;height:100vh;height:100dvh;margin:0!important;
+  padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right))
+   max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))!important;
+  align-items:center!important;justify-content:center!important;overflow:hidden
+ }
+ body.layout-tablet [id$="Modal"][style*="position:fixed"] > :first-child,
+ body.layout-tablet #meterReportOverlay > :first-child{
+  min-width:0!important;max-width:100%!important;
+  max-height:calc(100dvh - 20px)!important;margin:auto!important;overflow:auto
+ }
+}
 </style>
 </head>
 <body>
@@ -14499,7 +14528,14 @@ async function loadInfo(quiet){
 }
 
 let _hdmiIgnored=false;
-const uiBlockingOverlayIds=['meterGreyProfileModal','meterCcssCreateModal','customCcssEditorModal','meterReportOverlay','lgDisplayControlModal','lutSolveProgressModal','lutSolveDoneModal'];
+const uiBlockingOverlayIds=[
+ 'meterGreyProfileModal','meterCustomSeriesModal','meterCustomSeriesManagerModal',
+ 'meterImportWizardModal','meterLutToolsModal','lutSolveProgressModal',
+ 'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
+ 'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
+ 'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',
+ 'lgDisplayControlModal'
+];
 let uiLockedScrollTop=0;
 
 function uiAnyBlockingOverlayVisible(){
@@ -14509,6 +14545,7 @@ function uiAnyBlockingOverlayVisible(){
   const el=document.getElementById(id);
   if(!el) return false;
   if(id==='customCcssEditorModal'&&document.body.classList.contains('layout-desktop')) return false;
+  if(id==='meterLutToolsModal'&&document.body.classList.contains('layout-desktop')) return false;
   if(el.style.display) return el.style.display!=='none';
   return getComputedStyle(el).display!=='none';
  });
@@ -14516,6 +14553,19 @@ function uiAnyBlockingOverlayVisible(){
 
 function uiSyncBodyScrollLock(){
  const body=document.body;
+ // Fixed overlays nested under dashboard cards can inherit a card/grid
+ // containing block in mobile WebKit, centering against the widened card
+ // rather than the phone viewport. Hoist any visible tablet modal before
+ // calculating the scroll lock. Desktop keeps its intentionally embedded
+ // workspace panels in place.
+ if(body.classList.contains('layout-tablet')){
+  uiBlockingOverlayIds.forEach(id=>{
+   const el=document.getElementById(id);
+   if(!el||el.parentElement===body) return;
+   const visible=el.style.display?el.style.display!=='none':getComputedStyle(el).display!=='none';
+   if(visible) body.appendChild(el);
+  });
+ }
  const shouldLock=uiAnyBlockingOverlayVisible();
  if(shouldLock){
   if(!body.classList.contains('modal-open')){
