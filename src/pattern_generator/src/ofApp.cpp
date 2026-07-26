@@ -19,6 +19,7 @@
 */
 
 #include "ofApp.h"
+#include <algorithm>
 
 /* Start Patch RPI P4 */
 #include "rgb2ycbcr.h"
@@ -468,6 +469,7 @@ void ofApp::image() {
   float_img.clear();
   float_img.load(arr_image[i][to_draw]);
   float_img.rotate90(arr_rotate[i][to_draw]);
+  normalizeImageSourcePixels(arr_source_range[i][to_draw]);
 
   float_img.getTexture().setTextureMinMagFilter(GL_NEAREST, GL_NEAREST); //set pixel precision
   loop_count++;
@@ -483,6 +485,7 @@ void ofApp::image() {
     img.clear();
     img.load(arr_image[i][to_draw]);
     img.rotate90(arr_rotate[i][to_draw]);
+    normalizeImageSourcePixels(arr_source_range[i][to_draw]);
   //img.update(); //update here no necessary,  occurs in both load and rotate90 routines 
     img.getTexture().setTextureMinMagFilter(GL_NEAREST, GL_NEAREST); //set pixel precision
 	loop_count++;
@@ -628,6 +631,54 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
  if(normalized > max_value)
   normalized=max_value;
  return normalized;
+}
+
+void ofApp::normalizeImageSourcePixels(int source_range_mode) {
+ if(source_range_mode != 1)
+  return;
+ if(ofxRPI4Window::avi_info.output_format != 0)
+  return;
+ if(ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi)
+  return;
+ if(ofxRPI4Window::avi_info.rgb_quant_range != 1)
+  return;
+
+ /*
+  * IMAGE textures bypass setColor(), so their studio-range texels need the
+  * same expansion as rectangle patches before vc4 applies its framebuffer
+  * Full -> wire Limited CSC. Values below 16 and above 235 cannot survive
+  * that CSC and are intentionally clamped to framebuffer black/white.
+  */
+ if(ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) {
+  ofFloatPixels &pixels=float_img.getPixels();
+  int channels=pixels.getNumChannels();
+  int color_channels=(channels == 2) ? 1 : std::min(3,channels);
+  float *data=pixels.getData();
+  size_t pixel_count=(size_t)pixels.getWidth() * pixels.getHeight();
+  const float limited_min=16.0f / 255.0f;
+  const float limited_scale=255.0f / 219.0f;
+  for(size_t pixel=0;pixel<pixel_count;pixel++) {
+   for(int channel=0;channel<color_channels;channel++) {
+    float normalized=(data[pixel*channels+channel] - limited_min) * limited_scale;
+    data[pixel*channels+channel]=ofClamp(normalized,0.0f,1.0f);
+   }
+  }
+  float_img.update();
+ } else {
+  ofPixels &pixels=img.getPixels();
+  int channels=pixels.getNumChannels();
+  int color_channels=(channels == 2) ? 1 : std::min(3,channels);
+  unsigned char *data=pixels.getData();
+  size_t pixel_count=(size_t)pixels.getWidth() * pixels.getHeight();
+  for(size_t pixel=0;pixel<pixel_count;pixel++) {
+   for(int channel=0;channel<color_channels;channel++) {
+    int value=data[pixel*channels+channel];
+    int normalized=((value - 16) * 255 + 219 / 2) / 219;
+    data[pixel*channels+channel]=(unsigned char)ofClamp(normalized,0,255);
+   }
+  }
+  img.update();
+ }
 }
 #if 0
 /*
