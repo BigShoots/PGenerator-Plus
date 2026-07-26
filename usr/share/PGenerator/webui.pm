@@ -10259,7 +10259,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 			.meter-lg-rgb-tv-input{width:34px;height:22px;min-width:0;padding:1px 2px;border-radius:5px;border:1px solid var(--border);background:#080a11;color:#eee;font-size:.58rem;text-align:center}
 			.meter-lg-rgb-tv-input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
 			.meter-lg-rgb-apply{width:16px;height:22px;min-width:16px;padding:0;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:.58rem;gap:0}
-			.meter-lg-rgb-live{font-size:.58rem;line-height:1.15;color:var(--text2);white-space:nowrap}
+			.meter-lg-rgb-live{font-size:.875rem;font-weight:700;line-height:1.15;color:#fff;white-space:nowrap}
 			.meter-lg-rgb-luma{grid-column:1/-1;display:grid;grid-template-columns:24px minmax(0,1fr) 24px;grid-template-rows:auto 16px auto;gap:4px 6px;align-items:center;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,.09);background:#10131d}
 			.meter-lg-rgb-luma-label{grid-column:1/-1;font-size:.58rem;line-height:1.1;color:var(--text2);text-align:center;white-space:nowrap}
 		.meter-lg-rgb-luma-value{color:#eee;font-weight:700}
@@ -11069,7 +11069,8 @@ body.meter-stop-active.layout-desktop .desktop-sidebar{filter:grayscale(.25);opa
 [data-theme="light"] .meter-lg-rgb-luma,[data-theme="light"] .custom-ccss-panel{background:var(--surface-inset)}
 [data-theme="light"] .meter-lg-rgb-bar,[data-theme="light"] .meter-lg-rgb-luma{border-color:var(--border)}
 [data-theme="light"] .meter-lg-rgb-zero{background:var(--meter-bar-zero)}
-[data-theme="light"] .meter-lg-rgb-luma-label,[data-theme="light"] .meter-lg-rgb-live{color:var(--text-secondary)}
+[data-theme="light"] .meter-lg-rgb-luma-label{color:var(--text-secondary)}
+[data-theme="light"] .meter-lg-rgb-live{color:var(--text-primary)}
 [data-theme="light"] .meter-lg-rgb-luma-value{color:var(--text-primary)}
 [data-theme="light"] .meter-lg-rgb-luma-track{background:var(--surface-field);border-color:var(--border)}
 [data-theme="light"] .meter-lg-rgb-luma-zero{background:var(--meter-bar-zero)}
