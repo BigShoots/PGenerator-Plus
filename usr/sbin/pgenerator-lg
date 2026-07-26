@@ -3505,22 +3505,7 @@ sub lg_hdr_calman_reset_workflow (@) {
  my ($command,$value)=@{$item};
   my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
   my ($failed,$message)=&response_is_app_failure($response);
-  # This firmware accepts the gamma-enable toggles but returns the same
-  # generic errorCode 20 for the optional user-interface defaults. The
-  # identity matrix/LUT/DPG commands below are the actual HDR calibration
-  # reset and must still succeed. Match only the known driver rejection so
-  # an unrelated UI-command failure remains visible and fatal.
-  my $tolerated=$failed
-   && $command =~ /^(?:BRIGHTNESS|CONTRAST|BACKLIGHT|COLOR)_UI_DATA$/
-   && &lg_externalpq_error_is_expected_driver_rejection($response,$message);
-  push(@steps,{
-   command => $command,
-   value => $value,
-   response => $response,
-   failed => &json_bool($failed && !$tolerated),
-   tolerated => &json_bool($tolerated),
-   message => $tolerated ? "LG returned the expected UI-default driver rejection; HDR reset data is unaffected." : ($message||""),
-  });
+  push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
  }
 
  my ($dc_ok,$dc_attempts)=&lg_hdr_picture_reset_apply_dynamic_contrast_off($session,$active_picture_mode,$tv_input,$connect_timeout + 3);
