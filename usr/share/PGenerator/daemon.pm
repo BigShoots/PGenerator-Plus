@@ -47,8 +47,9 @@ sub fork_pattern_daemon (@) {
 #            Reference APL Helpers            #
 ###############################################
 sub calman_apl_levels (@) {
- my $bits=int($bits_default || 8);
- my $full_max=(1 << $bits) - 1;
+ my $full_max=&calman_target_max();
+ my %bit_depth_for_max=(255 => 8, 1023 => 10, 4095 => 12);
+ my $bits=$bit_depth_for_max{$full_max} || int($bits_default || 8);
  my $shift=$bits - 8;
  my $range_mode=int($pgenerator_conf{"rgb_quant_range"} || 0);
  my $limited_min=16 << $shift;
@@ -57,7 +58,15 @@ sub calman_apl_levels (@) {
  return (0,$full_max,$full_max,"full");
 }
 
+sub calman_dv_source_max (@) {
+ return 4095 if(int($pgenerator_conf{"dv_status"} || 0) == 1 &&
+                int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
+ return 0;
+}
+
 sub calman_target_max (@) {
+ my $dv_source_max=&calman_dv_source_max();
+ return $dv_source_max if($dv_source_max > 0);
  my $bits=int($bits_default || 8);
  return 1023 if($bits == 10);
  return 4095 if($bits == 12);
@@ -404,6 +413,7 @@ sub calman_render_commandrgb_pattern (@) {
  my $cr_tenBit=int($el_cmd[3]);
  my $cr_size=int($el_cmd[4]);
  my $target_max=&calman_target_max();
+ my $source_max=&calman_dv_source_max();
  my $input_max=$cr_tenBit ? 1023 : 255;
  my $cr_r=&calman_scale_value($cr_r_in,$input_max);
  my $cr_g=&calman_scale_value($cr_g_in,$input_max);
@@ -422,12 +432,12 @@ sub calman_render_commandrgb_pattern (@) {
                    extra=>"tenBit=$cr_tenBit size_token=$cr_size target_max=$target_max input_max=$input_max ".&calman_patch_context());
  &clean_pattern_files();
  if($cr_size_effective >= 100) {
-  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range);
+  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$cr_rgb","$cr_bg","","","",1,"calman",$cr_source_range,$source_max);
  } else {
   my $sqrt_val=sqrt($cr_size_effective/100);
   my $win_w=int($sqrt_val*$max_x);
   my $win_h=int($sqrt_val*$max_y);
-  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_rgb","$cr_bg","$position_default","","",1,"calman",$cr_source_range);
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$cr_rgb","$cr_bg","$position_default","","",1,"calman",$cr_source_range,$source_max);
  }
  return 1;
 }
@@ -440,6 +450,7 @@ sub calman_render_rgb_pattern (@) {
  my @el_cmd=split(",",$pattern_cmd);
  my $calman_max=1023;
  my $target_max=&calman_target_max();
+ my $source_max=&calman_dv_source_max();
  my $rgb_raw="$el_cmd[0],$el_cmd[1],$el_cmd[2]";
  &log("Calman PATTERN: type=$type raw=$rgb_raw bits_default=$bits_default target_max=$target_max");
  my $r=&calman_scale_value($el_cmd[0],$calman_max);
@@ -469,7 +480,7 @@ sub calman_render_rgb_pattern (@) {
   $calman_apl_enabled=0;
   $calman_bg="$bg_val,$bg_val,$bg_val";
   &clean_pattern_files();
-  &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman",$source_range);
+  &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$calman_bg","calman",$source_range,$source_max);
   return 1;
  }
  if($type =~/RGB_S/) {
@@ -482,14 +493,14 @@ sub calman_render_rgb_pattern (@) {
   if($win_pct >= 100) {
    $pname_file="FullField";
    &clean_pattern_files();
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range,$source_max);
    return 1;
   }
   my $sqrt_val=sqrt($win_pct/100);
   my $win_w=int($sqrt_val*$max_x);
   my $win_h=int($sqrt_val*$max_y);
   &clean_pattern_files();
-  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range,$source_max);
   return 1;
  }
  if($type =~/RGB_A/) {
@@ -511,19 +522,19 @@ sub calman_render_rgb_pattern (@) {
   if($win_pct >= 100) {
    $pname_file="FullField";
    &clean_pattern_files();
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range);
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$r,$g,$b","$effective_bg","","","",1,"calman",$source_range,$source_max);
    return 1;
   }
   my $sqrt_val=sqrt($win_pct/100);
   my $win_w=int($sqrt_val*$max_x);
   my $win_h=int($sqrt_val*$max_y);
   &clean_pattern_files();
-  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range);
+  &create_pattern_file("RECTANGLE","$win_w,$win_h",100,"$r,$g,$b","$effective_bg","$position_default","","",1,"calman",$source_range,$source_max);
   return 1;
  }
  my $effective_bg=&calman_apl_bg("$r,$g,$b",$calman_win_size,$type);
  &clean_pattern_files();
- &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$effective_bg","calman",$source_range);
+ &get_pattern($test_template_command,$pattern_dynamic,"$r,$g,$b;$effective_bg","calman",$source_range,$source_max);
  return 1;
 }
 
@@ -533,6 +544,8 @@ sub calman_render_specialty_pattern (@) {
  $sp_name=~s/^\s+|\s+$//g;
  &clean_pattern_files();
  my $source_range=&calman_pattern_source_range();
+ my $target_max=&calman_target_max();
+ my $source_max=&calman_dv_source_max();
  my $black_rgb=&calman_scale_triplet_8bit(0,0,0);
  my $white_rgb=&calman_scale_triplet_8bit(255,255,255);
  my $gray128_rgb=&calman_scale_triplet_8bit(128,128,128);
@@ -548,7 +561,7 @@ sub calman_render_specialty_pattern (@) {
    &load_new_pattern_file("calman");
   } else {
    &log("Calman: BRIGHTNESS image render failed, falling back to flat patch");
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$calman_bg","","","",1,"calman",$source_range);
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$black_rgb","$calman_bg","","","",1,"calman",$source_range,$source_max);
   }
  } elsif($sp_name eq "CONTRAST") {
   my $img=&webui_pattern_diag_image_file("calman_contrast");
@@ -560,7 +573,7 @@ sub calman_render_specialty_pattern (@) {
    &load_new_pattern_file("calman");
   } else {
    &log("Calman: CONTRAST image render failed, falling back to flat patch");
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$white_rgb","$calman_bg","","","",1,"calman",$source_range);
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$white_rgb","$calman_bg","","","",1,"calman",$source_range,$source_max);
   }
  } elsif($sp_name eq "ALIGNMENT" || $sp_name eq "OVERSCAN") {
   my $img=&webui_pattern_diag_image_file("calman_alignment");
@@ -572,11 +585,11 @@ sub calman_render_specialty_pattern (@) {
    &load_new_pattern_file("calman");
   } else {
    &log("Calman: ALIGNMENT image render failed, falling back to flat patch");
-   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
+   &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range,$source_max);
   }
  } else {
   &log("Calman: unknown specialty pattern: $sp_name");
-  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range);
+  &create_pattern_file("RECTANGLE","$w_s,$h_s",100,"$gray128_rgb","$calman_bg","","","",1,"calman",$source_range,$source_max);
  }
  return 1;
 }
@@ -2049,7 +2062,9 @@ sub pattern_daemon {
      #
     # RGB Pattern Commands (legacy external wire protocol)
     # RGB_B:R,G,B,BG  RGB_S:R,G,B,SIZE  RGB_A:R,G,B,BG_R,BG_G,BG_B,SIZE
-    # The client sends 10-bit values (0-1023); scale to the current output depth
+    # The client sends 10-bit values (0-1023). Standard DV expands them to
+    # 12-bit source codes while the renderer keeps the packed RGB tunnel at
+    # BITS=8; other modes scale to their normal drawing precision.
      #
      if($type =~/RGB_/) {
       # Apply any pending display mode settings before showing pattern

@@ -85,6 +85,7 @@ sub create_pattern_file (@) {
  my $simple=shift;
  my $requested_by=(($requested_by=shift) eq "") ? $requested_by_default : $requested_by;
  my $source_range=shift;
+ my $source_max=int(shift || 0);
  my $scaling_disabled=($requested_by eq "RGB") ? 1 : 0;
  my ($min_rgb,$max_rgb)=(0,255);
  my @el_rgb=split(",",$rgb);
@@ -101,6 +102,8 @@ sub create_pattern_file (@) {
  }
  $bits=$bits_default if($bits eq "");
  $max_rgb=(1 << $bits) - 1 if($bits > 8);
+ $source_max=0 if($source_max != 255 && $source_max != 1023 && $source_max != 4095);
+ $max_rgb=$source_max if($source_max > 0);
  for(@el_rgb) {
   return if($_ < $min_rgb || $_ > $max_rgb);
   $new_rgb.=int($_).",";
@@ -119,6 +122,7 @@ sub create_pattern_file (@) {
  # create the pattern file
  $pattern_string.="PATTERN_NAME=$pname_file\n" if($pname_file ne "");
  $pattern_string.="MOVIE_NAME=TestPattern\nBITS=$bits\n" if($simple);
+ $pattern_string.="SOURCE_MAX=$source_max\n" if($source_max > 0);
  $pattern_string.="DRAW=$draw\nDIM=$dim\nRESOLUTION=$resolution\nRGB=$new_rgb\nBG=$bg\nPOSITION=$position\n";
  $pattern_string.="SOURCE_RANGE=$source_range\n" if($source_range ne "");
  $pattern_string.="$options=$text\nEND=1\n";
@@ -406,6 +410,8 @@ sub get_pattern (@) {
  my $rgb = shift;
  my $requested_by = shift;
  my $source_range = shift;
+ my $source_max = int(shift || 0);
+ $source_max=0 if($source_max != 255 && $source_max != 1023 && $source_max != 4095);
  my ($str,$bg,$dim,$draw_type,$pos,$res,$frame,$str_other,$image,$bits,$rules) = "";
  my %var=();
  my $pattern_dir = $pattern_templates;
@@ -550,7 +556,7 @@ sub get_pattern (@) {
   # MACRO
   #
     if($_=~/^MACRO=(.*)/) {
-     &get_pattern($type,$1,$rgb,"MACRO",$source_range);
+     &get_pattern($type,$1,$rgb,"MACRO",$source_range,$source_max);
    next;
   }
   #
@@ -627,6 +633,7 @@ sub get_pattern (@) {
  # Write definitive pattern
  #
  $bits=$bits_default if($bits eq "");
+ $str=~s/^END=(.*)$/SOURCE_MAX=$source_max\nEND=$1/mg if($source_max > 0 && $str !~/^SOURCE_MAX=/m);
  $str=~s/^END=(.*)$/SOURCE_RANGE=$source_range\nEND=$1/mg if($source_range ne "");
  $str.="FRAME=$frame_default\n"  if($str !~/\n^FRAME=/m);
  open(PATTERN,">$command_file.tmp");

@@ -87,10 +87,9 @@ sub get_conf (@) {
 ###############################################
 sub sync_pattern_bits_default (@) {
  my $conf_bits=int($pgenerator_conf{"max_bpc"} || 8);
- # The Dolby Vision renderer consumes the generic/simple client pattern path
- # in 8-bit even when the HDMI link itself runs at higher bpc. Keep the
- # daemon/template default on 8-bit for DV and let dedicated web UI patch
- # generation select the renderer-safe draw depth explicitly.
+ # Standard Dolby Vision uses the 8-bit RGB tunnel, so BITS remains 8 even
+ # though its shader consumes 12-bit source codes via SOURCE_MAX=4095.
+ # Dedicated WebUI and Calman paths declare that source precision separately.
  if(int($pgenerator_conf{"dv_status"} || 0) == 1) {
   $bits_default=8;
   return;
