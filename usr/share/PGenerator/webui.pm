@@ -26878,6 +26878,10 @@ let meterThumbSelectionAnchor=null; // shift-range anchor in visible thumbnail o
 let meterThumbSuppressClickUntil=0; // prevents the click following a drag-box selection
 let meterThumbDragState=null;
 let meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
+// Snapshot of chart readings when Read Selection starts so partial re-reads
+// merge into the existing series instead of wiping the charts first.
+let meterSelectionBaselineReadings=null;
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
 
 function meterVisibleSeriesSteps(){
@@ -30711,6 +30715,29 @@ function meterHasSavedMeasuredBlack(){
    &&(r.luminance!=null||r.Y!=null)&&!r.error);
  }catch(e){}
  return false;
+}
+
+// Merge incoming series readings into an existing chart set by step key so
+// Read Selection updates only the patches it measured and leaves the rest.
+function meterMergeSeriesReadings(baseline,incoming){
+ const byKey=new Map();
+ const put=(rd)=>{
+  if(!rd) return;
+  const key=meterStepNameKey(rd);
+  if(!key) return;
+  byKey.set(key,rd);
+ };
+ (Array.isArray(baseline)?baseline:[]).forEach(put);
+ (Array.isArray(incoming)?incoming:[]).forEach(put);
+ return Array.from(byKey.values());
+}
+
+function meterCloneReadingsSnapshot(list){
+ try{
+  return JSON.parse(JSON.stringify(Array.isArray(list)?list:[]));
+ }catch(e){
+  return (Array.isArray(list)?list:[]).slice();
+ }
 }
 
 function meterStepIsNeutralEndpoint(step,ire){
@@ -39812,6 +39839,7 @@ function meterClearSeriesRunUiState(){
  }
  meterSeriesRunning=false;
  meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
@@ -40025,25 +40053,22 @@ async function meterRunSeries(options){
  }
  meterSeriesSelectionRunActive=!!(selectedRunSteps&&selectedRunSteps.length);
  const runStepCount=meterSeriesSelectionRunActive?selectedRunSteps.length:meterSeriesSteps.length;
- // Preserve saved white/black when Selection intentionally skipped re-measuring
- // those endpoints (Use measured + already have a sample). Full series and
- // Selection runs that will re-read 0%/100% still start from a clean slate.
- const selectionWillMeasureWhite=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,100)));
- const selectionWillMeasureBlack=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,0)));
- const keepWhiteReading=(meterSeriesSelectionRunActive&&selectionHasSavedWhite&&!selectionWillMeasureWhite)
-  ?meterWhiteReading:null;
- let keepBlackReading=null;
- if(meterSeriesSelectionRunActive&&selectionHasSavedBlack&&!selectionWillMeasureBlack){
-  try{
-   keepBlackReading=(Array.isArray(meterReadings)?meterReadings:[]).find(r=>r
-    &&Math.abs(Number(r.ire||0))<0.05&&(r.luminance!=null||r.Y!=null)&&!r.error)||null;
-  }catch(e){ keepBlackReading=null; }
+ // Read Selection keeps the existing chart and merges new samples in.
+ // Full Read Series still starts from a clean slate.
+ const selectionWillMeasureWhite=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,100)
+  ||String(s&&s.name||'').toLowerCase()==='white'));
+ if(meterSeriesSelectionRunActive){
+  meterSelectionBaselineReadings=meterCloneReadingsSnapshot(meterReadings);
+  // Keep current white unless this selection will re-measure it.
+  if(selectionWillMeasureWhite) meterWhiteReading=null;
+ }else{
+  meterSelectionBaselineReadings=null;
+  meterReadings=[];
+  meterWhiteReading=null;
  }
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterClearMultiPatchSelection();
- meterReadings=keepBlackReading?[keepBlackReading]:[];
- meterWhiteReading=keepWhiteReading;
  meterCurrentPatchStep=null;
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
@@ -40051,7 +40076,10 @@ async function meterRunSeries(options){
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
- meterLastChartCount=0;
+ meterLastChartCount=meterSeriesSelectionRunActive
+  ?(Array.isArray(meterReadings)?meterReadings.filter(rd=>rd&&rd.luminance!=null).length:0)
+  :0;
+ meterLastChartSignature='';
  meterGreyscaleLowEndPinned=false;
  meterGreyscaleLastCurrentKey=null;
  meterSharedSeriesId=null;
@@ -40081,15 +40109,25 @@ async function meterRunSeries(options){
  const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
  const uiCaps=meterSeriesUiCaps(sortedSteps.length);
  const runCaps=meterSeriesUiCaps(runStepCount);
- if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,new Set(),null);
+ const completedForThumbs=new Set((Array.isArray(meterReadings)?meterReadings:[])
+  .filter(rd=>rd&&rd.luminance!=null).map(rd=>meterStepNameKey(rd)));
+ if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,completedForThumbs,null);
  meterSetThumbsVisible(uiCaps.thumbs);
- drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
+ // Selection: keep plotted samples. Full series: empty preset targets only.
+ if(meterSeriesSelectionRunActive&&Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&rd.luminance!=null)){
+  const isColorKeep=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+  const keepSorted=isColorKeep?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(keepSorted);
+ }else{
+  drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
+ }
  if(runCaps.confirmStart){
   const estimate=meterLatticeFormatDuration(meterLatticeEstimateSeconds(runStepCount));
   const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+runStepCount+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
   if(!proceed){
    meterSeriesRunning=false;
    meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
    meterBuild3dLutPending=null;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -40163,6 +40201,7 @@ async function meterRunSeries(options){
 	   toast(r&&r.message?r.message:'Failed to start series',true);
 	   meterSeriesRunning=false;
 	   meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
 	   meterSeriesAwaitingReady=false;
 	   meterReadySignalPending=false;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
@@ -40182,6 +40221,7 @@ async function meterRunSeries(options){
   toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
@@ -40239,6 +40279,7 @@ async function meterPollSeries(){
   }
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+ meterSelectionBaselineReadings=null;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
@@ -40267,7 +40308,16 @@ async function meterPollSeries(){
  let currentIre=null;
 
 	 if(r.readings&&r.readings.length>0) {
-	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(r.readings,meterActiveSeriesType));
+	  const incoming=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(r.readings,meterActiveSeriesType));
+	  // Read Selection: merge into the pre-run chart. Full series: replace.
+	  if(meterSeriesSelectionRunActive){
+	   const baseline=Array.isArray(meterSelectionBaselineReadings)
+	    ?meterSelectionBaselineReadings
+	    :(Array.isArray(meterReadings)?meterReadings:[]);
+	   meterReadings=meterAttachSeriesMeta(meterMergeSeriesReadings(baseline,incoming));
+	  }else{
+	   meterReadings=incoming;
+	  }
   // Only set white reference from actual 100% reading — never use
   // "brightest so far" during a running series, because that changes
   // every poll cycle and causes all ΔE / RGB balance values to shift.
@@ -40344,6 +40394,7 @@ async function meterPollSeries(){
   meterSeriesPolling=null;
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+  meterSelectionBaselineReadings=null;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
