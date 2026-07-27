@@ -27061,9 +27061,15 @@ function meterSelectPatchFromInteraction(step,reading,opts){
    else if(resolvedStep.name){
     _selectedColorReadingName=resolvedStep.name||null;
     _colorDetailPinned=pin&&!!_selectedColorReadingName;
-    colorHighlightThumb(resolvedStep.name);
     colorHighlightTableRow(resolvedStep.name);
    }
+  }
+  // Always restyle thumbs after focus: multi-select must keep every selected
+  // ring (colorHighlightThumb alone only paints one name).
+  if(meterSelectedThumbIndices&&meterSelectedThumbIndices.size>1){
+   try{ meterRefreshThumbSelectionStyles(true); }catch(e){}
+  }else if(resolvedStep.name){
+   try{ colorHighlightThumb(resolvedStep.name); }catch(e){}
   }
  } else {
   meterSelectedThumbIre=meterStepNameKey(resolvedStep);
@@ -41245,6 +41251,9 @@ function meterThumbRenderDragSelection(state,currentX,currentY){
  const next=state.additive?new Set(state.baseSelection):new Set();
  hits.forEach(index=>next.add(index));
  meterSelectedThumbIndices=next;
+ // Remember the range painted during the drag so pointerup can commit it
+ // without re-hit-testing (color strip first-release used to collapse).
+ state.lastHits=hits.slice();
  meterRefreshThumbSelectionStyles(true);
  return hits;
 }
@@ -41320,15 +41329,24 @@ function meterThumbFinishDrag(event,cancelled){
   meterRefreshThumbSelectionStyles();
  } else if(state.dragging){
   meterThumbSuppressClickUntil=performance.now()+400;
-  const hits=meterThumbDragSelectionIndices(state,event.clientX,event.clientY);
+  // Prefer the selection painted during the last move — recomputing from
+  // pointerup coordinates can collapse a wide color-strip range.
+  let hits=Array.isArray(state.lastHits)?state.lastHits.slice():null;
+  if(!hits||!hits.length){
+   hits=meterThumbDragSelectionIndices(state,event.clientX,event.clientY);
+  }
   const next=state.additive?new Set(state.baseSelection):new Set();
   hits.forEach(index=>next.add(index));
   meterSelectedThumbIndices=next;
   if(hits.length) meterThumbSelectionAnchor=hits[0];
   const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
   if(!next.size) meterDeselectCurrentPatch();
-  else if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
-  else meterRefreshThumbSelectionStyles();
+  else{
+   // Always restyle multi first so colorHighlightThumb cannot wipe the range.
+   meterRefreshThumbSelectionStyles(true);
+   if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
+   else meterRefreshThumbSelectionStyles();
+  }
  }
  meterThumbDragState=null;
 }
@@ -43561,6 +43579,14 @@ function showColorReadingDetail(rd,opts){
 function colorHighlightThumb(name){
  const container=document.getElementById('meterPatchThumbs');
  if(!container) return;
+ // Multi-select (Read Selection drag): never paint a single-name ring — that
+ // wiped every other selected color thumb on pointerup of the first drag
+ // (meterDisplayFirstSelectedPatch → select → colorHighlightThumb). Greyscale
+ // never hit this path, so range-drag worked there on the first try.
+ if(meterSelectedThumbIndices&&meterSelectedThumbIndices.size>1){
+  try{ meterRefreshThumbSelectionStyles(true); }catch(e){}
+  return;
+ }
  const hasReadings=meterReadings&&meterReadings.length>0;
  const completedNames=hasReadings?new Set(meterReadings.filter(r=>r.luminance!=null).map(r=>r.name)):new Set();
  for(let i=0;i<container.children.length;i++){
