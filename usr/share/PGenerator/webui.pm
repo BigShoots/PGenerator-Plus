@@ -39920,15 +39920,47 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
  }
 }
 
-// Patch selection is transient. Clicking away clears it instead of disabling
-// ordinary text selection or making the whole dashboard inert.
-document.addEventListener('pointerdown',event=>{
- if(meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
- if(event.target&&event.target.closest&&event.target.closest('#meterPatchThumbs')) return;
+// Patch selection is transient. Mouse clicks can clear it immediately, but on
+// touch devices wait until pointerup proves the gesture was a tap. Deselecting
+// on the initial touch restyles the patch strip and resets the pattern, which
+// stalls the first frame of a page-scroll gesture over a chart.
+let meterPatchDeselectTouch=null;
+function meterPatchDeselectIgnoreTarget(target){
+ if(!target||!target.closest) return false;
+ if(target.closest('#meterPatchThumbs')) return true;
  // Measurement actions operate on the selected patch. Do not let the
  // click-away handler clear it before their click handlers run.
- if(event.target&&event.target.closest&&event.target.closest('#meterReadBtnRow')) return;
+ return !!target.closest('#meterReadBtnRow');
+}
+document.addEventListener('pointerdown',event=>{
+ if(meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
+ if(meterPatchDeselectIgnoreTarget(event.target)) return;
+ if(event.pointerType==='touch'||event.pointerType==='pen'){
+  meterPatchDeselectTouch={
+   pointerId:event.pointerId,
+   x:event.clientX,
+   y:event.clientY,
+   moved:false
+  };
+  return;
+ }
  try{ meterDeselectCurrentPatch(); }catch(e){}
+},true);
+document.addEventListener('pointermove',event=>{
+ const pending=meterPatchDeselectTouch;
+ if(!pending||pending.pointerId!==event.pointerId||pending.moved) return;
+ if(Math.abs(event.clientX-pending.x)>8||Math.abs(event.clientY-pending.y)>8) pending.moved=true;
+},true);
+document.addEventListener('pointerup',event=>{
+ const pending=meterPatchDeselectTouch;
+ if(!pending||pending.pointerId!==event.pointerId) return;
+ meterPatchDeselectTouch=null;
+ if(pending.moved||meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
+ if(meterPatchDeselectIgnoreTarget(event.target)) return;
+ try{ meterDeselectCurrentPatch(); }catch(e){}
+},true);
+document.addEventListener('pointercancel',event=>{
+ if(meterPatchDeselectTouch&&meterPatchDeselectTouch.pointerId===event.pointerId) meterPatchDeselectTouch=null;
 },true);
 
 // Pre-populate ALL charts with grids and placeholder points before readings
