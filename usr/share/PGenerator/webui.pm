@@ -7766,13 +7766,130 @@ sub webui_info_json (@) {
  return "{\"hostname\":\"$hostname\",\"version\":\"$ver\",\"temperature\":\"$temp\",\"uptime\":\"$uptime\",\"resolution\":\"$resolution\",\"interfaces\":$ip_json,\"wifi\":{\"ssid\":\"$wifi_ssid\",\"freq\":\"$wifi_freq\",\"band\":\"$wifi_band\",\"signal\":\"$wifi_signal\",\"state\":\"$wifi_state\"},\"calibration\":{\"connected\":$cal_conn,\"ip\":\"$cal_ip\",\"software\":\"$cal_sw\"},\"total_ram\":\"$total_ram\",\"gpu_mem\":\"$gpu_mem\",\"hdmi_port\":$hdmi_port_json}";
 }
 
+sub _webui_log_ipv4_class (@) {
+ my $addr=shift;
+ my @octets=split(/\./,$addr||"");
+ return "" if(@octets != 4);
+ foreach my $octet (@octets) {
+  return "" if($octet !~ /^\d{1,3}$/ || int($octet) > 255);
+ }
+ return "unspecified" if($addr eq "0.0.0.0");
+ return "broadcast" if($addr eq "255.255.255.255");
+ return "loopback" if($octets[0] == 127);
+ return "link-local" if($octets[0] == 169 && $octets[1] == 254);
+ return "private" if($octets[0] == 10
+  || ($octets[0] == 172 && $octets[1] >= 16 && $octets[1] <= 31)
+  || ($octets[0] == 192 && $octets[1] == 168));
+ return "multicast" if($octets[0] >= 224 && $octets[0] <= 239);
+ return "public";
+}
+
+sub _webui_log_ipv6_class (@) {
+ my $addr=shift;
+ return "" if(!defined($addr) || $addr eq "" || !defined(&Socket::inet_pton));
+ my $packed=eval { Socket::inet_pton(Socket::AF_INET6(),$addr) };
+ return "" if(!defined($packed) || length($packed) != 16);
+ my $lower=lc($addr);
+ return "loopback" if($lower eq "::1" || $packed eq (("\0" x 15)."\1"));
+ return "unspecified" if($lower eq "::" || $packed eq ("\0" x 16));
+ my $first=ord(substr($packed,0,1));
+ my $second=ord(substr($packed,1,1));
+ return "link-local" if($first == 0xfe && (($second & 0xc0) == 0x80));
+ return "private" if(($first & 0xfe) == 0xfc);
+ return "multicast" if($first == 0xff);
+ return "public";
+}
+
 sub webui_redact_sensitive_log_text (@) {
  my $text=shift;
  $text="" if(!defined($text));
- $text =~ s/("client_key"\s*:\s*)"[^"]*"/$1"<redacted>"/g;
- $text =~ s/("client-key"\s*:\s*)"[^"]*"/$1"<redacted>"/g;
- $text =~ s/("clientKey"\s*:\s*)"[^"]*"/$1"<redacted>"/g;
+
+ # Secrets can appear in config, JSON helper output, or wpa_cli output.
+ $text =~ s{("(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
+ $text =~ s{("(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)"\s*:\s*)(?:-?\d+(?:\.\d+)?|true|false|null)}{$1"<redacted>"}gi;
+ $text =~ s{^(\s*(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)\s*[:=]\s*).*$}{$1<redacted>}gim;
+ $text =~ s{(://[^/\s:@]+:)[^@\s/]+@}{$1<redacted>@}g;
+
+ # Names and hardware identifiers are not needed to diagnose their state.
+ $text =~ s{("(?:ssid|bssid|hostname|host_name|auto_host|user(?:name)?|email|serial(?:_number)?|device_serial|meter_serial|display_serial|uuid|boot_id|stored_name|cec_osd_name|cec_tv_name|friendly_name|device_name|tv_name)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
+ $text =~ s{^(\s*(?:ssid|bssid|hostname|host_name)\s*[:=]\s*).*$}{$1<redacted>}gim;
+ $text =~ s{^(\s*(?:(?:display product|device|meter|instrument)\s+)?serial(?:\s*(?:number|no\.?|#))?\s*[:=]\s*).*$}{$1<redacted>}gim;
+ $text =~ s{^(\s*Host:\s*)\S+(\s+Version:)}{$1<redacted>$2}gim;
+ $text =~ s{^(\s*(?:search|domain)\s+).*$}{$1<redacted>}gim;
+ $text =~ s{(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])}{<email-redacted>}g;
+ $text =~ s{/home/[^/\s]+}{/home/<user>}g;
+
+ # Preserve whether addresses are private/public/link-local and preserve
+ # equality within one report, without exposing the actual network topology.
+ my (%ipv6_alias,%ipv6_count);
+ $text =~ s{
+  (?<![A-Za-z0-9_.:])
+  ([0-9A-Fa-f:.]*:[0-9A-Fa-f:.]+)
+  (?![A-Za-z0-9_.:])
+ }{
+  my $addr=$1;
+  my $class=&_webui_log_ipv6_class($addr);
+  $class eq "" ? $addr
+   : ($ipv6_alias{$addr} ||= "<ipv6-$class-".(++$ipv6_count{$class}).">");
+ }gex;
+
+ my (%ipv4_alias,%ipv4_count);
+ $text =~ s{
+  (?<![A-Za-z0-9_.])
+  ((?:\d{1,3}\.){3}\d{1,3})
+  (?![A-Za-z0-9_.])
+ }{
+  my $addr=$1;
+  my $class=&_webui_log_ipv4_class($addr);
+  $class eq "" ? $addr
+   : ($ipv4_alias{$addr} ||= "<ipv4-$class-".(++$ipv4_count{$class}).">");
+ }gex;
+
+ my (%mac_alias,$mac_count);
+ $text =~ s{
+  (?<![A-Fa-f0-9])
+  ((?:[A-Fa-f0-9]{2}[:-]){5}[A-Fa-f0-9]{2})
+  (?![A-Fa-f0-9])
+ }{
+  my $addr=lc($1);
+  $mac_alias{$addr} ||= "<mac-".(++$mac_count).">";
+ }gex;
  return $text;
+}
+
+sub webui_sanitize_edid_hex (@) {
+ my $edid_hex=shift;
+ $edid_hex="" if(!defined($edid_hex));
+ $edid_hex=~s/\s+//g;
+ return "" if($edid_hex eq "");
+ return "(EDID hex unavailable after privacy sanitization)"
+  if($edid_hex=~/[^A-Fa-f0-9]/ || (length($edid_hex) % 256) != 0);
+ my @bytes=unpack("C*",pack("H*",$edid_hex));
+ return "(EDID hex unavailable after privacy sanitization)" if(@bytes < 128);
+
+ # The base block stores a numeric serial and can also carry a serial text
+ # descriptor. Neither affects display capability diagnosis.
+ @bytes[12..15]=(0,0,0,0);
+ foreach my $offset (54,72,90,108) {
+  next if($offset + 17 >= 128);
+  next if($bytes[$offset] != 0 || $bytes[$offset+1] != 0 || $bytes[$offset+2] != 0 || $bytes[$offset+3] != 0xff);
+  for(my $i=$offset+5;$i<=$offset+17;$i++) { $bytes[$i]=0x20; }
+ }
+ my $sum=0;
+ $sum+=$bytes[$_] for(0..126);
+ $bytes[127]=(-$sum) & 0xff;
+
+ my @out;
+ for(my $offset=0;$offset<@bytes;$offset+=128) {
+  if($offset > 0 && $bytes[$offset] == 0x70) {
+   push @out, "<DisplayID extension omitted: may contain a device serial>";
+   next;
+  }
+  my $block=pack("C*",@bytes[$offset..$offset+127]);
+  my $hex=unpack("H*",$block);
+  push @out, ($hex=~/.{1,64}/g);
+ }
+ return join("\n",@out);
 }
 
 sub webui_create_logs_bundle (@) {
@@ -7784,8 +7901,8 @@ sub webui_create_logs_bundle (@) {
  push @out, "  PGenerator+ Diagnostic Report";
  push @out, "  Host: $hostname   Version: $version   Date: ".`date -u '+%Y-%m-%d %H:%M:%S UTC'`;
  chomp($out[$#out]);
- push @out, "  NOTE: Log contains WiFi SSID/BSSID, EDID (display serial), meter serial#.";
- push @out, "  Redact before posting publicly.";
+ push @out, "  PRIVACY: Network addresses retain only their address class and stable alias.";
+ push @out, "  Host/user names, WiFi identity, credentials, and device serials are redacted.";
  push @out, "=" x 72;
 
  # System info
@@ -7812,7 +7929,11 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- DNS (resolv.conf) ---";
  push @out, `cat /etc/resolv.conf 2>/dev/null`; chomp($out[$#out]);
  push @out, "", "--- WiFi Status ---";
- push @out, `timeout 3 wpa_cli -i wlan0 status 2>/dev/null`; chomp($out[$#out]);
+ my $diag_wifi_status=`timeout 3 wpa_cli -i wlan0 status 2>/dev/null`;
+ chomp($diag_wifi_status);
+ my $diag_wifi_ssid="";
+ $diag_wifi_ssid=$1 if($diag_wifi_status=~/^ssid=(.*)$/m);
+ push @out, $diag_wifi_status;
 
  # HDMI / Display
  push @out, "", "--- HDMI Mode ---";
@@ -7821,7 +7942,7 @@ sub webui_create_logs_bundle (@) {
  my $edid_hex=`timeout 5 cat /sys/class/drm/card?-HDMI-A-1/edid 2>/dev/null | xxd -p 2>/dev/null`;
  chomp($edid_hex);
  if($edid_hex) {
-  push @out, $edid_hex;
+  push @out, &webui_sanitize_edid_hex($edid_hex);
   push @out, "", "--- EDID Decoded ---";
   push @out, `timeout 5 edid-decode /sys/class/drm/card?-HDMI-A-1/edid 2>&1`;
   chomp($out[$#out]);
@@ -7849,7 +7970,6 @@ sub webui_create_logs_bundle (@) {
 	 push @out, "", "--- LG Display Status API ---";
 	 my $lg_status="";
 	 $lg_status=&webui_lg_status_json("Diagnostic snapshot") if(defined(&webui_lg_status_json));
-	 $lg_status=&webui_redact_sensitive_log_text($lg_status);
 	 chomp($lg_status);
 	 push @out, ($lg_status ne "") ? $lg_status : "(LG display helper unavailable)";
 	 push @out, "", "--- LG Picture Endpoint Capabilities ---";
@@ -7859,12 +7979,10 @@ sub webui_create_logs_bundle (@) {
 	  my $body=&lg_encode_json({ keys => $keys, helper_timeout => 90 });
 	  $lg_caps=&webui_lg_picture_settings($body);
 	 }
-	 $lg_caps=&webui_redact_sensitive_log_text($lg_caps);
 	 chomp($lg_caps);
 	 push @out, ($lg_caps ne "") ? $lg_caps : "(LG TV not connected or picture capabilities unavailable)";
 	 push @out, "", "--- LG Last Write / Capability Log ---";
 	 my $lg_write_log=`tail -n 500 /var/lib/PGenerator/lg/last-write.log 2>/dev/null`; chomp($lg_write_log);
-	 $lg_write_log=&webui_redact_sensitive_log_text($lg_write_log);
 	 push @out, ($lg_write_log ne "") ? $lg_write_log : "(none found)";
 
 	 # Pattern generator state
@@ -7956,7 +8074,6 @@ sub webui_create_logs_bundle (@) {
     next if(!-f $path);
     my $content = `cat '$path' 2>/dev/null`;
     chomp($content);
-    $content = &webui_redact_sensitive_log_text($content);
     push @out, "", "[$f]";
     push @out, ($content ne "") ? $content : "(empty)";
    }
@@ -7978,8 +8095,18 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- USB / Serial ---";
  my $lsusb=`lsusb 2>/dev/null`; chomp($lsusb);
  push @out, ($lsusb ne "") ? $lsusb : "(none found)";
- my $serials=`ls -l /dev/serial/by-id/ 2>/dev/null`; chomp($serials);
- push @out, ($serials ne "") ? $serials : "(none found)";
+ my @serial_nodes=glob("/dev/serial/by-id/*");
+ if(@serial_nodes) {
+  my $serial_index=0;
+  foreach my $serial_node (@serial_nodes) {
+   $serial_index++;
+   my $target=readlink($serial_node);
+   $target="" if(!defined($target));
+   push @out, "USB serial device $serial_index -> ".($target ne "" ? $target : "(target unavailable)");
+  }
+ } else {
+  push @out, "(none found)";
+ }
  my $tty_nodes=`ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null`; chomp($tty_nodes);
  push @out, ($tty_nodes ne "") ? $tty_nodes : "(none found)";
  push @out, "", "--- spotread Version ---";
@@ -8042,6 +8169,13 @@ sub webui_create_logs_bundle (@) {
  push @out, "=" x 72, "";
 
  my $text=join("\n",@out);
+ if($hostname ne "") {
+  $text=~s{(?<![A-Za-z0-9_-])\Q$hostname\E(?![A-Za-z0-9_-])}{<hostname>}gi;
+ }
+ if($diag_wifi_ssid ne "") {
+  $text=~s{\Q$diag_wifi_ssid\E}{<ssid>}g;
+ }
+ $text=&webui_redact_sensitive_log_text($text);
  if(open(my $fh,">:raw",$tmp)) {
   print $fh $text;
   close($fh);
