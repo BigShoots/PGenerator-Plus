@@ -2898,6 +2898,14 @@ sub webui_lg_card_html (@) {
 	   body.layout-desktop #lgCalHistoryOpenBtn{display:none}
 	   body.layout-desktop .lg-display-control-open-desktop{display:inline-flex;margin:0 0 8px}
 	   body.layout-desktop #lgCalHistoryDesktop{display:block}
+	   .lg-card-title-actions{margin-left:auto;display:inline-flex;gap:6px;min-width:0}
+	   @media(max-width:600px){
+	    #lgCardTitle{flex-wrap:wrap}
+	    #lgCardTitle::after{order:2;margin-left:auto}
+	    #lgStatusBadge{margin-left:0!important}
+	    .lg-card-title-actions{order:3;display:grid;width:100%;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);margin-left:0}
+	    .lg-card-title-actions .btn{width:100%;min-width:0;justify-content:center;white-space:normal}
+	   }
 	   #lgCalHistoryDesktop{display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 	   .lg-cal-hist-section{margin-bottom:12px}
 	   .lg-cal-hist-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin:0 0 6px}
@@ -2931,7 +2939,7 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
 	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
 	  </style>
-	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><span style="margin-left:auto;display:inline-flex;gap:6px"><button class="btn btn-sm btn-secondary" id="lgCalHistoryOpenBtn" type="button" onclick="lgOpenCalHistoryModal()">History</button><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" type="button" onclick="lgOpenDisplayControl()">Display Control</button></span></h2>
+	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span>LG Display <span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><span class="lg-card-title-actions"><button class="btn btn-sm btn-secondary" id="lgCalHistoryOpenBtn" type="button" onclick="lgOpenCalHistoryModal()">History</button><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" type="button" onclick="lgOpenDisplayControl()">Display Control</button></span></h2>
   <button class="btn btn-sm btn-secondary lg-display-control-open-desktop" type="button" onclick="lgOpenDisplayControl()">Display Control</button>
   <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
    <span class="spinner"></span>

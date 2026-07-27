@@ -10280,8 +10280,13 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	 #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap,#chartsGreyscaleFullWrap.lg-calibration-mode #meterRgbChartScroller,#chartsGreyscaleFullWrap.lg-calibration-mode #meterDeltaEBlock{grid-column:1;grid-row:auto}
 	 #chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyTvWrap{min-height:360px}
 	 #meterGreyscaleRgbRow,#colorTopLayout{align-items:stretch}
-	 #meterGreyRgbLegacyWrap,#meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
-	 #meterRGBCanvasGrey,#meterRGBCanvasColor{height:72px!important}
+	 #meterGreyRgbLegacyWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
+	 #meterRGBCanvasGrey{height:72px!important}
+	 /* Color-series RGB balance stays a vertical three-bar chart on phones.
+	    It wraps below the CIE chart, so give it enough height to preserve the
+	    same orientation and readable scale used by larger Tablet layouts. */
+	 #meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:260px!important}
+	 #meterRGBCanvasColor{height:220px!important}
 	}
 /* CIE 3D view: use leftover row width only — never wrap RGB/XyY/detail below */
 #colorTopLayout.cie-3d-layout{
@@ -24546,7 +24551,10 @@ function drawDeltaBarsVertical(canvasId,spec){
   ctx.fillText('--',W/2,H/2);
   return;
  }
- const useHorizontal=(canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor')&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
+ // Only the compact greyscale companion switches to horizontal on phones.
+ // The color-series RGB companion remains the same vertical three-bar chart
+ // in every layout; its phone wrapper receives enough height in responsive CSS.
+ const useHorizontal=canvasId==='meterRGBCanvasGrey'&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
  const rgbPercentageBars=canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor'
   ||canvasId==='meterTwoPointLowCanvas'||canvasId==='meterTwoPointHighCanvas';
  const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor'
@@ -43310,6 +43318,14 @@ function meterCieInsetFocus(readings){
 // Zoomed inset for the focused color patch — overlaid top-right on the CIE plot
 // (same placement as original), with a caption box sized to the text width.
 function drawCIETargetInset(ctx,readings,geom){
+ // A fixed 130px inset consumes most of a phone-sized CIE plot. Omit it on
+ // phone portrait and coarse-pointer phone landscape; the main CIE plot,
+ // target/measured markers, selection details and pan/zoom remain available.
+ // Tablets and Desktop retain the inset unchanged.
+ const phonePortrait=window.matchMedia&&window.matchMedia('(max-width:600px)').matches;
+ const phoneLandscape=window.matchMedia
+  &&window.matchMedia('(max-height:500px) and (pointer:coarse)').matches;
+ if(phonePortrait||phoneLandscape) return;
  // Allow target-only inset during mid-read even when readings is empty of the current node.
  const colorInclLum=!!meterColorIncludeLum();
  const resolved=meterCieInsetFocus(readings);
