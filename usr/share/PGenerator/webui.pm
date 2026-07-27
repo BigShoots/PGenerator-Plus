@@ -21030,7 +21030,27 @@ function meterEnsureDeltaECache(readings){
 		].join('@'):'none';
 		// Include color_incl_lum so toggling CIE ΔY% / color ΔE mode never reuses a stale pair.
 		const colorInclLum=meterColorIncludeLum()?'1':'0';
-		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp;
+		// Target Black / Target White feed the greyscale target luminance
+		// (meterGreyscaleTargetYFromYn / meterGreyTargetLuminance), so a pair
+		// computed under one black is invalid under another. meterRefreshTargetCurves
+		// deletes these caches on a target-levels edit, but that only fires when
+		// meterReadings is already populated and it is one explicit call among
+		// several paths that can recompute -- miss it once and the key still claims
+		// the stale pair is good, which is why a dE could sit wrong until the gamma
+		// dropdown was toggled (gamma IS in the key) and then "fix itself".
+		// Keying on the values removes the dependency on remembering to invalidate.
+		const levelStamp=fn=>{
+		 try{ const t=(typeof fn==='function')?fn():null;
+		  return t?((t.useMeasured?'m':'f')+(t.value!=null?t.value:'')):''; }catch(e){ return ''; }
+		};
+		let resolvedBlack='';
+		try{ resolvedBlack=String(Number((typeof meterBlackReadingY==='function')?meterBlackReadingY():0)||0); }catch(e){}
+		const targetLevels=[
+		 resolvedBlack,
+		 levelStamp(typeof meterTargetBlackLevel!=='undefined'?meterTargetBlackLevel:null),
+		 levelStamp(typeof meterTargetWhiteLevel!=='undefined'?meterTargetWhiteLevel:null)
+		].join('/');
+		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp+':'+targetLevels;
 	readings.forEach(rd=>{
 	 if(!rd) return;
 	 if(rd._dE_cache_key===key) return;
