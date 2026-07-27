@@ -10800,10 +10800,11 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;margin-top:4px}
+#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px}
 #meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 auto;min-width:88px}
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:72px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
+#meterSettingsGrid .meter-target-measure-btn{padding:3px 8px;line-height:1.15;white-space:nowrap}
 #meterSettingsGrid #meterHdrDiffuseWhite.meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26)!important;cursor:not-allowed}
 #meterSettingsGrid #meterHdrDiffuseWhite{width:84px}
 #meterSettingsGrid .field-hdr{width:auto}
@@ -11958,6 +11959,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          <label class="meter-target-inline-label">Target White</label>
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
+         <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
          <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
@@ -11965,6 +11967,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          <label class="meter-target-inline-label">Target Black</label>
          <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
+         <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
          <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
          <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
         </div>
@@ -25539,12 +25542,12 @@ function meterSetTargetLevels(){
  else if(!white.hasAttribute('placeholder')){ white.setAttribute('placeholder','auto'); }
  if(bUm.checked){ black.placeholder=''; black.removeAttribute('placeholder'); }
  else if(!black.hasAttribute('placeholder')){ black.setAttribute('placeholder','auto'); }
- const wVal=Number(white.value); const bVal=Number(black.value);
+ const wVal=Number(white.value); let bVal=Number(black.value);
  const oled=meterDisplayTypeIsOledClass();
- // A self-emissive OLED target has a zero black floor. Do not let a stale
- // LCD-era saved preference or clicking Use measured replace that reference
- // with a noisy/timed-out meter black reading.
- if(oled){ bUm.checked=false; black.value='0'; black.disabled=false; black.classList.remove('meter-input-disabled'); }
+ // A self-emissive display defaults to a mathematical zero black floor. Keep
+ // that default when Use measured is selected, but respect an explicit manual
+ // value (including one captured by the Target Black Measure button).
+ if(oled&&bUm.checked){ bUm.checked=false; black.value='0'; bVal=0; black.disabled=false; black.classList.remove('meter-input-disabled'); }
  const wDef={useMeasured:true,value:null};
  const bDef=oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
  const wUseMeasured=!!wUm.checked;
@@ -25646,12 +25649,11 @@ function meterTargetWhiteLevel(){
 }
 // Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
- if(meterDisplayTypeIsOledClass()) return {useMeasured:false,value:0};
  const s=meterReadTargetLevelsState();
  if(s){
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
  }
- return {useMeasured:true,value:null};
+ return meterDisplayTypeIsOledClass()?{useMeasured:false,value:0}:{useMeasured:true,value:null};
 }
 // Build the override payload spread into meter request bodies. Only emits
 // keys when the operator has entered a manual value.
@@ -25663,6 +25665,107 @@ function meterTargetLevelsPayload(){
  if(!b.useMeasured&&b.value!=null&&b.value>=0){ p.target_black_luminance=Number(b.value); }
  else { p.target_black_use_measured=true; }
  return p;
+}
+
+let meterTargetLevelMeasuring='';
+function meterTargetLevelFormat(kind,value){
+ const numeric=Math.max(0,Number(value)||0);
+ if(kind==='black'){
+  if(numeric===0) return '0';
+  if(numeric<0.001) return numeric.toFixed(6).replace(/0+$/,'').replace(/\.$/,'');
+  return numeric.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+ }
+ return numeric.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
+}
+
+function meterUpdateTargetMeasureButtons(){
+ const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning
+  ||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning
+  ||meterContinuousActive||meterContinuousSuspendedForLgWrite;
+ ['white','black'].forEach(kind=>{
+  const button=document.getElementById(kind==='white'?'meterTargetWhiteMeasure':'meterTargetBlackMeasure');
+  if(!button) return;
+  const active=meterTargetLevelMeasuring===kind;
+  button.textContent=active?'Reading\u2026':'Measure';
+  button.disabled=!meterDetected||hasUnsavedSettings()||busy;
+  button.classList.toggle('btn-success',active);
+  button.classList.toggle('btn-secondary',!active);
+  button.title=hasUnsavedSettings()
+   ?'Apply & Restart first so the measurement matches the live signal mode'
+   :(busy&&!active?'Meter operation already in progress'
+    :(kind==='white'
+     ?'Display white, take one meter reading, and use its luminance as the fixed Target White'
+     :'Display black, take one meter reading, and use its luminance as the fixed Target Black'));
+ });
+}
+
+async function meterMeasureTargetLevel(kind){
+ const targetKind=kind==='black'?'black':'white';
+ if(meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterContinuousActive){
+  toast('Meter operation already in progress',true);
+  return;
+ }
+ if(!(await meterEnsureDetected())){ toast('No meter detected',true); return; }
+ if(!meterEnsureAppliedGeneratorSettings()) return;
+ const ire=targetKind==='white'?100:0;
+ const code=meterCodeFromSignalPercent(ire);
+ const step={
+  ire:ire,stimulus:ire,
+  signal_r_pct:ire,signal_g_pct:ire,signal_b_pct:ire,
+  r:code,g:code,b:code,input_max:meterPatchInputMax(),
+  name:targetKind==='white'?'Target White':'Target Black',
+  series_type:'greyscale'
+ };
+ meterActionPending=true;
+ meterTargetLevelMeasuring=targetKind;
+ meterUpdateReadButtons();
+ meterUpdateTargetMeasureButtons();
+ document.getElementById('meterDot').style.background='var(--orange)';
+ const progress=document.getElementById('meterProgress');
+ const progressLabel=document.getElementById('meterProgressLabel');
+ if(progress) progress.style.display='';
+ if(progressLabel) progressLabel.textContent='Measuring '+(targetKind==='white'?'Target White\u2026':'Target Black\u2026');
+ try{
+  await meterDisplayPatch(step,{fresh:false,allowAfterStop:true});
+  const payload=meterBuildManualReadPayload(step,{
+   dtype:getEffectiveDisplayType(),
+   rr:getMeterRefreshRate(),
+   delay:meterDelayMs(),
+   patternSignalRange:meterMeasurementPatchSignalRange(),
+   requireDeviceReady:meterSelectedMeasurementRequiresReady()
+  });
+  const result=await meterStartSingleRead(payload);
+  if(!meterReadResultOk(result)){
+   toast(result&&result.message?result.message:'Measurement failed',true);
+   return;
+  }
+  const reading=result.readings[0];
+  meterNormalizeMeasuredReading(reading);
+  const luminance=Number(reading.luminance!=null?reading.luminance:reading.Y);
+  if(!Number.isFinite(luminance)||luminance<0) throw new Error('Meter returned no valid luminance');
+  const input=document.getElementById(targetKind==='white'?'meterTargetWhite':'meterTargetBlack');
+  const useMeasured=document.getElementById(targetKind==='white'?'meterTargetWhiteUseMeasured':'meterTargetBlackUseMeasured');
+  if(input) input.value=meterTargetLevelFormat(targetKind,luminance);
+  if(useMeasured) useMeasured.checked=false;
+  meterSetTargetLevels();
+  toast((targetKind==='white'?'Target White: ':'Target Black: ')+meterTargetLevelFormat(targetKind,luminance)+' cd/m\u00B2');
+ }catch(e){
+  toast('Target '+targetKind+' measurement failed: '+(e&&e.message?e.message:'unknown error'),true);
+ }finally{
+  meterTargetLevelMeasuring='';
+  meterActionPending=false;
+  meterPingBusy=false;
+  meterSeriesAwaitingReady=false;
+  meterReadySignalPending=false;
+  meterPendingDeviceReadyAction=null;
+  meterClearManualPromptAwaiting(false);
+  meterSpectroSetupApply(null);
+  meterUpdateReadButtons();
+  meterUpdateTargetMeasureButtons();
+  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+  meterHideProgressIfIdle();
+  await meterCheckStatus();
+ }
 }
 // Redraw the greyscale target curves so a Target White/Black change is
 // reflected immediately without re-reading. Mirrors the cache bookkeeping
@@ -26989,6 +27092,7 @@ function meterUpdateReadButtons(){
  const stopBtn=document.getElementById('meterStopBtn');
  const readyBtn=document.getElementById('meterDeviceReadyBtn');
  const manualPromptBtn=document.getElementById('meterManualPromptBtn');
+ meterUpdateTargetMeasureButtons();
  if(clearBtn){
   clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
   clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal||empty3dLutTab;
