@@ -21104,7 +21104,7 @@ function meterGreyscaleGammaValue(reading,whiteY,blackLevel){
  // A raised Target Black only reshapes the SDR BT.1886 target. PQ/HLG/DV keep
  // their own effective-exponent handling, and a clipped power/sRGB target is
  // an unmodified power law above the clip, so both stay on effectiveGamma.
- if(meterGreyMeasuredGammaUsesBt1886Fit()){
+ if(meterBt1886BlackAwareMetricsActive()){
   const Lb=(blackLevel!=null&&Number.isFinite(Number(blackLevel)))
    ?Math.max(0,Number(blackLevel))
    :((typeof meterChartBlackLevel==='function')
@@ -21114,7 +21114,7 @@ function meterGreyscaleGammaValue(reading,whiteY,blackLevel){
  return effectiveGamma(y,whiteY,analysisIre);
 }
 
-function meterGreyMeasuredGammaUsesBt1886Fit(){
+function meterBt1886BlackAwareMetricsActive(){
  try{
   if(typeof meterChartIsDv==='function' && meterChartIsDv()) return false;
   if(typeof meterChartIsHlg==='function' && meterChartIsHlg()) return false;
@@ -22571,7 +22571,17 @@ function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
 function meterGreyMeasuredEotfChartValue(luminance,refWhite,blackLevel){
  const y=Math.max(0,luminance||0);
  const ref=meterEotfChartNormRef(refWhite);
- return meterEotfNormalizedEnabled() ? meterGreyMeasuredNormalizedEotfValue(y,ref) : meterGreyMeasuredEotfValue(y,ref,blackLevel);
+ if(meterEotfNormalizedEnabled()) return meterGreyMeasuredNormalizedEotfValue(y,ref);
+ // Absolute (inverse-EOTF) view. The BT.1886 inverse has no solution below the
+ // target black: L(0)=Lb for every signal, so a reading under Lb is off the
+ // curve family. meterGreyInverseEotfSignalFromLuminance clamps those to 0,
+ // which painted a false flat run along the X axis that reads as "tracking
+ // zero" instead of "unmeasurable against this target". Return null so the
+ // line and its dots simply stop, matching how the gamma chart now handles
+ // exactly the same unreachable region.
+ const Lb=Math.max(0,Number(blackLevel)||0);
+ if(Lb>0.001 && y<Lb && meterBt1886BlackAwareMetricsActive()) return null;
+ return meterGreyMeasuredEotfValue(y,ref,blackLevel);
 }
 
 function meterNiceAxisTop(dataMax,base,maxTicks){
