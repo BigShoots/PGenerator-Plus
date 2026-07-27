@@ -40332,7 +40332,43 @@ function meterThumbIndicesInsideBounds(container,bounds){
  return indices;
 }
 
-function meterThumbRenderDragSelection(state,currentX,currentY,accumulate){
+function meterThumbDragIndexAtPoint(state,x,y){
+ const children=Array.from(state.container.children);
+ if(!children.length) return -1;
+ const direct=document.elementFromPoint(x,y);
+ const directThumb=direct&&direct.closest?direct.closest('.meter-patch-thumb'):null;
+ const directIndex=directThumb?children.indexOf(directThumb):-1;
+ if(directIndex>=0) return directIndex;
+ const row=meterGreyscaleScrollSource();
+ const rowRect=row&&row.getBoundingClientRect();
+ const visible=[];
+ children.forEach((thumb,index)=>{
+  const rect=thumb.getBoundingClientRect();
+  if(!rowRect||rect.right>=rowRect.left&&rect.left<=rowRect.right) visible.push({index:index,center:(rect.left+rect.right)/2});
+ });
+ if(!visible.length) return -1;
+ const direction=meterThumbDragAutoScrollDirectionAt(x,y);
+ if(direction<0) return visible[0].index;
+ if(direction>0) return visible[visible.length-1].index;
+ let nearest=visible[0];
+ visible.forEach(item=>{ if(Math.abs(item.center-x)<Math.abs(nearest.center-x)) nearest=item; });
+ return nearest.index;
+}
+
+function meterThumbDragSelectionIndices(state,currentX,currentY){
+ const endIndex=meterThumbDragIndexAtPoint(state,currentX,currentY);
+ if(Number.isInteger(state.anchorIndex)&&state.anchorIndex>=0&&endIndex>=0){
+  const first=Math.min(state.anchorIndex,endIndex);
+  const last=Math.max(state.anchorIndex,endIndex);
+  const range=[];
+  for(let index=first;index<=last;index++) range.push(index);
+  return range;
+ }
+ const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
+ return meterThumbIndicesInsideBounds(state.container,bounds);
+}
+
+function meterThumbRenderDragSelection(state,currentX,currentY){
  const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
  if(!state.box){
   state.box=document.createElement('div');
@@ -40343,16 +40379,9 @@ function meterThumbRenderDragSelection(state,currentX,currentY,accumulate){
  state.box.style.top=bounds.top+'px';
  state.box.style.width=Math.max(1,bounds.right-bounds.left)+'px';
  state.box.style.height=Math.max(1,bounds.bottom-bounds.top)+'px';
- const hits=meterThumbIndicesInsideBounds(state.container,bounds);
- if(!state.accumulatedHits) state.accumulatedHits=new Set();
- if(accumulate||state.autoScrollHasRun){
-  hits.forEach(index=>state.accumulatedHits.add(index));
-  state.autoScrollHasRun=true;
- }else{
-  state.accumulatedHits=new Set(hits);
- }
+ const hits=meterThumbDragSelectionIndices(state,currentX,currentY);
  const next=state.additive?new Set(state.baseSelection):new Set();
- state.accumulatedHits.forEach(index=>next.add(index));
+ hits.forEach(index=>next.add(index));
  meterSelectedThumbIndices=next;
  meterRefreshThumbSelectionStyles(true);
  return hits;
@@ -40404,7 +40433,7 @@ function meterThumbDragAutoScrollTick(){
  meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(row);
  meterUpdateThumbScrollButtons();
  meterQueueGreyscaleTargetSync();
- meterThumbRenderDragSelection(state,state.currentX,state.currentY,true);
+ meterThumbRenderDragSelection(state,state.currentX,state.currentY);
  state.autoScrollFrame=window.requestAnimationFrame(meterThumbDragAutoScrollTick);
 }
 
@@ -40429,10 +40458,8 @@ function meterThumbFinishDrag(event,cancelled){
   meterRefreshThumbSelectionStyles();
  } else if(state.dragging){
   meterThumbSuppressClickUntil=performance.now()+250;
-  const bounds=meterThumbDragBounds(state.startX,state.startY,event.clientX,event.clientY);
-  const hits=meterThumbIndicesInsideBounds(state.container,bounds);
+  const hits=meterThumbDragSelectionIndices(state,event.clientX,event.clientY);
   const next=state.additive?new Set(state.baseSelection):new Set();
-  if(state.autoScrollHasRun&&state.accumulatedHits) state.accumulatedHits.forEach(index=>next.add(index));
   hits.forEach(index=>next.add(index));
   meterSelectedThumbIndices=next;
   if(hits.length) meterThumbSelectionAnchor=hits[0];
@@ -40450,7 +40477,9 @@ function meterBindThumbDragSelection(){
  container.dataset.dragSelectionBound='1';
  container.addEventListener('pointerdown',event=>{
   if(event.button!==0||event.pointerType!=='mouse'||meterSeriesRunning||meterAutoCalStatusActive()) return;
-  meterThumbDragState={
+  const children=Array.from(container.children);
+  const startThumb=event.target&&event.target.closest?event.target.closest('.meter-patch-thumb'):null;
+  const state={
    container:container,
    pointerId:event.pointerId,
    startX:event.clientX,
@@ -40459,13 +40488,14 @@ function meterBindThumbDragSelection(){
    baseSelection:new Set(meterSelectedThumbIndices),
    dragging:false,
    box:null,
-   accumulatedHits:new Set(),
-   autoScrollHasRun:false,
+   anchorIndex:startThumb?children.indexOf(startThumb):-1,
    autoScrollDirection:0,
    autoScrollFrame:0,
    currentX:event.clientX,
    currentY:event.clientY
   };
+  if(state.anchorIndex<0) state.anchorIndex=meterThumbDragIndexAtPoint(state,event.clientX,event.clientY);
+  meterThumbDragState=state;
  });
  container.addEventListener('pointermove',event=>{
   const state=meterThumbDragState;
