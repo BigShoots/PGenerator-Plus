@@ -42,3 +42,4 @@ tools/image-targets/*/src/pattern_generator/bin/
 tools/image-targets/*/src/pattern_generator/obj/
 tools/image-targets/*/build/
 data/
+local-deployer/
