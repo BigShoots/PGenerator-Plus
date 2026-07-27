@@ -21113,10 +21113,11 @@ function meterBuildColorCheckerStepsJS(){
 	 const steps=[];
 	 const min=meterChromaPatchRangeMin();
 	 const max=min+meterChromaPatchRangeSpan();
+	 const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
 	 const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
 	 const wp=meterTargetWhitePoint();
-	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1});
-	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0});
+	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
+	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
@@ -21127,7 +21128,7 @@ function meterBuildColorCheckerStepsJS(){
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn});
+	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
 	   return;
 	  }
     let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
@@ -21173,7 +21174,8 @@ function meterBuildColorCheckerStepsJS(){
    name:src.name,
    target_x:src.x,
    target_y:src.y,
-   target_Yn:targetYn
+   target_Yn:targetYn,
+   input_max:inputMax
   });
  });
  [
@@ -21194,6 +21196,7 @@ function meterBuildColorCheckerStepsJS(){
    name:name,
    series_color:colorName,
    sat_pct:100,
+   input_max:inputMax,
    ...target
   });
  });
