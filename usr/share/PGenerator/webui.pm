@@ -1352,9 +1352,13 @@ sub webui_meter_usb_present (@) {
 # dmesg timestamps are seconds-since-boot (monotonic); age = uptime - ts lets
 # us separate a one-off cold-plug enumeration retry from active-session faults.
 sub webui_meter_usb_power_parse (@) {
- my ($dmesg,$uptime)=@_;
+ my ($dmesg,$uptime,$cancel_suppressions)=@_;
  $dmesg="" if(!defined $dmesg);
  $uptime=(defined $uptime && $uptime=~/^[0-9.]+$/) ? ($uptime+0) : 0;
+ my @cancel_times=();
+ if(ref($cancel_suppressions) eq "ARRAY") {
+  @cancel_times=grep { defined($_) && $_=~/^[0-9.]+$/ } @$cancel_suppressions;
+ }
  # Strong = link-down events (port power-cycled, over-current status bit
  # toggled, or the host gave up enabling the port). Historically these were
  # called "power-specific"; on this hardware they are still link/enumeration
@@ -1374,14 +1378,31 @@ sub webui_meter_usb_power_parse (@) {
  # unhealthy RIGHT NOW, but the old code latched onto stale totals so the badge
  # stayed lit indefinitely. Track recent counts separately per class so the
  # caller can tailor the detail copy to what actually happened.
- my ($strong_n,$moderate_n,$recent_n,$recent_strong,$recent_moderate,$last_age)=(0,0,0,0,0,undef);
+ my ($strong_n,$moderate_n,$recent_n,$recent_strong,$recent_moderate,$suppressed_n,$last_age)=(0,0,0,0,0,0,undef);
  for my $line (split /\n/, $dmesg) {
   my $is_strong   = (grep { $line =~ $_ } @strong) ? 1 : 0;
   my $is_moderate = (!$is_strong && (grep { $line =~ $_ } @moderate)) ? 1 : 0;
   next unless($is_strong || $is_moderate);
+  my ($ts)=$line=~/^\[\s*([0-9.]+)\]/;
+  if(defined($ts) && @cancel_times) {
+   my $cancel_generated=0;
+   foreach my $cancel_ts (@cancel_times) {
+    # The marker is written immediately before TERM. Allow one second for a
+    # kernel event already in flight and ten seconds for TERM's 5s grace,
+    # final SIGKILL, and xHCI teardown. This intentionally narrow window does
+    # not hide a fault that preceded Stop or continues after cancellation.
+    if($ts >= ($cancel_ts-1) && $ts <= ($cancel_ts+10)) {
+     $cancel_generated=1;
+     last;
+    }
+   }
+   if($cancel_generated) {
+    $suppressed_n++;
+    next;
+   }
+  }
   $strong_n++   if($is_strong);
   $moderate_n++ if($is_moderate);
-  my ($ts)=$line=~/^\[\s*([0-9.]+)\]/;
   next unless defined $ts;
   my $age=$uptime-$ts; $age=0 if($age<0);
   if($age < 900) {
@@ -1402,23 +1423,36 @@ sub webui_meter_usb_power_parse (@) {
  my $warning=($recent_strong>0 || $recent_moderate>=4) ? 1 : 0;
  return {warning=>$warning, total=>$total, strong=>$strong_n, moderate=>$moderate_n,
    recent=>$recent_n, recent_strong=>$recent_strong, recent_moderate=>$recent_moderate,
+   suppressed=>$suppressed_n,
    last_age=>(defined $last_age ? int($last_age) : -1), kind=>'link',
    power_cycle=>($recent_strong>0)?1:0};
 }
 
 my %_meter_usb_power_cache;
+my $_meter_series_cancel_usb_suppress_file="/tmp/meter_series_cancel_usb_suppress.uptime";
 # Cached gatherer: reads dmesg + /proc/uptime (cheap, but the meter status is
 # polled often, so cache for 20s). dmesg_restrict=0 on this image, so the
 # unprivileged daemon can read the ring buffer directly.
 sub webui_meter_usb_power_health (@) {
  my $now=time();
+ my $cancel_suppression_data="";
+ if(open(my $cf,"<",$_meter_series_cancel_usb_suppress_file)) {
+  local $/;
+  $cancel_suppression_data=<$cf>;
+  close($cf);
+ }
  return $_meter_usb_power_cache{result}
-  if($_meter_usb_power_cache{ts} && ($now-$_meter_usb_power_cache{ts})<20 && $_meter_usb_power_cache{result});
+  if($_meter_usb_power_cache{ts} && ($now-$_meter_usb_power_cache{ts})<20
+   && $_meter_usb_power_cache{result}
+   && ($_meter_usb_power_cache{cancel_suppression_data}||"") eq $cancel_suppression_data);
  my $up=0;
  if(open(my $uf,"<","/proc/uptime")){ my $l=<$uf>; close($uf); ($up)=split /\s+/, ($l||""); }
+ my @cancel_suppressions=grep {
+  $_=~/^[0-9.]+$/ && ($_+0) <= ($up+1) && ($up-($_+0)) < 920
+ } split(/\s+/,$cancel_suppression_data);
  my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
- my $res=&webui_meter_usb_power_parse($dmesg,$up);
- %_meter_usb_power_cache=(ts=>$now, result=>$res);
+ my $res=&webui_meter_usb_power_parse($dmesg,$up,\@cancel_suppressions);
+ %_meter_usb_power_cache=(ts=>$now, result=>$res, cancel_suppression_data=>$cancel_suppression_data);
  return $res;
 }
 

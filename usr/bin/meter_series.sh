@@ -69,6 +69,7 @@ if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
  REFRESH_RATE=""
 fi
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
+USB_CANCEL_SUPPRESS_FILE="/tmp/meter_series_cancel_usb_suppress.uptime"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
@@ -174,7 +175,21 @@ series_process_tree() {
  printf '%s\n' "$all" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
 }
 
+record_series_cancel_usb_suppression() {
+ local uptime_now="" tmp=""
+ read -r uptime_now _ < /proc/uptime 2>/dev/null || return 0
+ [[ "$uptime_now" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+ tmp="${USB_CANCEL_SUPPRESS_FILE}.$$"
+ {
+  tail -n 19 "$USB_CANCEL_SUPPRESS_FILE" 2>/dev/null || true
+  printf '%s\n' "$uptime_now"
+ } > "$tmp" || return 0
+ chmod 666 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$USB_CANCEL_SUPPRESS_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
 series_quit_spotread() {
+ local quit_reason="${1:-normal}"
  if [[ "${METER_SERIES_FD_OPEN:-0}" == "1" ]]; then
   printf "Q" >&3 2>/dev/null || true
   exec 3>&- 2>/dev/null || true
@@ -195,6 +210,12 @@ series_quit_spotread() {
  done
  if pgrep -x spotread >/dev/null 2>&1; then
   echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread exceeded ${spotread_grace}s graceful timeout; sending TERM" >> /tmp/meter_series_debug.log
+  # Dark reads can leave spotread blocked inside libusb so an explicit Stop
+  # must interrupt it. The kernel may emit a short -32/-71 enumeration burst
+  # while that cancelled transaction is torn down. Record the monotonic time
+  # before TERM so the WebUI can ignore only this expected cancellation burst;
+  # spontaneous errors before it or errors that continue afterward still warn.
+  [[ "$quit_reason" == "cancel" ]] && record_series_cancel_usb_suppression
   pkill -TERM -x spotread 2>/dev/null || true
   local term_waited=0
   while (( term_waited < 50 )) && pgrep -x spotread >/dev/null 2>&1; do
@@ -225,7 +246,7 @@ series_cancel_exit() {
  write_state_json << EOJSON
 {"status":"cancelled","series_id":"$SERIES_ID","current_step":0,"total_steps":${TOTAL:-0},"current_name":"Cancelled","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
- series_quit_spotread
+ series_quit_spotread "cancel"
  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 0
 }
