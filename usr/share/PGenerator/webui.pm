@@ -10282,11 +10282,6 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	 #meterGreyscaleRgbRow,#colorTopLayout{align-items:stretch}
 	 #meterGreyRgbLegacyWrap{flex:1 1 100%!important;width:100%!important;height:112px!important}
 	 #meterRGBCanvasGrey{height:72px!important}
-	 /* Color-series RGB balance stays a vertical three-bar chart on phones.
-	    It wraps below the CIE chart, so give it enough height to preserve the
-	    same orientation and readable scale used by larger Tablet layouts. */
-	 #meterRGBColorWrap{flex:1 1 100%!important;width:100%!important;height:260px!important}
-	 #meterRGBCanvasColor{height:220px!important}
 	}
 /* CIE 3D view: use leftover row width only — never wrap RGB/XyY/detail below */
 #colorTopLayout.cie-3d-layout{
@@ -10304,6 +10299,21 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 }
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
+}
+/* A phone cannot fit the 3D CIE canvas beside 565px of fixed companion panels.
+   Give 3D the full row and hide only those companions at phone dimensions.
+   Normal 2D color layout keeps the original fixed 180px RGB panel below. */
+@media(max-width:700px),(max-height:500px) and (pointer:coarse){
+ body.layout-tablet #colorTopLayout.cie-3d-layout{display:block!important;width:100%;overflow:hidden}
+ body.layout-tablet #colorTopLayout.cie-3d-layout #chartCIEBox{
+  display:block;width:100%!important;max-width:100%!important;flex:none!important
+ }
+ body.layout-tablet #colorTopLayout.cie-3d-layout #chartCIE{
+  width:100%!important;height:clamp(280px,70dvh,480px)!important;max-width:100%!important
+ }
+ body.layout-tablet #colorTopLayout.cie-3d-layout #meterRGBColorWrap,
+ body.layout-tablet #colorTopLayout.cie-3d-layout #meterXYYColorWrap,
+ body.layout-tablet #colorTopLayout.cie-3d-layout #colorReadingDetail{display:none!important}
 }
 @media(min-width:701px) and (max-width:900px){
  body.layout-tablet #colorTopLayout #meterRGBColorWrap,
