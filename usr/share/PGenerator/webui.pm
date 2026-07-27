@@ -22301,19 +22301,16 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 	return meterGreyTargetLuminance(Number.isFinite(frac)?frac*100:0,Lw,Lb||0,null);
 }
 
-// Absolute inverse-EOTF maps a perfect BT.1886 track to a diagonal and
-// cancels a raised black (inverse of Lb is 0). When Lb>0, always plot absolute
-// Y/ref so the dashed target matches Absolute-Y error math (lifted floor).
-function meterEotfUseAbsoluteLuminancePlot(Lb){
- if(meterEotfNormalizedEnabled()) return true;
- const floor=Math.max(0,Number(Lb)||0);
- return floor>0.001;
-}
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
+ // Absolute checkbox drives plot mode only: checked = inverse-EOTF (tracking
+ // diagonal); unchecked = absolute Y/ref (bowed curve, black floor visible).
+ // Target luminance still uses live Lb so Absolute-Y error and these curves
+ // share the same black-aware BT.1886 / power targets.
  const ref=meterEotfChartNormRef(Lw);
- if(meterEotfUseAbsoluteLuminancePlot(Lb)) return meterGreyNormalizedEotfValueFromLuminance(lum,ref,Lb);
- return meterGreyEotfValueFromLuminance(lum,ref,Lb);
+ return meterEotfNormalizedEnabled()
+  ? meterGreyNormalizedEotfValueFromLuminance(lum,ref,Lb)
+  : meterGreyEotfValueFromLuminance(lum,ref,Lb);
 }
 
 function meterEotfNormalizedEnabled(){
@@ -22386,9 +22383,9 @@ function meterEotfAxisLabel(v){
 }
 
 function meterGreyTargetEotfChartValue(ire,Lw,Lb,code){
- const floor=Math.max(0,Number(Lb)||0);
- if(meterEotfUseAbsoluteLuminancePlot(floor)) return meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code);
- return meterGreyTargetEotfValue(ire,Lw,Lb,code);
+ return meterEotfNormalizedEnabled()
+  ? meterGreyTargetNormalizedEotfValue(ire,Lw,Lb,code)
+  : meterGreyTargetEotfValue(ire,Lw,Lb,code);
 }
 
 function meterLuminanceScaleValue(v,yTop){
@@ -22505,8 +22502,9 @@ function meterGreyMeasuredEotfChartValue(luminance,refWhite,blackLevel){
  const Lb=(blackLevel!=null&&Number.isFinite(Number(blackLevel)))
   ?Math.max(0,Number(blackLevel))
   :((typeof meterBlackReadingY==='function')?Math.max(0,Number(meterBlackReadingY())||0):0);
- if(meterEotfUseAbsoluteLuminancePlot(Lb)) return meterGreyMeasuredNormalizedEotfValue(y,ref);
- return meterGreyMeasuredEotfValue(y,ref,Lb);
+ return meterEotfNormalizedEnabled()
+  ? meterGreyMeasuredNormalizedEotfValue(y,ref)
+  : meterGreyMeasuredEotfValue(y,ref,Lb);
 }
 
 function meterNiceAxisTop(dataMax,base,maxTicks){
@@ -22543,10 +22541,7 @@ function meterUpdateEotfChartLabel(){
  const lbl=document.getElementById('chartEotfLabel');
  if(!lbl) return;
  const scaled=(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq());
- const Lb=(typeof meterBlackReadingY==='function')?Math.max(0,Number(meterBlackReadingY())||0):0;
- // Raised black forces absolute Y/ref plotting even if Absolute is checked
- // (inverse-EOTF would cancel BT.1886 Lb). Label the actual plot mode.
- if(meterEotfUseAbsoluteLuminancePlot(Lb)) lbl.textContent=scaled?'EOTF (diffuse)':'EOTF';
+ if(meterEotfNormalizedEnabled()) lbl.textContent=scaled?'EOTF (diffuse)':'EOTF';
  else lbl.textContent=scaled?'EOTF Absolute Error (diffuse)':'EOTF Absolute Error';
 }
 
@@ -26005,24 +26000,10 @@ function meterRefreshTargetCurves(){
   meterLastChartSignature='';
   meterLastChartCount=0;
  }catch(e){}
- // Raised black is nearly invisible on a linear 0–peak luminance axis and is
- // cancelled by Absolute inverse-EOTF (BT.1886 inverse of Lb is 0). Prefer log
- // luminance and the bowed absolute EOTF so the floor is actually visible.
- try{
-  const Lb=(typeof meterBlackReadingY==='function')?Number(meterBlackReadingY())||0:0;
-  if(Lb>0.001){
-   const lumLog=document.getElementById('meterLuminanceLogScale');
-   if(lumLog&&!lumLog.checked){ lumLog.checked=true; try{ meterSaveColorPrefs(); }catch(e){} }
-   const absEl=document.getElementById('meterEotfAbsolute');
-   // Absolute = inverse-EOTF diagonal; black floor only shows on the bowed
-   // absolute-luminance EOTF (Absolute unchecked).
-   if(absEl&&absEl.checked){ absEl.checked=false; try{ meterSaveColorPrefs(); }catch(e){} }
-   const eotfLog=document.getElementById('meterEotfLogScale');
-   if(eotfLog&&!eotfLog.checked){ eotfLog.checked=true; try{ meterSaveColorPrefs(); }catch(e){} }
-  }
- }catch(e){}
  // Always redraw EOTF + luminance (chart id chartGamma) immediately so a
  // Target Black/White edit is not lost behind the greyscale task queue.
+ // Absolute / Log scale checkboxes are left alone — they only change plot
+ // mode, not Target Black math.
  const redrawEotfLum=()=>{
   try{
    const hasReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
