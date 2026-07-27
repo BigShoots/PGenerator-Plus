@@ -362,7 +362,19 @@ clean_output_since() {
 manual_calibration_setup_prompt() {
  local normalized
  normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
- printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'
+ # Spectrophotometer white-tile wavelength cal only. Colorimeters (SpyderX,
+ # i1Display, Spyder5, ...) never use a white tile -- matching their refresh
+ # "80% white test patch" or generic "needs calibration" text used to pop the
+ # spectro wizard and force an operator click-through that does nothing useful.
+ [[ "${REQUIRE_DEVICE_READY:-0}" == "1" ]] || return 1
+ # SpyderX is always a colorimeter; belt-and-braces if ready_gate was mis-set.
+ [[ "${METER_USB_ID,,}" == "085c:0a00" || "${METER_USB_ID,,}" == "085c:0500" ]] && return 1
+ # Refresh-rate white-patch prompts are handled by the refresh-cal path, not
+ # the spectro white-tile wizard.
+ if printf '%s' "$normalized" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+(rate|frequency)|80%[[:space:]]+or[[:space:]]+greater'; then
+  return 1
+ fi
+ printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|place cap|dark surface|needs[[:space:]]+a[[:space:]]+calibration|spot read needs a calibration|calibration retry with correct setup'
 }
 
 manual_initial_measurement_prompt() {
@@ -1204,7 +1216,7 @@ HANDLED_OFFSET=0
   WAITED=$((WAITED + 4))
   continue
  fi
- if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]] && echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
     series_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectrophotometer flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
   printf " " >&3
   HANDLED_OFFSET=$(output_size)
@@ -1809,7 +1821,8 @@ EOJSON
  fi
 
  if [[ -n "$READING" ]] && nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
-  echo "[$(date '+%H:%M:%S.%3N')] zero read guard: step=$STEP_NUM ire=$IRE name=$NAME parsed all-zero XYZ/luminance" >> /tmp/meter_series_debug.log
+  ZERO_RESULT_LINE=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep "Result is XYZ:" | tail -1 | cut -c1-200)
+  echo "[$(date '+%H:%M:%S.%3N')] zero read guard: step=$STEP_NUM ire=$IRE name=$NAME parsed all-zero XYZ/luminance result=$(printf '%s' "$ZERO_RESULT_LINE" | tr '"' "'")" >> /tmp/meter_series_debug.log
   ZERO_RETRY_READING=""
   for (( zero_retry=1; zero_retry<=ZERO_READ_RETRIES; zero_retry++ )); do
    write_state_json << EOJSON

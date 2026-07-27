@@ -108,7 +108,19 @@ clean_output_since() {
 manual_calibration_setup_prompt() {
  local normalized
  normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
- printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|calibration position|place cap|dark surface|white test patch|80% or greater white test patch|needs calibration|calibration retry with correct setup'
+ # Spectrophotometer white-tile wavelength cal only. Colorimeters (SpyderX,
+ # i1Display, Spyder5, ...) never use a white tile -- matching their refresh
+ # "80% white test patch" or generic "needs calibration" text used to pop the
+ # spectro wizard and force an operator click-through that does nothing useful.
+ [[ "${REQUIRE_DEVICE_READY:-0}" == "1" ]] || return 1
+ # SpyderX is always a colorimeter; belt-and-braces if ready_gate was mis-set.
+ [[ "${METER_USB_ID,,}" == "085c:0a00" || "${METER_USB_ID,,}" == "085c:0500" ]] && return 1
+ # Refresh-rate white-patch prompts are handled by the refresh-cal path, not
+ # the spectro white-tile wizard.
+ if printf '%s' "$normalized" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+(rate|frequency)|80%[[:space:]]+or[[:space:]]+greater'; then
+  return 1
+ fi
+ printf '%s' "$normalized" | grep -qiE 'white[[:space:]-]+reference|calibration[[:space:]-]+tile|place cap|dark surface|needs[[:space:]]+a[[:space:]]+calibration|spot read needs a calibration|calibration retry with correct setup'
 }
 
 manual_initial_measurement_prompt() {
@@ -688,7 +700,7 @@ while (( WAITED < 900 )); do
   WAITED=0
   continue
  fi
- if echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]] && echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
   log "calibration failed during startup, surfacing retry"
   STARTUP_HINT="interactive_setup"
   WHITE_REF_DONE=1
