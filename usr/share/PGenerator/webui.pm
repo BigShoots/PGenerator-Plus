@@ -10805,6 +10805,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:72px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 #meterSettingsGrid .meter-target-measure-btn{padding:3px 8px;line-height:1.15;white-space:nowrap}
+#meterSettingsGrid .meter-target-use-measured{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 #meterSettingsGrid #meterHdrDiffuseWhite.meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26)!important;cursor:not-allowed}
 #meterSettingsGrid #meterHdrDiffuseWhite{width:84px}
 #meterSettingsGrid .field-hdr{width:auto}
@@ -11960,16 +11961,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
-         <input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked>
-         <label for="meterTargetWhiteUseMeasured" class="meter-toggle-label">Use measured</label>
+         <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
          <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
-         <input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked>
-         <label for="meterTargetBlackUseMeasured" class="meter-toggle-label">Use measured</label>
+         <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
        </div>
      </div>
