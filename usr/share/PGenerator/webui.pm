@@ -7811,9 +7811,11 @@ sub webui_redact_sensitive_log_text (@) {
  $text =~ s{(://[^/\s:@]+:)[^@\s/]+@}{$1<redacted>@}g;
 
  # Names and hardware identifiers are not needed to diagnose their state.
- $text =~ s{("(?:ssid|bssid|hostname|host_name|auto_host|user(?:name)?|email|serial(?:_number)?|device_serial|meter_serial|display_serial|uuid|boot_id|stored_name|cec_osd_name|cec_tv_name|friendly_name|device_name|tv_name)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
+ $text =~ s{("(?:ssid|bssid|hostname|host_name|auto_host|user(?:name)?|email|serial(?:[_-]?(?:number|no))?|device_serial|meter_serial|display_serial|uuid|boot_id|stored_name|cec_osd_name|cec_tv_name|friendly_name|device_name|tv_name)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
  $text =~ s{^(\s*(?:ssid|bssid|hostname|host_name)\s*[:=]\s*).*$}{$1<redacted>}gim;
  $text =~ s{^(\s*(?:(?:display product|device|meter|instrument)\s+)?serial(?:\s*(?:number|no\.?|#))?\s*[:=]\s*).*$}{$1<redacted>}gim;
+ $text =~ s{(\bserial(?:[_\s-]?(?:number|no\.?))\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,\}\]]+)}{$1<redacted>}gi;
+ $text =~ s{(\b(?:display product|device|meter|instrument)\s+serial(?:\s*(?:number|no\.?|#))?\s+(?:is\s+)?)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,\}\]]+)}{$1<redacted>}gi;
  $text =~ s{^(\s*Host:\s*)\S+(\s+Version:)}{$1<redacted>$2}gim;
  $text =~ s{^(\s*(?:search|domain)\s+).*$}{$1<redacted>}gim;
  $text =~ s{(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])}{<email-redacted>}g;
@@ -8169,7 +8171,10 @@ sub webui_create_logs_bundle (@) {
  push @out, "=" x 72, "";
 
  my $text=join("\n",@out);
- if($hostname ne "") {
+ # Factory/generic hostnames are also the product/process name; replacing every
+ # occurrence would corrupt useful labels such as PGenerator.conf and
+ # PGeneratord. Custom hostnames are replaced wherever syslog repeats them.
+ if($hostname ne "" && lc($hostname) !~ /^(?:pgenerator|raspberrypi|localhost)$/) {
   $text=~s{(?<![A-Za-z0-9_-])\Q$hostname\E(?![A-Za-z0-9_-])}{<hostname>}gi;
  }
  if($diag_wifi_ssid ne "") {
