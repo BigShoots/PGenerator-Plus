@@ -13074,7 +13074,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         leaves 8px padding around the check tips. -->
    <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
   </div>
-  <div class="apply-settings-title" id="applySettingsTitle">Apply Settings</div>
+  <div class="apply-settings-title" id="applySettingsTitle">Applying Settings</div>
   <div class="apply-settings-status" id="applySettingsStatus">Saving and restarting the renderer&hellip;</div>
   <div class="apply-settings-hint" id="applySettingsHint" style="display:none">The display will go black for a moment while the new signal mode is applied.</div>
  </div>
@@ -13204,7 +13204,7 @@ function applySettingsModalShow(){
  const title=document.getElementById('applySettingsTitle');
  const status=document.getElementById('applySettingsStatus');
  const hint=document.getElementById('applySettingsHint');
- if(title) title.textContent='Apply Settings';
+ if(title) title.textContent='Applying Settings';
  if(status) status.textContent='Saving and restarting the renderer\u2026';
  if(hint) hint.style.display='';
  overlay.setAttribute('aria-hidden','false');
