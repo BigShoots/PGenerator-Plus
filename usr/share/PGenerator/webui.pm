@@ -14081,6 +14081,12 @@ document.getElementById('signal_mode').addEventListener('change',function(){
  if(sm==='sdr'){
   setVal('eotf','0');
   setVal('colorimetry',autoColorimetry);
+  // Leave HDR's transport constraints behind before filtering bit depths.
+  // YCbCr 4:2:2 is intentionally 10-bit-only, so setting 8-bit while the
+  // previous 4:2:2 format is still active makes updateDropdowns() restore
+  // 10-bit. Select the normal SDR RGB baseline first so one mode change is
+  // sufficient and the 4:2:2 bit-perfect rule remains intact.
+  setVal('color_format','0');
   setVal('max_bpc','8');
  }else if(sm==='hdr10'){
   setVal('eotf','2');
