@@ -21891,6 +21891,23 @@ function gammaEotf(v,gamma){return Math.pow(Math.max(0,v),gamma);}
 
 function srgbEotf(v){return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);}
 
+// Pure power / sRGB targets with a raised black: scale from 0..peak then hard-
+// floor at Lb. That produces the classic clip kink on EOTF/luminance charts
+// (shadow codes whose power-law target sits below Lb map to the black shelf).
+// BT.1886 does NOT use this — it bends smoothly into Lb via a*(v+b)^g.
+function meterPowerTargetLuminance(signal,peak,gamma,Lb){
+ const p=(peak>0)?peak:0;
+ const y=gammaEotf(Math.max(0,Math.min(1,Number(signal)||0)),gamma)*p;
+ const floor=Math.max(0,Number(Lb)||0);
+ return floor>0?Math.max(y,floor):y;
+}
+function meterSrgbTargetLuminance(signal,peak,Lb){
+ const p=(peak>0)?peak:0;
+ const y=srgbEotf(Math.max(0,Math.min(1,Number(signal)||0)))*p;
+ const floor=Math.max(0,Number(Lb)||0);
+ return floor>0?Math.max(y,floor):y;
+}
+
 function targetEotf(v,Lw,Lb){
  // DV Absolute uses PQ/ST2084. DV Relative uses the normal power-gamma path
  // below so chart targets follow the standard 2.2 tunnel curve.
@@ -21907,8 +21924,9 @@ function targetEotf(v,Lw,Lb){
  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
  if(tgt==='st2084') return meterChartPqDecodeNormalized(v);
- if(tgt==='srgb') return srgbEotf(v)*Lw;
- return gammaEotf(v,parseFloat(tgt))*Lw;
+ if(tgt==='srgb') return meterSrgbTargetLuminance(v,Lw,Lb);
+ const gamma=parseFloat(tgt);
+ return meterPowerTargetLuminance(v,Lw,(gamma>0&&isFinite(gamma))?gamma:2.2,Lb);
 }
 
 function meterGreyStimulusFraction(ire){
@@ -22054,10 +22072,13 @@ function meterGreyTargetLuminance(ire,Lw,Lb,code){
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
  if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(signal,peak,Lb||0);
  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
+ // BT.1886: black-aware smooth bend into Lb (a*(v+b)^g).
+ // Power 2.2/2.4 and sRGB: black-oblivious curve hard-floored at Lb so a
+ // raised black (manual or measured) draws the clip kink on EOTF/luminance.
  if(tgt==='bt1886') return bt1886Eotf(signal,peak,Lb||0);
- if(tgt==='srgb') return srgbEotf(signal)*peak;
+ if(tgt==='srgb') return meterSrgbTargetLuminance(signal,peak,Lb||0);
  const gamma=parseFloat(tgt);
- return gammaEotf(signal,(gamma>0&&isFinite(gamma))?gamma:2.2)*peak;
+ return meterPowerTargetLuminance(signal,peak,(gamma>0&&isFinite(gamma))?gamma:2.2,Lb||0);
 }
 
 function meterReadingsUseLgHeadroomReference(readings){
