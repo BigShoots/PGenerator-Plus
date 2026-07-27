@@ -21976,6 +21976,29 @@ function meterSrgbTargetLuminance(signal,peak,Lb){
  return floor>0?Math.max(y,floor):y;
 }
 
+// Black level for bending the MEASURED trace along the target's shape between
+// samples. Power 2.2/2.4 and sRGB hard-floor the target at Lb, and that shelf
+// is a target-side clamp, not a transfer curve any display follows. Shaping
+// across it pins the interpolation weight at 0 until the clip point and then
+// races it to 1 -- with Lw=172/Lb=0.5 the clip lands at 7.04% IRE, so the
+// 5%->10% span drew a flat run then a step between two perfectly smooth reads.
+// Shape on the unclipped power law instead. BT.1886 bends smoothly into Lb and
+// keeps the real black; the drawn target curve is built elsewhere and still
+// shows the clip.
+function meterTargetShapeBlackLevel(Lb){
+ const black=Math.max(0,Number(Lb)||0);
+ if(!(black>0)) return 0;
+ try{
+  const tgt=String(((typeof meterGreyChartTargetGammaSelection==='function')
+   ?meterGreyChartTargetGammaSelection()
+   :((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'').toLowerCase();
+  if(tgt==='srgb') return 0;
+  const g=parseFloat(tgt);
+  if(g>0&&isFinite(g)) return 0;
+ }catch(e){}
+ return black;
+}
+
 function targetEotf(v,Lw,Lb){
  // DV Absolute uses PQ/ST2084. DV Relative uses the normal power-gamma path
  // below so chart targets follow the standard 2.2 tunnel curve.
@@ -43166,7 +43189,9 @@ function drawEOTFChart(gs,allSteps,readingMap){
   readingMap,
   axisMax,
   (signal,point)=>{
-   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
+   // Shape only: unclipped basis so a floored power target cannot inject a
+   // flat-then-step kink into an otherwise smooth measured trace.
+   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,meterTargetShapeBlackLevel(Lb),point);
   },
   eotfPlotMeasured,
   'eotf',
@@ -43276,7 +43301,9 @@ function drawGammaChart(gs,allSteps,readingMap){
   readingMap,
   axisMax,
   (signal,point)=>{
-   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
+   // Shape only: unclipped basis so a floored power target cannot inject a
+   // flat-then-step kink into an otherwise smooth measured trace.
+   return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,meterTargetShapeBlackLevel(Lb),point);
   },
   scaleMeasuredLuminance,
   'luminance',
