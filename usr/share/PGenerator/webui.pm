@@ -25018,7 +25018,21 @@ function meterLiveXyzRgbCodes(xyz,step){
   // were both on target.
   const dvGamma22=(typeof meterChartIsDv==='function'&&meterChartIsDv())
    && !(typeof meterDvUsesPqTargetCurve==='function'&&meterDvUsesPqTargetCurve());
+  // A raised Target Black reshapes the BT.1886 encode, but
+  // meterTargetLinearToSignal is a bare pow(c,1/2.4) with no Lb term -- and it
+  // must stay that way, because meterEncodeColorCheckerLinear /
+  // meterEncodeSaturationLinear use it to author the codes actually SENT to
+  // the display. So do the black-aware encode here, in the readout only.
+  // Without it the round trip cancelled the error: 0.66 cd/m2 measured against
+  // a 10.02 cd/m2 target came back as code 38 beside a target of 38.
+  // Target White needs nothing extra -- meterColorSeriesReferenceNits() already
+  // prefers a manual override over the measured peak.
+  const Lb=(typeof meterChartBlackLevel==='function')
+   ?Math.max(0,Number(meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]))||0):0;
+  const blackAware=!dvGamma22 && Lb>0.001
+   && (typeof meterBt1886BlackAwareMetricsActive==='function') && meterBt1886BlackAwareMetricsActive();
   signal=linear.map(channel=>{
+   if(blackAware) return meterGreyInverseEotfSignalFromLuminance(Math.max(0,channel),reference,Lb);
    const frac=Math.max(0,channel)/reference;
    return dvGamma22
     ? Math.pow(Math.max(0,Math.min(1,frac)),1/2.2)
