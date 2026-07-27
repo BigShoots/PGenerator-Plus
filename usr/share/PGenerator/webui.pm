@@ -14420,9 +14420,6 @@ function meterSyncTargetGammaControl(){
  }else{
   g.title='';
  }
- // Keep Use-measured white/black lock in step with the selected gamma
- // (BT.1886 forces measured Lw/Lb; power/sRGB/ST 2084 unlock).
- try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
 }
 
 function meterSyncTargetGammaOptionsForSignal(){
@@ -25645,53 +25642,11 @@ function meterLowLightFlags(mode){
 // Low Light Handler persistence pattern. When a "Use measured" checkbox is
 // checked the matching number input is disabled (greyed) and the measured
 // reference is used internally; uncheck + enter a value to force that
-// reference for all read targets (charts, series, autocal).
-//
-// Target gammas whose EOTF is defined from live display white/black force
-// Use measured and grey out the checkboxes (see
-// meterTargetGammaRequiresMeasuredEndpoints). Power 2.2/2.4, sRGB, and
-// absolute ST 2084 leave the controls free.
+// reference for all read targets (charts, series, autocal). Free under every
+// target gamma (BT.1886, power 2.2/2.4, sRGB, ST 2084) — raised black under
+// pure power is not the same curve as BT.1886 with the same Lb.
 const METER_TARGET_LEVELS_KEY='pgen.meter.targetLevels';
 function getEl(id){ return document.getElementById(id); }
-// BT.1886 EOTF is defined from Lw (peak white) and Lb (black). Manual
-// white/black overrides fight that definition. ST 2084 is absolute PQ —
-// chart peak/floor are references, not EOTF parameters — so it stays free
-// alongside power 2.2/2.4 and sRGB.
-function meterTargetGammaRequiresMeasuredEndpoints(gamma){
- const g=String(gamma!=null?gamma:
-  ((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():'')
-  ||((document.getElementById('meterTargetGamma')||{}).value||'')
- ).toLowerCase();
- return g==='bt1886';
-}
-// Force Use-measured UI when the active target gamma embeds Lw/Lb. Does not
-// rewrite localStorage preferences for other gammas — only the live DOM and
-// the runtime resolvers (meterTargetWhiteLevel / meterTargetBlackLevel).
-function meterSyncTargetLevelsGammaLock(){
- const lock=typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-  &&meterTargetGammaRequiresMeasuredEndpoints();
- const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
- const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
- if(!wUm||!bUm) return lock;
- const lockTitle='BT.1886 uses measured white (Lw) and black (Lb). Manual targets unlock under Gamma 2.2 / 2.4 / sRGB / ST 2084.';
- if(lock){
-  wUm.checked=true; bUm.checked=true;
-  if(white) white.value='';
-  if(black) black.value='';
-  wUm.disabled=true; bUm.disabled=true;
-  const wLab=wUm.closest('label'), bLab=bUm.closest('label');
-  if(wLab){ wLab.classList.add('meter-input-disabled'); wLab.title=lockTitle; }
-  if(bLab){ bLab.classList.add('meter-input-disabled'); bLab.title=lockTitle; }
- }else{
-  wUm.disabled=false; bUm.disabled=false;
-  const wLab=wUm.closest('label'), bLab=bUm.closest('label');
-  if(wLab){ wLab.classList.remove('meter-input-disabled'); wLab.removeAttribute('title'); }
-  if(bLab){ bLab.classList.remove('meter-input-disabled'); bLab.removeAttribute('title'); }
- }
- try{ meterSetTargetLevelsStateOnly(); }catch(e){}
- try{ meterUpdateTargetMeasureButtons(); }catch(e){}
- return lock;
-}
 function meterReadTargetLevelsState(){
  let saved=null;
  try{ saved=JSON.parse(localStorage.getItem(METER_TARGET_LEVELS_KEY)||'null'); }catch(e){ saved=null; }
@@ -25715,15 +25670,6 @@ function meterSetTargetLevels(){
  const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
  const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
  if(!wUm||!white||!bUm||!black) return;
- // Gamma lock (BT.1886) forces measured endpoints — refuse a manual toggle.
- if(typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-    &&meterTargetGammaRequiresMeasuredEndpoints()){
-  wUm.checked=true; bUm.checked=true;
-  white.value=''; black.value='';
-  try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
-  try{ meterScheduleTargetCurveRefresh(); }catch(e){}
-  return;
- }
  // When Use measured is turned on, clear the manual box so it cannot look
  // like a fixed override while the measured reference is active.
  if(wUm.checked) white.value='';
@@ -25766,7 +25712,6 @@ function meterRestoreTargetLevels(){
   // No saved state: apply the display-type defaults.
   meterApplyTargetLevelsDisplayDefaults(true);
   meterSetTargetLevelsStateOnly();
-  try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
   return;
  }
  wUm.checked=!!s.white.useMeasured;
@@ -25777,8 +25722,6 @@ function meterRestoreTargetLevels(){
  // not yet overridden.
  if(!s.white.overridden||!s.black.overridden) meterApplyTargetLevelsDisplayDefaults(false,s);
  meterSetTargetLevelsStateOnly();
- // BT.1886 (and any other Lw/Lb gamma) overrides restored prefs to measured.
- try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
 }
 // Apply the DOM checkbox/input state to the disabled/grey styling without
 // re-persisting (used during restore before the user edits anything).
@@ -25816,23 +25759,18 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
  if(!wUm||!bUm) return;
  const oled=meterDisplayTypeIsOledClass();
- const gammaLocks=typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-  &&meterTargetGammaRequiresMeasuredEndpoints();
  const s=saved||meterReadTargetLevelsState();
  const wOver=s&&s.white&&s.white.overridden;
  const bOver=s&&s.black&&s.black.overridden;
  // Target White defaults to measured for every display type.
- if(forceAll||!wOver||gammaLocks){
+ if(forceAll||!wOver){
   wUm.checked=true; if(white) white.value='';
  }
- // Target Black defaults: BT.1886 always measured (Lw/Lb EOTF); otherwise
- // self-emissive -> manual 0, else Use measured. Respect an explicit
- // operator override on power gammas; never force the checkbox back off
- // after the user toggled it — except when the active gamma locks measured.
- if(forceAll||!bOver||gammaLocks){
-  if(gammaLocks){
-   bUm.checked=true; if(black) black.value='';
-  }else if(oled){
+ // Target Black defaults: self-emissive -> manual 0, else Use measured.
+ // Respect an explicit operator override (including checking Use measured on
+ // OLED); never force the checkbox back off after the user toggled it.
+ if(forceAll||!bOver){
+  if(oled){
    bUm.checked=false; if(black) black.value='0';
   }else{
    bUm.checked=true; if(black) black.value='';
@@ -25842,26 +25780,15 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  // default and Use Measured. Keep the input's disabled/placeholder state in
  // lockstep with the checkbox instead of leaving the previous mode editable.
  meterSetTargetLevelsStateOnly();
- try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
 }
 // Resolve the effective Target White level. Returns {useMeasured,value}.
 function meterTargetWhiteLevel(){
- // Lw/Lb gammas always consume the measured peak, ignoring a stale manual
- // localStorage override that may still be present from a power-gamma session.
- if(typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-    &&meterTargetGammaRequiresMeasuredEndpoints()){
-  return {useMeasured:true,value:null};
- }
  const s=meterReadTargetLevelsState();
  if(s) return {useMeasured:!!s.white.useMeasured,value:s.white.value};
  return {useMeasured:true,value:null};
 }
 // Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
- if(typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-    &&meterTargetGammaRequiresMeasuredEndpoints()){
-  return {useMeasured:true,value:null};
- }
  const s=meterReadTargetLevelsState();
  if(s){
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
@@ -25895,24 +25822,20 @@ function meterUpdateTargetMeasureButtons(){
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning
   ||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning
   ||meterContinuousActive||meterContinuousSuspendedForLgWrite;
- const gammaLocks=typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-  &&meterTargetGammaRequiresMeasuredEndpoints();
  ['white','black'].forEach(kind=>{
   const button=document.getElementById(kind==='white'?'meterTargetWhiteMeasure':'meterTargetBlackMeasure');
   if(!button) return;
   const active=meterTargetLevelMeasuring===kind;
   button.textContent=active?'Reading\u2026':'Measure';
-  button.disabled=!meterDetected||hasUnsavedSettings()||busy||(gammaLocks&&!active);
+  button.disabled=!meterDetected||hasUnsavedSettings()||busy;
   button.classList.toggle('btn-success',active);
   button.classList.toggle('btn-secondary',!active);
-  button.title=gammaLocks
-   ?'BT.1886 always uses measured white/black from the series (Lw/Lb). Switch to Gamma 2.2 / 2.4 / sRGB / ST 2084 for a fixed manual target.'
-   :(hasUnsavedSettings()
+  button.title=hasUnsavedSettings()
    ?'Apply & Restart first so the measurement matches the live signal mode'
    :(busy&&!active?'Meter operation already in progress'
     :(kind==='white'
      ?'Display white, take one meter reading, and use its luminance as the fixed Target White'
-     :'Display black, take one meter reading, and use its luminance as the fixed Target Black')));
+     :'Display black, take one meter reading, and use its luminance as the fixed Target Black'));
  });
 }
 
@@ -25960,11 +25883,6 @@ async function meterMeasureTargetLevel(kind){
   meterNormalizeMeasuredReading(reading);
   const luminance=Number(reading.luminance!=null?reading.luminance:reading.Y);
   if(!Number.isFinite(luminance)||luminance<0) throw new Error('Meter returned no valid luminance');
-  if(typeof meterTargetGammaRequiresMeasuredEndpoints==='function'
-     &&meterTargetGammaRequiresMeasuredEndpoints()){
-   toast('BT.1886 always uses measured white/black (Lw/Lb). Switch target gamma to set a fixed value.',true);
-   return;
-  }
   const input=document.getElementById(targetKind==='white'?'meterTargetWhite':'meterTargetBlack');
   const useMeasured=document.getElementById(targetKind==='white'?'meterTargetWhiteUseMeasured':'meterTargetBlackUseMeasured');
   if(input) input.value=meterTargetLevelFormat(targetKind,luminance);
@@ -48270,7 +48188,6 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
   meterActiveSeriesTargetGamma=null;
-  try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
   meterRefreshActiveSeriesCharts();
   return;
  }
@@ -48281,8 +48198,6 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  // choice so the operator can compare e.g. 2.2 vs ST.2084 grading live.
  const sel=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
  meterActiveSeriesTargetGamma=sel||null;
- // BT.1886 forces measured white/black (Lw/Lb); power / sRGB / ST 2084 unlock.
- try{ meterSyncTargetLevelsGammaLock(); }catch(e){}
  // Persist the new selection alongside the other color-science prefs.
  try{ meterSaveColorPrefs(); }catch(e){}
  // Invalidate per-reading analysis caches (the dE cache key includes the
