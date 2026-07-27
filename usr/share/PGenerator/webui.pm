@@ -40263,7 +40263,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
 	     else meterRefreshThumbSelectionStyles();
 	     return;
 	    }
-	    if(meterSelectedThumbIndices.size===1&&meterSelectedThumbIndices.has(index)&&meterIsPatchStepSelected(step)){
+	    if(meterSelectedThumbIndices.size===1&&meterSelectedThumbIndices.has(index)){
 	     meterDeselectCurrentPatch();
 	     return;
 	    }
@@ -40391,13 +40391,15 @@ function meterBindThumbDragSelection(){
    dragging:false,
    box:null
   };
-  try{ container.setPointerCapture(event.pointerId); }catch(_e){}
  });
  container.addEventListener('pointermove',event=>{
   const state=meterThumbDragState;
   if(!state||event.pointerId!==state.pointerId) return;
   if(!state.dragging&&Math.hypot(event.clientX-state.startX,event.clientY-state.startY)<5) return;
-  state.dragging=true;
+  if(!state.dragging){
+   state.dragging=true;
+   try{ container.setPointerCapture(event.pointerId); }catch(_e){}
+  }
   event.preventDefault();
   meterThumbRenderDragSelection(state,event.clientX,event.clientY);
  });
