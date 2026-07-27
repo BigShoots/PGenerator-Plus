@@ -3247,6 +3247,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # those references back in import order. The current WebUI also supplies a
   # missing endpoint using the active signal range before posting the queue.
   if($type eq "greyscale" && ($target_white_use_measured || $target_black_use_measured)) {
+   # Reorder only. The WebUI is responsible for injecting missing 0%/100%
+   # endpoints when Use measured is set and no saved white/black exists
+   # (full series via meterCustomGreyscaleRunSteps; Read Selection via
+   # meterSelectionRunStepsWithMeasuredEndpoints). Synthesizing here would
+   # force a re-measure even when the client intentionally skipped an end
+   # because a saved measurement was already available.
    my @remaining=@custom_series_steps;
    my $take_endpoint=sub {
     my($wanted)=@_;
@@ -30633,6 +30639,59 @@ function meterBuildCustomSeriesSteps(series){
 }
 
 function meterCustomGreyscaleRunSteps(steps){
+ // Full greyscale runs always measure the Use-measured endpoints as leading
+ // steps so target Y has a live white/black reference.
+ return meterGreyscaleRunStepsWithMeasuredEndpoints(steps,{forceEndpoints:true});
+}
+
+// True when the UI already has a usable measured 100% white reference (live
+// series white_reading or a plotted 100% greyscale sample). Used by Read
+// Selection so we only prepend a white patch when one is still needed.
+function meterHasSavedMeasuredWhite(){
+ try{
+  if(meterWhiteReading&&typeof meterReadingHasLuminance==='function'
+     &&meterReadingHasLuminance(meterWhiteReading)
+     &&!meterWhiteReading.synthetic_target
+     &&!meterWhiteReading.autocal_reference_only
+     &&!meterWhiteReading.error){
+   return true;
+  }
+ }catch(e){}
+ try{
+  const list=Array.isArray(meterReadings)?meterReadings:[];
+  return list.some(r=>r&&Math.abs(Number(r.ire)-100)<0.05
+   &&typeof meterReadingHasLuminance==='function'&&meterReadingHasLuminance(r)
+   &&!r.error&&!r.synthetic_target&&!r.autocal_reference_only);
+ }catch(e){}
+ return false;
+}
+
+// True when a measured 0% black is already available on the chart. Server-side
+// last_black cache still stamps target math without a re-read; for Selection
+// we only skip the black endpoint when a real black sample is already in hand.
+function meterHasSavedMeasuredBlack(){
+ try{
+  const list=Array.isArray(meterReadings)?meterReadings:[];
+  return list.some(r=>r&&Math.abs(Number(r.ire||0))<0.05
+   &&(r.luminance!=null||r.Y!=null)&&!r.error);
+ }catch(e){}
+ return false;
+}
+
+function meterStepIsNeutralEndpoint(step,ire){
+ if(!step) return false;
+ if(Math.abs(Number(step.ire)-ire)>=0.05) return false;
+ const r=Number(step.r),g=Number(step.g),b=Number(step.b);
+ return Number.isFinite(r)&&r===g&&g===b;
+}
+
+// Prepend Use-measured white/black greyscale endpoints when needed.
+// opts.forceEndpoints: full series always re-reads them.
+// Selection runs only inject an endpoint when it is not already in the step
+// list AND no saved measurement exists for that end (or when it is in the
+// selection — then reorder it to the front).
+function meterGreyscaleRunStepsWithMeasuredEndpoints(steps,opts){
+ opts=opts||{};
  const source=Array.isArray(steps)?steps:[];
  if(!source.length) return source;
  const whiteControl=document.getElementById('meterTargetWhiteUseMeasured');
@@ -30642,8 +30701,7 @@ function meterCustomGreyscaleRunSteps(steps){
  if(!useMeasuredWhite&&!useMeasuredBlack) return source;
  const remaining=source.slice();
  const takeEndpoint=(ire)=>{
-  const index=remaining.findIndex(step=>step&&Math.abs(Number(step.ire)-ire)<0.05
-   &&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b));
+  const index=remaining.findIndex(step=>meterStepIsNeutralEndpoint(step,ire));
   if(index>=0) return remaining.splice(index,1)[0];
   const code=meterCodeFromSignalPercent(ire);
   return {
@@ -30654,10 +30712,30 @@ function meterCustomGreyscaleRunSteps(steps){
    series_type:'greyscale'
   };
  };
+ const whiteInSource=source.some(step=>meterStepIsNeutralEndpoint(step,100));
+ const blackInSource=source.some(step=>meterStepIsNeutralEndpoint(step,0));
+ // Explicit hasSaved* from the caller wins (Selection captures them before
+ // meterRunSeries clears meterWhiteReading / meterReadings).
+ const wantWhite=useMeasuredWhite&&(!!opts.forceEndpoints||whiteInSource
+  ||(opts.hasSavedWhite!=null?!opts.hasSavedWhite:!meterHasSavedMeasuredWhite()));
+ const wantBlack=useMeasuredBlack&&(!!opts.forceEndpoints||blackInSource
+  ||(opts.hasSavedBlack!=null?!opts.hasSavedBlack:!meterHasSavedMeasuredBlack()));
  const leading=[];
- if(useMeasuredWhite) leading.push(takeEndpoint(100));
- if(useMeasuredBlack) leading.push(takeEndpoint(0));
+ if(wantWhite) leading.push(takeEndpoint(100));
+ if(wantBlack) leading.push(takeEndpoint(0));
  return leading.concat(remaining);
+}
+
+// Read Selection: greyscale (and neutral greyscale-like) selections prepend
+// missing Use-measured white/black endpoints before the operator's patches.
+function meterSelectionRunStepsWithMeasuredEndpoints(steps,opts){
+ const source=Array.isArray(steps)?steps:[];
+ if(!source.length) return source;
+ const isGreySeries=String(meterActiveSeriesType||'')==='greyscale'
+  ||source.every(s=>s&&(s.series_type==='greyscale'
+   ||(Number(s.r)===Number(s.g)&&Number(s.g)===Number(s.b))));
+ if(!isGreySeries) return source;
+ return meterGreyscaleRunStepsWithMeasuredEndpoints(source,opts||{});
 }
 
 let meterCustomSeriesEditor=null;
@@ -39856,20 +39934,45 @@ async function meterRunSeries(options){
 	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 }
  const rebuiltVisibleSteps=meterVisibleSeriesSteps();
- const selectedRunSteps=requestedSelection.length
+ let selectedRunSteps=requestedSelection.length
   ? requestedSelection.map(index=>rebuiltVisibleSteps[index]).filter(Boolean)
   : null;
  if(requestedSelection.length&&(!selectedRunSteps||selectedRunSteps.length<2)){
   toast('The selected patches are no longer available in this series',true);
   return false;
  }
+ // Capture Use-measured white/black availability BEFORE clearing chart state.
+ // Read Selection must prepend those endpoints when the operator has no
+ // saved measurement, otherwise target Y has no white/black reference.
+ const selectionHasSavedWhite=meterHasSavedMeasuredWhite();
+ const selectionHasSavedBlack=meterHasSavedMeasuredBlack();
+ if(selectedRunSteps&&selectedRunSteps.length){
+  selectedRunSteps=meterSelectionRunStepsWithMeasuredEndpoints(selectedRunSteps,{
+   hasSavedWhite:selectionHasSavedWhite,
+   hasSavedBlack:selectionHasSavedBlack
+  });
+ }
  meterSeriesSelectionRunActive=!!(selectedRunSteps&&selectedRunSteps.length);
  const runStepCount=meterSeriesSelectionRunActive?selectedRunSteps.length:meterSeriesSteps.length;
+ // Preserve saved white/black when Selection intentionally skipped re-measuring
+ // those endpoints (Use measured + already have a sample). Full series and
+ // Selection runs that will re-read 0%/100% still start from a clean slate.
+ const selectionWillMeasureWhite=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,100)));
+ const selectionWillMeasureBlack=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,0)));
+ const keepWhiteReading=(meterSeriesSelectionRunActive&&selectionHasSavedWhite&&!selectionWillMeasureWhite)
+  ?meterWhiteReading:null;
+ let keepBlackReading=null;
+ if(meterSeriesSelectionRunActive&&selectionHasSavedBlack&&!selectionWillMeasureBlack){
+  try{
+   keepBlackReading=(Array.isArray(meterReadings)?meterReadings:[]).find(r=>r
+    &&Math.abs(Number(r.ire||0))<0.05&&(r.luminance!=null||r.Y!=null)&&!r.error)||null;
+  }catch(e){ keepBlackReading=null; }
+ }
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterClearMultiPatchSelection();
- meterReadings=[];
- meterWhiteReading=null;
+ meterReadings=keepBlackReading?[keepBlackReading]:[];
+ meterWhiteReading=keepWhiteReading;
  meterCurrentPatchStep=null;
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
