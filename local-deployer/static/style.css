@@ -214,7 +214,7 @@ th {
 }
 th:nth-child(1) { width: 48px; }
 th:nth-child(3) { width: 118px; }
-th:nth-child(4), th:nth-child(5) { width: 125px; }
+th:nth-child(4), th:nth-child(5) { width: 175px; }
 td { padding: 12px 15px; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
 tbody tr { transition: background .12s; }
 tbody tr:hover { background: rgba(255,255,255,.018); }
@@ -229,7 +229,7 @@ input[type="checkbox"] {
 }
 .file-path { overflow: hidden; color: #d3d8de; font: 500 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .file-path .warning-mark { margin-left: 7px; color: var(--amber); }
-.meta { color: #78828e; font: 10px/1.35 ui-monospace, monospace; }
+.meta { color: #78828e; font: 10px/1.45 ui-monospace, monospace; }
 .badge {
   display: inline-flex;
   align-items: center;

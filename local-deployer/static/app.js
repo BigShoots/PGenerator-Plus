@@ -68,6 +68,17 @@ function formatBytes(value) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatDate(timestamp) {
+  if (!timestamp) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
 function visibleFiles() {
   const query = els.search.value.trim().toLowerCase();
   return state.files.filter((file) => {
@@ -103,8 +114,8 @@ function renderRows() {
           </td>
           <td><div class="file-path" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}${warning}</div></td>
           <td><span class="badge ${file.status}">${file.status}</span></td>
-          <td><div class="meta">${formatBytes(file.localSize)}<br>mode ${escapeHtml(file.localMode)}</div></td>
-          <td><div class="meta">${file.status === "missing" ? "not found" : `${formatBytes(file.remoteSize)}<br>mode ${escapeHtml(file.remoteMode)}`}</div></td>
+          <td><div class="meta">${formatBytes(file.localSize)}<br>${formatDate(file.localModified)}<br>mode ${escapeHtml(file.localMode)}</div></td>
+          <td><div class="meta">${file.status === "missing" ? "not found" : `${formatBytes(file.remoteSize)}<br>${formatDate(file.remoteModified)}<br>mode ${escapeHtml(file.remoteMode)}`}</div></td>
         </tr>`;
     }).join("");
   }

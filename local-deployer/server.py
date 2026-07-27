@@ -163,23 +163,25 @@ while IFS= read -r rel; do
     hash="$1"
     mode=$(stat -c %a "$target" 2>/dev/null || echo "?")
     size=$(wc -c < "$target" 2>/dev/null || echo "0")
-    printf '%s\t%s\t%s\t%s\n' "$hash" "$mode" "$size" "$rel"
+    modified=$(stat -c %Y "$target" 2>/dev/null || echo "0")
+    printf '%s\t%s\t%s\t%s\t%s\n' "$hash" "$mode" "$size" "$modified" "$rel"
   else
-    printf 'MISSING\t-\t0\t%s\n' "$rel"
+    printf 'MISSING\t-\t0\t0\t%s\n' "$rel"
   fi
 done
 """.strip()
     output = ssh(connection, command, input_text="\n".join(paths) + "\n", timeout=120)
     states: dict[str, dict[str, Any]] = {}
     for line in output.splitlines():
-        parts = line.split("\t", 3)
-        if len(parts) != 4:
+        parts = line.split("\t", 4)
+        if len(parts) != 5:
             continue
-        remote_hash, mode, size, path = parts
+        remote_hash, mode, size, modified, path = parts
         states[path] = {
             "hash": None if remote_hash == "MISSING" else remote_hash,
             "mode": mode,
             "size": int(size.strip() or "0"),
+            "modified": int(modified.strip() or "0"),
         }
     return states
 
@@ -195,7 +197,7 @@ def scan_files(connection: dict[str, str]) -> dict[str, Any]:
         local_path = REPO_ROOT / rel
         local_hash = digest(local_path)
         local_mode = f"{local_path.stat().st_mode & 0o777:o}"
-        remote_state = remote.get(rel, {"hash": None, "mode": "-", "size": 0})
+        remote_state = remote.get(rel, {"hash": None, "mode": "-", "size": 0, "modified": 0})
         if remote_state["hash"] is None:
             status = "missing"
         elif remote_state["hash"] != local_hash or remote_state["mode"] != local_mode:
@@ -209,6 +211,8 @@ def scan_files(connection: dict[str, str]) -> dict[str, Any]:
                 "status": status,
                 "localSize": local_path.stat().st_size,
                 "remoteSize": remote_state["size"],
+                "localModified": int(local_path.stat().st_mtime),
+                "remoteModified": remote_state["modified"],
                 "localMode": local_mode,
                 "remoteMode": remote_state["mode"],
                 "sensitive": rel.startswith(("etc/PGenerator/", "var/lib/PGenerator/")),
