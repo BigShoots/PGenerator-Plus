@@ -10800,12 +10800,12 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px}
-#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 auto;min-width:88px}
-#meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:72px}
+#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:5px;flex-wrap:nowrap;margin-top:4px;width:min(390px,calc(100vw - 70px));max-width:none}
+#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 75px;min-width:75px}
+#meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:62px;min-width:62px;padding-left:7px;padding-right:7px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
-#meterSettingsGrid .meter-target-measure-btn{padding:3px 8px;line-height:1.15;white-space:nowrap}
-#meterSettingsGrid .meter-target-use-measured{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+#meterSettingsGrid .meter-target-measure-btn{padding:3px 6px;line-height:1.15;font-size:.68rem;white-space:nowrap}
+#meterSettingsGrid .meter-target-use-measured{display:inline-flex;align-items:center;gap:3px;white-space:nowrap;font-size:.64rem}
 #meterSettingsGrid #meterHdrDiffuseWhite.meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26)!important;cursor:not-allowed}
 #meterSettingsGrid #meterHdrDiffuseWhite{width:84px}
 #meterSettingsGrid .field-hdr{width:auto}
