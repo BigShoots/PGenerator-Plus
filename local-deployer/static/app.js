@@ -85,6 +85,7 @@ function visibleFiles() {
     const filterMatches =
       state.filter === "all" ||
       (state.filter === "changes" && file.status !== "same") ||
+      (state.filter === "expected" && file.expected) ||
       file.status === state.filter;
     return filterMatches && (!query || file.path.toLowerCase().includes(query));
   });
@@ -105,6 +106,9 @@ function renderRows() {
       const warning = file.sensitive
         ? '<span class="warning-mark" title="Device configuration or state file">◆</span>'
         : "";
+      const expected = file.expected
+        ? `<span class="expected-label">Expected</span><span class="expected-note">${escapeHtml(file.expectedReason)}</span>`
+        : "";
       return `
         <tr class="${checked ? "selected" : ""}">
           <td class="check-cell">
@@ -113,7 +117,7 @@ function renderRows() {
               aria-label="Select ${escapeHtml(file.path)}">
           </td>
           <td><div class="file-path" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}${warning}</div></td>
-          <td><span class="badge ${file.status}">${file.status}</span></td>
+          <td><div class="status-stack"><span class="badge ${file.status}">${file.status}</span>${expected}</div></td>
           <td><div class="meta">${formatBytes(file.localSize)}<br>${formatDate(file.localModified)}<br>mode ${escapeHtml(file.localMode)}</div></td>
           <td><div class="meta">${file.status === "missing" ? "not found" : `${formatBytes(file.remoteSize)}<br>${formatDate(file.remoteModified)}<br>mode ${escapeHtml(file.remoteMode)}`}</div></td>
         </tr>`;
@@ -142,6 +146,7 @@ function syncSelectionUi() {
 function setCounts(counts = {}) {
   $("#differentCount").textContent = counts.different ?? "—";
   $("#missingCount").textContent = counts.missing ?? "—";
+  $("#expectedCount").textContent = counts.expected ?? "—";
   $("#sameCount").textContent = counts.same ?? "—";
 }
 
@@ -202,7 +207,7 @@ els.form.addEventListener("submit", async (event) => {
     els.search.disabled = false;
     updateConnection(data.busy);
     renderRows();
-    toast(`Scan complete. ${data.counts.different + data.counts.missing} file differences found.`);
+    toast(`Scan complete. ${data.counts.different + data.counts.missing} file differences found · ${data.counts.expected} expected.`);
   } catch (error) {
     els.connection.className = "connection-state offline";
     els.connection.innerHTML = "<span></span><strong>Connection failed</strong>";

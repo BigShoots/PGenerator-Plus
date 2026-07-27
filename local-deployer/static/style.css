@@ -213,7 +213,7 @@ th {
   text-transform: uppercase;
 }
 th:nth-child(1) { width: 48px; }
-th:nth-child(3) { width: 118px; }
+th:nth-child(3) { width: 190px; }
 th:nth-child(4), th:nth-child(5) { width: 175px; }
 td { padding: 12px 15px; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
 tbody tr { transition: background .12s; }
@@ -245,6 +245,24 @@ input[type="checkbox"] {
 .badge.different { color: var(--amber); background: rgba(255, 184, 77, .1); }
 .badge.missing { color: var(--red); background: rgba(255, 95, 100, .1); }
 .badge.same { color: #718174; background: rgba(113, 129, 116, .1); }
+.status-stack { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px; }
+.expected-label {
+  padding: 4px 7px;
+  color: var(--blue);
+  border: 1px solid rgba(98, 168, 255, .25);
+  border-radius: 6px;
+  background: rgba(98, 168, 255, .08);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.expected-note {
+  flex-basis: 100%;
+  color: #718399;
+  font-size: 9px;
+  line-height: 1.35;
+}
 
 .empty-row td { height: 330px; text-align: center; border: 0; }
 .empty-state span { color: #46505b; font-size: 35px; }

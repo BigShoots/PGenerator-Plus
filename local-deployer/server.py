@@ -154,6 +154,28 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def expected_difference(
+    path: str,
+    status: str,
+    local_hash: str,
+    remote_hash: str | None,
+) -> str | None:
+    """Explain differences created by normal first-boot or runtime behavior."""
+    if status == "same":
+        return None
+    if path == "etc/BiasiLinux/BiasiLinux.FirstBoot" and status == "missing":
+        return "Removed after first boot"
+    if path == "etc/PGenerator/PGenerator.conf":
+        return "Device-specific runtime settings"
+    if path == "etc/sudo/sudoers.d/PGenerator" and local_hash == remote_hash:
+        return "Remote permissions are intentionally restricted"
+    if path == "var/lib/PGenerator/operations.txt":
+        return "Runtime command-file symlink"
+    if path == "var/lib/PGenerator/running/tmp/.gitkeep" and status == "missing":
+        return "Repository-only directory placeholder"
+    return None
+
+
 def remote_file_state(connection: dict[str, str], paths: list[str]) -> dict[str, dict[str, Any]]:
     command = r"""
 while IFS= read -r rel; do
@@ -192,7 +214,7 @@ def scan_files(connection: dict[str, str]) -> dict[str, Any]:
         raise AppError("No tracked deployable files were found in this repository.")
     remote = remote_file_state(connection, paths)
     entries: list[dict[str, Any]] = []
-    counts = {"different": 0, "missing": 0, "same": 0}
+    counts = {"different": 0, "missing": 0, "same": 0, "expected": 0}
     for rel in paths:
         local_path = REPO_ROOT / rel
         local_hash = digest(local_path)
@@ -205,10 +227,15 @@ def scan_files(connection: dict[str, str]) -> dict[str, Any]:
         else:
             status = "same"
         counts[status] += 1
+        expected_reason = expected_difference(rel, status, local_hash, remote_state["hash"])
+        if expected_reason:
+            counts["expected"] += 1
         entries.append(
             {
                 "path": rel,
                 "status": status,
+                "expected": bool(expected_reason),
+                "expectedReason": expected_reason,
                 "localSize": local_path.stat().st_size,
                 "remoteSize": remote_state["size"],
                 "localModified": int(local_path.stat().st_mtime),
