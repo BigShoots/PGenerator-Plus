@@ -1151,6 +1151,11 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/meter/stop/status") {
+    my $result=&webui_meter_stop_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/meter/clear" && $method eq "POST") {
     my $result=&webui_meter_clear();
     my $len=length($result);
@@ -5274,6 +5279,18 @@ sub webui_meter_stop (@) {
   unlink(@stale) if @stale;
  }
  return '{"status":"ok","message":"Measurement stopped"}';
+}
+
+sub webui_meter_stop_status (@) {
+ my $series_alive=&webui_meter_series_alive() ? 1 : 0;
+ # A series helper normally owns the only spotread process and does not exit
+ # until it has gracefully reaped that child. Check both so an abnormal helper
+ # exit cannot make the UI claim cancellation is complete while an orphaned
+ # meter transaction is still holding USB.
+ my $spotread_pids=`pgrep -x spotread 2>/dev/null`;
+ my $spotread_alive=(defined($spotread_pids) && $spotread_pids=~/\d/) ? 1 : 0;
+ my $stopping=($series_alive || $spotread_alive) ? 1 : 0;
+ return '{"status":"'.($stopping ? "stopping" : "stopped").'","series_alive":'.($series_alive ? "true" : "false").',"spotread_alive":'.($spotread_alive ? "true" : "false").'}';
 }
 
 sub webui_meter_clear (@) {
@@ -26235,15 +26252,51 @@ async function meterStop(){
  }
  meterHideWorkflowProgress();
  meterUpdateReadButtons();
+ const waitForSeriesTeardown=async()=>{
+  const started=Date.now();
+  let lastRetry=started;
+  while(true){
+   const status=await fetchJSON('/api/meter/stop/status',{_quiet:true,_timeoutMs:5000});
+   if(status&&status.series_alive===false&&status.spotread_alive===false) return;
+   const elapsed=Date.now()-started;
+   const statusEl=document.getElementById('meterStopStatus');
+   if(statusEl){
+    statusEl.textContent=elapsed>=30000
+     ? 'Finishing the current meter transaction and closing the series\u2026'
+     : 'Waiting for the series and meter to stop\u2026';
+   }
+   // Cancellation is idempotent. If the original request was lost during a
+   // network hiccup, re-send it occasionally rather than leaving the modal
+   // polling a series that was never signalled.
+   if(Date.now()-lastRetry>=5000){
+    lastRetry=Date.now();
+    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+   }
+   await new Promise(resolve=>setTimeout(resolve,250));
+  }
+ };
+ let patternStopped=false;
  try{
   if(needsBackendStop){
    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
   }
- }catch(e){
- }finally{
+  // Blank the patch immediately, but leave the modal and interaction lock in
+  // place until the helper has reaped spotread.
   try{
    await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+   patternStopped=true;
   }catch(e){}
+  if(hadSeriesStop) await waitForSeriesTeardown();
+ }catch(e){
+  // A transient request failure is handled by the polling loop's idempotent
+  // stop retry. For non-series stops, preserve the previous best-effort flow.
+  if(hadSeriesStop) await waitForSeriesTeardown();
+ }finally{
+  if(!patternStopped){
+   try{
+    await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+   }catch(e){}
+  }
   meterActionPending=false;
   meterStopModalHide();
   meterUpdateReadButtons();
