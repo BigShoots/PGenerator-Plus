@@ -10210,7 +10210,12 @@ sub webui_html (@) {
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
-#meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-gutter:stable both-edges}
+#meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-gutter:stable both-edges}
+#meterThumbsRow{touch-action:pan-x}
+/* Charts scroll horizontally inside their own strip, but a vertical finger
+   gesture over the plot must continue scrolling the page. Y-axis touch zoom
+   uses its own narrow touch-action:none overlay instead of locking the canvas. */
+.meter-scroll-sync{touch-action:pan-x pan-y}
 .meter-modal-scroll{scrollbar-color:#3a4152 #111723;scrollbar-width:thin}
 .meter-modal-scroll::-webkit-scrollbar{width:10px}
 .meter-modal-scroll::-webkit-scrollbar-track{background:#111723;border-radius:999px}
@@ -40827,9 +40832,15 @@ function meterChartPointerIsOnYAxis(canvas,e){
  const x=Number(e.clientX)-rect.left;
  const y=Number(e.clientY)-rect.top;
  if(!Number.isFinite(x)||!Number.isFinite(y)||y<0||y>rect.height) return false;
- const pad=meterChartYZoomAxisPad(canvas.id);
- const axisLimit=Math.max(48,Math.min(rect.width*0.35,(pad.l||55)+12));
+ const axisLimit=meterChartYZoomTouchWidth(canvas);
  return x>=0 && x<=axisLimit;
+}
+
+function meterChartYZoomTouchWidth(canvas){
+ if(!canvas) return 0;
+ const rect=canvas.getBoundingClientRect();
+ const pad=meterChartYZoomAxisPad(canvas.id);
+ return Math.max(48,Math.min(rect.width*0.35,(pad.l||55)+12));
 }
 
 function meterChartYZoomHelpRect(id,pad){
@@ -40977,10 +40988,54 @@ function meterApplyTopYZoom(id,max,min){
  return {min:lo,max:lo+span};
 }
 
+function meterSyncChartYZoomTouchZone(canvas){
+ if(!canvas||!canvas.parentElement||!meterChartCanYZoom(canvas.id)) return null;
+ const parent=canvas.parentElement;
+ if(getComputedStyle(parent).position==='static') parent.style.position='relative';
+ let zone=parent.querySelector('.meter-chart-y-zoom-touch-zone[data-canvas-id="'+canvas.id+'"]');
+ if(!zone){
+  zone=document.createElement('div');
+  zone.className='meter-chart-y-zoom-touch-zone';
+  zone.dataset.canvasId=canvas.id;
+  zone.setAttribute('aria-hidden','true');
+  zone.style.cssText='position:absolute;z-index:3;background:transparent;touch-action:none;user-select:none;-webkit-user-select:none';
+  parent.appendChild(zone);
+  zone.addEventListener('touchstart',e=>{
+   if(!e.touches||e.touches.length!==1) return;
+   meterChartYZoomTouch={id:canvas.id,y:e.touches[0].clientY};
+  },{passive:true});
+  zone.addEventListener('touchmove',e=>{
+   if(!meterChartYZoomTouch||meterChartYZoomTouch.id!==canvas.id||!e.touches||e.touches.length!==1) return;
+   const y=e.touches[0].clientY;
+   const dy=meterChartYZoomTouch.y-y;
+   if(Math.abs(dy)<8) return;
+   e.preventDefault();
+   meterChartYZoomTouch.y=y;
+   meterAdjustChartYZoom(canvas.id,dy/48);
+  },{passive:false});
+  const finish=()=>{ if(meterChartYZoomTouch&&meterChartYZoomTouch.id===canvas.id) meterChartYZoomTouch=null; };
+  zone.addEventListener('touchend',finish,{passive:true});
+  zone.addEventListener('touchcancel',finish,{passive:true});
+ }
+ const rect=canvas.getBoundingClientRect();
+ zone.style.left=canvas.offsetLeft+'px';
+ zone.style.top=canvas.offsetTop+'px';
+ zone.style.width=meterChartYZoomTouchWidth(canvas)+'px';
+ zone.style.height=Math.max(0,rect.height)+'px';
+ // Do not place an invisible mouse hit target over Desktop charts. Hybrid
+ // and touch devices expose pointer:coarse and receive the axis gesture zone.
+ zone.style.pointerEvents=(window.matchMedia&&window.matchMedia('(pointer:coarse)').matches)?'auto':'none';
+ return zone;
+}
+
 function meterEnsureChartYZoomInput(canvas){
- if(!canvas||canvas._meterYZoomBound||!meterChartCanYZoom(canvas.id)) return;
+ if(!canvas||!meterChartCanYZoom(canvas.id)) return;
+ if(canvas._meterYZoomBound){
+  meterSyncChartYZoomTouchZone(canvas);
+  return;
+ }
  canvas._meterYZoomBound=1;
- canvas.style.touchAction='none';
+ canvas.style.touchAction='pan-x pan-y';
  canvas.removeAttribute('title');
  canvas.addEventListener('mousemove',e=>{
   if(!meterChartYZoomHelpHit(e,canvas.id)) return;
@@ -40998,22 +41053,7 @@ function meterEnsureChartYZoomInput(canvas){
   e.preventDefault();
   meterChartYZoomReset(canvas.id);
  });
- canvas.addEventListener('touchstart',e=>{
-  if(!e.touches||e.touches.length!==1) return;
-  if(!meterChartPointerIsOnYAxis(canvas,e.touches[0])) return;
-  meterChartYZoomTouch={id:canvas.id,y:e.touches[0].clientY};
- },{passive:true});
- canvas.addEventListener('touchmove',e=>{
-  if(!meterChartYZoomTouch||meterChartYZoomTouch.id!==canvas.id||!e.touches||e.touches.length!==1) return;
-  const y=e.touches[0].clientY;
-  const dy=meterChartYZoomTouch.y-y;
-  if(Math.abs(dy)<8) return;
-  e.preventDefault();
-  meterChartYZoomTouch.y=y;
-  meterAdjustChartYZoom(canvas.id,dy/48);
- },{passive:false});
- canvas.addEventListener('touchend',()=>{ if(meterChartYZoomTouch&&meterChartYZoomTouch.id===canvas.id) meterChartYZoomTouch=null; },{passive:true});
- canvas.addEventListener('touchcancel',()=>{ if(meterChartYZoomTouch&&meterChartYZoomTouch.id===canvas.id) meterChartYZoomTouch=null; },{passive:true});
+ meterSyncChartYZoomTouchZone(canvas);
 }
 
 function meterDrawChartYZoomHelp(ctx,pad){
