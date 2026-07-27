@@ -23,6 +23,12 @@ our $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE = 0;
 our $LG_AUTOCAL_SETUP_LUMINANCE = 0;
 our $LG_AUTOCAL_DELTA_E_FORMULA = "deitp";
 our $LG_AUTOCAL_DDC_LAYOUT = "sdr26";
+# Dark Detail: when the operator ticks the wizard option, the descending
+# calibration pass gains the extra patch values the reference LG workflow
+# calibrates, so the region between ladder slots is measured instead of
+# interpolated. OFF by default -- off must reproduce the previous ladder
+# exactly. Set once from the run config; read by ddc_slots_for_layout.
+our $LG_AUTOCAL_DARK_DETAIL = 0;
 our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
 our $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS = [];
@@ -366,17 +372,61 @@ sub ddc_layout_for_signal_mode {
  return "sdr26";
 }
 
+# Dark Detail filler patch values per layout.
+#
+# These are the additional stimuli the reference LG calibration workflow
+# measures on top of our ladder, derived by subtracting each ladder from the
+# reference point set (SDR reconciles to 33 points, HDR to 32). They are
+# deliberately NOT added to the spline-anchor list
+# (lg_autocal_26_full_ddc_spine_anchor_ires_for_layout) -- that set builds the
+# DPG spline and must not change. These land in the descending calibration
+# pass only, where each is converged like any other slot.
+#
+# SDR gains no high-end fillers: its ladder already matches the reference set
+# above 10%. HDR gains 55/65/75/85/95 because the HDR20 ladder steps by 10%
+# above 50%. Dolby Vision runs the HDR20 layout and so inherits the HDR set.
+sub ddc_dark_detail_fillers_for_layout {
+ my ($layout)=@_;
+ $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
+ return (1,2.3,3,3.7,6,8,55,65,75,85,95) if($layout eq "hdr20");
+ return (2,2.7,3.7,6,8,9);
+}
+
+sub ddc_dark_detail_enabled {
+ return $LG_AUTOCAL_DARK_DETAIL ? 1 : 0;
+}
+
 sub ddc_slots_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return (1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100) if($layout eq "hdr20");
- return (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+ my @base=($layout eq "hdr20")
+  ? (1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100)
+  : (2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
+ return @base if(!ddc_dark_detail_enabled());
+ # Merge the fillers in ascending order. The caller that drives the run sorts
+ # descending itself, and every other consumer treats this as an unordered set
+ # keyed by position, so a single sorted union keeps slot positions stable and
+ # deterministic between runs.
+ my %seen=map { (sprintf("%.4f",$_) => 1) } @base;
+ my @merged=@base;
+ foreach my $filler (ddc_dark_detail_fillers_for_layout($layout)) {
+  my $key=sprintf("%.4f",$filler);
+  next if($seen{$key});
+  $seen{$key}=1;
+  push @merged,$filler+0;
+ }
+ return sort { $a <=> $b } @merged;
 }
 
 sub ddc_write_slots_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
- return (1.4,2,2.7,4,5,7,10,15,20,25,30,35,40,45,50,60,70,80,90,100) if($layout eq "hdr20");
+ # Both layouts delegate. ddc_target_for_step pairs this list with
+ # ddc_slots_for_layout BY POSITION ($write_slots[$i] against $slots[$i]), so
+ # the two must stay the same length and ordering. hdr20 previously repeated
+ # its ladder here as a separate literal; that literal was byte-identical to
+ # the ddc_slots_for_layout base list, so delegating changes nothing today and
+ # keeps the pairing correct once Dark Detail merges filler slots in.
  return ddc_slots_for_layout($layout);
 }
 
@@ -1189,6 +1239,24 @@ sub lg_autocal_sdr26_dpg_sample_index_for_limited_code {
  return 0 if(!defined($lim_code) || $lim_code+0 <= 0);
  my $lc=\@LG_AUTOCAL_SDR26_LIMITED_LADDER_CODES;
  my $li=\@LG_AUTOCAL_SDR26_LIMITED_LADDER_INDEXES;
+ # Below the first ladder code, extrapolate along the first segment instead of
+ # clamping. No ladder slot sits below that code, so this cannot change any
+ # pre-Dark-Detail run; it exists because the lowest Dark Detail filler does.
+ # SDR 2% resolves to Limited code 81.5, under the first ladder code of 84, and
+ # the old clamp returned index 21 -- the same index as the 2.3% ladder slot.
+ # Two anchors on one index silently overwrite each other in
+ # lg_autocal_26_build_dpg_core (%seen dedupes, the later value wins), so the
+ # filler would have destroyed the 2.3% anchor instead of adding a point.
+ # Extrapolated, 2% lands on index 18 and both survive. Floored at 1 so a
+ # filler can never collide with index 0, which the build pins to black.
+ if($lim_code+0 < $lc->[0]) {
+  my $span=($lc->[1]-$lc->[0]);
+  return $li->[0] if($span <= 0);
+  my $slope=($li->[1]-$li->[0])/$span;
+  my $idx=int($li->[0] + ($lim_code+0 - $lc->[0])*$slope + 0.5);
+  $idx=1 if($idx < 1);
+  return $idx;
+ }
  return $li->[0] if($lim_code+0 <= $lc->[0]);
  return $li->[-1] if($lim_code+0 >= $lc->[-1]);
  for(my $k=0;$k< @$lc-1;$k++) {
@@ -14550,6 +14618,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		for my $k (0..$#hdr20_idx_labels) {
 			return $hdr20_idx_values[$k] if(abs($hdr20_idx_labels[$k]-$ire) < 0.05);
 		}
+		# Below the first label, extrapolate along the first segment rather than
+		# clamping. No ladder slot sits below 1.4%, so pre-Dark-Detail runs are
+		# unaffected; the lowest HDR Dark Detail filler (1%) needs it. The old
+		# clamp returned index 14 for 1%, which is the 1.4% ladder slot's index,
+		# and two anchors on one index silently overwrite each other in
+		# lg_autocal_26_build_dpg_core. Extrapolated, 1% lands on index 11.
+		# Floored at 1: index 0 is pinned to black by the build.
+		if($ire > 0 && $ire < $hdr20_idx_labels[0]) {
+			my $span=$hdr20_idx_labels[1]-$hdr20_idx_labels[0];
+			if($span > 0) {
+				my $slope=($hdr20_idx_values[1]-$hdr20_idx_values[0])/$span;
+				my $x=int($hdr20_idx_values[0]+($ire-$hdr20_idx_labels[0])*$slope+0.5);
+				$x=1 if($x < 1);
+				return $x;
+			}
+		}
 		return $hdr20_idx_values[0] if($ire <= $hdr20_idx_labels[0]);
 		return $hdr20_idx_values[-1] if($ire >= $hdr20_idx_labels[-1]);
 		for my $k (0..$#hdr20_idx_labels-1) {
@@ -21541,6 +21625,15 @@ my $target_gamma=lc($config->{"target_gamma"}||"bt1886");
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
 my $signal_mode=lc($config->{"signal_mode"}||"sdr");
 $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
+# Dark Detail is set here, before anything reads the slot list, so every
+# consumer of ddc_slots_for_layout sees a consistent ladder for the whole run.
+# Absent/false reproduces the previous ladder exactly.
+$LG_AUTOCAL_DARK_DETAIL=$config->{"dark_detail"} ? 1 : 0;
+if($LG_AUTOCAL_DARK_DETAIL) {
+ my @dd=ddc_dark_detail_fillers_for_layout($LG_AUTOCAL_DDC_LAYOUT);
+ log_line("Dark Detail enabled: layout=$LG_AUTOCAL_DDC_LAYOUT adds ".scalar(@dd)." patches (".join(", ",@dd).") -> "
+  .scalar(ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT))." slots total; spline anchors unchanged");
+}
 my $max_iterations=defined($config->{"max_iterations"}) ? int($config->{"max_iterations"}) : 80;
 my $min_iterations=autocal_config_is_touchup($config) ? 4 : 12;
 if(defined($config->{"max_iterations"})) {

@@ -10707,6 +10707,24 @@ body.meter-autocal-active .dashboard,body.meter-autocal-active .site-footer{filt
 body.meter-autocal-active .meter-autocal-mask{display:flex}
 .meter-autocal-card{width:min(480px,calc(100vw - 36px));max-width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 22px 70px rgba(0,0,0,.48);padding:16px;box-sizing:border-box}
 .meter-autocal-step-box{background:var(--surface-inset)}
+/* Full Auto Cal confirm step. The step previously rendered as a title, one
+   dense run-on paragraph, and option rows whose hints were crammed inline
+   after the control at a smaller size, with per-row inline margins. These give
+   every row one shape -- control + bold label on the first line, hint on its
+   own line beneath at a single size -- and one shared vertical rhythm. */
+.fac-summary{font-size:.82rem;color:var(--text2);line-height:1.5}
+.fac-stages{margin:8px 0 0;padding-left:18px;font-size:.78rem;color:var(--text2);line-height:1.6}
+.fac-stages li{margin:0 0 2px}
+.fac-options{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.fac-options-title{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+.fac-option{display:block;margin:0 0 12px}
+.fac-option:last-child{margin-bottom:0}
+.fac-option-main{display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--text);font-weight:600;flex-wrap:wrap}
+.fac-option-main input[type=checkbox]{accent-color:var(--accent);margin:0;flex:0 0 auto}
+.fac-option-hint{margin:4px 0 0 24px;font-size:.72rem;color:var(--text2);line-height:1.5}
+.fac-option-controls{margin:6px 0 0 24px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fac-option-controls select{background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px}
+[data-theme="light"] .fac-option-controls select{background:var(--surface-inset);color:var(--text-primary)}
 /* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
 #meterAutoCalDisplayTypeBox .field{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
 #meterAutoCalDisplayTypeBox select{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
@@ -13358,25 +13376,45 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	  </div>
 	  <div id="meterFullAutoCalConfirmBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
-		   <div id="meterFullAutoCalConfirmMessage" style="font-size:.82rem;color:var(--text2);line-height:1.45">This will reset the active LG greyscale DDC state and LG 3D LUT baseline, run the current LG 26-point greyscale AutoCal top/body first and shadows low-to-high, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT so the first greyscale pass stays fast.</div>
-	   <label id="meterFullAutoCalShadowFixRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px">
-	    <input type="checkbox" id="meterFullAutoCalShadowFixEnabled" style="accent-color:var(--accent)">
-	    LG Tone Mapping Shadow Fix
-	    <span style="font-size:.68rem;color:var(--text2)">(HDR only: probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re-apply lift)</span>
-	   </label>
-	   <label id="meterFullAutoCalProfilingRow" style="display:none;margin-top:10px;font-size:.78rem;color:var(--text);align-items:center;gap:8px;flex-wrap:wrap">
-	    3D LUT profiling
-	    <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px">
-	     <option value="matrix">Matrix (5 patches)</option>
-	     <option value="skeleton">Skeleton WRGB (45 patches)</option>
-	     <option value="hybrid3" selected>Hybrid 3³ (63 patches)</option>
-	     <option value="hybrid5">Hybrid 5³ (161 patches)</option>
-	     <option value="hybrid9">Hybrid 9³ (765 patches)</option>
-	     <option value="lattice">Lattice series… (N³ only)</option>
-	    </select>
-	    <select id="meterFullAutoCalLatticeSeries" style="display:none;background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px"></select>
-	    <span style="font-size:.68rem;color:var(--text2)">(Matrix=W/R/G/B/K. Skeleton=multi-level WRGB ramps. Hybrid=skeleton + volume cube, deduped. Lattice=N³ only. All produce a 33³ upload.)</span>
-	   </label>
+		   <div id="meterFullAutoCalConfirmMessage" class="fac-summary">Resets the active LG greyscale DDC state and 3D LUT baseline, then runs the full calibration in one pass:
+		    <ol class="fac-stages">
+		     <li>Greyscale AutoCal &mdash; top and body first, then shadows low&#8209;to&#8209;high.</li>
+		     <li>Colour&#8209;only 3D LUT AutoCal, with probe&#8209;gated upload to the TV.</li>
+		     <li>Optional cleanup, after the 3D LUT so the first greyscale pass stays fast.</li>
+		    </ol>
+		   </div>
+		   <div class="fac-options">
+		    <div class="fac-options-title">Options</div>
+		    <label id="meterFullAutoCalDarkDetailRow" class="fac-option" style="display:none">
+		     <span class="fac-option-main">
+		      <input type="checkbox" id="meterFullAutoCalDarkDetailEnabled">
+		      Dark Detail
+		     </span>
+		     <span class="fac-option-hint" id="meterFullAutoCalDarkDetailHint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Increases the time the AutoCal takes to complete.</span>
+		    </label>
+		    <label id="meterFullAutoCalShadowFixRow" class="fac-option" style="display:none">
+		     <span class="fac-option-main">
+		      <input type="checkbox" id="meterFullAutoCalShadowFixEnabled">
+		      LG Tone Mapping Shadow Fix
+		     </span>
+		     <span class="fac-option-hint">HDR only. Probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re&#8209;apply lift.</span>
+		    </label>
+		    <label id="meterFullAutoCalProfilingRow" class="fac-option" style="display:none">
+		     <span class="fac-option-main">3D LUT profiling</span>
+		     <span class="fac-option-controls">
+		      <select id="meterFullAutoCalProfilingMethod" onchange="meterFullAutoCalProfilingMethodChanged()">
+		       <option value="matrix">Matrix (5 patches)</option>
+		       <option value="skeleton">Skeleton WRGB (45 patches)</option>
+		       <option value="hybrid3" selected>Hybrid 3³ (63 patches)</option>
+		       <option value="hybrid5">Hybrid 5³ (161 patches)</option>
+		       <option value="hybrid9">Hybrid 9³ (765 patches)</option>
+		       <option value="lattice">Lattice series… (N³ only)</option>
+		      </select>
+		      <select id="meterFullAutoCalLatticeSeries" style="display:none"></select>
+		     </span>
+		     <span class="fac-option-hint">Matrix = W/R/G/B/K. Skeleton = multi&#8209;level WRGB ramps. Hybrid = skeleton + volume cube, deduped. Lattice = N³ only. All produce a 33³ upload.</span>
+		    </label>
+		   </div>
 	  </div>
 		  <div id="meterAutoCalProgressBox"><div class="meter-autocal-progress"><div class="meter-autocal-progress-fill" id="meterAutoCalProgressFill"></div></div></div>
 		  <div class="btn-row" style="justify-content:flex-end;margin:0">
@@ -35593,7 +35631,8 @@ function meterFullAutoCalDefaultConfig(){
    wp:null,
    preCalSkipped:false,
    postCommitPolishEnabled:false,
-   shadowFixEnabled:true
+   shadowFixEnabled:true,
+   darkDetailEnabled:false
   };
  }
  const resolved=meterLg3dResolveProfilingChoice('hybrid3',null);
@@ -35612,7 +35651,8 @@ function meterFullAutoCalDefaultConfig(){
   wp:null,
 	  preCalSkipped:false,
 	  postCommitPolishEnabled:false,
-	  shadowFixEnabled:true
+	  shadowFixEnabled:true,
+	  darkDetailEnabled:false
  };
 	}
 
@@ -35674,6 +35714,18 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 	function meterFullAutoCalShadowFixEnabled(){
 	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'shadowFixEnabled')) return meterFullAutoCalConfig.shadowFixEnabled!==false;
 	 return true;
+	}
+
+	function meterFullAutoCalDarkDetailChoiceValue(){
+	 const el=document.getElementById('meterFullAutoCalDarkDetailEnabled');
+	 return el?el.checked===true:false;
+	}
+
+	// Default OFF, and off must behave exactly as before -- the worker only
+	// extends its ladder when this is explicitly true.
+	function meterFullAutoCalDarkDetailEnabled(){
+	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'darkDetailEnabled')) return meterFullAutoCalConfig.darkDetailEnabled===true;
+	 return false;
 	}
 
 		function meterFullAutoCalPostSeriesAdjustChoiceValue(){
@@ -36456,13 +36508,14 @@ function meterFullAutoCalResolveConfirm(accepted){
  // a bare `true` then fell through start3d to method=matrix via
  // meterFullAutoCalMethodValue().
  if(accepted){
-  const needObj=!!(opts.showPostCalTouchupChoice||opts.showProfilingChoice||opts.showShadowFixChoice);
+  const needObj=!!(opts.showPostCalTouchupChoice||opts.showProfilingChoice||opts.showShadowFixChoice||opts.showDarkDetailChoice);
   if(needObj){
    result={accepted:true};
    if(opts.showPostCalTouchupChoice){
     result.postCommitPolishEnabled=meterFullAutoCalPostCommitPolishChoiceValue();
    }
    if(opts.showShadowFixChoice) result.shadowFixEnabled=meterFullAutoCalShadowFixChoiceValue();
+   if(opts.showDarkDetailChoice) result.darkDetailEnabled=meterFullAutoCalDarkDetailChoiceValue();
    if(opts.showProfilingChoice){
     const choice=meterFullAutoCalCaptureProfilingChoice();
     result.method=choice.method;
@@ -36539,8 +36592,19 @@ function meterFullAutoCalConfirmDialog(options){
 	 const shadowFixRow=document.getElementById('meterFullAutoCalShadowFixRow');
 	 const shadowFixChoice=document.getElementById('meterFullAutoCalShadowFixEnabled');
 	 if(shadowFixRow){
-	  shadowFixRow.style.display=opts.showShadowFixChoice?'flex':'none';
+	  // '' not 'flex': the .fac-option class owns the layout (block, so the hint
+	  // sits on its own line). An inline flex here would collapse it back onto
+	  // one line and undo the row rework.
+	  shadowFixRow.style.display=opts.showShadowFixChoice?'':'none';
 	  if(shadowFixChoice&&opts.showShadowFixChoice) shadowFixChoice.checked=opts.shadowFixDefault!==false;
+	 }
+	 // Dark Detail applies to every greyscale-bearing mode (SDR, HDR10, DV),
+	 // unlike the HDR-only shadow fix. Default OFF: it lengthens the run.
+	 const darkDetailRow=document.getElementById('meterFullAutoCalDarkDetailRow');
+	 const darkDetailChoice=document.getElementById('meterFullAutoCalDarkDetailEnabled');
+	 if(darkDetailRow){
+	  darkDetailRow.style.display=opts.showDarkDetailChoice?'':'none';
+	  if(darkDetailChoice&&opts.showDarkDetailChoice) darkDetailChoice.checked=opts.darkDetailDefault===true;
 	 }
  if(fullConfirmBox) fullConfirmBox.style.display='';
  if(progressBox) progressBox.style.display='none';
@@ -36956,7 +37020,7 @@ async function meterStartFullAutoCal(){
  const dvSignal=(String(getVal('signal_mode')||'').toLowerCase()==='dv');
  // HDR: Calman only supports matrix 3D LUT — restore old wizard (no type picker).
  const hdrMatrixOnly=(signalMode==='hdr10');
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showProfilingChoice:!hdrMatrixOnly&&!dvSignal});
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showDarkDetailChoice:true,darkDetailDefault:false,showProfilingChoice:!hdrMatrixOnly&&!dvSignal});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
@@ -36964,6 +37028,11 @@ async function meterStartFullAutoCal(){
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
 		  ? accepted.shadowFixEnabled!==false
 		  : true;
+		 // Dark Detail defaults to FALSE when absent -- the opposite of shadowFix --
+		 // so any path that does not surface the option leaves the ladder untouched.
+		 const darkDetailEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'darkDetailEnabled'))
+		  ? accepted.darkDetailEnabled===true
+		  : false;
 		 let profilingMethod=(accepted&&typeof accepted==='object'&&accepted.method
 		  &&(accepted.method==='lattice'||accepted.method==='skeleton'||accepted.method==='hybrid'||accepted.method==='matrix'))
 		  ?accepted.method:'hybrid';
@@ -37031,6 +37100,7 @@ async function meterStartFullAutoCal(){
 		  preCalSkipped:skipPreCal,
 		  postCommitPolishEnabled:postCommitPolishEnabled,
 		  shadowFixEnabled:shadowFixEnabled,
+		  darkDetailEnabled:darkDetailEnabled,
 		  method:profilingMethod,
 		  profileSource:profilingSource,
 		  latticeSeriesId:profilingLatticeSeriesId
@@ -39878,6 +39948,10 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
   lg_autocal_hdr20_postcal_shadow_enable:fullWorkflow?(meterFullAutoCalShadowFixEnabled()?1:0):undefined,
+  // Dark Detail: extends the descending calibration pass with the extra
+  // patch values. Omitted entirely when off so the worker config is
+  // byte-identical to a pre-Dark-Detail run.
+  dark_detail:meterFullAutoCalDarkDetailEnabled()?1:undefined,
   skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
