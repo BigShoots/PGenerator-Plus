@@ -22434,9 +22434,13 @@ function meterLuminanceAxisLabel(v){
  return '0';
 }
 
-function meterGreyMeasuredEotfValue(luminance,refWhite){
+// blackLevel must be the SAME Lb the target curve was built with. In the
+// Absolute (inverse-EOTF) view the target inverts to the diagonal by
+// construction, so the measured curve is the only thing carrying the error --
+// inverting it against a different Lb silently cancels that error out.
+function meterGreyMeasuredEotfValue(luminance,refWhite,blackLevel){
  const y=Math.max(0,luminance||0);
- return meterGreyEotfValueFromLuminance(y,refWhite);
+ return meterGreyEotfValueFromLuminance(y,refWhite,blackLevel);
 }
 
 function meterGreyNormalizedLuminanceValue(luminance,refWhite){
@@ -22490,10 +22494,13 @@ function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  return meterGreyNormalizedEotfValueFromLuminance(y,refWhite);
 }
 
-function meterGreyMeasuredEotfChartValue(luminance,refWhite){
+// blackLevel defaults to 0 so callers that have no series black (the preset
+// pre-read charts) keep drawing exactly as before. The normalized view is a
+// plain y/ref ratio and needs no Lb.
+function meterGreyMeasuredEotfChartValue(luminance,refWhite,blackLevel){
  const y=Math.max(0,luminance||0);
  const ref=meterEotfChartNormRef(refWhite);
- return meterEotfNormalizedEnabled() ? meterGreyMeasuredNormalizedEotfValue(y,ref) : meterGreyMeasuredEotfValue(y,ref);
+ return meterEotfNormalizedEnabled() ? meterGreyMeasuredNormalizedEotfValue(y,ref) : meterGreyMeasuredEotfValue(y,ref,blackLevel);
 }
 
 function meterNiceAxisTop(dataMax,base,maxTicks){
@@ -22572,12 +22579,26 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
   return effectiveGamma(tgtLum,peak,analysisIre);
  }
  let black=Lb||0;
- if(tgt==='bt1886'){
-  // Keep the SDR gamma target consistent across 11/21/101-point greyscale
-  // series. The BT.1886 black-offset shape still belongs in the luminance and
-  // EOTF targets; the gamma target chart should reflect the nominal exponent.
-  return 2.4;
+ // With a raised Target Black the SDR target is no longer a pure power law:
+ // BT.1886 bends into Lb and power/sRGB clip onto it. Plot the effective
+ // exponent of the luminance the EOTF/luminance charts actually target, the
+ // same way the PQ/HLG branch above does, so the gamma chart agrees with them
+ // and with Absolute-Y error instead of drawing a flat nominal line the
+ // target no longer follows (e.g. Lw=172, Lb=10 -> 0.86 at 5%, not 2.4).
+ // Lb=0 is the common case and is mathematically identical to the nominal
+ // exponent, so keep returning the constant there.
+ if(black>0.001){
+  const tgtLum=meterGreyTargetLuminance(ire,peak,black,code);
+  if(!(tgtLum>0)) return null;
+  const analysisIre=signal*100;
+  if(analysisIre>=99.999){
+   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
+   const prevLum=meterGreyTargetLuminance(prevStepIre,peak,black,prevStepCode);
+   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignal*100);
+  }
+  return effectiveGamma(tgtLum,peak,analysisIre);
  }
+ if(tgt==='bt1886') return 2.4;
  if(tgt==='srgb') return 2.2;
  const gamma=parseFloat(tgt);
  return (gamma>0&&isFinite(gamma))?gamma:null;
@@ -43032,8 +43053,8 @@ function drawEOTFChart(gs,allSteps,readingMap){
  }
  const valid=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const eotfMeasuredRef=targetPeak||refWhite;
- const allValues=[meterGreyMeasuredEotfChartValue(refWhite,eotfMeasuredRef)];
- valid.forEach(r=>allValues.push(meterGreyMeasuredEotfChartValue(r.luminance||0,eotfMeasuredRef)));
+ const allValues=[meterGreyMeasuredEotfChartValue(refWhite,eotfMeasuredRef,Lb)];
+ valid.forEach(r=>allValues.push(meterGreyMeasuredEotfChartValue(r.luminance||0,eotfMeasuredRef,Lb)));
  for(let pct=0;pct<=axisMax;pct+=1) allValues.push(meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null));
  let yTop=meterEotfChartTop(allValues);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
@@ -43048,6 +43069,14 @@ function drawEOTFChart(gs,allSteps,readingMap){
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
  const measureSteps=(directMeasured&&plotSteps.length)?plotSteps:(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
+ // Single measured->plot transform for the line, the dots and the lifted-black
+ // label. It must carry Lb: the dashed target inverts to the diagonal using Lb,
+ // so a measured curve inverted without it lands on the target and hides the error.
+ const eotfPlotMeasured=lum=>{
+  const value=Number(lum);
+  if(!Number.isFinite(value)) return null;
+  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef,Lb),yTop,null,value);
+ };
  let mSegments=meterMeasuredEotfLuminanceSegments(
   measureSteps,
   readingMap,
@@ -43055,11 +43084,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
   (signal,point)=>{
    return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
   },
-  lum=>{
-   const value=Number(lum);
-   if(!Number.isFinite(value)) return null;
-   return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
-  },
+  eotfPlotMeasured,
   'eotf',
   lum=>{
    const value=Number(lum);
@@ -43072,19 +43097,11 @@ function drawEOTFChart(gs,allSteps,readingMap){
  mSegments.forEach(seg=>{
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
  });
- drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,lum=>{
-  const value=Number(lum);
-  if(!Number.isFinite(value)) return null;
-  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
- },'eotf'),'#ffeb3b',2.2);
+ drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,eotfPlotMeasured,'eotf'),'#ffeb3b',2.2);
  // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
  // lifted black is visible even though the Y axis spans 0 to peak and
  // the plotted 0% point sits on the X axis.
- meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,lum=>{
-  const value=Number(lum);
-  if(!Number.isFinite(value)) return null;
-  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
- });
+ meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,eotfPlotMeasured);
  // Optional per-channel R/G/B EOTF overlay (mirrors the Gamma chart's
  // per-channel option). Each channel's measured linear value is normalized to
  // the white reference's same channel, rescaled to the chart reference, then
@@ -43108,7 +43125,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
      const wc=rw[ch.i];
      if(!(wc>0)) return;
      const chanLum=(lin[ch.i]/wc)*eotfMeasuredRef;
-     const val=meterGreyMeasuredEotfChartValue(chanLum,eotfMeasuredRef);
+     const val=meterGreyMeasuredEotfChartValue(chanLum,eotfMeasuredRef,Lb);
      const x=meterGreyEotfLuminanceChartX(step,pcSteps,idx,axisMax);
      const scaled=meterScaleEotfLuminancePlotValue('eotf',val,yTop,null,chanLum);
      if(scaled!=null) pts.push([x,scaled]);
