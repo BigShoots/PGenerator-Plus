@@ -10282,6 +10282,11 @@ sub webui_html (@) {
  var mode='dark';
  try{var saved=localStorage.getItem('pgen.ui.themeMode');if(saved==='light'||saved==='dark')mode=saved;}catch(e){}
  document.documentElement.setAttribute('data-theme',mode);
+ try{
+  if(localStorage.getItem('pgen.ui.desktopSidebarCollapsed')==='1'){
+   document.documentElement.setAttribute('data-desktop-sidebar-collapsed','1');
+  }
+ }catch(e){}
 })();
 </script>
 <style>
@@ -10956,15 +10961,31 @@ display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap
 .desktop-shell{min-width:0}
 .desktop-sidebar{display:none}
 .desktop-nav{display:flex;flex-direction:column;gap:3px}
-.desktop-nav-title{padding:0 10px 9px;color:var(--text2);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px}
-.desktop-nav-btn{display:flex;align-items:center;width:100%;min-height:38px;border:0;border-radius:6px;padding:8px 10px;background:transparent;color:var(--text2);font-size:.8rem;font-weight:600;text-align:left;cursor:pointer;transition:background .16s,color .16s}
+.desktop-nav-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.desktop-nav-title{min-width:0;padding:0 10px;color:var(--text2);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px;white-space:nowrap;overflow:hidden}
+.desktop-sidebar-toggle{display:inline-flex;flex:0 0 30px;width:30px;height:30px;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:7px;background:var(--surface-inset);color:var(--text2);cursor:pointer;transition:background .16s,color .16s,border-color .16s}
+.desktop-sidebar-toggle:hover{background:var(--hover-bg);color:var(--text);border-color:var(--accent)}
+.desktop-sidebar-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.desktop-sidebar-toggle svg{width:18px;height:18px}
+.desktop-sidebar-toggle .desktop-sidebar-chevron{transform-origin:12px 12px;transition:transform .18s ease}
+.desktop-nav-btn{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;border:0;border-radius:6px;padding:8px 10px;background:transparent;color:var(--text2);font-size:.8rem;font-weight:600;text-align:left;cursor:pointer;transition:background .16s,color .16s}
+.desktop-nav-icon{display:inline-flex;flex:0 0 20px;width:20px;height:20px;align-items:center;justify-content:center;color:currentColor}
+.desktop-nav-icon svg{display:block;width:20px;height:20px}
+.desktop-nav-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .desktop-nav-btn:hover{background:rgba(255,255,255,.055);color:var(--text)}
 .desktop-nav-btn[aria-current="page"]{background:rgba(91,127,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
 .desktop-workspace-title{display:none}
 body.layout-desktop{--desktop-utility-width:min(390px,30vw);--desktop-rgb-chart-height:clamp(260px,42vh,420px);--desktop-eotf-chart-height:clamp(420px,54vh,560px)}
-body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start;transition:width .22s ease}
+body.layout-desktop .desktop-shell{display:grid;grid-template-columns:240px minmax(0,1fr);width:100%;align-items:start;transition:width .22s ease,grid-template-columns .18s ease}
 body.layout-desktop.desktop-utility-open .desktop-shell{width:calc(100% - var(--desktop-utility-width))}
 body.layout-desktop .desktop-sidebar{display:block;position:sticky;top:var(--pg-header-height,61px);height:calc(100vh - var(--pg-header-height,61px));padding:16px 12px;border-right:1px solid var(--border);background:#0d0d15;overflow-y:auto;z-index:30}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-shell{grid-template-columns:68px minmax(0,1fr)}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-sidebar{padding-left:8px;padding-right:8px;overflow-x:hidden}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-nav-head{justify-content:center}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-nav-title,
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-nav-label{display:none}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-sidebar-toggle .desktop-sidebar-chevron{transform:rotate(180deg)}
+html[data-desktop-sidebar-collapsed="1"] body.layout-desktop .desktop-nav-btn{width:44px;min-height:42px;margin:0 auto;padding:9px 12px;gap:0;justify-content:center}
 body.layout-desktop .desktop-content{min-width:0;width:100%;min-height:calc(100vh - var(--pg-header-height,61px));display:flex;flex-direction:column}
 body.layout-desktop .dashboard{max-width:none;width:100%;margin:0;padding:20px 24px 28px;display:flex;flex:1 0 auto;flex-direction:column;gap:0}
 body.layout-desktop .desktop-workspace-title{display:block;order:-1000;margin:0 0 18px;font-size:1.25rem;line-height:1.25;color:var(--text);font-weight:700}
@@ -11366,17 +11387,22 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 <div class="desktop-shell">
 <aside class="desktop-sidebar" aria-label="Desktop workspace navigation">
  <nav class="desktop-nav" aria-label="PGenerator workspaces">
-  <div class="desktop-nav-title">Workspaces</div>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="output" onclick="pgSelectDesktopWorkspace('output')">Output</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" onclick="pgSelectDesktopWorkspace('patterns')">Patterns</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" onclick="pgSelectDesktopWorkspace('calibration')">Calibration</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" onclick="pgSelectDesktopWorkspace('3d-lut')">3D LUT</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" onclick="pgSelectDesktopWorkspace('meter-profile')">Meter Profile</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" onclick="pgSelectDesktopWorkspace('display-control')">LG Display</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" onclick="pgSelectDesktopWorkspace('connectivity')">Connectivity</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" onclick="pgSelectDesktopWorkspace('ui-settings')">UI Settings</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="session" onclick="pgSelectDesktopWorkspace('session')">Session</button>
-  <button type="button" class="desktop-nav-btn" data-workspace-target="system" onclick="pgSelectDesktopWorkspace('system')">System</button>
+  <div class="desktop-nav-head">
+   <div class="desktop-nav-title">Workspaces</div>
+   <button type="button" class="desktop-sidebar-toggle" id="desktopSidebarToggle" aria-label="Collapse workspace menu" aria-expanded="true" title="Collapse workspace menu" onclick="pgToggleDesktopSidebar()">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 4v16" fill="none" stroke="currentColor" stroke-width="1.8"/><path class="desktop-sidebar-chevron" d="m15 9-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+   </button>
+  </div>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="output" title="Output" onclick="pgSelectDesktopWorkspace('output')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="desktop-nav-label">Output</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" title="Patterns" onclick="pgSelectDesktopWorkspace('patterns')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="desktop-nav-label">Patterns</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" title="Calibration" onclick="pgSelectDesktopWorkspace('calibration')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="desktop-nav-label">Calibration</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" title="3D LUT" onclick="pgSelectDesktopWorkspace('3d-lut')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.8 8 4.5v9.4l-8 4.5-8-4.5V7.3zM4 7.3l8 4.6 8-4.6M12 11.9v9.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="desktop-nav-label">3D LUT</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" title="Meter Profile" onclick="pgSelectDesktopWorkspace('meter-profile')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8v4.5a4 4 0 0 1-8 0zM10 12v3.5a3.5 3.5 0 0 0 7 0V14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="17" cy="11" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="desktop-nav-label">Meter Profile</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" title="LG Display" onclick="pgSelectDesktopWorkspace('display-control')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.8" y="4" width="18.4" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 21h8M12 17v4M7 10h3v3H7zM14 9v4h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="desktop-nav-label">LG Display</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" title="Connectivity" onclick="pgSelectDesktopWorkspace('connectivity')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7 11 9.8-4M7 13l9.8 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="desktop-nav-label">Connectivity</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="ui-settings" title="UI Settings" onclick="pgSelectDesktopWorkspace('ui-settings')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7M15 6h5M4 12h3M11 12h9M4 18h9M17 18h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="13" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="15" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="desktop-nav-label">UI Settings</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="session" title="Session" onclick="pgSelectDesktopWorkspace('session')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7.5V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="desktop-nav-label">Session</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="system" title="System" onclick="pgSelectDesktopWorkspace('system')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2 3"/></svg></span><span class="desktop-nav-label">System</span></button>
  </nav>
 </aside>
 <div class="desktop-content">
@@ -15926,6 +15952,7 @@ async function resolveDisconnect(){
 const PG_LAYOUT_STORAGE_KEY='pgen.ui.layoutMode';
 const PG_THEME_STORAGE_KEY='pgen.ui.themeMode';
 const PG_DESKTOP_ZOOM_STORAGE_KEY='pgen.ui.desktopZoom';
+const PG_DESKTOP_SIDEBAR_STORAGE_KEY='pgen.ui.desktopSidebarCollapsed';
 const PG_METER_CONFIG_COLLAPSE_KEY='pgen.ui.meterConfigCollapsed';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
@@ -15937,6 +15964,8 @@ let pgLayoutPreference='tablet';
 let pgLayoutEffective='tablet';
 let pgDesktopZoom=1;
 let pgDesktopWorkspace='output';
+let pgDesktopSidebarCollapsed=false;
+let pgDesktopSidebarRefreshTimer=null;
 let pgLayoutResizeTimer=null;
 let pgLayoutPanelObserver=null;
 let pgLayoutViewportWidth=0;
@@ -15956,6 +15985,38 @@ function pgReadDesktopZoom(){
   const value=Number(localStorage.getItem(PG_DESKTOP_ZOOM_STORAGE_KEY));
   return [0.75,0.8,0.9,1,1.1,1.25].includes(value)?value:1;
  }catch(e){ return 1; }
+}
+function pgReadDesktopSidebarCollapsed(){
+ try{ return localStorage.getItem(PG_DESKTOP_SIDEBAR_STORAGE_KEY)==='1'; }
+ catch(e){ return false; }
+}
+function pgSyncDesktopSidebar(){
+ const collapsed=!!pgDesktopSidebarCollapsed;
+ document.documentElement.setAttribute('data-desktop-sidebar-collapsed',collapsed?'1':'0');
+ document.querySelectorAll('.desktop-nav-btn[data-workspace-target]').forEach(button=>{
+  if(!button.getAttribute('aria-label')) button.setAttribute('aria-label',button.title||'Workspace');
+ });
+ const toggle=document.getElementById('desktopSidebarToggle');
+ if(toggle){
+  toggle.setAttribute('aria-expanded',collapsed?'false':'true');
+  toggle.setAttribute('aria-label',collapsed?'Expand workspace menu':'Collapse workspace menu');
+  toggle.title=collapsed?'Expand workspace menu':'Collapse workspace menu';
+ }
+}
+function pgSetDesktopSidebarCollapsed(collapsed){
+ pgDesktopSidebarCollapsed=!!collapsed;
+ try{ localStorage.setItem(PG_DESKTOP_SIDEBAR_STORAGE_KEY,pgDesktopSidebarCollapsed?'1':'0'); }catch(e){}
+ pgSyncDesktopSidebar();
+ if(pgDesktopSidebarRefreshTimer) clearTimeout(pgDesktopSidebarRefreshTimer);
+ if(pgLayoutEffective==='desktop'){
+  pgDesktopSidebarRefreshTimer=setTimeout(()=>{
+   pgDesktopSidebarRefreshTimer=null;
+   pgRefreshVisibleWorkspace();
+  },220);
+ }
+}
+function pgToggleDesktopSidebar(){
+ pgSetDesktopSidebarCollapsed(!pgDesktopSidebarCollapsed);
 }
 function pgApplyDesktopZoom(){
  const scale=pgLayoutEffective==='desktop'?pgDesktopZoom:1;
@@ -16200,6 +16261,7 @@ function pgApplyLayout(options){
  document.body.classList.toggle('layout-desktop',pgLayoutEffective==='desktop');
  document.body.classList.toggle('layout-tablet',pgLayoutEffective==='tablet');
  pgSyncMeterDesktopWorkspaceAvailability();
+ pgSyncDesktopSidebar();
  pgApplyDesktopZoom();
  meterPlaceCcssEditorForLayout();
  meterPlace3dLutWorkspaceForLayout();
@@ -16245,6 +16307,7 @@ function pgLayoutInit(){
  pgApplyThemeMode(pgReadThemeMode(),{initial:true});
  pgLayoutPreference=pgReadLayoutPreference();
  pgDesktopZoom=pgReadDesktopZoom();
+ pgDesktopSidebarCollapsed=pgReadDesktopSidebarCollapsed();
  pgLayoutEffective='tablet';
  pgDesktopWorkspace='output';
  pgLayoutViewportWidth=Math.round(window.innerWidth||0);
