@@ -22875,6 +22875,7 @@ function meterDrawGreyAnalysisCharts(){
 }
 
 function meterQueueGreyAnalysisRefresh(){
+ if(typeof meterCancelRunningGreyscaleChartRefresh==='function') meterCancelRunningGreyscaleChartRefresh();
  meterCancelQueuedGreyAnalysisRefresh();
  // Yield one complete paint so the native select closes and displays its new
  // value before any long-series canvas work begins.
@@ -39659,7 +39660,8 @@ async function meterPollSeries(){
    meterLastChartSignature=chartSignature;
    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
    const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-   drawAllCharts(sorted);
+   if(!isColor&&meterSeriesRunning) meterQueueRunningGreyscaleChartRefresh(sorted);
+   else drawAllCharts(sorted);
    meterCacheSeriesState(r.status||'running');
   }
  }
@@ -39701,6 +39703,7 @@ async function meterPollSeries(){
  }
 
  if(r.status==='complete'||r.status==='cancelled'||r.status==='error'){
+  meterCancelRunningGreyscaleChartRefresh();
   if(meterBuild3dLutPending) meterBuild3dLutMeasureHide();
   if(r.status!=='complete') meterBuild3dLutPending=null;
   clearInterval(meterSeriesPolling);
@@ -41366,6 +41369,62 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 ///////////////////////////////////////////////
 //           Canvas Chart Drawing            //
 ///////////////////////////////////////////////
+let meterRunningGreyChartRefreshToken=0;
+let meterRunningGreyChartRefreshFrame=0;
+
+function meterCancelRunningGreyscaleChartRefresh(){
+ meterRunningGreyChartRefreshToken++;
+ if(meterRunningGreyChartRefreshFrame){
+  window.cancelAnimationFrame(meterRunningGreyChartRefreshFrame);
+  meterRunningGreyChartRefreshFrame=0;
+ }
+}
+
+function meterQueueRunningGreyscaleChartRefresh(readings){
+ meterCancelRunningGreyscaleChartRefresh();
+ const token=meterRunningGreyChartRefreshToken;
+ const raw=Array.isArray(readings)?readings:[];
+ const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;
+ const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;
+ const rawGs=meterGreyscaleReadings(raw);
+ const gs=meterFilterLgAutoCalChartItems(rawGs);
+ if(!gs.length) return;
+ const readingMap=meterGreyscaleReadingMap(gs);
+ meterUpdateHdrConfigVisibility();
+ meterUpdateGreyscaleChartMode();
+ meterUpdateGreyscaleChartScrollLayout((allSteps&&allSteps.length)||gs.length);
+ const tasks=[
+  ()=>drawRGBChart(gs,allSteps,readingMap),
+  ()=>drawDeltaEChart(gs,allSteps,readingMap,rawGs),
+  ()=>{ meterEnsureChannelGammaCache(raw); drawGammaValueChart(gs,allSteps,readingMap); },
+  ()=>drawEOTFChart(gs,allSteps,readingMap),
+  ()=>drawGammaChart(gs,allSteps,readingMap),
+  ()=>chartRegisterInteraction()
+ ];
+ let taskIndex=0;
+ const runNext=()=>{
+  if(token!==meterRunningGreyChartRefreshToken||taskIndex>=tasks.length){
+   meterRunningGreyChartRefreshFrame=0;
+   return;
+  }
+  meterRunningGreyChartRefreshFrame=window.requestAnimationFrame(()=>{
+   meterRunningGreyChartRefreshFrame=0;
+   if(token!==meterRunningGreyChartRefreshToken) return;
+   // If the browser already has pointer/keyboard work queued, yield this
+   // frame instead of making a native select wait behind another canvas.
+   try{
+    if(navigator.scheduling&&navigator.scheduling.isInputPending&&navigator.scheduling.isInputPending()){
+     setTimeout(runNext,0);
+     return;
+    }
+   }catch(_e){}
+   tasks[taskIndex++]();
+   setTimeout(runNext,0);
+  });
+ };
+ runNext();
+}
+
 function drawAllCharts(readings){
  if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
   try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
