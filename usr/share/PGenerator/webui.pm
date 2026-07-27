@@ -11996,14 +11996,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White</label>
-         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" oninput="meterScheduleTargetLevelsFromInput()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+         <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
          <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
         <div class="meter-target-black-row">
          <label class="meter-target-inline-label">Target Black</label>
-         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" oninput="meterScheduleTargetLevelsFromInput()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+         <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
          <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetBlackUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
@@ -14449,7 +14449,6 @@ function applyMeterTargetGammaDefault(force){
  else if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
  meterSyncTargetGammaControl();
- try{ if(typeof meterApplyTargetBlackDefaultForPowerGamma==='function') meterApplyTargetBlackDefaultForPowerGamma(g.value); }catch(e){}
 }
 
 document.getElementById('signal_mode').addEventListener('change',function(){
@@ -22303,14 +22302,9 @@ function meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb,point){
 
 function meterGreyTargetEotfChartValueForSignal(signal,Lw,Lb,point){
  const lum=meterGreyTargetLuminanceForChartPoint(signal,Lw,Lb||0,point);
- // Absolute checkbox drives plot mode only: checked = inverse-EOTF (tracking
- // diagonal); unchecked = absolute Y/ref (bowed curve, black floor visible).
- // Target luminance still uses live Lb so Absolute-Y error and these curves
- // share the same black-aware BT.1886 / power targets.
- const ref=meterEotfChartNormRef(Lw);
  return meterEotfNormalizedEnabled()
-  ? meterGreyNormalizedEotfValueFromLuminance(lum,ref,Lb)
-  : meterGreyEotfValueFromLuminance(lum,ref,Lb);
+  ? meterGreyNormalizedEotfValueFromLuminance(lum,meterEotfChartNormRef(Lw),Lb)
+  : meterGreyEotfValueFromLuminance(lum,meterEotfChartNormRef(Lw),Lb);
 }
 
 function meterEotfNormalizedEnabled(){
@@ -22440,9 +22434,9 @@ function meterLuminanceAxisLabel(v){
  return '0';
 }
 
-function meterGreyMeasuredEotfValue(luminance,refWhite,blackLevel){
+function meterGreyMeasuredEotfValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
- return meterGreyEotfValueFromLuminance(y,refWhite,blackLevel);
+ return meterGreyEotfValueFromLuminance(y,refWhite);
 }
 
 function meterGreyNormalizedLuminanceValue(luminance,refWhite){
@@ -22496,15 +22490,10 @@ function meterGreyMeasuredNormalizedEotfValue(luminance,refWhite){
  return meterGreyNormalizedEotfValueFromLuminance(y,refWhite);
 }
 
-function meterGreyMeasuredEotfChartValue(luminance,refWhite,blackLevel){
+function meterGreyMeasuredEotfChartValue(luminance,refWhite){
  const y=Math.max(0,luminance||0);
  const ref=meterEotfChartNormRef(refWhite);
- const Lb=(blackLevel!=null&&Number.isFinite(Number(blackLevel)))
-  ?Math.max(0,Number(blackLevel))
-  :((typeof meterBlackReadingY==='function')?Math.max(0,Number(meterBlackReadingY())||0):0);
- return meterEotfNormalizedEnabled()
-  ? meterGreyMeasuredNormalizedEotfValue(y,ref)
-  : meterGreyMeasuredEotfValue(y,ref,Lb);
+ return meterEotfNormalizedEnabled() ? meterGreyMeasuredNormalizedEotfValue(y,ref) : meterGreyMeasuredEotfValue(y,ref);
 }
 
 function meterNiceAxisTop(dataMax,base,maxTicks){
@@ -22584,19 +22573,10 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
  }
  let black=Lb||0;
  if(tgt==='bt1886'){
-  // With Lb=0 this is pure 2.4. With a raised black, plot the effective
-  // exponent of the BT.1886 target at this IRE so the gamma chart tracks the
-  // same black-aware curve Absolute-Y error uses (not a flat 2.4 line).
-  if(!(black>0.001)) return 2.4;
-  const tgtLum=meterGreyTargetLuminance(ire,peak,black,code);
-  if(!(tgtLum>0)) return null;
-  const analysisIre=signal*100;
-  if(analysisIre>=99.999){
-   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
-   const prevLum=meterGreyTargetLuminance(prevStepIre,peak,black,prevStepCode);
-   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignal*100);
-  }
-  return effectiveGamma(tgtLum,peak,analysisIre);
+  // Keep the SDR gamma target consistent across 11/21/101-point greyscale
+  // series. The BT.1886 black-offset shape still belongs in the luminance and
+  // EOTF targets; the gamma target chart should reflect the nominal exponent.
+  return 2.4;
  }
  if(tgt==='srgb') return 2.2;
  const gamma=parseFloat(tgt);
@@ -25801,55 +25781,19 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  // lockstep with the checkbox instead of leaving the previous mode editable.
  meterSetTargetLevelsStateOnly();
 }
-// When the operator picks pure power gamma (2.2 / 2.4), default Target Black
-// to manual 0 (not Use measured). Power with a raised black is a hard floor
-// kink, not BT.1886; starting at 0 keeps that curve clean. The operator can
-// still uncheck/check Use measured or type a raised black afterward.
-function meterApplyTargetBlackDefaultForPowerGamma(gamma){
- const g=String(gamma!=null?gamma:((document.getElementById('meterTargetGamma')||{}).value||'')).toLowerCase();
- if(g!=='2.2'&&g!=='2.4') return false;
- const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
- if(!bUm||!black) return false;
- bUm.checked=false;
- black.value='0';
- try{ meterSetTargetLevels(); }catch(e){ try{ meterSetTargetLevelsStateOnly(); }catch(e2){} }
- return true;
-}
-// Prefer live DOM so chart redraws while the operator is typing a manual
-// white/black (localStorage alone lags until meterSetTargetLevels finishes).
+// Resolve the effective Target White level. Returns {useMeasured,value}.
 function meterTargetWhiteLevel(){
- const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
- if(wUm){
-  if(wUm.checked) return {useMeasured:true,value:null};
-  const v=Number(white&&white.value);
-  if(Number.isFinite(v)&&v>0) return {useMeasured:false,value:v};
-  return {useMeasured:false,value:null};
- }
  const s=meterReadTargetLevelsState();
  if(s) return {useMeasured:!!s.white.useMeasured,value:s.white.value};
  return {useMeasured:true,value:null};
 }
+// Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
- const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
- if(bUm){
-  if(bUm.checked) return {useMeasured:true,value:null};
-  const v=Number(black&&black.value);
-  if(Number.isFinite(v)&&v>=0) return {useMeasured:false,value:v};
-  return {useMeasured:false,value:meterDisplayTypeIsOledClass()?0:null};
- }
  const s=meterReadTargetLevelsState();
  if(s){
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
  }
  return meterDisplayTypeIsOledClass()?{useMeasured:false,value:0}:{useMeasured:true,value:null};
-}
-let meterTargetLevelsInputTimer=0;
-function meterScheduleTargetLevelsFromInput(){
- if(meterTargetLevelsInputTimer) clearTimeout(meterTargetLevelsInputTimer);
- meterTargetLevelsInputTimer=setTimeout(()=>{
-  meterTargetLevelsInputTimer=0;
-  try{ meterSetTargetLevels(); }catch(e){}
- },80);
 }
 // Build the override payload spread into meter request bodies. Only emits
 // keys when the operator has entered a manual value.
@@ -25995,39 +25939,23 @@ function meterRefreshTargetCurves(){
     delete r._dE_lc;
     delete r._gamma_rgb;
    });
+   _chartHitZones=[];
+   meterLastChartSignature='';
+   meterLastChartCount=0;
   }
-  _chartHitZones=[];
-  meterLastChartSignature='';
-  meterLastChartCount=0;
  }catch(e){}
- // Always redraw EOTF + luminance (chart id chartGamma) immediately so a
- // Target Black/White edit is not lost behind the greyscale task queue.
- // Absolute / Log scale checkboxes are left alone — they only change plot
- // mode, not Target Black math.
- const redrawEotfLum=()=>{
-  try{
-   const hasReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
-   const stepsRaw=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
-   const allSteps=stepsRaw.length&&typeof meterGreyscaleSeriesSteps==='function'
-    ?meterGreyscaleSeriesSteps(stepsRaw):stepsRaw;
-   if(hasReadings&&meterActiveSeriesType==='greyscale'){
-    const rawGs=(typeof meterGreyscaleReadings==='function')?meterGreyscaleReadings(meterReadings):meterReadings;
-    const gs=(typeof meterFilterLgAutoCalChartItems==='function')?meterFilterLgAutoCalChartItems(rawGs):rawGs;
-    const readingMap=(typeof meterGreyscaleReadingMap==='function')?meterGreyscaleReadingMap(gs):{};
-    const plotSteps=(typeof meterFilterLgAutoCalChartItems==='function')?meterFilterLgAutoCalChartItems(allSteps):allSteps;
-    if(typeof drawEOTFChart==='function') drawEOTFChart(gs,plotSteps,readingMap);
-    if(typeof drawGammaChart==='function') drawGammaChart(gs,plotSteps,readingMap);
-    if(typeof drawGammaValueChart==='function') drawGammaValueChart(gs,plotSteps,readingMap);
-    if(typeof drawDeltaEChart==='function') drawDeltaEChart(gs,plotSteps,readingMap,rawGs);
-    if(typeof chartRegisterInteraction==='function') chartRegisterInteraction();
-    return;
-   }
-   if(allSteps.length&&typeof drawAllChartsPreset==='function'){
-    drawAllChartsPreset((typeof meterFilterLgAutoCalChartItems==='function')?meterFilterLgAutoCalChartItems(allSteps):allSteps);
-   }
-  }catch(e){}
- };
- try{ requestAnimationFrame(redrawEotfLum); }catch(e){ redrawEotfLum(); }
+ if(!(meterReadings&&meterReadings.length)) return;
+ // The old path drew EOTF + luminance individually and then drew ALL charts,
+ // which drew those same two canvases again. Use the existing frame-sliced
+ // greyscale renderer so each chart is computed once and input can be handled
+ // between canvases.
+ try{
+  if(meterActiveSeriesType==='greyscale'&&typeof meterQueueRunningGreyscaleChartRefresh==='function'){
+   meterQueueRunningGreyscaleChartRefresh(meterReadings);
+  }else if(typeof drawAllCharts==='function'){
+   requestAnimationFrame(()=>drawAllCharts(meterReadings));
+  }
+ }catch(e){}
 }
 
 async function meterRunManualReadStep(step,ctx){
@@ -42186,14 +42114,8 @@ function drawEOTFPreset(gsSteps){
  const axisMax=meterEotfLuminanceAxisMax(plotSteps);
  const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
  const refPeak=meterGreyTargetPeak(Lw);
- // Honor Target Black (manual or already-measured/stamped) on the preset
- // target curve so BT.1886 / raised-black power show the lifted floor before
- // any series readings land. Hardcoding Lb=0 left the dashed target on 0
- // until a live redraw.
- const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
-  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
  const allVals=[meterGreyMeasuredEotfChartValue(Lw,Lw)];
- for(let pct=0;pct<=axisMax;pct+=1) allVals.push(meterGreyTargetEotfChartValue(pct,refPeak,Lb,null));
+ for(let pct=0;pct<=axisMax;pct+=1) allVals.push(meterGreyTargetEotfChartValue(pct,refPeak,0,null));
  let yTop=meterEotfChartTop(allVals);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
  const _ax=meterNiceAxisTopForZoom('chartEOTF',yTop,0.2,10); yTop=_ax.top;
@@ -42203,7 +42125,7 @@ function drawEOTFPreset(gsSteps){
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
- const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,Lb,yTop,'eotf',axisMax,plotSteps);
+ const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
 }
 function drawGammaPreset(gsSteps){
@@ -42213,9 +42135,7 @@ function drawGammaPreset(gsSteps){
  const axisMax=meterEotfLuminanceAxisMax(plotSteps);
  const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
  const refPeak=Lw>0?Lw:(meterChartIsHdr()?meterChartHdrPeak():100);
- const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
-  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
- const curveMax=meterGreyTargetChartValue(axisMax,refPeak,Lb,null);
+ const curveMax=meterGreyTargetChartValue(axisMax,refPeak,0,null);
  let yTop=Math.ceil(Math.max(Lw,refPeak,curveMax)*1.1/10)*10||Math.max(Lw,refPeak,curveMax);
  yTop=meterApplyTopYZoom('chartGamma',yTop,0).max;
  const _ax=meterNiceAxisTopForZoom('chartGamma',yTop,50,10); yTop=_ax.top;
@@ -42225,7 +42145,7 @@ function drawGammaPreset(gsSteps){
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
  });
- const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,Lb,yTop,'luminance',axisMax,plotSteps);
+ const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'luminance',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,[]);
 }
@@ -42292,9 +42212,7 @@ function drawGammaValuePreset(gsSteps){
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
  const presetTargetYw=meterChartIsHdr()?meterGreyTargetPeak(100):100;
- const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
-  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
- const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),presetTargetYw,Lb,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),presetTargetYw,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
 	 const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq()||meterChartIsHlg());
  let yMin=axis.min;
  let yMax=axis.max;
@@ -42312,7 +42230,7 @@ function drawGammaValuePreset(gsSteps){
  chartSteps.forEach((s,idx)=>{
   const targetIre=meterGreyscaleTargetSlotIre(s);
   if(!((targetIre||0)>0&&(targetIre||0)<100)) return;
-  const g=meterGreyTargetGamma(targetIre,presetTargetYw,Lb,s.r_code!=null?s.r_code:s.r);
+  const g=meterGreyTargetGamma(targetIre,presetTargetYw,0,s.r_code!=null?s.r_code:s.r);
   if(g!=null&&isFinite(g)) tgtPts.push([meterGammaChartX(s,chartSteps,idx),Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
  });
  const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
@@ -43114,8 +43032,8 @@ function drawEOTFChart(gs,allSteps,readingMap){
  }
  const valid=meterFilterEotfLuminanceChartItems(sorted).filter(r=>r.luminance!=null && r.luminance>=0);
  const eotfMeasuredRef=targetPeak||refWhite;
- const allValues=[meterGreyMeasuredEotfChartValue(refWhite,eotfMeasuredRef,Lb)];
- valid.forEach(r=>allValues.push(meterGreyMeasuredEotfChartValue(r.luminance||0,eotfMeasuredRef,Lb)));
+ const allValues=[meterGreyMeasuredEotfChartValue(refWhite,eotfMeasuredRef)];
+ valid.forEach(r=>allValues.push(meterGreyMeasuredEotfChartValue(r.luminance||0,eotfMeasuredRef)));
  for(let pct=0;pct<=axisMax;pct+=1) allValues.push(meterGreyTargetEotfChartValue(pct,targetPeak,Lb,null));
  let yTop=meterEotfChartTop(allValues);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
@@ -43130,11 +43048,6 @@ function drawEOTFChart(gs,allSteps,readingMap){
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  const directMeasured=!meterUseTargetShapedMeasuredEotfLuminanceCurve();
  const measureSteps=(directMeasured&&plotSteps.length)?plotSteps:(directMeasured&&valid.length)?valid:(plotSteps.length?plotSteps:valid);
- const eotfPlotMeasured=lum=>{
-  const value=Number(lum);
-  if(!Number.isFinite(value)) return null;
-  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef,Lb),yTop,null,value);
- };
  let mSegments=meterMeasuredEotfLuminanceSegments(
   measureSteps,
   readingMap,
@@ -43142,7 +43055,11 @@ function drawEOTFChart(gs,allSteps,readingMap){
   (signal,point)=>{
    return meterGreyTargetLuminanceForChartPoint(signal,targetPeak,Lb||0,point);
   },
-  eotfPlotMeasured,
+  lum=>{
+   const value=Number(lum);
+   if(!Number.isFinite(value)) return null;
+   return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+  },
   'eotf',
   lum=>{
    const value=Number(lum);
@@ -43155,11 +43072,19 @@ function drawEOTFChart(gs,allSteps,readingMap){
  mSegments.forEach(seg=>{
   if(seg.length>1) drawLine(ctx,chart,seg,'#ffeb3b',1.25);
  });
- drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,eotfPlotMeasured,'eotf'),'#ffeb3b',2.2);
+ drawDots(ctx,chart,meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,lum=>{
+  const value=Number(lum);
+  if(!Number.isFinite(value)) return null;
+  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+ },'eotf'),'#ffeb3b',2.2);
  // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
  // lifted black is visible even though the Y axis spans 0 to peak and
  // the plotted 0% point sits on the X axis.
- meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,eotfPlotMeasured);
+ meterDrawLiftedBlackLabel(ctx,chart,axisMax,yTop,Lb,measureSteps,lum=>{
+  const value=Number(lum);
+  if(!Number.isFinite(value)) return null;
+  return meterScaleEotfLuminancePlotValue('eotf',meterGreyMeasuredEotfChartValue(value,eotfMeasuredRef),yTop,null,value);
+ });
  // Optional per-channel R/G/B EOTF overlay (mirrors the Gamma chart's
  // per-channel option). Each channel's measured linear value is normalized to
  // the white reference's same channel, rescaled to the chart reference, then
@@ -43183,7 +43108,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
      const wc=rw[ch.i];
      if(!(wc>0)) return;
      const chanLum=(lin[ch.i]/wc)*eotfMeasuredRef;
-     const val=meterGreyMeasuredEotfChartValue(chanLum,eotfMeasuredRef,Lb);
+     const val=meterGreyMeasuredEotfChartValue(chanLum,eotfMeasuredRef);
      const x=meterGreyEotfLuminanceChartX(step,pcSteps,idx,axisMax);
      const scaled=meterScaleEotfLuminancePlotValue('eotf',val,yTop,null,chanLum);
      if(scaled!=null) pts.push([x,scaled]);
@@ -48273,8 +48198,6 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  // choice so the operator can compare e.g. 2.2 vs ST.2084 grading live.
  const sel=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
  meterActiveSeriesTargetGamma=sel||null;
- // Power 2.2/2.4 → Target Black defaults to manual 0 (still operator-editable).
- try{ if(typeof meterApplyTargetBlackDefaultForPowerGamma==='function') meterApplyTargetBlackDefaultForPowerGamma(sel); }catch(e){}
  // Persist the new selection alongside the other color-science prefs.
  try{ meterSaveColorPrefs(); }catch(e){}
  // Invalidate per-reading analysis caches (the dE cache key includes the
