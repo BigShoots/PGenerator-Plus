@@ -61,6 +61,13 @@ COLOR_FORMAT="${31:-}"
 # resolves the spotread -c index from THIS device instead of trusting the
 # requested index, which goes stale when meters are plugged/unplugged.
 METER_USB_ID="${32:-}"
+
+# SpyderX uses native -y display calibrations and does not accept external
+# CCSS spectral samples or a manual refresh-frequency override.
+if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
+ CCSS_FILE=""
+ REFRESH_RATE=""
+fi
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
@@ -1202,7 +1209,7 @@ HANDLED_OFFSET=0
   # Without this, the loop runs the full 120s before timing out, and 3
   # attempts => ~6 minutes of "Initializing meter..." before the series
   # errors out. See meter-selection-empty-port-bug-2026-06-29.md.
-  if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+  if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
    break
   fi
   sleep 0.5
@@ -1226,7 +1233,7 @@ HANDLED_OFFSET=0
  # straight to the error path so the operator doesn't wait 6 minutes for 3
  # identical retries. Mirrors the 2026-06-29 series hang (CCSS on a
  # colorimeter); see meter-selection-empty-port-bug-2026-06-29.md.
- if echo "$DBGOUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
+ if echo "$DBGOUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample"; then
   write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter does not support requested mode","debug":"$DBGOUT","readings":[]}
 EOJSON

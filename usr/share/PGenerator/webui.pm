@@ -403,6 +403,7 @@ my $_dtype_info={
  "lcd_ccfl"     => ["l","CCFLFamily_07Feb11.ccss"],
  "lcd_wgccfl"   => ["l","WGCCFLFamily_07Feb11.ccss"],
  "lcd_rgbled"   => ["l","RGBLEDFamily_07Feb11.ccss"],
+ "lcd_gbled"    => ["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
  "plasma"       => ["c","PlasmaFamily_20Jul12.ccss"],
  "projector_ccss"=>["p","ProjectorFamily_07Feb11.ccss"],
  "crt"          => ["c","CRT.ccss"],
@@ -419,6 +420,7 @@ my $_ccxxmake_disptech_map={
  "lcd_ccfl"       => "l",
  "lcd_wgccfl"     => "L",
  "lcd_rgbled"     => "b",
+ "lcd_gbled"      => "i",
  "oled"           => "o",
  "oled_generic"   => "w",
  "qdoled"         => "o",
@@ -1555,6 +1557,55 @@ sub webui_meter_port_is_spectro (@) {
  return 0;
 }
 
+sub webui_meter_usb_id_for_port (@) {
+ my ($port)=@_;
+ $port="" if(!defined($port));
+ $port=~s/[^0-9]//g;
+ # AutoCal workers intentionally send only the selected spotread port. Reuse
+ # the live session identity or last successful inventory first so every patch
+ # read does not launch a fresh spotread enumeration probe.
+ if(-f $_meter_session_config_file && open(my $cfh,"<",$_meter_session_config_file)) {
+  local $/;
+  my $config=<$cfh>;
+  close($cfh);
+  my @fields=split(/\|/,$config||"",-1);
+  my $config_port=defined($fields[4]) ? $fields[4] : "";
+  my $config_usb=defined($fields[7]) ? lc($fields[7]) : "";
+  $config_usb=~s/\s+$//;
+  return $config_usb
+   if(($port eq "" || $config_port eq $port) && $config_usb=~/^[0-9a-f]{4}:[0-9a-f]{4}$/);
+ }
+ my $json=$_meter_last_good_status;
+ $json=&webui_meter_status() if(!defined($json) || $json eq "" || $json!~/"detected"\s*:\s*true/);
+ return "" if(!defined($json) || $json eq "");
+ while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"\}/g) {
+  my ($meter_port,$usb_id)=($1,lc($2||""));
+  next if($port ne "" && $meter_port ne $port);
+  return $usb_id if($usb_id=~/^[0-9a-f]{4}:[0-9a-f]{4}$/);
+ }
+ return lc($1) if($port eq "" && $json=~/"usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
+ return "";
+}
+
+sub webui_meter_is_spyderx (@) {
+ my ($usb_id,$port)=@_;
+ $usb_id="" if(!defined($usb_id));
+ $usb_id=lc($usb_id);
+ $usb_id=&webui_meter_usb_id_for_port($port) if($usb_id eq "");
+ return $usb_id eq "085c:0a00" ? 1 : 0;
+}
+
+sub webui_spyderx_native_display_type (@) {
+ my ($display_type_key)=@_;
+ my $key=lc($display_type_key||"");
+ return "e" if($key eq "lcd_wled");
+ return "b" if($key eq "lcd_rgbled");
+ return "i" if($key eq "lcd_gbled");
+ # SpyderX has no native OLED, plasma, projector, CCFL or QD-OLED spectral
+ # calibration. Its General mode is the least-assumptive native fallback.
+ return "l";
+}
+
 sub webui_meter_session_alive (@) {
 	 return 0 unless(-f $_meter_session_pid_file);
 	 my $pid="";
@@ -2074,6 +2125,18 @@ sub webui_meter_read (@) {
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $measurement_meter_usb_id="";
  $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
+ if($measurement_meter_usb_id eq "" && $measurement_meter_port ne "") {
+  $measurement_meter_usb_id=&webui_meter_usb_id_for_port($measurement_meter_port);
+ }
+ if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
+  # SpyderX exposes four built-in display calibrations through -y. It does not
+  # expose the spectral-sensitivity capability required by spotread -X CCSS,
+  # nor the refresh-frequency override used by -Y R:. Keep this normalization
+  # server-side so browser, series, AutoCal and API callers behave identically.
+  $display_type=&webui_spyderx_native_display_type($display_type_key);
+  $ccss_file="";
+  $refresh_rate="";
+ }
  # Session identity stickiness: an ABSENT field means "unspecified", not
  # "changed".
  #
@@ -2817,6 +2880,14 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  }
  my $measurement_meter_usb_id="";
  $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
+ if($measurement_meter_usb_id eq "" && $measurement_meter_port ne "") {
+  $measurement_meter_usb_id=&webui_meter_usb_id_for_port($measurement_meter_port);
+ }
+ if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
+  $display_type=&webui_spyderx_native_display_type($display_type_key);
+  $ccss_file="";
+  $refresh_rate="";
+ }
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -11547,6 +11618,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <option value="qdoled">QD-OLED</option>
       <option value="lcd_wled">LCD - White LED</option>
       <option value="lcd_rgbled">LCD - RGB LED</option>
+      <option value="lcd_gbled">LCD - GB-R LED</option>
       <option value="lcd_ccfl">LCD - CCFL</option>
       <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
       <option value="plasma">Plasma</option>
@@ -11559,6 +11631,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div class="meter-ccss-profile-row field">
      <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; choose No Correction to read without a CCSS, or select a custom profile. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
      <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
+     <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2);margin-top:4px">SpyderX uses its native display calibration; CCSS profiles are not supported.</div>
     </div>
    </div>
   </div>
@@ -11747,6 +11820,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="100">100 Hz</option>
      <option value="120">120 Hz</option>
     </select>
+    <div id="meterRefreshCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2);margin-top:4px">Automatic (SpyderX native); manual refresh override is not supported.</div>
    </div>
   </div>
 
@@ -12251,6 +12325,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         <option value="qdoled">QD-OLED</option>
         <option value="lcd_wled">LCD - White LED</option>
         <option value="lcd_rgbled">LCD - RGB LED</option>
+        <option value="lcd_gbled">LCD - GB-R LED</option>
         <option value="lcd_ccfl">LCD - CCFL</option>
         <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
         <option value="plasma">Plasma</option>
@@ -23146,6 +23221,69 @@ function meterIsSpectrophotometer(meter){
  return meterKind(meter)==='spectro';
 }
 
+function meterIsSpyderX(meter){
+ return String((meter&&meter.usb_id)||'').toLowerCase()==='085c:0a00';
+}
+
+function meterSelectedMeasurementIsSpyderX(){
+ return meterIsSpyderX(meterSelectedMeasurementMeter());
+}
+
+function meterSpyderXNativeModeLabel(){
+ const tech=getDisplayTechnology();
+ if(tech==='lcd_wled') return 'Standard LED';
+ if(tech==='lcd_rgbled') return 'Wide Gamut LED';
+ if(tech==='lcd_gbled') return 'GB-R LED';
+ return 'General';
+}
+
+function meterUpdateMeterCapabilityControls(){
+ const spyderX=meterSelectedMeasurementIsSpyderX();
+ const ccss=document.getElementById('meterCcssProfile');
+ const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
+ const refresh=document.getElementById('meterRefreshRate');
+ const ccssNote=document.getElementById('meterCcssCapabilityNote');
+ const refreshNote=document.getElementById('meterRefreshCapabilityNote');
+ const nativeLabel=meterSpyderXNativeModeLabel();
+ const setCapabilityOptionText=(sel,text)=>{
+  if(!sel) return;
+  // Change only the visible label. Keep the operator's real selection intact
+  // so switching back to a CCSS-capable meter restores its saved profile and
+  // refresh preference without a hidden settings mutation.
+  for(const opt of Array.from(sel.options||[])){
+   if(opt.dataset&&opt.dataset.capabilityOriginalText!=null){
+    opt.textContent=opt.dataset.capabilityOriginalText;
+    delete opt.dataset.capabilityOriginalText;
+   }
+  }
+  if(spyderX&&sel.selectedIndex>=0){
+   const selected=sel.options[sel.selectedIndex];
+   selected.dataset.capabilityOriginalText=selected.textContent;
+   selected.textContent=text;
+  }
+ };
+ for(const sel of [ccss,wizardCcss]){
+  if(!sel) continue;
+  setCapabilityOptionText(sel,'SpyderX native: '+nativeLabel);
+  sel.disabled=spyderX;
+  sel.title=spyderX
+   ? 'SpyderX does not support external CCSS files. Using its '+nativeLabel+' calibration.'
+   : '';
+ }
+ if(refresh){
+  setCapabilityOptionText(refresh,'Automatic (SpyderX native)');
+  refresh.disabled=spyderX;
+  refresh.title=spyderX
+   ? 'SpyderX handles timing internally and does not support a manual refresh-rate override.'
+   : '';
+ }
+ if(ccssNote){
+  ccssNote.style.display=spyderX?'':'none';
+  if(spyderX) ccssNote.textContent='SpyderX native mode: '+nativeLabel+'. External CCSS profiles are not supported.';
+ }
+ if(refreshNote) refreshNote.style.display=spyderX?'':'none';
+}
+
 function meterSelectedMeasurementMeter(){
  return meterFindByPort(meterSelectedMeasurementPort())||(Array.isArray(meterInventory)?meterInventory[0]:null);
 }
@@ -23205,6 +23343,7 @@ function meterPopulateRoleSelects(meters,detectedPort){
  meterProfilingPort=meterNormalizePortValue(meterProfilingPort);
  meterRenderCcssCreateChoices();
  meterUpdateProfileFieldVisibility();
+ meterUpdateMeterCapabilityControls();
 }
 
 function meterSelectedMeasurementPort(){
@@ -37096,6 +37235,7 @@ async function meterAutoCalDisplayTypePopulate(){
   if(wizardCcss.value===String(mainCcss.value||'')) delete wizardCcss.dataset.pendingValue;
  }
  meterBindWizardDisplayTypeHandlers();
+ meterUpdateMeterCapabilityControls();
  meterAutoCalDisplayTypeUpdateSummary();
 }
 function meterAutoCalDisplayTypeUpdateSummary(){
@@ -37104,9 +37244,17 @@ function meterAutoCalDisplayTypeUpdateSummary(){
  if(!dst||!out) return;
  const opt=dst.options[dst.selectedIndex];
  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
- out.textContent=oled
+ let summary=oled
   ? 'OLED profile: patch size 10% Window, pattern insertion enabled (level 25%, 5s).'
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
+ if(meterSelectedMeasurementIsSpyderX()){
+  let nativeMode='General';
+  if(dst.value==='lcd_wled') nativeMode='Standard LED';
+  else if(dst.value==='lcd_rgbled') nativeMode='Wide Gamut LED';
+  else if(dst.value==='lcd_gbled') nativeMode='GB-R LED';
+  summary+=' SpyderX will use its '+nativeMode+' native calibration; CCSS and manual refresh override are unavailable.';
+ }
+ out.textContent=summary;
 }
 function meterAutoCalDisplayTypeContinue(){
  const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
@@ -45022,8 +45170,10 @@ function meterBindWizardDisplayTypeHandlers(){
  const techSel=document.getElementById('meterAutoCalDisplayTypeSelect');
  const ccssSel=document.getElementById('meterAutoCalCcssProfile');
  if(techSel&&!techSel.dataset.boundRefresh){
-  techSel.addEventListener('change',function(){
+ techSel.addEventListener('change',function(){
    meterRefreshCcssAutoLabel('meterAutoCalCcssProfile');
+   meterUpdateMeterCapabilityControls();
+   meterAutoCalDisplayTypeUpdateSummary();
   });
   techSel.dataset.boundRefresh='1';
  }
@@ -45576,6 +45726,7 @@ function getDisplayTechnology(){
 // the technology default"; the server falls back to $_dtype_info's CCSS
 // whenever this token is empty.
 function getCcssOverride(){
+ if(typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX()) return 'none';
  const sel=document.getElementById('meterCcssProfile');
  if(!sel) return '';
  const v=String(sel.value||'');
@@ -45603,6 +45754,7 @@ function meterTechnologyDefaultCcssLabel(){
  if(tech==='lcd_ccfl') return 'CCFL family (built-in)';
  if(tech==='lcd_wgccfl') return 'Wide gamut CCFL (built-in)';
  if(tech==='lcd_rgbled') return 'RGB LED family (built-in)';
+ if(tech==='lcd_gbled') return 'GB-R LED (built-in)';
  if(tech==='plasma') return 'Plasma (built-in)';
  if(tech==='projector_ccss') return 'Projector family (built-in)';
  if(tech==='crt') return 'CRT (built-in)';
@@ -45825,6 +45977,7 @@ function meterNormalizeStoredDisplayType(value,ccssFile){
 }
 
 function getMeterRefreshRate(){
+ if(typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX()) return '';
  const sel=document.getElementById('meterRefreshRate');
  // Auto: send no refresh override -- the meter auto-detects (no -Y r|n, no -Y R:rate).
  if(sel&&sel.value==='auto') return '';
@@ -46338,9 +46491,12 @@ if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>
  const label=document.getElementById('meterStatusText');
  if(label) label.textContent=meterLastKnownName;
  meterUpdateProfileFieldVisibility();
+ meterUpdateMeterCapabilityControls();
  meterUpdateReadButtons();
  saveMeterSettings();
 });
+const meterDisplayTypeCapabilityEl=document.getElementById('meterDisplayType');
+if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('change',meterUpdateMeterCapabilityControls);
 (function(){
  const setupGear=(gearId,popId)=>{
   const gear=document.getElementById(gearId);

@@ -43,6 +43,15 @@ METER_AVERAGING="${10:-${METER_AVERAGING:-off}}"
 # which goes stale whenever meters are plugged/unplugged (enumeration order).
 METER_USB_ID="${11:-}"
 
+# SpyderX supports only its built-in display calibrations. Argyll does not
+# expose CCSS spectral-sample or manual refresh-override capability for it.
+# The WebUI maps panel technology to the native -y mode; this guard also makes
+# direct/helper invocations safe.
+if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
+ CCSS_FILE=""
+ REFRESH_RATE=""
+fi
+
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
 API_BASE="http://127.0.0.1/api"
@@ -704,6 +713,10 @@ while (( WAITED < 900 )); do
   STARTUP_HINT="communications_failure"
   break
  fi
+ if echo "$CLEAN_OUT" | grep -qiE "doesn't have|does not support|instrument doesn't support|Display/calibration type ignored|no suitable|not supported|Colorimeter Calibration Spectral Sample|usage:"; then
+  STARTUP_HINT="unsupported_mode"
+  break
+ fi
  sleep 0.1
  WAITED=$((WAITED + 1))
 done
@@ -715,6 +728,9 @@ if ! sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep
  elif [[ "$STARTUP_HINT" == "communications_failure" ]]; then
   log "spotread init failed after communications failure${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
   write_state '{"status":"error","message":"Meter communication failed during init"}'
+ elif [[ "$STARTUP_HINT" == "unsupported_mode" ]]; then
+  log "spotread rejected the requested mode${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
+  write_state '{"status":"error","message":"Meter does not support requested mode"}'
  else
   log "spotread init failed${FAIL_CONTEXT:+: $FAIL_CONTEXT}"
   write_state '{"status":"error","message":"Meter init failed"}'

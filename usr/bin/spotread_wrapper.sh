@@ -286,6 +286,19 @@ meter_type_for_port() {
  [[ -n "$forced" ]] && printf '%s' "$forced" || printf 'unknown'
 }
 
+meter_usb_id_for_port() {
+ local want="$1" help_out="$2"
+ LSUSB_CACHE=$(lsusb 2>/dev/null || true)
+ local entry pnum devpath usb_id name mtype
+ while IFS= read -r entry; do
+  IFS='|' read -r pnum devpath usb_id name mtype <<< "$entry"
+  if [[ "$pnum" == "$want" ]]; then
+   printf '%s' "${usb_id,,}"
+   return 0
+  fi
+ done < <(spotread_usb_ports "$help_out" "")
+}
+
 # Default if find_port never ran (defensive).
 SELECTED_METER_TYPE="${SELECTED_METER_TYPE:-unknown}"
 
@@ -295,6 +308,12 @@ take_readings() {
  local display_type="$1" count="$2" timeout_per="$3" ccss_file="$4" requested_port="$5"
  local port_num
  port_num=$(find_port "$requested_port")
+ local selected_usb_id
+ selected_usb_id=$(meter_usb_id_for_port "$port_num" "$(spotread_help_output)")
+ if [[ "$selected_usb_id" == "085c:0a00" ]]; then
+  ccss_file=""
+  refresh_rate=""
+ fi
 
  local outfile="$TMPDIR/spotread_out_$$"
  rm -f "$outfile"
