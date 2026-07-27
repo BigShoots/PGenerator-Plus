@@ -2776,13 +2776,22 @@ sub webui_custom_series_steps_from_body (@) {
   last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
-  foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits)) {
+  foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
    $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
-  my $input_max=(defined $num{"input_max"} && int($num{"input_max"})==4095)
-   ? 4095
-   : ((defined $num{"input_max"} && int($num{"input_max"})==1023) ? 1023 : 255);
+  # Prefer the client's input_max. Fall back by magnitude of the RGB codes so
+  # 10-bit ColorChecker selection steps that omit input_max are not clamped to 255.
+  my $input_max=255;
+  if(defined $num{"input_max"}) {
+   my $im=int($num{"input_max"});
+   $input_max=($im==4095||$im==1023||$im==255)?$im:255;
+  } else {
+   my $peak=0;
+   foreach my $ch (qw(r g b)) { $peak=$num{$ch} if(defined $num{$ch} && $num{$ch}>$peak); }
+   $input_max=4095 if($peak>1023);
+   $input_max=1023 if($peak>255 && $peak<=1023);
+  }
   foreach my $ch (qw(r g b)) {
    $num{$ch}=int($num{$ch}+0.5);
    $num{$ch}=0 if($num{$ch}<0);
@@ -4218,7 +4227,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	 # LG 26pt greyscale post-cal reads must target the series' own 100% white
 	 # read. AutoCal-derived white is useful audit context, but stamping it as
 	 # series_target_white_y makes post-cal charts use the old calibration basis.
-	 $stamp_series_target_white_y=1 if($type eq "greyscale" && $series_target_white_y_provided && !($points==26 && $lg_autocal_26));
+	 # Stamp manual/explicit white peak on greyscale and on color/sat steps so
+	 # Read Selection custom_steps (and full custom color runs) honor the
+	 # calibration-card Target White the same way greyscale already does.
+	 $stamp_series_target_white_y=1 if($series_target_white_y_provided
+	  && !($type eq "greyscale" && $points==26 && $lg_autocal_26)
+	  && ($type eq "greyscale" || $type eq "colors" || $type eq "saturations"));
  my $series_target_white_audit="";
  if($series_target_white_reference && $series_target_white_y_num>0) {
   my @audit_fields;
@@ -19533,6 +19547,14 @@ function meterGreyscaleChartWhiteReference(readings){
 }
 
 function meterColorReferenceNits(){
+ // Operator Target White override (manual nits) is the chart peak when not
+ // Use measured — same rule as meterGreyTargetPeak / color series targets.
+ try{
+  const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+  if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0){
+   return Math.max(1,Number(tw.value));
+  }
+ }catch(e){}
  if(meterChartIsDv()){
   // DV relative uses the measured white reference when available, but DV
   // absolute keeps its target luminance anchored to mastering peak. The warm
@@ -19552,6 +19574,16 @@ function meterColorReferenceNits(){
 }
 
 function meterColorSeriesReferenceNits(){
+ // Manual Target White (cd/m²) from the calibration card is the absolute peak
+ // for color/sat target luminance (target_Yn * peak). Honor it before any
+ // measured-white cascade so Read Series / Read Selection match the operator
+ // value even when White was not re-measured in this run.
+ try{
+  const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+  if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0){
+   return Math.max(1,Number(tw.value));
+  }
+ }catch(e){}
  // DV Absolute used to short-circuit to the mastering peak here, ignoring the
  // measured white entirely. With Target White = "Use measured" that produced
  // absurd targets on a ~713 cd/m2 panel (observed: Moderate Red targeting
@@ -30726,16 +30758,52 @@ function meterGreyscaleRunStepsWithMeasuredEndpoints(steps,opts){
  return leading.concat(remaining);
 }
 
-// Read Selection: greyscale (and neutral greyscale-like) selections prepend
-// missing Use-measured white/black endpoints before the operator's patches.
+// Color/sat Read Selection: if Use measured white is on and we have no saved
+// white, prepend the series White patch (stock ColorChecker/sat codes — never
+// greyscale meterCodeFromSignalPercent endpoints). Black is not injected for
+// color series; greyscale Use-measured black only applies to greyscale runs.
+function meterColorSelectionRunStepsWithMeasuredEndpoints(steps,opts){
+ opts=opts||{};
+ const source=Array.isArray(steps)?steps.slice():[];
+ if(!source.length) return source;
+ const whiteControl=document.getElementById('meterTargetWhiteUseMeasured');
+ const useMeasuredWhite=whiteControl?!!whiteControl.checked:!!meterTargetWhiteLevel().useMeasured;
+ if(!useMeasuredWhite) return source;
+ const isWhiteStep=(step)=>{
+  if(!step) return false;
+  const name=String(step.name||'').toLowerCase();
+  if(name==='white'||name==='100% white') return true;
+  return Math.abs(Number(step.ire)-100)<0.05
+   &&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b);
+ };
+ const whiteInSourceIdx=source.findIndex(isWhiteStep);
+ if(whiteInSourceIdx>=0){
+  if(whiteInSourceIdx===0) return source;
+  const white=source.splice(whiteInSourceIdx,1)[0];
+  return [white].concat(source);
+ }
+ const hasSaved=(opts.hasSavedWhite!=null)?!!opts.hasSavedWhite:meterHasSavedMeasuredWhite();
+ if(hasSaved) return source;
+ // Prefer the already-built series White step so limited/full chroma codes match.
+ const pool=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+ const whiteFromSeries=pool.find(isWhiteStep);
+ if(whiteFromSeries) return [Object.assign({},whiteFromSeries)].concat(source);
+ return source;
+}
+
+// Read Selection endpoint prep. Greyscale and color paths stay separate so a
+// colour selection never gets greyscale stimulus codes injected as 0%/100%.
 function meterSelectionRunStepsWithMeasuredEndpoints(steps,opts){
  const source=Array.isArray(steps)?steps:[];
  if(!source.length) return source;
- const isGreySeries=String(meterActiveSeriesType||'')==='greyscale'
-  ||source.every(s=>s&&(s.series_type==='greyscale'
-   ||(Number(s.r)===Number(s.g)&&Number(s.g)===Number(s.b))));
- if(!isGreySeries) return source;
- return meterGreyscaleRunStepsWithMeasuredEndpoints(source,opts||{});
+ const seriesType=String(meterActiveSeriesType||'');
+ if(seriesType==='greyscale'){
+  return meterGreyscaleRunStepsWithMeasuredEndpoints(source,opts||{});
+ }
+ if(seriesType==='colors'||seriesType==='saturations'){
+  return meterColorSelectionRunStepsWithMeasuredEndpoints(source,opts||{});
+ }
+ return source;
 }
 
 let meterCustomSeriesEditor=null;
@@ -40051,8 +40119,19 @@ async function meterRunSeries(options){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
-		  const _serializeStep=step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+		  // Always stamp input_max: ColorChecker/sat client steps often omit it,
+		  // and the server defaults missing input_max to 255 — clamping 10-bit
+		  // chroma codes and wrecking stimulus on Read Selection custom_steps.
+		  const _stepInputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+		  const _serializeStep=step=>({
+		   ire:step.ire,r:step.r,g:step.g,b:step.b,
+		   input_max:(step.input_max!=null&&step.input_max!=='')?step.input_max:_stepInputMax,
+		   name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,
+		   custom_target_nits:step.custom_target_nits,
+		   series_color:step.series_color,sat_pct:step.sat_pct,stimulus:step.stimulus,
+		   signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct
+		  });
 		  if(meterSeriesSelectionRunActive&&Array.isArray(selectedRunSteps)){
 		   _seriesBody.custom_series=true;
 		   _seriesBody.custom_steps=selectedRunSteps.map(_serializeStep);
