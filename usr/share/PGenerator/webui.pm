@@ -21093,12 +21093,38 @@ function meterGammaValueReferenceY(readings){
  return measuredPeak>0?measuredPeak:0;
 }
 
-function meterGreyscaleGammaValue(reading,whiteY){
+// blackLevel is optional; when omitted the active chart black (which honours a
+// manual Target Black override) is used so the chart line and the hover tooltip
+// always quote the same number.
+function meterGreyscaleGammaValue(reading,whiteY,blackLevel){
  if(!reading) return null;
  const y=meterReadingLuminanceNits(reading);
  const analysisIre=meterReadingGammaAnalysisIre(reading);
  if(!(whiteY>0) || !(y>0) || !(analysisIre>0) || analysisIre>=100) return null;
+ // A raised Target Black only reshapes the SDR BT.1886 target. PQ/HLG/DV keep
+ // their own effective-exponent handling, and a clipped power/sRGB target is
+ // an unmodified power law above the clip, so both stay on effectiveGamma.
+ if(meterGreyMeasuredGammaUsesBt1886Fit()){
+  const Lb=(blackLevel!=null&&Number.isFinite(Number(blackLevel)))
+   ?Math.max(0,Number(blackLevel))
+   :((typeof meterChartBlackLevel==='function')
+     ?Math.max(0,Number(meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]))||0):0);
+  if(Lb>0.001) return meterBt1886MeasuredGamma(y,whiteY,Lb,analysisIre);
+ }
  return effectiveGamma(y,whiteY,analysisIre);
+}
+
+function meterGreyMeasuredGammaUsesBt1886Fit(){
+ try{
+  if(typeof meterChartIsDv==='function' && meterChartIsDv()) return false;
+  if(typeof meterChartIsHlg==='function' && meterChartIsHlg()) return false;
+  if(typeof meterGreyChartUsesPqTarget==='function' ? meterGreyChartUsesPqTarget()
+     : (typeof meterChartIsHdr==='function' && meterChartIsHdr())) return false;
+  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')
+   ?meterGreyChartTargetGammaSelection()
+   :((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():'');
+  return String(tgt||'').toLowerCase()==='bt1886';
+ }catch(e){ return false; }
 }
 
 function meterEnsureChannelGammaCache(readings){
@@ -21812,6 +21838,57 @@ function meterLiveRgbData(reading){
  };
 }
 
+// Shared IRE->signal-fraction convention for every per-point gamma metric, so
+// the measured and target lines can never disagree about the divisor.
+function meterGammaSignalFraction(ire){
+ let _gammaHasHeadroomAnchor=false;
+ try{
+  const _gl=Array.isArray(meterReadings)?meterReadings:[];
+  _gammaHasHeadroomAnchor=_gl.some(function(rd){return rd&&(typeof meterReadingIsGreyscale!=='function'||meterReadingIsGreyscale(rd))&&Number(rd.ire)>100.5;});
+ }catch(e){}
+ const fracBase=((typeof meterChartSignalMode==='function'&&meterChartSignalMode()==='sdr')&&_gammaHasHeadroomAnchor)?109:100;
+ return (ire>1)?(ire/fracBase):ire;
+}
+
+// Exponent g for which the BT.1886 curve built from (Lw, Lb, g) passes through
+// this reading -- i.e. "what gamma is the display actually running, judged in
+// the same parameterisation as the target". At fixed V the curve is monotone
+// decreasing in g, spanning (Lb, Lw), so a simple bisection inverts it.
+//
+// The floor is Lb by definition: L(0)=Lb for every g. A reading at or below Lb
+// is off the curve family entirely and no exponent describes it, so this
+// returns null and the chart leaves a gap rather than inventing a value. On a
+// panel whose real black is far under a lifted Target Black that will blank the
+// low end -- that is the honest reading, not a bug.
+function meterBt1886MeasuredGamma(Y,Lw,Lb,ire){
+ const y=Number(Y), peak=Number(Lw), black=Math.max(0,Number(Lb)||0);
+ const frac=meterGammaSignalFraction(ire);
+ if(!(y>0)||!(peak>0)||!(frac>0)||frac>=0.999999) return null;
+ // Lb=0 collapses BT.1886 to Lw*V^g, which is exactly effectiveGamma.
+ if(!(black>0.001)) return effectiveGamma(y,peak,ire);
+ if(!(y>black)||y>=peak) return null;
+ const at=g=>{
+  const d=Math.pow(peak,1/g)-Math.pow(black,1/g);
+  if(!(d>0)) return null;
+  return Math.pow(d,g)*Math.pow(frac+Math.pow(black,1/g)/d,g);
+ };
+ let lo=0.05,hi=100;
+ let flo=at(lo),fhi=at(hi);
+ if(flo==null||fhi==null) return null;
+ flo-=y; fhi-=y;
+ if(flo*fhi>0) return null;
+ for(let i=0;i<100;i++){
+  const mid=(lo+hi)/2;
+  const fm=at(mid);
+  if(fm==null) return null;
+  const d=fm-y;
+  if(d===0) return mid;
+  if(flo*d<=0){ hi=mid; } else { lo=mid; flo=d; }
+ }
+ const g=(lo+hi)/2;
+ return isFinite(g)?g:null;
+}
+
 function effectiveGamma(Y,Yw,ire,prevY,prevIre){
  // SDR26 normalises the gamma reference against the 109% legal peak, not
  // 100 IRE. The worker stores target_Yn = (ire/109)^2.2 (gamma 2.2 encoded
@@ -21827,13 +21904,7 @@ function effectiveGamma(Y,Yw,ire,prevY,prevIre){
  // 109 (while Yw is the measured 100% reading) makes the per-point gamma
  // collapse toward 0 as IRE rises. Use 109 only when a >100 IRE greyscale
  // reading is actually present in the data being charted.
- let _gammaHasHeadroomAnchor=false;
- try{
-  const _gl=Array.isArray(meterReadings)?meterReadings:[];
-  _gammaHasHeadroomAnchor=_gl.some(function(rd){return rd&&(typeof meterReadingIsGreyscale!=='function'||meterReadingIsGreyscale(rd))&&Number(rd.ire)>100.5;});
- }catch(e){}
- const fracBase=((typeof meterChartSignalMode==='function'&&meterChartSignalMode()==='sdr')&&_gammaHasHeadroomAnchor)?109:100;
- const frac=(ire>1)?(ire/fracBase):ire;
+ const frac=meterGammaSignalFraction(ire);
  if(!(frac>0) || !(Y>0) || !(Yw>0)) return null;
  if(frac>=0.999999) return null;
  const g=Math.log(Y/Yw)/Math.log(frac);
@@ -22579,25 +22650,11 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
   return effectiveGamma(tgtLum,peak,analysisIre);
  }
  let black=Lb||0;
- // With a raised Target Black the SDR target is no longer a pure power law:
- // BT.1886 bends into Lb and power/sRGB clip onto it. Plot the effective
- // exponent of the luminance the EOTF/luminance charts actually target, the
- // same way the PQ/HLG branch above does, so the gamma chart agrees with them
- // and with Absolute-Y error instead of drawing a flat nominal line the
- // target no longer follows (e.g. Lw=172, Lb=10 -> 0.86 at 5%, not 2.4).
- // Lb=0 is the common case and is mathematically identical to the nominal
- // exponent, so keep returning the constant there.
- if(black>0.001){
-  const tgtLum=meterGreyTargetLuminance(ire,peak,black,code);
-  if(!(tgtLum>0)) return null;
-  const analysisIre=signal*100;
-  if(analysisIre>=99.999){
-   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
-   const prevLum=meterGreyTargetLuminance(prevStepIre,peak,black,prevStepCode);
-   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignal*100);
-  }
-  return effectiveGamma(tgtLum,peak,analysisIre);
- }
+ // The target line stays at the nominal exponent the operator selected, at
+ // every Target Black. A raised Lb is expressed on the MEASURED line instead
+ // (meterBt1886MeasuredGamma), which solves for the exponent that would put
+ // the reading on the BT.1886 curve built from the same Lw/Lb -- so "on
+ // target" reads exactly 2.4 and the gap from this line is the gamma error.
  if(tgt==='bt1886') return 2.4;
  if(tgt==='srgb') return 2.2;
  const gamma=parseFloat(tgt);
@@ -22796,7 +22853,10 @@ function meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr){
  let half=0.3;
  allVals.forEach(v=>{ half=Math.max(half,Math.abs(v-center)+0.08); });
  half=Math.ceil(half*20)/20;
- return {min:center-half,max:center+half};
+ // Gamma is an exponent: a negative axis floor is meaningless. One large
+ // outlier used to drag the symmetric lower bound well below zero (a 69 with
+ // a 2.4 centre gave an axis of -64..71). Match the HDR branch and clamp at 0.
+ return {min:Math.max(0,center-half),max:center+half};
 }
 
 function meterGreyChartTargetCode(step){
@@ -42296,7 +42356,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
 	  if(!(topGamma&&allSteps&&!prev)){
 	  const g=((topGamma && (meterChartIsHdr()||meterChartIsDv()))
 	      ? effectiveGammaTopSlope(y,chartYw,analysisIre,prevY,prevIre)
-	      : meterGreyscaleGammaValue(rd,chartYw));
+	      : meterGreyscaleGammaValue(rd,chartYw,Lb));
 	   if(g!=null&&isFinite(g)) gammaMap[rd.ire]=g;
 	  }
 		  const targetIreForRd=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(rd):null)||analysisIre;
