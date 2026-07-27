@@ -25959,16 +25959,25 @@ function meterRefreshTargetCurves(){
    meterLastChartCount=0;
   }
  }catch(e){}
- if(!(meterReadings&&meterReadings.length)) return;
- // The old path drew EOTF + luminance individually and then drew ALL charts,
- // which drew those same two canvases again. Use the existing frame-sliced
- // greyscale renderer so each chart is computed once and input can be handled
- // between canvases.
+ // With readings: full greyscale redraw. Without readings but with a loaded
+ // series: redraw the PRESET target curves so a Target Black/White change
+ // (manual raised black, power 2.2/2.4, BT.1886) is visible before the first
+ // meter sample — the old early-return left EOTF/luminance stuck at Lb=0.
  try{
-  if(meterActiveSeriesType==='greyscale'&&typeof meterQueueRunningGreyscaleChartRefresh==='function'){
-   meterQueueRunningGreyscaleChartRefresh(meterReadings);
-  }else if(typeof drawAllCharts==='function'){
-   requestAnimationFrame(()=>drawAllCharts(meterReadings));
+  if(meterReadings&&meterReadings.length){
+   if(meterActiveSeriesType==='greyscale'&&typeof meterQueueRunningGreyscaleChartRefresh==='function'){
+    meterQueueRunningGreyscaleChartRefresh(meterReadings);
+   }else if(typeof drawAllCharts==='function'){
+    requestAnimationFrame(()=>drawAllCharts(meterReadings));
+   }
+   return;
+  }
+  if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+     &&(meterActiveSeriesType==='greyscale'||!meterActiveSeriesType)
+     &&typeof drawAllChartsPreset==='function'){
+   const steps=(typeof meterGreyscaleSeriesSteps==='function')
+    ?meterGreyscaleSeriesSteps(meterSeriesSteps):meterSeriesSteps;
+   requestAnimationFrame(()=>drawAllChartsPreset(steps));
   }
  }catch(e){}
 }
@@ -42129,8 +42138,14 @@ function drawEOTFPreset(gsSteps){
  const axisMax=meterEotfLuminanceAxisMax(plotSteps);
  const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
  const refPeak=meterGreyTargetPeak(Lw);
+ // Honor Target Black (manual or already-measured/stamped) on the preset
+ // target curve so BT.1886 / raised-black power show the lifted floor before
+ // any series readings land. Hardcoding Lb=0 left the dashed target on 0
+ // until a live redraw.
+ const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
+  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
  const allVals=[meterGreyMeasuredEotfChartValue(Lw,Lw)];
- for(let pct=0;pct<=axisMax;pct+=1) allVals.push(meterGreyTargetEotfChartValue(pct,refPeak,0,null));
+ for(let pct=0;pct<=axisMax;pct+=1) allVals.push(meterGreyTargetEotfChartValue(pct,refPeak,Lb,null));
  let yTop=meterEotfChartTop(allVals);
  yTop=meterApplyTopYZoom('chartEOTF',yTop,0).max;
  const _ax=meterNiceAxisTopForZoom('chartEOTF',yTop,0.2,10); yTop=_ax.top;
@@ -42140,7 +42155,7 @@ function drawEOTFPreset(gsSteps){
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterEotfAxisLabel(meterEotfUnscaleValue(i/n,yTop))
  });
- const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'eotf',axisMax,plotSteps);
+ const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,Lb,yTop,'eotf',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
 }
 function drawGammaPreset(gsSteps){
@@ -42150,7 +42165,9 @@ function drawGammaPreset(gsSteps){
  const axisMax=meterEotfLuminanceAxisMax(plotSteps);
  const Lw=(meterWhiteReading&&meterWhiteReading.luminance>0)?meterWhiteReading.luminance:100;
  const refPeak=Lw>0?Lw:(meterChartIsHdr()?meterChartHdrPeak():100);
- const curveMax=meterGreyTargetChartValue(axisMax,refPeak,0,null);
+ const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
+  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
+ const curveMax=meterGreyTargetChartValue(axisMax,refPeak,Lb,null);
  let yTop=Math.ceil(Math.max(Lw,refPeak,curveMax)*1.1/10)*10||Math.max(Lw,refPeak,curveMax);
  yTop=meterApplyTopYZoom('chartGamma',yTop,0).max;
  const _ax=meterNiceAxisTopForZoom('chartGamma',yTop,50,10); yTop=_ax.top;
@@ -42160,7 +42177,7 @@ function drawGammaPreset(gsSteps){
   xLabel:(i)=>(i*10)+'',
   yLabel:(i,n)=>meterLuminanceAxisLabel(meterLuminanceUnscaleValue(i/n,yTop))
  });
- const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,0,yTop,'luminance',axisMax,plotSteps);
+ const tgtPts=meterGreyNominalTargetCurvePoints(refPeak,Lb,yTop,'luminance',axisMax,plotSteps);
  drawDashedLine(ctx,chart,tgtPts,'#666',1.8);
  drawGammaContrastLabel(ctx,chart,[]);
 }
@@ -42227,7 +42244,9 @@ function drawGammaValuePreset(gsSteps){
   return (targetIre||0)>0&&(targetIre||0)<100;
  });
  const presetTargetYw=meterChartIsHdr()?meterGreyTargetPeak(100):100;
- const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),presetTargetYw,0,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
+ const Lb=(typeof meterBlackReadingY==='function')?meterBlackReadingY()
+  :((typeof meterChartBlackLevel==='function')?meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]):0);
+ const targetVals=steps.map(s=>meterGreyTargetGamma(meterGreyscaleTargetSlotIre(s),presetTargetYw,Lb,s.r_code!=null?s.r_code:s.r)).filter(v=>v!=null&&isFinite(v));
 	 const axis=meterGammaAxisCenteredOnTarget([],targetVals,meterGreyTargetUsesPq()||meterChartIsHlg());
  let yMin=axis.min;
  let yMax=axis.max;
@@ -42245,7 +42264,7 @@ function drawGammaValuePreset(gsSteps){
  chartSteps.forEach((s,idx)=>{
   const targetIre=meterGreyscaleTargetSlotIre(s);
   if(!((targetIre||0)>0&&(targetIre||0)<100)) return;
-  const g=meterGreyTargetGamma(targetIre,presetTargetYw,0,s.r_code!=null?s.r_code:s.r);
+  const g=meterGreyTargetGamma(targetIre,presetTargetYw,Lb,s.r_code!=null?s.r_code:s.r);
   if(g!=null&&isFinite(g)) tgtPts.push([meterGammaChartX(s,chartSteps,idx),Math.max(0,Math.min(1,(g-yMin)/(yMax-yMin)))]);
  });
  const tgtPtsAnchored=meterGammaValueAnchorPoints(tgtPts);
