@@ -10,6 +10,10 @@ Usage: spotread_measure.py [options]
 """
 import os, sys, subprocess, select, time, re, json
 
+# Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
+# Argyll tries its built-in keys first, and non-i1D3 drivers ignore it.
+os.environ.setdefault("I1D3_ESCAPE", "c9bfafe002871166")
+
 KNOWN_METERS = {
     "0765:5020": "Calibrite/X-Rite i1Display Pro Plus",
     "0765:5001": "X-Rite i1 Pro",

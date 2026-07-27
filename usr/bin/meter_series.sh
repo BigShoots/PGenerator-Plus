@@ -6,6 +6,12 @@
 
 set -o pipefail
 
+# Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
+# Built-in i1D3 keys remain first in Argyll's key list; other meter drivers
+# never consume this variable.
+I1D3_ESCAPE="${I1D3_ESCAPE:-c9bfafe002871166}"
+export I1D3_ESCAPE
+
 SERIES_ID="$1"
 DISPLAY_TYPE="$2"
 DELAY_MS="$3"
