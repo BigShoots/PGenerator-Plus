@@ -10800,8 +10800,8 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
-#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:5px;flex-wrap:nowrap;margin-top:4px;width:min(390px,calc(100vw - 70px));max-width:none}
-#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 75px;min-width:75px}
+#meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;margin-top:4px;width:min(420px,calc(100vw - 70px));max-width:none}
+#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 92px;min-width:92px;margin-right:2px;white-space:nowrap}
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:62px;min-width:62px;padding-left:7px;padding-right:7px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 #meterSettingsGrid .meter-target-measure-btn{padding:3px 6px;line-height:1.15;font-size:.68rem;white-space:nowrap}
@@ -25536,6 +25536,13 @@ function meterSetTargetLevels(){
  const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
  const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
  if(!wUm||!white||!bUm||!black) return;
+ // When Use measured is turned on, clear the manual box so it cannot look
+ // like a fixed override while the measured reference is active.
+ if(wUm.checked) white.value='';
+ if(bUm.checked) black.value='';
+ // OLED default is manual 0. If the operator unchecks Use measured with an
+ // empty black box, restore that default so the field is not blank.
+ if(!bUm.checked&&black.value===''&&meterDisplayTypeIsOledClass()) black.value='0';
  white.disabled=!!wUm.checked; black.disabled=!!bUm.checked;
  white.classList.toggle('meter-input-disabled',!!wUm.checked);
  black.classList.toggle('meter-input-disabled',!!bUm.checked);
@@ -25545,10 +25552,6 @@ function meterSetTargetLevels(){
  else if(!black.hasAttribute('placeholder')){ black.setAttribute('placeholder','auto'); }
  const wVal=Number(white.value); let bVal=Number(black.value);
  const oled=meterDisplayTypeIsOledClass();
- // A self-emissive display defaults to a mathematical zero black floor. Keep
- // that default when Use measured is selected, but respect an explicit manual
- // value (including one captured by the Target Black Measure button).
- if(oled&&bUm.checked){ bUm.checked=false; black.value='0'; bVal=0; black.disabled=false; black.classList.remove('meter-input-disabled'); }
  const wDef={useMeasured:true,value:null};
  const bDef=oled?{useMeasured:false,value:0}:{useMeasured:true,value:null};
  const wUseMeasured=!!wUm.checked;
@@ -25629,13 +25632,15 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  if(forceAll||!wOver){
   wUm.checked=true; if(white) white.value='';
  }
- // Target Black: self-emissive -> 0 (manual), else measured.
- if(oled){
-  // OLED black is always the mathematical zero target, even if an older
-  // browser state recorded Use measured as an explicit override.
-  bUm.checked=false; if(black) black.value='0';
- }else if(forceAll||!bOver){
+ // Target Black defaults: self-emissive -> manual 0, else Use measured.
+ // Respect an explicit operator override (including checking Use measured on
+ // OLED); never force the checkbox back off after the user toggled it.
+ if(forceAll||!bOver){
+  if(oled){
+   bUm.checked=false; if(black) black.value='0';
+  }else{
    bUm.checked=true; if(black) black.value='';
+  }
  }
  // A display-type change can flip Target Black between the manual OLED
  // default and Use Measured. Keep the input's disabled/placeholder state in
