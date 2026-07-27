@@ -22564,7 +22564,9 @@ function meterGreyDenseTargetCurvePoints(targetPeak,Lb,yTop,mode,maxPct,steps){
   const a=unique[i];
   const b=unique[i+1];
   const span=Math.max(0,b.plot-a.plot);
-  const segments=Math.max(1,Math.ceil(span*8));
+  // Roughly 100 points over a 0-100 chart is visually smooth while avoiding
+  // hundreds of redundant target-mode evaluations on every redraw.
+  const segments=Math.max(1,Math.ceil(span));
   for(let j=0;j<=segments;j++){
    if(i>0&&j===0) continue;
    const t=segments>0?j/segments:0;
@@ -25560,8 +25562,9 @@ function meterSetTargetLevels(){
   black:{useMeasured:bUseMeasured,value:bValue,overridden:bOver}
  };
  try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
- // Live target math depends on these; refresh charts if a redraw hook exists.
- try{ if(typeof meterRefreshTargetCurves==='function') meterRefreshTargetCurves(); }catch(e){}
+ // Let the checkbox/input state paint before recalculating charts. Rapid
+ // toggles coalesce into one refresh instead of stacking expensive canvases.
+ try{ meterScheduleTargetCurveRefresh(); }catch(e){}
 }
 function meterRestoreTargetLevels(){
  const wUm=getEl('meterTargetWhiteUseMeasured'), white=getEl('meterTargetWhite');
@@ -25766,6 +25769,22 @@ async function meterMeasureTargetLevel(kind){
   await meterCheckStatus();
  }
 }
+let meterTargetCurveRefreshFrame=0;
+let meterTargetCurveRefreshTimer=0;
+function meterScheduleTargetCurveRefresh(){
+ if(meterTargetCurveRefreshFrame) cancelAnimationFrame(meterTargetCurveRefreshFrame);
+ if(meterTargetCurveRefreshTimer) clearTimeout(meterTargetCurveRefreshTimer);
+ meterTargetCurveRefreshFrame=requestAnimationFrame(()=>{
+  meterTargetCurveRefreshFrame=0;
+  // A timer from the animation frame lets the browser commit the checkbox
+  // paint before any chart computation begins.
+  meterTargetCurveRefreshTimer=setTimeout(()=>{
+   meterTargetCurveRefreshTimer=0;
+   meterRefreshTargetCurves();
+  },0);
+ });
+}
+
 // Redraw the greyscale target curves so a Target White/Black change is
 // reflected immediately without re-reading. Mirrors the cache bookkeeping
 // in meterOnGreyRefChange (this is bookkeeping, not curve math) so the
@@ -25787,12 +25806,18 @@ function meterRefreshTargetCurves(){
    meterLastChartCount=0;
   }
  }catch(e){}
- // Existing single-chart redraws (kept intact).
- try{ if(typeof meterRedrawEotfChart==='function') meterRedrawEotfChart(); }catch(e){}
- try{ if(typeof meterRedrawLuminanceChart==='function') meterRedrawLuminanceChart(); }catch(e){}
- // Redraw ALL greyscale charts (RGB / Delta E / Gamma, plus EOTF/Luminance)
- // via the single redraw-all entry point so every target curve rescales.
- try{ if(typeof drawAllCharts==='function' && meterReadings&&meterReadings.length) drawAllCharts(meterReadings); }catch(e){}
+ if(!(meterReadings&&meterReadings.length)) return;
+ // The old path drew EOTF + luminance individually and then drew ALL charts,
+ // which drew those same two canvases again. Use the existing frame-sliced
+ // greyscale renderer so each chart is computed once and input can be handled
+ // between canvases.
+ try{
+  if(meterActiveSeriesType==='greyscale'&&typeof meterQueueRunningGreyscaleChartRefresh==='function'){
+   meterQueueRunningGreyscaleChartRefresh(meterReadings);
+  }else if(typeof drawAllCharts==='function'){
+   requestAnimationFrame(()=>drawAllCharts(meterReadings));
+  }
+ }catch(e){}
 }
 
 async function meterRunManualReadStep(step,ctx){
@@ -41202,7 +41227,10 @@ function meterDensifyTargetShapedMeasuredSegment(rows,axisMax,targetValueForSign
   const a=list[i];
   const b=list[i+1];
   const spanPct=Math.abs((Number(b.x)||0)-(Number(a.x)||0))*maxPct;
-  const segments=Math.max(1,Math.min(80,Math.ceil(spanPct*6)));
+  // One sample per percentage point matches the nominal fallback curve and is
+  // smooth on the rendered chart. The old six-per-percent density multiplied
+  // target-mode resolution hundreds of extra times on every redraw.
+  const segments=Math.max(1,Math.min(40,Math.ceil(spanPct)));
   for(let j=1;j<=segments;j++){
    const t=j/segments;
    if(j===segments){
@@ -41813,6 +41841,7 @@ function meterQueueRunningGreyscaleChartRefresh(readings){
  meterUpdateGreyscaleChartMode();
  meterUpdateGreyscaleChartScrollLayout((allSteps&&allSteps.length)||gs.length);
  const tasks=[
+  ()=>meterEnsureDeltaECache(raw),
   ()=>drawRGBChart(gs,allSteps,readingMap),
   ()=>drawDeltaEChart(gs,allSteps,readingMap,rawGs),
   ()=>{ meterEnsureChannelGammaCache(raw); drawGammaValueChart(gs,allSteps,readingMap); },
