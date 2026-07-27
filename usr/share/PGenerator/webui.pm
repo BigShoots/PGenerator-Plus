@@ -11767,7 +11767,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
   <div class="field field-gamma">
     <label>Target Gamma</label>
-    <select id="meterTargetGamma" onchange="meterOnGreyRefChange()">
+    <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
      <option value="2.4">Gamma 2.4</option>
@@ -22836,9 +22836,60 @@ function meterUpdateSeparateLumVisibility(){
 // Unified handler for the grey-ref / gray-world / RGB balance / greyscale
 // ΔE / color ΔE selectors and the Separate Luminance Error checkbox.
 // Persists selections and redraws charts.
+let meterGreyAnalysisRefreshFrame=0;
+let meterGreyAnalysisRefreshPaintFrame=0;
+
+function meterCancelQueuedGreyAnalysisRefresh(){
+ if(meterGreyAnalysisRefreshFrame){
+  window.cancelAnimationFrame(meterGreyAnalysisRefreshFrame);
+  meterGreyAnalysisRefreshFrame=0;
+ }
+ if(meterGreyAnalysisRefreshPaintFrame){
+  window.cancelAnimationFrame(meterGreyAnalysisRefreshPaintFrame);
+  meterGreyAnalysisRefreshPaintFrame=0;
+ }
+}
+
+function meterDrawGreyAnalysisCharts(){
+ meterGreyAnalysisRefreshPaintFrame=0;
+ if(!Array.isArray(meterReadings)||!meterReadings.length) return;
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ if(isColor||meterIsTwoPointGreyscale()){
+  drawAllCharts(meterReadings);
+  return;
+ }
+ const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;
+ const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;
+ const rawGs=meterGreyscaleReadings(meterReadings);
+ const gs=meterFilterLgAutoCalChartItems(rawGs);
+ if(!gs.length) return;
+ const readingMap=meterGreyscaleReadingMap(gs);
+ // Grey-reference controls affect RGB balance and greyscale Delta E only.
+ // Gamma-value, EOTF and luminance canvases retain both their pixels and
+ // per-channel gamma cache.
+ drawRGBChart(gs,allSteps,readingMap);
+ drawDeltaEChart(gs,allSteps,readingMap,rawGs);
+ chartRegisterInteraction();
+ const live=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
+ if(live&&meterReadingIsRealMeasurement(live)) updateLiveReading(live);
+}
+
+function meterQueueGreyAnalysisRefresh(){
+ meterCancelQueuedGreyAnalysisRefresh();
+ // Yield one complete paint so the native select closes and displays its new
+ // value before any long-series canvas work begins.
+ meterGreyAnalysisRefreshFrame=window.requestAnimationFrame(()=>{
+  meterGreyAnalysisRefreshFrame=0;
+  meterGreyAnalysisRefreshPaintFrame=window.requestAnimationFrame(meterDrawGreyAnalysisCharts);
+ });
+}
+
 function meterOnGreyRefChange(src){
  meterUpdateSeparateLumVisibility();
  try{ meterSaveColorPrefs(); }catch(e){}
+ // Target Gamma has a dedicated change listener that regrades series targets
+ // and performs the required full target-curve refresh.
+ if(src==='target-gamma') return;
  if(meterReadings && meterReadings.length){
   // Invalidate any per-reading greyscale analysis cache (mode/form/gw changed).
   meterReadings.forEach(r=>{
@@ -22848,13 +22899,10 @@ function meterOnGreyRefChange(src){
    delete r._dE_lc;
    delete r._gamma_rgb;
   });
-  _chartHitZones=[];
-  meterLastChartSignature='';
-  meterLastChartCount=0;
   if(meterAutoCalRunning||meterAutoCalPolling||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling){
    const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
-   const sorted=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
-   drawAllCharts(sorted);
+   if(isColor) drawAllCharts([...meterReadings]);
+   else meterQueueGreyAnalysisRefresh();
   } else if(meterActiveSeriesType && meterActiveSeriesPoints && typeof meterRefreshActiveSeriesCharts==='function'){
    // Post-autocal greyscale/color toggle: route through the lighter
    // drawAllCharts path instead of meterRefreshActiveSeriesCharts. The
@@ -22867,9 +22915,11 @@ function meterOnGreyRefChange(src){
    // change -- leaving target_Yn alone keeps the chart consistent across
    // toggles. (operator-initiated Target Gamma dropdown changes still go
    // through meterRefreshActiveSeriesCharts from meterOnTargetGammaChange.)
-   drawAllCharts(meterReadings);
+   if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations') drawAllCharts(meterReadings);
+   else meterQueueGreyAnalysisRefresh();
   } else {
-   drawAllCharts(meterReadings);
+   if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations') drawAllCharts(meterReadings);
+   else meterQueueGreyAnalysisRefresh();
   }
  }
 }
@@ -46999,6 +47049,7 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
+	 if(typeof meterCancelQueuedGreyAnalysisRefresh==='function') meterCancelQueuedGreyAnalysisRefresh();
 	 if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
 	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 	  return;
