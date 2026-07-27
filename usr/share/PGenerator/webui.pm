@@ -41161,37 +41161,73 @@ function meterThumbIndicesInsideBounds(container,bounds){
 function meterThumbDragIndexAtPoint(state,x,y){
  const children=Array.from(state.container.children);
  if(!children.length) return -1;
- const direct=document.elementFromPoint(x,y);
- const directThumb=direct&&direct.closest?direct.closest('.meter-patch-thumb'):null;
- const directIndex=directThumb?children.indexOf(directThumb):-1;
- if(directIndex>=0) return directIndex;
+ // Geometry-first: during setPointerCapture, elementFromPoint often returns the
+ // capture target (the strip) or the start thumb, so the first color-series
+ // drag only ever selected index 0. Greyscale looked fine because its denser
+ // layout more often still hit a real thumb under the cursor.
+ let inside=-1;
+ let nearest=-1;
+ let nearestScore=Infinity;
+ children.forEach((thumb,index)=>{
+  const rect=thumb.getBoundingClientRect();
+  if(!(rect.width>0)||!(rect.height>0)) return;
+  if(x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom){
+   inside=index;
+   return;
+  }
+  if(inside>=0) return;
+  const cx=(rect.left+rect.right)/2;
+  const cy=(rect.top+rect.bottom)/2;
+  // Same row: weight horizontal distance so a long color strip tracks X.
+  const score=(Math.abs(cy-y)<=Math.max(rect.height,28)*1.75)
+   ?Math.abs(cx-x)
+   :Math.hypot(cx-x,cy-y);
+  if(score<nearestScore){ nearestScore=score; nearest=index; }
+ });
+ if(inside>=0) return inside;
  const row=meterGreyscaleScrollSource();
  const rowRect=row&&row.getBoundingClientRect();
  const visible=[];
  children.forEach((thumb,index)=>{
   const rect=thumb.getBoundingClientRect();
-  if(!rowRect||rect.right>=rowRect.left&&rect.left<=rowRect.right) visible.push({index:index,center:(rect.left+rect.right)/2});
+  if(!(rect.width>0)||!(rect.height>0)) return;
+  if(!rowRect||(rect.right>=rowRect.left&&rect.left<=rowRect.right)){
+   visible.push({index:index,center:(rect.left+rect.right)/2});
+  }
  });
- if(!visible.length) return -1;
+ if(!visible.length) return nearest;
  const direction=meterThumbDragAutoScrollDirectionAt(x,y);
  if(direction<0) return visible[0].index;
  if(direction>0) return visible[visible.length-1].index;
- let nearest=visible[0];
- visible.forEach(item=>{ if(Math.abs(item.center-x)<Math.abs(nearest.center-x)) nearest=item; });
- return nearest.index;
+ if(nearest>=0) return nearest;
+ let best=visible[0];
+ visible.forEach(item=>{ if(Math.abs(item.center-x)<Math.abs(best.center-x)) best=item; });
+ return best.index;
 }
 
 function meterThumbDragSelectionIndices(state,currentX,currentY){
+ const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
+ const hits=meterThumbIndicesInsideBounds(state.container,bounds);
  const endIndex=meterThumbDragIndexAtPoint(state,currentX,currentY);
- if(Number.isInteger(state.anchorIndex)&&state.anchorIndex>=0&&endIndex>=0){
-  const first=Math.min(state.anchorIndex,endIndex);
-  const last=Math.max(state.anchorIndex,endIndex);
+ // Contiguous range from the press anchor to the pointer (or to the bounds
+ // extremes). Combining both fixes thin horizontal drags on labeled color
+ // thumbs where the marquee barely intersects each cell.
+ if(Number.isInteger(state.anchorIndex)&&state.anchorIndex>=0){
+  let first=state.anchorIndex;
+  let last=state.anchorIndex;
+  if(endIndex>=0){
+   first=Math.min(first,endIndex);
+   last=Math.max(last,endIndex);
+  }
+  if(hits.length){
+   first=Math.min(first,hits[0]);
+   last=Math.max(last,hits[hits.length-1]);
+  }
   const range=[];
   for(let index=first;index<=last;index++) range.push(index);
   return range;
  }
- const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
- return meterThumbIndicesInsideBounds(state.container,bounds);
+ return hits;
 }
 
 function meterThumbRenderDragSelection(state,currentX,currentY){
@@ -41283,7 +41319,7 @@ function meterThumbFinishDrag(event,cancelled){
   meterSelectedThumbIndices=new Set(state.baseSelection);
   meterRefreshThumbSelectionStyles();
  } else if(state.dragging){
-  meterThumbSuppressClickUntil=performance.now()+250;
+  meterThumbSuppressClickUntil=performance.now()+400;
   const hits=meterThumbDragSelectionIndices(state,event.clientX,event.clientY);
   const next=state.additive?new Set(state.baseSelection):new Set();
   hits.forEach(index=>next.add(index));
@@ -41305,6 +41341,13 @@ function meterBindThumbDragSelection(){
   if(event.button!==0||event.pointerType!=='mouse'||meterSeriesRunning||meterAutoCalStatusActive()) return;
   const children=Array.from(container.children);
   const startThumb=event.target&&event.target.closest?event.target.closest('.meter-patch-thumb'):null;
+  // Geometry-based anchor (not elementFromPoint): first color drag used to
+  // resolve only the pressed thumb for the whole gesture after capture.
+  let anchorIndex=startThumb?children.indexOf(startThumb):-1;
+  if(anchorIndex<0){
+   const probe={container:container,currentX:event.clientX,currentY:event.clientY};
+   anchorIndex=meterThumbDragIndexAtPoint(probe,event.clientX,event.clientY);
+  }
   const state={
    container:container,
    pointerId:event.pointerId,
@@ -41314,13 +41357,12 @@ function meterBindThumbDragSelection(){
    baseSelection:new Set(meterSelectedThumbIndices),
    dragging:false,
    box:null,
-   anchorIndex:startThumb?children.indexOf(startThumb):-1,
+   anchorIndex:anchorIndex,
    autoScrollDirection:0,
    autoScrollFrame:0,
    currentX:event.clientX,
    currentY:event.clientY
   };
-  if(state.anchorIndex<0) state.anchorIndex=meterThumbDragIndexAtPoint(state,event.clientX,event.clientY);
   meterThumbDragState=state;
  });
  container.addEventListener('pointermove',event=>{
@@ -41329,6 +41371,9 @@ function meterBindThumbDragSelection(){
   if(!state.dragging&&Math.hypot(event.clientX-state.startX,event.clientY-state.startY)<5) return;
   if(!state.dragging){
    state.dragging=true;
+   // Suppress the trailing click before capture so the first successful color
+   // drag cannot collapse back to a single patch via the thumb click handler.
+   meterThumbSuppressClickUntil=performance.now()+400;
    try{ container.setPointerCapture(event.pointerId); }catch(_e){}
   }
   event.preventDefault();
