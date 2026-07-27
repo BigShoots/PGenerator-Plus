@@ -40332,7 +40332,7 @@ function meterThumbIndicesInsideBounds(container,bounds){
  return indices;
 }
 
-function meterThumbRenderDragSelection(state,currentX,currentY){
+function meterThumbRenderDragSelection(state,currentX,currentY,accumulate){
  const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
  if(!state.box){
   state.box=document.createElement('div');
@@ -40344,16 +40344,84 @@ function meterThumbRenderDragSelection(state,currentX,currentY){
  state.box.style.width=Math.max(1,bounds.right-bounds.left)+'px';
  state.box.style.height=Math.max(1,bounds.bottom-bounds.top)+'px';
  const hits=meterThumbIndicesInsideBounds(state.container,bounds);
+ if(!state.accumulatedHits) state.accumulatedHits=new Set();
+ if(accumulate||state.autoScrollHasRun){
+  hits.forEach(index=>state.accumulatedHits.add(index));
+  state.autoScrollHasRun=true;
+ }else{
+  state.accumulatedHits=new Set(hits);
+ }
  const next=state.additive?new Set(state.baseSelection):new Set();
- hits.forEach(index=>next.add(index));
+ state.accumulatedHits.forEach(index=>next.add(index));
  meterSelectedThumbIndices=next;
  meterRefreshThumbSelectionStyles(true);
  return hits;
 }
 
+function meterThumbStopDragAutoScroll(state){
+ if(!state) return;
+ state.autoScrollDirection=0;
+ if(state.autoScrollFrame){
+  window.cancelAnimationFrame(state.autoScrollFrame);
+  state.autoScrollFrame=0;
+ }
+}
+
+function meterThumbDragAutoScrollDirectionAt(x,y){
+ const candidates=[
+  [document.getElementById('meterThumbsLeftBtn'),-1],
+  [document.getElementById('meterThumbsRightBtn'),1]
+ ];
+ for(const candidate of candidates){
+  const button=candidate[0];
+  if(!button||button.disabled||getComputedStyle(button).display==='none') continue;
+  const rect=button.getBoundingClientRect();
+  if(x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom) return candidate[1];
+ }
+ return 0;
+}
+
+function meterThumbDragAutoScrollTick(){
+ const state=meterThumbDragState;
+ if(!state||!state.dragging||!state.autoScrollDirection){
+  if(state) state.autoScrollFrame=0;
+  return;
+ }
+ const row=meterGreyscaleScrollSource();
+ if(!row){ meterThumbStopDragAutoScroll(state); return; }
+ const direction=meterThumbDragAutoScrollDirectionAt(state.currentX,state.currentY);
+ if(!direction){ meterThumbStopDragAutoScroll(state); return; }
+ state.autoScrollDirection=direction;
+ const max=meterGreyscaleScrollMax(row);
+ const before=row.scrollLeft||0;
+ const speed=Math.max(8,Math.min(24,Math.round((row.clientWidth||600)*0.018)));
+ row.scrollLeft=Math.max(0,Math.min(max,before+direction*speed));
+ if(Math.abs((row.scrollLeft||0)-before)<1){
+  meterUpdateThumbScrollButtons();
+  meterThumbStopDragAutoScroll(state);
+  return;
+ }
+ meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(row);
+ meterUpdateThumbScrollButtons();
+ meterQueueGreyscaleTargetSync();
+ meterThumbRenderDragSelection(state,state.currentX,state.currentY,true);
+ state.autoScrollFrame=window.requestAnimationFrame(meterThumbDragAutoScrollTick);
+}
+
+function meterThumbUpdateDragAutoScroll(state,x,y){
+ if(!state||!state.dragging) return;
+ state.currentX=x;
+ state.currentY=y;
+ const direction=meterThumbDragAutoScrollDirectionAt(x,y);
+ if(!direction){ meterThumbStopDragAutoScroll(state); return; }
+ state.autoScrollDirection=direction;
+ if(!state.autoScrollFrame) state.autoScrollFrame=window.requestAnimationFrame(meterThumbDragAutoScrollTick);
+}
+
 function meterThumbFinishDrag(event,cancelled){
  const state=meterThumbDragState;
  if(!state||event.pointerId!==state.pointerId) return;
+ meterThumbStopDragAutoScroll(state);
  try{ state.container.releasePointerCapture(state.pointerId); }catch(_e){}
  if(state.box&&state.box.parentNode) state.box.parentNode.removeChild(state.box);
  if(cancelled){
@@ -40364,6 +40432,7 @@ function meterThumbFinishDrag(event,cancelled){
   const bounds=meterThumbDragBounds(state.startX,state.startY,event.clientX,event.clientY);
   const hits=meterThumbIndicesInsideBounds(state.container,bounds);
   const next=state.additive?new Set(state.baseSelection):new Set();
+  if(state.autoScrollHasRun&&state.accumulatedHits) state.accumulatedHits.forEach(index=>next.add(index));
   hits.forEach(index=>next.add(index));
   meterSelectedThumbIndices=next;
   if(hits.length) meterThumbSelectionAnchor=hits[0];
@@ -40389,7 +40458,13 @@ function meterBindThumbDragSelection(){
    additive:!!(event.ctrlKey||event.metaKey),
    baseSelection:new Set(meterSelectedThumbIndices),
    dragging:false,
-   box:null
+   box:null,
+   accumulatedHits:new Set(),
+   autoScrollHasRun:false,
+   autoScrollDirection:0,
+   autoScrollFrame:0,
+   currentX:event.clientX,
+   currentY:event.clientY
   };
  });
  container.addEventListener('pointermove',event=>{
@@ -40402,6 +40477,7 @@ function meterBindThumbDragSelection(){
   }
   event.preventDefault();
   meterThumbRenderDragSelection(state,event.clientX,event.clientY);
+  meterThumbUpdateDragAutoScroll(state,event.clientX,event.clientY);
  });
  container.addEventListener('pointerup',event=>meterThumbFinishDrag(event,false));
  container.addEventListener('pointercancel',event=>meterThumbFinishDrag(event,true));
