@@ -10334,6 +10334,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	.meter-scroll-sync{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
 	.meter-scroll-sync>canvas{display:block}
 	.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}
+	.meter-thumb-selection-box{position:fixed;z-index:10020;pointer-events:none;border:1px solid #7f9cff;background:rgba(91,127,255,.2);box-shadow:0 0 0 1px rgba(0,0,0,.25);border-radius:2px}
 	#meterGreyscaleLgPrimary{display:block}
 	#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{display:grid;grid-template-columns:180px minmax(0,1fr);column-gap:8px;row-gap:10px;align-items:stretch;margin-bottom:10px}
 	#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbBlock,#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleRgbRow{display:contents!important}
@@ -10877,6 +10878,7 @@ body.is-custom-series-patch-dragging{cursor:grabbing!important;user-select:none!
 @keyframes meterProgressShimmer{0%{transform:translateX(-115%)}100%{transform:translateX(115%)}}
 #meterCard.meter-patterns-only #meterLiveReading,
 #meterCard.meter-patterns-only #meterReadSeriesBtn,
+#meterCard.meter-patterns-only #meterReadSelectionBtn,
 #meterCard.meter-patterns-only #meterCharts,
 #meterCard.meter-patterns-only #meterExportRow,
 #meterCard.meter-patterns-only #meterSeriesHeader,
@@ -11925,6 +11927,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <button class="btn btn-sm btn-secondary" id="meterReadOnce" onclick="meterReadOnce()" style="display:none" disabled>&#9679; Read Once</button>
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
     <button class="btn btn-sm btn-secondary" id="meterReadSeriesBtn" onclick="meterReadSeriesPrimaryAction()" style="display:none">&#9654; Read Series</button>
+    <button class="btn btn-sm btn-secondary" id="meterReadSelectionBtn" onclick="meterRunSelectedPatches()" style="display:none">&#9654; Read Selection</button>
     <button class="btn btn-sm btn-primary" id="meterAutoCalBtn" onclick="meterStartAutoCal()" style="display:none">&#9654; Auto Cal</button>
     <span id="meterLg3dColorControls" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
      <button class="btn btn-sm btn-primary" id="meterLg3dAutoCalBtn" onclick="meterOpenLg3dAutoCalModal()" style="display:none">&#9654; 3D LUT AutoCal</button>
@@ -26388,7 +26391,88 @@ let meterActiveSeriesDvInterface=null; // DV standard/low-latency interface tied
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterPatternDisplayToken=0; // invalidates queued patch-display requests
 let meterSeriesRunning=false; // true when Read Series is actively running
+let meterSelectedThumbIndices=new Set(); // visible thumbnail indices selected for a partial series
+let meterThumbSelectionAnchor=null; // shift-range anchor in visible thumbnail order
+let meterThumbSuppressClickUntil=0; // prevents the click following a drag-box selection
+let meterThumbDragState=null;
+let meterSeriesSelectionRunActive=false;
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
+
+function meterVisibleSeriesSteps(){
+ const source=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+ const ordered=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
+  ? [...source]
+  : meterGreyscaleSeriesSteps(source);
+ return meterFilterLgAutoCalChartItems(ordered);
+}
+
+function meterSelectedPatchCount(){
+ return meterSelectedThumbIndices instanceof Set ? meterSelectedThumbIndices.size : 0;
+}
+
+function meterClearMultiPatchSelection(){
+ meterSelectedThumbIndices=new Set();
+ meterThumbSelectionAnchor=null;
+}
+
+function meterThumbStepAt(index){
+ const steps=meterVisibleSeriesSteps();
+ return (index>=0&&index<steps.length)?steps[index]:null;
+}
+
+function meterThumbIndexForStep(step){
+ if(!step) return -1;
+ const steps=meterVisibleSeriesSteps();
+ const canonical=meterCanonicalSeriesStep(step)||step;
+ const key=meterStepNameKey(canonical);
+ let fallback=-1;
+ for(let i=0;i<steps.length;i++){
+  const candidate=meterCanonicalSeriesStep(steps[i])||steps[i];
+  if(candidate===canonical||steps[i]===step) return i;
+  if(fallback<0&&meterStepNameKey(candidate)===key) fallback=i;
+ }
+ return fallback;
+}
+
+function meterRefreshThumbSelectionStyles(suppressButtonUpdate){
+ const container=document.getElementById('meterPatchThumbs');
+ if(!container) return;
+ const completed=new Set((meterReadings||[]).filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
+ meterUpdateThumbStyles(container,completed,null);
+ if(!suppressButtonUpdate) meterUpdateReadButtons();
+}
+
+function meterDisplayFirstSelectedPatch(){
+ if(!meterSelectedThumbIndices.size){
+  meterDeselectCurrentPatch();
+  return;
+ }
+ const index=Math.min(...Array.from(meterSelectedThumbIndices));
+ const step=meterThumbStepAt(index);
+ if(step) meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true,preserveMulti:true});
+}
+
+function meterApplyThumbSelection(indices,opts){
+ opts=opts||{};
+ const steps=meterVisibleSeriesSteps();
+ const next=opts.additive?new Set(meterSelectedThumbIndices):new Set();
+ Array.from(indices||[]).forEach(raw=>{
+  const index=Number(raw);
+  if(Number.isInteger(index)&&index>=0&&index<steps.length) next.add(index);
+ });
+ meterSelectedThumbIndices=next;
+ if(Number.isInteger(opts.anchor)) meterThumbSelectionAnchor=opts.anchor;
+ const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
+ if(!meterSelectedThumbIndices.size){
+  meterDeselectCurrentPatch();
+  return;
+ }
+ if(opts.displayFirst||currentIndex<0||!meterSelectedThumbIndices.has(currentIndex)){
+  meterDisplayFirstSelectedPatch();
+ }else{
+  meterRefreshThumbSelectionStyles();
+ }
+}
 function meterUpdateDeltaEFormControl(){
  const greySel=document.getElementById('meterDeltaEForm');
  const colorSel=document.getElementById('meterColorDeltaEForm');
@@ -26409,6 +26493,7 @@ function meterClearInteractiveSelection(keepLiveReading){
  meterPatternDisplayToken++;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
+ meterClearMultiPatchSelection();
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  const container=document.getElementById('meterPatchThumbs');
@@ -26439,6 +26524,7 @@ function meterIsPatchStepSelected(step){
 function meterDeselectCurrentPatch(){
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
+ meterClearMultiPatchSelection();
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  const container=document.getElementById('meterPatchThumbs');
@@ -26458,6 +26544,11 @@ function meterSelectPatchFromInteraction(step,reading,opts){
 	 if(!step) return;
 	 const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const resolvedStep=meterCanonicalSeriesStep(step)||step;
+	 if(!(opts&&opts.preserveMulti)){
+	  const index=meterThumbIndexForStep(resolvedStep);
+	  meterSelectedThumbIndices=(index>=0)?new Set([index]):new Set();
+	  meterThumbSelectionAnchor=(index>=0)?index:null;
+	 }
 	 // Only a real meter sample for THIS step counts as measured. Never treat
 	 // the series step (or a leftover ColorChecker reading) as the measurement.
 	 let resolvedReading=meterFindReadingForStep(resolvedStep);
@@ -26578,6 +26669,7 @@ function meterUpdateReadButtons(){
  const showClear=hasData&&meterDetected&&!empty3dLutTab;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
+ const readSelectionBtn=document.getElementById('meterReadSelectionBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
  const continuousBtn=document.getElementById('meterContinuous');
  const autoCalBtn=document.getElementById('meterAutoCalBtn');
@@ -26603,6 +26695,17 @@ function meterUpdateReadButtons(){
  if(continuousBtn) continuousBtn.style.display=(show&&!on3dLutTab)?'':'none';
  const toneMapSeriesActive=meterSeriesTab==='autocal'&&meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
  if(readSeriesBtn) readSeriesBtn.style.display=(seriesControlsOk&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive)?'':'none';
+ if(readSelectionBtn){
+  const selectionCount=meterSelectedPatchCount();
+  const showSelection=selectionCount>1&&showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive;
+  readSelectionBtn.style.display=showSelection?'':'none';
+  readSelectionBtn.innerHTML='&#9654; Read Selection ('+selectionCount+')';
+  readSelectionBtn.disabled=!showSelection||settingsDirty||busy;
+  readSelectionBtn.title=window._configApplyPending?'Applying settings...'
+   :settingsDirty?'Apply & Restart first so measurements match the live signal mode'
+   :busy?'Meter operation already in progress'
+   :'Read only the selected patches in thumbnail order';
+ }
  const autoCalTabActive=meterSeriesTab==='autocal';
  const showAutoCal=autoCalSignalAllowed&&autoCalSeriesAvailable&&autoCalTabActive&&meterAutoCalSeriesChoice==='greyscale'&&!continuousUiActive;
  if(autoCalBtn){
@@ -27057,6 +27160,7 @@ function meterLg3dPrepareChartContext(opts){
  _colorDetailPinned=false;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
+ meterClearMultiPatchSelection();
  meterSharedSeriesId=null;
  if(o.clearReadings!==false){
   meterReadings=[];
@@ -31176,6 +31280,7 @@ async function meterSelectSeries(type,points,opts){
  _colorDetailPinned=false;
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
+ meterClearMultiPatchSelection();
  document.getElementById('meterLiveReading').style.display='none';
  meterResetLiveReadingDisplay();
  meterHideWorkflowProgress();
@@ -39059,6 +39164,7 @@ function meterClearSeriesRunUiState(){
   meterSeriesPolling=null;
  }
  meterSeriesRunning=false;
+ meterSeriesSelectionRunActive=false;
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
@@ -39220,8 +39326,21 @@ async function meterBuild3dLutSeries(){
  return started;
 }
 
-// Run full automated series (Read Series button)
-async function meterRunSeries(){
+async function meterRunSelectedPatches(){
+ const selectionIndices=Array.from(meterSelectedThumbIndices).sort((a,b)=>a-b);
+ if(selectionIndices.length<2){
+  toast('Select at least two patches to read a selection',true);
+  return false;
+ }
+ return meterRunSeries({selectionIndices:selectionIndices});
+}
+
+// Run a full automated series, or a thumbnail subset from Read Selection.
+async function meterRunSeries(options){
+ options=options||{};
+ const requestedSelection=Array.isArray(options.selectionIndices)
+  ? options.selectionIndices.filter(index=>Number.isInteger(index)&&index>=0).sort((a,b)=>a-b)
+  : [];
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
@@ -39238,8 +39357,19 @@ async function meterRunSeries(){
 	  meterSetActiveSeriesChartContext();
 	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 }
+ const rebuiltVisibleSteps=meterVisibleSeriesSteps();
+ const selectedRunSteps=requestedSelection.length
+  ? requestedSelection.map(index=>rebuiltVisibleSteps[index]).filter(Boolean)
+  : null;
+ if(requestedSelection.length&&(!selectedRunSteps||selectedRunSteps.length<2)){
+  toast('The selected patches are no longer available in this series',true);
+  return false;
+ }
+ meterSeriesSelectionRunActive=!!(selectedRunSteps&&selectedRunSteps.length);
+ const runStepCount=meterSeriesSelectionRunActive?selectedRunSteps.length:meterSeriesSteps.length;
  meterStopContinuous();
  meterSelectedThumbIre=null;
+ meterClearMultiPatchSelection();
  meterReadings=[];
  meterWhiteReading=null;
  meterCurrentPatchStep=null;
@@ -39256,7 +39386,7 @@ async function meterRunSeries(){
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterProgressLabel').textContent='Connecting to meter...';
- document.getElementById('meterReadSeriesBtn').innerHTML=meterBuild3dLutPending?'&#9209; Building 3D LUT…':'&#9209; Reading Series';
+ document.getElementById('meterReadSeriesBtn').innerHTML=meterBuild3dLutPending?'&#9209; Building 3D LUT…':(meterSeriesSelectionRunActive?'&#9209; Reading Selection':'&#9209; Reading Series');
  document.getElementById('meterReadSeriesBtn').classList.remove('btn-secondary');
  document.getElementById('meterReadSeriesBtn').classList.add('btn-success');
  // Raise the shared spectro setup modal in 'Working…' mode immediately so
@@ -39276,16 +39406,18 @@ async function meterRunSeries(){
    meterSeriesSpectroSetupActive=true;
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
-  const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
+ const sortedSteps=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
  const uiCaps=meterSeriesUiCaps(sortedSteps.length);
+ const runCaps=meterSeriesUiCaps(runStepCount);
  if(uiCaps.thumbs) meterBuildPatchThumbs(sortedSteps,new Set(),null);
  meterSetThumbsVisible(uiCaps.thumbs);
  drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
- if(uiCaps.confirmStart){
-  const estimate=meterLatticeFormatDuration(meterLatticeEstimateSeconds(meterSeriesSteps.length));
-  const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+meterSeriesSteps.length+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
+ if(runCaps.confirmStart){
+  const estimate=meterLatticeFormatDuration(meterLatticeEstimateSeconds(runStepCount));
+  const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+runStepCount+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
   if(!proceed){
    meterSeriesRunning=false;
+   meterSeriesSelectionRunActive=false;
    meterBuild3dLutPending=null;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
    document.getElementById('meterReadSeriesBtn').classList.add('btn-secondary');
@@ -39310,7 +39442,7 @@ async function meterRunSeries(){
     meterSetActiveSeriesChartContext(s);
     meterSharedSeriesId=String(s.series_id);
     if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
+    meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*runCaps.pollScale);
     await meterPollSeries();
     return true;
    }
@@ -39319,13 +39451,17 @@ async function meterRunSeries(){
  };
  try{
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints)||undefined,grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
-		  if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
+		  const _serializeStep=step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits});
+		  if(meterSeriesSelectionRunActive&&Array.isArray(selectedRunSteps)){
+		   _seriesBody.custom_series=true;
+		   _seriesBody.custom_steps=selectedRunSteps.map(_serializeStep);
+		  } else if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
 		   if(_activeCustom&&_activeCustom.kind==='lattice'){
 		    _seriesBody.lattice_params=meterLatticeSanitizeParams(_activeCustom.params);
 		   } else {
-		    _seriesBody.custom_steps=meterSeriesSteps.map(step=>({ire:step.ire,r:step.r,g:step.g,b:step.b,input_max:step.input_max,name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,custom_target_nits:step.custom_target_nits}));
+		    _seriesBody.custom_steps=meterSeriesSteps.map(_serializeStep);
 		   }
 		  }
 	  // Pass the calibration-card low-light handler through to the
@@ -39341,6 +39477,7 @@ async function meterRunSeries(){
    if(await recoverStartedSeries()) return true;
 	   toast(r&&r.message?r.message:'Failed to start series',true);
 	   meterSeriesRunning=false;
+	   meterSeriesSelectionRunActive=false;
 	   meterSeriesAwaitingReady=false;
 	   meterReadySignalPending=false;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
@@ -39348,17 +39485,18 @@ async function meterRunSeries(){
    document.getElementById('meterReadSeriesBtn').classList.remove('btn-success');
    return false;
 	  }
-	  toast('Series started: '+r.total_steps+' steps');
+	  toast((meterSeriesSelectionRunActive?'Selection':'Series')+' started: '+r.total_steps+' steps');
 	  meterSetActiveSeriesChartContext(r);
 	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
-  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*meterSeriesUiCaps((meterSeriesSteps||[]).length).pollScale);
+  meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*runCaps.pollScale);
 	  await meterPollSeries();
 	  return true;
  }catch(e){
   if(await recoverStartedSeries()) return true;
   toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
   meterSeriesRunning=false;
+  meterSeriesSelectionRunActive=false;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
@@ -39393,7 +39531,7 @@ async function meterPollSeries(){
 		 meterSeriesAwaitingReady=!!r.awaiting_ready;
 		 meterSeriesSpectroSetupApplyFromStatus(r);
 		 meterSetActiveSeriesChartContext(r);
-		 if(Array.isArray(r.steps)&&r.steps.length>0){
+		 if(!meterSeriesSelectionRunActive&&Array.isArray(r.steps)&&r.steps.length>0){
 		  const _activeLattice=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
 		  if(_activeLattice&&_activeLattice.kind==='lattice'&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===r.steps.length){
 		   // Lattice steps are expanded identically client/server (locked by the
@@ -39415,6 +39553,7 @@ async function meterPollSeries(){
    meterSeriesPolling=null;
   }
   meterSeriesRunning=false;
+  meterSeriesSelectionRunActive=false;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
@@ -39517,6 +39656,7 @@ async function meterPollSeries(){
   clearInterval(meterSeriesPolling);
   meterSeriesPolling=null;
   meterSeriesRunning=false;
+  meterSeriesSelectionRunActive=false;
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
   meterReadySignalPending=false;
@@ -40076,7 +40216,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  if(needsRebuild){
   container.innerHTML='';
   meterThumbsBuilt=true;
-  visibleSteps.forEach(step=>{
+  visibleSteps.forEach((step,index)=>{
    const thumb=document.createElement('div');
    thumb.className='meter-patch-thumb';
     const isGrey=meterSeriesStepIsGreyscale(step);
@@ -40099,10 +40239,37 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   thumb.dataset.thumbWidth=scrollMode?String(thumbWidth):'';
   thumb.dataset.key=meterStepNameKey(step);
 	  thumb.dataset.colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-	   thumb.addEventListener('click',function(){
+	   thumb.addEventListener('click',function(event){
 	    if(meterSeriesRunning||meterAutoCalStatusActive()) return;
-	    if(meterIsPatchStepSelected(step)){ meterDeselectCurrentPatch(); return; }
-	    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true});
+	    if(performance.now()<meterThumbSuppressClickUntil) return;
+	    const additive=!!(event.ctrlKey||event.metaKey);
+	    if(event.shiftKey){
+	     const anchor=Number.isInteger(meterThumbSelectionAnchor)?meterThumbSelectionAnchor:index;
+	     const first=Math.min(anchor,index);
+	     const last=Math.max(anchor,index);
+	     const range=[];
+	     for(let i=first;i<=last;i++) range.push(i);
+	     meterApplyThumbSelection(range,{additive:additive,anchor:anchor});
+	     return;
+	    }
+	    if(additive){
+	     const next=new Set(meterSelectedThumbIndices);
+	     if(next.has(index)) next.delete(index); else next.add(index);
+	     meterSelectedThumbIndices=next;
+	     meterThumbSelectionAnchor=index;
+	     const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
+	     if(!next.size){ meterDeselectCurrentPatch(); return; }
+	     if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
+	     else meterRefreshThumbSelectionStyles();
+	     return;
+	    }
+	    if(meterSelectedThumbIndices.size===1&&meterSelectedThumbIndices.has(index)&&meterIsPatchStepSelected(step)){
+	     meterDeselectCurrentPatch();
+	     return;
+	    }
+	    meterSelectedThumbIndices=new Set([index]);
+	    meterThumbSelectionAnchor=index;
+	    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true,preserveMulti:true});
 	   });
    container.appendChild(thumb);
   });
@@ -40124,7 +40291,7 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
   // All thumbs fully visible always; completed ones get a checkmark overlay
   thumb.style.opacity='1';
 	  const isReading=(currentIre!=null&&key===currentIre);
-	  const isSelected=(!meterAutoCalStatusActive()&&meterSelectedThumbIre!=null&&key===meterSelectedThumbIre);
+	  const isSelected=(!meterAutoCalStatusActive()&&(meterSelectedThumbIndices.has(i)||(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre)));
   if(isReading){
    thumb.style.boxShadow='';
    thumb.style.animation='thumbPulse 1s ease-in-out infinite';
@@ -40146,6 +40313,98 @@ function meterUpdateThumbStyles(container,completedIres,currentIre){
   }
  }
 }
+
+function meterThumbDragBounds(startX,startY,currentX,currentY){
+ return {
+  left:Math.min(startX,currentX),
+  top:Math.min(startY,currentY),
+  right:Math.max(startX,currentX),
+  bottom:Math.max(startY,currentY)
+ };
+}
+
+function meterThumbIndicesInsideBounds(container,bounds){
+ const indices=[];
+ Array.from(container.children).forEach((thumb,index)=>{
+  const rect=thumb.getBoundingClientRect();
+  if(rect.right>=bounds.left&&rect.left<=bounds.right&&rect.bottom>=bounds.top&&rect.top<=bounds.bottom) indices.push(index);
+ });
+ return indices;
+}
+
+function meterThumbRenderDragSelection(state,currentX,currentY){
+ const bounds=meterThumbDragBounds(state.startX,state.startY,currentX,currentY);
+ if(!state.box){
+  state.box=document.createElement('div');
+  state.box.className='meter-thumb-selection-box';
+  document.body.appendChild(state.box);
+ }
+ state.box.style.left=bounds.left+'px';
+ state.box.style.top=bounds.top+'px';
+ state.box.style.width=Math.max(1,bounds.right-bounds.left)+'px';
+ state.box.style.height=Math.max(1,bounds.bottom-bounds.top)+'px';
+ const hits=meterThumbIndicesInsideBounds(state.container,bounds);
+ const next=state.additive?new Set(state.baseSelection):new Set();
+ hits.forEach(index=>next.add(index));
+ meterSelectedThumbIndices=next;
+ meterRefreshThumbSelectionStyles(true);
+ return hits;
+}
+
+function meterThumbFinishDrag(event,cancelled){
+ const state=meterThumbDragState;
+ if(!state||event.pointerId!==state.pointerId) return;
+ try{ state.container.releasePointerCapture(state.pointerId); }catch(_e){}
+ if(state.box&&state.box.parentNode) state.box.parentNode.removeChild(state.box);
+ if(cancelled){
+  meterSelectedThumbIndices=new Set(state.baseSelection);
+  meterRefreshThumbSelectionStyles();
+ } else if(state.dragging){
+  meterThumbSuppressClickUntil=performance.now()+250;
+  const bounds=meterThumbDragBounds(state.startX,state.startY,event.clientX,event.clientY);
+  const hits=meterThumbIndicesInsideBounds(state.container,bounds);
+  const next=state.additive?new Set(state.baseSelection):new Set();
+  hits.forEach(index=>next.add(index));
+  meterSelectedThumbIndices=next;
+  if(hits.length) meterThumbSelectionAnchor=hits[0];
+  const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
+  if(!next.size) meterDeselectCurrentPatch();
+  else if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
+  else meterRefreshThumbSelectionStyles();
+ }
+ meterThumbDragState=null;
+}
+
+function meterBindThumbDragSelection(){
+ const container=document.getElementById('meterPatchThumbs');
+ if(!container||container.dataset.dragSelectionBound==='1') return;
+ container.dataset.dragSelectionBound='1';
+ container.addEventListener('pointerdown',event=>{
+  if(event.button!==0||event.pointerType!=='mouse'||meterSeriesRunning||meterAutoCalStatusActive()) return;
+  meterThumbDragState={
+   container:container,
+   pointerId:event.pointerId,
+   startX:event.clientX,
+   startY:event.clientY,
+   additive:!!(event.ctrlKey||event.metaKey),
+   baseSelection:new Set(meterSelectedThumbIndices),
+   dragging:false,
+   box:null
+  };
+  try{ container.setPointerCapture(event.pointerId); }catch(_e){}
+ });
+ container.addEventListener('pointermove',event=>{
+  const state=meterThumbDragState;
+  if(!state||event.pointerId!==state.pointerId) return;
+  if(!state.dragging&&Math.hypot(event.clientX-state.startX,event.clientY-state.startY)<5) return;
+  state.dragging=true;
+  event.preventDefault();
+  meterThumbRenderDragSelection(state,event.clientX,event.clientY);
+ });
+ container.addEventListener('pointerup',event=>meterThumbFinishDrag(event,false));
+ container.addEventListener('pointercancel',event=>meterThumbFinishDrag(event,true));
+}
+meterBindThumbDragSelection();
 
 // Patch selection is transient. Mouse clicks can clear it immediately, but on
 // touch devices wait until pointerup proves the gesture was a tap. Deselecting
