@@ -3242,6 +3242,26 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   return "{\"status\":\"error\",\"message\":\"Custom series has no valid patches\"}";
  }
  if(scalar(@custom_series_steps)) {
+  # Full custom greyscale runs use measured endpoint patches as references.
+  # Keep this server-side ordering guard so a stale/cached WebUI cannot put
+  # those references back in import order. The current WebUI also supplies a
+  # missing endpoint using the active signal range before posting the queue.
+  if($type eq "greyscale" && ($target_white_use_measured || $target_black_use_measured)) {
+   my @remaining=@custom_series_steps;
+   my $take_endpoint=sub {
+    my($wanted)=@_;
+    for(my $i=0;$i<scalar(@remaining);$i++) {
+     if($remaining[$i]=~/"ire"\s*:\s*(-?\d+(?:\.\d+)?)/ && abs(($1+0)-$wanted)<0.05) {
+      return splice(@remaining,$i,1);
+     }
+    }
+    return ();
+   };
+   my @leading;
+   push @leading,$take_endpoint->(100) if($target_white_use_measured);
+   push @leading,$take_endpoint->(0) if($target_black_use_measured);
+   @custom_series_steps=(@leading,@remaining);
+  }
   @steps=@custom_series_steps;
  } elsif($type eq "greyscale") {
    my @ire_vals;
@@ -16184,7 +16204,7 @@ function pgSetDesktopSidebarCollapsed(collapsed){
  if(pgLayoutEffective==='desktop'){
   pgDesktopSidebarRefreshTimer=setTimeout(()=>{
    pgDesktopSidebarRefreshTimer=null;
-   pgRefreshVisibleWorkspace();
+   pgRefreshVisibleWorkspace({layoutOnly:true});
   },220);
  }
 }
@@ -16327,9 +16347,11 @@ function pgSyncMeterDesktopWorkspaceAvailability(){
   pgSyncDesktopPanels();
  }
 }
-function pgRefreshVisibleWorkspace(){
+function pgRefreshVisibleWorkspace(options){
+ const layoutOnly=!!(options&&options.layoutOnly);
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
+  if(layoutOnly) return;
   if(typeof pgRedrawChartsForTheme==='function') pgRedrawChartsForTheme();
   if(pgDesktopWorkspace==='calibration'&&typeof meterRefreshActiveSeriesCharts==='function'){
    try{ meterRefreshActiveSeriesCharts(); }catch(e){}
@@ -28729,6 +28751,10 @@ function meterSaveGreyProfileEditor(){
 // series expand from params and are not subject to this store limit.
 const METER_CUSTOM_SERIES_MAX_PATCHES=3000;
 let meterCustomSeriesState={format:'pgenerator-custom-series-v1',next_id:1001,series:[]};
+let meterCustomSeriesNormalizedState=null;
+let meterCustomSeriesIndexedSeries=null;
+let meterCustomSeriesIndex=new Map();
+let meterCustomSeriesRawJson='';
 
 // Durability backup: every custom-series mutation is mirrored to localStorage
 // (marked unsynced) and the mark clears once the settings save that carried
@@ -28878,6 +28904,29 @@ function meterCustomSeriesNormalizeState(){
  });
  const nextId=Math.round(Number(meterCustomSeriesState.next_id));
  meterCustomSeriesState.next_id=Math.max(maxId+1,Number.isFinite(nextId)?nextId:0,1001);
+ meterCustomSeriesNormalizedState=meterCustomSeriesState;
+ meterCustomSeriesReindex();
+ return meterCustomSeriesState;
+}
+
+function meterCustomSeriesReindex(){
+ const series=(meterCustomSeriesState&&Array.isArray(meterCustomSeriesState.series))
+  ?meterCustomSeriesState.series:[];
+ meterCustomSeriesIndex=new Map();
+ series.forEach(item=>{
+  const id=Math.round(Number(item&&item.id));
+  if(Number.isFinite(id)&&id>=1001) meterCustomSeriesIndex.set(id,item);
+ });
+ meterCustomSeriesIndexedSeries=series;
+}
+
+// Normalization sanitizes every stored patch. That is appropriate after a load
+// or mutation, but it is far too expensive for a lookup: large imported
+// libraries can contain tens of thousands of patches and the chart path asks
+// for the active series many times per frame.
+function meterCustomSeriesCurrentState(){
+ if(meterCustomSeriesNormalizedState!==meterCustomSeriesState) return meterCustomSeriesNormalizeState();
+ if(meterCustomSeriesIndexedSeries!==meterCustomSeriesState.series) meterCustomSeriesReindex();
  return meterCustomSeriesState;
 }
 
@@ -28937,12 +28986,12 @@ function meterCustomSeriesById(id){
   return builtin;
  }
  if(!Number.isFinite(numeric)||numeric<1001) return null;
- const state=meterCustomSeriesNormalizeState();
- return state.series.find(s=>s.id===numeric)||null;
+ meterCustomSeriesCurrentState();
+ return meterCustomSeriesIndex.get(numeric)||null;
 }
 
 function meterCustomSeriesForMode(category,mode){
- const state=meterCustomSeriesNormalizeState();
+ const state=meterCustomSeriesCurrentState();
  const modeKey=meterCustomSeriesModeKey(mode);
  const cat=(category==='color')?'color':'greyscale';
  // Only series that render correctly for the current output range are offered
@@ -29207,9 +29256,10 @@ async function meterRefreshCustomSeriesFromServer(){
  try{ s=await fetchJSON('/api/meter/settings?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}); }catch(e){ return false; }
  if(!s||!s.custom_series_json) return false;
  try{
+  if(s.custom_series_json===meterCustomSeriesRawJson) return false;
   const next=JSON.parse(s.custom_series_json);
-  if(JSON.stringify(next)===JSON.stringify(meterCustomSeriesState)) return false;
   meterCustomSeriesState=next;
+  meterCustomSeriesRawJson=s.custom_series_json;
   meterCustomSeriesNormalizeState();
   meterRenderCustomSeriesButtons();
   return true;
@@ -30447,6 +30497,32 @@ function meterBuildCustomSeriesSteps(series){
   steps.push(step);
  });
  return steps;
+}
+
+function meterCustomGreyscaleRunSteps(steps){
+ const source=Array.isArray(steps)?steps:[];
+ if(!source.length) return source;
+ const white=meterTargetWhiteLevel();
+ const black=meterTargetBlackLevel();
+ if(!white.useMeasured&&!black.useMeasured) return source;
+ const remaining=source.slice();
+ const takeEndpoint=(ire)=>{
+  const index=remaining.findIndex(step=>step&&Math.abs(Number(step.ire)-ire)<0.05
+   &&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b));
+  if(index>=0) return remaining.splice(index,1)[0];
+  const code=meterCodeFromSignalPercent(ire);
+  return {
+   ire:ire,stimulus:ire,
+   signal_r_pct:ire,signal_g_pct:ire,signal_b_pct:ire,
+   r:code,g:code,b:code,input_max:meterPatchInputMax(),
+   name:ire===100?'100% White':'0% Black',
+   series_type:'greyscale'
+  };
+ };
+ const leading=[];
+ if(white.useMeasured) leading.push(takeEndpoint(100));
+ if(black.useMeasured) leading.push(takeEndpoint(0));
+ return leading.concat(remaining);
 }
 
 let meterCustomSeriesEditor=null;
@@ -39745,11 +39821,13 @@ async function meterRunSeries(options){
 		  } else if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
-		   if(_activeCustom&&_activeCustom.kind==='lattice'){
-		    _seriesBody.lattice_params=meterLatticeSanitizeParams(_activeCustom.params);
-		   } else {
-		    _seriesBody.custom_steps=meterSeriesSteps.map(_serializeStep);
-		   }
+			  if(_activeCustom&&_activeCustom.kind==='lattice'){
+			    _seriesBody.lattice_params=meterLatticeSanitizeParams(_activeCustom.params);
+			   } else {
+			    const _customRunSteps=(meterActiveSeriesType==='greyscale')
+			     ?meterCustomGreyscaleRunSteps(meterSeriesSteps):meterSeriesSteps;
+			    _seriesBody.custom_steps=_customRunSteps.map(_serializeStep);
+			   }
 		  }
 	  // Pass the calibration-card low-light handler through to the
 	  // server so series reads honor the same gear as autocal/single.
@@ -46985,6 +47063,7 @@ function saveMeterSettings(){
   body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
  request.then(r=>{
   if(r&&r.status==='ok'&&carriedCustomSeries){
+   meterCustomSeriesRawJson=s.custom_series_json||'';
    meterCustomSeriesDirty=false;
    meterCustomSeriesBackupWrite(false);
   }
@@ -47015,7 +47094,10 @@ async function loadMeterSettings(){
   try{ meterGreyPatchProfiles=JSON.parse(s.grey_patch_profiles_json); }catch(e){}
  }
  if(s.custom_series_json){
-  try{ meterCustomSeriesState=JSON.parse(s.custom_series_json); }catch(e){}
+  try{
+   meterCustomSeriesState=JSON.parse(s.custom_series_json);
+   meterCustomSeriesRawJson=s.custom_series_json;
+  }catch(e){}
  }
  meterCustomSeriesNormalizeState();
  // Recover any locally-backed-up series whose carrying save never landed
