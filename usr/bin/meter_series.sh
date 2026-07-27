@@ -173,12 +173,36 @@ series_quit_spotread() {
   exec 3>&- 2>/dev/null || true
   METER_SERIES_FD_OPEN=0
  fi
- if [[ -n "${BG_PID:-}" ]]; then
-  local waited=0
-  while (( waited < 20 )) && kill -0 "$BG_PID" 2>/dev/null; do
+ # A Stop request can arrive while spotread is inside a USB measurement.
+ # Let that transaction finish and consume the queued Q before escalating.
+ # READ_TIMEOUT reflects the active patch (near-black reads can legitimately
+ # take much longer); clamp the shutdown grace so a genuinely wedged process
+ # still has a bounded recovery path.
+ local spotread_grace="${READ_TIMEOUT:-30}"
+ [[ "$spotread_grace" =~ ^[0-9]+$ ]] || spotread_grace=30
+ (( spotread_grace < 30 )) && spotread_grace=30
+ (( spotread_grace > 180 )) && spotread_grace=180
+ local waited=0
+ while (( waited < spotread_grace * 10 )) && pgrep -x spotread >/dev/null 2>&1; do
+  sleep 0.1
+  waited=$((waited + 1))
+ done
+ if pgrep -x spotread >/dev/null 2>&1; then
+  echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread exceeded ${spotread_grace}s graceful timeout; sending TERM" >> /tmp/meter_series_debug.log
+  pkill -TERM -x spotread 2>/dev/null || true
+  local term_waited=0
+  while (( term_waited < 100 )) && pgrep -x spotread >/dev/null 2>&1; do
    sleep 0.1
-   waited=$((waited + 1))
+   term_waited=$((term_waited + 1))
   done
+ fi
+ if pgrep -x spotread >/dev/null 2>&1; then
+  echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread ignored TERM for 10s; forcing SIGKILL" >> /tmp/meter_series_debug.log
+  pkill -9 -x spotread 2>/dev/null || true
+ fi
+ # spotread is gone; now the surrounding cat/script pipeline can be reaped
+ # without interrupting a USB transaction.
+ if [[ -n "${BG_PID:-}" ]]; then
   if kill -0 "$BG_PID" 2>/dev/null; then
    local tree
    tree=$(series_process_tree "$BG_PID")
@@ -1955,22 +1979,10 @@ EOJSON
  fi
 fi
 
-# Quit spotread
-printf "Q" >&3 2>/dev/null
-exec 3>&- 2>/dev/null
-METER_SERIES_FD_OPEN=0
-sleep 0.5
-kill "$BG_PID" 2>/dev/null
-SR_KIDS=$(pgrep -P "$BG_PID" 2>/dev/null)
-for p in $SR_KIDS; do
- SR_GRANDKIDS=$(pgrep -P "$p" 2>/dev/null)
- kill -9 $SR_GRANDKIDS 2>/dev/null
- kill -9 "$p" 2>/dev/null
-done
-kill -9 "$BG_PID" 2>/dev/null
-wait "$BG_PID" 2>/dev/null
-pkill -9 -x spotread 2>/dev/null
-rm -f "$OUTFILE" "$CMDPIPE"
+# Quit spotread through the same graceful, read-timeout-aware path used by
+# cancellation. Normal completion reaches an idle prompt and exits quickly;
+# this also avoids the former unconditional SIGKILL after only 0.5 seconds.
+series_quit_spotread
 
 # Display black screen to prevent burn-in
 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \

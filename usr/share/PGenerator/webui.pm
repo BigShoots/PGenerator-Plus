@@ -2024,17 +2024,19 @@ sub webui_meter_read (@) {
 
  &webui_pattern_stop_guard_clear();
 
- # Refuse single reads while a series is actively running
- if(-f $_meter_series_file) {
+ # Refuse single reads while a series still owns the meter, including the
+ # cooperative drain window after its state has already changed to cancelled.
+ if(&webui_meter_series_alive()) {
   my $scheck="";
-  if(open(my $fh,"<",$_meter_series_file)) { local $/; $scheck=<$fh>; close($fh); }
-	  if($scheck=~/"status"\s*:\s*"running"/) {
-	   if(&webui_meter_series_alive()) {
-	     &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
-	     &webui_meter_stop();
-	     &webui_pattern_stop_guard_clear();
-	     select(undef,undef,undef,0.5);
-   }
+  if(-f $_meter_series_file && open(my $fh,"<",$_meter_series_file)) { local $/; $scheck=<$fh>; close($fh); }
+  if($scheck=~/"status"\s*:\s*"running"/) {
+   &log("WebUI: manual meter read requested while series helper still running; stopping stale series first");
+   &webui_meter_stop();
+   &webui_pattern_stop_guard_clear();
+   select(undef,undef,undef,0.5);
+  }
+  if(&webui_meter_series_alive()) {
+   return '{"status":"idle","message":"Previous meter series is still stopping"}';
   }
  }
 
@@ -2709,6 +2711,12 @@ sub webui_custom_series_steps_from_body (@) {
 
 sub webui_meter_series_start (@) {
  my ($body)=@_;
+ # A cooperatively-cancelled series may still be finishing its current USB
+ # transaction after the Stop API has returned. Never start a second owner of
+ # the meter during that short drain window.
+ if(&webui_meter_series_alive()) {
+  return '{"status":"error","message":"Previous meter series is still stopping"}';
+ }
  # A series run owns its own persistent spotread process. Read Once /
  # Continuous keeps a reusable meter_session daemon alive, so shut that down
  # before launching the series helper or two spotread instances can fight over
@@ -5161,40 +5169,39 @@ sub webui_meter_stop (@) {
  if($series_was_alive) {
   &webui_meter_series_signal_stop();
   &webui_meter_series_cancel_state();
-  my $waited=0;
-  while($waited < 80 && &webui_meter_series_alive()) {
-   Time::HiRes::sleep(0.1);
-   $waited++;
-	  }
-	  if(&webui_meter_series_alive()) {
-	   &webui_meter_series_kill("-TERM");
-	   my $tw=0;
-	   while($tw < 30 && &webui_meter_series_alive()) {
-	    Time::HiRes::sleep(0.1);
-    $tw++;
-   }
-  }
-	 }
-	 # Kill any running spotread/meter processes (sudo required: they run as root)
-	 system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
-	 &webui_meter_series_kill("-9") if(&webui_meter_series_alive());
- system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
- system("sudo pkill -9 -x spotread 2>/dev/null");
- system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
- system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
- system("sudo pkill -9 -f 'sudo.*spotread' 2>/dev/null");
+  # Do not wait here: meter_series may currently be blocked posting its patch
+  # to this same single-threaded HTTP server. Waiting used to deadlock until
+  # the 8s+3s escalation forcibly killed spotread mid-USB transaction. Return
+  # so the queued request can drain; the pattern stop guard replaces it with
+  # idle, and meter_series owns graceful spotread shutdown (with its own
+  # read-timeout-aware TERM/SIGKILL fallback).
+  &log("WebUI: cooperative meter series stop requested; helper owns spotread shutdown");
+ } else {
+  # No series owns the instrument. Explicit Stop may be releasing an idle
+  # manual-read session or a genuinely stale wrapper, so the general cleanup
+  # remains available for those paths.
+  system("sudo pkill -9 -f 'meter_session.sh' 2>/dev/null");
+  system("sudo pkill -9 -f 'spotread_wrapper' 2>/dev/null");
+  system("sudo pkill -9 -x spotread 2>/dev/null");
+  system("sudo pkill -9 -f 'script.*spotread' 2>/dev/null");
+  system("sudo pkill -9 -f 'cat.*spotread_cmd' 2>/dev/null");
+  system("sudo pkill -9 -f 'sudo.*spotread' 2>/dev/null");
+ }
  &webui_meter_session_ready_cleanup();
  &webui_meter_series_ready_cleanup();
- &webui_meter_series_stop_cleanup();
+ &webui_meter_series_stop_cleanup() if(!$series_was_alive);
  unlink($_meter_session_pid_file, $_meter_session_config_file, $_meter_session_fifo);
  &webui_meter_read_state_write('{"status":"idle","message":"Measurement stopped"}');
  # Mark state as cancelled (if still running or paused in a setup wizard)
  &webui_meter_series_cancel_state();
  # Clean up stale temp files so new series starts fresh
  unlink("/tmp/spotread_port_cache");
- # Remove any leftover spotread pipes/output files
- my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
- unlink(@stale) if @stale;
+ # Do not unlink the live series' pipe/output while its cooperative shutdown is
+ # still draining. The helper removes its own files after spotread exits.
+ if(!$series_was_alive) {
+  my @stale=glob("/tmp/spotread_series_* /tmp/spotread_cmd_* /tmp/spotread_session_*");
+  unlink(@stale) if @stale;
+ }
  return '{"status":"ok","message":"Measurement stopped"}';
 }
 
@@ -26044,7 +26051,8 @@ async function meterStop(){
  if(meterFullAutoCalRunning&&!fullReportSeriesActive){
   return meterFullAutoCalAbort('Full Auto Cal stopped',false);
  }
- const hadContinuousStop=meterContinuousActive||meterContinuousSuspendedForLgWrite||meterManualPromptAwaiting;
+ const hadContinuousStop=meterContinuousActive||meterContinuousSuspendedForLgWrite;
+ const hadManualStop=meterManualPromptAwaiting;
  meterStopContinuous();
  meterClearInteractiveSelection(true);
  if(meterSeriesPolling){clearInterval(meterSeriesPolling);meterSeriesPolling=null;}
@@ -26054,15 +26062,22 @@ async function meterStop(){
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
  meterPendingDeviceReadyAction=null;
+ const continuousOnlyStop=hadContinuousStop&&!hadSeriesStop&&!hadManualStop;
+ // Continuous mode uses the reusable meter_session. Stopping its browser loop
+ // must not tear down spotread: let any in-flight read finish, then leave the
+ // session idle for the next Read Once/Continuous request. Series and explicit
+ // manual/setup stops still call the backend because they own work that must
+ // be cooperatively cancelled.
+ const needsBackendStop=!continuousOnlyStop;
  if(hadSeriesStop&&meterBuild3dLutPending) meterBuild3dLutMeasureHide();
  if(hadSeriesStop) meterBuild3dLutPending=null;
  meterClearManualPromptAwaiting(true);
  meterSpectroSetupApply(null);
- meterActionPending=hadSeriesStop||hadContinuousStop;
+ meterActionPending=hadSeriesStop||hadContinuousStop||hadManualStop;
  // Blocking modal while the stop RTT runs. Without it the series buttons
  // look idle but meterActionPending freezes every click until the helper
  // is actually dead (often several seconds on a mid-read series).
- if(hadSeriesStop||hadContinuousStop){
+ if(hadSeriesStop||hadContinuousStop||hadManualStop){
   meterStopModalShow(hadSeriesStop?'series':(hadContinuousStop?'continuous':'meter'));
  }
  document.getElementById('meterReadOnce').innerHTML='&#9679; Read Once';
@@ -26082,7 +26097,9 @@ async function meterStop(){
  meterHideWorkflowProgress();
  meterUpdateReadButtons();
  try{
-  await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
+  if(needsBackendStop){
+   await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
+  }
  }catch(e){
  }finally{
   try{
