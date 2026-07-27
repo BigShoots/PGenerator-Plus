@@ -30502,9 +30502,11 @@ function meterBuildCustomSeriesSteps(series){
 function meterCustomGreyscaleRunSteps(steps){
  const source=Array.isArray(steps)?steps:[];
  if(!source.length) return source;
- const white=meterTargetWhiteLevel();
- const black=meterTargetBlackLevel();
- if(!white.useMeasured&&!black.useMeasured) return source;
+ const whiteControl=document.getElementById('meterTargetWhiteUseMeasured');
+ const blackControl=document.getElementById('meterTargetBlackUseMeasured');
+ const useMeasuredWhite=whiteControl?!!whiteControl.checked:!!meterTargetWhiteLevel().useMeasured;
+ const useMeasuredBlack=blackControl?!!blackControl.checked:!!meterTargetBlackLevel().useMeasured;
+ if(!useMeasuredWhite&&!useMeasuredBlack) return source;
  const remaining=source.slice();
  const takeEndpoint=(ire)=>{
   const index=remaining.findIndex(step=>step&&Math.abs(Number(step.ire)-ire)<0.05
@@ -30520,8 +30522,8 @@ function meterCustomGreyscaleRunSteps(steps){
   };
  };
  const leading=[];
- if(white.useMeasured) leading.push(takeEndpoint(100));
- if(black.useMeasured) leading.push(takeEndpoint(0));
+ if(useMeasuredWhite) leading.push(takeEndpoint(100));
+ if(useMeasuredBlack) leading.push(takeEndpoint(0));
  return leading.concat(remaining);
 }
 
