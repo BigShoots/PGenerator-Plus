@@ -14449,6 +14449,7 @@ function applyMeterTargetGammaDefault(force){
  else if(displayType.startsWith('projector')) g.value='2.2';
  else g.value='bt1886';
  meterSyncTargetGammaControl();
+ try{ if(typeof meterApplyTargetBlackDefaultForPowerGamma==='function') meterApplyTargetBlackDefaultForPowerGamma(g.value); }catch(e){}
 }
 
 document.getElementById('signal_mode').addEventListener('change',function(){
@@ -25780,6 +25781,20 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
  // default and Use Measured. Keep the input's disabled/placeholder state in
  // lockstep with the checkbox instead of leaving the previous mode editable.
  meterSetTargetLevelsStateOnly();
+}
+// When the operator picks pure power gamma (2.2 / 2.4), default Target Black
+// to manual 0 (not Use measured). Power with a raised black is a hard floor
+// kink, not BT.1886; starting at 0 keeps that curve clean. The operator can
+// still uncheck/check Use measured or type a raised black afterward.
+function meterApplyTargetBlackDefaultForPowerGamma(gamma){
+ const g=String(gamma!=null?gamma:((document.getElementById('meterTargetGamma')||{}).value||'')).toLowerCase();
+ if(g!=='2.2'&&g!=='2.4') return false;
+ const bUm=getEl('meterTargetBlackUseMeasured'), black=getEl('meterTargetBlack');
+ if(!bUm||!black) return false;
+ bUm.checked=false;
+ black.value='0';
+ try{ meterSetTargetLevels(); }catch(e){ try{ meterSetTargetLevelsStateOnly(); }catch(e2){} }
+ return true;
 }
 // Resolve the effective Target White level. Returns {useMeasured,value}.
 function meterTargetWhiteLevel(){
@@ -48198,6 +48213,8 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  // choice so the operator can compare e.g. 2.2 vs ST.2084 grading live.
  const sel=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
  meterActiveSeriesTargetGamma=sel||null;
+ // Power 2.2/2.4 → Target Black defaults to manual 0 (still operator-editable).
+ try{ if(typeof meterApplyTargetBlackDefaultForPowerGamma==='function') meterApplyTargetBlackDefaultForPowerGamma(sel); }catch(e){}
  // Persist the new selection alongside the other color-science prefs.
  try{ meterSaveColorPrefs(); }catch(e){}
  // Invalidate per-reading analysis caches (the dE cache key includes the
