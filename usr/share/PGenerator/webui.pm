@@ -16424,18 +16424,44 @@ function meterActivate3dLutWorkspace(){
  try{ meterLoadSolvedLutList(); }catch(e){}
  meterSync3dLutWorkspaceUi();
 }
+// Human label for the active 3D LUT profiling series. Built-in hybrid /
+// skeleton / lattice / matrix never update the "Select series…" button text,
+// so the workspace status must not fall back to that placeholder.
+function meter3dLutSelectedSeriesLabel(){
+ try{
+  if(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()){
+   return 'Matrix (5-point)';
+  }
+  const vol=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
+  if(vol){
+   const n=String(vol.name||'').trim();
+   if(n) return n;
+   const kind=String(vol.kind||'').toLowerCase();
+   if(kind==='hybrid') return 'Hybrid';
+   if(kind==='skeleton') return 'Skeleton';
+   if(kind==='lattice') return 'Lattice';
+  }
+  const loaded=document.getElementById('meterCustomSeriesLoaded3dLut');
+  const loadedName=loaded&&loaded.style.display!=='none'?String(loaded.textContent||'').trim():'';
+  if(loadedName) return loadedName;
+ }catch(e){}
+ return '';
+}
 function meterSync3dLutWorkspaceUi(){
  const button=document.getElementById('meter3dLutWorkspaceBuildBtn');
  const status=document.getElementById('meter3dLutWorkspaceStatus');
  if(!button&&!status) return;
  const selected=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
- const loaded=document.getElementById('meterCustomSeriesLoaded3dLut');
- const loadedName=loaded&&loaded.style.display!=='none'?String(loaded.textContent||'').trim():'';
+ const seriesName=meter3dLutSelectedSeriesLabel();
  const picker=document.getElementById('meter3dLutSelectSeriesBtn');
- const pickerName=picker?String(picker.textContent||'').replace(/\s+/g,' ').trim():'';
  if(status) status.textContent=selected
-  ?('Selected: '+(loadedName||pickerName||'3D LUT profiling series'))
+  ?('Selected: '+(seriesName||'3D LUT profiling series'))
   :'Select a profiling series to begin.';
+ if(picker){
+  picker.title=selected&&seriesName
+   ?('Selected: '+seriesName+' — click to choose another profiling series')
+   :'Choose a 3D LUT profiling series to measure (lattice / skeleton / hybrid) — same method chooser and descriptions as the standalone 3D LUT AutoCal';
+ }
  if(button){
   const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterContinuousActive;
   const dirty=hasUnsavedSettings();
@@ -39100,6 +39126,7 @@ async function meterConfirmLg3dSelectSeries(){
   try{ meterInstallMatrixProfileSeries({clearReadings:true}); }catch(e){}
   try{ meterSync3dLutTabChartVisibility(); }catch(e){}
   try{ meterUpdateReadButtons(); }catch(e){}
+  try{ meterSync3dLutWorkspaceUi(); }catch(e){}
   if(startBuild) setTimeout(function(){ meterBuild3dLutSeries(); },40);
   else toast('Matrix 5-point series loaded — use Build 3D LUT to measure and solve');
   return;
@@ -39114,6 +39141,7 @@ async function meterConfirmLg3dSelectSeries(){
  await meterSelectSeries('colors',resolved.series.id,{force:true,preserveTab:true});
  try{ meterSync3dLutTabChartVisibility(); }catch(e){}
  try{ meterUpdateReadButtons(); }catch(e){}
+ try{ meterSync3dLutWorkspaceUi(); }catch(e){}
  if(startBuild) setTimeout(function(){ meterBuild3dLutSeries(); },40);
 }
 
