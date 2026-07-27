@@ -180,15 +180,14 @@ series_quit_spotread() {
   exec 3>&- 2>/dev/null || true
   METER_SERIES_FD_OPEN=0
  fi
- # A Stop request can arrive while spotread is inside a USB measurement.
- # Let that transaction finish and consume the queued Q before escalating.
- # READ_TIMEOUT reflects the active patch (near-black reads can legitimately
- # take much longer); clamp the shutdown grace so a genuinely wedged process
- # still has a bounded recovery path.
- local spotread_grace="${READ_TIMEOUT:-30}"
- [[ "$spotread_grace" =~ ^[0-9]+$ ]] || spotread_grace=30
- (( spotread_grace < 30 )) && spotread_grace=30
- (( spotread_grace > 180 )) && spotread_grace=180
+ # A Stop request is explicit cancellation, not a request to finish the active
+ # read. Give spotread a short opportunity to consume Q and close its USB
+ # handle cleanly, then use TERM to interrupt a read that is still integrating.
+ # Waiting the full READ_TIMEOUT here made normal Stop operations take 30-180s
+ # (90s in the observed 2026-07-27 color-series stop). SIGKILL remains only the
+ # final fallback, so responsive cancellation does not return to force-resetting
+ # a healthy meter process immediately.
+ local spotread_grace=3
  local waited=0
  while (( waited < spotread_grace * 10 )) && pgrep -x spotread >/dev/null 2>&1; do
   sleep 0.1
@@ -198,13 +197,13 @@ series_quit_spotread() {
   echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread exceeded ${spotread_grace}s graceful timeout; sending TERM" >> /tmp/meter_series_debug.log
   pkill -TERM -x spotread 2>/dev/null || true
   local term_waited=0
-  while (( term_waited < 100 )) && pgrep -x spotread >/dev/null 2>&1; do
+  while (( term_waited < 50 )) && pgrep -x spotread >/dev/null 2>&1; do
    sleep 0.1
    term_waited=$((term_waited + 1))
   done
  fi
  if pgrep -x spotread >/dev/null 2>&1; then
-  echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread ignored TERM for 10s; forcing SIGKILL" >> /tmp/meter_series_debug.log
+  echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread ignored TERM for 5s; forcing SIGKILL" >> /tmp/meter_series_debug.log
   pkill -9 -x spotread 2>/dev/null || true
  fi
  # spotread is gone; now the surrounding cat/script pipeline can be reaped

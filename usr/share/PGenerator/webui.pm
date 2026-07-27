@@ -26252,6 +26252,7 @@ async function meterStop(){
  }
  meterHideWorkflowProgress();
  meterUpdateReadButtons();
+ let stopRequestConfirmed=false;
  const waitForSeriesTeardown=async()=>{
   const started=Date.now();
   let lastRetry=started;
@@ -26268,17 +26269,19 @@ async function meterStop(){
    // Cancellation is idempotent. If the original request was lost during a
    // network hiccup, re-send it occasionally rather than leaving the modal
    // polling a series that was never signalled.
-   if(Date.now()-lastRetry>=5000){
+   if(!stopRequestConfirmed&&Date.now()-lastRetry>=5000){
     lastRetry=Date.now();
-    await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+    const retry=await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+    stopRequestConfirmed=!!(retry&&retry.status==='ok');
    }
-   await new Promise(resolve=>setTimeout(resolve,250));
+   await new Promise(resolve=>setTimeout(resolve,500));
   }
  };
  let patternStopped=false;
  try{
   if(needsBackendStop){
-   await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
+   const stopResult=await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
+   stopRequestConfirmed=!!(stopResult&&stopResult.status==='ok');
   }
   // Blank the patch immediately, but leave the modal and interaction lock in
   // place until the helper has reaped spotread.
