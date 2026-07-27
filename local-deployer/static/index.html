@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>PGenerator Deploy Console</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <p class="eyebrow">Local utility</p>
+          <h1>PGenerator <span>Deploy Console</span></h1>
+        </div>
+      </div>
+      <div id="connectionState" class="connection-state offline">
+        <span></span>
+        <strong>Not connected</strong>
+      </div>
+    </header>
+
+    <section class="connection-card">
+      <div class="section-heading">
+        <div>
+          <p class="step">01 / Connection</p>
+          <h2>Choose your target</h2>
+        </div>
+        <p>Credentials stay in this browser tab and are sent only to the local server.</p>
+      </div>
+      <form id="connectionForm" class="connection-grid">
+        <label>
+          <span>Pi address</span>
+          <input id="host" name="host" value="192.168.1.249" placeholder="192.168.1.249" autocomplete="off" required>
+        </label>
+        <label>
+          <span>SSH user</span>
+          <input id="user" name="user" value="root" autocomplete="username" required>
+        </label>
+        <label>
+          <span>Password <small>optional for SSH keys</small></span>
+          <input id="password" name="password" type="password" placeholder="SSH password" autocomplete="current-password">
+        </label>
+        <button id="scanButton" class="button primary" type="submit">
+          <span class="button-icon">⌁</span>
+          Scan Pi
+        </button>
+      </form>
+    </section>
+
+    <section class="workspace">
+      <div class="section-heading compact">
+        <div>
+          <p class="step">02 / Compare</p>
+          <h2>Source differences</h2>
+        </div>
+        <div class="summary" aria-live="polite">
+          <span><b id="differentCount">—</b> different</span>
+          <span><b id="missingCount">—</b> missing</span>
+          <span><b id="sameCount">—</b> matched</span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="File filters">
+          <button type="button" class="filter active" data-filter="changes">Changes</button>
+          <button type="button" class="filter" data-filter="different">Different</button>
+          <button type="button" class="filter" data-filter="missing">Missing</button>
+          <button type="button" class="filter" data-filter="same">Matched</button>
+          <button type="button" class="filter" data-filter="all">All</button>
+        </div>
+        <label class="search">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="Filter files…" disabled>
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="check-cell"><input id="selectAll" type="checkbox" aria-label="Select all visible changes" disabled></th>
+              <th>Source path</th>
+              <th>Status</th>
+              <th>Local</th>
+              <th>On Pi</th>
+            </tr>
+          </thead>
+          <tbody id="fileRows">
+            <tr class="empty-row">
+              <td colspan="5">
+                <div class="empty-state">
+                  <span>⌁</span>
+                  <strong>No scan yet</strong>
+                  <p>Connect to a Pi to compare tracked deployable files.</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="actionbar">
+        <div>
+          <strong id="selectedCount">0 files selected</strong>
+          <span id="selectionSize">Choose changed files to deploy</span>
+        </div>
+        <button id="uploadButton" class="button primary" type="button" disabled>
+          Upload selected
+          <span>→</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="renderer-card">
+      <div>
+        <p class="step">03 / Renderer</p>
+        <h2>Pattern renderer</h2>
+        <p id="rendererStatus">Scan a Pi to check renderer status.</p>
+      </div>
+      <button id="restartButton" class="button danger" type="button" disabled>
+        <span class="restart-icon">↻</span>
+        Restart renderer
+      </button>
+    </section>
+  </main>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <span class="dialog-icon">↑</span>
+      <h2 id="dialogTitle">Deploy selected files?</h2>
+      <p id="dialogText"></p>
+      <div id="dialogWarning" class="dialog-warning" hidden>
+        <strong>Configuration files selected</strong>
+        These may overwrite device-specific settings.
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="dialogConfirm" value="confirm" class="button primary">Continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
