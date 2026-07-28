@@ -4968,6 +4968,12 @@ eval {
      keep_calibration_mode => json_false(),
      calibration_mode_active => json_false(),
      helper_timeout => 90,
+     # Snapshot the SMOOTHED curve into Calibration History so it is
+     # restorable independently of the run's raw solve. The run archive keeps
+     # the pre-smoothing curve, so both ends of the change stay recoverable.
+     archive_history => json_true(),
+     archive_variant => "smoothed",
+     archive_run_id => ($config->{"run_id"}||""),
     },120);
     my $sm_ok=(ref($smooth_resp) eq "HASH" && (($smooth_resp->{status}//"") eq "ok")) ? 1 : 0;
     my $sm_msg=(ref($smooth_resp) eq "HASH")

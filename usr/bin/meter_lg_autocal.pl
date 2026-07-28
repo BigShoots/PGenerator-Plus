@@ -14843,13 +14843,18 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# sub exit. The TV's calibration overlay is raised ONCE at the start and is
 	# NOT flashed per read. The commit/finalise path ends it once, at the end.
 	my $cal_active=0;
+	# $extra merges additional fields into the upload body (e.g. the
+	# archive_history flags on the final smoothed curve). Omitted by the
+	# per-iteration solver uploads, which must NOT be archived.
 	my $upload_dpg=sub {
-		my ($dpg)=@_;
+		my ($dpg,$extra)=@_;
+		$extra={} if(ref($extra) ne "HASH");
 		my $tries=4;
 		my $ok=0; my $msg=""; my $resp;
 		for(my $t=1;$t<=$tries;$t++) {
 			last if(cancelled());
 			$resp=api_json("POST","/api/lg/1d-dpg/upload",{
+				%{$extra},
 				picture_mode=>$picture_mode,
 				ddc_layout=>"hdr20",
 				dpg_data=>$dpg,
@@ -16068,7 +16073,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"phase"}="writing";
 			$state->{"message"}="Smoothing the calibrated shadow curve before the final upload";
 			write_state($state);
-			my ($sok,$smsg)=$upload_dpg->($smoothed);
+			# Archive the smoothed curve so it is restorable from Calibration
+			# History independently of the run's raw solve.
+			my ($sok,$smsg)=$upload_dpg->($smoothed,{
+				archive_history=>JSON::PP::true,
+				archive_variant=>"smoothed",
+				signal_mode=>"hdr10",
+				archive_run_id=>($config->{"full_autocal_run_id"}||$config->{"run_id"}||""),
+			});
 			if($sok) {
 				$current_dpg=$smoothed;
 				$state->{"hdr20_1d_dpg_data"}=$smoothed;
@@ -17771,13 +17783,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # (calibration_mode_active=1, keep_calibration_mode=1), and leave it on
  # at sub exit so the single-socket commit at the end can re-bind it.
  my $cal_active=0;
+ # $extra merges additional fields into the upload body (e.g. the
+ # archive_history flags on the final smoothed curve). Omitted by the
+ # per-iteration solver uploads, which must NOT be archived.
  my $upload_dpg=sub {
-  my ($dpg)=@_;
+  my ($dpg,$extra)=@_;
+  $extra={} if(ref($extra) ne "HASH");
   my $tries=4;
   my $ok=0; my $msg=""; my $resp;
   for(my $t=1;$t<=$tries;$t++) {
    last if(cancelled());
    $resp=api_json("POST","/api/lg/1d-dpg/upload",{
+    %{$extra},
     picture_mode=>$picture_mode,
     ddc_layout=>"sdr26",
     signal_mode=>"sdr",
@@ -18040,7 +18057,13 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
    $state->{"phase"}="writing";
    $state->{"message"}="Smoothing the calibrated shadow curve before the final upload";
    write_state($state);
-   my ($sok,$smsg)=$upload_dpg->($smoothed);
+   # Archive the smoothed curve so it is restorable from Calibration
+   # History independently of the run's raw solve.
+   my ($sok,$smsg)=$upload_dpg->($smoothed,{
+    archive_history=>JSON::PP::true,
+    archive_variant=>"smoothed",
+    archive_run_id=>($config->{"full_autocal_run_id"}||$config->{"run_id"}||""),
+   });
    if($sok) {
     $current_dpg=$smoothed;
     $state->{"sdr_1d_dpg_data"}=$smoothed;

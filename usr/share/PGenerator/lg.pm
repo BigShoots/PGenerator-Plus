@@ -1931,6 +1931,24 @@ sub webui_lg_1d_dpg_upload (@) {
   calibration_mode_active => ($payload->{"calibration_mode_active"} ? 1 : 0),
  });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ # Durable history snapshot, opt-in via archive_history. NOT unconditional: the
+ # greyscale solver uploads a DPG on every inner iteration, so archiving each
+ # one would bury the list under hundreds of entries. Callers set the flag only
+ # for curves worth restoring -- the final commit and the post-cal smoothing --
+ # and pass a variant so the raw solve and the smoothed curve are both kept and
+ # are distinguishable in the list.
+ if($payload->{"archive_history"} && ($result->{"status"}||"") eq "ok") {
+  eval {
+   &_lg_cal_hist_archive_1d(\@normalized,{
+    picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+    signal_mode => $payload->{"signal_mode"}||"",
+    de => $payload->{"archive_de"},
+    run_id => $payload->{"archive_run_id"}||"",
+    variant => $payload->{"archive_variant"}||"",
+   });
+   1;
+  };
+ }
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR20 1D DPG upload again.";
   $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
@@ -2245,9 +2263,44 @@ sub _lg_cal_hist_read_json_file {
 }
 
 # List final autocal uploads only:
-#  - 1D: autocal-runs/*/grey-state with final_1d_lut_uploaded + hdr20_1d_dpg_data
+#  - 1D: autocal-runs/*/grey-state with final_1d_lut_uploaded + a 3072-value DPG
 #  - 3D: /var/lib/PGenerator/lg/luts/*.bin with companion .json (export_lut triple)
 #  - DV: runs whose stages.ndjson have a successful dv_profile_upload
+
+# Resolve a run's final 1D DPG regardless of layout. The greyscale worker stores
+# the HDR20 curve under hdr20_1d_dpg_data and the SDR26 curve under
+# sdr_1d_dpg_data; the list and reupload paths previously read only the HDR key,
+# so a COMPLETED SDR run (final_1d_lut_uploaded=true) was skipped and no SDR 1D
+# LUT ever appeared in Calibration History -- leaving SDR calibrations with no
+# restore path at all. Returns (dpg, signal_mode, de) with signal_mode inferred
+# from whichever key carried the data when the run did not stamp one.
+sub _lg_cal_hist_run_1d {
+ my ($state)=@_;
+ return (undef,"",undef) unless(ref($state) eq "HASH");
+ my $hdr=$state->{"hdr20_1d_dpg_data"};
+ if(ref($hdr) eq "ARRAY" && scalar(@$hdr)==3072) {
+  return ($hdr,"hdr10",
+   defined($state->{"hdr20_1d_dpg_best_de"}) ? $state->{"hdr20_1d_dpg_best_de"}
+    : $state->{"hdr20_1d_dpg_final_de"});
+ }
+ my $sdr=$state->{"sdr_1d_dpg_data"};
+ if(ref($sdr) eq "ARRAY" && scalar(@$sdr)==3072) {
+  return ($sdr,"sdr",
+   defined($state->{"sdr_1d_dpg_best_de"}) ? $state->{"sdr_1d_dpg_best_de"}
+    : $state->{"sdr_1d_dpg_final_de"});
+ }
+ return (undef,"",undef);
+}
+
+# Did this run's DPG already carry the post-cal shadow smoothing? Recorded so the
+# history label can distinguish the smoothed curve from the raw solve.
+sub _lg_cal_hist_run_smoothed {
+ my ($state)=@_;
+ return 0 unless(ref($state) eq "HASH");
+ return 1 if($state->{"sdr_1d_dpg_low_end_smoothed"});
+ return 1 if($state->{"hdr20_1d_dpg_low_end_smoothed"});
+ return 0;
+}
 
 sub _lg_cal_hist_ensure_dir {
  system("mkdir -p ".quotemeta($_lg_cal_hist_dir)."/1d ".quotemeta($_lg_cal_hist_dir)."/dv 2>/dev/null");
@@ -2273,12 +2326,16 @@ sub _lg_cal_hist_archive_1d {
  my $stamp=sprintf("%04d%02d%02d_%02d%02d%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec);
  my $pm=$meta->{"picture_mode"}||"mode"; $pm=~s/[^A-Za-z0-9._-]+/_/g;
  my $sm=$meta->{"signal_mode"}||"sig"; $sm=~s/[^A-Za-z0-9._-]+/_/g;
- my $id="${stamp}_${sm}_${pm}";
+ # variant distinguishes curves archived for the SAME run -- notably the raw
+ # solve versus the post-cal shadow-smoothed curve, so either can be restored.
+ my $variant=$meta->{"variant"}||""; $variant=~s/[^A-Za-z0-9._-]+/_/g;
+ my $id="${stamp}_${sm}_${pm}".($variant ne "" ? "_${variant}" : "");
  return _lg_cal_hist_write_json("$_lg_cal_hist_dir/1d/${id}.json",{
   id => "1dfile:$id",
   type => "1d",
   picture_mode => $meta->{"picture_mode"}||"",
   signal_mode => $meta->{"signal_mode"}||"",
+  variant => $meta->{"variant"}||"",
   de => $meta->{"de"},
   archived_at => time()+0,
   dpg_data => $dpg_data,
@@ -2329,12 +2386,17 @@ sub webui_lg_calibration_history_list (@) {
    my $mtime=(stat("$_lg_cal_hist_dir/1d/$f"))[9] || ($meta->{"archived_at"}||0);
    my $pm=$meta->{"picture_mode"}||"";
    my $sm=$meta->{"signal_mode"}||"";
+   my $variant=$meta->{"variant"}||"";
+   my $label="$1 1D ".($sm||"?")." ".($pm||"");
+   $label.=" (".$variant.")" if($variant ne "" && $1!~/\Q$variant\E/);
+   $label=~s/\s+$//;
    push @items,{
     id => $id,
     type => "1d",
-    label => "$1 1D ".($sm||"?")." ".($pm||""),
+    label => $label,
     picture_mode => $pm,
     signal_mode => $sm,
+    variant => $variant,
     mtime => $mtime+0,
     de => defined($meta->{"de"}) ? ($meta->{"de"}+0) : undef,
     source => "archive",
@@ -2372,15 +2434,18 @@ sub webui_lg_calibration_history_list (@) {
    next unless(-d $dir);
    my $state=_lg_cal_hist_read_json_file("$dir/grey-state.json");
    next unless(ref($state) eq "HASH");
-   my $uploaded=($state->{"final_1d_lut_uploaded"} || $state->{"hdr20_1d_dpg_uploaded"}) ? 1 : 0;
-   my $dpg=$state->{"hdr20_1d_dpg_data"};
+   my $uploaded=($state->{"final_1d_lut_uploaded"} || $state->{"hdr20_1d_dpg_uploaded"} || $state->{"sdr_1d_dpg_uploaded"}) ? 1 : 0;
+   my ($dpg,$sm_from_data,$de_from_data)=_lg_cal_hist_run_1d($state);
    next unless($uploaded && ref($dpg) eq "ARRAY" && scalar(@$dpg) == 3072);
    my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
    my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
-   my $pm=$cfg->{"picture_mode"} || $state->{"picture_mode"} || "";
-   my $sm=$cfg->{"signal_mode"} || $state->{"signal_mode"} || "";
+   # calibration_picture_mode is what the SDR26 worker stamps; the manifest
+   # config is frequently absent on these runs.
+   my $pm=$cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "";
+   my $sm=$cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $sm_from_data || "";
    my $mtime=(stat("$dir/grey-state.json"))[9] || 0;
-   my $label=$run." 1D ".($sm||"?")." ".($pm||"");
+   my $smoothed=_lg_cal_hist_run_smoothed($state);
+   my $label=$run." 1D ".($sm||"?")." ".($pm||"").($smoothed ? " (smoothed)" : "");
    $label=~s/\s+$//;
    push @items,{
     id => "1d:$run",
@@ -2389,8 +2454,9 @@ sub webui_lg_calibration_history_list (@) {
     run_id => $run,
     picture_mode => $pm,
     signal_mode => $sm,
+    variant => ($smoothed ? "smoothed" : ""),
     mtime => $mtime+0,
-    de => defined($state->{"hdr20_1d_dpg_best_de"}) ? ($state->{"hdr20_1d_dpg_best_de"}+0) : (defined($state->{"hdr20_1d_dpg_final_de"}) ? ($state->{"hdr20_1d_dpg_final_de"}+0) : undef),
+    de => defined($de_from_data) ? ($de_from_data+0) : undef,
     source => "run",
    };
   }
@@ -2537,12 +2603,15 @@ sub webui_lg_calibration_history_reupload (@) {
  if($id =~ /^1d:([A-Za-z0-9._-]+)$/) {
   my $run=$1;
   my $state=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/grey-state.json");
+  my ($run_dpg,$run_sm,$run_de)=_lg_cal_hist_run_1d($state);
   return &lg_encode_json({ status => "error", message => "1D DPG data not found for run $run" })
-   unless(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY" && @{$state->{"hdr20_1d_dpg_data"}}==3072);
+   unless(ref($run_dpg) eq "ARRAY" && @{$run_dpg}==3072);
   my $manifest=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/manifest.json") || {};
   my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
-  $picture_mode ||= $cfg->{"picture_mode"} || $state->{"picture_mode"} || "";
-  $signal_mode ||= $cfg->{"signal_mode"} || $state->{"signal_mode"} || "";
+  $picture_mode ||= $cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "";
+  # Fall back to the layout the DPG itself came from, so an SDR run cannot be
+  # re-pushed as HDR (which would write the curve into the wrong picture mode).
+  $signal_mode ||= $cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $run_sm || "";
   # Optional cal-mode bookends via existing calibration-mode endpoint helpers
   if($enable_cal) {
    my $on_body=sprintf('{"enabled":true,"picture_mode":"%s","signal_mode":"%s"}',
@@ -2550,7 +2619,7 @@ sub webui_lg_calibration_history_reupload (@) {
    eval { &webui_lg_calibration_mode($on_body); };
   }
   my $up_body=&lg_encode_json({
-   dpg_data => $state->{"hdr20_1d_dpg_data"},
+   dpg_data => $run_dpg,
    picture_mode => $picture_mode,
    signal_mode => $signal_mode,
    keep_calibration_mode => 1,
@@ -2561,11 +2630,12 @@ sub webui_lg_calibration_history_reupload (@) {
   eval {
    my $decoded=&lg_decode_json($result_json);
    if(ref($decoded) eq "HASH" && ($decoded->{"status"}||"") eq "ok") {
-    &_lg_cal_hist_archive_1d($state->{"hdr20_1d_dpg_data"},{
+    &_lg_cal_hist_archive_1d($run_dpg,{
      picture_mode => $picture_mode,
      signal_mode => $signal_mode,
-     de => $state->{"hdr20_1d_dpg_best_de"}||$state->{"hdr20_1d_dpg_final_de"},
+     de => $run_de,
      run_id => $run,
+     variant => (_lg_cal_hist_run_smoothed($state) ? "smoothed" : ""),
     });
    }
   };
