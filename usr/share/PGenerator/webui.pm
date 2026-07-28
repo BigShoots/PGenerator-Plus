@@ -36358,6 +36358,34 @@ async function meterAutoCalPromptHdrToneMapUpload(status,source,options){
 async function meterFullAutoCalUploadHdrToneMap(status,source){
  if(!meterFullAutoCalHdrWorkflowActive()) return status||{};
  if(status&&status.hdr_tone_map_uploaded) return status;
+ // The 3D LUT worker uploads the tone map ITSELF -- once in its "tone map
+ // upload" stage and again in the post-cal shadow re-commit -- and stamps
+ // tone_map_uploaded / tone_map_upload_status. It never sets
+ // hdr_tone_map_uploaded, which only this function writes, so the guard above
+ // could never match a worker-performed upload and the browser always fired a
+ // third, redundant upload seconds after the worker had already ended
+ // calibration mode. Observed on a real HDR run: POSTs to
+ // /api/lg/hdr-tone-map/upload at 07:29:53 and 07:40:52 from the worker, then
+ // 07:40:53 and 07:40:54 from the browser; the redundant one failed, the catch
+ // in meterFullAutoCalCompleteAfterHdrToneMap aborted the run, and the workflow
+ // progress line was left frozen on "HDR tone map 0/1" -- which reads as a hung
+ // tone-map upload for as long as the page stays open.
+ if(status&&(status.tone_map_uploaded===true||String(status.tone_map_upload_status||'').toLowerCase()==='ok')){
+  const workerPeak=Number(status.tone_map_upload_peak_luminance);
+  meterFullAutoCalReportData=meterFullAutoCalReportData||meterFullAutoCalDefaultReportData();
+  meterFullAutoCalReportData.stages=meterFullAutoCalReportData.stages||{};
+  meterFullAutoCalReportData.stages.tone_map={
+   status:'complete',
+   source:(source||'full-autocal')+':worker',
+   completed_at:Date.now(),
+   peak_luminance:Number.isFinite(workerPeak)?workerPeak:null,
+   response:status.tone_map_upload||null
+  };
+  meterFullAutoCalSaveReportData();
+  try{ console.info('Full AutoCal: tone map already uploaded by the 3D LUT worker; skipping the browser upload'); }catch(e){}
+  return {...status,hdr_tone_map_uploaded:true,
+   hdr_tone_map_peak_luminance:Number.isFinite(workerPeak)?workerPeak:status.hdr_tone_map_peak_luminance};
+ }
  // Wizard-owned path: the operator-confirmed upload already happened (or
  // was deliberately skipped) in the prompt. The full-workflow completion
  // caller is responsible for invoking the prompt; we just merge the
