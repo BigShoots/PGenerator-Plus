@@ -28789,11 +28789,14 @@ function meterGreySeriesSlots(points){
  if(points===256) points=100;
  if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- // HDR/DV run the HDR20 ladder descending after 0%. Merge Dark Detail fillers
- // into the body first, then reverse, so the extra patches take their correct
- // place in the descending order rather than being appended at the end.
+ // HDR/DV: this list is ASCENDING after 0%. METER_LG_GREY_HDR_AUTOCAL_SLOTS is
+ // stored descending, so the original `.slice().reverse()` produced ascending --
+ // an earlier version of this merge re-sorted then reversed again and inverted
+ // the whole ladder, which wrecked the EOTF/luminance curves and the bar-chart
+ // axis. The WORKER does its own descending pass (@top_down); this client list
+ // only drives the step order, charts and thumbs, and must stay ascending.
  if(Number(points)===26&&meterUseLgAutoCal26(points)&&(mode==='hdr10'||mode==='dv')){
-  return [0,...meterDarkDetailMergeBody(METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().sort((a,b)=>a-b),mode).reverse()];
+  return [0,...meterDarkDetailMergeBody(METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse(),mode)];
  }
  if(meterUseLgAutoCal26(points)){
   if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
