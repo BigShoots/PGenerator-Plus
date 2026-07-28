@@ -13382,7 +13382,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 		   <div id="meterFullAutoCalConfirmMessage" class="fac-summary">Resets the active LG greyscale DDC state and 3D LUT baseline, then runs the full calibration in one pass:
 		    <ol class="fac-stages">
-		     <li>Greyscale AutoCal &mdash; top and body first, then shadows low&#8209;to&#8209;high.</li>
+		     <li>Greyscale AutoCal, top and body first, then shadows low&#8209;to&#8209;high.</li>
 		     <li>Colour&#8209;only 3D LUT AutoCal, with probe&#8209;gated upload to the TV.</li>
 		     <li>Optional cleanup, after the 3D LUT so the first greyscale pass stays fast.</li>
 		    </ol>
@@ -35822,19 +35822,19 @@ function meterFullAutoCalPromptDefaults(){
 	 // as the flattened equivalent for any caller that only reads plain text.
 	 const transport=dvWorkflow?'Dolby Vision':(hdrWorkflow?'HDR10':'');
 	 const stages=dvWorkflow
-	  ? ['Before report — optionally measures the current state.',
-	     'Reset — clears the active LG greyscale DDC state.',
+	  ? ['Optional before report of the current state.',
+	     'Reset clears the active LG greyscale DDC state.',
 	     'HDR greyscale AutoCal.',
 	     'Builds the Dolby Vision profile and uploads it to the TV.']
 	  : hdrWorkflow
-	  ? ['Before report — optionally measures the current HDR state.',
-	     'Reset — clears the LG greyscale DDC state and the 3D LUT baseline.',
+	  ? ['Optional before report of the current HDR state.',
+	     'Reset clears the LG greyscale DDC state and the 3D LUT baseline.',
 	     'HDR greyscale AutoCal.',
 	     'HDR10 matrix 3D LUT AutoCal, with probe-gated upload to the TV.',
 	     'Optional cleanup, after the 3D LUT.']
-	  : ['Before report — optionally measures the current state.',
-	     'Reset — clears the LG greyscale DDC state and the 3D LUT baseline.',
-	     'Greyscale AutoCal — 26-point pass.',
+	  : ['Optional before report of the current state.',
+	     'Reset clears the LG greyscale DDC state and the 3D LUT baseline.',
+	     'Greyscale AutoCal, 26-point pass.',
 	     'Colour-only 3D LUT AutoCal, with probe-gated upload to the TV.',
 	     'Optional cleanup, after the 3D LUT.'];
 	 const lead='Switches PGenerator to the '+(transport?transport+' ':'')+'AutoCal video transport, then runs the calibration in one pass:';
