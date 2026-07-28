@@ -21190,24 +21190,22 @@ function meterGammaValueReferenceY(readings){
  return measuredPeak>0?measuredPeak:0;
 }
 
-// blackLevel is optional; when omitted the active chart black (which honours a
-// manual Target Black override) is used so the chart line and the hover tooltip
-// always quote the same number.
+// The measured gamma is the plain log-ratio exponent ln(Y/Yw)/ln(V) -- the
+// display's actual behaviour, with nothing about the TARGET folded into it. The
+// target line carries the raised Target Black instead (meterGreyTargetGamma),
+// so the two lines share one metric and the gap between them is the error.
+//
+// A previous revision solved this for the exponent that would put each reading
+// on the BT.1886 curve built from the operator's Lw/Lb, which made an on-target
+// display read a flat 2.4. That reads well but is not what the display is doing,
+// it cannot be compared against a nominal line, and readings at or below the
+// target black had no solution at all so they dropped out of the plot.
+// blackLevel is accepted and ignored; kept so existing call sites still work.
 function meterGreyscaleGammaValue(reading,whiteY,blackLevel){
  if(!reading) return null;
  const y=meterReadingLuminanceNits(reading);
  const analysisIre=meterReadingGammaAnalysisIre(reading);
  if(!(whiteY>0) || !(y>0) || !(analysisIre>0) || analysisIre>=100) return null;
- // A raised Target Black only reshapes the SDR BT.1886 target. PQ/HLG/DV keep
- // their own effective-exponent handling, and a clipped power/sRGB target is
- // an unmodified power law above the clip, so both stay on effectiveGamma.
- if(meterBt1886BlackAwareMetricsActive()){
-  const Lb=(blackLevel!=null&&Number.isFinite(Number(blackLevel)))
-   ?Math.max(0,Number(blackLevel))
-   :((typeof meterChartBlackLevel==='function')
-     ?Math.max(0,Number(meterChartBlackLevel(Array.isArray(meterReadings)?meterReadings:[]))||0):0);
-  if(Lb>0.001) return meterBt1886MeasuredGamma(y,whiteY,Lb,analysisIre);
- }
  return effectiveGamma(y,whiteY,analysisIre);
 }
 
@@ -21947,45 +21945,6 @@ function meterGammaSignalFraction(ire){
  return (ire>1)?(ire/fracBase):ire;
 }
 
-// Exponent g for which the BT.1886 curve built from (Lw, Lb, g) passes through
-// this reading -- i.e. "what gamma is the display actually running, judged in
-// the same parameterisation as the target". At fixed V the curve is monotone
-// decreasing in g, spanning (Lb, Lw), so a simple bisection inverts it.
-//
-// The floor is Lb by definition: L(0)=Lb for every g. A reading at or below Lb
-// is off the curve family entirely and no exponent describes it, so this
-// returns null and the chart leaves a gap rather than inventing a value. On a
-// panel whose real black is far under a lifted Target Black that will blank the
-// low end -- that is the honest reading, not a bug.
-function meterBt1886MeasuredGamma(Y,Lw,Lb,ire){
- const y=Number(Y), peak=Number(Lw), black=Math.max(0,Number(Lb)||0);
- const frac=meterGammaSignalFraction(ire);
- if(!(y>0)||!(peak>0)||!(frac>0)||frac>=0.999999) return null;
- // Lb=0 collapses BT.1886 to Lw*V^g, which is exactly effectiveGamma.
- if(!(black>0.001)) return effectiveGamma(y,peak,ire);
- if(!(y>black)||y>=peak) return null;
- const at=g=>{
-  const d=Math.pow(peak,1/g)-Math.pow(black,1/g);
-  if(!(d>0)) return null;
-  return Math.pow(d,g)*Math.pow(frac+Math.pow(black,1/g)/d,g);
- };
- let lo=0.05,hi=100;
- let flo=at(lo),fhi=at(hi);
- if(flo==null||fhi==null) return null;
- flo-=y; fhi-=y;
- if(flo*fhi>0) return null;
- for(let i=0;i<100;i++){
-  const mid=(lo+hi)/2;
-  const fm=at(mid);
-  if(fm==null) return null;
-  const d=fm-y;
-  if(d===0) return mid;
-  if(flo*d<=0){ hi=mid; } else { lo=mid; flo=d; }
- }
- const g=(lo+hi)/2;
- return isFinite(g)?g:null;
-}
-
 function effectiveGamma(Y,Yw,ire,prevY,prevIre){
  // SDR26 normalises the gamma reference against the 109% legal peak, not
  // 100 IRE. The worker stores target_Yn = (ire/109)^2.2 (gamma 2.2 encoded
@@ -22692,13 +22651,18 @@ function meterGreyMeasuredEotfChartValue(luminance,refWhite,blackLevel){
  const y=Math.max(0,luminance||0);
  const ref=meterEotfChartNormRef(refWhite);
  if(meterEotfNormalizedEnabled()) return meterGreyMeasuredNormalizedEotfValue(y,ref);
- // Absolute (inverse-EOTF) view. The BT.1886 inverse has no solution below the
- // target black: L(0)=Lb for every signal, so a reading under Lb is off the
- // curve family. meterGreyInverseEotfSignalFromLuminance clamps those to 0,
- // which painted a false flat run along the X axis that reads as "tracking
- // zero" instead of "unmeasurable against this target". Return null so the
- // line and its dots simply stop, matching how the gamma chart now handles
- // exactly the same unreachable region.
+ // Absolute (inverse-EOTF) view. The BT.1886 inverse genuinely has no solution
+ // below the target black: L(0)=Lb for every signal, so a reading under Lb is
+ // off the curve family and there is no signal value that maps to it.
+ // meterGreyInverseEotfSignalFromLuminance clamps those to 0, which painted a
+ // false flat run along the X axis reading as "tracking zero" rather than
+ // "unmeasurable against this target". Return null so the line and its dots
+ // simply stop.
+ //
+ // This applies to THIS chart only, because inverting the target curve is what
+ // it plots. The gamma chart does not share the limitation: its measured value
+ // is the plain log-ratio exponent ln(Y/Yw)/ln(V), which is defined for any
+ // Y>0, so a panel with blacker-than-target black still plots there.
  const Lb=Math.max(0,Number(blackLevel)||0);
  if(Lb>0.001 && y<Lb && meterBt1886BlackAwareMetricsActive()) return null;
  return meterGreyMeasuredEotfValue(y,ref,blackLevel);
@@ -22780,11 +22744,37 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
   return effectiveGamma(tgtLum,peak,analysisIre);
  }
  let black=Lb||0;
- // The target line stays at the nominal exponent the operator selected, at
- // every Target Black. A raised Lb is expressed on the MEASURED line instead
- // (meterBt1886MeasuredGamma), which solves for the exponent that would put
- // the reading on the BT.1886 curve built from the same Lw/Lb -- so "on
- // target" reads exactly 2.4 and the gap from this line is the gamma error.
+ // With a raised Target Black the SDR target is NOT a pure power law. BT.1886
+ // is L = a*(V+b)^g with b derived from Lb, so L(0)=Lb; power/sRGB clip onto
+ // it. Plot the effective exponent of the luminance the EOTF/luminance charts
+ // actually target, exactly as the PQ/HLG branch above does, so all three
+ // charts and the Absolute-Y error agree rather than drawing a flat nominal
+ // line the target does not follow. At Lw=100, Lb=0.1 the BT.1886 target is
+ // 1.97 at 10% and 2.26 at 90%, not 2.4 -- that droop is the definition of the
+ // curve, not an error, and its depth is set by the Lw/Lb contrast ratio.
+ //
+ // Both lines are therefore the same metric, the log-ratio exponent
+ // ln(Y/Yw)/ln(V), which is what makes the vertical gap between them a
+ // like-for-like gamma error and matches how established calibration software
+ // draws BT.1886 against a raised black. A previous revision flattened this to
+ // a constant 2.4 and instead solved the MEASURED line for the exponent that
+ // put each reading back on the BT.1886 curve; that made an on-target display
+ // read 2.4, but it put target and measured on two different metrics and hid
+ // the shape of the target the operator had actually asked for.
+ //
+ // Lb=0 collapses BT.1886 to Lw*V^g and is mathematically identical to the
+ // nominal exponent, so keep returning the constant there.
+ if(black>0.001){
+  const tgtLum=meterGreyTargetLuminance(ire,peak,black,code);
+  if(!(tgtLum>0)) return null;
+  const analysisIre=signal*100;
+  if(analysisIre>=99.999){
+   const prevSignal=meterGreyTargetSignal(prevStepIre,prevStepCode);
+   const prevLum=meterGreyTargetLuminance(prevStepIre,peak,black,prevStepCode);
+   return effectiveGammaTopSlope(tgtLum,peak,analysisIre,prevLum,prevSignal*100);
+  }
+  return effectiveGamma(tgtLum,peak,analysisIre);
+ }
  if(tgt==='bt1886') return 2.4;
  if(tgt==='srgb') return 2.2;
  const gamma=parseFloat(tgt);
