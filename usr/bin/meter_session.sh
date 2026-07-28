@@ -105,6 +105,32 @@ clean_output_since() {
  tail -c +"$start" "$OUTFILE" 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
 }
 
+# spotread's refresh-rate calibration step. Two DIFFERENT strings are involved
+# and only one of them is a prompt:
+#   diagnostic: "Please read an 80% white patch first to calibrate refresh frequency"
+#   prompt:     "Place the instrument on a 80% white test patch,"
+#               "and hit [Return] to start calibration:"
+# Matching only "calibrate refresh" catches the diagnostic and misses the
+# prompt, which then goes unanswered until the startup loop times out.
+# An explicit -Y R:rate makes spotread skip this step, which is why the stall
+# is seen on the SpyderX first: its refresh override is force-cleared above
+# (and disabled in the UI), so it ALWAYS reaches the prompt. Any meter left on
+# automatic refresh reaches it too -- hence "meter says Reading... for two
+# minutes and returns nothing".
+refresh_cal_prompt() {
+ printf '%s' "$1" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+frequency|80%[[:space:]]*(or[[:space:]]+greater[[:space:]]+)?white[[:space:]]+test[[:space:]]+patch'
+}
+
+# A genuine "cover the sensor" dark calibration. Unlike the generic
+# "needs calibration" text this one names a real operator action, so it is
+# safe to surface for a colorimeter too -- answering it blind with the meter
+# aimed at a lit screen captures screen light as the black reference, which
+# is what zeroes every low-grey reading afterwards.
+colorimeter_dark_cal_prompt() {
+ [[ "${REQUIRE_DEVICE_READY:-0}" == "1" ]] && return 1
+ printf '%s' "$1" | grep -qiE 'place cap on the instrument|place on a dark surface'
+}
+
 manual_calibration_setup_prompt() {
  local normalized
  normalized=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -675,7 +701,9 @@ startup_marker "command FIFO created"
 WAITED=0
 REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
+DARK_CAL_DONE=0
 HANDLED_OFFSET=0
+STARTUP_LOG_OFFSET=0
 STARTUP_HINT=""
 # Spectros such as the i1 Pro 2 need a multi-step interactive bring-up (place on
 # the white calibration tile, keypress; then aim at the screen, keypress) before
@@ -689,7 +717,17 @@ while (( WAITED < 900 )); do
  CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
  echo "$CLEAN_OUT" | grep -q "to take a reading:" && break
  NEW_OUT=$(clean_output_since "$HANDLED_OFFSET")
- if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
+ # Echo new spotread output into the session log every ~5s. Without this an
+ # unrecognised prompt is completely silent: the log shows "spotread spawned"
+ # and then nothing until the teardown, with no record of what it asked for.
+ if (( WAITED % 50 == 0 )); then
+  _startup_new=$(clean_output_since "$STARTUP_LOG_OFFSET" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')
+  if [[ -n "$_startup_new" ]]; then
+   log "startup output: $_startup_new"
+   STARTUP_LOG_OFFSET=$(output_size)
+  fi
+ fi
+ if (( REFRESH_CAL_DONE == 0 )) && refresh_cal_prompt "$NEW_OUT"; then
   log "performing refresh-rate calibration during startup"
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
   sleep 2
@@ -697,6 +735,16 @@ while (( WAITED < 900 )); do
   REFRESH_CAL_DONE=1
   HANDLED_OFFSET=$(output_size)
   sleep 2
+  WAITED=0
+  continue
+ fi
+ if colorimeter_dark_cal_prompt "$NEW_OUT"; then
+  log "colorimeter dark-calibration prompt during startup"
+  startup_marker "dark_cal prompt seen"
+  DARK_CAL_DONE=1
+  await_setup_step "calibrate_dark" "Cover the meter's sensor (or lay it face-down on a dark surface), then click Calibrate." "Calibrating the meter's black reference - please wait..."
+  printf " " >&3
+  HANDLED_OFFSET=$(output_size)
   WAITED=0
   continue
  fi
@@ -756,7 +804,7 @@ startup_marker "ready prompt reached"
 # then continue — some spotread builds redraw the same prompt instead of adding
 # a second prompt line, so waiting for the prompt count to increase can deadlock.
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+if (( REFRESH_CAL_DONE == 0 )) && refresh_cal_prompt "$CLEAN_OUT"; then
  log "performing refresh-rate calibration"
  post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
  sleep 2
@@ -769,7 +817,7 @@ fi
 # calibration was needed (cal reused via -N, meter never left the screen) skip
 # this so no wizard appears -- the startup wait loop above already showed the
 # "preparing" status and surfaced calibrate_tile only when spotread requested it.
-if [[ "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ]]; then
+if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_CAL_DONE" == "1" ]]; then
  await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
 

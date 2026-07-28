@@ -26541,10 +26541,10 @@ let meterSpectroSetupStepId=0;
 let meterSpectroSetupAckEndpoint='/api/meter/setup/ack';
 let meterSpectroSetupCancelEndpoint='/api/meter/stop';
 function meterSpectroSetupLabel(step){
- return ({calibrate_tile:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
+ return ({calibrate_tile:'Calibrate',calibrate_dark:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
 }
 function meterSpectroSetupStepText(step){
- return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
+ return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',calibrate_dark:'Step 1 of 2: Dark calibration',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
 }
 // Driven by the read-result poll. Shows the modal during status:"setup",
 // updates per step, hides it otherwise.

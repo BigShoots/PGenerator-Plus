@@ -402,7 +402,7 @@ take_readings() {
  # then restore the requested patch before the actual measurement loop.
  local clean_init
  clean_init=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$outfile" 2>/dev/null | tr -d '\r')
- if echo "$clean_init" | grep -qi "calibrate refresh frequency"; then
+ if echo "$clean_init" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+frequency|80%[[:space:]]*(or[[:space:]]+greater[[:space:]]+)?white[[:space:]]+test[[:space:]]+patch'; then
   if [[ -n "$patch_size" ]]; then
    curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
     -d "{\"name\":\"patch\",\"r\":255,\"g\":255,\"b\":255,\"size\":$patch_size,\"input_max\":255}" >/dev/null 2>&1 || true

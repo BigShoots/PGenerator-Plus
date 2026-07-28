@@ -309,7 +309,7 @@ series_setup_step() {
  local escaped_step escaped_message escaped_working ready_reason
  ready_reason="initial_measurement"
  case "$step" in
-  calibrate_tile|calibrate_retry) ready_reason="calibration_setup" ;;
+  calibrate_tile|calibrate_retry|calibrate_dark) ready_reason="calibration_setup" ;;
   position_screen) ready_reason="initial_measurement" ;;
  esac
  escaped_step=$(json_escape "$step")
@@ -357,6 +357,24 @@ clean_output_since() {
  local start=$((offset + 1))
  [[ -f "$OUTFILE" ]] || return 0
  tail -c +"$start" "$OUTFILE" 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
+}
+
+# See meter_session.sh: spotread's refresh-cal PROMPT is
+# "Place the instrument on a 80% white test patch," while "calibrate refresh"
+# only ever appears in a separate diagnostic line. Matching the diagnostic
+# alone leaves the prompt unanswered until the startup loop times out, which
+# is why a meter on automatic refresh -- always the SpyderX, whose override is
+# force-cleared -- stalls on "Connecting to meter...".
+refresh_cal_prompt() {
+ printf '%s' "$1" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+frequency|80%[[:space:]]*(or[[:space:]]+greater[[:space:]]+)?white[[:space:]]+test[[:space:]]+patch'
+}
+
+# A genuine "cover the sensor" dark calibration, which a colorimeter can ask
+# for as well. Answering it blind with the meter facing a lit screen takes
+# screen light as the black reference and zeroes every low-grey reading.
+colorimeter_dark_cal_prompt() {
+ [[ "${REQUIRE_DEVICE_READY:-0}" == "1" ]] && return 1
+ printf '%s' "$1" | grep -qiE 'place cap on the instrument|place on a dark surface'
 }
 
 manual_calibration_setup_prompt() {
@@ -1045,7 +1063,7 @@ restart_spotread_session() {
    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
    return 0
   fi
-  if (( refresh_done == 0 )) && echo "$clean" | grep -qi "calibrate refresh"; then
+  if (( refresh_done == 0 )) && refresh_cal_prompt "$clean"; then
    post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
    sleep 2
    printf " " >&3
@@ -1198,6 +1216,7 @@ EOJSON
  WAITED=0
 REFRESH_CAL_DONE=0
 WHITE_REF_DONE=0
+DARK_CAL_DONE=0
 HANDLED_OFFSET=0
  while (( WAITED < 120 )); do
   series_stop_requested && series_cancel_exit
@@ -1206,7 +1225,7 @@ HANDLED_OFFSET=0
  if echo "$CLEAN_OUT" | grep -q "to take a reading:"; then
    break
   fi
- if (( REFRESH_CAL_DONE == 0 )) && echo "$NEW_OUT" | grep -qi "calibrate refresh"; then
+ if (( REFRESH_CAL_DONE == 0 )) && refresh_cal_prompt "$NEW_OUT"; then
   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
   sleep 2
   printf " " >&3
@@ -1219,6 +1238,14 @@ HANDLED_OFFSET=0
  if [[ "$REQUIRE_DEVICE_READY" == "1" ]] && echo "$NEW_OUT" | grep -qiE 'reading is too low|calibration failed'; then
     series_setup_step "calibrate_retry" "Calibration failed. Re-seat the spectrophotometer flat on its white tile, then click Retry." "Re-calibrating the meter - please wait..."
   printf " " >&3
+  HANDLED_OFFSET=$(output_size)
+  WAITED=$((WAITED + 1))
+  continue
+ fi
+ if colorimeter_dark_cal_prompt "$NEW_OUT"; then
+    series_setup_step "calibrate_dark" "Cover the meter's sensor (or lay it face-down on a dark surface), then click Calibrate." "Calibrating the meter's black reference - please wait..."
+  printf " " >&3
+  DARK_CAL_DONE=1
   HANDLED_OFFSET=$(output_size)
   WAITED=$((WAITED + 1))
   continue
@@ -1298,7 +1325,7 @@ done
 # prompt line instead of emitting a second prompt, so don't wait for the prompt
 # count to increase here or startup can deadlock.
 CLEAN_OUT=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refresh"; then
+if (( REFRESH_CAL_DONE == 0 )) && refresh_cal_prompt "$CLEAN_OUT"; then
  post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
  sleep 2
  printf " " >&3
@@ -1306,7 +1333,7 @@ if (( REFRESH_CAL_DONE == 0 )) && echo "$CLEAN_OUT" | grep -qi "calibrate refres
 fi
 
 series_stop_requested && series_cancel_exit
-if [[ "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ]]; then
+if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_CAL_DONE" == "1" ]]; then
  # Only re-prompt "aim at the screen" when a white-tile calibration actually
  # happened this startup -- the meter was on the tile and must be moved back to
  # the screen. When no calibration was needed (cal reused via -N, meter never
