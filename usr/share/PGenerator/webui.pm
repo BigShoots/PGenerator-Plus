@@ -35020,6 +35020,22 @@ async function meterAutoCalRunPreflightReset(){
  meterAutoCalPhase='disclaimer';
  meterAutoCalResetInProgress=true;
  meterActionPending=true;
+ // Paint the button at the CLICK FRAME. Setting the flags above is not enough:
+ // the overlay is only re-rendered by meterAutoCalSetOverlay, and the first
+ // call to it happens inside meterAutoCalResetWithRecovery -- AFTER the
+ // /api/lg/autocal/run/begin POST below, which carries an 8s timeout. So the
+ // button kept saying "Reset" and the click looked ignored for up to 8s
+ // (operator-reported on an SDR wizard reset). Same rule the Apply Settings and
+ // LG Connect modals follow: feedback pops at the click, not when the POST
+ // returns. meterAutoCalSetOverlay remains the source of truth for every later
+ // update, and re-applies exactly these two values from the same flag.
+ try{
+  const resetBtnNow=document.getElementById('meterAutoCalResetBtn');
+  if(resetBtnNow){
+   resetBtnNow.disabled=true;
+   resetBtnNow.textContent='Resetting...';
+  }
+ }catch(e){}
  try{
   const cfg=meterAutoCalPendingConfig||{};
   // Tell the server the ACTUAL live signal mode ('hdr10' / 'sdr' / 'dv'),
@@ -37245,6 +37261,24 @@ async function meterStartFullAutoCal(){
 		  latticeSeriesId:profilingLatticeSeriesId
 		 };
  try{ console.info('Full AutoCal config 3D profiling',{method:profilingMethod,profileSource:profilingSource,latticeSeriesId:profilingLatticeSeriesId}); }catch(e){}
+ // Rebuild the greyscale ladder now that meterFullAutoCalConfig exists.
+ // meterSeriesSteps is built when the operator SELECTS the series, which
+ // happens before this dialog -- so it was created while
+ // meterFullAutoCalDarkDetailEnabled() still read false and every start site
+ // (main, touch-up, polish) then reused that stale array via
+ // meterAutoCalBuildBackendSteps. Ticking Dark Detail therefore changed
+ // nothing: the run still posted the stock 28-step ladder. Rebuilding here
+ // also refreshes the thumbs, so the patch count the operator sees before
+ // starting matches what will actually be measured. With Dark Detail off this
+ // reproduces the same array it replaces.
+ try{
+  const darkDetailSteps=meterBuildStepsJS('greyscale',26);
+  if(Array.isArray(darkDetailSteps)&&darkDetailSteps.length){
+   meterSeriesSteps=darkDetailSteps;
+   try{ meterBuildPatchThumbs(meterGreyscaleSeriesSteps(meterSeriesSteps),new Set(),null); }catch(e){}
+   try{ console.info('Full AutoCal greyscale ladder',{darkDetail:meterFullAutoCalDarkDetailEnabled(),steps:meterSeriesSteps.length}); }catch(e){}
+  }
+ }catch(e){}
  meterFullAutoCalBeginReportData(skipPreCal);
  meterFullAutoCalSaveState();
  if(!skipPreCal){
