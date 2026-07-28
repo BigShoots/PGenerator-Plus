@@ -43405,13 +43405,16 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  // chroma never exceeds the drawn total.
  const deMap={},chromaMap={};
  gs.forEach(rd=>{
-  if((rd.Y||0)<=0){deMap[Number(rd.ire)]=0;return;}
   // Coerce to numeric IRE so the lookup matches the numeric keys in
   // xSteps (which come from the canonical series step table). Without
   // this, an SDR26 reading's ire arrives as a JSON string and the
   // xStep lookup at the same numeric IRE misses the bar entirely.
   const _ireKey=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:rd.stimulus));
   if(!Number.isFinite(_ireKey)) return;
+  // A Y<=0 reading used to be forced to 0 here, short-circuiting the dE
+  // function entirely -- so a patch that measured black scored a perfect 0
+  // even against a lifted Target Black. meterGreyDeltaResult decides: still
+  // 0 against a black target, a real luminance-gap dE against a lit one.
   const modeDE=meterGreyDeltaResult(rd,greyMode,deForm,gwWeight).value;
   deMap[_ireKey]=modeDE;
   if(sepLum) chromaMap[_ireKey]=Math.min(meterGreyDeltaResult(rd,'relative',deForm,gwWeight).value,modeDE);
@@ -45917,10 +45920,12 @@ function meterBuildGreyscaleReportTable(){
   const bal=white?rgbBalance(rd,white,greyMode):{R:100,G:100,B:100};
   const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
   let de='--';
-  if(Lw>0 && (rd.Y||0)>0){
-     de=meterColorDeltaE2000(rd,greyMode,deForm,meterGrayWorldWeight()).toFixed(2);
-  } else if((rd.Y||0)===0){
-   de='0.00';
+  // Do not force 0.00 for a Y=0 reading: meterColorDeltaE2000 scores a
+  // measured black against a lit target itself (still 0 against a black
+  // target). Hardcoding it printed a blackout as a perfect row.
+  if(Lw>0){
+   const _de=meterColorDeltaE2000(rd,greyMode,deForm,meterGrayWorldWeight());
+   if(Number.isFinite(_de)) de=_de.toFixed(2);
   }
   rows+='<tr>'
     +'<td>'+(rd.name||((rd.ire!=null)?(Math.round(rd.ire*100)/100)+'%':'--'))+'</td>'
