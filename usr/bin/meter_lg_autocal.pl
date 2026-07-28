@@ -14655,6 +14655,33 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $damp_floor_low=defined($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}) ? ($config->{"lg_autocal_hdr20_dpg_damp_floor_low"}+0) : 0.5;
 	$damp_floor_low=0.3 if($damp_floor_low < 0.3);
 	$damp_floor_low=0.95 if($damp_floor_low > 0.95);
+	# Deep-shadow step-size control, ported from the SDR26 path (which grew it
+	# to fix exactly this failure at 2.3%). HDR20 had the halve-on-revert half
+	# of the mechanism but reset move_scaling to full on every new best, so a
+	# noise-driven "improvement" snapped the step back to full size and the next
+	# move overshot again. Measured on a real HDR run, the 1% anchor:
+	#   i1 10.79 -> i2 23.69 -> i3 14.89 -> i4 4.31 -> i5 3.56 -> i6 6.61
+	#   -> i7 9.74 ... i12 2.48 -> i13 6.95 -> i14 9.68
+	# 28 iterations of constant-amplitude oscillation, ending at 42% of target
+	# luminance, while 1.4% converged in 9. These three knobs replace the hard
+	# reset with a gentle recovery, let a genuinely-stuck anchor get its step
+	# back instead of just exhausting the revert budget, and stop early once the
+	# anchor is inside the noise band around its target.
+	#
+	# Escalations available to a stuck low-IRE anchor before it gives up.
+	my $low_ire_max_escalations=defined($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) : 2;
+	$low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
+	$low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
+	# Only re-escalate when best dE is still this many times the (relaxed)
+	# target -- i.e. genuinely stuck, not just noise-limited near the goal.
+	my $low_ire_reescalate_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}+0) : 4.0;
+	$low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
+	$low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
+	# "Close enough that further moves only scatter the reading" band, as a
+	# multiple of the anchor's effective target dE.
+	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.5;
+	$low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
+	$low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
 	# 100% white is calibrated first and gets its own (usually larger)
 	# iteration budget: every lower target's luminance is referenced to the
 	# CALIBRATED peak, so it must settle before anything else runs.
@@ -15113,6 +15140,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# move, fails, halves again, etc., until either it succeeds or the
 		# 3-consecutive-reverts break fires.
 		my $move_scaling=1.0;
+		# Cap the gentle recovery below. Kept as a named value (rather than the
+		# literal 1.0) so the recovery and the re-escalation agree on "full step"
+		# and a future per-anchor initial step needs one change, not three.
+		my $initial_move_scaling=1.0;
+		# Re-escalations already spent by THIS anchor.
+		my $low_ire_escalations=0;
 		# Probe-up: if this anchor's first read is below the meter floor (reads
 		# ~0), the gain loop has no gradient and quits -- 1.4% IRE was trapped
 		# here at ~0.002 nits (under the ~0.003-nits colorimeter floor). Ramp
@@ -15387,10 +15420,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# this new best will NOT lower this value, so a single noise
 					# outlier on a reverted iter cannot poison it.
 					$max_de_overall_committed=$de+0 if(defined($de) && $de+0 > $max_de_overall_committed+0);
-					# Successful iter: reset the move-scaling to full. The next gain
-					# is computed fresh from the new Y, so a fresh full-size move is
-					# the right starting point.
-					$move_scaling=1.0;
+					# Gentle step-size recovery instead of a hard reset to full.
+					# At very low IRE the signal sits in the meter noise floor, so a
+					# "new best" is frequently just a lucky read; snapping the step
+					# straight back to full made the very next move overshoot and the
+					# anchor oscillated (1.0->0.5->0.25->reset->1.0...) without ever
+					# settling. That is precisely the 1% trace above, and the same
+					# failure the SDR26 path already fixed at 2.3%. Doubling toward
+					# the cap lets a genuinely-improving anchor recover its step in a
+					# couple of iters, while a noise-dominated one keeps ratcheting
+					# down into the band where it can actually converge.
+					my $_recovered=$move_scaling*2.0;
+					$_recovered=$initial_move_scaling if($_recovered+0 > $initial_move_scaling+0);
+					$move_scaling=$_recovered;
 				} elsif($is_white
 					&& defined($best_de)
 					&& ($de+0) > ($best_de+0) + 0.08
@@ -15450,9 +15492,35 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$move_scaling*=0.5 if($move_scaling+0 > 0.001);
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
-					if($consecutive_reverts >= $_revert_budget) {
-						log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
+					# Noise-limited early stop (SDR26 port). A low-IRE anchor already
+					# inside the noise band around its relaxed target gains nothing
+					# from more moves -- they only scatter the reading, and the
+					# final-state restore re-reads the best anyway. Keep the best and
+					# move on rather than spending the rest of the budget on moves
+					# that cannot beat it. This is most of the speed-up: the 1% anchor
+					# spent 14 iterations of pass 1 oscillating well inside this band.
+					if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de)
+					   && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor
+					   && $consecutive_reverts >= 2) {
+						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
 						last;
+					}
+					if($consecutive_reverts >= $_revert_budget) {
+						# Genuinely stuck and still far from target: give the step back
+						# once or twice instead of quitting at a bad best. Halving alone
+						# converges the STEP to zero, not the anchor to its target, so
+						# without this a stuck anchor just freezes wherever it was.
+						if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de)
+						   && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor
+						   && $low_ire_escalations < $low_ire_max_escalations) {
+							$low_ire_escalations++;
+							$consecutive_reverts=0;
+							$move_scaling=$initial_move_scaling;
+							log_line("HDR20 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$_revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
+						} else {
+							log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
+							last;
+						}
 					}
 				}
 				# Update prev_de for the next iter's descent check, regardless of
