@@ -13379,7 +13379,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	      <input type="checkbox" id="meterAutoCalDarkDetailEnabled">
 	      Dark Detail
 	     </span>
-	     <span class="fac-option-hint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Increases the time the Auto Cal takes to complete.</span>
+	     <span class="fac-option-hint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Adds roughly 20 minutes to the run.</span>
 	    </label>
 	   </div>
 	  </div>
@@ -13408,14 +13408,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 		      <input type="checkbox" id="meterFullAutoCalDarkDetailEnabled">
 		      Dark Detail
 		     </span>
-		     <span class="fac-option-hint" id="meterFullAutoCalDarkDetailHint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Increases the time the AutoCal takes to complete.</span>
+		     <span class="fac-option-hint" id="meterFullAutoCalDarkDetailHint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Adds roughly 20 minutes to the run.</span>
 		    </label>
 		    <label id="meterFullAutoCalShadowFixRow" class="fac-option" style="display:none">
 		     <span class="fac-option-main">
 		      <input type="checkbox" id="meterFullAutoCalShadowFixEnabled">
 		      Tone Mapping Shadow Fix
 		     </span>
-		     <span class="fac-option-hint">HDR only. Probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re&#8209;apply lift.</span>
+		     <span class="fac-option-hint">HDR only. Probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re&#8209;apply lift. Adds roughly 20 minutes to the run.</span>
 		    </label>
 		    <label id="meterFullAutoCalProfilingRow" class="fac-option" style="display:none">
 		     <span class="fac-option-main">3D LUT profiling</span>
