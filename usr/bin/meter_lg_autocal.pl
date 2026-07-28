@@ -15985,10 +15985,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# layout-independent -- anchor slack turning into slope error wherever
 	# control points crowd -- and the HDR20 ladder crowds harder at the bottom
 	# than SDR does. UNVERIFIED ON HDR/DV HARDWARE: the numbers quoted in
-	# lg_autocal_26_smooth_dpg_low_end are SDR-only. Note also that the HDR
-	# post-3D-LUT shadow fix re-trims the 5-30% band later in the workflow, so
-	# it partially re-solves whatever this smooths.
-	if(!cancelled() && !$upload_failed) {
+	# lg_autocal_26_smooth_dpg_low_end are SDR-only.
+	#
+	# ONLY when this pass is the end of the run, as on the SDR path. A full HDR
+	# workflow rewrites the DPG twice more afterwards (tone-map upload carries
+	# dpg_data; post-cal shadow fix uploads a corrected curve), so smoothing here
+	# was discarded. meter_lg_3d_autocal.pl applies it after both.
+	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
 		my $committed=(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY"
 			&& @{$state->{"hdr20_1d_dpg_data"}} == 3072) ? $state->{"hdr20_1d_dpg_data"} : $current_dpg;
 		my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
@@ -17954,7 +17957,13 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  # authoritative final table. Skipped on cancel or a failed upload so a partial
  # run is never re-uploaded, and the unsmoothed curve is kept if the extra
  # upload fails.
- if(!cancelled() && !$upload_failed) {
+ #
+ # ONLY when this pass is the end of the run. In a full workflow the 3D LUT
+ # stage still rewrites the 1D DPG afterwards -- the HDR tone-map upload carries
+ # its own dpg_data payload, and the post-cal shadow fix uploads a corrected
+ # curve -- so smoothing here was simply overwritten. meter_lg_3d_autocal.pl
+ # applies it at the true end instead.
+ if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
   my $committed=(ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_data"}) eq "ARRAY"
    && @{$state->{"sdr_1d_dpg_data"}} == 3072) ? $state->{"sdr_1d_dpg_data"} : $current_dpg;
   my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
