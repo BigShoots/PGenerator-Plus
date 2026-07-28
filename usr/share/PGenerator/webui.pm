@@ -24984,9 +24984,29 @@ function meterUpdateLiveReadingTargets(src){
 // This is a PRESENTATION scale only. The emitted patch codes are deliberately
 // left exactly as they were -- the ladders are a separate, hardware-driven
 // concern and changing them is not what this row is reporting.
+// The SDR26 YCbCr-Limited ladder is legal-EXPANDED: 0% is code 64 and the top
+// slot is 109% at code 1023, so in 8-bit terms its signal axis spans 16..255,
+// NOT 16..235. Gate strictly on the SDR autocal-26 ladder:
+// meterSdr26UsesSuperWhiteLadder() alone is true for any YCbCr Limited link,
+// including HDR and DV, whose ladders top out at 100% and must keep 16..235.
+function meterLiveSuperWhiteLadderActive(){
+ const mode=String((meterActiveSeriesSignalMode
+  ||(typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr')).toLowerCase();
+ if(mode!=='sdr') return false;
+ if(!(typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints))) return false;
+ return (typeof meterSdr26UsesSuperWhiteLadder==='function')?!!meterSdr26UsesSuperWhiteLadder():false;
+}
+
+// peakIre is the IRE that sits at the TOP of the code range, so the target
+// fraction normalizes against it. On the super-white ladder that is 109 (code
+// 1023): normalizing by 100 instead clamped both 100% and 109% to legal white,
+// so the calculated RGB row showed 235 for both (operator-reported).
+// Cross-check against the emitted ladder codes: 0%->64/4=16, 50%->504/4=126,
+// 100%->940/4=235, 105%->984/4=246, 109%->1023/4=255.
 function meterLiveDisplayCodeRange(){
+ if(meterLiveSuperWhiteLadderActive()) return {min:16,span:239,peakIre:109};
  return (typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())
-  ? {min:16,span:219} : {min:0,span:255};
+  ? {min:16,span:219,peakIre:100} : {min:0,span:255,peakIre:100};
 }
 
 function meterLiveTargetRgbCodes(src){
@@ -25001,7 +25021,7 @@ function meterLiveTargetRgbCodes(src){
  // and 100% -> range max regardless of the ladder's coding.
  const pct=['r','g','b'].map(channel=>Number(step['signal_'+channel+'_pct']));
  if(pct.every(value=>Number.isFinite(value)&&value>=0)){
-  return pct.map(value=>toDisplay(value/100));
+  return pct.map(value=>toDisplay(value/(disp.peakIre||100)));
  }
  const raw=['r','g','b'].map(channel=>{
   const code=step[channel+'_code']!=null?step[channel+'_code']:step[channel];

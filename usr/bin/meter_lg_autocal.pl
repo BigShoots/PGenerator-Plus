@@ -396,6 +396,86 @@ sub ddc_dark_detail_enabled {
  return $LG_AUTOCAL_DARK_DETAIL ? 1 : 0;
 }
 
+# Linear interpolation of a ladder table paired BY POSITION with a label list.
+# Below the first label it EXTRAPOLATES along the first segment instead of
+# clamping: clamping would land the lowest filler on the lowest ladder anchor's
+# DPG index, and lg_autocal_26_build_dpg_core dedupes control points by index,
+# so the filler would DESTROY that anchor rather than add a point.
+sub sdr26_ladder_value_at_ire {
+ my ($labels,$values,$ire)=@_;
+ return undef if(ref($labels) ne "ARRAY" || ref($values) ne "ARRAY" || @$labels < 2);
+ $ire=$ire+0;
+ for(my $k=0;$k<@$labels;$k++) {
+  return $values->[$k] if(abs(($labels->[$k]+0)-$ire) < 0.001);
+ }
+ my ($lo,$hi);
+ if($ire < ($labels->[0]+0)) { ($lo,$hi)=(0,1); }
+ elsif($ire > ($labels->[-1]+0)) { ($lo,$hi)=($#$labels-1,$#$labels); }
+ else {
+  for(my $k=0;$k<@$labels-1;$k++) {
+   if($ire > ($labels->[$k]+0) && $ire < ($labels->[$k+1]+0)) { ($lo,$hi)=($k,$k+1); last; }
+  }
+ }
+ return undef if(!defined($lo));
+ return undef if(!defined($values->[$lo]) || !defined($values->[$hi]));
+ my $span=($labels->[$hi]+0)-($labels->[$lo]+0);
+ return $values->[$lo]+0 if(!$span);
+ my $f=($ire-($labels->[$lo]+0))/$span;
+ return ($values->[$lo]+0)+((($values->[$hi]+0)-($values->[$lo]+0))*$f);
+}
+
+# Merge the Dark Detail fillers into an SDR26 ladder label list and every table
+# paired with it BY POSITION.
+#
+# This is REQUIRED in addition to ddc_slots_for_layout: the SDR26 1D DPG pass
+# does not consume the posted steps or the DDC slot list at all -- it
+# synthesizes its own step objects from these label/index/code tables -- so a
+# filler absent here is never measured no matter what the config says.
+#
+# Tables whose source values are all integers (DPG indexes, wire codes) are
+# rounded back to integers; float tables (target stimuli) are left alone.
+# No-op when Dark Detail is off, so the default ladder stays byte-identical.
+sub sdr26_merge_dark_detail_ladder {
+ my ($labels,@tables)=@_;
+ return 0 if(!ddc_dark_detail_enabled());
+ return 0 if(ref($labels) ne "ARRAY" || !@$labels);
+ my %seen=map { (sprintf("%.4f",$_+0) => 1) } @$labels;
+ my $peak=$labels->[-1]+0;
+ my @add;
+ foreach my $filler (ddc_dark_detail_fillers_for_layout("sdr26")) {
+  my $key=sprintf("%.4f",$filler+0);
+  next if($seen{$key});
+  next if(($filler+0) >= $peak);
+  $seen{$key}=1;
+  push @add,$filler+0;
+ }
+ return 0 if(!@add);
+ my @intish=map {
+  my $t=$_;
+  (ref($t) eq "ARRAY" && @$t && !(grep { !defined($_) || ($_+0) != int($_+0) } @$t)) ? 1 : 0
+ } @tables;
+ my @rows;
+ for(my $k=0;$k<@$labels;$k++) {
+  push @rows,[$labels->[$k]+0, map { $_->[$k] } @tables];
+ }
+ # Interpolate against the ORIGINAL tables before any of them are rewritten.
+ foreach my $ire (@add) {
+  my @row=($ire);
+  for(my $t=0;$t<@tables;$t++) {
+   my $v=sdr26_ladder_value_at_ire($labels,$tables[$t],$ire);
+   $v=int($v+0.5) if(defined($v) && $intish[$t]);
+   push @row,$v;
+  }
+  push @rows,\@row;
+ }
+ @rows=sort { $a->[0] <=> $b->[0] } @rows;
+ @$labels=map { $_->[0] } @rows;
+ for(my $t=0;$t<@tables;$t++) {
+  @{$tables[$t]}=map { $_->[$t+1] } @rows;
+ }
+ return scalar(@add);
+}
+
 sub ddc_slots_for_layout {
  my ($layout)=@_;
  $layout=lc($layout||$LG_AUTOCAL_DDC_LAYOUT||"sdr26");
@@ -17175,7 +17255,14 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   $sdr26_peak_ire=109.0;
   if($sdr26_bits==10) {
    @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+   # Dark Detail: labels, DPG indexes and 10-bit codes are all empirical
+   # tables here, so the fillers are interpolated into all three at once to
+   # keep them aligned by position.
+   sdr26_merge_dark_detail_ladder(\@sdr26_labels,\@sdr26_indexes,\@sdr26_codes);
   } else {
+   # 8-bit codes come from a formula over the labels, so merge the labels
+   # (and their empirical indexes) FIRST and let the loop derive the rest.
+   sdr26_merge_dark_detail_ladder(\@sdr26_labels,\@sdr26_indexes);
    for(my $k=0;$k<@sdr26_labels;$k++) {
     my $ire=$sdr26_labels[$k]+0;
     my $code=int($ire/100*239+16+0.5);
@@ -17198,6 +17285,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   # wire code (Full: 64 + c*876/1023; RGB Limited: c IS the Limited code).
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100);
   $sdr26_peak_ire=100.0;
+  # Dark Detail: merge before the derive loop -- codes, DPG indexes and target
+  # stimuli are all computed per-label below, so the fillers get exact values
+  # from the same formulas rather than interpolated approximations.
+  sdr26_merge_dark_detail_ladder(\@sdr26_labels);
   for(my $k=0;$k<@sdr26_labels;$k++) {
    my $ire=$sdr26_labels[$k]+0;
    my $code;
@@ -17272,7 +17363,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # Also published as package state so the inner loop / seeded build use the
  # same table without threading 8 extra args.
  $LG_AUTOCAL_SDR26_DPG_SEED_IDXES=[$sdr26_indexes[0]+0];
- log_line(sprintf("SDR26 1D DPG greyscale: range=%s peak_ire=%.0f anchors=%d bits=%d pattern_max=%d seed_idx=%d (2.3%%) full_2.3_idx=%d limited_2.3_idx=21",
+ # Lowest label is 2.3% normally but 2% with Dark Detail, so report it rather
+ # than hard-coding 2.3 in the message.
+ log_line(sprintf("SDR26 1D DPG greyscale: range=%s peak_ire=%.0f anchors=%d bits=%d pattern_max=%d seed_idx=%d (%g%%) full_2.3_idx=%d limited_2.3_idx=21",
   $sdr26_ycbcr_limited ? "limited-ycbcr"
    : ($sdr26_rgb_limited ? "limited-rgb" : "full"),
   $sdr26_peak_ire+0,
@@ -17280,6 +17373,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   $sdr26_bits,
   $sdr26_input_max+0,
   $sdr26_indexes[0]+0,
+  $sdr26_labels[0]+0,
   lg_autocal_sdr26_dpg_full_sample_index_for_ire(2.3,1023)+0));
  my $idx_for_sdr=sub {
   my ($step)=@_;
@@ -17359,9 +17453,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # SHAPE decision: super-white anchors 105/99 only exist on YCbCr Limited.
  # RGB Limited and Full share the same 24-anchor descend (no 105/99
  # entries -- their 99/105 IRE slots do not exist on the wire).
- my @sdr26_body_order=$sdr26_ycbcr_limited
-  ? (50,25,75,105,99,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3)
-  : (50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3);
+ # Descending tail is derived from the ladder itself so Dark Detail fillers
+ # descend IN PLACE. Left as a literal they would miss every entry here and be
+ # swept up by the "leftover steps" loop below, which appends them after 2.3%.
+ # With Dark Detail off this reproduces the previous literals exactly: the peak
+ # is excluded (it is already in @white_first) and YCbCr Limited keeps its
+ # 105/99 headroom anchors ahead of 95 purely by descending order.
+ my @sdr26_descend=sort { $b <=> $a }
+  grep { abs(($_+0)-$sdr26_peak_ire) >= 0.05 } @sdr26_labels;
+ my @sdr26_body_order=(50,25,75,@sdr26_descend);
  {
   my %by_ire=map { defined($_->{"ire"}) ? (($_->{"ire"}+0) => $_) : () } @rest;
   my @reordered;
