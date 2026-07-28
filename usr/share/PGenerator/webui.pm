@@ -10717,12 +10717,16 @@ body.meter-autocal-active .meter-autocal-mask{display:flex}
 .fac-stages li{margin:0 0 2px}
 .fac-options{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
 .fac-options-title{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
-.fac-option{display:block;margin:0 0 12px}
+.fac-option{display:block;margin:0 0 14px}
 .fac-option:last-child{margin-bottom:0}
 .fac-option-main{display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--text);font-weight:600;flex-wrap:wrap}
 .fac-option-main input[type=checkbox]{accent-color:var(--accent);margin:0;flex:0 0 auto}
-.fac-option-hint{margin:4px 0 0 24px;font-size:.72rem;color:var(--text2);line-height:1.5}
-.fac-option-controls{margin:6px 0 0 24px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* display:block is load-bearing. As a bare inline <span> the left margin only
+   offsets the FIRST line and every wrapped line falls back to the container
+   edge, which is the ragged hanging indent the hints used to show. */
+.fac-option-hint{display:block;margin:5px 0 0 24px;font-size:.72rem;color:var(--text2);line-height:1.5}
+.fac-option-controls{margin:7px 0 0 24px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fac-option-controls select{min-width:230px}
 .fac-option-controls select{background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px}
 [data-theme="light"] .fac-option-controls select{background:var(--surface-inset);color:var(--text-primary)}
 /* Wizard display-type step: keep panel tech + CCSS selects inside the card. */
@@ -35522,7 +35526,20 @@ async function meterAutoCalApplyStatus(status){
 	  if(sorted.length) {
 	   drawAllCharts(sorted);
 	   const currentValid=currentKey?meterReadings.find(rd=>rd&&rd.luminance!=null&&meterStepNameKey(rd)===currentKey):null;
-	   const lastValid=currentValid||[...meterReadings].reverse().find(rd=>rd&&rd.luminance!=null);
+	   // meterReadings is sorted by IRE (see meterAutoCalStatusChartReadings),
+	   // NOT by measurement order, so reverse().find() returned the HIGHEST-IRE
+	   // reading -- the 109%/100% top slot -- rather than the newest one. This
+	   // fallback runs whenever the current patch has not finished reading yet,
+	   // which is most of a descending pass, so the live panel sat frozen on the
+	   // top slot for the entire run and every later patch looked unmeasured.
+	   // Pick the most recently measured reading by timestamp instead.
+	   let lastValid=currentValid;
+	   if(!lastValid){
+	    meterReadings.forEach(rd=>{
+	     if(!rd||rd.luminance==null) return;
+	     if(!lastValid||Number(rd.timestamp||0)>=Number(lastValid.timestamp||0)) lastValid=rd;
+	    });
+	   }
 	   if(lastValid) updateLiveReading(lastValid);
 	   meterCacheSeriesState(status.status||'running');
 	  }
@@ -35801,13 +35818,31 @@ function meterFullAutoCalPromptDefaults(){
  const promptSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
  const hdrWorkflow=(promptSigMode==='hdr10');
  const dvWorkflow=(promptSigMode==='dv');
+	 // lead + stages render as a sentence and a numbered list. message is kept
+	 // as the flattened equivalent for any caller that only reads plain text.
+	 const transport=dvWorkflow?'Dolby Vision':(hdrWorkflow?'HDR10':'');
+	 const stages=dvWorkflow
+	  ? ['Before report — optionally measures the current state.',
+	     'Reset — clears the active LG greyscale DDC state.',
+	     'HDR greyscale AutoCal.',
+	     'Builds the Dolby Vision profile and uploads it to the TV.']
+	  : hdrWorkflow
+	  ? ['Before report — optionally measures the current HDR state.',
+	     'Reset — clears the LG greyscale DDC state and the 3D LUT baseline.',
+	     'HDR greyscale AutoCal.',
+	     'HDR10 matrix 3D LUT AutoCal, with probe-gated upload to the TV.',
+	     'Optional cleanup, after the 3D LUT.']
+	  : ['Before report — optionally measures the current state.',
+	     'Reset — clears the LG greyscale DDC state and the 3D LUT baseline.',
+	     'Greyscale AutoCal — 26-point pass.',
+	     'Colour-only 3D LUT AutoCal, with probe-gated upload to the TV.',
+	     'Optional cleanup, after the 3D LUT.'];
+	 const lead='Switches PGenerator to the '+(transport?transport+' ':'')+'AutoCal video transport, then runs the calibration in one pass:';
  return {
   title:'Full Auto Cal',
-		  message:dvWorkflow
-		   ? 'This will first switch PGenerator to the Dolby Vision AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state, run HDR greyscale AutoCal, then build and upload the Dolby Vision calibration profile to the TV.'
-		   : hdrWorkflow
-		   ? 'This will first switch PGenerator to the HDR10 AutoCal video transport and optionally measure the current HDR state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run HDR greyscale AutoCal, then run HDR10 matrix 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.'
-		   : 'This will first switch PGenerator to the AutoCal video transport and optionally measure the current state for the before report, then reset the active LG greyscale DDC state and LG 3D LUT baseline, run a fast LG 26-point greyscale AutoCal pass, then run color-only 3D LUT AutoCal with probe-gated TV upload. Optional cleanup runs only after the 3D LUT.',
+	  lead:lead,
+	  stages:stages,
+	  message:lead+' '+stages.map((s,i)=>(i+1)+'. '+s).join(' '),
   continueText:'\u25B6 Continue',
   skipText:'',
   cancelText:'Cancel',
@@ -36772,13 +36807,37 @@ function meterFullAutoCalConfirmDialog(options){
  });
  if(text) text.textContent=opts.statusText;
  if(title) title.textContent=opts.title;
- if(message) message.textContent=opts.message;
+	 // Render a short lead plus the numbered stage list. A bare textContent
+	 // assignment here destroyed the <ol class="fac-stages"> authored in the
+	 // markup and flattened the whole thing back into one run-on paragraph,
+	 // which is what the step actually displayed. Falls back to plain text when
+	 // a caller supplies no stages.
+	 if(message){
+	  message.textContent='';
+	  const lead=document.createElement('div');
+	  lead.textContent=opts.lead||opts.message||'';
+	  message.appendChild(lead);
+	  if(Array.isArray(opts.stages)&&opts.stages.length){
+	   const list=document.createElement('ol');
+	   list.className='fac-stages';
+	   opts.stages.forEach(stage=>{
+	    const item=document.createElement('li');
+	    item.textContent=stage;
+	    list.appendChild(item);
+	   });
+	   message.appendChild(list);
+	  }
+	 }
 	 if(touchupChoiceRow){
 	  touchupChoiceRow.style.display=opts.showPostCalTouchupChoice?'':'none';
 	 }
 	 const profilingRow=document.getElementById('meterFullAutoCalProfilingRow');
 	 if(profilingRow){
-	  profilingRow.style.display=opts.showProfilingChoice?'flex':'none';
+	  // '' not 'flex', for the same reason as the shadow-fix row below: the
+	  // .fac-option class owns the layout. An inline flex here turned the row
+	  // into label | select | hint columns, squeezing the long profiling hint
+	  // into a narrow right-hand strip with dead space beside the label.
+	  profilingRow.style.display=opts.showProfilingChoice?'':'none';
 	  if(opts.showProfilingChoice){
 	   const methodSel=document.getElementById('meterFullAutoCalProfilingMethod');
 	   // Default Hybrid 3³ (HTML selected). Prefer last sticky pick / current
