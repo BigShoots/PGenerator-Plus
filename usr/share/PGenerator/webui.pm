@@ -37671,6 +37671,13 @@ function meterFullAutoCalTouchupTargetY(){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
+    // Dark Detail extends the greyscale ladder, so it belongs in THIS body
+    // (/api/meter/lg-autocal -> meter_lg_autocal.pl), not the 3D LUT start.
+    // Every site that posts greyscale steps must send it: the client builds
+    // the steps and the worker maps each onto a DDC slot, so filler steps
+    // posted to a worker whose ladder lacks them are silently dropped.
+    // Omitted when off, so the config stays byte-identical to before.
+    dark_detail:meterFullAutoCalDarkDetailEnabled()?1:undefined,
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
@@ -37834,6 +37841,13 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
+    // Dark Detail extends the greyscale ladder, so it belongs in THIS body
+    // (/api/meter/lg-autocal -> meter_lg_autocal.pl), not the 3D LUT start.
+    // Every site that posts greyscale steps must send it: the client builds
+    // the steps and the worker maps each onto a DDC slot, so filler steps
+    // posted to a worker whose ladder lacks them are silently dropped.
+    // Omitted when off, so the config stays byte-identical to before.
+    dark_detail:meterFullAutoCalDarkDetailEnabled()?1:undefined,
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
@@ -38756,6 +38770,13 @@ async function meterAutoCalConfirmAndStart(){
     pattern_signal_range:patternSignalRange||undefined,
     lg_greyscale_21:false,
     lg_autocal_26:true,
+    // Dark Detail extends the greyscale ladder, so it belongs in THIS body
+    // (/api/meter/lg-autocal -> meter_lg_autocal.pl), not the 3D LUT start.
+    // Every site that posts greyscale steps must send it: the client builds
+    // the steps and the worker maps each onto a DDC slot, so filler steps
+    // posted to a worker whose ladder lacks them are silently dropped.
+    // Omitted when off, so the config stays byte-identical to before.
+    dark_detail:meterFullAutoCalDarkDetailEnabled()?1:undefined,
     lg_autocal_26_full_ddc_spine:meterAutoCalUseFullDdcSpine(),
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
@@ -40087,10 +40108,6 @@ refresh_rate:getMeterRefreshRate()||undefined,
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
   lg_autocal_hdr20_postcal_shadow_enable:fullWorkflow?(meterFullAutoCalShadowFixEnabled()?1:0):undefined,
-  // Dark Detail: extends the descending calibration pass with the extra
-  // patch values. Omitted entirely when off so the worker config is
-  // byte-identical to a pre-Dark-Detail run.
-  dark_detail:meterFullAutoCalDarkDetailEnabled()?1:undefined,
   skip_preprofile_unity_reset:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_verified:skipPreprofileUnityReset||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
