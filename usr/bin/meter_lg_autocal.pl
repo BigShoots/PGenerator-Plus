@@ -15918,6 +15918,26 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
 						$_restored_de=$ade+0 if(defined($ade));
 						$_restored_ok=1;
+						# Merge the re-read into the CHARTED readings, exactly as the
+						# SDR26 path does. Without this the anchor's stored reading
+						# stayed the last iteration's measurement -- frequently the
+						# reverted overshoot that triggered the restore -- while the
+						# panel actually sat at the restored best. Only current_delta_e
+						# and the history row were corrected, so the chart, the report
+						# and the run archive all showed a state the panel was not in.
+						#
+						# Observed on the 1% anchor: the stored reading was
+						# Y=0.012215 against a 0.028993 target (dE ITP 9.68), while the
+						# restore re-read of the committed state measured dE 1.2474.
+						# That stale reading is what made the anchor look like it
+						# finished at 42% of target.
+						#
+						# Unlike SDR this does not reject a noisy low-IRE re-read: the
+						# state it would fall back to is the pre-restore reading, which
+						# is the very thing being corrected here. The re-read is a real
+						# measurement of the committed curve, so it is charted.
+						annotate_reading_target($arr,($is_white ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
+						$state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
 					}
 				}
 				$state->{"current_delta_e"}=$_restored_de;
