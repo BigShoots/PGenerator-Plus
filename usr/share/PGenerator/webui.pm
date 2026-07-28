@@ -34385,7 +34385,7 @@ function meterAutoCalShowPreflightOptions(){
  const summary=document.getElementById('meterAutoCalConfirmSummary');
  if(description) description.textContent=needsLuminanceSetup
 	  ? 'The picture mode reset and 100% luminance setup will follow. SDR uses the measured 100% white as the calibration peak; the wizard reads the active 100% patch to seed the 109% headroom reference and the greyscale DDC ladder.'
-	  : 'The picture mode reset will follow. HDR uses the calibrated 100% point as its peak reference, so no SDR luminance setup is required.';
+	  : 'The picture mode reset will follow. HDR uses the calibrated 100% point as its peak reference.';
  if(targetRow) targetRow.style.display='none';
  if(summary) summary.textContent=needsLuminanceSetup?'The picture mode reset and 100% luminance setup will follow.':'The picture mode reset will follow.';
  meterAutoCalSetOverlay(true,{phase:'options',current_name:'Greyscale Auto Cal options',message:'Choose post-cal cleanup before reset.'});
