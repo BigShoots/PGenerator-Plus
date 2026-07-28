@@ -13368,6 +13368,20 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    <input type="number" id="meterAutoCalTarget" min="0.1" max="10" step="0.1" value="0.5" style="background:#080a11;border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 8px">
 	   </label>
 	   <div id="meterAutoCalConfirmSummary" style="font-size:.72rem;color:var(--text2);margin-top:8px"></div>
+	   <!-- Standalone greyscale Auto Cal options. Dark Detail was previously only
+	        offered in the Full Auto Cal wizard, so a standalone greyscale run
+	        (SDR, HDR10 or DV) could never request the filler ladder. Same
+	        .fac-option markup and CSS as the Full wizard so the two match. -->
+	   <div class="fac-options" id="meterAutoCalGreyscaleOptionsBox">
+	    <div class="fac-options-title">Options</div>
+	    <label id="meterAutoCalDarkDetailRow" class="fac-option">
+	     <span class="fac-option-main">
+	      <input type="checkbox" id="meterAutoCalDarkDetailEnabled">
+	      Dark Detail
+	     </span>
+	     <span class="fac-option-hint">Calibrates additional patches between the standard points, concentrated in the dark end, so those levels are measured instead of interpolated. Increases the time the Auto Cal takes to complete.</span>
+	    </label>
+	   </div>
 	  </div>
 	  <div id="meterAutoCalResultsBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Auto Cal complete</div>
@@ -34380,6 +34394,29 @@ function meterAutoCalShowPreflightOptions(){
 function meterAutoCalAcceptPreflightOptions(){
 	 if(!meterAutoCalPendingConfig||meterAutoCalPendingConfig.fullWorkflow){toast('Auto Cal setup is not ready',true);return;}
 	 meterAutoCalPendingConfig.postCommitPolishEnabled=false;
+	 // Capture Dark Detail before the ladder is rebuilt below. Applies to SDR,
+	 // HDR10 and DV alike -- the filler sets are per-layout but the choice is not.
+	 {
+	  const el=document.getElementById('meterAutoCalDarkDetailEnabled');
+	  meterAutoCalPendingConfig.darkDetailEnabled=!!(el&&el.checked);
+	 }
+	 // Rebuild the greyscale ladder now that the choice is captured, exactly as
+	 // the Full Auto Cal wizard does: meterSeriesSteps was built when the series
+	 // was SELECTED, before this step existed, so without this the run would post
+	 // the stock ladder no matter what the operator ticked. Also refreshes the
+	 // thumbs so the visible patch count matches what will be measured.
+	 try{
+	  const rebuilt=meterBuildStepsJS('greyscale',26);
+	  if(Array.isArray(rebuilt)&&rebuilt.length){
+	   meterSeriesSteps=rebuilt;
+	   const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
+	   if(adjustable.length) meterAutoCalPendingConfig.adjustable=adjustable;
+	   const white=meterAutoCalWhiteStep();
+	   if(white) meterAutoCalPendingConfig.whiteStep=white;
+	   try{ meterBuildPatchThumbs(meterGreyscaleSeriesSteps(meterSeriesSteps),new Set(),null); }catch(e){}
+	   try{ console.info('Greyscale Auto Cal ladder',{darkDetail:meterAutoCalPendingConfig.darkDetailEnabled,steps:meterSeriesSteps.length}); }catch(e){}
+	  }
+	 }catch(e){}
 	 meterAutoCalPendingConfig.greyscaleOptionsCaptured=true;
  meterAutoCalPhase='disclaimer';
  meterAutoCalSetOverlay(true,{phase:'disclaimer',current_name:'Before LG Auto Cal',message:meterAutoCalPreflightResetPrompt()});
@@ -35984,8 +36021,26 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 
 	// Default OFF, and off must behave exactly as before -- the worker only
 	// extends its ladder when this is explicitly true.
+	// True when the run being started should use the Dark Detail filler ladder.
+	// Consulted by the ladder builder AND by every /api/meter/lg-autocal body, so
+	// it has to answer for BOTH entry points: the Full Auto Cal wizard (which
+	// stamps meterFullAutoCalConfig) and a standalone greyscale Auto Cal (which
+	// stamps meterAutoCalPendingConfig). Previously it only knew about the
+	// former, so a standalone SDR/HDR10/DV run could never request the fillers
+	// even though the worker and the ladder builder both supported them.
 	function meterFullAutoCalDarkDetailEnabled(){
 	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'darkDetailEnabled')) return meterFullAutoCalConfig.darkDetailEnabled===true;
+	 // Standalone run: the pending config carries the captured choice once the
+	 // operator has passed the options step.
+	 if(meterAutoCalPendingConfig&&Object.prototype.hasOwnProperty.call(meterAutoCalPendingConfig,'darkDetailEnabled')) return meterAutoCalPendingConfig.darkDetailEnabled===true;
+	 // Options step still on screen: read the live control so a ladder preview
+	 // built during the step reflects the tick. Gated on the phase so a stale
+	 // checkbox cannot leak into a later run once the choice has been captured
+	 // (or cleared) -- after capture the pending-config branch above answers.
+	 if(meterAutoCalPhase==='options'){
+	  const el=document.getElementById('meterAutoCalDarkDetailEnabled');
+	  if(el) return !!el.checked;
+	 }
 	 return false;
 	}
 
