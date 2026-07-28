@@ -13387,7 +13387,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 		     <li>Optional cleanup, after the 3D LUT so the first greyscale pass stays fast.</li>
 		    </ol>
 		   </div>
-		   <div class="fac-options">
+		   <div class="fac-options" id="meterFullAutoCalOptionsBlock">
 		    <div class="fac-options-title">Options</div>
 		    <label id="meterFullAutoCalDarkDetailRow" class="fac-option" style="display:none">
 		     <span class="fac-option-main">
@@ -36792,7 +36792,18 @@ function meterFullAutoCalResolveConfirm(accepted){
 function meterFullAutoCalConfirmDialog(options){
  meterAutoCalClearCompleteAutoClose();
  if(meterFullAutoCalConfirmResolver) meterFullAutoCalResolveConfirm(false);
- const opts={...meterFullAutoCalPromptDefaults(),...(options||{})};
+	 const provided=options||{};
+	 const opts={...meterFullAutoCalPromptDefaults(),...provided};
+	 // A caller that supplies its own message is describing a DIFFERENT step --
+	 // the pre-cal capture, a reset-failure prompt -- so it must not inherit the
+	 // full-workflow lead and stage list from the defaults. Without this the
+	 // pre-cal step rendered the whole five-stage workflow and dropped its own
+	 // text, because the spread above kept the default lead and lead wins over
+	 // message in the renderer.
+	 if(Object.prototype.hasOwnProperty.call(provided,'message')){
+	  if(!Object.prototype.hasOwnProperty.call(provided,'lead')) opts.lead=provided.message;
+	  if(!Object.prototype.hasOwnProperty.call(provided,'stages')) opts.stages=null;
+	 }
  meterFullAutoCalConfirmOptions=opts;
  const overlay=document.getElementById('meterAutoCalOverlay');
  const text=document.getElementById('meterAutoCalStatusText');
@@ -36875,6 +36886,17 @@ function meterFullAutoCalConfirmDialog(options){
 	 if(darkDetailRow){
 	  darkDetailRow.style.display=opts.showDarkDetailChoice?'':'none';
 	  if(darkDetailChoice&&opts.showDarkDetailChoice) darkDetailChoice.checked=opts.darkDetailDefault===true;
+	 }
+	 // Hide the whole Options group when no row is showing, otherwise steps that
+	 // reuse this box (pre-cal capture, reset-failure prompt) render a bare
+	 // "OPTIONS" heading with nothing under it.
+	 {
+	  const optionsBlock=document.getElementById('meterFullAutoCalOptionsBlock');
+	  if(optionsBlock){
+	   const anyOption=[touchupChoiceRow,profilingRow,shadowFixRow,darkDetailRow]
+	    .some(row=>row&&row.style.display!=='none');
+	   optionsBlock.style.display=anyOption?'':'none';
+	  }
 	 }
  if(fullConfirmBox) fullConfirmBox.style.display='';
  if(progressBox) progressBox.style.display='none';
