@@ -17253,16 +17253,37 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   @sdr26_labels=(2.3,3,4,5,7,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,99,105,109);
   @sdr26_indexes=(21,30,38,47,64,94,141,188,235,282,329,375,422,469,512,559,606,653,700,747,794,841,888,926,981,1023);
   $sdr26_peak_ire=109.0;
+  # Empirical 10-bit code table, paired BY POSITION with the ORIGINAL labels.
+  # Snapshotted before the merge so ladder slots keep their exact table code
+  # while fillers fall through to the formula below.
+  my @sdr26_base_labels=@sdr26_labels;
+  my @sdr26_base_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
+  # Merge labels + DPG indexes only. The indexes are empirical with no
+  # client-side counterpart, so interpolating them is correct; the CODES are
+  # not -- see below.
+  sdr26_merge_dark_detail_ladder(\@sdr26_labels,\@sdr26_indexes);
   if($sdr26_bits==10) {
-   @sdr26_codes=(84,92,100,108,124,152,196,240,284,328,372,416,460,504,544,588,632,676,720,764,808,852,896,932,984,1023);
-   # Dark Detail: labels, DPG indexes and 10-bit codes are all empirical
-   # tables here, so the fillers are interpolated into all three at once to
-   # keep them aligned by position.
-   sdr26_merge_dark_detail_ladder(\@sdr26_labels,\@sdr26_indexes,\@sdr26_codes);
+   foreach my $label (@sdr26_labels) {
+    my $ire=$label+0;
+    my $exact;
+    for(my $k=0;$k<@sdr26_base_labels;$k++) {
+     if(abs(($sdr26_base_labels[$k]+0)-$ire) < 0.001) { $exact=$sdr26_base_codes[$k]; last; }
+    }
+    # Off-ladder (Dark Detail filler): use the Limited legal-expansion FORMULA,
+    # NOT an interpolation of the empirical table. meterLgAutoCalCodeForSlot()
+    # in webui.pm uses this exact formula for in-between slots, and the chart
+    # matcher (meterGreyscaleReadingMatchesStep -> meterReadingCodesMatchStep)
+    # compares reading codes against step codes with a +/-0.5 tolerance. An
+    # interpolated table gave 89/98/133 where the client computed 88/96/134, so
+    # 2.7%, 3.7% and 8% matched no step and were silently dropped from every
+    # chart even though they had been measured (operator-reported).
+    my $code=defined($exact) ? $exact+0 : int(64+$ire/100.0*876.0+0.5);
+    $code=64 if($code < 64);
+    $code=1023 if($code > 1023);
+    push @sdr26_codes,$code;
+   }
   } else {
-   # 8-bit codes come from a formula over the labels, so merge the labels
-   # (and their empirical indexes) FIRST and let the loop derive the rest.
-   sdr26_merge_dark_detail_ladder(\@sdr26_labels,\@sdr26_indexes);
+   # 8-bit codes are already formula-derived over the merged labels.
    for(my $k=0;$k<@sdr26_labels;$k++) {
     my $ire=$sdr26_labels[$k]+0;
     my $code=int($ire/100*239+16+0.5);
