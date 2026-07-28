@@ -15137,6 +15137,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# overshoot's reading instead of its best. Track it explicitly rather
 		# than inferring it from array equality.
 		my $panel_out_of_sync=0;
+		# The measurement that produced $best_de. Re-uploading $best_dpg puts the
+		# panel back into exactly the state this was measured in, so it is the
+		# honest reading for the committed curve -- and it costs no meter time.
+		my $best_reading=undef;
 		# Acceptance ("good enough"): once a patch's dE drops below
 		# $acceptance_de (default 0.3) it is snapped as the best, given ONE
 		# more refinement move, and if that move worsens dE the best is
@@ -15424,6 +15428,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_de=$de+0;
 					$best_dpg=[@{$current_dpg}];
 					$best_anchors=[map { +{ %$_ } } @done];
+					$best_reading=(ref($reading) eq "HASH") ? { %{$reading} } : undef;
 					$consecutive_reverts=0;
 					# Committed-max accumulator -- new-best path. A new best means
 					# this dE is the trajectory landmark for the anchor -- it is by
@@ -15910,55 +15915,33 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				@{$current_dpg}=@{$best_dpg};
 				@done=@{$best_anchors};
 				my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-				# Re-read after restoring best_dpg so the chart shows the actual
-				# measured dE at the panel's CURRENT state, not the last iter's
-				# dE (which may be the overshoot that triggered the restore).
-				# Without this, the operator sees the last-iter number (often
-				# the worst one in the trajectory) on the chart while the panel
-				# is sitting at the best state -- a misleading divergence that
-				# has to be diagnosed by reading the per-anchor history.
-				# Mirrors the acceptance fast-path pattern (the post-revert
-				# re-read at line ~14683) but at the final-state-restore level
-				# rather than per-iter.
-				# Recompute $tl the same way the iter loop does ($is_white
-				# uses luminance($last_reading); lower anchors use the 2.2
-				# curve via white_ref + rs). At this point $last_reading is
-				# still the LAST iter's reading, not the re-read, so for white
-				# anchors $tl will be the previous iter's Y -- acceptable: the
-				# re-read uses the same $tl so the dE ITP is consistent with
-				# how the iter loop evaluated it.
+				# Chart the reading that PRODUCED the best, rather than spending a
+				# fresh read on the restored state. Re-uploading $best_dpg puts the
+				# panel back into exactly the state $best_reading was measured in, so
+				# it is an honest description of the committed curve and it costs no
+				# meter time. A restore re-read was ~18s per anchor, which over a
+				# 32-anchor Dark Detail ladder is several minutes.
+				#
+				# It is also more faithful. The re-read is a single sample at the
+				# meter noise floor, so it frequently lands WORSE than the best it is
+				# confirming and drags the charted result down with it -- the 6%
+				# anchor charted 0.6099 against a committed best of 0.5129. The SDR
+				# path already threw such re-reads away via a close-factor guard,
+				# i.e. it paid for a read and then discarded it. This keeps the
+				# committed measurement directly.
+				#
+				# The re-upload above is still required: the revert only restored
+				# $current_dpg in memory, so without it the TV keeps the overshoot.
 				my $_tl_restore=$is_white ? luminance($last_reading) : target_luminance_for_step($white_ref,$rs,"2.2","hdr10",undef);
 				$_tl_restore=$white_ref if(!(defined($_tl_restore) && $_tl_restore+0 > 0));
 				my $_restored_de=$best_de+0;
 				my $_restored_ok=0;
-				if($bok && !cancelled()) {
-					my ($arr,$are)=read_step($config,$rs,$state);
-					if(!$are && ref($arr) eq "HASH") {
-						$last_reading=$arr;
-						my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
-						$_restored_de=$ade+0 if(defined($ade));
-						$_restored_ok=1;
-						# Merge the re-read into the CHARTED readings, exactly as the
-						# SDR26 path does. Without this the anchor's stored reading
-						# stayed the last iteration's measurement -- frequently the
-						# reverted overshoot that triggered the restore -- while the
-						# panel actually sat at the restored best. Only current_delta_e
-						# and the history row were corrected, so the chart, the report
-						# and the run archive all showed a state the panel was not in.
-						#
-						# Observed on the 1% anchor: the stored reading was
-						# Y=0.012215 against a 0.028993 target (dE ITP 9.68), while the
-						# restore re-read of the committed state measured dE 1.2474.
-						# That stale reading is what made the anchor look like it
-						# finished at 42% of target.
-						#
-						# Unlike SDR this does not reject a noisy low-IRE re-read: the
-						# state it would fall back to is the pre-restore reading, which
-						# is the very thing being corrected here. The re-read is a real
-						# measurement of the committed curve, so it is charted.
-						annotate_reading_target($arr,($is_white ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
-						$state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
-					}
+				if(ref($best_reading) eq "HASH") {
+					my $arr={ %{$best_reading} };
+					$last_reading=$arr;
+					annotate_reading_target($arr,($is_white ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
+					$state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
+					$_restored_ok=1;
 				}
 				$state->{"current_delta_e"}=$_restored_de;
 				if(ref($state->{"hdr20_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"hdr20_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
@@ -15967,11 +15950,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						$_r->[-1]{"de"}=sprintf("%.4f",$_restored_de);
 						$_r->[-1]{"reverted_to_best"}=JSON::PP::true;
 						$_r->[-1]{"best_de"}=sprintf("%.4f",$best_de+0);
-						$_r->[-1]{"restored_re_read_ok"}=$_restored_ok ? JSON::PP::true : JSON::PP::false;
+						$_r->[-1]{"restored_from_best_reading"}=$_restored_ok ? JSON::PP::true : JSON::PP::false;
 					}
 				}
 				write_state($state);
-				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (re-read dE=".sprintf("%.4f",$_restored_de).")":" (re-read failed or skipped)"));
+				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (charted best reading, no re-read)":" (no best reading to chart)"));
 			}
 		}
 		return ($converged,$last_reading);
@@ -16440,10 +16423,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # DISABLED the re-read is skipped entirely (treat as rejected without
  # bothering to read). Kept as an escape hatch so an operator who wants
  # the raw re-read path (with the noise-clobber risk) can still get it.
- my $low_ire_restore_re_read=defined($config->{"lg_autocal_sdr26_dpg_low_ire_restore_re_read"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_restore_re_read"}+0) : 1;
- $low_ire_restore_re_read=0 if($low_ire_restore_re_read+0 < 0);
- $low_ire_restore_re_read=1 if($low_ire_restore_re_read+0 > 1);
-  my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
+   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
   $target_de=0.05 if($target_de < 0.05);
   $target_de=5.0 if($target_de > 5.0);
   # Per-anchor target_de multiplier at low IRE (HDR pattern). The panel's
@@ -16509,6 +16489,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   # without uploading, so the TV still holds the overshoot. The restore
   # below gates its re-upload on $_differs, which cannot see that.
   my $panel_out_of_sync=0;
+  # Measurement that produced $best_de -- charted on restore instead of
+  # spending a fresh read, see the HDR20 note.
+  my $best_reading=undef;
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
@@ -16782,6 +16765,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $best_de=$de+0;
     $best_dpg=[@{$current_dpg_ref}];
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
+    $best_reading=(ref($reading) eq "HASH") ? { %{$reading} } : undef;
     $consecutive_reverts=0;
     # Committed-max accumulator: a new best means this dE is the trajectory
     # landmark for the anchor -- it is by construction WORSE than the
@@ -17278,15 +17262,22 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   for(my $j=0;$j<@{$current_dpg_ref};$j++) {
    if(($current_dpg_ref->[$j]+0) != ($best_dpg->[$j]+0)) { $_differs=1; last; }
   }
-  # Re-read + re-chart the best state whenever the DPG had to be restored OR
-  # the anchor did not converge. A reverted/broke anchor's LAST charted
-  # reading is a bad move even when current_dpg already == best_dpg (the last
-  # iter reverted after merging its overshoot reading), so gating only on
-  # $_differs left the ugly dE on the chart. Re-reading the committed best and
-  # merging it guarantees the chart shows a fresh measurement of the state the
-  # panel is actually sitting at.
-  if($_differs || !$converged) {
-   if($_differs) {
+  # Restore the best state and chart the measurement that PRODUCED it, rather
+  # than spending a fresh read confirming it. Re-uploading $best_dpg returns the
+  # panel to exactly the state $best_reading was measured in.
+  #
+  # This path previously re-read and then, at low IRE, usually THREW THE READ
+  # AWAY: the close-factor guard rejected any re-read landing above best*1.5
+  # because a single sample at the meter noise floor is not a fair description
+  # of the committed curve. That cost a read per anchor to arrive back at the
+  # best reading anyway. Charting it directly is the same answer without the
+  # meter time (~18s per anchor; several minutes over a Dark Detail ladder).
+  #
+  # The re-upload is still required whenever the panel is out of sync: a revert
+  # restores $current_dpg_ref in memory only, so without it the TV keeps running
+  # the overshoot that triggered the revert.
+  if($_differs || $panel_out_of_sync || !$converged) {
+   if($_differs || $panel_out_of_sync) {
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
    }
@@ -17301,92 +17292,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $_tl_restore=$white_ref if(!(defined($_tl_restore) && $_tl_restore+0 > 0));
    my $_restored_de=$best_de+0;
    my $_restored_ok=0;
-   # Chart-fidelity guard for the final-state restore re-read at low IRE.
-   # At very low IRE the meter noise floor is wide, so a single re-read of
-   # the committed best state frequently lands WELL above the best_de we
-   # already have -- because the noise, not the panel, moved the reading.
-   # Merging the noisy re-read clobbers a good charted point with a fake
-   # "final-state" measurement (the operator saw chart ~3.8 vs committed
-   # dE=1.04 at 2.3% IRE on a converged-2.0 anchor). The guard has 3 modes:
-   #   default ($low_ire_restore_re_read=1): take the re-read; merge into
-   #     chart only if it CONFIRMS best within $low_ire_close_factor
-   #     tolerance (default 1.5 -- a re-read above best*1.5 is rejected).
-   #     Rejected re-reads keep the charted best reading and annotate the
-   #     anchor-history row with the noisy dE so the operator can still
-   #     see it for diagnostics.
-   #   escape hatch ($low_ire_restore_re_read=0): skip the re-read entirely
-   #     on a non-converged low-IRE anchor; $_restored_ok stays 0, chart
-   #     and state already reflect committed best.
-   #   mid/high IRE OR a converged anchor: take + merge the re-read as
-   #     before (the noise floor is narrow enough that the re-read is
-   #     faithful).
-   my $_skip_low_ire_reread=(!$low_ire_restore_re_read && $_anchor_ire+0 < $low_ire_threshold+0 && !$converged && !$acceptance_pending) ? 1 : 0;
-   my $_low_ire_reread_rejected=0;
-   my $_low_ire_reread_noisy=$_restored_de+0;
-   if($_skip_low_ire_reread) {
-    # Operator escape hatch: do not even attempt the re-read at low IRE on
-    # a non-converged anchor. Record it as rejected, keep the charted best.
-    $_restored_de=$best_de+0;
-    log_line("SDR26 1D DPG greyscale: ".$label." final-state restore re-read skipped (operator escape hatch, low IRE ".sprintf("%.4f",$_anchor_ire+0).", best dE=".sprintf("%.4f",$best_de+0).")");
-   } elsif($bok && !cancelled()) {
-    my ($arr,$are)=read_step($config,$rs,$state);
-    if(!$are && ref($arr) eq "HASH") {
-     $last_reading=$arr;
-     my $ade=autocal_delta_e_for_step($config,$arr,$rs,$white_ref,$target_x,$target_y,$_tl_restore);
-     if(defined($ade)) {
-      $_restored_de=$ade+0;
-      $_restored_ok=1;
-      $_low_ire_reread_noisy=$ade+0;
-      # Low-IRE confirmation gate. A re-read that lands ABOVE
-      # best*low_ire_close_factor is treated as a noise-dominated outlier
-      # (the panel is sitting at best, the noise moved the reading) and
-      # rejected for charting. Convergence is irrelevant here -- this
-      # gate fires on any non-converged low-IRE re-read regardless of
-      # the iter-time convergence verdict, because the only signal that
-      # matters is whether the fresh measurement AGREE with the committed
-      # best within the noise band.
-      if($_anchor_ire+0 < $low_ire_threshold+0 && !$converged && !$acceptance_pending && $ade+0 > ($best_de+0)*$low_ire_close_factor+0) {
-       $_low_ire_reread_rejected=1;
-       $_restored_de=$best_de+0;
-       log_line("SDR26 1D DPG greyscale: ".$label." final-state restore re-read rejected (low IRE ".sprintf("%.4f",$_anchor_ire+0).", re-read dE=".sprintf("%.4f",$ade+0)." > best ".sprintf("%.4f",$best_de+0)." * close_factor ".sprintf("%.4f",$low_ire_close_factor)."), keeping charted best");
-      } else {
-       # Merge the re-read into the charted readings (annotated exactly as
-       # the iter loop does before its own merge) so the chart reflects
-       # the restored best state's ACTUAL measurement, not the last
-       # reverted bad move.
-       annotate_reading_target($arr,($_is_legal_peak_restore ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
-       $state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
-      }
-     }
-    }
+   if(ref($best_reading) eq "HASH") {
+    my $arr={ %{$best_reading} };
+    annotate_reading_target($arr,($_is_legal_peak_restore ? $_tl_restore : $white_ref),$_tl_restore,$target_x,$target_y);
+    $state->{"readings"}=merge_reading($state->{"readings"},$arr) if(ref($state) eq "HASH");
+    $_restored_ok=1;
    }
    $state->{"current_delta_e"}=$_restored_de if(ref($state) eq "HASH");
-   # Anchor-history row annotation: when the re-read was rejected, stamp
-   # the last (final-state) row with the committed-best dE and the
-   # noisy-rejected dE so the operator can see the rejected measurement
-   # in the per-anchor diagnostic without it poisoning the main chart.
-   if($_low_ire_reread_rejected && ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}) eq "HASH" && ref($state->{"sdr_1d_dpg_anchor_history"}{$label}) eq "ARRAY") {
-    my $_r=$state->{"sdr_1d_dpg_anchor_history"}{$label};
-    if(@$_r) {
-     $_r->[-1]{"de"}=sprintf("%.4f",$best_de+0);
-     $_r->[-1]{"best_de"}=sprintf("%.4f",$best_de+0);
-     $_r->[-1]{"reverted_to_best"}=JSON::PP::true;
-     $_r->[-1]{"low_ire_re_read_rejected"}=JSON::PP::true;
-     $_r->[-1]{"rejected_re_read_de"}=sprintf("%.4f",$_low_ire_reread_noisy+0);
-    }
-   }
    write_state($state) if(ref($state) eq "HASH");
-   my $_reread_suffix="";
-   if($_low_ire_reread_rejected) {
-    $_reread_suffix=" (re-read REJECTED: re-read dE=".sprintf("%.4f",$_low_ire_reread_noisy+0)." > best ".sprintf("%.4f",$best_de+0)." * close_factor ".sprintf("%.4f",$low_ire_close_factor).", chart kept best)";
-   } elsif($_skip_low_ire_reread) {
-    $_reread_suffix=" (re-read SKIPPED: operator escape hatch active, chart kept best)";
-   } elsif($_restored_ok) {
-    $_reread_suffix=" (re-read dE=".sprintf("%.4f",$_restored_de).", re-charted)";
-   } else {
-    $_reread_suffix=" (re-read failed or skipped)";
-   }
-   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($_differs?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").$_reread_suffix);
+   my $_reread_suffix=$_restored_ok ? " (charted best reading, no re-read)" : " (no best reading to chart)";
+   log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).((($_differs || $panel_out_of_sync))?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").$_reread_suffix);
   }
  }
  # Return the headline-committed max (not the trajectory max). The caller
