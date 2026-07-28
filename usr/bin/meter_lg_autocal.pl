@@ -15127,6 +15127,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# hashes, wiping @done on every revert.
 		my $best_anchors=[map { +{ %$_ } } @done];
 		my $consecutive_reverts=0;
+		# The panel is out of sync with $current_dpg whenever a revert restores
+		# the best arrays IN MEMORY without re-uploading -- the curve actually on
+		# the TV is still the overshoot that triggered the revert. The
+		# final-state restore below then compared $current_dpg against $best_dpg
+		# to decide whether to act, and after a revert those are equal, so it
+		# skipped BOTH the re-upload and the re-read. An anchor that ended on a
+		# revert therefore left the panel running the overshoot and charted the
+		# overshoot's reading instead of its best. Track it explicitly rather
+		# than inferring it from array equality.
+		my $panel_out_of_sync=0;
 		# Acceptance ("good enough"): once a patch's dE drops below
 		# $acceptance_de (default 0.3) it is snapped as the best, given ONE
 		# more refinement move, and if that move worsens dE the best is
@@ -15488,6 +15498,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# Descent-style revert for non-white low/high IRE anchors.
 					@{$current_dpg}=@{$best_dpg};
 					@done=@{$best_anchors};
+					# In-memory only: the TV is still running the overshoot until
+					# something uploads again. Normally the next iteration does, but
+					# if the loop exits here (revert budget, or the noise-limited
+					# early stop) the final-state restore has to.
+					$panel_out_of_sync=1;
 					$consecutive_reverts++;
 					# Halve the move-scaling so the next iter makes a smaller move.
 					# Floor at 0.001 so the scaling never underflows or goes to zero
@@ -15886,7 +15901,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			for(my $j=0;$j<@{$current_dpg};$j++) {
 				if(($current_dpg->[$j]+0) != ($best_dpg->[$j]+0)) { $_differs=1; last; }
 			}
-			if($_differs) {
+			# $panel_out_of_sync covers the case array equality cannot see: a
+			# revert synced the arrays without uploading, so the TV still holds
+			# the overshoot. Without it an anchor that ended on a revert skipped
+			# the re-upload AND the re-read, leaving the panel on the overshoot
+			# curve and charting the overshoot's reading as the anchor's result.
+			if($_differs || $panel_out_of_sync) {
 				@{$current_dpg}=@{$best_dpg};
 				@done=@{$best_anchors};
 				my ($bok,$bmsg)=$upload_dpg->($current_dpg);
@@ -16485,6 +16505,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   my $best_anchors=[map { +{ %$_ } } @{$done_ref}];
   my $consecutive_reverts=0;
   my $low_ire_escalations=0;
+  # See the HDR20 note: a revert syncs $current_dpg_ref to best IN MEMORY
+  # without uploading, so the TV still holds the overshoot. The restore
+  # below gates its re-upload on $_differs, which cannot see that.
+  my $panel_out_of_sync=0;
   my $revert_budget=defined($config->{"lg_autocal_sdr26_dpg_revert_budget"}) ? int($config->{"lg_autocal_sdr26_dpg_revert_budget"}) : 4;
   $revert_budget=2 if($revert_budget < 2);
   $revert_budget=10 if($revert_budget > 10);
@@ -16786,6 +16810,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     # worse than the previous iter, and only in the low/high tiers.
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
+    $panel_out_of_sync=1;
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
     log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".(($_anchor_ire+0 >= $high_ire_threshold+0)?"high-IRE":"low-IRE").")");
@@ -17265,7 +17290,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     @{$current_dpg_ref}=@{$best_dpg};
     @{$done_ref}=@{$best_anchors};
    }
-   my ($bok,$bmsg)=$_differs ? $upload_dpg->($current_dpg_ref) : (1,undef);
+   my ($bok,$bmsg)=($_differs || $panel_out_of_sync) ? $upload_dpg->($current_dpg_ref) : (1,undef);
    # Recompute the anchor's $tl the same way the iter loop does (legal-peak
    # uses its own measured Y; body uses the 2.2 curve via white_ref + black_y).
    my $_is_legal_peak_restore=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
