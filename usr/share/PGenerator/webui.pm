@@ -24989,11 +24989,17 @@ function meterUpdateLiveReadingTargets(src){
 // NOT 16..235. Gate strictly on the SDR autocal-26 ladder:
 // meterSdr26UsesSuperWhiteLadder() alone is true for any YCbCr Limited link,
 // including HDR and DV, whose ladders top out at 100% and must keep 16..235.
+// meterGreyAllowsHeadroomTargets() is exactly this question already -- greyscale
+// + 26pt + SDR + the super-white ladder, i.e. "this series has slots above
+// 100%". Reuse it rather than re-deriving: meterUseLgAutoCal26() additionally
+// requires live LG TV-control state, which has nothing to do with how a code is
+// displayed and made the row fall back to 16..235 whenever the TV link was not
+// up yet.
 function meterLiveSuperWhiteLadderActive(){
+ if(typeof meterGreyAllowsHeadroomTargets==='function') return !!meterGreyAllowsHeadroomTargets();
  const mode=String((meterActiveSeriesSignalMode
   ||(typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr')).toLowerCase();
  if(mode!=='sdr') return false;
- if(!(typeof meterUseLgAutoCal26==='function'&&meterUseLgAutoCal26(meterActiveSeriesPoints))) return false;
  return (typeof meterSdr26UsesSuperWhiteLadder==='function')?!!meterSdr26UsesSuperWhiteLadder():false;
 }
 
