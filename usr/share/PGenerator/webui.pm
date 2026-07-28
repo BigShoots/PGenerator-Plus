@@ -13502,7 +13502,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <span class="apply-settings-spinner" aria-hidden="true"></span>
    <span class="apply-settings-check" aria-hidden="true"><svg viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg"><path d="M14 36 L28 50 L56 18"/></svg></span>
   </div>
-  <div class="apply-settings-title" id="lgConnectTitle">Connect to LG TV</div>
+  <!-- Present tense: this modal is only ever visible while the connect is
+       in flight. lgConnectModalSuccess/Error swap it for the terminal text. -->
+  <div class="apply-settings-title" id="lgConnectTitle">Connecting to LG TV</div>
   <div class="apply-settings-status" id="lgConnectStatus">Contacting the LG TV&hellip;</div>
   <!-- PIN field: only visible during first-time pairing (no saved key).
        The field is rendered inline so the operator doesn't lose the
@@ -13698,7 +13700,9 @@ function lgConnectModalShow(showPinField,statusText){
  const status=document.getElementById('lgConnectStatus');
  const pinField=document.getElementById('lgConnectPinField');
  const pinInput=document.getElementById('lgConnectPinInput');
- if(title) title.textContent='Connect to LG TV';
+ // Spinner state, so present tense. lgConnectModalSuccess flips this to
+ // 'Connected to LG TV' and lgConnectModalError to 'Connect failed'.
+ if(title) title.textContent='Connecting to LG TV';
  if(status) status.textContent=statusText||'Contacting the LG TV\u2026';
  if(pinField) pinField.style.display=showPinField?'flex':'none';
  if(pinInput){
