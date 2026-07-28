@@ -17570,6 +17570,31 @@ function meterCanonicalRecoveredSteps(type,points,steps,status){
 	   if(Array.isArray(freshLat)&&freshLat.length&&(existing.length===0||freshLat.length===existing.length)) return freshLat;
 	  }
 	 }catch(e){}
+	 // Custom series: a snapshot can hold a PARTIAL patch list. Reading a
+	 // sub-range of a custom series replaces meterSeriesSteps with just that
+	 // range, and meterCacheSeriesState then persists the short list -- its
+	 // anti-downgrade guard only fires when the step COUNT matches, so the full
+	 // ladder is lost. After a restart or OTA the series NAME is right but only
+	 // the sub-range renders, and it becomes the active series
+	 // (operator-reported). Rebuild from the series definition whenever the
+	 // snapshot is a strict SUBSET of it. A definition that legitimately shrank
+	 // produces a shorter fresh list, which fails the length test, so an edited
+	 // series still wins. This runs on every restore path, including boot
+	 // recovery, which is the one that has no freshly built steps to compare.
+	 try{
+	  const customSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+	  if(customSeries&&existing.length){
+	   const freshCustom=meterBuildStepsJS(type,points);
+	   if(Array.isArray(freshCustom)&&freshCustom.length>existing.length){
+	    const freshKeys=new Set(freshCustom.map(s=>meterStepNameKey(s)||String((s&&s.name)||'')));
+	    const isSubset=existing.every(s=>freshKeys.has(meterStepNameKey(s)||String((s&&s.name)||'')));
+	    if(isSubset){
+	     try{ console.info('Series cache: rebuilt full ladder over a partial snapshot',{points:points,cached:existing.length,full:freshCustom.length}); }catch(e){}
+	     return freshCustom;
+	    }
+	   }
+	  }
+	 }catch(e){}
 	 if(type!=='greyscale'||String(status||'')==='running') return existing;
 	 if(!(meterUseLgGreyscale21(points)||meterUseLgAutoCal26(points))) return existing;
 	 const fresh=meterBuildStepsJS(type,points);
