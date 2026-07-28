@@ -19111,11 +19111,40 @@ function meterLgAutoCalBodyLumaBiasPayload(dtype){
 // super-white ladder (99/105/109); RGB Limited AND Full use the 24-anchor
 // shape with no super-white (RGB Limited clamps 101..109% to legal white,
 // Full has no super-white at all). Used by thumbs, series slots, TV stops.
+// Dark Detail filler patch values. These MUST stay identical to
+// ddc_dark_detail_fillers_for_layout() in meter_lg_autocal.pl: the browser
+// posts the measurement steps and the worker maps each one onto a DDC slot via
+// ddc_target_for_step, so a value present in one list and not the other is
+// simply dropped on the floor. Changing one without the other is a bug.
+const METER_DARK_DETAIL_FILLERS_SDR=[2,2.7,3.7,6,8,9];
+const METER_DARK_DETAIL_FILLERS_HDR=[1,2.3,3,3.7,6,8,55,65,75,85,95];
+
+function meterDarkDetailFillersForMode(mode){
+ const m=String(mode||'').toLowerCase();
+ return (m==='hdr10'||m==='dv')?METER_DARK_DETAIL_FILLERS_HDR.slice():METER_DARK_DETAIL_FILLERS_SDR.slice();
+}
+
+// Merge the fillers into a ladder body, de-duped, returned ascending. Callers
+// impose their own final ordering (SDR keeps the body ascending, HDR reverses
+// it to descending), so this deliberately does not care about direction.
+// Returns the input untouched when the option is off, so the default path is
+// byte-identical.
+function meterDarkDetailMergeBody(body,mode){
+ const base=(body||[]).slice();
+ if(!(typeof meterFullAutoCalDarkDetailEnabled==='function'&&meterFullAutoCalDarkDetailEnabled())) return base;
+ const seen=new Set(base.map(v=>Number(v).toFixed(4)));
+ meterDarkDetailFillersForMode(mode).forEach(v=>{
+  const k=Number(v).toFixed(4);
+  if(!seen.has(k)){ seen.add(k); base.push(Number(v)); }
+ });
+ return base.sort((a,b)=>a-b);
+}
+
 function meterLgAutoCalSdr26BodySlots(){
- if(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder()){
-  return METER_LG_GREY_AUTOCAL_26_SLOTS_FULL;
- }
- return METER_LG_GREY_AUTOCAL_26_SLOTS;
+ const body=(typeof meterSdr26UsesSuperWhiteLadder==='function' && !meterSdr26UsesSuperWhiteLadder())
+  ? METER_LG_GREY_AUTOCAL_26_SLOTS_FULL
+  : METER_LG_GREY_AUTOCAL_26_SLOTS;
+ return meterDarkDetailMergeBody(body,'sdr');
 }
 function meterLgAutoCalSdr26SeriesSlots(){
  // RGB Limited AND Full: include peak 100% (it is a real charted/thumbed
@@ -28760,7 +28789,12 @@ function meterGreySeriesSlots(points){
  if(points===256) points=100;
  if(meterUseHdrGreyscale30(points)) return [...METER_GREY_SLOTS_HDR30];
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- if(Number(points)===26&&meterUseLgAutoCal26(points)&&(mode==='hdr10'||mode==='dv')) return [0,...METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().reverse()];
+ // HDR/DV run the HDR20 ladder descending after 0%. Merge Dark Detail fillers
+ // into the body first, then reverse, so the extra patches take their correct
+ // place in the descending order rather than being appended at the end.
+ if(Number(points)===26&&meterUseLgAutoCal26(points)&&(mode==='hdr10'||mode==='dv')){
+  return [0,...meterDarkDetailMergeBody(METER_LG_GREY_HDR_AUTOCAL_SLOTS.slice().sort((a,b)=>a-b),mode).reverse()];
+ }
  if(meterUseLgAutoCal26(points)){
   if(mode==='sdr'&&typeof meterLgAutoCalSdr26SeriesSlots==='function') return meterLgAutoCalSdr26SeriesSlots();
   return [...METER_LG_GREY_AUTOCAL_SERIES_SLOTS];
