@@ -32022,7 +32022,13 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 	  // autocal_step_is_hdr20_top_white), so the anchor is redundant.
 	  // Body is reversed so the step strip is 0 -> ascending -> 100%, not
 	  // 0 -> 100 -> descending.
-	  const body=[...METER_LG_GREY_HDR_AUTOCAL_SLOTS].reverse().map(makeHdrStep);
+	  // Same Dark Detail merge point as the SDR body below: this is where the
+	  // POSTED steps are built. METER_LG_GREY_HDR_AUTOCAL_SLOTS is stored
+	  // descending, so .reverse() gives ascending and the merge returns
+	  // ascending -- keep it that way (an earlier inversion here wrecked the
+	  // EOTF/luminance charts). makeHdrStep already handles off-table slots:
+	  // hdrIdx<0 falls back to meterCodeFromSignalPercentWithOptions.
+	  const body=meterDarkDetailMergeBody([...METER_LG_GREY_HDR_AUTOCAL_SLOTS].reverse(),mode).map(makeHdrStep);
 	  return [zero,...body,...passthrough];
 	 }
 	 const makeDdcStep=(slot)=>{
@@ -32089,13 +32095,29 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
  const white=mode==='sdr' && fullShape
   ? {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:stepInputMax,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,stepInputMax),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_order_ire:100,autocal_target_label:isFullRange?'100% full peak':'100% peak'}
   : {ire:100,stimulus:100,signal_r_pct:100,signal_g_pct:100,signal_b_pct:100,r:whiteCode,g:whiteCode,b:whiteCode,input_max:mode==='sdr'?stepInputMax:255,name:'100%',series_type:'greyscale',autocal_code:whiteCode,...meterLgAutoCalTargetMetaForCode(whiteCode),...previewCodesForCode(whiteCode,mode==='sdr'?stepInputMax:255),read_delay_ms:3000,autocal_slot_locked:true,ddc_slot_locked:true,autocal_white_reference:true,autocal_reference_only:true,autocal_read_only:true,autocal_legal_white_anchor:true,ddc_target_ire:99,autocal_order_ire:98.95,autocal_target_label:'100% legal white'};
- const bodySlots=(mode==='sdr' && fullShape)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS;
+ // Dark Detail fillers MUST be merged here, not only in meterGreySeriesSlots.
+ // meterBuildStepsJS sends the 26-point ladder straight to this function, so
+ // meterGreySeriesSlots only ever drove charts/thumbs/TV stops -- the POSTED
+ // measurement steps come from these constants. The worker measures only the
+ // steps it is sent (it greps $config->{steps} through ddc_target_for_step),
+ // so a filler missing here is dropped on the floor even though the worker's
+ // own ddc_slots_for_layout merged it. That was the whole bug: dark_detail
+ // rode in the config, the worker merged its slot list, and the run still
+ // measured the stock 28 steps.
+ // meterLgAutoCalCodeForSlot resolves off-ladder slots by formula, so fillers
+ // get correct codes with no table entry.
+ const bodySlots=meterDarkDetailMergeBody((mode==='sdr' && fullShape)?METER_LG_GREY_AUTOCAL_26_SLOTS_FULL:METER_LG_GREY_AUTOCAL_26_SLOTS,mode);
  const bodyAsc=[...bodySlots].sort((a,b)=>a-b).map(makeDdcStep);
  if(mode==='sdr' && fullShape){
   // Full measurement/thumb flow: 0 → 100 → 50 → 25 → 75 → descend 95..2.3.
   // Worker also re-runs 100% peak after 75% (sdr26_white_recal) before 95%.
   // Mid-spine 50/25/75 early, then revisited on descend (after 80/55/30).
-  const flow=[0,100,50,25,75,95,90,85,80,75,70,65,60,55,50,45,40,35,30,25,20,15,10,7,5,4,3,2.3];
+  // Descending tail is generated from bodySlots so Dark Detail fillers land in
+  // their correct descending position instead of being swept up as leftovers
+  // and appended after 2.3% below. With Dark Detail off this reproduces the
+  // former literal exactly: bodySlots descending IS 95,90,...,2.3, and the
+  // repeated 75/50/25 in that literal were already no-ops once consumed.
+  const flow=[0,100,50,25,75,...[...bodySlots].sort((a,b)=>b-a)];
   const byIre={};
   byIre[0]=zero;
   byIre[100]=white;
@@ -32741,7 +32763,11 @@ function meterGreyTvTarget(step,opts){
 	 // only its wire codes differ. Without dv here the adjustable-point target
 	 // ladder collapsed to the SDR 0-109% body slots.
 	 const autoCalHdr=autoCal26&&['hdr10','dv'].indexOf(String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase())>=0;
-	 const stops=autoCal26?(autoCalHdr?[...METER_LG_GREY_HDR_AUTOCAL_SLOTS]:(typeof meterLgAutoCalSdr26BodySlots==='function'?[...meterLgAutoCalSdr26BodySlots()]:[...METER_LG_GREY_AUTOCAL_26_SLOTS])):meterGreyTvIreStops();
+	 // HDR stops merge the Dark Detail fillers too (the SDR branch already does
+	 // via meterLgAutoCalSdr26BodySlots). Re-sorted descending because the merge
+	 // returns ascending and this list is consumed in the constant's original
+	 // descending direction.
+	 const stops=autoCal26?(autoCalHdr?meterDarkDetailMergeBody([...METER_LG_GREY_HDR_AUTOCAL_SLOTS],'hdr10').sort((a,b)=>b-a):(typeof meterLgAutoCalSdr26BodySlots==='function'?[...meterLgAutoCalSdr26BodySlots()]:[...METER_LG_GREY_AUTOCAL_26_SLOTS])):meterGreyTvIreStops();
 		 let idx=stops.findIndex(v=>Math.abs(v-ire)<0.001);
 	 let patchStop=null;
 	 if(idx < 0 && !autoCal26 && meterUseLgGreyscale21(meterActiveSeriesPoints)){
