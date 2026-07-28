@@ -20866,6 +20866,29 @@ function meterReadingXYZ(reading){
  return null;
 }
 
+// meterReadingXYZ returns null for a reading of zero luminance unless the patch
+// was TARGETING black, because a zero read carries no chromaticity. Every dE
+// path then treated "no measurement to compare" the same as "nothing to report"
+// and returned 0 -- so a patch that measured pure black against a lit target
+// (display off, meter capped or unplugged, fully crushed shadow) scored a
+// perfect zero. Reconstruct {X,0,Z} for a real measurement so the luminance gap
+// is scored against whatever the target is.
+//
+// Unread step shells return null and keep the old behaviour: they have no
+// measurement, which is genuinely different from having measured nothing.
+function meterMeasuredXYZOrBlack(reading){
+ const xyz=meterReadingXYZ(reading);
+ if(xyz) return xyz;
+ if(!reading) return null;
+ if(typeof meterReadingIsRealMeasurement==='function' && !meterReadingIsRealMeasurement(reading)) return null;
+ const Y=Number(meterReadingLuminanceNits(reading));
+ if(!(Y===0)) return null;
+ const X=(reading.X!=null)?Number(reading.X):0;
+ const Z=(reading.Z!=null)?Number(reading.Z):0;
+ if(!Number.isFinite(X)||!Number.isFinite(Z)) return null;
+ return {X:X,Y:0,Z:Z};
+}
+
 function meterColorLuminanceInfo(reading){
  if(!reading) return {measuredY:null,targetY:null,deltaY:null,deltaPct:null};
  const measuredY=meterReadingLuminanceNits(reading);
@@ -20913,22 +20936,13 @@ function meterColorDeltaEForm(){
 }
 
 function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
- let xyz=meterReadingXYZ(reading);
- // A non-0% patch that measured true black (Y=0) returns null from
- // meterReadingXYZ (which only hands back {0,0,0} for black-TARGETING
- // readings). Bailing here with dE 0 wrongly reports a crushed shadow as
- // perfect. Treat a genuine black read (Y=0, X~0, Z~0) as measured {0,0,0}
- // so the black-on-black guard below decides: it still returns 0 when the
- // target is also ~0 (the 0% / target-black case), but for any lit patch
- // with a non-zero target it now computes the full luminance-gap dE.
- if(!xyz && reading){
-  const _Yb=meterReadingLuminanceNits(reading);
-  const _Xb=(reading.X!=null)?Number(reading.X):0;
-  const _Zb=(reading.Z!=null)?Number(reading.Z):0;
-  if(Number(_Yb)===0 && Number.isFinite(_Xb) && Number.isFinite(_Zb) && Math.abs(_Xb)<1e-9 && Math.abs(_Zb)<1e-9){
-   xyz={X:0,Y:0,Z:0};
-  }
- }
+ // Reconstructs {X,0,Z} for a patch that genuinely measured black, so the
+ // black-on-black guard below decides: still 0 when the target is also ~0 (the
+ // 0% / target-black case), but a full luminance-gap dE for any lit target.
+ // This used to be inline here and required X and Z within 1e-9 of zero, but
+ // it was unreachable anyway -- meterColorDeltaE2000 bailed on the null XYZ
+ // before ever calling this.
+ const xyz=meterMeasuredXYZOrBlack(reading);
  if(!reading||!xyz) return {value:0,de2000:0};
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
@@ -20965,7 +20979,7 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
 // selector; Colors and Sat Sweep use their dedicated Color ΔE selector.
 function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
  if(!reading) return 0;
- const xyz=meterReadingXYZ(reading);
+ const xyz=meterMeasuredXYZOrBlack(reading);
  const useColorForm=meterReadingUsesColorDeltaForm(reading);
  form = form || (useColorForm ? meterColorDeltaEForm() : meterDeltaEForm());
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
@@ -20973,15 +20987,16 @@ function meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight){
   return meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight).value;
  }
  const mode=meterResolveGreyRefMode(modeOrIncl);
+ const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
  if(!xyz||!(xyz.Y>0)){
-  if(useColorForm&&meterXyzIsBlack(xyz)){
-   const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
-   if(meterXyzIsBlack(target)) return 0;
+  // Measured black is a zero error ONLY against a black target. Against a lit
+  // target it is a total miss and has to be scored, not swallowed.
+  if(!xyz||!target||!(target.Y>0)){
+   if(useColorForm&&meterXyzIsBlack(xyz)&&meterXyzIsBlack(target)) return 0;
+   return useColorForm ? NaN : 0;
   }
-  return useColorForm ? NaN : 0;
  }
  const wR=meterColorLabWhite();
- const target=meterColorDeltaTargetXYZ(reading, mode==='eotf');
  const labM=xyzToLab(xyz.X,xyz.Y,xyz.Z,wR.X,wR.Y,wR.Z);
  const labT=xyzToLab(target.X,target.Y,target.Z,wR.X,wR.Y,wR.Z);
  return meterDeltaE(labM,labT,form,{
