@@ -13413,7 +13413,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 		    <label id="meterFullAutoCalShadowFixRow" class="fac-option" style="display:none">
 		     <span class="fac-option-main">
 		      <input type="checkbox" id="meterFullAutoCalShadowFixEnabled">
-		      LG Tone Mapping Shadow Fix
+		      Tone Mapping Shadow Fix
 		     </span>
 		     <span class="fac-option-hint">HDR only. Probes this panel&#39;s shadow sampling zones, then measures and trims the 5&ndash;30% DPG shadow band to remove PQ re&#8209;apply lift.</span>
 		    </label>
@@ -40372,7 +40372,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
   full_autocal_run_id:fullWorkflow?meterFullAutoCalRunId||undefined:undefined,
   full_autocal_phase:fullWorkflow?'3d-lut':undefined,
    full_autocal_post_commit_polish:fullWorkflow?fullPostCommitPolish:undefined,
-   // Explicit 1/0 from the wizard's "LG Tone Mapping Shadow Fix" checkbox.
+   // Explicit 1/0 from the wizard's "Tone Mapping Shadow Fix" checkbox.
   // Presence of this key in the payload makes the server-side conf merge
   // (webui_meter_lg_3d_autocal_start) skip its PGenerator.conf fallback,
   // so the wizard choice wins over the conf knob.
