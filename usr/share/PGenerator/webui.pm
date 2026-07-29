@@ -21953,11 +21953,10 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  const wp = meterTargetWhitePoint();
  const wXn = wp.X;
  const wZn = wp.Z;
- // Measured response is normalized by its measured 100% white. The target
- // response must be normalized independently by the active Target White so
- // 100% remains the reference point even when the operator overrides Target
- // White. Using measured white as the target divisor made every channel move
- // above/below 100 when only the target endpoint changed.
+ // Measured response is normalized by its measured 100% white. In Absolute Y
+ // mode the target must use that SAME scale so a measured white above/below
+ // Target White moves all three channels above/below 100. Chroma-only modes
+ // normalize the target independently because luminance error is excluded.
  const mXn=readingXYZ.X/whiteXYZ.Y, mYn=readingXYZ.Y/whiteXYZ.Y, mZn=readingXYZ.Z/whiteXYZ.Y;
  const ire=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
  let lcXn,lcYn,lcZn;
@@ -21977,7 +21976,8 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
    ((typeof meterGreyTargetLuminanceForChartPoint==='function')
     ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,{stimulus:ire,code:reading.r_code})
     : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code));
-  const tYn=(Lw>0)?tgtLum/Lw:0;
+  const targetNormY=(mode==='eotf')?whiteXYZ.Y:Lw;
+  const tYn=(targetNormY>0)?tgtLum/targetNormY:0;
   const tXn=wXn*tYn;
   const tZn=wZn*tYn;
   if(mode==='eotf'){
@@ -22028,9 +22028,7 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
   const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
    ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, {stimulus:targetIre,code:reading.r_code})
    : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
-  const measuredYn=readingXYZ.Y/whiteXYZ.Y;
-  const targetYn=(targetPeak>0)?tgtY/targetPeak:0;
-  fact = (targetYn>0 && measuredYn>=0) ? measuredYn / targetYn : 1.0;
+  fact = (tgtY>0 && readingXYZ.Y>=0) ? readingXYZ.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
  const gamut = meterAnalysisGamut();
