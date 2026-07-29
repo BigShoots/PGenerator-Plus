@@ -5582,15 +5582,18 @@ sub webui_meter_settings_save (@) {
   # explicitly touched custom series; otherwise preserve the stored value so an
   # open old tab can't wipe user data.
   my $posted_empty_stale=($sticky eq "custom_series_json" && $posted ne "" && index($posted,'\\"series\\":[]')>=0 && $body!~/"custom_series_dirty"\s*:\s*true/) ? 1 : 0;
+  # Custom series now live only in their independent authoritative store.
+  # Keep accepting them on the settings POST for older clients, but do not
+  # duplicate the multi-megabyte blob inside meter_settings.json.
+  if($sticky eq "custom_series_json") {
+   if($posted ne "" && !$posted_empty_stale) {
+    $custom_series_store_ok=&_webui_meter_settings_write_json($_custom_series_store,$posted) ? 1 : 0;
+   }
+   next;
+  }
   my $value_to_write="";
   if($posted ne "" && !$posted_empty_stale) {
    $value_to_write=$posted;
-   if($sticky eq "custom_series_json") {
-    # Store the quoted JSON-string value exactly as carried by the settings
-    # response.  The inner series document remains untouched regardless of
-    # size, and can be injected directly into a later settings response.
-    $custom_series_store_ok=&_webui_meter_settings_write_json($_custom_series_store,$posted) ? 1 : 0;
-   }
   } else {
    foreach my $path ($_meter_settings_runtime,$_meter_settings_persist) {
     next unless(-f $path);
@@ -5770,6 +5773,7 @@ sub webui_meter_settings_load (@) {
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "" && $json=~/^\{/) {
+     my $had_embedded_custom=(index($json,'"custom_series_json"')>=0) ? 1 : 0;
      # One-time migration for installations that already persisted custom
      # series inside meter_settings.json before the independent store existed.
      if($custom_series_value eq "") {
@@ -5783,6 +5787,13 @@ sub webui_meter_settings_load (@) {
      # after migration and before optionally appending it once, avoiding the
      # former 2x payload.
      $json=&_webui_json_without_str_key($json,"custom_series_json");
+     # One-time compaction for settings files written before the independent
+     # store became authoritative. Future settings and status requests no
+     # longer have to read and scan a 7+ MB legacy copy.
+     if($omit_custom && $had_embedded_custom) {
+      &_webui_meter_settings_write_json($_meter_settings_runtime,$json);
+      &_webui_meter_settings_write_json($_meter_settings_persist,$json);
+     }
      my $delay_user_set=($json=~/"delay_user_set"\s*:\s*true/i) ? 1 : 0;
      my $delay_explicit=$delay_user_set ? 1 : 0;
      my $delay_value;
