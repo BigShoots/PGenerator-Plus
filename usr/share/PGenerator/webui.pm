@@ -42055,12 +42055,14 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
 	 const distributedGreyThumbWidth=(index)=>(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
 	  ?meterDistributedThumbWidth(parseFloat(container.style.width)||0,visibleSteps.length,index,2)
 	  :null;
+	 const customGreyscaleThumbs=meterActiveSeriesType==='greyscale'&&meterActiveSeriesIsCustom();
 	 const buildSignature=visibleSteps.map((step,index)=>{
 	  const isGrey=meterSeriesStepIsGreyscale(step);
 	  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
 	  const thumbWidth=scrollMode?String(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):'';
+	  const fontSize=(isGrey&&customGreyscaleThumbs)?'10px':'8px';
 	  const colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-	  return [meterStepNameKey(step),label,thumbWidth,colorKey].join('\x1f');
+	  return [meterStepNameKey(step),label,thumbWidth,fontSize,colorKey].join('\x1f');
 	 }).join('\x1e');
 	 const needsRebuild=container.children.length!==visibleSteps.length||container._meterBuildSignature!==buildSignature;
  if(needsRebuild){
@@ -42075,9 +42077,10 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
   const thumbWidth=scrollMode?(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):0;
+  const fontSize=(isGrey&&customGreyscaleThumbs)?'10px':'8px';
   const padX=isGrey?'2px':'1px';
   const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
-  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
+  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:'+fontSize+';font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
   thumb.style.setProperty('--patch-bg',bgColor);
   thumb.style.setProperty('--patch-fg',textColor);
    thumb.textContent=label;
@@ -43753,16 +43756,16 @@ function drawChartGrid(ctx,opts){
  ctx.fillStyle=pgThemeColor('--chart-label','#888898');ctx.font='11px sans-serif';
  if(opts.rotateX){
   if(densePatchAxis){
-   ctx.font='8px sans-serif';
+   ctx.font='11px sans-serif';
    for(let i=0;i<=xSteps;i++){
     const lbl=String(opts.xLabel(i,xSteps)||'').replace(/^Patch\s+/i,'');
     if(!lbl) continue;
     const x=pad.l+xIn+dw*(i/xSteps);
     ctx.save();
     ctx.translate(x,pad.t+h+5);
-    ctx.rotate(-Math.PI/2);
+    ctx.rotate(-Math.PI/4);
     ctx.textAlign='right';
-    ctx.fillText(lbl,0,3);
+    ctx.fillText(lbl,0,4);
     ctx.restore();
    }
   } else {
