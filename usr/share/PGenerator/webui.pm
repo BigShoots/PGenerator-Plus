@@ -1170,13 +1170,18 @@ sub webui_http (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/meter/custom-series") {
+    my $result=&webui_meter_custom_series_load($request_query);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/meter/settings") {
     if($method eq "POST") {
      my $result=&webui_meter_settings_save($body);
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     } else {
-     my $result=&webui_meter_settings_load();
+     my $result=&webui_meter_settings_load($request_query);
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
@@ -5472,6 +5477,61 @@ sub _webui_json_str_value (@) {
  return undef;
 }
 
+# Remove every occurrence of a JSON string property without parsing the whole
+# document. meter_settings.json from older builds can contain the multi-megabyte
+# custom-series value, and the settings response used to append the independent
+# store as a second copy. New clients request ordinary settings without that
+# blob and load the library from its dedicated endpoint.
+sub _webui_json_without_str_key (@) {
+ my ($src,$key)=@_;
+ return $src if(!defined($src) || $src eq "");
+ my $anchor="\"$key\"";
+ while(1) {
+  my $ki=index($src,$anchor);
+  last if($ki < 0);
+  my $ci=index($src,":",$ki+length($anchor));
+  last if($ci < 0);
+  my $len=length($src);
+  my $vi=$ci+1;
+  $vi++ while($vi < $len && substr($src,$vi,1)=~/\s/);
+  last unless($vi < $len && substr($src,$vi,1) eq '"');
+  my $i=$vi+1;
+  while($i < $len) {
+   my $c=substr($src,$i,1);
+   if($c eq "\\") { $i+=2; next; }
+   if($c eq '"') { $i++; last; }
+   $i++;
+  }
+  last if($i > $len);
+  my $start=$ki;
+  $start-- while($start > 0 && substr($src,$start-1,1)=~/\s/);
+  if($start > 0 && substr($src,$start-1,1) eq ",") {
+   $start--;
+  } else {
+   my $tail=$i;
+   $tail++ while($tail < $len && substr($src,$tail,1)=~/\s/);
+   $tail++ if($tail < $len && substr($src,$tail,1) eq ",");
+   $i=$tail;
+  }
+  substr($src,$start,$i-$start,"");
+ }
+ return $src;
+}
+
+sub webui_meter_custom_series_load (@) {
+ my ($query)=@_;
+ my @st=stat($_custom_series_store);
+ my $revision=@st ? (($st[9]||0)."-".($st[7]||0)) : "empty";
+ return "{\"status\":\"ok\",\"revision\":\"$revision\"}" if(defined($query) && $query=~/(?:^|&)meta=1(?:&|$)/);
+ return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state\":{\"format\":\"pgenerator-custom-series-v1\",\"next_id\":1001,\"series\":[]}}" if(!@st);
+ my $quoted="";
+ if(open(my $fh,"<",$_custom_series_store)) { local $/; $quoted=<$fh>; close($fh); }
+ my $inner=eval { require JSON::PP; JSON::PP::decode_json($quoted); };
+ return '{"status":"error","message":"Custom series store is invalid"}'
+  if(!defined($inner) || $inner!~/^\s*\{.*\}\s*$/s);
+ return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state\":$inner}";
+}
+
 sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
@@ -5677,6 +5737,8 @@ sub webui_lg_lut_delete (@) {
 }
 
 sub webui_meter_settings_load (@) {
+ my ($query)=@_;
+ my $omit_custom=(defined($query) && $query=~/(?:^|&)custom_series=0(?:&|$)/) ? 1 : 0;
  my $peak=$pgenerator_conf{"max_luma"};
  $peak=1000 if(!defined $peak || $peak eq "");
  my $min=$pgenerator_conf{"min_luma"};
@@ -5714,6 +5776,10 @@ sub webui_meter_settings_load (@) {
        $custom_series_value=$legacy_custom;
       }
      }
+     # The independent store is authoritative. Strip any legacy embedded copy
+     # after migration and before optionally appending it once, avoiding the
+     # former 2x payload.
+     $json=&_webui_json_without_str_key($json,"custom_series_json");
      my $delay_user_set=($json=~/"delay_user_set"\s*:\s*true/i) ? 1 : 0;
      my $delay_explicit=$delay_user_set ? 1 : 0;
      my $delay_value;
@@ -5761,10 +5827,9 @@ sub webui_meter_settings_load (@) {
    $json=~s/\s*\}\s*$//;
    $json.="," if($json!~/\{\s*$/);
    $json.="\"hdr_master_peak\":\"$peak\",\"hdr_master_min\":\"$min\",\"boot_id\":\"$boot_id\"}";
-   # A duplicate JSON key is intentionally appended last when an old runtime
-   # settings copy also contains custom_series_json; JSON.parse uses the last
-   # value, making the independent persistent store authoritative.
-   if($custom_series_value ne "") {
+   # Append the independent persistent store once for older clients. New
+   # clients omit it here and use /api/meter/custom-series.
+   if(!$omit_custom && $custom_series_value ne "") {
     $json=~s/\}\s*$//;
     $json.=',"custom_series_json":'.$custom_series_value.'}';
    }
@@ -5777,7 +5842,7 @@ sub webui_meter_settings_load (@) {
    push @fallback_parts, "\"hdr_master_peak\":\"$peak\"";
    push @fallback_parts, "\"hdr_master_min\":\"$min\"";
    push @fallback_parts, "\"boot_id\":\"$boot_id\"";
-   push @fallback_parts, '"custom_series_json":'.$custom_series_value if($custom_series_value ne "");
+   push @fallback_parts, '"custom_series_json":'.$custom_series_value if(!$omit_custom && $custom_series_value ne "");
    return "{".join(",",@fallback_parts)."}";
 }
 
@@ -29530,6 +29595,7 @@ let meterCustomSeriesNormalizedState=null;
 let meterCustomSeriesIndexedSeries=null;
 let meterCustomSeriesIndex=new Map();
 let meterCustomSeriesRawJson='';
+let meterCustomSeriesRevision='';
 
 // Durability backup: every custom-series mutation is mirrored to localStorage
 // (marked unsynced) and the mark clears once the settings save that carried
@@ -30025,16 +30091,24 @@ let meterCustomSeriesDirty=false;
 // Refresh the custom-series blob from the Pi so series created in ANOTHER
 // browser/computer appear without a reload. Local unsaved edits win (dirty
 // state skips the refresh; it posts on the next save instead).
+async function meterFetchCustomSeriesSnapshot(){
+ const payload=await fetchJSON('/api/meter/custom-series?_='+Date.now(),{_quiet:true,_timeoutMs:30000,cache:'no-store'});
+ if(!payload||payload.status!=='ok'||!payload.state||!Array.isArray(payload.state.series)) return null;
+ return payload;
+}
+
 async function meterRefreshCustomSeriesFromServer(){
  if(meterCustomSeriesDirty) return false;
- let s=null;
- try{ s=await fetchJSON('/api/meter/settings?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}); }catch(e){ return false; }
- if(!s||!s.custom_series_json) return false;
+ let meta=null;
+ try{ meta=await fetchJSON('/api/meter/custom-series?meta=1&_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}); }catch(e){ return false; }
+ if(!meta||meta.status!=='ok') return false;
+ if(meterCustomSeriesRevision&&String(meta.revision||'')===meterCustomSeriesRevision) return false;
  try{
-  if(s.custom_series_json===meterCustomSeriesRawJson) return false;
-  const next=JSON.parse(s.custom_series_json);
-  meterCustomSeriesState=next;
-  meterCustomSeriesRawJson=s.custom_series_json;
+  const payload=await meterFetchCustomSeriesSnapshot();
+  if(!payload) return false;
+  meterCustomSeriesState=payload.state;
+  meterCustomSeriesRawJson=JSON.stringify(payload.state);
+  meterCustomSeriesRevision=String(payload.revision||'');
   meterCustomSeriesNormalizeState();
   meterRenderCustomSeriesButtons();
   return true;
@@ -41734,12 +41808,10 @@ function meterQueueGreyscaleTargetSync(){
 function meterGreyscaleChartContentWidth(stepCount,viewportWidth){
  const count=Math.max(0,Number(stepCount)||0);
  const viewport=Math.max(320,Number(viewportWidth)||0);
- // Keep large-series canvases below Chromium's practical texture/backing
- // limits. A 1024-patch series previously produced a 37k CSS-pixel canvas
- // (often 74k backing pixels at devicePixelRatio=2) for each scrolling chart,
- // which made the whole page lag while the GPU tiled and repainted them.
- // Every point is still plotted; only the horizontal pixels per point taper.
- return Math.max(viewport,Math.min(16384,Math.round(count*36+90)));
+ // Keep this geometry identical to the thumbnail strip's scroll scale.
+ // Reducing the chart CSS width independently makes the same scroll ratio
+ // expose more thumbnails than chart points.
+ return Math.max(viewport,Math.round(count*36+90));
 }
 
 function meterGreyscaleRotateXLabels(stepCount){
@@ -48685,7 +48757,12 @@ async function flushMeterSettings(timeoutMs){
 }
 async function loadMeterSettings(){
  if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
- const s=await fetchJSON('/api/meter/settings?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'})||{};
+ const requests=await Promise.all([
+  fetchJSON('/api/meter/settings?custom_series=0&_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}),
+  meterFetchCustomSeriesSnapshot()
+ ]);
+ const s=requests[0]||{};
+ const customSeriesPayload=requests[1];
  try{ meterSetSeriesCacheBootId(s.boot_id||''); }catch(e){}
  // Apply any locally-cached color prefs first — server values below will
  // overwrite them on first sync, but this keeps the UI warm during a brief
@@ -48696,7 +48773,11 @@ async function loadMeterSettings(){
  if(s.grey_patch_profiles_json){
   try{ meterGreyPatchProfiles=JSON.parse(s.grey_patch_profiles_json); }catch(e){}
  }
- if(s.custom_series_json){
+ if(customSeriesPayload){
+  meterCustomSeriesState=customSeriesPayload.state;
+  meterCustomSeriesRawJson=JSON.stringify(customSeriesPayload.state);
+  meterCustomSeriesRevision=String(customSeriesPayload.revision||'');
+ } else if(s.custom_series_json){
   try{
    meterCustomSeriesState=JSON.parse(s.custom_series_json);
    meterCustomSeriesRawJson=s.custom_series_json;
