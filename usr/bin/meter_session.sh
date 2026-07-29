@@ -250,6 +250,36 @@ await_setup_step() {
  fi
 }
 
+# Complete a colorimeter dark calibration requested after startup. The caller
+# has already observed spotread's dark-calibration prompt. This function
+# performs the covered-sensor step, waits for the normal read prompt, and asks
+# the operator to aim the meter back at the display. The caller owns the final
+# key that resumes the interrupted read.
+perform_colorimeter_dark_calibration() {
+ local context="${1:-read}"
+ local cal_offset waited clean
+ log "colorimeter dark-calibration prompt during $context"
+ await_setup_step "calibrate_dark" "Cover the meter's sensor (or lay it face-down on a dark surface), then click Calibrate." "Calibrating the meter's black reference - please wait..."
+ cal_offset=$(output_size)
+ printf " " >&3
+ waited=0
+ while (( waited < 300 )); do
+  clean=$(clean_output_since "$cal_offset")
+  if printf '%s' "$clean" | grep -q "to take a reading:"; then
+   await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+   return 0
+  fi
+  if printf '%s' "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected|calibration failed"; then
+   log "dark calibration failed during $context: $(printf '%s' "$clean" | tr '\n' ' ' | cut -c1-300)"
+   return 1
+  fi
+  sleep 0.1
+  waited=$((waited + 1))
+ done
+ log "dark calibration did not return to the read prompt during $context"
+ return 1
+}
+
 patch_request_body() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8" input_max="${9:-255}"
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
@@ -554,11 +584,29 @@ respawn_spotread () {
   # up to 15s for the i1d3 AIO to re-init after a mode change. The
   # second iteration of the outer retry loop gives a second 15s window
   # after a clean re-exec.
-  local _rt=0
+  local _rt=0 _refresh_done=0
   while (( _rt < 150 )); do
    local _co
    _co=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
    echo "$_co" | grep -q "to take a reading:" && break
+   if (( _refresh_done == 0 )) && refresh_cal_prompt "$_co"; then
+    log "performing refresh-rate calibration during low-light respawn"
+    post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
+    sleep 2
+    printf " " >&3
+    _refresh_done=1
+    sleep 2
+    _rt=$((_rt + 40))
+    continue
+   fi
+   if colorimeter_dark_cal_prompt "$_co"; then
+    if ! perform_colorimeter_dark_calibration "low-light respawn"; then
+     write_state '{"status":"error","message":"Meter dark calibration did not complete"}'
+     return 1
+    fi
+    CURRENT_LOW_LIGHT_MODE="$new_mode"
+    return 0
+   fi
    sleep 0.1
    _rt=$(( _rt + 1 ))
   done
@@ -954,6 +1002,18 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
          GOT_RESULT=true
          break
         fi
+       fi
+       if colorimeter_dark_cal_prompt "$READ_OUTPUT"; then
+        if ! perform_colorimeter_dark_calibration "read"; then
+         write_state '{"status":"error","message":"Meter dark calibration did not complete"}'
+         break
+        fi
+        printf " " >&3
+        READ_START=$SECONDS
+        READ_TIMEOUT=$((READ_TIMEOUT + 30))
+        READ_OUTPUT=""
+        SCAN_OFFSET=$(output_size)
+        continue
        fi
        if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
         # Only surface a genuine re-calibration (white tile) prompt -- never

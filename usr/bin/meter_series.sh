@@ -410,6 +410,10 @@ manual_ready_prompt_reason() {
  # calibration prompts and must not pop the wizard mid-read (a "place
  # .*instrument" race on the normal prompt previously fired a spurious wizard
  # that skipped the white-tile step). Applies to all read types (series).
+ if colorimeter_dark_cal_prompt "$clean_out"; then
+  echo "dark_calibration"
+  return 0
+ fi
  if manual_calibration_setup_prompt "$clean_out"; then
   echo "calibration_setup"
   return 0
@@ -434,6 +438,43 @@ manual_ready_prompt_label() {
    printf '%s' "$step_name (click Device Ready when positioned)"
    ;;
  esac
+}
+
+# Handle an interactive prompt raised after a series has already started.
+# Argyll can invalidate a SpyderX black reference after 30 minutes, so the
+# covered-sensor step must work during long series as well as during startup.
+# The caller sends the final key that retries the interrupted patch read.
+handle_series_manual_prompt() {
+ local step_num="$1" step_name="$2" reason="$3"
+ local cal_offset waited clean
+ if [[ "$reason" == "dark_calibration" ]]; then
+  series_setup_step "calibrate_dark" "Cover the meter's sensor (or lay it face-down on a dark surface), then click Calibrate." "Calibrating the meter's black reference - please wait..."
+  cal_offset=$(output_size)
+  printf " " >&3
+  waited=0
+  while (( waited < 300 )); do
+   series_stop_requested && series_cancel_exit
+   clean=$(clean_output_since "$cal_offset")
+   if printf '%s' "$clean" | grep -q "to take a reading:"; then
+    series_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+    return 0
+   fi
+   if printf '%s' "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected|calibration failed"; then
+    echo "[$(date '+%H:%M:%S.%3N')] dark calibration failed: step=$step_num name=$step_name output=$(printf '%s' "$clean" | tr '\n' ' ' | cut -c1-300)" >> /tmp/meter_series_debug.log
+    return 1
+   fi
+   sleep 0.1
+   waited=$((waited + 1))
+  done
+  echo "[$(date '+%H:%M:%S.%3N')] dark calibration timed out: step=$step_num name=$step_name" >> /tmp/meter_series_debug.log
+  return 1
+ fi
+ if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+  wait_for_device_ready "$step_num" "$(manual_ready_prompt_label "$step_name" "$reason")" "$reason"
+ else
+  sleep 1
+ fi
+ return 0
 }
 
 rm -f "$READY_FILE" "$STOP_FILE"
@@ -1586,10 +1627,8 @@ EOJSON
    CUR_SIZE=$(output_size)
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S')] Manual prompt detected during white pre-read: $PROMPT_REASON" >> "$DEBUG_LOG"
-    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-     wait_for_device_ready 0 "$(manual_ready_prompt_label "Reading 100% white for target Y" "$PROMPT_REASON")" "$PROMPT_REASON"
-    else
-     sleep 1
+    if ! handle_series_manual_prompt "0" "Reading 100% white for target Y" "$PROMPT_REASON"; then
+     break
     fi
     printf " " >&3
     SCAN_OFFSET=$(output_size)
@@ -1763,10 +1802,8 @@ EOJSON
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
-    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-     wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
-    else
-     sleep 1
+    if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
+     break
     fi
     printf " " >&3
     READ_START=$SECONDS
@@ -1824,10 +1861,8 @@ EOJSON
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
-      if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-       wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
-      else
-       sleep 1
+      if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
+       break
       fi
       printf " " >&3
       READ_START=$SECONDS
@@ -1894,10 +1929,8 @@ EOJSON
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
-      if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-       wait_for_device_ready "$STEP_NUM" "$(manual_ready_prompt_label "$NAME" "$PROMPT_REASON")" "$PROMPT_REASON"
-      else
-       sleep 1
+      if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
+       break
       fi
       printf " " >&3
       READ_START=$SECONDS
@@ -2017,11 +2050,9 @@ EOJSON
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
-     if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-     wait_for_device_ready "1" "$(manual_ready_prompt_label "$FIRST_NAME (refresh)" "$PROMPT_REASON")" "$PROMPT_REASON"
-     else
-      sleep 1
-     fi
+	     if ! handle_series_manual_prompt "1" "$FIRST_NAME (refresh)" "$PROMPT_REASON"; then
+	      break
+	     fi
      printf " " >&3
      READ_START=$SECONDS
      READ_TIMEOUT=$((READ_TIMEOUT + 30))
