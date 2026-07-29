@@ -21961,7 +21961,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  const mXn=readingXYZ.X/whiteXYZ.Y, mYn=readingXYZ.Y/whiteXYZ.Y, mZn=readingXYZ.Z/whiteXYZ.Y;
  const ire=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
  let lcXn,lcYn,lcZn;
- if(ire!=null&&ire>0){
+ if(ire!=null&&ire>=0){
  // Target: D65 white at the active grey-target luminance.
   const Lw=meterGreyTargetPeak(whiteXYZ.Y);
   const Lb=meterBlackReadingY();
@@ -21987,7 +21987,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
   } else {
    // Chroma-only (absolute or relative): lift/lower the target to the measured
    // Y so pure luminance errors don't show up as equal R/G/B shifts.
-   const lumRatio=(mYn>0&&tYn>0)?mYn/tYn:1;
+   const lumRatio=(tYn>0)?Math.max(0,mYn)/tYn:1;
    lcXn=tXn*lumRatio; lcYn=mYn; lcZn=tZn*lumRatio;
   }
  } else {
@@ -22030,7 +22030,7 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
    : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
   const measuredYn=readingXYZ.Y/whiteXYZ.Y;
   const targetYn=(targetPeak>0)?tgtY/targetPeak:0;
-  fact = (targetYn>0 && measuredYn>0) ? measuredYn / targetYn : 1.0;
+  fact = (targetYn>0 && measuredYn>=0) ? measuredYn / targetYn : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
  const gamut = meterAnalysisGamut();
