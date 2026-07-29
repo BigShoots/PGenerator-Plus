@@ -13283,7 +13283,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <!-- Spectro setup wizard: kept at body level (sibling of the AutoCal overlay) so its z-index beats the AutoCal mask; inside the Calibration card it was stacking-capped behind it. -->
   <div id="meterSpectroSetupModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(460px,100%);background:#111723;border:1px solid #2a3140;border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
-    <div style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Spectrophotometer Setup</div>
+    <div id="meterSpectroSetupTitle" style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Spectrophotometer Setup</div>
     <div id="meterSpectroSetupStepLabel" style="font-size:.72rem;color:var(--text2);margin-bottom:10px">Step</div>
     <div id="meterSpectroSetupMessage" style="font-size:.86rem;color:var(--text);line-height:1.5;margin-bottom:16px;min-height:3em">Preparing the meter…</div>
     <div style="display:flex;justify-content:flex-end;gap:8px">
@@ -26543,6 +26543,11 @@ let meterSpectroSetupCancelEndpoint='/api/meter/stop';
 function meterSpectroSetupLabel(step){
  return ({calibrate_tile:'Calibrate',calibrate_dark:'Calibrate',position_screen:'Ready',calibrate_retry:'Retry'})[step]||'Continue';
 }
+// calibrate_dark is the colorimeter (SpyderX) dark reference, not a spectro
+// step, so the modal title has to follow the step instead of being hardcoded.
+function meterSpectroSetupTitleText(step){
+ return step==='calibrate_dark' ? 'Meter Setup' : 'Spectrophotometer Setup';
+}
 function meterSpectroSetupStepText(step){
  return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',calibrate_dark:'Step 1 of 2: Dark calibration',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
 }
@@ -26552,6 +26557,7 @@ function meterSpectroSetupApply(r,ackEndpoint){
  const modal=document.getElementById('meterSpectroSetupModal');
  if(!modal) return;
  const lbl=document.getElementById('meterSpectroSetupStepLabel');
+ const ttl=document.getElementById('meterSpectroSetupTitle');
  const msg=document.getElementById('meterSpectroSetupMessage');
  const btn=document.getElementById('meterSpectroSetupBtn');
  if(ackEndpoint){
@@ -26560,6 +26566,7 @@ function meterSpectroSetupApply(r,ackEndpoint){
  }
  if(r && r.status==='setup' && r.step_id){
   meterSpectroSetupStepId=Number(r.step_id)||0;
+  if(ttl) ttl.textContent=meterSpectroSetupTitleText(r.step||'');
   if(lbl) lbl.textContent=meterSpectroSetupStepText(r.step||'');
   if(msg) msg.textContent=String(r.message||'');
   if(btn){ btn.textContent=meterSpectroSetupLabel(r.step||''); btn.disabled=false; btn.style.display=''; }

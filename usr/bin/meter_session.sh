@@ -52,6 +52,18 @@ if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
  REFRESH_RATE=""
 fi
 
+# The SpyderX/Spyder5 perform a MANUAL dark calibration (sensor covered) and
+# Argyll persists it to ~/.argyll/.spydX2_<serial>.cal. -N maps to the driver's
+# set_noinitcalib: it suppresses the AUTOMATIC per-startup calibration so the
+# stored one is reused. Without it every spotread spawn re-calibrates, so a
+# dark cal done for Read Once was demanded again for Read Series (a separate
+# spotread process). Argyll still forces the prompt when the stored cal is
+# missing or stale, which is the same safety property the spectro relies on.
+NOINITCAL_FLAG=""
+case "${METER_USB_ID,,}" in
+ 085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
+esac
+
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
 API_BASE="http://127.0.0.1/api"
@@ -472,9 +484,9 @@ build_sr_cmd () {
     # So -N is safe unconditionally for spectros; colorimeters never use it.
     cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -x $new_ll_flags"
    elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
-   cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
+   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
   else
-   cmd="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
+   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
   fi
   # -Y R:rate overrides spotread's measured refresh rate. Passing it makes
   # spotread SKIP its mandatory "read an 80% white patch to calibrate refresh

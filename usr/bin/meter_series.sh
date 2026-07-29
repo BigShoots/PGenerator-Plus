@@ -1141,7 +1141,13 @@ EOJSON
  touch "$OUTFILE"
  mkfifo "$CMDPIPE"
 
- SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
+ # SpyderX/Spyder5 keep a stored manual dark cal; -N reuses it instead of
+ # re-calibrating on every spawn. See meter_session.sh for the full note.
+ NOINITCAL_FLAG=""
+ case "${METER_USB_ID,,}" in
+  085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
+ esac
+ SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
    # Spectrophotometer: no -X (CCSS is a colorimeter correction) and no -y
    # (display type selection is a colorimeter concept). Passing -y makes
@@ -1174,7 +1180,7 @@ EOJSON
     DISPLAY_TYPE="l"
    fi
   fi
-  SR_CMD="$SPOTREAD_BIN -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
+  SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
  fi
  # Override refresh rate if specified. Passing -Y R:rate makes spotread skip
  # its mandatory 80% white refresh-calibration read (unreliable on a
