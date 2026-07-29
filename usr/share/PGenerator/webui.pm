@@ -12890,7 +12890,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartGammaValueLabel">Gamma</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto">
-       <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings)" style="vertical-align:middle"> Per-channel γ
+       <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings);meterSaveColorPrefs()" style="vertical-align:middle"> Per-channel γ
       </label>
      </div>
     <div id="meterGammaValueScroller" class="meter-scroll-sync" style="background:#0d0d15;border-radius:6px">
@@ -23684,6 +23684,7 @@ function meterSaveColorPrefs(){
    sep_lum:       cb('meterSeparateLumError'),
    target_gamma:  v('meterTargetGamma'),
     hdr_bt2390:    cb('meterHdrApplyBT2390'),
+    gamma_per_channel: cb('meterPerChannelGamma'),
     eotf_absolute: cb('meterEotfAbsolute'),
     eotf_per_channel: cb('meterEotfPerChannel'),
     eotf_log: cb('meterEotfLogScale'),
@@ -23734,6 +23735,7 @@ function meterLoadColorPrefs(){
     meterUpdateSeparateLumVisibility();
   setVal('meterTargetGamma', p.target_gamma);
   setChk('meterHdrApplyBT2390', p.hdr_bt2390);
+  setChk('meterPerChannelGamma', p.gamma_per_channel);
   setChk('meterEotfAbsolute', p.eotf_absolute);
   setChk('meterEotfPerChannel', p.eotf_per_channel);
   setChk('meterEotfLogScale', p.eotf_log);
