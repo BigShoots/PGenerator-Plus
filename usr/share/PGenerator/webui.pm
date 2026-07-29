@@ -8068,14 +8068,21 @@ sub webui_redact_sensitive_log_text (@) {
  $text="" if(!defined($text));
 
  # Secrets can appear in config, JSON helper output, or wpa_cli output.
- $text =~ s{("(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
- $text =~ s{("(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)"\s*:\s*)(?:-?\d+(?:\.\d+)?|true|false|null)}{$1"<redacted>"}gi;
- $text =~ s{^(\s*(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin)\s*[:=]\s*).*$}{$1<redacted>}gim;
+ my $secret_key=qr/(?:client[_-]?key|password|passwd|psk|secret|(?:access|auth|pairing)?[_-]?token|pin|(?:private|identity|link|long[_-]?term|local[_-]?identity|remote[_-]?identity)[_-]?key|irk|ltk|csrk)/i;
+ $text =~ s{("?$secret_key"?\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
+ $text =~ s{("?$secret_key"?\s*:\s*)(?:-?\d+(?:\.\d+)?|true|false|null)}{$1"<redacted>"}gi;
+ $text =~ s{^(\s*$secret_key\s*[:=]\s*).*$}{$1<redacted>}gim;
  $text =~ s{(://[^/\s:@]+:)[^@\s/]+@}{$1<redacted>@}g;
 
- # Names and hardware identifiers are not needed to diagnose their state.
- $text =~ s{("(?:ssid|bssid|hostname|host_name|auto_host|user(?:name)?|email|serial(?:[_-]?(?:number|no))?|device_serial|meter_serial|display_serial|uuid|boot_id|stored_name|cec_osd_name|cec_tv_name|friendly_name|device_name|tv_name)"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
- $text =~ s{^(\s*(?:ssid|bssid|hostname|host_name)\s*[:=]\s*).*$}{$1<redacted>}gim;
+ # Names and stable hardware/account identifiers are not needed to diagnose
+ # their state. Cover JSON, config/udev key-value output, and CGATS-style
+ # whitespace fields such as INSTRUMENT_SERIAL "12345".
+ my $identity_key=qr/(?:ssid|bssid|hostname|host_name|auto_host|user(?:name)?|email|s[\/_-]?n|serial(?:[_-]?(?:number|no))?|(?:device|meter|display|instrument|board|cpu|soc|system|product|chassis|baseboard|edid|adapter|controller)[_-]?serial(?:[_-]?(?:number|no))?|id[_-]?serial(?:[_-]?short)?|uuid|guid|udid|unique[_-]?id|partuuid|(?:boot|machine|product|system|hardware|device|client|installation|instance|network|connection|adapter|interface|wifi|wi[_-]?fi|bluetooth|bt|filesystem|fs|partition|part[_-]?(?:entry|table)|dm)[_-]?(?:uuid|guid|id)|id[_-]?(?:fs|part[_-]?(?:entry|table))[_-]?uuid(?:[_-]?enc)?|(?:device|adapter|controller|interface|wifi|wi[_-]?fi|bluetooth|bt)[_-]?mac(?:[_-]?address)?|mac(?:[_-]?address)?|hwaddr|bdaddr|wwn|wwid|id[_-]?(?:wwn|wwid)|stored_name|cec_osd_name|cec_tv_name|friendly_name|device_name|tv_name)/i;
+ $text =~ s{("$identity_key"\s*:\s*)"(?:\\.|[^"\\])*"}{$1"<redacted>"}gi;
+ $text =~ s{("$identity_key"\s*:\s*)(?:-?\d+(?:\.\d+)?|true|false|null)}{$1"<redacted>"}gi;
+ $text =~ s{("$identity_key"\s*:\s*)\[(?:\\.|[^\]])*\]}{$1["<redacted>"]}gi;
+ $text =~ s{^(\s*$identity_key\s*[:=]\s*).*$}{$1<redacted>}gim;
+ $text =~ s{^(\s*$identity_key\s+)(?:"(?:\\.|[^"\\])*"|'[^']*'|\S+).*$}{$1<redacted>}gim;
  $text =~ s{^(\s*(?:(?:display product|device|meter|instrument)\s+)?serial(?:\s*(?:number|no\.?|#))?\s*[:=]\s*).*$}{$1<redacted>}gim;
  $text =~ s{(\bserial(?:[_\s-]?(?:number|no\.?))\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,\}\]]+)}{$1<redacted>}gi;
  $text =~ s{(\b(?:display product|device|meter|instrument)\s+serial(?:\s*(?:number|no\.?|#))?\s+(?:is\s+)?)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,\}\]]+)}{$1<redacted>}gi;
@@ -8083,6 +8090,20 @@ sub webui_redact_sensitive_log_text (@) {
  $text =~ s{^(\s*(?:search|domain)\s+).*$}{$1<redacted>}gim;
  $text =~ s{(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])}{<email-redacted>}g;
  $text =~ s{/home/[^/\s]+}{/home/<user>}g;
+
+ # UUIDs/GUIDs also appear without a useful key (Bluetooth service listings,
+ # WiFi connection records, D-Bus output and filesystem paths). Preserve only
+ # equality within the report so repeated references remain diagnosable.
+ my (%uuid_alias,$uuid_count);
+ $text =~ s{
+  (?<![A-Fa-f0-9])
+  (\{?[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}?)
+  (?![A-Fa-f0-9])
+ }{
+  my $id=lc($1);
+  $id=~s/^\{//; $id=~s/\}$//;
+  $uuid_alias{$id} ||= "<uuid-".(++$uuid_count).">";
+ }gex;
 
  # Preserve whether addresses are private/public/link-local and preserve
  # equality within one report, without exposing the actual network topology.
@@ -8113,7 +8134,7 @@ sub webui_redact_sensitive_log_text (@) {
  my (%mac_alias,$mac_count);
  $text =~ s{
   (?<![A-Fa-f0-9])
-  ((?:[A-Fa-f0-9]{2}[:-]){5}[A-Fa-f0-9]{2})
+  ((?:(?:[A-Fa-f0-9]{2}[:-]){7}[A-Fa-f0-9]{2})|(?:(?:[A-Fa-f0-9]{2}[:-]){5}[A-Fa-f0-9]{2})|(?:[A-Fa-f0-9]{4}\.){2}[A-Fa-f0-9]{4})
   (?![A-Fa-f0-9])
  }{
   my $addr=lc($1);
@@ -8167,7 +8188,7 @@ sub webui_create_logs_bundle (@) {
  push @out, "  Host: $hostname   Version: $version   Date: ".`date -u '+%Y-%m-%d %H:%M:%S UTC'`;
  chomp($out[$#out]);
  push @out, "  PRIVACY: Network addresses retain only their address class and stable alias.";
- push @out, "  Host/user names, WiFi identity, credentials, and device serials are redacted.";
+ push @out, "  Host/user names, WiFi/Bluetooth identity, UUIDs, credentials, and hardware serials are redacted.";
  push @out, "=" x 72;
 
  # System info
