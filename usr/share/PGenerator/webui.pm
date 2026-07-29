@@ -10706,8 +10706,9 @@ sub webui_html (@) {
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--text);min-height:100vh;padding:0}
 body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscroll-behavior:none}
-#meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-gutter:stable both-edges}
-#meterThumbsRow{touch-action:pan-x}
+#meterThumbsRow,.meter-scroll-sync{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+#meterThumbsRow{touch-action:pan-x;scrollbar-gutter:auto}
+.meter-scroll-sync{scrollbar-gutter:stable both-edges}
 /* Charts scroll horizontally inside their own strip, but a vertical finger
    gesture over the plot must continue scrolling the page. Y-axis touch zoom
    uses its own narrow touch-action:none overlay instead of locking the canvas. */
@@ -41664,6 +41665,18 @@ function meterSeriesThumbWidth(step){
  return 34;
 }
 
+function meterDistributedThumbWidth(totalWidth,count,index,gap){
+ const n=Math.max(1,Number(count)||1);
+ const i=Math.max(0,Math.min(n-1,Number(index)||0));
+ const available=Math.max(n,Number(totalWidth)||n)-Math.max(0,n-1)*(Number(gap)||0);
+ // Flex rounds each repeated fractional width independently, which can lose
+ // several pixels over 1,024 items. Quantize cumulative boundaries instead;
+ // the tiny fractions are distributed and the final edge lands exactly.
+ const left=Math.round(i*available/n*64)/64;
+ const right=Math.round((i+1)*available/n*64)/64;
+ return Math.max(1,right-left);
+}
+
 function meterSeriesThumbContentWidth(sortedSteps,row){
  const steps=Array.isArray(sortedSteps)?sortedSteps:[];
  const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
@@ -41953,12 +41966,12 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
   const steps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(meterSeriesSteps||[]));
   if(thumbContainer&&steps.length===count&&thumbContainer.children.length===count){
    const contentWidth=meterSeriesThumbContentWidth(steps,thumbRow);
-   const slotWidth=Math.max(1,(contentWidth-Math.max(0,count-1)*2)/Math.max(1,count));
    thumbContainer.style.paddingLeft='0';
    thumbContainer.style.paddingRight='0';
    thumbContainer.style.width=contentWidth+'px';
    thumbContainer.style.minWidth=contentWidth+'px';
-   Array.from(thumbContainer.children).forEach(thumb=>{
+   Array.from(thumbContainer.children).forEach((thumb,index)=>{
+    const slotWidth=meterDistributedThumbWidth(contentWidth,count,index,2);
     thumb.style.flex='0 0 '+slotWidth+'px';
     thumb.style.minWidth=slotWidth+'px';
     thumb.dataset.thumbWidth=String(slotWidth);
@@ -42039,13 +42052,13 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   container.style.width='100%';
   container.style.minWidth='100%';
  }
-	 const uniformGreyThumbWidth=(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
-	  ?Math.max(1,((parseFloat(container.style.width)||0)-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
+	 const distributedGreyThumbWidth=(index)=>(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
+	  ?meterDistributedThumbWidth(parseFloat(container.style.width)||0,visibleSteps.length,index,2)
 	  :null;
-	 const buildSignature=visibleSteps.map(step=>{
+	 const buildSignature=visibleSteps.map((step,index)=>{
 	  const isGrey=meterSeriesStepIsGreyscale(step);
 	  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-	  const thumbWidth=scrollMode?String(uniformGreyThumbWidth||meterSeriesThumbWidth(step)):'';
+	  const thumbWidth=scrollMode?String(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):'';
 	  const colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
 	  return [meterStepNameKey(step),label,thumbWidth,colorKey].join('\x1f');
 	 }).join('\x1e');
@@ -42061,7 +42074,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    const textColor=meterContrastTextColor(bgColor);
    const textShadow=textColor==='#eee'?'0 1px 2px rgba(0,0,0,.75)':'0 1px 1px rgba(255,255,255,.18)';
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
-  const thumbWidth=scrollMode?(uniformGreyThumbWidth||meterSeriesThumbWidth(step)):0;
+  const thumbWidth=scrollMode?(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):0;
   const padX=isGrey?'2px':'1px';
   const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
   thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:8px;font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
