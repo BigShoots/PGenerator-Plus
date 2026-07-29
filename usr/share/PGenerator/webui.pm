@@ -10655,7 +10655,7 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 	.meter-thumbs-nav:disabled{opacity:.35;cursor:default;filter:none}
 	.meter-scroll-sync{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
 	.meter-scroll-sync>canvas{display:block}
-	.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important}
+	.meter-patch-thumb{background:var(--patch-bg)!important;color:var(--patch-fg)!important;contain:layout style paint;content-visibility:auto;contain-intrinsic-size:34px 28px}
 	.meter-thumb-selection-box{position:fixed;z-index:10020;pointer-events:none;border:1px solid #7f9cff;background:rgba(91,127,255,.2);box-shadow:0 0 0 1px rgba(0,0,0,.25);border-radius:2px}
 	#meterGreyscaleLgPrimary{display:block}
 	#chartsGreyscaleFullWrap.lg-calibration-mode #meterGreyscaleLgPrimary{display:grid;grid-template-columns:180px minmax(0,1fr);column-gap:8px;row-gap:10px;align-items:stretch;margin-bottom:10px}
@@ -24961,8 +24961,25 @@ function meterFindSeriesWhiteReading(readings){
 
 function meterCanonicalSeriesStep(step){
  if(!step||!Array.isArray(meterSeriesSteps)||!meterSeriesSteps.length) return step||null;
+ if(meterCanonicalStepCacheSource!==meterSeriesSteps||!meterCanonicalStepCache){
+  const byObject=new Map();
+  const byKey=new Map();
+  meterSeriesSteps.forEach(candidate=>{
+   byObject.set(candidate,candidate);
+   const key=meterStepNameKey(candidate);
+   if(key&&!byKey.has(key)) byKey.set(key,candidate);
+   const name=String((candidate&&candidate.name)||'');
+   if(name&&!byKey.has('name:'+name)) byKey.set('name:'+name,candidate);
+  });
+  meterCanonicalStepCacheSource=meterSeriesSteps;
+  meterCanonicalStepCache={byObject:byObject,byKey:byKey};
+ }
+ const direct=meterCanonicalStepCache.byObject.get(step);
+ if(direct) return direct;
  const key=meterStepNameKey(step);
- return meterSeriesSteps.find(s=>meterStepNameKey(s)===key||((s.name||'')===(step.name||'')))||step;
+ if(key&&meterCanonicalStepCache.byKey.has(key)) return meterCanonicalStepCache.byKey.get(key);
+ const name=String(step.name||'');
+ return (name&&meterCanonicalStepCache.byKey.get('name:'+name))||step;
 }
 
 function meterFreshSeriesStep(step){
@@ -27386,6 +27403,13 @@ let meterSelectionBaselineReadings=null;
 let meterSelectionBaselineWhite=null;
 let meterSelectionWillMeasureWhite=false;
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
+let meterVisibleStepsCacheSource=null;
+let meterVisibleStepsCacheType=null;
+let meterVisibleStepsCacheResult=null;
+let meterVisibleStepsIndexCacheSource=null;
+let meterVisibleStepsIndexCache=null;
+let meterCanonicalStepCacheSource=null;
+let meterCanonicalStepCache=null;
 
 // A Read Selection worker intentionally reports only the patches it was asked
 // to measure (plus optional white/black reference steps). Those worker steps
@@ -27418,10 +27442,47 @@ function meterRecoveryDisplaySteps(type,points,workerSteps){
 
 function meterVisibleSeriesSteps(){
  const source=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+ if(meterVisibleStepsCacheSource===source&&meterVisibleStepsCacheType===meterActiveSeriesType&&Array.isArray(meterVisibleStepsCacheResult)){
+  return meterVisibleStepsCacheResult;
+ }
  const ordered=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
   ? [...source]
   : meterGreyscaleSeriesSteps(source);
- return meterFilterLgAutoCalChartItems(ordered);
+ meterVisibleStepsCacheSource=source;
+ meterVisibleStepsCacheType=meterActiveSeriesType;
+ meterVisibleStepsCacheResult=meterFilterLgAutoCalChartItems(ordered);
+ meterVisibleStepsIndexCacheSource=null;
+ meterVisibleStepsIndexCache=null;
+ return meterVisibleStepsCacheResult;
+}
+
+function meterVisibleSeriesStepIndex(step){
+ if(!step) return -1;
+ const steps=meterVisibleSeriesSteps();
+ if(meterVisibleStepsIndexCacheSource!==steps||!meterVisibleStepsIndexCache){
+  const byObject=new Map();
+  const byKey=new Map();
+  steps.forEach((candidate,index)=>{
+   byObject.set(candidate,index);
+   const key=meterStepNameKey(candidate);
+   if(key&&!byKey.has(key)) byKey.set(key,index);
+   const name=String((candidate&&candidate.name)||'');
+   if(name&&!byKey.has('name:'+name)) byKey.set('name:'+name,index);
+  });
+  meterVisibleStepsIndexCacheSource=steps;
+  meterVisibleStepsIndexCache={byObject:byObject,byKey:byKey};
+ }
+ const direct=meterVisibleStepsIndexCache.byObject.get(step);
+ if(direct!=null) return direct;
+ const canonical=meterCanonicalSeriesStep(step)||step;
+ const canonicalDirect=meterVisibleStepsIndexCache.byObject.get(canonical);
+ if(canonicalDirect!=null) return canonicalDirect;
+ const key=meterStepNameKey(canonical);
+ if(key&&meterVisibleStepsIndexCache.byKey.has(key)) return meterVisibleStepsIndexCache.byKey.get(key);
+ const name=String((canonical&&canonical.name)||'');
+ return name&&meterVisibleStepsIndexCache.byKey.has('name:'+name)
+  ?meterVisibleStepsIndexCache.byKey.get('name:'+name)
+  :-1;
 }
 
 function meterSelectedPatchCount(){
@@ -27439,17 +27500,7 @@ function meterThumbStepAt(index){
 }
 
 function meterThumbIndexForStep(step){
- if(!step) return -1;
- const steps=meterVisibleSeriesSteps();
- const canonical=meterCanonicalSeriesStep(step)||step;
- const key=meterStepNameKey(canonical);
- let fallback=-1;
- for(let i=0;i<steps.length;i++){
-  const candidate=meterCanonicalSeriesStep(steps[i])||steps[i];
-  if(candidate===canonical||steps[i]===step) return i;
-  if(fallback<0&&meterStepNameKey(candidate)===key) fallback=i;
- }
- return fallback;
+ return meterVisibleSeriesStepIndex(step);
 }
 
 function meterRefreshThumbSelectionStyles(suppressButtonUpdate){
@@ -41683,7 +41734,12 @@ function meterQueueGreyscaleTargetSync(){
 function meterGreyscaleChartContentWidth(stepCount,viewportWidth){
  const count=Math.max(0,Number(stepCount)||0);
  const viewport=Math.max(320,Number(viewportWidth)||0);
- return Math.max(viewport,Math.round(count*36+90));
+ // Keep large-series canvases below Chromium's practical texture/backing
+ // limits. A 1024-patch series previously produced a 37k CSS-pixel canvas
+ // (often 74k backing pixels at devicePixelRatio=2) for each scrolling chart,
+ // which made the whole page lag while the GPU tiled and repainted them.
+ // Every point is still plotted; only the horizontal pixels per point taper.
+ return Math.max(viewport,Math.min(16384,Math.round(count*36+90)));
 }
 
 function meterGreyscaleRotateXLabels(stepCount){
@@ -41884,16 +41940,16 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
 	 const uniformGreyThumbWidth=(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
 	  ?Math.max(1,((parseFloat(container.style.width)||0)-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
 	  :null;
-	 const needsRebuild=(container.children.length!==visibleSteps.length)||visibleSteps.some((step,idx)=>{
-	  const child=container.children[idx];
+	 const buildSignature=visibleSteps.map(step=>{
 	  const isGrey=meterSeriesStepIsGreyscale(step);
 	  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
 	  const thumbWidth=scrollMode?String(uniformGreyThumbWidth||meterSeriesThumbWidth(step)):'';
 	  const colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-	  return !child||(child.dataset.key||'')!==meterStepNameKey(step)||(child.textContent||'')!==label||(child.dataset.thumbWidth||'')!==thumbWidth||(child.dataset.colorKey||'')!==colorKey;
- });
+	  return [meterStepNameKey(step),label,thumbWidth,colorKey].join('\x1f');
+	 }).join('\x1e');
+	 const needsRebuild=container.children.length!==visibleSteps.length||container._meterBuildSignature!==buildSignature;
  if(needsRebuild){
-  container.innerHTML='';
+  const fragment=document.createDocumentFragment();
   meterThumbsBuilt=true;
   visibleSteps.forEach((step,index)=>{
    const thumb=document.createElement('div');
@@ -41915,43 +41971,18 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
    thumb.dataset.g=step.g;
    thumb.dataset.b=step.b;
    thumb.dataset.name=step.name||'';
+  thumb.dataset.index=String(index);
   thumb.dataset.thumbWidth=scrollMode?String(thumbWidth):'';
   thumb.dataset.key=meterStepNameKey(step);
 	  thumb.dataset.colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-	   thumb.addEventListener('click',function(event){
-	    if(meterSeriesRunning||meterAutoCalStatusActive()) return;
-	    if(performance.now()<meterThumbSuppressClickUntil) return;
-	    const additive=!!(event.ctrlKey||event.metaKey);
-	    if(event.shiftKey){
-	     const anchor=Number.isInteger(meterThumbSelectionAnchor)?meterThumbSelectionAnchor:index;
-	     const first=Math.min(anchor,index);
-	     const last=Math.max(anchor,index);
-	     const range=[];
-	     for(let i=first;i<=last;i++) range.push(i);
-	     meterApplyThumbSelection(range,{additive:additive,anchor:anchor});
-	     return;
-	    }
-	    if(additive){
-	     const next=new Set(meterSelectedThumbIndices);
-	     if(next.has(index)) next.delete(index); else next.add(index);
-	     meterSelectedThumbIndices=next;
-	     meterThumbSelectionAnchor=index;
-	     const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
-	     if(!next.size){ meterDeselectCurrentPatch(); return; }
-	     if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
-	     else meterRefreshThumbSelectionStyles();
-	     return;
-	    }
-	    if(meterSelectedThumbIndices.size===1&&meterSelectedThumbIndices.has(index)){
-	     meterDeselectCurrentPatch();
-	     return;
-	    }
-	    meterSelectedThumbIndices=new Set([index]);
-	    meterThumbSelectionAnchor=index;
-	    meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true,preserveMulti:true});
-	   });
-   container.appendChild(thumb);
+   fragment.appendChild(thumb);
   });
+  container.replaceChildren(fragment);
+  container._meterBuildSignature=buildSignature;
+ }
+ if(container.dataset.thumbClickBound!=='1'){
+  container.dataset.thumbClickBound='1';
+  container.addEventListener('click',meterHandlePatchThumbClick);
  }
  meterUpdateThumbStyles(container,completedIres,currentIre);
  meterUpdateThumbScrollButtons();
@@ -41961,16 +41992,58 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  }
  if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
 }
+
+function meterHandlePatchThumbClick(event){
+ if(meterSeriesRunning||meterAutoCalStatusActive()) return;
+ if(performance.now()<meterThumbSuppressClickUntil) return;
+ const thumb=event.target&&event.target.closest?event.target.closest('.meter-patch-thumb'):null;
+ if(!thumb) return;
+ const index=Number(thumb.dataset.index);
+ const step=meterThumbStepAt(index);
+ if(!Number.isInteger(index)||!step) return;
+ const additive=!!(event.ctrlKey||event.metaKey);
+ if(event.shiftKey){
+  const anchor=Number.isInteger(meterThumbSelectionAnchor)?meterThumbSelectionAnchor:index;
+  const first=Math.min(anchor,index);
+  const last=Math.max(anchor,index);
+  const range=[];
+  for(let i=first;i<=last;i++) range.push(i);
+  meterApplyThumbSelection(range,{additive:additive,anchor:anchor});
+  return;
+ }
+ if(additive){
+  const next=new Set(meterSelectedThumbIndices);
+  if(next.has(index)) next.delete(index); else next.add(index);
+  meterSelectedThumbIndices=next;
+  meterThumbSelectionAnchor=index;
+  const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
+  if(!next.size){ meterDeselectCurrentPatch(); return; }
+  if(currentIndex<0||!next.has(currentIndex)) meterDisplayFirstSelectedPatch();
+  else meterRefreshThumbSelectionStyles();
+  return;
+ }
+ if(meterSelectedThumbIndices.size===1&&meterSelectedThumbIndices.has(index)){
+  meterDeselectCurrentPatch();
+  return;
+ }
+ meterSelectedThumbIndices=new Set([index]);
+ meterThumbSelectionAnchor=index;
+ meterSelectPatchFromInteraction(step,meterFindReadingForStep(step),{pin:true,preserveMulti:true});
+}
+
 function meterUpdateThumbStyles(container,completedIres,currentIre){
- const hasReadings=completedIres&&completedIres.size>0;
+ const autoCalActive=meterAutoCalStatusActive();
  for(let i=0;i<container.children.length;i++){
   const thumb=container.children[i];
   const key=thumb.dataset.key||thumb.dataset.name||String(thumb.dataset.ire||'');
   const done=completedIres&&completedIres.has(key);
-  // All thumbs fully visible always; completed ones get a checkmark overlay
-  thumb.style.opacity='1';
 	  const isReading=(currentIre!=null&&key===currentIre);
-	  const isSelected=(!meterAutoCalStatusActive()&&(meterSelectedThumbIndices.has(i)||(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre)));
+	  const isSelected=(!autoCalActive&&(meterSelectedThumbIndices.has(i)||(meterSelectedThumbIre!=null&&key===meterSelectedThumbIre)));
+  const visualState=isReading?'reading':(isSelected?'selected':(done?'done':'idle'));
+  if(thumb.dataset.visualState===visualState) continue;
+  thumb.dataset.visualState=visualState;
+  // All thumbs fully visible always; completed ones get a checkmark overlay.
+  thumb.style.opacity='1';
   if(isReading){
    thumb.style.boxShadow='';
    thumb.style.animation='thumbPulse 1s ease-in-out infinite';
@@ -43215,11 +43288,15 @@ function getChartCtx(id){
  const rect=c.getBoundingClientRect();
  // Guard: if canvas not visible (VS Code webview, hidden panel), skip
  if(rect.width<10||rect.height<10) return null;
- const newW=Math.round(rect.width*dpr), newH=Math.round(rect.height*dpr);
+ // Wide series charts can exceed the browser/GPU maximum backing dimension
+ // when DPR is applied. Reduce backing density for those canvases while
+ // preserving their CSS geometry and all plotted samples.
+ const renderRatio=Math.max(0.25,Math.min(dpr,16384/rect.width,16384/rect.height));
+ const newW=Math.round(rect.width*renderRatio), newH=Math.round(rect.height*renderRatio);
  // Only resize canvas buffer if dimensions actually changed (avoids unnecessary clear)
  if(c.width!==newW||c.height!==newH){ c.width=newW; c.height=newH; }
  const ctx=c.getContext('2d');
- ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.setTransform(renderRatio,0,0,renderRatio,0,0);
  ctx.w=rect.width;
  ctx.h=rect.height;
  ctx.canvasId=id;
@@ -43516,8 +43593,16 @@ function drawChartGrid(ctx,opts){
  ctx.strokeStyle=pgThemeColor('--chart-grid','#1d1d29');
  ctx.lineWidth=1;
  const xSteps=opts.xSteps||10, ySteps=opts.ySteps||5;
- for(let i=0;i<=xSteps;i++){
+ // Drawing a vertical line and rotated label for every point is useful for
+ // normal series, but wasteful at 1k+ points. Limit grid density while keeping
+ // the first/last labels and the chart's full coordinate resolution.
+ const xStride=Math.max(1,Math.ceil(xSteps/160));
+ for(let i=0;i<=xSteps;i+=xStride){
   const x=pad.l+xIn+dw*(i/xSteps);
+  ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+ }
+ if(xSteps%xStride){
+  const x=pad.l+xIn+dw;
   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
  }
  for(let i=0;i<=ySteps;i++){
@@ -43531,7 +43616,7 @@ function drawChartGrid(ctx,opts){
  // (e.g. "Magenta 100%") don't overlap on dense series.
  ctx.fillStyle=pgThemeColor('--chart-label','#888898');ctx.font='11px sans-serif';
  if(opts.rotateX){
-  for(let i=0;i<=xSteps;i++){
+  for(let i=0;i<=xSteps;i+=xStride){
    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
    if(!lbl) continue;
    const x=pad.l+xIn+dw*(i/xSteps);
@@ -43542,11 +43627,26 @@ function drawChartGrid(ctx,opts){
    ctx.fillText(lbl,0,4);
    ctx.restore();
   }
+  if(xSteps%xStride){
+   const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
+   if(lbl){
+    ctx.save();
+    ctx.translate(pad.l+xIn+dw,pad.t+h+6);
+    ctx.rotate(-Math.PI/4);
+    ctx.textAlign='right';
+    ctx.fillText(lbl,0,4);
+    ctx.restore();
+   }
+  }
  } else {
   ctx.textAlign='center';
-  for(let i=0;i<=xSteps;i++){
+  for(let i=0;i<=xSteps;i+=xStride){
    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
    ctx.fillText(lbl,pad.l+xIn+dw*(i/xSteps),pad.t+h+14);
+  }
+  if(xSteps%xStride){
+   const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
+   ctx.fillText(lbl,pad.l+xIn+dw,pad.t+h+14);
   }
  }
  // Y labels
@@ -44446,6 +44546,7 @@ function colorHighlightThumb(name){
   const t=container.children[i];
   const isMatch=t.dataset.name===name;
   const done=completedNames.has(t.dataset.name);
+  t.dataset.visualState=isMatch?'selected':(done?'done':'idle');
   t.style.boxShadow=isMatch?'inset 0 0 0 3px #5b7fff':(done?'inset 0 0 0 2px #4caf50':'none');
   t.style.animation='none';
   t.style.zIndex=isMatch?'1':'';
