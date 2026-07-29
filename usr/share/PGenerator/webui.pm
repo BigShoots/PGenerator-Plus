@@ -24661,6 +24661,14 @@ function meterRecoverSeries(s){
 	   if(importedBasis>=101) return 100;
 	   return importedBasis>0&&importedBasis<=11?11:21;
 	  }
+	  // The backend keeps the original series preset/id in `points` even when
+	  // Read Selection sends only a small custom_steps subset to the worker.
+	  // Preserve that identity. Inferring from total_steps turns, for example,
+	  // six selected patches from a 21-point or 1024-patch series into a new
+	  // 11-point series after refresh.
+	  if(seriesType==='greyscale'&&(points===2||points===11||points===21||points===26||points===30||points===100||points>=1001)) return points;
+	  if(seriesType==='colors'&&(points===29||points===30||points>=900)) return points;
+	  if(seriesType==='saturations'&&(points===24||points===25)) return points;
 	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
 	  // ids (>=1001); their patch count is not a built-in point preset.
 	  if(seriesType==='colors') return (points>=900)?points:((points===29||count===29||stepCount===29)?29:30);
@@ -24696,6 +24704,7 @@ function meterRecoverSeries(s){
 	  points=normalizePoints(type,steps.length,steps);
 	 }
 	 steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
+	 steps=meterRecoveryDisplaySteps(type,points,steps);
 	 if(s.series_id) steps=meterApplyColorSeriesTargetWhiteReference(steps,type);
  meterSeriesSteps=steps;
  meterActiveSeriesType=type;
@@ -27377,6 +27386,35 @@ let meterSelectionBaselineReadings=null;
 let meterSelectionBaselineWhite=null;
 let meterSelectionWillMeasureWhite=false;
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
+
+// A Read Selection worker intentionally reports only the patches it was asked
+// to measure (plus optional white/black reference steps). Those worker steps
+// are correct for progress/current-patch tracking, but they are not the series
+// definition shown by the thumbnail strip. After refresh, retain/rebuild the
+// larger matching series so unselected thumbnails do not disappear.
+function meterRecoveryDisplaySteps(type,points,workerSteps){
+ const run=Array.isArray(workerSteps)?workerSteps:[];
+ if(!run.length) return run;
+ const candidates=[];
+ if(meterActiveSeriesType===type&&Number(meterActiveSeriesPoints)===Number(points)
+    &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length>run.length){
+  candidates.push(meterSeriesSteps);
+ }
+ try{
+  const rebuilt=meterBuildStepsJS(type,points);
+  if(Array.isArray(rebuilt)&&rebuilt.length>run.length) candidates.push(rebuilt);
+ }catch(e){}
+ const runKeys=run.map(step=>meterStepNameKey(step)).filter(Boolean);
+ for(const candidate of candidates){
+  const candidateKeys=new Set(candidate.map(step=>meterStepNameKey(step)).filter(Boolean));
+  const matched=runKeys.reduce((count,key)=>count+(candidateKeys.has(key)?1:0),0);
+  // Selection may prepend measured-reference White/Black steps that are not
+  // part of a custom series. Allow those two extras, but require every other
+  // worker patch to belong to the candidate before treating it as the parent.
+  if(matched>=Math.max(1,runKeys.length-2)) return candidate;
+ }
+ return run;
+}
 
 function meterVisibleSeriesSteps(){
  const source=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
@@ -41138,7 +41176,8 @@ async function meterPollSeries(){
 		   // parity regressions); keep the client copy — it carries the chart
 		   // target_x/y/Yn fields the server expansion does not compute.
 		  } else {
-	  meterSeriesSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
+	  const _workerSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
+	  meterSeriesSteps=meterRecoveryDisplaySteps(meterActiveSeriesType,meterActiveSeriesPoints,_workerSteps);
 	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
 		  }
 	 }
