@@ -28058,7 +28058,34 @@ function meterIsPatchStepSelected(step){
  const sel=meterCanonicalSeriesStep(step)||step;
  return meterStepNameKey(cur)===meterStepNameKey(sel);
 }
-function meterDeselectCurrentPatch(){
+
+function meterPatchDisplayLockedForRead(){
+ return !!(
+  meterSeriesRunning
+  ||meterContinuousActive
+  ||meterContinuousSuspendedForLgWrite
+  ||meterContinuousReadInFlight
+  ||meterActionPending
+  ||meterSeriesAwaitingReady
+  ||meterManualPromptAwaiting
+  ||meterAutoCalStatusActive()
+ );
+}
+
+function meterDeselectCurrentPatch(options){
+ // Click-away deselection normally stops the displayed pattern. During any
+ // read that would change the light being integrated by the meter, so keep
+ // the current patch selected unless a workflow explicitly forces teardown.
+ if(meterPatchDisplayLockedForRead()&&!(options&&options.force)){
+  const currentIndex=meterThumbIndexForStep(meterCurrentPatchStep);
+  if(currentIndex>=0){
+   meterSelectedThumbIndices=new Set([currentIndex]);
+   meterThumbSelectionAnchor=currentIndex;
+   meterSelectedThumbIre=meterStepNameKey(meterCurrentPatchStep);
+   meterRefreshThumbSelectionStyles();
+  }
+  return false;
+ }
  meterCurrentPatchStep=null;
  meterSelectedThumbIre=null;
  meterClearMultiPatchSelection();
@@ -28076,6 +28103,7 @@ function meterDeselectCurrentPatch(){
  if(liveEl) liveEl.style.display='none';
  meterUpdateReadButtons();
  try{ fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(_e){}
+ return true;
 }
 function meterSelectPatchFromInteraction(step,reading,opts){
 	 if(!step) return;
@@ -42843,7 +42871,7 @@ function meterPatchDeselectIgnoreTarget(target){
  return !!target.closest('#meterReadBtnRow');
 }
 document.addEventListener('pointerdown',event=>{
- if(meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
+ if(meterPatchDisplayLockedForRead()||meterSelectedThumbIre==null) return;
  if(meterPatchDeselectIgnoreTarget(event.target)) return;
  if(event.pointerType==='touch'||event.pointerType==='pen'){
   meterPatchDeselectTouch={
@@ -42865,7 +42893,7 @@ document.addEventListener('pointerup',event=>{
  const pending=meterPatchDeselectTouch;
  if(!pending||pending.pointerId!==event.pointerId) return;
  meterPatchDeselectTouch=null;
- if(pending.moved||meterSeriesRunning||meterAutoCalStatusActive()||meterSelectedThumbIre==null) return;
+ if(pending.moved||meterPatchDisplayLockedForRead()||meterSelectedThumbIre==null) return;
  if(meterPatchDeselectIgnoreTarget(event.target)) return;
  try{ meterDeselectCurrentPatch(); }catch(e){}
 },true);
@@ -50061,12 +50089,16 @@ meterRenderGreyTvControls(null);
 });
 
 function meterRefreshActiveSeriesCharts(){
+	 // A viewport/layout refresh is presentation-only. Never rebuild the
+	 // active steps while a read owns the displayed patch: the next continuous
+	 // iteration consumes meterCurrentPatchStep and could otherwise send a
+	 // different canonical step after an Alt-Tab, resize, or drawer transition.
+	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterPatchDisplayLockedForRead()) return;
 	 if(typeof meterCancelQueuedGreyAnalysisRefresh==='function') meterCancelQueuedGreyAnalysisRefresh();
 	 if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
 	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 	  return;
 	 }
-	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning||meterAutoCalStatusActive()) return;
 	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
 	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
 	 // A CHC workspace has measurement positions but no recoverable generator
