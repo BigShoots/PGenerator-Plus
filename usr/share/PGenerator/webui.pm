@@ -17386,6 +17386,7 @@ let meterLastChartCount=0; // track reading count to skip redundant chart redraw
 let meterLastChartSignature='';
 let meterSeriesCache={};
 let meterSeriesCacheBootId='';
+let meterChromaticityLockedMode='';
 let meterActiveHcfrSessionId=null;
 let meterCcssCreateDisplayType='oled_generic';
 let meterExportFilenameBases={};
@@ -17975,6 +17976,7 @@ function meterResolveSeriesSnapshotFromCache(key,options){
 	   target_gamma:exactEligible.target_gamma||null,
 	   max_luma:exactEligible.max_luma||null,
 	   dv_map_mode:exactEligible.dv_map_mode||null,
+	   observer_readings:clone(exactEligible.observer_readings||{}),
 	   steps:steps,
 	   readings:clone((exactEligible.readings||[]).filter(rd=>meterReadingHasLuminance(rd))),
 	   white_reading:exactEligible.white_reading?clone(exactEligible.white_reading):null,
@@ -18150,15 +18152,20 @@ function meterSharedSeriesStatusKey(status){
 function meterSharedSeriesShouldRecover(status,opts){
  opts=opts||{};
  if(!meterSharedSeriesStatusCanRecover(status)) return false;
- if(!meterActiveSeriesKey) return true;
  const serverId=String(status.series_id||'');
  const localId=String(meterSharedSeriesId||'');
  const serverKey=meterSharedSeriesStatusKey(status);
+ const serverMeta=serverKey&&typeof meterParseSeriesKey==='function'?meterParseSeriesKey(serverKey):null;
+ if(serverMeta&&(serverMeta.type==='colors'||serverMeta.type==='saturations')){
+  const serverObserver=meterObserverForReadings(status.readings)
+   ||(/^(?:1931_2|1964_10|2015_2|2015_10)$/.test(String(status.observer||''))?String(status.observer):null);
+  if(serverObserver&&serverObserver!==meterChromaticityObserver()) return false;
+ }
+ if(!meterActiveSeriesKey) return true;
  // Series selection is browser-local. Do not let the periodic shared-status
  // poll replace an idle 3D LUT workspace with another browser's ordinary
  // greyscale/color session (and repeatedly redraw its stale chart data).
  // A series actually running in this browser still follows the normal sync.
- const serverMeta=serverKey&&typeof meterParseSeriesKey==='function'?meterParseSeriesKey(serverKey):null;
  if(meterSeriesTab==='3dlut'&&!meterSeriesRunning&&!meterActionPending&&serverMeta
    &&meterSeriesTabForSeries(serverMeta.type,serverMeta.points)!=='3dlut') return false;
  const serverCount=meterSeriesLuminanceReadingCount(status.readings);
@@ -22053,6 +22060,80 @@ function meterChromaticityObserver(){
  if(mode.indexOf('2015')>=0||mode.indexOf('ciemb')>=0) return '2015_2';
  return '1931_2';
 }
+function meterObserverForReadings(readings){
+ const observers=new Set();
+ (Array.isArray(readings)?readings:[]).forEach(rd=>{
+  if(!rd||!meterReadingHasLuminance(rd)) return;
+  const observer=String(rd.observer||'1931_2');
+  if(/^(?:1931_2|1964_10|2015_2|2015_10)$/.test(observer)) observers.add(observer);
+ });
+ return observers.size===1?[...observers][0]:null;
+}
+function meterChromaticityReadActive(){
+ return !!(
+  (typeof meterSeriesRunning!=='undefined'&&meterSeriesRunning)
+  ||(typeof meterSeriesAwaitingReady!=='undefined'&&meterSeriesAwaitingReady)
+  ||(typeof meterActionPending!=='undefined'&&meterActionPending)
+  ||(typeof meterContinuousActive!=='undefined'&&meterContinuousActive)
+  ||(typeof meterContinuousSuspendedForLgWrite!=='undefined'&&meterContinuousSuspendedForLgWrite)
+  ||(typeof meterAutoCalRunning!=='undefined'&&meterAutoCalRunning)
+  ||(typeof meterLg3dAutoCalRunning!=='undefined'&&meterLg3dAutoCalRunning)
+  ||(typeof meterFullAutoCalRunning!=='undefined'&&meterFullAutoCalRunning)
+ );
+}
+function meterUpdateChromaticityChartLock(){
+ const el=document.getElementById('meterChromaticityChart');
+ if(!el) return;
+ const locked=meterChromaticityReadActive();
+ if(locked&&!meterChromaticityLockedMode) meterChromaticityLockedMode=String(el.value||'cie1931_2');
+ if(!locked) meterChromaticityLockedMode='';
+ el.disabled=locked;
+ el.setAttribute('aria-disabled',locked?'true':'false');
+ el.title=locked?'Chromaticity chart is locked while a measurement is running':'';
+}
+function meterCacheActiveChromaticityReadings(){
+ if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return;
+ if(!meterActiveSeriesKey||!Array.isArray(meterReadings)||!meterReadings.length) return;
+ const observer=meterObserverForReadings(meterReadings);
+ if(!observer) return;
+ meterCacheSeriesState('complete',{deferPersist:true});
+ const snap=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
+ if(!snap) return;
+ const map=(snap.observer_readings&&typeof snap.observer_readings==='object')?snap.observer_readings:{};
+ map[observer]={
+  readings:JSON.parse(JSON.stringify(meterReadings)),
+  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+  updated_at:Date.now()
+ };
+ snap.observer_readings=map;
+ snap.updated_at=Date.now();
+ meterScheduleSeriesCachePersist();
+}
+function meterRestoreActiveChromaticityReadings(observer){
+ if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return false;
+ const snap=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
+ const entry=snap&&snap.observer_readings&&snap.observer_readings[observer];
+ let readings=null,white=null;
+ if(entry&&Array.isArray(entry.readings)){
+  readings=entry.readings;
+  white=entry.white_reading||null;
+ }else if(snap&&Array.isArray(snap.readings)&&meterObserverForReadings(snap.readings)===observer){
+  readings=snap.readings;
+  white=snap.white_reading||null;
+ }
+ meterReadings=readings?JSON.parse(JSON.stringify(readings)):[];
+ meterWhiteReading=white?JSON.parse(JSON.stringify(white)):null;
+ meterLastChartCount=0;
+ meterLastChartSignature='';
+ _selectedColorReadingName=null;
+ _colorDetailPinned=false;
+ try{ showColorReadingDetail(null,{pin:false}); }catch(e){}
+ if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  const completed=new Set(meterReadings.filter(rd=>rd&&rd.luminance!=null).map(rd=>meterStepNameKey(rd)));
+  meterBuildPatchThumbs([...meterSeriesSteps],completed,null);
+ }
+ return !!meterReadings.length;
+}
 
 // CIE 1964 and CIE 170-2 are different observers. Their tristimulus values
 // cannot be recovered from CIE 1931 XYZ without the source spectrum: two
@@ -22250,18 +22331,30 @@ function meterCieChartAxis(){
  return {x:'x',y:'y',title:'CIE 1931 Chromaticity (2\u00B0)',threeD:'CIE 1931 XYZ (2\u00B0, 3D)'};
 }
 function meterOnChromaticityChartChange(){
+ const el=document.getElementById('meterChromaticityChart');
+ if(meterChromaticityReadActive()){
+  if(el&&meterChromaticityLockedMode) el.value=meterChromaticityLockedMode;
+  meterUpdateChromaticityChartLock();
+  toast('Chromaticity chart is locked until the measurement finishes.',true);
+  return;
+ }
+ meterCacheActiveChromaticityReadings();
  cie2dResetView();
  try{ meterSaveColorPrefs(); }catch(e){}
  meterUpdateCie3dLabel();
  const observer=meterChromaticityObserver();
- if(Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.observer&&r.observer!==observer)){
+ const chromaticitySeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const hadOtherReadings=chromaticitySeries&&Array.isArray(meterReadings)&&meterReadings.length>0;
+ const restored=chromaticitySeries&&meterRestoreActiveChromaticityReadings(observer);
+ if(hadOtherReadings&&!restored){
   const observerLabel={1931_2:'CIE 1931 2\u00B0',1964_10:'CIE 1964 10\u00B0',2015_2:'CIE 2015 2\u00B0',2015_10:'CIE 2015 10\u00B0'}[observer]||observer;
-  toast('Existing samples use another observer. Read the series again for '+observerLabel+'.',true);
+  toast('No cached samples for '+observerLabel+'. Read the series for this observer.',true);
  }
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
   if(meterReadings&&meterReadings.length) drawAllCharts(meterReadings);
   else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
  }
+ meterUpdateReadButtons();
 }
 
 // CIE L* from Y/Yn (normalized luminance 0-1) — perceptual lightness
@@ -25385,6 +25478,15 @@ function meterCacheSeriesState(status,options){
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const prev=meterSeriesCache[meterActiveSeriesKey]||null;
  const readings=JSON.parse(JSON.stringify(meterReadings||[]));
+ const observerReadings=JSON.parse(JSON.stringify((prev&&prev.observer_readings)||{}));
+ const readingObserver=(typeof meterObserverForReadings==='function')?meterObserverForReadings(readings):null;
+ if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&readingObserver&&readings.length){
+  observerReadings[readingObserver]={
+   readings:readings,
+   white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+   updated_at:Date.now()
+  };
+ }
  // Never downgrade a COMPLETE snapshot to a partial in-progress one. The chart
  // is driven by live meterReadings while a series runs, so the cache only
  // matters on restore -- and letting a mid-run write land meant selecting that
@@ -25421,6 +25523,7 @@ function meterCacheSeriesState(status,options){
 	  max_luma:meterActiveSeriesMaxLuma||null,
 	  dv_map_mode:meterActiveSeriesDvMapMode||null,
 	  dv_interface:meterActiveSeriesDvInterface||null,
+	  observer_readings:observerReadings,
 	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
   steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
   readings:readings,
@@ -25437,6 +25540,19 @@ function meterRestoreSeriesFromCache(key){
  if(!cached||!cached.steps||cached.steps.length===0) return false;
  const sourceSnap=meterSeriesCache&&meterSeriesCache[key];
  if(sourceSnap&&sourceSnap.source_format==='hcfr-chc'&&sourceSnap.source_session_id) meterActiveHcfrSessionId=sourceSnap.source_session_id;
+ let restoredReadings=JSON.parse(JSON.stringify(cached.readings||[]));
+ let restoredWhite=cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null;
+ if(cached.type==='colors'||cached.type==='saturations'){
+  const observer=meterChromaticityObserver();
+  const observerEntry=cached.observer_readings&&cached.observer_readings[observer];
+  if(observerEntry&&Array.isArray(observerEntry.readings)){
+   restoredReadings=JSON.parse(JSON.stringify(observerEntry.readings));
+   restoredWhite=observerEntry.white_reading?JSON.parse(JSON.stringify(observerEntry.white_reading)):null;
+  }else if(meterObserverForReadings(restoredReadings)!==observer){
+   restoredReadings=[];
+   restoredWhite=null;
+  }
+ }
  meterRecoverSeries({
   series_id:null,
   cache_key:key,
@@ -25450,8 +25566,8 @@ function meterRestoreSeriesFromCache(key){
 	  max_luma:cached.max_luma,
 	  dv_map_mode:cached.dv_map_mode,
 	  steps:JSON.parse(JSON.stringify(cached.steps)),
-  readings:JSON.parse(JSON.stringify(cached.readings||[])),
-  white_reading:cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null,
+  readings:restoredReadings,
+  white_reading:restoredWhite,
   _defer_cache_persist:true
  });
  meterSharedSeriesId=null;
@@ -28077,6 +28193,7 @@ function meterToneMapSeriesAllowedForSignal(){
 
 function meterUpdateReadButtons(){
  meterAutoCalRepairOverlayPointerState();
+ try{ meterUpdateChromaticityChartLock(); }catch(e){}
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  const hasSelection=isColorSeries ? !!meterCurrentPatchStep : meterSelectedThumbIre!=null;
  const hasSeries=meterSeriesSteps&&meterSeriesSteps.length>0;
