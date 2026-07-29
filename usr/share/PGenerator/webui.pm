@@ -11061,7 +11061,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-gamma{width:140px}
 #meterSettingsGrid .field-chromaticity{width:140px}
 #meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;margin-top:4px;width:min(420px,calc(100vw - 70px));max-width:none}
-#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 92px;min-width:92px;margin-right:2px;white-space:nowrap}
+#meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 112px;min-width:112px;margin-right:2px;white-space:nowrap}
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:62px;min-width:62px;padding-left:7px;padding-right:7px}
 #meterSettingsGrid .meter-target-white-row input[type=number].meter-input-disabled,#meterSettingsGrid .meter-target-black-row input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 #meterSettingsGrid .meter-target-measure-btn{padding:3px 6px;line-height:1.15;font-size:.68rem;white-space:nowrap}
@@ -12220,14 +12220,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          </span>
         </div>
         <div class="meter-target-white-row">
-         <label class="meter-target-inline-label">Target White</label>
+         <label class="meter-target-inline-label">Target White <span class="meter-help-tip" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetWhiteMeasure" type="button" onclick="meterMeasureTargetLevel('white')" title="Display white, take one meter reading, and use its luminance as the fixed Target White">Measure</button>
          <label class="meter-toggle-label meter-target-use-measured"><input type="checkbox" id="meterTargetWhiteUseMeasured" onchange="meterSetTargetLevels()" checked> Use measured</label>
         </div>
         <div class="meter-target-black-row">
-         <label class="meter-target-inline-label">Target Black</label>
+         <label class="meter-target-inline-label">Target Black <span class="meter-help-tip" title="Sets the black-floor luminance used to anchor the bottom of the target EOTF curve. Use measured follows the series black reading; Measure displays black and stores a fixed value." aria-label="Target black luminance help">?</span></label>
          <input type="number" id="meterTargetBlack" min="0" step="0.001" inputmode="decimal" title="Black-floor luminance (cd/m^2) used as the bottom of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
          <span class="meter-inline-unit">cd/m&sup2;</span>
          <button class="btn btn-sm btn-secondary meter-target-measure-btn" id="meterTargetBlackMeasure" type="button" onclick="meterMeasureTargetLevel('black')" title="Display black, take one meter reading, and use its luminance as the fixed Target Black">Measure</button>
@@ -12250,7 +12250,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    </div>
   <div class="field field-gamma">
-    <label>Target Gamma</label>
+    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets and error calculations. This changes the analysis target, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
@@ -12273,14 +12273,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </select>
    </div>
   	   <div class="field field-delay">
-	    <label>Pattern Delay</label>
+	    <label>Pattern Delay <span class="meter-help-tip" title="Wait time after each new pattern appears, before the separate Meter Delay begins. Increase it when the display needs more time to settle after a patch change." aria-label="Pattern delay help">?</span></label>
 	    <div class="meter-inline-value">
 	     <input id="meterPatternDelay" type="text" value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" autocomplete="off" spellcheck="false" title="Applied after each pattern is displayed and before meter delay" aria-label="Pattern Delay in seconds" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,0))">
 	     <span class="meter-inline-unit">sec</span>
 	    </div>
 	   </div>
   <div class="field field-patch">
-    <label>Patch Size</label>
+    <label>Patch Size <span class="meter-help-tip" title="Controls the measurement pattern area. Window options set the patch percentage; APL options add a background to maintain the stated average picture level." aria-label="Patch size help">?</span></label>
     <select id="meterPatchSize">
      <option value="2">2% Window</option>
      <option value="5">5% Window</option>
