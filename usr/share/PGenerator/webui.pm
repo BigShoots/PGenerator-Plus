@@ -43706,6 +43706,100 @@ function setupCanvasHiDPI(canvas){
  return getChartCtx(canvas.id);
 }
 
+function meterBindStickyYAxisInput(axis,canvasId){
+ if(!axis||axis.dataset.inputBound==='1') return;
+ axis.dataset.inputBound='1';
+ axis.addEventListener('wheel',e=>{
+  e.preventDefault();
+  meterAdjustChartYZoom(canvasId,e.deltaY<0?1:-1);
+ },{passive:false});
+ axis.addEventListener('dblclick',e=>{
+  e.preventDefault();
+  meterChartYZoomReset(canvasId);
+ });
+ axis.addEventListener('mousemove',e=>{
+  const rect=axis.getBoundingClientRect();
+  const help=meterChartYZoomHelpRect(canvasId,{});
+  if(!help) return;
+  const dx=e.clientX-rect.left-help.cx;
+  const dy=e.clientY-rect.top-help.cy;
+  if(Math.sqrt(dx*dx+dy*dy)<=help.radius+4) meterShowChartYZoomHelpTooltip(e);
+  else {
+   const tip=document.getElementById('chartTooltip');
+   if(tip) tip.style.display='none';
+  }
+ });
+ axis.addEventListener('mouseleave',()=>{
+  const tip=document.getElementById('chartTooltip');
+  if(tip) tip.style.display='none';
+ });
+ axis.addEventListener('touchstart',e=>{
+  if(!e.touches||e.touches.length!==1) return;
+  meterChartYZoomTouch={id:canvasId,y:e.touches[0].clientY};
+ },{passive:true});
+ axis.addEventListener('touchmove',e=>{
+  if(!meterChartYZoomTouch||meterChartYZoomTouch.id!==canvasId||!e.touches||e.touches.length!==1) return;
+  const y=e.touches[0].clientY;
+  const dy=meterChartYZoomTouch.y-y;
+  if(Math.abs(dy)<8) return;
+  e.preventDefault();
+  meterChartYZoomTouch.y=y;
+  meterAdjustChartYZoom(canvasId,dy/48);
+ },{passive:false});
+ const finish=()=>{ if(meterChartYZoomTouch&&meterChartYZoomTouch.id===canvasId) meterChartYZoomTouch=null; };
+ axis.addEventListener('touchend',finish,{passive:true});
+ axis.addEventListener('touchcancel',finish,{passive:true});
+}
+
+function meterDrawStickyYAxis(ctx,opts,pad,h){
+ if(!ctx||!ctx.canvas||!ctx.canvasId) return;
+ const canvas=ctx.canvas;
+ const scroller=canvas.parentElement;
+ if(!scroller||!scroller.classList.contains('meter-scroll-sync')) return;
+ let axis=scroller.querySelector('.meter-sticky-y-axis[data-canvas-id="'+ctx.canvasId+'"]');
+ const overflow=(scroller.scrollWidth-scroller.clientWidth)>4;
+ if(!overflow){
+  if(axis) axis.remove();
+  return;
+ }
+ if(!axis){
+  axis=document.createElement('canvas');
+  axis.className='meter-sticky-y-axis';
+  axis.dataset.canvasId=ctx.canvasId;
+  axis.setAttribute('aria-hidden','true');
+  scroller.appendChild(axis);
+  meterBindStickyYAxisInput(axis,ctx.canvasId);
+ }
+ const width=Math.max(1,(pad.l||45)+1);
+ const height=Math.max(1,ctx.h||canvas.getBoundingClientRect().height||1);
+ const ratio=Math.max(1,Math.min(3,pgCanvasPixelRatio()));
+ const backingW=Math.round(width*ratio),backingH=Math.round(height*ratio);
+ if(axis.width!==backingW||axis.height!==backingH){axis.width=backingW;axis.height=backingH;}
+ axis.style.cssText='position:sticky;left:0;top:0;display:block;width:'+width+'px;height:'+height+'px;margin-top:-'+height+'px;z-index:4;pointer-events:auto;touch-action:none;background:'+pgThemeColor('--chart-bg','#0d0d15');
+ const ac=axis.getContext('2d');
+ ac.setTransform(ratio,0,0,ratio,0,0);
+ ac.clearRect(0,0,width,height);
+ ac.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
+ ac.fillRect(0,0,width,height);
+ ac.strokeStyle=pgThemeColor('--chart-axis','#3a3a4a');
+ ac.lineWidth=1;
+ ac.beginPath();
+ ac.moveTo((pad.l||45)-0.5,pad.t);
+ ac.lineTo((pad.l||45)-0.5,pad.t+h);
+ ac.stroke();
+ ac.fillStyle=pgThemeColor('--chart-label','#888898');
+ ac.font='11px sans-serif';
+ ac.textAlign='right';
+ ac.textBaseline='alphabetic';
+ const ySteps=opts.ySteps||5;
+ for(let i=0;i<=ySteps;i++){
+  const lbl=opts.yLabel?opts.yLabel(i,ySteps):'';
+  ac.fillText(lbl,(pad.l||45)-4,pad.t+h-h*(i/ySteps)+3);
+ }
+ ac.canvasId=ctx.canvasId;
+ meterDrawChartYZoomHelp(ac,pad);
+}
+
 function drawChartGrid(ctx,opts){
  const pad=opts.pad||{t:20,r:15,b:30,l:45};
  const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
@@ -43812,6 +43906,7 @@ function drawChartGrid(ctx,opts){
   ctx.fillText(lbl,pad.l-4,pad.t+h-h*(i/ySteps)+3);
  }
  meterDrawChartYZoomHelp(ctx,pad);
+ meterDrawStickyYAxis(ctx,opts,pad,h);
  return {pad,w,h,dw,toX:v=>pad.l+xIn+v*dw, toY:v=>pad.t+h-v*h};
 }
 
