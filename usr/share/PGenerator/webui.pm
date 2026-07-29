@@ -21953,13 +21953,18 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  const wp = meterTargetWhitePoint();
  const wXn = wp.X;
  const wZn = wp.Z;
- // Measured XYZ normalized by white Y
+ // Measured response is normalized by its measured 100% white. The target
+ // response must be normalized independently by the active Target White so
+ // 100% remains the reference point even when the operator overrides Target
+ // White. Using measured white as the target divisor made every channel move
+ // above/below 100 when only the target endpoint changed.
  const mXn=readingXYZ.X/whiteXYZ.Y, mYn=readingXYZ.Y/whiteXYZ.Y, mZn=readingXYZ.Z/whiteXYZ.Y;
  const ire=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
  let lcXn,lcYn,lcZn;
  if(ire!=null&&ire>0){
  // Target: D65 white at the active grey-target luminance.
-  const Lw=meterChartIsHdr()?meterGreyTargetPeak(whiteXYZ.Y):whiteXYZ.Y, Lb=0;
+  const Lw=meterGreyTargetPeak(whiteXYZ.Y);
+  const Lb=meterBlackReadingY();
   // Route the gamma target through meterGreyTargetLuminanceForChartPoint so the
   // RGB-balance luminance-error bars share the SAME stimulus-based target the
   // gamma/EOTF chart and the per-point tooltip use. For SDR26 that path derives
@@ -21972,7 +21977,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
    ((typeof meterGreyTargetLuminanceForChartPoint==='function')
     ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,{stimulus:ire,code:reading.r_code})
     : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code));
-  const tYn=tgtLum/whiteXYZ.Y;
+  const tYn=(Lw>0)?tgtLum/Lw:0;
   const tXn=wXn*tYn;
   const tZn=wZn*tYn;
   if(mode==='eotf'){
@@ -22016,14 +22021,16 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  let fact = 1.0;
  if(mode==='eotf'){
   const Lb = meterBlackReadingY();
-  const targetPeak = meterChartIsHdr() ? meterGreyTargetPeak(whiteXYZ.Y) : whiteXYZ.Y;
+  const targetPeak = meterGreyTargetPeak(whiteXYZ.Y);
   const targetIre=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
   // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
   // avoids the limited-only meterGreyCodeRange skewing full-range gamma error.
   const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
    ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, {stimulus:targetIre,code:reading.r_code})
    : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
-  fact = (tgtY>0 && whiteXYZ.Y>0 && readingXYZ.Y>0) ? readingXYZ.Y / tgtY : 1.0;
+  const measuredYn=readingXYZ.Y/whiteXYZ.Y;
+  const targetYn=(targetPeak>0)?tgtY/targetPeak:0;
+  fact = (targetYn>0 && measuredYn>0) ? measuredYn / targetYn : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
  const gamut = meterAnalysisGamut();
@@ -46755,15 +46762,47 @@ function meterBuildHcfrExportModel(){
  return {model:{preferences:preferences,generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:nearBlack.length?nearBlack:Array(5).fill(null),nearWhite:nearWhite.length?nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,nearBlack:nearBlack.length,nearWhite:nearWhite.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
 }
 
-function meterExportHcfrChc(){
+let meterHcfrChcLoadPromise=null;
+function meterEnsureHcfrChcModule(){
+ if(window.PGeneratorHcfrChc) return Promise.resolve(window.PGeneratorHcfrChc);
+ if(meterHcfrChcLoadPromise) return meterHcfrChcLoadPromise;
+ meterHcfrChcLoadPromise=(async()=>{
+  let lastError=null;
+  for(let attempt=1;attempt<=2;attempt++){
+   try{
+    await new Promise((resolve,reject)=>{
+     const script=document.createElement('script');
+     script.src='/assets/hcfr_chc.js?retry='+Date.now()+'-'+attempt;
+     script.async=true;
+     script.onload=()=>resolve();
+     script.onerror=()=>{
+      script.remove();
+      reject(new Error('HCFR CHC module request failed'));
+     };
+     document.head.appendChild(script);
+    });
+    if(window.PGeneratorHcfrChc) return window.PGeneratorHcfrChc;
+    lastError=new Error('HCFR CHC module initialized without its API');
+   }catch(e){ lastError=e; }
+  }
+  throw lastError||new Error('HCFR CHC module could not be loaded');
+ })();
  try{
-  if(!window.PGeneratorHcfrChc) throw new Error('CHC module did not load');
+  return await meterHcfrChcLoadPromise;
+ }finally{
+  meterHcfrChcLoadPromise=null;
+ }
+}
+
+async function meterExportHcfrChc(){
+ try{
+  const chc=await meterEnsureHcfrChcModule();
   const built=meterBuildHcfrExportModel(),s=built.summary;
   const message='Export '+s.mode.toUpperCase()+' session?\n\nRGB range: '+String(s.rgbRange||'unknown').toUpperCase()+'\nGreyscale: '+s.grayscale+'\nSaturation: '+s.saturations+'\nColorChecker: '+s.colorChecker+'\nFree measurements: '+s.free+(s.warnings.length?'\n\nWarnings:\n'+s.warnings.join('\n'):'');
   if(!window.confirm(message)) return;
   let filename=meterPromptExportFilename('chc','pgenerator_'+s.mode+'_session','chc','Enter a file name for the HCFR session');
   if(!filename) filename=meterDefaultExportFilename('chc','pgenerator_'+s.mode+'_session','chc');
-  const bytes=window.PGeneratorHcfrChc.serializeHcfrChc(built.model);
+  const bytes=chc.serializeHcfrChc(built.model);
   meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),filename);
   toast('HCFR CHC exported');
  }catch(e){toast('HCFR export failed: '+((e&&e.message)||e),true);}
@@ -46801,8 +46840,8 @@ function meterApplyHcfrAnalysisPreferences(p){
 async function meterImportHcfrChcFile(input){
  try{
   const file=input&&input.files&&input.files[0];if(!file)return;
-  if(!window.PGeneratorHcfrChc)throw new Error('CHC module did not load');
-  const parsed=window.PGeneratorHcfrChc.parseHcfrChc(await file.arrayBuffer()),sum=window.PGeneratorHcfrChc.summarizeHcfrChc(parsed);
+  const chc=await meterEnsureHcfrChcModule();
+  const parsed=chc.parseHcfrChc(await file.arrayBuffer()),sum=chc.summarizeHcfrChc(parsed);
   const mode=parsed.preferences.gammaOffsetType===5?'hdr10':(parsed.preferences.gammaOffsetType===7?'hlg':([8,9].includes(parsed.preferences.gammaOffsetType)?'dv':'sdr'));
   const importContext={target_gamma:mode==='hdr10'||mode==='dv'?'st2084':(mode==='hlg'?'hlg':null),max_luma:Number(parsed.preferences.masterMaxLuminance)||null,hcfr_preferences:{...parsed.preferences}};
   const sourceRange=(parsed.generator&&parsed.generator.rgbRange)||'unknown';
