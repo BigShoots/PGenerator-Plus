@@ -42061,8 +42061,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
 	  const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
 	  const thumbWidth=scrollMode?String(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):'';
 	  const fontSize=(isGrey&&customGreyscaleThumbs)?'10px':'8px';
+	  const border=(isGrey&&customGreyscaleThumbs)?'1px solid var(--border)':'0';
 	  const colorKey=[step.r,step.g,step.b,step.preview_r,step.preview_g,step.preview_b].join(',');
-	  return [meterStepNameKey(step),label,thumbWidth,fontSize,colorKey].join('\x1f');
+	  return [meterStepNameKey(step),label,thumbWidth,fontSize,border,colorKey].join('\x1f');
 	 }).join('\x1e');
 	 const needsRebuild=container.children.length!==visibleSteps.length||container._meterBuildSignature!==buildSignature;
  if(needsRebuild){
@@ -42078,9 +42079,10 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   const label=isGrey?meterGreyscaleStepLabel(step):(step.name||'');
   const thumbWidth=scrollMode?(distributedGreyThumbWidth(index)||meterSeriesThumbWidth(step)):0;
   const fontSize=(isGrey&&customGreyscaleThumbs)?'10px':'8px';
+  const border=(isGrey&&customGreyscaleThumbs)?'1px solid var(--border)':'0';
   const padX=isGrey?'2px':'1px';
   const flexStyle=scrollMode?('flex:0 0 '+thumbWidth+'px;min-width:'+thumbWidth+'px;'):'flex:1 1 0;min-width:0;';
-  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:'+fontSize+';font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
+  thumb.style.cssText=flexStyle+'display:flex;align-items:center;justify-content:center;height:28px;border:'+border+';border-radius:3px;cursor:pointer;box-sizing:border-box;font-size:'+fontSize+';font-weight:700;user-select:none;transition:box-shadow .2s;text-align:center;line-height:1.1;padding:0 '+padX+';text-shadow:'+textShadow;
   thumb.style.setProperty('--patch-bg',bgColor);
   thumb.style.setProperty('--patch-fg',textColor);
    thumb.textContent=label;
