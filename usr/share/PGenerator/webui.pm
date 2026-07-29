@@ -5523,13 +5523,16 @@ sub webui_meter_custom_series_load (@) {
  my @st=stat($_custom_series_store);
  my $revision=@st ? (($st[9]||0)."-".($st[7]||0)) : "empty";
  return "{\"status\":\"ok\",\"revision\":\"$revision\"}" if(defined($query) && $query=~/(?:^|&)meta=1(?:&|$)/);
- return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state\":{\"format\":\"pgenerator-custom-series-v1\",\"next_id\":1001,\"series\":[]}}" if(!@st);
+ return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state_json\":\"{\\\"format\\\":\\\"pgenerator-custom-series-v1\\\",\\\"next_id\\\":1001,\\\"series\\\":[]}\"}" if(!@st);
  my $quoted="";
  if(open(my $fh,"<",$_custom_series_store)) { local $/; $quoted=<$fh>; close($fh); }
- my $inner=eval { require JSON::PP; JSON::PP::decode_json($quoted); };
  return '{"status":"error","message":"Custom series store is invalid"}'
-  if(!defined($inner) || $inner!~/^\s*\{.*\}\s*$/s);
- return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state\":$inner}";
+  if($quoted!~/^".*"\s*$/s);
+ # Keep the stored JSON string quoted and escaped. Decoding this multi-megabyte
+ # value with JSON::PP takes many seconds on the Pi4, while the browser parses
+ # it in milliseconds. This also lets the server stream the authoritative file
+ # without allocating a second expanded copy.
+ return "{\"status\":\"ok\",\"revision\":\"$revision\",\"state_json\":$quoted}";
 }
 
 sub webui_meter_settings_save (@) {
@@ -30093,8 +30096,12 @@ let meterCustomSeriesDirty=false;
 // state skips the refresh; it posts on the next save instead).
 async function meterFetchCustomSeriesSnapshot(){
  const payload=await fetchJSON('/api/meter/custom-series?_='+Date.now(),{_quiet:true,_timeoutMs:30000,cache:'no-store'});
- if(!payload||payload.status!=='ok'||!payload.state||!Array.isArray(payload.state.series)) return null;
- return payload;
+ if(!payload||payload.status!=='ok'||typeof payload.state_json!=='string') return null;
+ try{
+  const state=JSON.parse(payload.state_json);
+  if(!state||!Array.isArray(state.series)) return null;
+  return {status:'ok',revision:String(payload.revision||''),state:state,rawJson:payload.state_json};
+ }catch(e){ return null; }
 }
 
 async function meterRefreshCustomSeriesFromServer(){
@@ -30107,7 +30114,7 @@ async function meterRefreshCustomSeriesFromServer(){
   const payload=await meterFetchCustomSeriesSnapshot();
   if(!payload) return false;
   meterCustomSeriesState=payload.state;
-  meterCustomSeriesRawJson=JSON.stringify(payload.state);
+  meterCustomSeriesRawJson=payload.rawJson;
   meterCustomSeriesRevision=String(payload.revision||'');
   meterCustomSeriesNormalizeState();
   meterRenderCustomSeriesButtons();
@@ -48775,7 +48782,7 @@ async function loadMeterSettings(){
  }
  if(customSeriesPayload){
   meterCustomSeriesState=customSeriesPayload.state;
-  meterCustomSeriesRawJson=JSON.stringify(customSeriesPayload.state);
+  meterCustomSeriesRawJson=customSeriesPayload.rawJson;
   meterCustomSeriesRevision=String(customSeriesPayload.revision||'');
  } else if(s.custom_series_json){
   try{
