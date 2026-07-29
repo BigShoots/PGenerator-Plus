@@ -12234,7 +12234,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </select>
     </div>
    <div class="field field-chromaticity">
-    <label>Chromaticity Chart <span class="meter-help-tip" title="The selected observer is applied to new meter reads through Argyll. CIE 1964 and CIE 170-2 require a spectrometer or a colorimeter with a spectral CCSS correction. Existing readings made with another observer are not reinterpreted." aria-label="Chromaticity chart observer help">?</span></label>
+    <label>Chromaticity Chart <span class="meter-help-tip" title="The selected observer is applied to new meter reads through Argyll. CIE 1964 and CIE 170-2 require a spectrometer or a colorimeter with a spectral CCSS correction. Existing readings made with another observer are not reinterpreted. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Chromaticity chart observer help">?</span></label>
     <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
      <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
      <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
@@ -22061,6 +22061,16 @@ const CIE2015_TO_LMS_10=[
  [-0.429979672,1.203889660,0.086210852],
  [-0.000000018,0.000000018,0.465792324]
 ];
+const CIE_LMS_TO_CIE2015_2=[
+ [1.947354386,-1.414462149,.364766123],
+ [.689900827,.348321629,.000000178],
+ [.000000460,-.000000617,1.934859310]
+];
+const CIE_LMS_TO_CIE2015_10=[
+ [1.939864394,-1.346643543,.430449242],
+ [.692839451,.349675448,.000000091],
+ [.000000048,-.000000066,2.146879535]
+];
 // CIE 170-2 MacLeod-Boynton normalization. L and M are weighted so their
 // sum is the cone-fundamental luminous-efficiency value. S is weighted so
 // the maximum spectral sMB coordinate is one.
@@ -22069,6 +22079,29 @@ const CIE_MB_FACTORS_10=[0.69283938,0.34967553,0.05546866];
 function meterCieApplyMatrix(xyz,M){
  const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
  return {X:M[0][0]*X+M[0][1]*Y+M[0][2]*Z,Y:M[1][0]*X+M[1][1]*Y+M[1][2]*Z,Z:M[2][0]*X+M[2][1]*Y+M[2][2]*Z};
+}
+// Gamut standards and generated patch targets are specified in CIE 1931
+// coordinates and normally have no source spectrum. Give them a stable
+// reference projection in every chart so the requested gamut and targets
+// remain usable. Native meter readings still require the selected observer.
+function meterCieReferenceCoordFromXYZ(xyz){
+ if(!xyz) return null;
+ const mode=meterChromaticityChartMode();
+ const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
+ if(![X,Y,Z].every(Number.isFinite)) return null;
+ if(mode.indexOf('ciemb_')===0){
+  const ten=/_10$/.test(mode);
+  const lms=meterCieApplyMatrix({X:X,Y:Y,Z:Z},ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
+  const f=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+  const L=f[0]*lms.X,M=f[1]*lms.Y,S=f[2]*lms.Z,lm=L+M;
+  return lm>0?{x:L/lm,y:S/lm,Y:lm,L:L,M:M,S:S,reference:true}:null;
+ }
+ if(mode.indexOf('cie1976_')===0){
+  const d=X+15*Y+3*Z;
+  return d>0?{x:4*X/d,y:9*Y/d,Y:Y,reference:true}:null;
+ }
+ const s=X+Y+Z;
+ return s>0?{x:X/s,y:Y/s,Y:Y,reference:true}:null;
 }
 function meterCie2015XYZ(xyz){
  if(!xyz) return null;
@@ -22089,7 +22122,7 @@ function meterCieChartCoordFromXYZ(xyz){
  const desiredObserver=meterChromaticityObserver();
  // Unstamped target XYZ is defined in the application's CIE 1931 reference
  // space. It is valid only in 1931 and its exact 1976 2 degree projection.
- if(!observer&&desiredObserver!=='1931_2') return null;
+ if(!observer&&desiredObserver!=='1931_2') return meterCieReferenceCoordFromXYZ(xyz);
  if(observer&&observer!==desiredObserver) return null;
  const wantsTen=/_10$/.test(mode);
  if(mode.indexOf('cie2015_')===0||mode.indexOf('ciemb_')===0){
@@ -22115,7 +22148,24 @@ function meterCieChartCoordFromXYZ(xyz){
 function meterCieChartCoordFromXy(x,y,Y){
  x=Number(x);y=Number(y);Y=Number.isFinite(Number(Y))?Number(Y):1;
  if(!(x>=0&&y>0)) return null;
- return meterCieChartCoordFromXYZ({X:x*Y/y,Y:Y,Z:(1-x-y)*Y/y});
+ return meterCieReferenceCoordFromXYZ({X:x*Y/y,Y:Y,Z:(1-x-y)*Y/y});
+}
+function meterCieReferenceXyForChartCoord(x,y){
+ const mode=meterChromaticityChartMode();
+ x=Number(x);y=Number(y);
+ if(![x,y].every(Number.isFinite)) return null;
+ if(mode.indexOf('cie1976_')===0){
+  const d=6*x-16*y+12;
+  return Math.abs(d)>1e-9?{x:9*x/d,y:4*y/d}:null;
+ }
+ if(mode.indexOf('ciemb_')===0){
+  const ten=/_10$/.test(mode),f=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+  const raw={X:x/f[0],Y:(1-x)/f[1],Z:y/f[2]};
+  const xyz=meterCieApplyMatrix(raw,ten?CIE_LMS_TO_CIE2015_10:CIE_LMS_TO_CIE2015_2);
+  const s=xyz.X+xyz.Y+xyz.Z;
+  return s>0?{x:xyz.X/s,y:xyz.Y/s}:null;
+ }
+ return {x:x,y:y};
 }
 // Observer-specific coordinates obtained by integrating the official CIE D65
 // spectrum with the corresponding CMFs/cone fundamentals. D65 is spectral,
@@ -22141,8 +22191,8 @@ function meterCieD65Coord(){
  const p=CIE_D65_COORDS[mode]||CIE_D65_COORDS.cie1931_2;
  return {x:p[0],y:p[1],Y:1,reference:true};
 }
-function meterCieTargetsHaveSpectralBasis(){
- return meterChromaticityObserver()==='1931_2';
+function meterCieTargetsAvailable(){
+ return true;
 }
 function meterCieChartLocus(){
  const mode=meterChromaticityChartMode();
@@ -22158,6 +22208,29 @@ function meterCieChartLocus(){
   });
  }
  return locus;
+}
+function meterStrokeCieLocus2d(ctx,points,toX,toY){
+ if(!points||points.length<2) return;
+ ctx.beginPath();ctx.moveTo(toX(points[0][0]),toY(points[0][1]));
+ for(let i=1;i<points.length-1;i++){
+  const p=points[i],n=points[i+1];
+  ctx.quadraticCurveTo(toX(p[0]),toY(p[1]),toX((p[0]+n[0])/2),toY((p[1]+n[1])/2));
+ }
+ const last=points[points.length-1];
+ ctx.lineTo(toX(last[0]),toY(last[1]));
+ ctx.lineTo(toX(points[0][0]),toY(points[0][1]));
+ ctx.closePath();ctx.stroke();
+}
+function cie3dStrokeSmoothLocus(ctx,points){
+ if(!points||points.length<2) return;
+ ctx.beginPath();ctx.moveTo(points[0].sx,points[0].sy);
+ for(let i=1;i<points.length-1;i++){
+  const p=points[i],n=points[i+1];
+  ctx.quadraticCurveTo(p.sx,p.sy,(p.sx+n.sx)/2,(p.sy+n.sy)/2);
+ }
+ const last=points[points.length-1];
+ ctx.lineTo(last.sx,last.sy);ctx.lineTo(points[0].sx,points[0].sy);
+ ctx.closePath();ctx.stroke();
 }
 function meterCieChartAxis(){
  const mode=meterChromaticityChartMode();
@@ -44806,20 +44879,22 @@ function drawColorSeriesAverages(readings,colorRefMode){
  wrap.style.display='';
 }
 
-// Cached CIE 1931 xy chromaticity gradient (offscreen canvas at device-pixel
-// resolution so it stays crisp on HiDPI and is drawn explicitly sized into
-// the inner plot rect).
+// Cached chromaticity gradient for the selected diagram. Colours are rendered
+// through a reference projection to browser RGB; the selected observer's
+// official locus determines the visible boundary.
 let _cieGrad=null,_cieGradKey='';
 function getCIEGradient(innerPxW,innerPxH){
  const gw=Math.max(1,Math.round(innerPxW)), gh=Math.max(1,Math.round(innerPxH));
- const key=gw+'x'+gh;
+ const mode=meterChromaticityChartMode();
+ const key=mode+'@'+gw+'x'+gh;
  if(_cieGrad&&_cieGradKey===key) return _cieGrad;
  const oc=document.createElement('canvas');oc.width=gw;oc.height=gh;
  const ox=oc.getContext('2d');
  const img=ox.createImageData(gw,gh);
  const d=img.data;
- const xMn=CIE2D_WORLD.xMin,xMx=CIE2D_WORLD.xMax,yMn=CIE2D_WORLD.yMin,yMx=CIE2D_WORLD.yMax;
- const locus=CIE_LOCUS, M=M_XYZ_TO_RGB;
+ const world=meterCie2dWorld();
+ const xMn=world.xMin,xMx=world.xMax,yMn=world.yMin,yMx=world.yMax;
+ const locus=meterCieChartLocus(), M=M_XYZ_TO_RGB;
  function pip(px,py){
   let ins=false;
   for(let i=0,j=locus.length-1;i<locus.length;j=i++){
@@ -44833,8 +44908,10 @@ function getCIEGradient(innerPxW,innerPxH){
    const cx=xMn+(px/gw)*(xMx-xMn);
    const cy=yMx-(py/gh)*(yMx-yMn);
    const idx=(py*gw+px)*4;
-   if(cy<0.005||!pip(cx,cy)){d[idx+3]=0;continue;}
-   const X=cx/cy, Y=1.0, Z=(1-cx-cy)/cy;
+   if(!pip(cx,cy)){d[idx+3]=0;continue;}
+   const ref=meterCieReferenceXyForChartCoord(cx,cy);
+   if(!ref||!(ref.y>.000001)){d[idx+3]=0;continue;}
+   const X=ref.x/ref.y, Y=1.0, Z=(1-ref.x-ref.y)/ref.y;
    let rl=M[0][0]*X+M[0][1]*Y+M[0][2]*Z;
    let gl=M[1][0]*X+M[1][1]*Y+M[1][2]*Z;
    let bl=M[2][0]*X+M[2][1]*Y+M[2][2]*Z;
@@ -44844,7 +44921,7 @@ function getCIEGradient(innerPxW,innerPxH){
    d[idx]=Math.round(255*Math.pow(rl,1/2.2));
    d[idx+1]=Math.round(255*Math.pow(gl,1/2.2));
    d[idx+2]=Math.round(255*Math.pow(bl,1/2.2));
-   d[idx+3]=95;
+   d[idx+3]=105;
   }
  }
  ox.putImageData(img,0,0);
@@ -45168,9 +45245,8 @@ function meterDrawMbFullLocusInset(ctx,geom){
  ctx.fillRect(ix,iy,iw,ih);ctx.globalAlpha=1;
  ctx.strokeStyle='rgba(132,148,178,.85)';ctx.lineWidth=1;ctx.strokeRect(ix+.5,iy+.5,iw-1,ih-1);
  ctx.beginPath();ctx.rect(ix,iy,iw,ih);ctx.clip();
- ctx.strokeStyle='rgba(176,190,220,.9)';ctx.lineWidth=1.1;ctx.beginPath();
- locus.forEach((p,i)=>{if(i===0)ctx.moveTo(tx(p[0]),ty(p[1]));else ctx.lineTo(tx(p[0]),ty(p[1]));});
- ctx.closePath();ctx.stroke();
+ ctx.strokeStyle='rgba(176,190,220,.9)';ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';
+ meterStrokeCieLocus2d(ctx,locus,tx,ty);
  const view=meterCie2dViewport();
  ctx.strokeStyle='rgba(90,190,255,.95)';ctx.lineWidth=1;
  ctx.strokeRect(tx(view.xMin),ty(view.yMax),tx(view.xMax)-tx(view.xMin),ty(view.yMin)-ty(view.yMax));
@@ -46146,7 +46222,7 @@ function drawCIEChart3D(readings,opts){
  const d65Vector=meterCie3dD65Vector(referenceY);
  const gamut=meterAnalysisGamut();
  let gamutVectors=null;
- if(meterCieViewOpts.gamut&&meterCieTargetsHaveSpectralBasis()){
+ if(meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
   const p=gamut.primaries;
   const cR=meterCieChartCoordFromXy(p.R.x,p.R.y,1);
   const cG=meterCieChartCoordFromXy(p.G.x,p.G.y,1);
@@ -46195,8 +46271,8 @@ function drawCIEChart3D(readings,opts){
  if(locusVectors.length){
   const pts=locusVectors.map(v=>cie3dProjectVector(v,layout));
   prims.push({z:cie3dAvgZ(pts),draw:()=>{
-   ctx.strokeStyle='rgba(176,190,220,.88)';ctx.lineWidth=1.6;
-   cie3dStrokePoly(ctx,pts,true);
+   ctx.strokeStyle='rgba(176,190,220,.88)';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';
+   cie3dStrokeSmoothLocus(ctx,pts);
   }});
  }
  if(gamutVectors){
@@ -46289,7 +46365,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
  ctx.fillText(axis.title+'  \u00B7  drag rotate \u00B7 wheel zoom',ctx.w-12,28);
- if(!meterCieTargetsHaveSpectralBasis()){
+ if(!meterCieTargetsAvailable()){
   ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');
   ctx.fillText('Reference targets need spectral data',ctx.w-12,42);
  } else if(colorInclLum){
@@ -46506,10 +46582,11 @@ function drawCIEChart(readings){
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
  // Chromaticity wash cropped to the current viewport.
- if(meterChromaticityChartMode()==='cie1931_2') try{
+ try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
-   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const gradWorld=meterCie2dWorld();
+   const CX_MIN=gradWorld.xMin,CX_MAX=gradWorld.xMax,CY_MIN=gradWorld.yMin,CY_MAX=gradWorld.yMax;
    const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
    const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
    const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
@@ -46529,9 +46606,8 @@ function drawCIEChart(readings){
  ctx.strokeStyle='rgba(132,148,178,0.85)';ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,pad.t+h);ctx.lineTo(pad.l+w,pad.t+h);ctx.stroke();
  // CIE spectral locus
  if(meterCieViewOpts.locus){
-  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
-  meterCieChartLocus().forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
-  ctx.closePath();ctx.stroke();
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';
+  meterStrokeCieLocus2d(ctx,meterCieChartLocus(),toX,toY);
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
@@ -46554,16 +46630,16 @@ function drawCIEChart(readings){
  // Gamut / legend at plot top-right (zoom inset draws below these lines).
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(targetGamutAvailable?gamut.label:'Native observer measurements',pad.l+w-2,pad.t+10);
- if(!meterCieTargetsHaveSpectralBasis()){
+ if(!meterCieTargetsAvailable()){
   ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');ctx.font='9px sans-serif';
   ctx.fillText('Reference targets need spectral data',pad.l+w-2,pad.t+22);
  }
  if(colorInclLum){
   ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Ring = |\u0394Y|%',pad.l+w-2,pad.t+(meterCieTargetsHaveSpectralBasis()?22:34));
+  ctx.fillText('Ring = |\u0394Y|%',pad.l+w-2,pad.t+(meterCieTargetsAvailable()?22:34));
  } else {
   ctx.fillStyle=pgThemeColor('--chart-empty','#6a7690');ctx.font='9px sans-serif';ctx.textAlign='right';
-  ctx.fillText('Chroma only',pad.l+w-2,pad.t+(meterCieTargetsHaveSpectralBasis()?22:34));
+  ctx.fillText('Chroma only',pad.l+w-2,pad.t+(meterCieTargetsAvailable()?22:34));
  }
  // Unread series targets stay on the chart for the whole read — only the
  // measured dots arrive incrementally. (They used to vanish when the first
@@ -46861,10 +46937,11 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
- if(meterChromaticityChartMode()==='cie1931_2') try{
+ try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
-   const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
+   const gradWorld=meterCie2dWorld();
+   const CX_MIN=gradWorld.xMin,CX_MAX=gradWorld.xMax,CY_MIN=gradWorld.yMin,CY_MAX=gradWorld.yMax;
    const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
    const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
    const sy=(CY_MAX-yMax)/(CY_MAX-CY_MIN)*grad.height;
@@ -46883,9 +46960,8 @@ function drawCIEChartPreset(steps){
  // pre-read preset used to ignore them, leaving the checkboxes dead until
  // the first measurement arrived.
  if(meterCieViewOpts.locus){
-  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
-  meterCieChartLocus().forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
-  ctx.closePath();ctx.stroke();
+  ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';
+  meterStrokeCieLocus2d(ctx,meterCieChartLocus(),toX,toY);
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
@@ -46905,7 +46981,7 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(d65.x)+5,toY(d65.y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(targetGamutAvailable?gamut.label:'Native observer measurements',pad.l+w-2,pad.t+10);
- if(!meterCieTargetsHaveSpectralBasis()){
+ if(!meterCieTargetsAvailable()){
   ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');ctx.font='9px sans-serif';
   ctx.fillText('Reference targets need spectral data',pad.l+w-2,pad.t+22);
  }
