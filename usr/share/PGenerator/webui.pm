@@ -12890,7 +12890,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
       <div style="font-size:.65rem;color:var(--text2);text-transform:uppercase" id="chartGammaValueLabel">Gamma</div>
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;margin-left:auto">
-       <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings);meterSaveColorPrefs()" style="vertical-align:middle"> Per-channel γ
+       <input type="checkbox" id="meterPerChannelGamma" onchange="if(meterReadings&&meterReadings.length)drawAllCharts(meterReadings);meterSaveColorPrefs()" style="vertical-align:middle"> Per-channel Y
       </label>
      </div>
     <div id="meterGammaValueScroller" class="meter-scroll-sync" style="background:#0d0d15;border-radius:6px">
