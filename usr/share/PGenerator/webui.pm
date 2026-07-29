@@ -46886,7 +46886,8 @@ function drawCIEChartPreset(steps){
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
  const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
- if(meterCieViewOpts.gamut){
+ const targetGamutAvailable=!!(pR&&pG&&pB);
+ if(meterCieViewOpts.gamut&&targetGamutAvailable){
   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
   ctx.beginPath();ctx.moveTo(toX(pR.x),toY(pR.y));ctx.lineTo(toX(pG.x),toY(pG.y));ctx.lineTo(toX(pB.x),toY(pB.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
