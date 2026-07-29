@@ -46763,7 +46763,7 @@ function meterBuildHcfrExportModel(){
 }
 
 let meterHcfrChcLoadPromise=null;
-function meterEnsureHcfrChcModule(){
+async function meterEnsureHcfrChcModule(){
  if(window.PGeneratorHcfrChc) return Promise.resolve(window.PGeneratorHcfrChc);
  if(meterHcfrChcLoadPromise) return meterHcfrChcLoadPromise;
  meterHcfrChcLoadPromise=(async()=>{
