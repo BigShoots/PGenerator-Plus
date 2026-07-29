@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id] [observer]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode]
@@ -42,6 +42,12 @@ METER_AVERAGING="${10:-${METER_AVERAGING:-off}}"
 # spotread -c index from THIS device instead of trusting the requested index,
 # which goes stale whenever meters are plugged/unplugged (enumeration order).
 METER_USB_ID="${11:-}"
+OBSERVER="${12:-1931_2}"
+case "$OBSERVER" in
+ 1931_2|1964_10|2015_2|2015_10) ;;
+ *) OBSERVER="1931_2" ;;
+esac
+export OBSERVER
 
 # SpyderX supports its built-in display calibrations and device-specific CCMX
 # matrices. It does not expose CCSS spectral-sample or manual refresh-override
@@ -308,8 +314,8 @@ if ! flock -n 9; then
  exit 0
 fi
 echo $$ > "$PID_FILE"
-printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" "$METER_USB_ID" > "$CONFIG_FILE"
-log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT usb_id=$METER_USB_ID ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" "$METER_USB_ID" "$OBSERVER" > "$CONFIG_FILE"
+log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT usb_id=$METER_USB_ID observer=$OBSERVER ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
 startup_marker "pid/config written"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
@@ -510,11 +516,11 @@ build_sr_cmd () {
     # calibrate_tile / calibrate_retry steps below surface to the operator.
     # So -N is safe unconditionally for spectros. Spyder colorimeters also
     # use it above to reuse a still-valid stored dark calibration.
-    cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -x $new_ll_flags"
+    cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
    elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
-   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
+   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
   else
-   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -x $new_ll_flags"
+   cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
   fi
   # -Y R:rate overrides spotread's measured refresh rate. Passing it makes
   # spotread SKIP its mandatory "read an 80% white patch to calibrate refresh
@@ -1059,6 +1065,7 @@ r['r_code']=int(os.environ.get('READ_R','0') or 0)
 r['g_code']=int(os.environ.get('READ_G','0') or 0)
 r['b_code']=int(os.environ.get('READ_B','0') or 0)
 r['request_id']=os.environ.get('READ_REQUEST_ID','')
+r['observer']=os.environ.get('OBSERVER','1931_2')
 print(json.dumps({'status':'complete','request_id':os.environ.get('READ_REQUEST_ID',''),'readings':[r],'count':1}))
 		" 2>/dev/null)
      if [[ -n "$OUT" ]]; then

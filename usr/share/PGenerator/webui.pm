@@ -2036,10 +2036,11 @@ sub webui_meter_session_stop_only (@) {
 }
 
 sub webui_meter_session_start (@) {
- my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging,$meter_usb_id)= @_;
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging,$meter_usb_id,$observer)= @_;
  $averaging="" if(!defined($averaging));
  $meter_usb_id="" if(!defined($meter_usb_id));
  $meter_usb_id="" if($meter_usb_id!~/^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$/);
+ $observer="1931_2" if(!defined($observer) || $observer!~/^(?:1931_2|1964_10|2015_2|2015_10)$/);
  my $aio_flag=$disable_aio ? "1" : "0";
  $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
@@ -2057,7 +2058,7 @@ sub webui_meter_session_start (@) {
   # Launch detached as root. The daemon writes its own PID/config files once it
   # grabs the lock; wait for an actionable startup state before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' </dev/null >/dev/null 2>&1 &");
+  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' '$observer' </dev/null >/dev/null 2>&1 &");
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -2176,6 +2177,8 @@ sub webui_meter_read (@) {
  if($measurement_meter_usb_id eq "" && $measurement_meter_port ne "") {
   $measurement_meter_usb_id=&webui_meter_usb_id_for_port($measurement_meter_port);
  }
+ my $observer="1931_2";
+ $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   # SpyderX exposes four built-in display calibrations and device-specific
   # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
@@ -2341,7 +2344,7 @@ sub webui_meter_read (@) {
  # run. The per-read $avg_mode flows through the READ command line, not the
  # session config -- otherwise the persistent session respawns (35-90s on
  # OLED) every time the per-read mode flips at the 5 cd/m2 trigger.
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -2384,7 +2387,7 @@ sub webui_meter_read (@) {
   # METER_AVERAGING, not the per-read $avg_mode -- they have to match the
   # 7th field of want_config so the new session doesn't immediately look
   # like a config-changed session to the next request.
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
@@ -2413,7 +2416,7 @@ sub webui_meter_read (@) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
@@ -2939,6 +2942,8 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  if($measurement_meter_usb_id eq "" && $measurement_meter_port ne "") {
   $measurement_meter_usb_id=&webui_meter_usb_id_for_port($measurement_meter_port);
  }
+ my $observer="1931_2";
+ $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   $display_type=&webui_spyderx_native_display_type($display_type_key);
   $ccss_file="" if($ccss_file!~/\.ccmx$/i);
@@ -4351,7 +4356,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -11029,6 +11034,7 @@ padding:4px 24px 4px 8px;border-radius:6px;font-size:.74rem;outline:none;transit
 #meterSettingsGrid .field-display .field-whitepoint{display:none;margin-top:2px;width:100%}
 #meterSettingsGrid .field-display .field-whitepoint.visible{display:block}
 #meterSettingsGrid .field-gamma{width:140px}
+#meterSettingsGrid .field-chromaticity{width:140px}
 #meterSettingsGrid .meter-target-white-row,#meterSettingsGrid .meter-target-black-row{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;margin-top:4px;width:min(420px,calc(100vw - 70px));max-width:none}
 #meterSettingsGrid .meter-target-inline-label{font-size:.65rem;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;flex:0 0 92px;min-width:92px;margin-right:2px;white-space:nowrap}
 #meterSettingsGrid .meter-target-white-row input[type=number],#meterSettingsGrid .meter-target-black-row input[type=number]{width:62px;min-width:62px;padding-left:7px;padding-right:7px}
@@ -12227,6 +12233,19 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="srgb">sRGB</option>
      </select>
     </div>
+   <div class="field field-chromaticity">
+    <label>Chromaticity Chart <span class="meter-help-tip" title="The selected observer is applied to new meter reads through Argyll. CIE 1964 and CIE 170-2 require a spectrometer or a colorimeter with a spectral CCSS correction. Existing readings made with another observer are not reinterpreted." aria-label="Chromaticity chart observer help">?</span></label>
+    <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
+     <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
+     <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
+     <option value="cie1976_2">CIE 1976 u&#8242;v&#8242; (2&deg;)</option>
+     <option value="cie1976_10">CIE 1976 u&#8242;v&#8242; (10&deg;)</option>
+     <option value="cie2015_2">CIE 170-2 xF yF (2&deg;)</option>
+     <option value="cie2015_10">CIE 170-2 xF yF (10&deg;)</option>
+     <option value="ciemb_2">MacLeod-Boynton lMB sMB (2&deg;)</option>
+     <option value="ciemb_10">MacLeod-Boynton lMB sMB (10&deg;)</option>
+    </select>
+   </div>
   	   <div class="field field-delay">
 	    <label>Pattern Delay</label>
 	    <div class="meter-inline-value">
@@ -13061,7 +13080,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <canvas id="meterRGBCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
       <div id="meterXYYColorWrap" style="flex:0 0 180px;width:180px;height:450px;background:#0d0d15;border-radius:6px;padding:10px;display:flex;flex-direction:column;box-sizing:border-box">
-       <div style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">xyY</div>
+       <div id="meterXYYColorLabel" style="font-size:.68rem;color:var(--text2);text-transform:none;letter-spacing:.06em;margin-bottom:8px;text-align:center">xyY</div>
        <canvas id="meterXYYCanvasColor" width="200" height="400" style="width:100%;flex:1;min-height:0;display:block"></canvas>
       </div>
       <div id="colorReadingDetail" style="flex:0 0 205px;width:205px;height:450px;background:#0d0d15;border-radius:6px;padding:12px;font-size:12px;color:#888;box-sizing:border-box;overflow:auto">
@@ -21142,7 +21161,7 @@ function meterReadingXYZ(reading){
   }
   return null;
  }
- if(reading.X!=null && reading.Y!=null && reading.Z!=null) return {X:reading.X,Y:reading.Y,Z:reading.Z};
+ if(reading.X!=null && reading.Y!=null && reading.Z!=null) return {X:reading.X,Y:reading.Y,Z:reading.Z,observer:reading.observer||'1931_2'};
  const x=(reading.x!=null)?Number(reading.x):NaN;
  const y=(reading.y!=null)?Number(reading.y):NaN;
  if(Number.isFinite(x) && Number.isFinite(y) && y>0){
@@ -22007,6 +22026,153 @@ function stimulusColor(r,g,b){
 
 // CIE 1931 spectral locus xy coordinates (5nm intervals, 380-700nm)
 const CIE_LOCUS=[[.1741,.005],[.174,.005],[.1733,.0048],[.1726,.0048],[.1714,.0051],[.1703,.0058],[.1689,.0069],[.1669,.0086],[.1644,.0109],[.1611,.0138],[.1566,.0177],[.151,.0227],[.144,.0297],[.1355,.0399],[.1241,.0578],[.1096,.0868],[.0913,.1327],[.0687,.2007],[.0454,.295],[.0235,.4127],[.0082,.5384],[.0039,.6548],[.0139,.7502],[.0389,.812],[.0743,.8338],[.1142,.8262],[.1547,.8059],[.1929,.7816],[.2296,.7543],[.2658,.7243],[.3016,.6923],[.3373,.6589],[.3731,.6245],[.4087,.5896],[.4441,.5547],[.4788,.5202],[.5125,.4866],[.5448,.4544],[.5752,.4242],[.6029,.3965],[.627,.3725],[.6482,.3514],[.6658,.334],[.6801,.3197],[.6915,.3083],[.7006,.2993],[.7079,.292],[.714,.2859],[.719,.2809],[.723,.277],[.726,.274],[.7283,.2717],[.73,.27],[.732,.268],[.7334,.2666],[.7347,.2653]];
+// Official CIE open-data spectral loci, sampled at 10 nm for the alternate
+// observers. Blank long-wave Z/S table cells are zero.
+const CIE_LOCUS_1964=[[.181333,.019685],[.180313,.0193476],[.178387,.0187109],[.175488,.0181337],[.170634,.0178493],[.165027,.0202828],[.159022,.0257251],[.151001,.0364389],[.138922,.0589201],[.11518,.10904],[.0727766,.229239],[.0209874,.440113],[.00558634,.674543],[.0495405,.802302],[.125236,.810194],[.207057,.766282],[.278588,.7113],[.347296,.65009],[.414213,.585787],[.479038,.520962],[.53856,.46144],[.58996,.41004],[.630629,.369371],[.661224,.338776],[.68266,.31734],[.695483,.304517],[.705873,.294127],[.713713,.286287],[.71679,.28321],[.718732,.281268],[.719763,.280237],[.72016,.27984],[.720358,.279642]];
+const CIE_LOCUS_2015_2=[[.16638,.0182998],[.164995,.0182721],[.162958,.0165252],[.159581,.0158926],[.155404,.0176748],[.150365,.0217336],[.144232,.0289496],[.133916,.0458814],[.115738,.0832027],[.0805505,.176011],[.0311653,.355796],[.00418288,.591944],[.0238164,.796176],[.0932183,.840635],[.170905,.806175],[.243156,.749116],[.311614,.685758],[.380606,.618505],[.450008,.549684],[.518078,.481808],[.577571,.422385],[.624569,.375412],[.659999,.339992],[.683693,.316307],[.699072,.300928],[.708867,.291133],[.715279,.284721],[.719116,.280884],[.721541,.278459],[.722647,.277353],[.723143,.276857],[.723291,.276709]];
+const CIE_LOCUS_2015_10=[[.17842,.0246367],[.176521,.024325],[.173723,.0218546],[.169345,.0209976],[.164082,.0234899],[.157689,.0292501],[.149774,.0395764],[.136265,.0639734],[.112468,.117502],[.0692931,.244778],[.0182574,.463233],[.00817345,.691305],[.0502997,.831847],[.128254,.831344],[.20946,.776992],[.283155,.712361],[.35114,.647341],[.417162,.582324],[.480878,.518942],[.540968,.458964],[.593121,.406852],[.633963,.366025],[.664977,.335017],[.685958,.314042],[.699774,.300226],[.708708,.291292],[.714655,.285345],[.718244,.281756],[.720535,.279465],[.721581,.278419],[.722049,.277951],[.722187,.277813]];
+const CIE_LOCUS_MB_2=[[.690547,.85567],[.677571,.858452],[.662656,.953597],[.627777,.996399],[.585916,.898535],[.551744,.731596],[.531511,.54852],[.524357,.343327],[.528335,.184906],[.540738,.08112],[.55547,.033091],[.572275,.013104],[.588088,.004342],[.603889,.001511],[.619954,.000546],[.636807,.000198],[.655844,.000074],[.679293,.000028],[.708852,.000011],[.746141,.000005],[.788583,.000002],[.831629,.000001],[.871948,.000001],[.903949,0],[.927421,0],[.943662,0],[.954901,0],[.961871,0],[.966375,0],[.968455,0],[.969394,0],[.969674,0]];
+const CIE_LOCUS_MB_10=[[.6927375,.8357751],[.6797181,.8488253],[.6645833,.9510032],[.6292175,.996258],[.5866436,.893601],[.551633,.7181829],[.5305491,.5292222],[.5224176,.3229995],[.5253855,.1693177],[.5371162,.07240147],[.5512122,.02891989],[.5677017,.01123174],[.5838496,.003660485],[.6007595,.00125562],[.6190357,.0004504866],[.6386031,.0001626139],[.6605153,.00006059423],[.6867121,.00002280989],[.7183437,.000008957794],[.7562422,.000003822312],[.7982168,.000001709524],[.8394434,.0000008480997],[.8774655,.0000004661395],[.907444,0],[.9294768,0],[.9448365,0],[.9555935,0],[.9623054,0],[.9666802,0],[.9687004,0],[.9696107,0],[.9698788,0]];
+
+function meterChromaticityChartMode(){
+ const el=document.getElementById('meterChromaticityChart');
+ const mode=String(el&&el.value||'cie1931_2');
+ return /^(cie1931_2|cie1964_10|cie1976_2|cie1976_10|cie2015_2|cie2015_10|ciemb_2|ciemb_10)$/.test(mode)?mode:'cie1931_2';
+}
+function meterChromaticityObserver(){
+ const mode=meterChromaticityChartMode();
+ if(/(?:1964|_10)$/.test(mode)) return mode.indexOf('2015')>=0||mode.indexOf('ciemb')>=0?'2015_10':'1964_10';
+ if(mode.indexOf('2015')>=0||mode.indexOf('ciemb')>=0) return '2015_2';
+ return '1931_2';
+}
+
+// CIE 1976 UCS is an exact projective transform of CIE 1931 XYZ. CIE
+// 170-2 is a different observer and therefore cannot, in general, be
+// recovered from a 1931 tristimulus reading without its spectrum. The
+// compatibility matrix below is the least-squares 1931 XYZ -> 2015 XF/YF/ZF
+// transform over the official 1 nm CIE CMF tables. Spectral measurements
+// carrying native XF/YF/ZF may provide those fields directly.
+const CIE1931_TO_CIE2015=[
+ [1.07607467,-0.00796087,-0.01858281],
+ [0.05064999,0.98983321,0.01175327],
+ [0.04110928,-0.04750461,1.03352313]
+];
+const CIE1931_TO_CIE1964=[
+ [1.15651484,0.03915620,-0.01423358],
+ [-0.40300447,1.15237515,0.11112577],
+ [0.38645035,-0.14247649,1.03357434]
+];
+const CIE1931_TO_CIE2015_10=[
+ [1.01872905,0.09171435,0.01263802],
+ [-0.03497830,1.06327928,0.05888701],
+ [0.06662105,-0.07843136,1.12141162]
+];
+const CIE2015_TO_LMS_2=[
+ [0.210575136,0.855102038,-0.039698405],
+ [-0.417074188,1.177257920,0.078628107],
+ [-0.000000183,0.000000172,0.516833478]
+];
+const CIE2015_TO_LMS_10=[
+ [0.217010354,0.835733794,-0.043510601],
+ [-0.429979672,1.203889660,0.086210852],
+ [-0.000000018,0.000000018,0.465792324]
+];
+// CIE 170-2 MacLeod-Boynton normalization. L and M are weighted so their
+// sum is the cone-fundamental luminous-efficiency value. S is weighted so
+// the maximum spectral sMB coordinate is one.
+const CIE_MB_FACTORS_2=[0.68990078,0.34832169,0.03715959];
+const CIE_MB_FACTORS_10=[0.69283938,0.34967553,0.05546866];
+function meterCieApplyMatrix(xyz,M){
+ const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
+ return {X:M[0][0]*X+M[0][1]*Y+M[0][2]*Z,Y:M[1][0]*X+M[1][1]*Y+M[1][2]*Z,Z:M[2][0]*X+M[2][1]*Y+M[2][2]*Z};
+}
+function meterCie2015XYZ(xyz){
+ if(!xyz) return null;
+ if(Number.isFinite(Number(xyz.XF))&&Number.isFinite(Number(xyz.YF))&&Number.isFinite(Number(xyz.ZF))){
+  return {X:Number(xyz.XF),Y:Number(xyz.YF),Z:Number(xyz.ZF),native:true};
+ }
+ const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
+ if(![X,Y,Z].every(Number.isFinite)) return null;
+ const observer=String(xyz.observer||'');
+ if(observer==='2015_2'||observer==='2015_10') return {X:X,Y:Y,Z:Z,native:true};
+ const ten=/_10$/.test(meterChromaticityChartMode());
+ return Object.assign(meterCieApplyMatrix({X:X,Y:Y,Z:Z},ten?CIE1931_TO_CIE2015_10:CIE1931_TO_CIE2015),{native:false});
+}
+function meterCieChartCoordFromXYZ(xyz){
+ if(!xyz) return null;
+ const mode=meterChromaticityChartMode();
+ let X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
+ const observer=String(xyz.observer||'1931_2');
+ const desiredObserver=meterChromaticityObserver();
+ if(xyz.observer&&observer!==desiredObserver) return null;
+ const wantsTen=/_10$/.test(mode);
+ if((mode==='cie1964_10'||mode==='cie1976_10')&&observer!=='1964_10'){
+  const converted=meterCieApplyMatrix({X:X,Y:Y,Z:Z},CIE1931_TO_CIE1964);
+  X=converted.X;Y=converted.Y;Z=converted.Z;
+ }
+ if(mode.indexOf('cie2015_')===0||mode.indexOf('ciemb_')===0){
+  const f=meterCie2015XYZ(xyz);
+  if(!f) return null;
+  X=f.X;Y=f.Y;Z=f.Z;
+ }
+ if(![X,Y,Z].every(Number.isFinite)) return null;
+ if(mode.indexOf('ciemb_')===0){
+  const lms=meterCieApplyMatrix({X:X,Y:Y,Z:Z},wantsTen?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
+  const f=wantsTen?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+  const L=f[0]*lms.X,M=f[1]*lms.Y,S=f[2]*lms.Z;
+  const lm=L+M;
+  return lm>0?{x:L/lm,y:S/lm,Y:lm,L:L,M:M,S:S}:{x:0,y:0,Y:0,L:0,M:0,S:0};
+ }
+ if(mode.indexOf('cie1976_')===0){
+  const d=X+15*Y+3*Z;
+  return d>0?{x:4*X/d,y:9*Y/d,Y:Y}:{x:0,y:0,Y:Y};
+ }
+ const s=X+Y+Z;
+ return s>0?{x:X/s,y:Y/s,Y:Y}:{x:0,y:0,Y:Y};
+}
+function meterCieChartCoordFromXy(x,y,Y){
+ x=Number(x);y=Number(y);Y=Number.isFinite(Number(Y))?Number(Y):1;
+ if(!(x>=0&&y>0)) return null;
+ return meterCieChartCoordFromXYZ({X:x*Y/y,Y:Y,Z:(1-x-y)*Y/y});
+}
+function meterCieChartLocus(){
+ const mode=meterChromaticityChartMode();
+ if(mode==='cie2015_2') return CIE_LOCUS_2015_2;
+ if(mode==='cie2015_10') return CIE_LOCUS_2015_10;
+ if(mode==='ciemb_2') return CIE_LOCUS_MB_2;
+ if(mode==='ciemb_10') return CIE_LOCUS_MB_10;
+ const locus=(mode==='cie1964_10'||mode==='cie1976_10')?CIE_LOCUS_1964:CIE_LOCUS;
+ if(mode.indexOf('cie1976_')===0){
+  return locus.map(p=>{
+   const d=-2*p[0]+12*p[1]+3;
+   return [4*p[0]/d,9*p[1]/d];
+  });
+ }
+ return locus;
+}
+function meterCieChartAxis(){
+ const mode=meterChromaticityChartMode();
+ const ten=/_10$/.test(mode),degree=ten?'10\u00B0':'2\u00B0';
+ if(mode.indexOf('cie1976_')===0) return {x:'u\u2032',y:'v\u2032',title:'CIE 1976 UCS Chromaticity ('+degree+')',threeD:'CIE u\u2032v\u2032Y ('+degree+', 3D)'};
+ if(mode.indexOf('cie2015_')===0) return {x:'xF',y:'yF',title:'CIE 170-2:2015 Chromaticity ('+degree+')',threeD:'CIE 170-2 xFyFYF ('+degree+', 3D)'};
+ if(mode.indexOf('ciemb_')===0) return {x:'lMB',y:'sMB',title:'MacLeod-Boynton Chromaticity ('+degree+')',threeD:'MacLeod-Boynton lMB sMB YF ('+degree+', 3D)'};
+ if(mode==='cie1964_10') return {x:'x',y:'y',title:'CIE 1964 Chromaticity (10\u00B0)',threeD:'CIE 1964 xyY (10\u00B0, 3D)'};
+ return {x:'x',y:'y',title:'CIE 1931 Chromaticity (2\u00B0)',threeD:'CIE 1931 xyY (2\u00B0, 3D)'};
+}
+function meterOnChromaticityChartChange(){
+ cie2dResetView();
+ try{ meterSaveColorPrefs(); }catch(e){}
+ meterUpdateCie3dLabel();
+ const observer=meterChromaticityObserver();
+ if(Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.observer&&r.observer!==observer)){
+  const observerLabel={1931_2:'CIE 1931 2\u00B0',1964_10:'CIE 1964 10\u00B0',2015_2:'CIE 2015 2\u00B0',2015_10:'CIE 2015 10\u00B0'}[observer]||observer;
+  toast('Existing samples use another observer. Read the series again for '+observerLabel+'.',true);
+ }
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  if(meterReadings&&meterReadings.length) drawAllCharts(meterReadings);
+  else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
+ }
+}
 
 // CIE L* from Y/Yn (normalized luminance 0-1) — perceptual lightness
 function ynToLstar(yn){
@@ -23779,6 +23945,7 @@ function meterSaveColorPrefs(){
     eotf_log: cb('meterEotfLogScale'),
     luminance_log: cb('meterLuminanceLogScale'),
     cie_3d: cb('meterCie3dView'),
+    chromaticity_chart: v('meterChromaticityChart'),
     hdr_diffuse_white: v('meterHdrDiffuseWhite'),
     hdr_diffuse_white_auto: cb('meterHdrDiffuseWhiteAuto')
   };
@@ -23830,6 +23997,7 @@ function meterLoadColorPrefs(){
   setChk('meterEotfLogScale', p.eotf_log);
   setChk('meterLuminanceLogScale', p.luminance_log);
   setChk('meterCie3dView', p.cie_3d);
+  setVal('meterChromaticityChart', p.chromaticity_chart);
   setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white);
   setChk('meterHdrDiffuseWhiteAuto', p.hdr_diffuse_white_auto==null?'1':p.hdr_diffuse_white_auto);
   meterSyncHdrDiffuseWhiteControl();
@@ -32871,6 +33039,7 @@ async function meterSelectSeries(type,points,opts){
 }
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
+ body.observer=meterChromaticityObserver();
  body.signal_mode=getVal('signal_mode')||'sdr';
  if(body.signal_mode==='dv'){
   const dvTransport=dvTransportDefaults(getVal('dv_transport'));
@@ -44512,6 +44681,9 @@ function drawColorReadingsTable(readings){
  const deLabel=meterDeltaEFormLabel(colorForm)+(colorInclLum?' + Y':' (chroma)');
  const deHead=document.querySelector('#colorReadingsTable thead th:last-child');
  if(deHead) deHead.innerHTML=deLabel;
+ const axis=meterCieChartAxis();
+ const heads=document.querySelectorAll('#colorReadingsTable thead th');
+ if(heads.length>=5){heads[1].textContent='Tgt '+axis.x;heads[2].textContent=axis.x;heads[3].textContent='Tgt '+axis.y;heads[4].textContent=axis.y;}
  let html='';
  let deSum=0,deCount=0;
  readings.forEach(rd=>{
@@ -44519,9 +44691,10 @@ function drawColorReadingsTable(readings){
   if(!meterReadingHasLuminance(rd)) return;
   const hasChroma=meterReadingHasChromaticity(rd);
   const targetXYZ=meterTargetXYZForReading(rd);
-  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterTargetChromaticityForReading(rd):null;
-  const dx=(hasChroma&&tgt)?(rd.x-tgt.x):null;
-  const dy=(hasChroma&&tgt)?(rd.y-tgt.y):null;
+  const tgt=(targetXYZ&&targetXYZ.Y>0)?meterCieChartCoordFromXYZ(targetXYZ):null;
+  const measured=hasChroma?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
+  const dx=(measured&&tgt)?(measured.x-tgt.x):null;
+  const dy=(measured&&tgt)?(measured.y-tgt.y):null;
   const pc=meterPreviewColorForReading(rd,'target');
   const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
    const hasDe=Number.isFinite(de);
@@ -44532,9 +44705,9 @@ function drawColorReadingsTable(readings){
   html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
   html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.x.toFixed(4):'--')+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.x.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(measured?measured.x.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
-  html+='<td style="padding:5px 6px;text-align:right">'+(hasChroma?rd.y.toFixed(4):'--')+'</td>';
+  html+='<td style="padding:5px 6px;text-align:right">'+(measured?measured.y.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+((targetXYZ&&targetXYZ.Y>0)?targetXYZ.Y.toFixed(1):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right">'+((rd.Y!=null?rd.Y:(rd.luminance||0)).toFixed(1))+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td>';
@@ -44564,6 +44737,9 @@ function drawColorSeriesAverages(readings,colorRefMode){
  if(!wrap||!tbody) return;
  const valid=(readings||[]).filter(rd=>meterReadingHasLuminance(rd)&&!meterIsWhiteReferenceReading(rd));
  if(valid.length===0){wrap.style.display='none';return;}
+ const axis=meterCieChartAxis();
+ const heads=document.querySelectorAll('#colorSeriesAveragesTable thead th');
+ if(heads.length>=4){heads[2].textContent='Avg \u0394'+axis.x;heads[3].textContent='Avg \u0394'+axis.y;}
  const colorForm=meterColorDeltaEForm();
  const isSat=(meterActiveSeriesType==='saturations');
  const groups={};
@@ -44575,12 +44751,14 @@ function drawColorSeriesAverages(readings,colorRefMode){
    key=sat&&sat.color?sat.color:(rd.name||'Other');
   }
   if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
-  const tgt=meterReadingHasChromaticity(rd)?meterTargetChromaticityForReading(rd):null;
+  const targetXYZ=meterTargetXYZForReading(rd);
+  const tgt=meterReadingHasChromaticity(rd)?meterCieChartCoordFromXYZ(targetXYZ):null;
+  const measured=meterReadingHasChromaticity(rd)?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
   const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
   if(Number.isFinite(de)) groups[key].de.push(de);
-  if(tgt){
-   groups[key].dx.push(Math.abs(rd.x-tgt.x));
-   groups[key].dy.push(Math.abs(rd.y-tgt.y));
+  if(tgt&&measured){
+   groups[key].dx.push(Math.abs(measured.x-tgt.x));
+   groups[key].dy.push(Math.abs(measured.y-tgt.y));
   }
   groups[key].Y.push(rd.Y!=null?rd.Y:(rd.luminance||0));
  });
@@ -44740,7 +44918,7 @@ function showColorReadingDetail(rd,opts){
  const colorInclLum=(meterColorRefMode()==='eotf');
  const deLabel=meterDeltaEFormLabel(meterColorDeltaEForm());
  const targetXYZ=meterTargetXYZForReading(view);
- const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterTargetChromaticityForReading(view):null;
+ const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterCieChartCoordFromXYZ(targetXYZ):null;
  // Measured fields: ONLY from a real sample. Never fall through to targets.
  const hasMeasuredXYZ=!isUnread&&!!meterReadingXYZ(view);
  const hasChroma=!isUnread&&hasMeasuredXYZ&&meterReadingHasChromaticity(view);
@@ -44754,8 +44932,9 @@ function showColorReadingDetail(rd,opts){
  }
  const targetColor=meterPreviewColorForReading(view,'target');
  const measuredColor=hasMeasuredXYZ?meterPreviewColorForReading(view,'measured'):'#14141c';
- const mx=hasChroma?Number(view.x):null;
- const my=hasChroma?Number(view.y):null;
+ const measuredCoord=hasChroma?meterCieChartCoordFromXYZ(meterReadingXYZ(view)):null;
+ const mx=measuredCoord?measuredCoord.x:null;
+ const my=measuredCoord?measuredCoord.y:null;
  const dx=(mx!=null&&tgt)?(mx-tgt.x):null;
  const dy=(my!=null&&tgt)?(my-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
@@ -44771,16 +44950,17 @@ function showColorReadingDetail(rd,opts){
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+targetColor+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Target</div></div>';
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
- h+='<tr><td style="padding:3px 0;color:#777">Target x</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured x</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">Measured y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(my!=null?my.toFixed(4):'--')+'</td></tr>';
+ const chartAxis=meterCieChartAxis();
+ h+='<tr><td style="padding:3px 0;color:#777">Target '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(my!=null?my.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target Y</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(lumInfo.targetY!=null?Number(lumInfo.targetY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured Y</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(lumInfo.measuredY!=null?Number(lumInfo.measuredY).toFixed(1)+' cd/m\u00B2':'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaY==null?'--':(lumInfo.deltaY>=0?'+':'')+Number(lumInfo.deltaY).toFixed(1)+' cd/m\u00B2')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%')+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394x</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777">\u0394y</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394'+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777">\u0394'+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
@@ -44846,7 +45026,8 @@ function colorChartRegisterInteraction(readings){
   const g=meterCie2dGeom(rect.width,rect.height);
   plotReadings.forEach(rd=>{
    if(!rd.x||!rd.y||rd.x<=0||rd.y<=0) return;
-   _colorChartHitZones.push({canvasId:'chartCIE',cx:g.toX(rd.x),cy:g.toY(rd.y),radius:12,reading:rd});
+   const p=meterCieChartCoordFromXYZ(meterReadingXYZ(rd));
+   if(p) _colorChartHitZones.push({canvasId:'chartCIE',cx:g.toX(p.x),cy:g.toY(p.y),radius:12,reading:rd});
   });
   // Hover via property handlers; click is handled by cie2d mouseup (so pan
   // drag does not also select). Wheel/pan bound in cie2dBindHandlers.
@@ -44955,6 +45136,12 @@ function meterSelectedCIETargetColor(rd,baseColor){
 // uses a slightly wider 1.15:1 presentation so the plot fills more of its
 // card without restoring the old unused x=.9-1.0 world-coordinate gutter.
 const CIE2D_WORLD={xMin:0,xMax:0.9,yMin:0,yMax:0.9};
+function meterCie2dWorld(){
+ const mode=meterChromaticityChartMode();
+ if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:1.05};
+ if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
+ return CIE2D_WORLD;
+}
 const CIE2D_SCALE_MIN=1,CIE2D_SCALE_MAX=25;
 let _cie2d={
  scale:1,panX:0,panY:0,
@@ -44965,26 +45152,29 @@ function cie2dResetView(){
  _cie2d.scale=1; _cie2d.panX=0; _cie2d.panY=0;
 }
 function meterCie2dViewport(){
- const defW=CIE2D_WORLD.xMax-CIE2D_WORLD.xMin;
- const defH=CIE2D_WORLD.yMax-CIE2D_WORLD.yMin;
+ const world=(typeof meterCie2dWorld==='function')?meterCie2dWorld():CIE2D_WORLD;
+ const defW=world.xMax-world.xMin;
+ const defH=world.yMax-world.yMin;
  const scale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
  const vw=defW/scale, vh=defH/scale;
- const worldCx=(CIE2D_WORLD.xMin+CIE2D_WORLD.xMax)/2;
- const worldCy=(CIE2D_WORLD.yMin+CIE2D_WORLD.yMax)/2;
+ const worldCx=(world.xMin+world.xMax)/2;
+ const worldCy=(world.yMin+world.yMax)/2;
  let cx=worldCx+(Number(_cie2d.panX)||0);
  let cy=worldCy+(Number(_cie2d.panY)||0);
  // Keep the viewport inside the world when zoomed; full view is locked.
  const halfW=vw/2, halfH=vh/2;
  if(scale<=1.0001){ cx=worldCx; cy=worldCy; _cie2d.panX=0; _cie2d.panY=0; }
  else {
-  cx=Math.max(CIE2D_WORLD.xMin+halfW,Math.min(CIE2D_WORLD.xMax-halfW,cx));
-  cy=Math.max(CIE2D_WORLD.yMin+halfH,Math.min(CIE2D_WORLD.yMax-halfH,cy));
+  cx=Math.max(world.xMin+halfW,Math.min(world.xMax-halfW,cx));
+  cy=Math.max(world.yMin+halfH,Math.min(world.yMax-halfH,cy));
   _cie2d.panX=cx-worldCx; _cie2d.panY=cy-worldCy;
  }
  return {xMin:cx-halfW,xMax:cx+halfW,yMin:cy-halfH,yMax:cy+halfH,scale:scale,cx:cx,cy:cy};
 }
 function meterCie2dNiceStep(range){
  const r=Math.max(1e-6,Number(range)||0.1);
+ if(r>5) return 2;
+ if(r>1) return 1;
  if(r<=0.04) return 0.005;
  if(r<=0.08) return 0.01;
  if(r<=0.2) return 0.02;
@@ -45126,6 +45316,12 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 // Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
 // Drag rotates (orbit), wheel zooms, double-click resets — matches the cube view.
 const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
+function meterCie3dBounds(){
+ const mode=meterChromaticityChartMode();
+ if(mode.indexOf('ciemb_')===0) return {xMin:0,xMax:1,yMin:0,yMax:1.05};
+ if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
+ return {xMin:0,xMax:0.8,yMin:0,yMax:0.9};
+}
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
 const CIE3D_DEFAULT={yaw:0.85,pitch:0.72,dist:2.4,panX:0,panY:0.02,scale:1};
@@ -45145,7 +45341,17 @@ function meterCie3dViewEnabled(){
 function meterUpdateCie3dLabel(){
  const lab=document.getElementById('chartCIELabel');
  if(!lab) return;
- lab.textContent=meterCie3dViewEnabled()?'CIE xyY (3D)':'CIE 1931 Chromaticity';
+ const axis=meterCieChartAxis();
+ lab.textContent=meterCie3dViewEnabled()?axis.threeD:axis.title;
+ const help=document.querySelector('#meterCie3dViewLabel .meter-help-tip');
+ if(help){
+  help.title=axis.threeD+': drag = rotate, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
+ }
+ const xyy=document.getElementById('meterXYYColorLabel');
+ if(xyy){
+  const mode=meterChromaticityChartMode();
+  xyy.textContent=axis.x+axis.y+((mode.indexOf('cie2015_')===0||mode.indexOf('ciemb_')===0)?'YF':'Y');
+ }
 }
 // CIE layout: 3D uses free row width; expand (2D or 3D) fills the card.
 function meterApplyCie3dLayout(){
@@ -45470,10 +45676,11 @@ function cie3dComputeYMax(items,isPreset){
 }
 // Map data (x,y,Y) → screen. Layout holds canvas size + yMax scale.
 function cie3dProject(x,y,Y,layout){
- const x0=(CIE3D_XMIN+CIE3D_XMAX)/2;
- const y0=(CIE3D_YMIN+CIE3D_YMAX)/2;
- const xSpan=(CIE3D_XMAX-CIE3D_XMIN);
- const ySpan=(CIE3D_YMAX-CIE3D_YMIN);
+ const bounds=meterCie3dBounds();
+ const x0=(bounds.xMin+bounds.xMax)/2;
+ const y0=(bounds.yMin+bounds.yMax)/2;
+ const xSpan=(bounds.xMax-bounds.xMin);
+ const ySpan=(bounds.yMax-bounds.yMin);
  // Unit-ish coords with floor at 0 and Y up
  const px=(x-x0)/(xSpan*0.5);
  const pz=(y-y0)/(ySpan*0.5);
@@ -45542,20 +45749,22 @@ function drawCIEChart3D(readings,opts){
  // already scale via baseScale; without this the dots stay fixed-size).
  const markerScale=Math.max(0.35,Math.min(3,_cie3d.scale||1));
  const prims=[]; // {z, draw:fn}
+ const bounds=meterCie3dBounds();
  // Background
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  // Floor grid
- for(let gx=0;gx<=CIE3D_XMAX+1e-9;gx+=0.1){
-  const a=cie3dProject(gx,CIE3D_YMIN,0,layout);
-  const b=cie3dProject(gx,CIE3D_YMAX,0,layout);
+ for(let gx=bounds.xMin;gx<=bounds.xMax+1e-9;gx+=0.1){
+  const a=cie3dProject(gx,bounds.yMin,0,layout);
+  const b=cie3dProject(gx,bounds.yMax,0,layout);
   prims.push({z:(a.z+b.z)/2, draw:()=>{
    ctx.strokeStyle='rgba(56,72,102,0.45)';ctx.lineWidth=1;
    ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
   }});
  }
- for(let gy=0;gy<=CIE3D_YMAX+1e-9;gy+=0.1){
-  const a=cie3dProject(CIE3D_XMIN,gy,0,layout);
-  const b=cie3dProject(CIE3D_XMAX,gy,0,layout);
+ const floorYStep=(bounds.yMax-bounds.yMin)>2?2:0.1;
+ for(let gy=bounds.yMin;gy<=bounds.yMax+1e-9;gy+=floorYStep){
+  const a=cie3dProject(bounds.xMin,gy,0,layout);
+  const b=cie3dProject(bounds.xMax,gy,0,layout);
   prims.push({z:(a.z+b.z)/2, draw:()=>{
    ctx.strokeStyle='rgba(56,72,102,0.45)';ctx.lineWidth=1;
    ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
@@ -45563,7 +45772,7 @@ function drawCIEChart3D(readings,opts){
  }
  // Spectral locus on floor
  if(meterCieViewOpts.locus){
-  const locusPts=CIE_LOCUS.map(p=>cie3dProject(p[0],p[1],0,layout));
+  const locusPts=meterCieChartLocus().map(p=>cie3dProject(p[0],p[1],0,layout));
   prims.push({z:cie3dAvgZ(locusPts), draw:()=>{
    ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;
    cie3dStrokePoly(ctx,locusPts,true);
@@ -45572,18 +45781,19 @@ function drawCIEChart3D(readings,opts){
  // Gamut triangle
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
+ const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
  if(meterCieViewOpts.gamut){
   const gPts=[
-   cie3dProject(prim.R.x,prim.R.y,0,layout),
-   cie3dProject(prim.G.x,prim.G.y,0,layout),
-   cie3dProject(prim.B.x,prim.B.y,0,layout)
+   cie3dProject(pR.x,pR.y,0,layout),
+   cie3dProject(pG.x,pG.y,0,layout),
+   cie3dProject(pB.x,pB.y,0,layout)
   ];
   prims.push({z:cie3dAvgZ(gPts), draw:()=>{
    ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
    cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
    try{
     const mpts=meterMeasuredGamutOutlinePoints(typeof readings!=='undefined'?readings:(typeof meterReadings!=='undefined'?meterReadings:[]));
-    if(mpts&&mpts.length>=3){
+    if(meterChromaticityChartMode()==='cie1931_2'&&mpts&&mpts.length>=3){
      const mProj=mpts.map(pt=>cie3dProject(pt.x,pt.y,0,layout));
      ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,0.92)');ctx.lineWidth=1.0;ctx.setLineDash([]);
      cie3dStrokePoly(ctx,mProj,true);
@@ -45596,7 +45806,8 @@ function drawCIEChart3D(readings,opts){
   }});
  }
  // D65
- const d65=cie3dProject(0.3127,0.329,0,layout);
+ const d65c=meterCieChartCoordFromXy(0.3127,0.329,1);
+ const d65=cie3dProject(d65c.x,d65c.y,0,layout);
  prims.push({z:d65.z, draw:()=>{
   ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
   ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';
@@ -45604,8 +45815,8 @@ function drawCIEChart3D(readings,opts){
  }});
  // Axes: origin at (0,0,0) → x, y(chroma), Y
  const o=cie3dProject(0,0,0,layout);
- const ax=cie3dProject(CIE3D_XMAX,0,0,layout);
- const ay=cie3dProject(0,CIE3D_YMAX,0,layout);
+ const ax=cie3dProject(bounds.xMax,0,0,layout);
+ const ay=cie3dProject(0,bounds.yMax,0,layout);
  const aY=cie3dProject(0,0,yMax,layout);
  prims.push({z:Math.min(o.z,ax.z,ay.z,aY.z)-0.01, draw:()=>{
   ctx.strokeStyle='rgba(132,148,178,0.95)';ctx.lineWidth=1.4;
@@ -45614,9 +45825,10 @@ function drawCIEChart3D(readings,opts){
   ctx.beginPath();ctx.moveTo(o.sx,o.sy);ctx.lineTo(aY.sx,aY.sy);ctx.stroke();
   ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';
   ctx.textAlign='center';
-  ctx.fillText('x',ax.sx,ax.sy+14);
-  ctx.fillText('y',ay.sx-10,ay.sy+4);
-  ctx.fillText('Y',aY.sx-8,aY.sy-6);
+  const axis=meterCieChartAxis();
+  ctx.fillText(axis.x,ax.sx,ax.sy+14);
+  ctx.fillText(axis.y,ay.sx-10,ay.sy+4);
+  ctx.fillText(meterChromaticityChartMode().indexOf('cie2015_')===0||meterChromaticityChartMode().indexOf('ciemb_')===0?'YF':'Y',aY.sx-8,aY.sy-6);
   // Y ticks
   ctx.font='9px sans-serif';ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.textAlign='right';
   const tickN=4;
@@ -45641,10 +45853,12 @@ function drawCIEChart3D(readings,opts){
    const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
     : targetChromaticityXY(rd.r,rd.g,rd.b));
-   if(tgt){ tx=tgt.x; ty=tgt.y; }
+   const chartTgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
+   if(chartTgt){ tx=chartTgt.x; ty=chartTgt.y; }
    try{
     const tXYZ=meterTargetXYZForReading(rd);
-    if(tXYZ&&tXYZ.Y>0) tY=tXYZ.Y;
+    const chartXYZ=tXYZ&&meterCieChartCoordFromXYZ(tXYZ);
+    if(chartXYZ&&chartXYZ.Y>0) tY=chartXYZ.Y;
    }catch(e){}
    if(tY==null) tY=yMax*0.5;
   } else {
@@ -45652,10 +45866,12 @@ function drawCIEChart3D(readings,opts){
    const targetXYZ=meterTargetXYZForReading(rd);
    const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
    if(!hasMeasuredXY&&!hasTarget) return;
-   const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
+   const targetCoord=hasTarget?meterCieChartCoordFromXYZ(targetXYZ):null;
+   const tgt=meterCieViewOpts.targets?targetCoord:null;
    const lum=meterColorLuminanceInfo(rd);
-   if(tgt){ tx=tgt.x; ty=tgt.y; tY=(lum.targetY!=null)?lum.targetY:0; }
-   if(hasMeasuredXY){ mx=rd.x; my=rd.y; mY=(lum.measuredY!=null)?lum.measuredY:0; }
+   if(tgt){ tx=tgt.x; ty=tgt.y; tY=(targetCoord&&targetCoord.Y!=null)?targetCoord.Y:((lum.targetY!=null)?lum.targetY:0); }
+   const measuredCoord=hasMeasuredXY?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
+   if(measuredCoord){ mx=measuredCoord.x; my=measuredCoord.y; mY=(measuredCoord.Y!=null)?measuredCoord.Y:((lum.measuredY!=null)?lum.measuredY:0); }
    deltaPct=lum.deltaPct;
   }
   // Chroma-only: cancel Y error by plotting target at measured luminance.
@@ -45772,7 +45988,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
- ctx.fillText('3D xyY  ·  drag rotate · wheel zoom',ctx.w-12,28);
+ ctx.fillText(meterCieChartAxis().threeD+'  ·  drag rotate · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
@@ -45990,7 +46206,7 @@ function drawCIEChart(readings){
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
  // Chromaticity wash cropped to the current viewport.
- try{
+ if(meterChromaticityChartMode()==='cie1931_2') try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
    const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
@@ -46014,24 +46230,26 @@ function drawCIEChart(readings){
  // CIE spectral locus
  if(meterCieViewOpts.locus){
   ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
-  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  meterCieChartLocus().forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
   ctx.closePath();ctx.stroke();
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
+ const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
  if(meterCieViewOpts.gamut){
   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
-  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();
+  ctx.beginPath();ctx.moveTo(toX(pR.x),toY(pR.y));ctx.lineTo(toX(pG.x),toY(pG.y));ctx.lineTo(toX(pB.x),toY(pB.y));ctx.closePath();ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
-  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);
-  ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
-  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
-  try{ meterStrokeMeasuredGamut(ctx,toX,toY,readings); }catch(e){}
+  ctx.textAlign='left';ctx.fillText('R',toX(pR.x)+4,toY(pR.y)-4);
+  ctx.fillText('G',toX(pG.x)-12,toY(pG.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(pB.x)-4,toY(pB.y)+12);
+  if(meterChromaticityChartMode()==='cie1931_2') try{ meterStrokeMeasuredGamut(ctx,toX,toY,readings); }catch(e){}
  }
  // D65 white point
- ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
- ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ const d65=meterCieChartCoordFromXy(.3127,.329,1);
+ ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(d65.x),toY(d65.y),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(d65.x)+5,toY(d65.y)+3);
  // Gamut / legend at plot top-right (zoom inset draws below these lines).
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  if(colorInclLum){
@@ -46055,6 +46273,7 @@ function drawCIEChart(readings){
      ? meterTargetChromaticityForReading(s)
      : targetChromaticityXY(s.r,s.g,s.b);
    }catch(e){ tgt=null; }
+   tgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
    if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
    const pc=meterCiePlotColor(meterPreviewColorForStep(s));
    const sq=meterCieLightMode()?4.2:3.5;
@@ -46070,15 +46289,17 @@ function drawCIEChart(readings){
   const targetXYZ=meterTargetXYZForReading(rd);
   const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
   if(!hasMeasuredXY&&!hasTarget) return;
-  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterTargetChromaticityForReading(rd):null;
+  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterCieChartCoordFromXYZ(targetXYZ):null;
   const lumInfo=meterColorLuminanceInfo(rd);
-  const mx=hasMeasuredXY?rd.x:null, my=hasMeasuredXY?rd.y:null;
+  const measuredCoord=hasMeasuredXY?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
+  const hasMeasuredCoord=!!measuredCoord;
+  const mx=measuredCoord?measuredCoord.x:null, my=measuredCoord?measuredCoord.y:null;
   const targetColor=meterCiePlotColor(meterPreviewColorForReading(rd,'target'));
   const targetStrokeColor=meterSelectedCIETargetColor(rd,targetColor);
   const measuredColor=meterCiePlotColor(meterPreviewColorForReading(rd,'measured'));
   const tx=tgt?toX(tgt.x):null, ty=tgt?toY(tgt.y):null;
-  const px=hasMeasuredXY?toX(mx):null, py=hasMeasuredXY?toY(my):null;
-  if(tgt&&hasMeasuredXY){
+  const px=hasMeasuredCoord?toX(mx):null, py=hasMeasuredCoord?toY(my):null;
+  if(tgt&&hasMeasuredCoord){
    // Chromaticity error line (xy only — always shown)
    ctx.save();
    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
@@ -46092,11 +46313,11 @@ function drawCIEChart(readings){
    ctx.restore();
   }
   // Luminance-error ring ONLY when Include luminance error is checked.
-  if(meterCieViewOpts.lumRings&&hasMeasuredXY&&colorInclLum){
+  if(meterCieViewOpts.lumRings&&hasMeasuredCoord&&colorInclLum){
    meterCieDrawLumErrorHalo(ctx,px,py,lumInfo.deltaPct,1);
   }
   // Measured: solid circle at xy (chroma). Always drawn — not a luminance ring.
-  if(hasMeasuredXY){
+  if(hasMeasuredCoord){
    ctx.save();
    ctx.fillStyle=measuredColor;ctx.beginPath();
    ctx.arc(px,py,meterCieLightMode()?3.8:2.8,0,Math.PI*2);
@@ -46113,8 +46334,9 @@ function drawCIEChart(readings){
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ const axis=meterCieChartAxis();
+ ctx.fillText(axis.x,pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText(axis.y,0,0);ctx.restore();
  if(g.scale>1.001){
   ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);
@@ -46201,6 +46423,7 @@ function drawCIETargetInset(ctx,readings,geom){
  // cap the measured dot pins to the inset edge, connector showing direction.
  const span=hasMeasured?Math.max(Math.abs(focus.x-tgt.x),Math.abs(focus.y-tgt.y)):0;
  const halfRange=Math.max(0.004,Math.min(0.05,hasMeasured?(span*1.6):0.05));
+ if(meterChromaticityChartMode()!=='cie1931_2') return;
  const xMn=tgt.x-halfRange,xMx=tgt.x+halfRange,yMn=tgt.y-halfRange,yMx=tgt.y+halfRange;
  // Caption: measure text first so the box hugs the words (width + height).
  const focusLumInfo=hasMeasured?meterColorLuminanceInfo(focus):{deltaPct:null};
@@ -46331,7 +46554,7 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
- try{
+ if(meterChromaticityChartMode()==='cie1931_2') try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
    const CX_MIN=CIE2D_WORLD.xMin,CX_MAX=CIE2D_WORLD.xMax,CY_MIN=CIE2D_WORLD.yMin,CY_MAX=CIE2D_WORLD.yMax;
@@ -46354,22 +46577,24 @@ function drawCIEChartPreset(steps){
  // the first measurement arrived.
  if(meterCieViewOpts.locus){
   ctx.strokeStyle='rgba(176,190,220,0.85)';ctx.lineWidth=1.6;ctx.beginPath();
-  CIE_LOCUS.forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
+  meterCieChartLocus().forEach((p,i)=>{if(i===0)ctx.moveTo(toX(p[0]),toY(p[1]));else ctx.lineTo(toX(p[0]),toY(p[1]));});
   ctx.closePath();ctx.stroke();
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
+ const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
  if(meterCieViewOpts.gamut){
   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
-  ctx.beginPath();ctx.moveTo(toX(prim.R.x),toY(prim.R.y));ctx.lineTo(toX(prim.G.x),toY(prim.G.y));ctx.lineTo(toX(prim.B.x),toY(prim.B.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+  ctx.beginPath();ctx.moveTo(toX(pR.x),toY(pR.y));ctx.lineTo(toX(pG.x),toY(pG.y));ctx.lineTo(toX(pB.x),toY(pB.y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
-  ctx.textAlign='left';ctx.fillText('R',toX(prim.R.x)+4,toY(prim.R.y)-4);ctx.fillText('G',toX(prim.G.x)-12,toY(prim.G.y)-6);
-  ctx.textAlign='right';ctx.fillText('B',toX(prim.B.x)-4,toY(prim.B.y)+12);
-  try{ meterStrokeMeasuredGamut(ctx,toX,toY,steps||readings||[]); }catch(e){}
+  ctx.textAlign='left';ctx.fillText('R',toX(pR.x)+4,toY(pR.y)-4);ctx.fillText('G',toX(pG.x)-12,toY(pG.y)-6);
+  ctx.textAlign='right';ctx.fillText('B',toX(pB.x)-4,toY(pB.y)+12);
+  if(meterChromaticityChartMode()==='cie1931_2') try{ meterStrokeMeasuredGamut(ctx,toX,toY,steps||readings||[]); }catch(e){}
  }
  // D65
- ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(.3127),toY(.329),3.2,0,Math.PI*2);ctx.fill();
- ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(.3127)+5,toY(.329)+3);
+ const d65=meterCieChartCoordFromXy(.3127,.329,1);
+ ctx.fillStyle=pgThemeColor('--text-primary','#fff');ctx.beginPath();ctx.arc(toX(d65.x),toY(d65.y),3.2,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';ctx.fillText('D65',toX(d65.x)+5,toY(d65.y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';ctx.fillText(gamut.label,pad.l+w-2,pad.t+10);
  // Target placeholders (hollow squares) — hidden when Targets is unchecked.
  if(meterCieViewOpts.targets) (steps||[]).forEach(s=>{
@@ -46380,6 +46605,7 @@ function drawCIEChartPreset(steps){
     ? meterTargetChromaticityForReading(s)
     : targetChromaticityXY(s.r,s.g,s.b);
   }catch(e){ tgt=null; }
+  tgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
   if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
   const pc=meterCiePlotColor(meterPreviewColorForStep(s));
   const sq=meterCieLightMode()?4.2:3.5;
@@ -46395,8 +46621,9 @@ function drawCIEChartPreset(steps){
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
- ctx.fillText('x',pad.l+w/2,ctx.h-2);
- ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('y',0,0);ctx.restore();
+ const axis=meterCieChartAxis();
+ ctx.fillText(axis.x,pad.l+w/2,ctx.h-2);
+ ctx.save();ctx.translate(10,pad.t+h/2);ctx.rotate(-Math.PI/2);ctx.fillText(axis.y,0,0);ctx.restore();
  if(g.scale>1.001){
   ctx.fillStyle=pgThemeColor('--chart-label','#8b97ad');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText(g.scale.toFixed(1)+'× · wheel zoom · drag pan · dbl-click reset',pad.l+4,pad.t+h+28);

@@ -61,6 +61,13 @@ COLOR_FORMAT="${31:-}"
 # resolves the spotread -c index from THIS device instead of trusting the
 # requested index, which goes stale when meters are plugged/unplugged.
 METER_USB_ID="${32:-}"
+# Argyll tristimulus observer (arg 33).
+OBSERVER="${33:-1931_2}"
+case "$OBSERVER" in
+ 1931_2|1964_10|2015_2|2015_10) ;;
+ *) OBSERVER="1931_2" ;;
+esac
+export OBSERVER
 
 # SpyderX uses native -y display calibrations and device-specific CCMX
 # matrices. It does not accept CCSS or a manual refresh-frequency override.
@@ -537,7 +544,7 @@ build_step_reading_json() {
  local idx="$1" parsed_json="${2:-}"
  [[ -n "$parsed_json" ]] || parsed_json="{}"
  python - "$idx" "$STEPS_FILE" "$parsed_json" <<'PY'
-import json, math, sys
+import json, math, os, sys
 
 try:
     index = int(sys.argv[1])
@@ -556,6 +563,7 @@ except Exception:
 
 if not isinstance(reading, dict):
     sys.exit(1)
+reading["observer"] = os.environ.get("OBSERVER", "1931_2")
 
 def finite_number(value):
     try:
@@ -1187,7 +1195,7 @@ EOJSON
  case "${METER_USB_ID,,}" in
   085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
  esac
- SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -x"
+ SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -Q $OBSERVER -x"
   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
    # Spectrophotometer: no -X (CCSS is a colorimeter correction) and no -y
    # (display type selection is a colorimeter concept). Passing -y makes
@@ -1198,7 +1206,7 @@ EOJSON
    # stored wavelength cal instead of re-calibrating on every series launch.
    # Mandatory re-cal (stale/missing cal) still triggers and is surfaced via
    # the calibrate_tile / calibrate_retry steps below, so -N is safe here.
-   SR_CMD="$SPOTREAD_BIN -N -e -c $PORT_NUM -x"
+   SR_CMD="$SPOTREAD_BIN -N -e -c $PORT_NUM -Q $OBSERVER -x"
    [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
   fi
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
@@ -1223,7 +1231,7 @@ EOJSON
     fi
    fi
   fi
-  SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"
+  SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -Q $OBSERVER -x"
  fi
  # Override refresh rate if specified. Passing -Y R:rate makes spotread skip
  # its mandatory 80% white refresh-calibration read (unreliable on a
