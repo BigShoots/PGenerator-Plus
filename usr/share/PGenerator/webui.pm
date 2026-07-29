@@ -45348,15 +45348,80 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
  return true;
 }
 
-// ── CIE xyY 3D view ──────────────────────────────────────────────────────────
-// Canvas-2D software projection: floor = chromaticity (x,y), vertical = Y nits.
-// Drag rotates (orbit), wheel zooms, double-click resets — matches the cube view.
-const CIE3D_XMIN=0, CIE3D_XMAX=0.8, CIE3D_YMIN=0, CIE3D_YMAX=0.9;
-function meterCie3dBounds(){
+// ── Observer-native 3D colour spaces ─────────────────────────────────────────
+// Canvas-2D software projection of actual tristimulus/cone coordinates.
+// Drag rotates (orbit), wheel zooms, double-click resets.
+function meterCie3dLegacyChromaBounds(){
  const mode=meterChromaticityChartMode();
  if(mode.indexOf('ciemb_')===0) return {xMin:0,xMax:1,yMin:0,yMax:1.05};
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return {xMin:0,xMax:0.8,yMin:0,yMax:0.9};
+}
+function meterCie3dAxisSpec(){
+ const mode=meterChromaticityChartMode();
+ if(mode.indexOf('cie1976_')===0) return {a:'u*',b:'v*',c:'L*',title:meterCieChartAxis().threeD};
+ if(mode.indexOf('cie2015_')===0) return {a:'XF',b:'ZF',c:'YF',title:meterCieChartAxis().threeD};
+ if(mode.indexOf('ciemb_')===0) return {a:'LMB',b:'MMB',c:'SMB',title:meterCieChartAxis().threeD};
+ if(mode==='cie1964_10') return {a:'X10',b:'Z10',c:'Y10',title:meterCieChartAxis().threeD};
+ return {a:'X',b:'Z',c:'Y',title:meterCieChartAxis().threeD};
+}
+function meterCie3dVectorFromXYZ(xyz,referenceY){
+ if(!xyz) return null;
+ const mode=meterChromaticityChartMode();
+ const coord=meterCieChartCoordFromXYZ(xyz);
+ if(!coord) return null;
+ const observer=String(xyz.observer||'');
+ const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
+ if(![X,Y,Z].every(Number.isFinite)) return null;
+ if(mode.indexOf('cie1976_')===0){
+  const Yn=Math.max(1e-9,Number(referenceY)||1);
+  const L=ynToLstar(Y/Yn);
+  const d65=meterCieD65Coord();
+  return {a:13*L*(coord.x-d65.x),b:13*L*(coord.y-d65.y),c:L,source:xyz};
+ }
+ if(mode.indexOf('ciemb_')===0){
+  return {a:coord.L,b:coord.M,c:coord.S,source:xyz};
+ }
+ // In native 1964/2015 modes Argyll's X/Y/Z fields already carry X10/Y10/Z10
+ // or XF/YF/ZF according to the stamped observer.
+ return {a:X,b:Z,c:Y,source:xyz};
+}
+function meterCie3dVectorFromChroma(coord,level,referenceY){
+ if(!coord) return null;
+ const mode=meterChromaticityChartMode();
+ const k=Math.max(1e-9,Number(level)||1);
+ if(mode.indexOf('cie1976_')===0){
+  const L=65,d65=meterCieD65Coord();
+  return {a:13*L*(coord.x-d65.x),b:13*L*(coord.y-d65.y),c:L,reference:true};
+ }
+ if(mode.indexOf('ciemb_')===0){
+  return {a:coord.x*k,b:(1-coord.x)*k,c:coord.y*k,reference:true};
+ }
+ const z=Math.max(0,1-coord.x-coord.y);
+ return {a:coord.x*k,b:z*k,c:coord.y*k,reference:true};
+}
+function meterCie3dD65Vector(referenceY){
+ const mode=meterChromaticityChartMode();
+ const d65=meterCieD65Coord(),k=Math.max(1,Number(referenceY)||1);
+ if(mode.indexOf('cie1976_')===0) return {a:0,b:0,c:100,reference:true};
+ if(mode.indexOf('ciemb_')===0) return {a:d65.x*k,b:(1-d65.x)*k,c:d65.y*k,reference:true};
+ const y=Math.max(1e-9,d65.y),z=Math.max(0,1-d65.x-d65.y);
+ return {a:d65.x*k/y,b:z*k/y,c:k,reference:true};
+}
+function meterCie3dLocusVectors(referenceY){
+ const level=Math.max(1,Number(referenceY)||1)*.38;
+ return meterCieChartLocus().map(p=>meterCie3dVectorFromChroma({x:p[0],y:p[1]},level,referenceY)).filter(Boolean);
+}
+function meterCie3dBoundsForVectors(vectors){
+ const vals=(vectors||[]).filter(v=>v&&[v.a,v.b,v.c].every(Number.isFinite));
+ const range=key=>{
+  let lo=Math.min(0,...vals.map(v=>v[key])),hi=Math.max(0,...vals.map(v=>v[key]));
+  if(!(hi>lo)){lo-=.5;hi+=.5;}
+  const pad=(hi-lo)*.08;
+  return [lo-pad,hi+pad];
+ };
+ const a=range('a'),b=range('b'),c=range('c');
+ return {aMin:a[0],aMax:a[1],bMin:b[0],bMax:b[1],cMin:c[0],cMax:c[1]};
 }
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
@@ -45710,17 +45775,16 @@ function cie3dComputeYMax(items,isPreset){
  if(!(maxY>0)||!isFinite(maxY)) maxY=100;
  return maxY*1.12;
 }
-// Map data (x,y,Y) → screen. Layout holds canvas size + yMax scale.
-function cie3dProject(x,y,Y,layout){
- const bounds=meterCie3dBounds();
- const x0=(bounds.xMin+bounds.xMax)/2;
- const y0=(bounds.yMin+bounds.yMax)/2;
- const xSpan=(bounds.xMax-bounds.xMin);
- const ySpan=(bounds.yMax-bounds.yMin);
- // Unit-ish coords with floor at 0 and Y up
- const px=(x-x0)/(xSpan*0.5);
- const pz=(y-y0)/(ySpan*0.5);
- const py=(Y/(layout.yMax||1))*1.6;
+// Map observer-native data (a,b,c) to screen. The c axis is vertical.
+function cie3dProject(a,b,c,layout){
+ const bounds=layout.bounds3d;
+ const a0=(bounds.aMin+bounds.aMax)/2,b0=(bounds.bMin+bounds.bMax)/2;
+ const aSpan=Math.max(1e-9,bounds.aMax-bounds.aMin);
+ const bSpan=Math.max(1e-9,bounds.bMax-bounds.bMin);
+ const cSpan=Math.max(1e-9,bounds.cMax-bounds.cMin);
+ const px=(a-a0)/(aSpan*.5);
+ const pz=(b-b0)/(bSpan*.5);
+ const py=((c-bounds.cMin)/cSpan)*1.6;
  const cyaw=Math.cos(_cie3d.yaw), syaw=Math.sin(_cie3d.yaw);
  const pitch=Math.max(CIE3D_PITCH_MIN,Math.min(CIE3D_PITCH_MAX,_cie3d.pitch));
  const cp=Math.cos(pitch), sp=Math.sin(pitch);
@@ -45742,12 +45806,15 @@ function cie3dProject(x,y,Y,layout){
  const sy=layout.cy-y2*baseScale*persp-_cie3d.panY*layout.h;
  return {sx:sx,sy:sy,z:z2,persp:persp};
 }
-function cie3dMakeLayout(ctx,yMax){
+function cie3dMakeLayout(ctx,bounds3d){
  return {
   w:ctx.w,h:ctx.h,
   cx:ctx.w*0.52, cy:ctx.h*0.58,
-  yMax:yMax||_cie3d.yMax||100
+  bounds3d:bounds3d
  };
+}
+function cie3dProjectVector(v,layout){
+ return cie3dProject(v.a,v.b,v.c,layout);
 }
 function cie3dStrokePoly(ctx,pts,close){
  if(!pts||pts.length<2) return;
@@ -45761,7 +45828,7 @@ function cie3dAvgZ(pts){
  if(!pts||!pts.length) return 0;
  let s=0; for(let i=0;i<pts.length;i++) s+=pts[i].z; return s/pts.length;
 }
-function drawCIEChart3D(readings,opts){
+function drawCIEChart3DLegacy(readings,opts){
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  const isPreset=!!(opts&&opts.preset);
@@ -46040,6 +46107,198 @@ function drawCIEChart3D(readings,opts){
  const canvas=document.getElementById('chartCIE');
  if(canvas) cie3dBindHandlers(canvas);
 }
+function drawCIEChart3D(readings,opts){
+ const ctx=getChartCtx('chartCIE');
+ if(!ctx) return;
+ const isPreset=!!(opts&&opts.preset);
+ let items=Array.isArray(readings)?readings.slice():[];
+ if(!isPreset&&meterCieViewOpts.targets&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length
+    &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
+  const readNames=new Set(items.map(r=>(r&&r.name!=null)?String(r.name):''));
+  items=items.concat(meterSeriesSteps
+   .filter(s=>s&&s.name!=null&&!readNames.has(String(s.name)))
+   .map(s=>Object.assign({},s,{_presetStep:true})));
+ }
+ const yMax=cie3dComputeYMax(items,isPreset);
+ const referenceY=Math.max(1,yMax/1.12);
+ _cie3d.yMax=referenceY;
+ const axis=meterCie3dAxisSpec();
+ const colorInclLum=!!meterColorIncludeLum();
+ const records=[];
+ items.forEach(rd=>{
+  if(!rd||meterIsWhiteReferenceReading(rd)) return;
+  const itemPreset=isPreset||!!rd._presetStep;
+  let targetXYZ=null,measuredXYZ=null;
+  try{ targetXYZ=meterTargetXYZForReading(rd); }catch(e){}
+  if(!itemPreset){ try{ measuredXYZ=meterReadingXYZ(rd); }catch(e){} }
+  const targetVector=(meterCieViewOpts.targets&&targetXYZ)?meterCie3dVectorFromXYZ(targetXYZ,referenceY):null;
+  const measuredVector=measuredXYZ?meterCie3dVectorFromXYZ(measuredXYZ,referenceY):null;
+  if(!targetVector&&!measuredVector) return;
+  let lum={deltaPct:null};
+  try{ lum=meterColorLuminanceInfo(rd); }catch(e){}
+  records.push({rd,itemPreset,targetVector,measuredVector,lum});
+ });
+ const locusVectors=meterCieViewOpts.locus?meterCie3dLocusVectors(referenceY):[];
+ const d65Vector=meterCie3dD65Vector(referenceY);
+ const gamut=meterAnalysisGamut();
+ let gamutVectors=null;
+ if(meterCieViewOpts.gamut&&meterCieTargetsHaveSpectralBasis()){
+  const p=gamut.primaries;
+  const cR=meterCieChartCoordFromXy(p.R.x,p.R.y,1);
+  const cG=meterCieChartCoordFromXy(p.G.x,p.G.y,1);
+  const cB=meterCieChartCoordFromXy(p.B.x,p.B.y,1);
+  if(cR&&cG&&cB){
+   const level=referenceY*.55;
+   gamutVectors=[
+    meterCie3dVectorFromChroma(cR,level,referenceY),
+    meterCie3dVectorFromChroma(cG,level,referenceY),
+    meterCie3dVectorFromChroma(cB,level,referenceY)
+   ];
+  }
+ }
+ const allVectors=[d65Vector].concat(locusVectors);
+ records.forEach(r=>{
+  if(r.targetVector) allVectors.push(r.targetVector);
+  if(r.measuredVector) allVectors.push(r.measuredVector);
+ });
+ if(gamutVectors) allVectors.push(...gamutVectors);
+ const bounds=meterCie3dBoundsForVectors(allVectors);
+ const layout=cie3dMakeLayout(ctx,bounds);
+ const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
+ const prims=[];
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
+
+ // Base-plane grid in the selected observer-native coordinate space.
+ const gridN=5;
+ for(let i=0;i<=gridN;i++){
+  const av=bounds.aMin+(bounds.aMax-bounds.aMin)*(i/gridN);
+  const a=cie3dProject(av,bounds.bMin,bounds.cMin,layout);
+  const b=cie3dProject(av,bounds.bMax,bounds.cMin,layout);
+  prims.push({z:(a.z+b.z)/2,draw:()=>{
+   ctx.strokeStyle='rgba(56,72,102,.45)';ctx.lineWidth=1;
+   ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
+  }});
+ }
+ for(let i=0;i<=gridN;i++){
+  const bv=bounds.bMin+(bounds.bMax-bounds.bMin)*(i/gridN);
+  const a=cie3dProject(bounds.aMin,bv,bounds.cMin,layout);
+  const b=cie3dProject(bounds.aMax,bv,bounds.cMin,layout);
+  prims.push({z:(a.z+b.z)/2,draw:()=>{
+   ctx.strokeStyle='rgba(56,72,102,.45)';ctx.lineWidth=1;
+   ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
+  }});
+ }
+ if(locusVectors.length){
+  const pts=locusVectors.map(v=>cie3dProjectVector(v,layout));
+  prims.push({z:cie3dAvgZ(pts),draw:()=>{
+   ctx.strokeStyle='rgba(176,190,220,.88)';ctx.lineWidth=1.6;
+   cie3dStrokePoly(ctx,pts,true);
+  }});
+ }
+ if(gamutVectors){
+  const pts=gamutVectors.map(v=>cie3dProjectVector(v,layout));
+  prims.push({z:cie3dAvgZ(pts),draw:()=>{
+   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,.9)');
+   ctx.lineWidth=1.05;ctx.setLineDash([4,4]);cie3dStrokePoly(ctx,pts,true);ctx.setLineDash([]);
+   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
+   ctx.textAlign='left';ctx.fillText('R',pts[0].sx+4,pts[0].sy-4);
+   ctx.fillText('G',pts[1].sx-12,pts[1].sy-6);
+   ctx.textAlign='right';ctx.fillText('B',pts[2].sx-4,pts[2].sy+12);
+  }});
+ }
+ const d65=cie3dProjectVector(d65Vector,layout);
+ prims.push({z:d65.z,draw:()=>{
+  ctx.fillStyle=pgThemeColor('--text-primary','#fff');
+  ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';
+  ctx.fillText('D65',d65.sx+5,d65.sy+3);
+ }});
+
+ const o=cie3dProject(bounds.aMin,bounds.bMin,bounds.cMin,layout);
+ const aa=cie3dProject(bounds.aMax,bounds.bMin,bounds.cMin,layout);
+ const ab=cie3dProject(bounds.aMin,bounds.bMax,bounds.cMin,layout);
+ const ac=cie3dProject(bounds.aMin,bounds.bMin,bounds.cMax,layout);
+ prims.push({z:Math.min(o.z,aa.z,ab.z,ac.z)-.01,draw:()=>{
+  ctx.strokeStyle='rgba(132,148,178,.95)';ctx.lineWidth=1.4;
+  [[aa],[ab],[ac]].forEach(pair=>{
+   const p=pair[0];ctx.beginPath();ctx.moveTo(o.sx,o.sy);ctx.lineTo(p.sx,p.sy);ctx.stroke();
+  });
+  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
+  ctx.fillText(axis.a,aa.sx,aa.sy+14);ctx.fillText(axis.b,ab.sx-10,ab.sy+4);ctx.fillText(axis.c,ac.sx-8,ac.sy-6);
+  ctx.font='9px sans-serif';ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.textAlign='right';
+  for(let i=0;i<=4;i++){
+   const cv=bounds.cMin+(bounds.cMax-bounds.cMin)*(i/4);
+   const p=cie3dProject(bounds.aMin,bounds.bMin,cv,layout);
+   const label=Math.abs(cv)>=100?cv.toFixed(0):cv.toFixed(Math.abs(cv)>=10?0:1);
+   ctx.fillText(label,p.sx-6,p.sy+3);
+  }
+ }});
+
+ const hitZones=[];
+ records.forEach(rec=>{
+  const rd=rec.rd;
+  const targetColor=meterBoostPlotColor(rec.itemPreset?meterPreviewColorForStep(rd):meterPreviewColorForReading(rd,'target'));
+  const measuredColor=rec.itemPreset?null:meterBoostPlotColor(meterPreviewColorForReading(rd,'measured'));
+  const targetStroke=meterSelectedCIETargetColor(rd,targetColor);
+  const selected=meterIsSelectedColorReading(rd);
+  const pT=rec.targetVector?cie3dProjectVector(rec.targetVector,layout):null;
+  const pM=rec.measuredVector?cie3dProjectVector(rec.measuredVector,layout):null;
+  if(pT){
+   const p0=cie3dProject(rec.targetVector.a,rec.targetVector.b,bounds.cMin,layout);
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pT.z),draw:()=>{
+    ctx.strokeStyle=meterColorWithAlpha(targetColor,.45);ctx.lineWidth=Math.max(.5,markerScale);
+    ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
+   }});
+   prims.push({z:pT.z+.02,draw:()=>{
+    const sq=3.2*pT.persp*markerScale;
+    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(.5,(selected?1.8:1.4)*markerScale);
+    ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
+   }});
+   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:Math.max(8,12*markerScale),reading:rd});
+  }
+  if(pM){
+   const p0=cie3dProject(rec.measuredVector.a,rec.measuredVector.b,bounds.cMin,layout);
+   if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pM.z),draw:()=>{
+    ctx.strokeStyle=meterColorWithAlpha(measuredColor,.5);ctx.lineWidth=Math.max(.5,markerScale);
+    ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
+   }});
+   if(pT) prims.push({z:(pT.z+pM.z)/2,draw:()=>{
+    ctx.save();ctx.strokeStyle=meterColorWithAlpha(targetColor,.78);
+    ctx.lineWidth=Math.max(.6,1.5*markerScale);ctx.setLineDash([4,3]);
+    ctx.beginPath();ctx.moveTo(pT.sx,pT.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();ctx.restore();
+   }});
+   if(meterCieViewOpts.lumRings&&colorInclLum&&rec.lum.deltaPct!=null){
+    prims.push({z:pM.z+.05,draw:()=>meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,rec.lum.deltaPct,pM.persp*markerScale)});
+   }
+   prims.push({z:pM.z+.03,draw:()=>{
+    const r=2.8*pM.persp*markerScale;
+    ctx.fillStyle=measuredColor;ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
+    if(selected){ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5*markerScale,0,Math.PI*2);ctx.stroke();}
+   }});
+   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:Math.max(8,12*markerScale),reading:rd});
+  }
+ });
+ prims.sort((a,b)=>b.z-a.z);
+ prims.forEach(p=>{try{p.draw();}catch(e){}});
+
+ ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
+ ctx.fillText(gamut.label,ctx.w-12,14);
+ ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
+ ctx.fillText(axis.title+'  \u00B7  drag rotate \u00B7 wheel zoom',ctx.w-12,28);
+ if(!meterCieTargetsHaveSpectralBasis()){
+  ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');
+  ctx.fillText('Reference targets need spectral data',ctx.w-12,42);
+ } else if(colorInclLum){
+  ctx.fillStyle='#7ec8ff';ctx.fillText('True tristimulus magnitude \u00B7 ring = |\u0394Y|%',ctx.w-12,42);
+ }
+ const fmt=v=>Math.abs(v)>=100?v.toFixed(0):v.toFixed(Math.abs(v)>=10?1:2);
+ ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='9px sans-serif';ctx.textAlign='left';
+ ctx.fillText(axis.a+' '+fmt(bounds.aMin)+'..'+fmt(bounds.aMax)+'  '+axis.b+' '+fmt(bounds.bMin)+'..'+fmt(bounds.bMax)+'  '+axis.c+' '+fmt(bounds.cMin)+'..'+fmt(bounds.cMax),12,ctx.h-10);
+ _cie3d.hitZones=hitZones;
+ const canvas=document.getElementById('chartCIE');
+ if(canvas) cie3dBindHandlers(canvas);
+}
+
 function cie3dFindHit(mx,my){
  let best=null,bestDist=Infinity;
  (_cie3d.hitZones||[]).forEach(z=>{
