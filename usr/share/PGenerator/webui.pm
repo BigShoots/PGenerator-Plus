@@ -41660,13 +41660,10 @@ function meterSeriesThumbWidth(step){
 function meterSeriesThumbContentWidth(sortedSteps,row){
  const steps=Array.isArray(sortedSteps)?sortedSteps:[];
  const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
- // Desktop's thumbnail viewport spans the calibration card while the
- // greyscale plots occupy only the left chart column.  A fixed 34px thumb
- // therefore exposes far more patches than the synchronized chart viewport.
+ // The thumbnail viewport and greyscale chart viewport have different widths.
  // Scale the strip by the chart's visible/content ratio so one horizontal
- // thumbnail slot represents the same patch slot as the plots below it.
- if(document.body.classList.contains('layout-desktop')
-    &&meterActiveSeriesType==='greyscale'&&steps.length>64){
+ // thumbnail slot represents the same patch slot in every layout.
+ if(meterActiveSeriesType==='greyscale'&&steps.length>64){
   const chartScroller=document.getElementById('meterRgbChartScroller');
   const chartViewport=Math.max(320,Math.round((chartScroller&&chartScroller.clientWidth)||0)||viewport);
   const chartContent=meterGreyscaleChartContentWidth(steps.length,chartViewport);
@@ -41826,10 +41823,11 @@ function meterQueueGreyscaleTargetSync(){
 function meterGreyscaleChartContentWidth(stepCount,viewportWidth){
  const count=Math.max(0,Number(stepCount)||0);
  const viewport=Math.max(320,Number(viewportWidth)||0);
- // Keep this geometry identical to the thumbnail strip's scroll scale.
- // Reducing the chart CSS width independently makes the same scroll ratio
- // expose more thumbnails than chart points.
- return Math.max(viewport,Math.round(count*36+90));
+ // Chromium cannot allocate a sharp backing surface for the old 37k-pixel
+ // 1024-point canvas. Cap the shared virtual width at its 16k canvas limit;
+ // meterSeriesThumbContentWidth uses this exact ratio so thumbnails and every
+ // chart still expose the same patch interval.
+ return Math.max(viewport,Math.min(16384,Math.round(count*36+90)));
 }
 
 function meterGreyscaleRotateXLabels(stepCount){
@@ -43684,9 +43682,11 @@ function drawChartGrid(ctx,opts){
  ctx.lineWidth=1;
  const xSteps=opts.xSteps||10, ySteps=opts.ySteps||5;
  // Drawing a vertical line and rotated label for every point is useful for
- // normal series, but wasteful at 1k+ points. Limit grid density while keeping
- // the first/last labels and the chart's full coordinate resolution.
- const xStride=Math.max(1,Math.ceil(xSteps/160));
+ // normal series, but wasteful at 1k+ points. For large series, derive label
+ // density from the actual canvas width rather than a fixed label count. This
+ // keeps the visible patch range obvious after the shared 16k width cap.
+ const maxLargeSeriesLabels=Math.max(1,Math.floor(dw/(opts.rotateX?52:44)));
+ const xStride=xSteps>160?Math.max(1,Math.ceil(xSteps/maxLargeSeriesLabels)):1;
  for(let i=0;i<=xSteps;i+=xStride){
   const x=pad.l+xIn+dw*(i/xSteps);
   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
