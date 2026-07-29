@@ -45228,7 +45228,11 @@ function meterCie2dGeom(cw,ch){
  // sides of the chart card in both normal and expanded layouts. All drawing,
  // hit testing, zooming and inset placement consume this same geometry.
  const availableW=Math.max(1,cw-pad.l-pad.r), availableH=Math.max(1,ch-pad.t-pad.b);
- const targetAspect=1.15*(xSpan/ySpan);
+ // MacLeod-Boynton axes are independently normalized physiological ratios;
+ // forcing equal screen units creates a short strip for its practical sMB
+ // range. Fill the chart card while keeping the numeric ticks explicit.
+ const isMb=typeof meterChromaticityChartMode==='function'&&meterChromaticityChartMode().indexOf('ciemb_')===0;
+ const targetAspect=isMb?1.15:1.15*(xSpan/ySpan);
  let w=availableW,h=w/targetAspect;
  if(h>availableH){h=availableH;w=h*targetAspect;}
  pad.l+=(availableW-w)/2;
@@ -45798,7 +45802,7 @@ function cie3dProject(a,b,c,layout){
  const y2=y1*cp+z1*sp;
  const z2=-y1*sp+z1*cp;
  const x2=x1;
- const baseScale=Math.min(layout.w,layout.h)*0.28*_cie3d.scale;
+ const baseScale=Math.min(layout.w,layout.h)*0.22*_cie3d.scale;
  // Depth: larger z = further. Guard so perspective never flips through the camera.
  const depth=Math.max(-_cie3d.dist+0.45,z2);
  const persp=_cie3d.dist/( _cie3d.dist+depth );
@@ -45809,7 +45813,7 @@ function cie3dProject(a,b,c,layout){
 function cie3dMakeLayout(ctx,bounds3d){
  return {
   w:ctx.w,h:ctx.h,
-  cx:ctx.w*0.52, cy:ctx.h*0.58,
+  cx:ctx.w*0.52, cy:ctx.h*0.62,
   bounds3d:bounds3d
  };
 }
