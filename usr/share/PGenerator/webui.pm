@@ -31155,7 +31155,24 @@ function meterBuildCustomSeriesSteps(series){
   return inputMax>255?Math.max(0,Math.min(255,Math.round(numeric*255/inputMax))):Math.max(0,Math.min(255,Math.round(numeric)));
  };
  const isGrey=!isVolume&&series.category!=='color';
- const fractionPct=(code)=>Math.round(meterGreySignalFractionFromCode(code)*1000)/10;
+ const fractionPct=(code)=>{
+  const numeric=Number(code)||0;
+  if(tenBit){
+   // Manual/imported 10-bit patches are authored in the full 0..1023 code
+   // domain. The general greyscale helper uses the legacy 8-bit-left-shifted
+   // full-range span of 1020, which aliases codes 1020..1023 to the same 100%
+   // step key. Preserve the exact 10-bit stimulus here so each patch remains
+   // independently selectable and replaceable.
+   const tagged=String((series&&series.range)||'').toLowerCase();
+   const limited=tagged==='limited'||(tagged!=='full'&&meterPatchUsesVideoRange());
+   const min=limited?64:0;
+   const span=limited?876:1023;
+   const maxFraction=limited?1.1:1;
+   const fraction=Math.max(0,Math.min(maxFraction,(numeric-min)/span));
+   return Math.round(fraction*1000)/10;
+  }
+  return Math.round(meterGreySignalFractionFromCode(numeric)*1000)/10;
+ };
  const fracToPct=(f)=>Math.round((Number(f)||0)*1000)/10;
  const steps=[];
  sourcePatches.forEach((patch,idx)=>{
@@ -43754,7 +43771,10 @@ function drawEOTFChart(gs,allSteps,readingMap){
   }
  }
  ctx.fillStyle=pgThemeColor('--chart-eotf-measured','#ffeb3b');
- ctx.fillText('Measured max: '+Math.max(...valid.map(r=>r.luminance||0),0).toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
+ const measuredMax=(white&&!white.synthetic_target&&refWhite>0)
+  ?refWhite
+  :Math.max(...valid.map(r=>r.luminance||0),0);
+ ctx.fillText('Measured max: '+measuredMax.toFixed(1)+' cd/m\u00B2',ctx.w-chart.pad.r,chart.pad.t-8);
 }
 
 function meterDrawDeltaSummary(ctx,chart,values){
