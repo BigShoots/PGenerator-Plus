@@ -24716,6 +24716,8 @@ async function meterCheckStatus(){
  }
 
 function meterRecoverSeries(s){
+ const previousSeriesKey=String(meterActiveSeriesKey||'');
+ const previousScrollRatio=Number(meterGreyscaleScrollRatio)||0;
  // Determine series type and points from series_id or the recovered steps.
  let type=String((s&&s.type)||'').toLowerCase();
  let points=Number((s&&s.points)||0)||0;
@@ -24803,7 +24805,10 @@ function meterRecoverSeries(s){
    meterSelectedThumbIre=null;
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
- meterGreyscaleScrollRatio=0;
+ // The 10-second shared-status poll may refresh the series currently on
+ // screen. Preserve the operator's scroll position when its key is unchanged;
+ // only a genuinely different recovered series starts at patch zero.
+ meterGreyscaleScrollRatio=(previousSeriesKey===meterActiveSeriesKey)?previousScrollRatio:0;
  meterLastChartCount=0;
  // Restore readings — always clear the previous series first so a cached
  // empty Sat Sweep can never leave the old Colors CIE plot on screen.
@@ -41619,6 +41624,8 @@ function meterThumbsPage(direction){
  const delta=Math.max(120,Math.round((row.clientWidth||0)*0.82))*(direction<0?-1:1);
  const next=Math.max(0,Math.min(max,current+delta));
  row.scrollLeft=next;
+ meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(row);
+ meterQueueGreyscaleTargetSync();
  meterUpdateThumbScrollButtons();
 }
 
@@ -41675,6 +41682,19 @@ function meterSeriesThumbContentWidth(sortedSteps,row){
   if(idx<steps.length-1) total+=2;
  });
  return Math.max(viewport,total);
+}
+
+function meterGreyscaleThumbInsets(sortedSteps,row){
+ const steps=Array.isArray(sortedSteps)?sortedSteps:[];
+ if(meterActiveSeriesType!=='greyscale'||steps.length<=64) return {left:0,right:0};
+ const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
+ const chartScroller=document.getElementById('meterRgbChartScroller');
+ const chartViewport=Math.max(320,Math.round((chartScroller&&chartScroller.clientWidth)||0)||viewport);
+ const scale=viewport/chartViewport;
+ // drawChartGrid's greyscale charts use l=45/r=15. Mirroring those insets in
+ // the wider thumbnail strip makes patch positions affine-equivalent across
+ // the entire scroll range, rather than only matching the outer widths.
+ return {left:45*scale,right:15*scale};
 }
 
 function meterDesktopColorThumbsFit(sortedSteps,row){
@@ -41903,6 +41923,9 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
  const count=Math.max(0,Number(stepCount)||0);
  const scrollMode=(meterActiveSeriesType==='greyscale'&&count>64);
  const thumbRow=document.getElementById('meterThumbsRow');
+ if(scrollMode&&thumbRow&&!meterGreyscaleScrollSyncing&&meterGreyscaleScrollMax(thumbRow)>0){
+  meterGreyscaleScrollRatio=meterGreyscaleScrollRatioFor(thumbRow);
+ }
  const fallbackViewport=Math.max(320,Math.round((thumbRow&&thumbRow.clientWidth)||0)||800);
  meterGreyscaleCanvasPairs().forEach(pair=>{
   const scroller=document.getElementById(pair[0]);
@@ -41944,7 +41967,11 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
   const steps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(meterSeriesSteps||[]));
   if(thumbContainer&&steps.length===count&&thumbContainer.children.length===count){
    const contentWidth=meterSeriesThumbContentWidth(steps,thumbRow);
-   const slotWidth=Math.max(1,(contentWidth-Math.max(0,count-1)*2)/Math.max(1,count));
+   const insets=meterGreyscaleThumbInsets(steps,thumbRow);
+   const slotWidth=Math.max(1,(contentWidth-insets.left-insets.right-Math.max(0,count-1)*2)/Math.max(1,count));
+   thumbContainer.style.boxSizing='border-box';
+   thumbContainer.style.paddingLeft=insets.left+'px';
+   thumbContainer.style.paddingRight=insets.right+'px';
    thumbContainer.style.width=contentWidth+'px';
    thumbContainer.style.minWidth=contentWidth+'px';
    Array.from(thumbContainer.children).forEach(thumb=>{
@@ -42017,6 +42044,11 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  if(scrollMode&&meterDesktopColorThumbsFit(visibleSteps,row)) scrollMode=false;
  container.style.flexWrap='nowrap';
  container.dataset.scrollMode=scrollMode?'1':'0';
+ const thumbInsets=(scrollMode&&meterActiveSeriesType==='greyscale')
+  ?meterGreyscaleThumbInsets(visibleSteps,row):{left:0,right:0};
+ container.style.boxSizing='border-box';
+ container.style.paddingLeft=thumbInsets.left+'px';
+ container.style.paddingRight=thumbInsets.right+'px';
  if(scrollMode){
   const contentWidth=meterSeriesThumbContentWidth(visibleSteps,row);
   container.style.width=contentWidth+'px';
@@ -42026,7 +42058,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   container.style.minWidth='100%';
  }
 	 const uniformGreyThumbWidth=(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
-	  ?Math.max(1,((parseFloat(container.style.width)||0)-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
+	  ?Math.max(1,((parseFloat(container.style.width)||0)-thumbInsets.left-thumbInsets.right-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
 	  :null;
 	 const buildSignature=visibleSteps.map(step=>{
 	  const isGrey=meterSeriesStepIsGreyscale(step);
@@ -42078,7 +42110,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
   try{ meterUpdateColorDeltaEScrollLayout(visibleSteps); }catch(e){}
  }
- if(currentIre!=null) meterEnsureThumbVisible(container,currentIre);
+ // Idle redraw/status refreshes must not drag the operator back to a selected
+ // patch. Auto-follow is only useful while a series read is actively moving.
+ if(currentIre!=null&&meterSeriesRunning) meterEnsureThumbVisible(container,currentIre);
 }
 
 function meterHandlePatchThumbClick(event){
@@ -43687,6 +43721,21 @@ function drawChartGrid(ctx,opts){
  // keeps the visible patch range obvious after the shared 16k width cap.
  const maxLargeSeriesLabels=Math.max(1,Math.floor(dw/(opts.rotateX?52:44)));
  const xStride=xSteps>160?Math.max(1,Math.ceil(xSteps/maxLargeSeriesLabels)):1;
+ const firstXLabel=opts.xLabel?String(opts.xLabel(0,xSteps)||''):'';
+ const densePatchAxis=xSteps>160&&opts.rotateX&&/^Patch\s+\d+$/i.test(firstXLabel);
+ if(densePatchAxis){
+  // Give every patch a visible x position, but batch all minor lines into one
+  // stroke so a 1,024-patch chart remains cheap to draw.
+  ctx.save();
+  ctx.globalAlpha=0.28;
+  ctx.beginPath();
+  for(let i=0;i<=xSteps;i++){
+   const x=pad.l+xIn+dw*(i/xSteps);
+   ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);
+  }
+  ctx.stroke();
+  ctx.restore();
+ }
  for(let i=0;i<=xSteps;i+=xStride){
   const x=pad.l+xIn+dw*(i/xSteps);
   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
@@ -43706,26 +43755,41 @@ function drawChartGrid(ctx,opts){
  // (e.g. "Magenta 100%") don't overlap on dense series.
  ctx.fillStyle=pgThemeColor('--chart-label','#888898');ctx.font='11px sans-serif';
  if(opts.rotateX){
-  for(let i=0;i<=xSteps;i+=xStride){
-   const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
-   if(!lbl) continue;
-   const x=pad.l+xIn+dw*(i/xSteps);
-   ctx.save();
-   ctx.translate(x,pad.t+h+6);
-   ctx.rotate(-Math.PI/4);
-   ctx.textAlign='right';
-   ctx.fillText(lbl,0,4);
-   ctx.restore();
-  }
-  if(xSteps%xStride){
-   const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
-   if(lbl){
+  if(densePatchAxis){
+   ctx.font='8px sans-serif';
+   for(let i=0;i<=xSteps;i++){
+    const lbl=String(opts.xLabel(i,xSteps)||'').replace(/^Patch\s+/i,'');
+    if(!lbl) continue;
+    const x=pad.l+xIn+dw*(i/xSteps);
     ctx.save();
-    ctx.translate(pad.l+xIn+dw,pad.t+h+6);
+    ctx.translate(x,pad.t+h+5);
+    ctx.rotate(-Math.PI/2);
+    ctx.textAlign='right';
+    ctx.fillText(lbl,0,3);
+    ctx.restore();
+   }
+  } else {
+   for(let i=0;i<=xSteps;i+=xStride){
+    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
+    if(!lbl) continue;
+    const x=pad.l+xIn+dw*(i/xSteps);
+    ctx.save();
+    ctx.translate(x,pad.t+h+6);
     ctx.rotate(-Math.PI/4);
     ctx.textAlign='right';
     ctx.fillText(lbl,0,4);
     ctx.restore();
+   }
+   if(xSteps%xStride){
+    const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
+    if(lbl){
+     ctx.save();
+     ctx.translate(pad.l+xIn+dw,pad.t+h+6);
+     ctx.rotate(-Math.PI/4);
+     ctx.textAlign='right';
+     ctx.fillText(lbl,0,4);
+     ctx.restore();
+    }
    }
   }
  } else {
