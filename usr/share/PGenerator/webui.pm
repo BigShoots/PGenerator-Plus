@@ -18627,11 +18627,19 @@ function meterMeasuredGamutOutlinePoints(readings){
   if(!rd) return;
   const hit=meterReadingGamutCornerKey(rd);
   if(!hit) return;
-  const x=(rd.x!=null)?Number(rd.x):(rd.raw_x!=null?Number(rd.raw_x):NaN);
-  const y=(rd.y!=null)?Number(rd.y):(rd.raw_y!=null?Number(rd.raw_y):NaN);
-  if(!isFinite(x)||!isFinite(y)||!(x>0)||!(y>0)) return;
+  // Use observer-stamped tristimulus data and the same native projection as
+  // the measured markers. This also rejects readings made with a different
+  // observer instead of leaking their legacy x/y outline into another chart.
+  let xyz=null,coord=null;
+  try{
+   xyz=meterReadingXYZ(rd);
+   coord=xyz&&meterCieChartCoordFromXYZ(xyz);
+  }catch(e){}
+  if(!coord||!isFinite(coord.x)||!isFinite(coord.y)) return;
   const prev=best[hit.key];
-  if(!prev || hit.score>prev.score) best[hit.key]={x,y,name:rd.name||hit.key,score:hit.score};
+  if(!prev || hit.score>prev.score){
+   best[hit.key]={x:coord.x,y:coord.y,xyz:xyz,reading:rd,name:rd.name||hit.key,score:hit.score};
+  }
  });
  // Prefer primaries triangle; if secondaries exist, walk R-Y-G-C-B-M (hue order)
  const orderPrim=['R','G','B'];
@@ -21165,7 +21173,7 @@ function meterReadingXYZ(reading){
  const x=(reading.x!=null)?Number(reading.x):NaN;
  const y=(reading.y!=null)?Number(reading.y):NaN;
  if(Number.isFinite(x) && Number.isFinite(y) && y>0){
-  return {X:(x/y)*Y,Y,Z:((1-x-y)/y)*Y};
+  return {X:(x/y)*Y,Y,Z:((1-x-y)/y)*Y,observer:reading.observer||'1931_2'};
  }
  if(meterReadingIsGreyscale(reading)){
   const wp=meterTargetWhitePoint();
@@ -45977,7 +45985,7 @@ function drawCIEChart3DLegacy(readings,opts){
    cie3dStrokePoly(ctx,gPts,true);ctx.setLineDash([]);
    try{
     const mpts=meterMeasuredGamutOutlinePoints(typeof readings!=='undefined'?readings:(typeof meterReadings!=='undefined'?meterReadings:[]));
-    if(meterChromaticityChartMode()==='cie1931_2'&&mpts&&mpts.length>=3){
+    if(mpts&&mpts.length>=3){
      const mProj=mpts.map(pt=>cie3dProject(pt.x,pt.y,0,layout));
      ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,0.92)');ctx.lineWidth=1.0;ctx.setLineDash([]);
      cie3dStrokePoly(ctx,mProj,true);
@@ -46221,6 +46229,15 @@ function drawCIEChart3D(readings,opts){
  const locusVectors=meterCieViewOpts.locus?meterCie3dLocusVectors(referenceY):[];
  const d65Vector=meterCie3dD65Vector(referenceY);
  const gamut=meterAnalysisGamut();
+ const measuredGamutPoints=(!isPreset&&meterCieViewOpts.gamut)
+  ?meterMeasuredGamutOutlinePoints(readings):null;
+ let measuredGamutVectors=null;
+ if(measuredGamutPoints&&measuredGamutPoints.length>=3){
+  measuredGamutVectors=measuredGamutPoints
+   .map(pt=>meterCie3dVectorFromXYZ(pt.xyz,referenceY))
+   .filter(Boolean);
+  if(measuredGamutVectors.length<3) measuredGamutVectors=null;
+ }
  let gamutVectors=null;
  if(meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
   const p=gamut.primaries;
@@ -46242,6 +46259,7 @@ function drawCIEChart3D(readings,opts){
   if(r.measuredVector) allVectors.push(r.measuredVector);
  });
  if(gamutVectors) allVectors.push(...gamutVectors);
+ if(measuredGamutVectors) allVectors.push(...measuredGamutVectors);
  const bounds=meterCie3dBoundsForVectors(allVectors);
  const layout=cie3dMakeLayout(ctx,bounds);
  const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
@@ -46284,6 +46302,14 @@ function drawCIEChart3D(readings,opts){
    ctx.textAlign='left';ctx.fillText('R',pts[0].sx+4,pts[0].sy-4);
    ctx.fillText('G',pts[1].sx-12,pts[1].sy-6);
    ctx.textAlign='right';ctx.fillText('B',pts[2].sx-4,pts[2].sy+12);
+  }});
+ }
+ if(measuredGamutVectors){
+  const pts=measuredGamutVectors.map(v=>cie3dProjectVector(v,layout));
+  prims.push({z:cie3dAvgZ(pts),draw:()=>{
+   ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,.92)');
+   ctx.lineWidth=1.15;ctx.lineJoin='round';ctx.lineCap='round';ctx.setLineDash([]);
+   cie3dStrokePoly(ctx,pts,true);
   }});
  }
  const d65=cie3dProjectVector(d65Vector,layout);
@@ -46621,7 +46647,7 @@ function drawCIEChart(readings){
   ctx.textAlign='left';ctx.fillText('R',toX(pR.x)+4,toY(pR.y)-4);
   ctx.fillText('G',toX(pG.x)-12,toY(pG.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(pB.x)-4,toY(pB.y)+12);
-  if(meterChromaticityChartMode()==='cie1931_2') try{ meterStrokeMeasuredGamut(ctx,toX,toY,readings); }catch(e){}
+  try{ meterStrokeMeasuredGamut(ctx,toX,toY,readings); }catch(e){}
  }
  // D65 white point
  const d65=meterCieD65Coord();
@@ -46973,7 +46999,7 @@ function drawCIEChartPreset(steps){
   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
   ctx.textAlign='left';ctx.fillText('R',toX(pR.x)+4,toY(pR.y)-4);ctx.fillText('G',toX(pG.x)-12,toY(pG.y)-6);
   ctx.textAlign='right';ctx.fillText('B',toX(pB.x)-4,toY(pB.y)+12);
-  if(meterChromaticityChartMode()==='cie1931_2') try{ meterStrokeMeasuredGamut(ctx,toX,toY,steps||readings||[]); }catch(e){}
+  try{ meterStrokeMeasuredGamut(ctx,toX,toY,steps||readings||[]); }catch(e){}
  }
  // D65
  const d65=meterCieD65Coord();
