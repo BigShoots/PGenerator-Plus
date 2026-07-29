@@ -48496,8 +48496,11 @@ function saveMeterSettings(){
  };
  const carriedCustomSeries=!!meterCustomSeriesDirty;
  if(carriedCustomSeries) meterCustomSeriesBackupWrite(true);
+ // Imported series can make this payload large enough that the Pi finishes
+ // after the normal settings timeout. Aborting at 5 seconds reports a false
+ // failure even though the server continues and eventually lands the series.
  const request=fetchJSON('/api/meter/settings',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(s),_quiet:true,_timeoutMs:5000});
+  body:JSON.stringify(s),_quiet:true,_timeoutMs:carriedCustomSeries?30000:5000});
  request.then(r=>{
   if(r&&r.status==='ok'&&carriedCustomSeries){
    meterCustomSeriesRawJson=s.custom_series_json||'';
