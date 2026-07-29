@@ -41684,19 +41684,6 @@ function meterSeriesThumbContentWidth(sortedSteps,row){
  return Math.max(viewport,total);
 }
 
-function meterGreyscaleThumbInsets(sortedSteps,row){
- const steps=Array.isArray(sortedSteps)?sortedSteps:[];
- if(meterActiveSeriesType!=='greyscale'||steps.length<=64) return {left:0,right:0};
- const viewport=Math.max(320,Math.round((row&&row.clientWidth)||0)||800);
- const chartScroller=document.getElementById('meterRgbChartScroller');
- const chartViewport=Math.max(320,Math.round((chartScroller&&chartScroller.clientWidth)||0)||viewport);
- const scale=viewport/chartViewport;
- // drawChartGrid's greyscale charts use l=45/r=15. Mirroring those insets in
- // the wider thumbnail strip makes patch positions affine-equivalent across
- // the entire scroll range, rather than only matching the outer widths.
- return {left:45*scale,right:15*scale};
-}
-
 function meterDesktopColorThumbsFit(sortedSteps,row){
  if(!document.body.classList.contains('layout-desktop')) return false;
  if(meterActiveSeriesType!=='colors'&&meterActiveSeriesType!=='saturations') return false;
@@ -41843,11 +41830,10 @@ function meterQueueGreyscaleTargetSync(){
 function meterGreyscaleChartContentWidth(stepCount,viewportWidth){
  const count=Math.max(0,Number(stepCount)||0);
  const viewport=Math.max(320,Number(viewportWidth)||0);
- // Chromium cannot allocate a sharp backing surface for the old 37k-pixel
- // 1024-point canvas. Cap the shared virtual width at its 16k canvas limit;
- // meterSeriesThumbContentWidth uses this exact ratio so thumbnails and every
- // chart still expose the same patch interval.
- return Math.max(viewport,Math.min(16384,Math.round(count*36+90)));
+ // Preserve the original 36px-per-patch scale. Wide charts render at a fixed
+ // 1x backing density in getChartCtx, avoiding the old 2x 74k allocation while
+ // keeping a 1,024-patch series sharp and showing roughly 26 patches at once.
+ return Math.max(viewport,Math.round(count*36+90));
 }
 
 function meterGreyscaleRotateXLabels(stepCount){
@@ -41967,11 +41953,9 @@ function meterUpdateGreyscaleChartScrollLayout(stepCount){
   const steps=meterFilterLgAutoCalChartItems(meterGreyscaleSeriesSteps(meterSeriesSteps||[]));
   if(thumbContainer&&steps.length===count&&thumbContainer.children.length===count){
    const contentWidth=meterSeriesThumbContentWidth(steps,thumbRow);
-   const insets=meterGreyscaleThumbInsets(steps,thumbRow);
-   const slotWidth=Math.max(1,(contentWidth-insets.left-insets.right-Math.max(0,count-1)*2)/Math.max(1,count));
-   thumbContainer.style.boxSizing='border-box';
-   thumbContainer.style.paddingLeft=insets.left+'px';
-   thumbContainer.style.paddingRight=insets.right+'px';
+   const slotWidth=Math.max(1,(contentWidth-Math.max(0,count-1)*2)/Math.max(1,count));
+   thumbContainer.style.paddingLeft='0';
+   thumbContainer.style.paddingRight='0';
    thumbContainer.style.width=contentWidth+'px';
    thumbContainer.style.minWidth=contentWidth+'px';
    Array.from(thumbContainer.children).forEach(thumb=>{
@@ -42044,11 +42028,9 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
  if(scrollMode&&meterDesktopColorThumbsFit(visibleSteps,row)) scrollMode=false;
  container.style.flexWrap='nowrap';
  container.dataset.scrollMode=scrollMode?'1':'0';
- const thumbInsets=(scrollMode&&meterActiveSeriesType==='greyscale')
-  ?meterGreyscaleThumbInsets(visibleSteps,row):{left:0,right:0};
  container.style.boxSizing='border-box';
- container.style.paddingLeft=thumbInsets.left+'px';
- container.style.paddingRight=thumbInsets.right+'px';
+ container.style.paddingLeft='0';
+ container.style.paddingRight='0';
  if(scrollMode){
   const contentWidth=meterSeriesThumbContentWidth(visibleSteps,row);
   container.style.width=contentWidth+'px';
@@ -42058,7 +42040,7 @@ function meterBuildPatchThumbs(sortedSteps,completedIres,currentIre){
   container.style.minWidth='100%';
  }
 	 const uniformGreyThumbWidth=(scrollMode&&meterActiveSeriesType==='greyscale'&&visibleSteps.length)
-	  ?Math.max(1,((parseFloat(container.style.width)||0)-thumbInsets.left-thumbInsets.right-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
+	  ?Math.max(1,((parseFloat(container.style.width)||0)-Math.max(0,visibleSteps.length-1)*2)/visibleSteps.length)
 	  :null;
 	 const buildSignature=visibleSteps.map(step=>{
 	  const isGrey=meterSeriesStepIsGreyscale(step);
@@ -43410,10 +43392,12 @@ function getChartCtx(id){
  const rect=c.getBoundingClientRect();
  // Guard: if canvas not visible (VS Code webview, hidden panel), skip
  if(rect.width<10||rect.height<10) return null;
- // Wide series charts can exceed the browser/GPU maximum backing dimension
- // when DPR is applied. Reduce backing density for those canvases while
- // preserving their CSS geometry and all plotted samples.
- const renderRatio=Math.max(0.25,Math.min(dpr,16384/rect.width,16384/rect.height));
+ // Do not multiply very wide scrolling charts by devicePixelRatio: a
+ // 36,954px series at 2x becomes a wasteful 74k backing surface. Chromium
+ // supports the full logical width at 1x, which keeps it sharp without the
+ // stretched 16k bitmap or the old 2x allocation cost.
+ const densityLimit=rect.width>8192?1:dpr;
+ const renderRatio=Math.max(0.25,Math.min(dpr,densityLimit,65535/rect.width,65535/rect.height));
  const newW=Math.round(rect.width*renderRatio), newH=Math.round(rect.height*renderRatio);
  // Only resize canvas buffer if dimensions actually changed (avoids unnecessary clear)
  if(c.width!==newW||c.height!==newH){ c.width=newW; c.height=newH; }
