@@ -43,17 +43,16 @@ METER_AVERAGING="${10:-${METER_AVERAGING:-off}}"
 # which goes stale whenever meters are plugged/unplugged (enumeration order).
 METER_USB_ID="${11:-}"
 
-# SpyderX supports only its built-in display calibrations. Argyll does not
-# expose CCSS spectral-sample or manual refresh-override capability for it.
-# The WebUI maps panel technology to the native -y mode; this guard also makes
-# direct/helper invocations safe.
+# SpyderX supports its built-in display calibrations and device-specific CCMX
+# matrices. It does not expose CCSS spectral-sample or manual refresh-override
+# capability. Preserve a selected CCMX but reject CCSS in direct/helper calls.
 if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
- CCSS_FILE=""
+ [[ "${CCSS_FILE,,}" =~ \.ccmx$ ]] || CCSS_FILE=""
  REFRESH_RATE=""
 fi
 
 # The SpyderX/Spyder5 perform a MANUAL dark calibration (sensor covered) and
-# Argyll persists it to ~/.argyll/.spydX2_<serial>.cal. -N maps to the driver's
+# Argyll persists it in the XDG cache as .spydX_<serial>.cal. -N maps to the driver's
 # set_noinitcalib: it suppresses the AUTOMATIC per-startup calibration so the
 # stored one is reused. Without it every spotread spawn re-calibrates, so a
 # dark cal done for Read Once was demanded again for Read Series (a separate
@@ -124,11 +123,9 @@ clean_output_since() {
 #               "and hit [Return] to start calibration:"
 # Matching only "calibrate refresh" catches the diagnostic and misses the
 # prompt, which then goes unanswered until the startup loop times out.
-# An explicit -Y R:rate makes spotread skip this step, which is why the stall
-# is seen on the SpyderX first: its refresh override is force-cleared above
-# (and disabled in the UI), so it ALWAYS reaches the prompt. Any meter left on
-# automatic refresh reaches it too -- hence "meter says Reading... for two
-# minutes and returns nothing".
+# An explicit -Y R:rate makes spotread skip this step on meters that support
+# refresh-rate calibration. A meter left on automatic refresh can otherwise
+# wait at this prompt until the startup loop times out.
 refresh_cal_prompt() {
  printf '%s' "$1" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+frequency|80%[[:space:]]*(or[[:space:]]+greater[[:space:]]+)?white[[:space:]]+test[[:space:]]+patch'
 }
@@ -511,7 +508,8 @@ build_sr_cmd () {
     # invalid/missing, spotread still emits the mandatory
     # "Spot read needs a calibration before continuing" prompt, which the
     # calibrate_tile / calibrate_retry steps below surface to the operator.
-    # So -N is safe unconditionally for spectros; colorimeters never use it.
+    # So -N is safe unconditionally for spectros. Spyder colorimeters also
+    # use it above to reuse a still-valid stored dark calibration.
     cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -x $new_ll_flags"
    elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
    cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x $new_ll_flags"
@@ -522,7 +520,8 @@ build_sr_cmd () {
   # spotread SKIP its mandatory "read an 80% white patch to calibrate refresh
   # frequency" step -- on a sample-and-hold OLED that auto-cal read is
   # unreliable (it fails without averaging, leaving the meter uncalibrated so
-  # every subsequent read fails). So always honour an explicit rate.
+  # every subsequent read fails). So always honour an explicit rate on meters
+  # that support the override.
   [[ -n "$REFRESH_RATE" ]] && cmd="$cmd -Y R:$REFRESH_RATE"
   printf '%s' "$cmd"
 }
@@ -715,7 +714,7 @@ esac
 if [[ "$REQUIRE_DEVICE_READY" == "1" && -n "$CCSS_FILE" ]]; then
  log "spectrophotometer selected: skipping CCSS ($CCSS_FILE) -- spectros measure spectrally"
 fi
-if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
+if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "${CCSS_FILE,,}" =~ \.ccss$ && "$REQUIRE_DEVICE_READY" != "1" ]]; then
  # Match the actual DISPLAY_TYPE_REFRESH value, not the KEYWORD line.
  # Fall back to CCSS metadata when the explicit refresh hint is absent.
  CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)

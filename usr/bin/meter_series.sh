@@ -62,10 +62,10 @@ COLOR_FORMAT="${31:-}"
 # requested index, which goes stale when meters are plugged/unplugged.
 METER_USB_ID="${32:-}"
 
-# SpyderX uses native -y display calibrations and does not accept external
-# CCSS spectral samples or a manual refresh-frequency override.
+# SpyderX uses native -y display calibrations and device-specific CCMX
+# matrices. It does not accept CCSS or a manual refresh-frequency override.
 if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
- CCSS_FILE=""
+ [[ "${CCSS_FILE,,}" =~ \.ccmx$ ]] || CCSS_FILE=""
  REFRESH_RATE=""
 fi
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
@@ -362,9 +362,8 @@ clean_output_since() {
 # See meter_session.sh: spotread's refresh-cal PROMPT is
 # "Place the instrument on a 80% white test patch," while "calibrate refresh"
 # only ever appears in a separate diagnostic line. Matching the diagnostic
-# alone leaves the prompt unanswered until the startup loop times out, which
-# is why a meter on automatic refresh -- always the SpyderX, whose override is
-# force-cleared -- stalls on "Connecting to meter...".
+# alone leaves a refresh-capable meter unanswered until the startup loop
+# times out.
 refresh_cal_prompt() {
  printf '%s' "$1" | grep -qiE 'calibrate[[:space:]]+refresh|refresh[[:space:]]+frequency|80%[[:space:]]*(or[[:space:]]+greater[[:space:]]+)?white[[:space:]]+test[[:space:]]+patch'
 }
@@ -1203,22 +1202,25 @@ EOJSON
    [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
   fi
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
-  # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
-  # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
-  # profiles don't get treated like generic LCDs (or vice versa).
-  CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)
-  if [[ "$CCSS_REFRESH" == *'"NO"'* ]]; then
-   DISPLAY_TYPE="l"
-  elif [[ "$CCSS_REFRESH" == *'"YES"'* ]]; then
-   DISPLAY_TYPE="c"
-  else
-   CCSS_META=$(grep -iE '^[[:space:]]*(DISPLAY|TECHNOLOGY)[[:space:]]' "$CCSS_FILE" 2>/dev/null | tr '\n' ' ')
-   if [[ "$CCSS_META" =~ [Pp]rojector ]]; then
-    DISPLAY_TYPE="p"
-   elif [[ "$CCSS_META" =~ (OLED|Plasma|CRT) ]]; then
+  if [[ "${CCSS_FILE,,}" =~ \.ccss$ ]]; then
+   # Read the actual DISPLAY_TYPE_REFRESH value line, not the KEYWORD declaration.
+   # If the field is missing, fall back to the CCSS metadata so OLED/Plasma/CRT
+   # profiles don't get treated like generic LCDs (or vice versa). A CCMX uses
+   # the selected instrument base type and has no spectral refresh metadata.
+   CCSS_REFRESH=$(grep -iE '^[[:space:]]*DISPLAY_TYPE_REFRESH[[:space:]]' "$CCSS_FILE" 2>/dev/null | head -1)
+   if [[ "$CCSS_REFRESH" == *'"NO"'* ]]; then
+    DISPLAY_TYPE="l"
+   elif [[ "$CCSS_REFRESH" == *'"YES"'* ]]; then
     DISPLAY_TYPE="c"
    else
-    DISPLAY_TYPE="l"
+    CCSS_META=$(grep -iE '^[[:space:]]*(DISPLAY|TECHNOLOGY)[[:space:]]' "$CCSS_FILE" 2>/dev/null | tr '\n' ' ')
+    if [[ "$CCSS_META" =~ [Pp]rojector ]]; then
+     DISPLAY_TYPE="p"
+    elif [[ "$CCSS_META" =~ (OLED|Plasma|CRT) ]]; then
+     DISPLAY_TYPE="c"
+    else
+     DISPLAY_TYPE="l"
+    fi
    fi
   fi
   SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -x"

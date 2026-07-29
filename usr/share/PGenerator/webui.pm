@@ -436,6 +436,7 @@ my $_ccxxmake_disptech_map={
 sub _resolve_ccss_yflag (@) {
  my ($path)=@_;
  return "l" if(!$path || !-f $path);
+ return "l" if($path=~/\.ccmx$/i);
  my $txt="";
  if(open(my $fh,"<",$path)) {
   local $/;
@@ -514,7 +515,9 @@ sub _webui_ccss_repair_file (@) {
 
 sub resolve_display_type (@) {
  my ($key)=@_;
- # ccss_FILENAME or custom_FILENAME: look up a .ccss file in system or custom dirs
+ # ccss_FILENAME or custom_FILENAME: look up a correction profile in the
+ # system or custom dirs. The legacy token names are retained for API and
+ # saved-settings compatibility, but the file may be CCSS or CCMX.
  if($key=~/^(?:ccss|custom)_(.+)$/) {
   my $fname=$1;
   $fname=~s{\\}{/}g;
@@ -525,8 +528,8 @@ sub resolve_display_type (@) {
   my $cust="$_custom_ccss_dir/$fname";
   my $legacy="$_custom_ccss_legacy_dir/$fname";
   if(-f $sys)    { return (&_resolve_ccss_yflag($sys),$sys); }
-  if(-f $cust)   { &_webui_ccss_repair_file($cust); return (&_resolve_ccss_yflag($cust),$cust); }
-  if(-f $legacy) { &_webui_ccss_repair_file($legacy); return (&_resolve_ccss_yflag($legacy),$legacy); }
+  if(-f $cust)   { &_webui_ccss_repair_file($cust) if($cust=~/\.ccss$/i); return (&_resolve_ccss_yflag($cust),$cust); }
+  if(-f $legacy) { &_webui_ccss_repair_file($legacy) if($legacy=~/\.ccss$/i); return (&_resolve_ccss_yflag($legacy),$legacy); }
   return ("l","");
  }
  my $info=$_dtype_info->{lc($key)}||["l",""];
@@ -538,11 +541,12 @@ sub resolve_display_type (@) {
  return ($y_flag,$ccss_file);
 }
 
-# Map a CCSS override token (ccss_<file> | custom_<file>) to an absolute path.
+# Map a correction override token (ccss_<file> | custom_<file>) to an absolute
+# CCSS or CCMX path.
 # Empty / whitespace token -> "" (caller falls back to the technology default).
 # Missing / unreadable file -> "" (do NOT silently fall through to a different
 # CCSS — the worker would print a confusing "no such file" error instead).
-# Validated suffix is .ccss; basename only (no traversal). Used in tandem with
+# Validated suffix is .ccss or .ccmx; basename only (no traversal). Used with
 # the panel-technology parse so the meter session can use a real tech key for
 # the spotread -y flag AND a separate CCSS file for the correction matrix.
 sub resolve_ccss_override (@) {
@@ -558,13 +562,13 @@ sub resolve_ccss_override (@) {
  $fname=~s{^.*\/}{}; # basename only; discard nested path / traversal attempts
  $fname=~s/[^a-zA-Z0-9._\-()\[\] ]//g;
  return "" if($fname eq "");
- return "" if($fname !~ /\.ccss$/i);
+ return "" if($fname !~ /\.(?:ccss|ccmx)$/i);
  my $sys="$_ccss_dir/$fname";
  my $cust="$_custom_ccss_dir/$fname";
  my $legacy="$_custom_ccss_legacy_dir/$fname";
  if(-f $sys)    { return $sys; }
- if(-f $cust)   { &_webui_ccss_repair_file($cust); return (-f $cust) ? $cust : ""; }
- if(-f $legacy) { &_webui_ccss_repair_file($legacy); return (-f $legacy) ? $legacy : ""; }
+ if(-f $cust)   { &_webui_ccss_repair_file($cust) if($cust=~/\.ccss$/i); return (-f $cust) ? $cust : ""; }
+ if(-f $legacy) { &_webui_ccss_repair_file($legacy) if($legacy=~/\.ccss$/i); return (-f $legacy) ? $legacy : ""; }
  return "";
 }
 
@@ -2168,12 +2172,11 @@ sub webui_meter_read (@) {
   $measurement_meter_usb_id=&webui_meter_usb_id_for_port($measurement_meter_port);
  }
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
-  # SpyderX exposes four built-in display calibrations through -y. It does not
-  # expose the spectral-sensitivity capability required by spotread -X CCSS,
-  # nor the refresh-frequency override used by -Y R:. Keep this normalization
-  # server-side so browser, series, AutoCal and API callers behave identically.
+  # SpyderX exposes four built-in display calibrations and device-specific
+  # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
+  # clear CCSS and the unsupported manual refresh override.
   $display_type=&webui_spyderx_native_display_type($display_type_key);
-  $ccss_file="";
+  $ccss_file="" if($ccss_file!~/\.ccmx$/i);
   $refresh_rate="";
  }
  # Session identity stickiness: an ABSENT field means "unspecified", not
@@ -2933,7 +2936,7 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  }
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   $display_type=&webui_spyderx_native_display_type($display_type_key);
-  $ccss_file="";
+  $ccss_file="" if($ccss_file!~/\.ccmx$/i);
   $refresh_rate="";
  }
  my $require_device_ready=0;
@@ -6050,7 +6053,7 @@ sub webui_diag_asset_delete (@) {
 
 sub _webui_ccss_meta (@) {
  my ($path)=@_;
- my %meta=(display=>"",technology=>"");
+ my %meta=(display=>"",technology=>"",instrument=>"",reference=>"",format=>($path=~/\.ccmx$/i ? "ccmx" : "ccss"));
  return \%meta if(!$path || !-f $path);
  if(open(my $fh,"<",$path)) {
   local $/="\n";
@@ -6062,6 +6065,8 @@ sub _webui_ccss_meta (@) {
    chomp($line);
    $meta{display}=$1 if(!$meta{display} && $line=~/^DISPLAY\s+"([^"]*)"/i);
    $meta{technology}=$1 if(!$meta{technology} && $line=~/^TECHNOLOGY\s+"([^"]*)"/i);
+   $meta{instrument}=$1 if(!$meta{instrument} && $line=~/^INSTRUMENT\s+"([^"]*)"/i);
+   $meta{reference}=$1 if(!$meta{reference} && $line=~/^REFERENCE\s+"([^"]*)"/i);
   }
   close($fh);
  }
@@ -6337,7 +6342,7 @@ sub _webui_ccss_from_ti3 (@) {
   my ($base,$resolved_source)=@$candidate;
   my $path="$base/$fname";
   next unless(-f $path);
-  &_webui_ccss_repair_file($path) if($resolved_source eq "custom");
+  &_webui_ccss_repair_file($path) if($resolved_source eq "custom" && $path=~/\.ccss$/i);
   return ($path,$resolved_source,$fname);
  }
  return ("","",$fname);
@@ -6349,7 +6354,7 @@ sub webui_ccss_list (@) {
  foreach my $dir ($_custom_ccss_dir,$_custom_ccss_legacy_dir) {
   next unless(-d $dir && opendir(my $dh, $dir));
   while(my $f=readdir($dh)) {
-   next unless($f=~/\.ccss$/i);
+   next unless($f=~/\.(?:ccss|ccmx)$/i);
    next if($seen{lc $f}++);
    push @files, "\"$f\"";
   }
@@ -6359,33 +6364,38 @@ sub webui_ccss_list (@) {
 }
 
 sub webui_ccss_all (@) {
- # Returns combined list of system + custom ccss files (alphabetical).
- # Each entry: {"name":"...", "source":"system"|"custom", "display":"...", "technology":"..."}
+ # Returns combined list of system CCSS plus custom CCSS/CCMX profiles.
  my @out;
  my %seen;
  # System dir (excluding the 'custom' subdir)
  if(-d $_ccss_dir && opendir(my $dh, $_ccss_dir)) {
   while(my $f=readdir($dh)) {
-   next unless($f=~/\.ccss$/i);
+   next unless($f=~/\.(?:ccss|ccmx)$/i);
    next if($seen{lc $f}++);
    my $meta=&_webui_ccss_meta("$_ccss_dir/$f");
    my $e=&_webui_json_escape($f);
    my $d=&_webui_json_escape($meta->{display});
    my $t=&_webui_json_escape($meta->{technology});
-   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"system\",\"display\":\"$d\",\"technology\":\"$t\"}"];
+   my $i=&_webui_json_escape($meta->{instrument});
+   my $r=&_webui_json_escape($meta->{reference});
+   my $format=$meta->{format} eq "ccmx" ? "ccmx" : "ccss";
+   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"system\",\"format\":\"$format\",\"display\":\"$d\",\"technology\":\"$t\",\"instrument\":\"$i\",\"reference\":\"$r\"}"];
   }
   closedir($dh);
  }
  foreach my $dir ($_custom_ccss_dir,$_custom_ccss_legacy_dir) {
   next unless(-d $dir && opendir(my $dh, $dir));
   while(my $f=readdir($dh)) {
-   next unless($f=~/\.ccss$/i);
+   next unless($f=~/\.(?:ccss|ccmx)$/i);
    next if($seen{lc $f}++);
    my $meta=&_webui_ccss_meta("$dir/$f");
    my $e=&_webui_json_escape($f);
    my $d=&_webui_json_escape($meta->{display});
    my $t=&_webui_json_escape($meta->{technology});
-   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"custom\",\"display\":\"$d\",\"technology\":\"$t\"}"];
+   my $i=&_webui_json_escape($meta->{instrument});
+   my $r=&_webui_json_escape($meta->{reference});
+   my $format=$meta->{format} eq "ccmx" ? "ccmx" : "ccss";
+   push @out, [lc $f, "{\"name\":\"$e\",\"source\":\"custom\",\"format\":\"$format\",\"display\":\"$d\",\"technology\":\"$t\",\"instrument\":\"$i\",\"reference\":\"$r\"}"];
   }
   closedir($dh);
  }
@@ -6419,6 +6429,27 @@ sub _webui_custom_ccss_storage_dir (@) {
  return "";
 }
 
+sub _webui_ccmx_validate_content (@) {
+ my ($raw)=@_;
+ return (0,"Not a CCMX file") if(!defined($raw) || $raw!~/\ACCMX[ \t]*(?:\r?\n|$)/i);
+ return (0,"Invalid CCMX file: missing instrument") if($raw!~/^INSTRUMENT\s+"[^"]+"/mi);
+ return (0,"Invalid CCMX file: COLOR_REP must be XYZ") if($raw!~/^COLOR_REP\s+"?XYZ"?[ \t]*$/mi);
+ return (0,"Invalid CCMX file: expected a 3 by 3 matrix") if($raw!~/^NUMBER_OF_FIELDS\s+3[ \t]*$/mi || $raw!~/^NUMBER_OF_SETS\s+3[ \t]*$/mi);
+ return (0,"Invalid CCMX file: missing XYZ data format") if($raw!~/^BEGIN_DATA_FORMAT[ \t]*\r?\n\s*XYZ_X\s+XYZ_Y\s+XYZ_Z\s*\r?\nEND_DATA_FORMAT[ \t]*$/mi);
+ my ($data)=$raw=~/^BEGIN_DATA[ \t]*\r?\n(.*?)^END_DATA[ \t]*$/mis;
+ return (0,"Invalid CCMX file: missing matrix data") if(!defined($data));
+ my @rows=grep { $_!~/^\s*$/ } split(/\r?\n/,$data);
+ return (0,"Invalid CCMX file: expected exactly three matrix rows") if(@rows != 3);
+ foreach my $row (@rows) {
+  my @values=grep { $_ ne "" } split(/\s+/,$row);
+  return (0,"Invalid CCMX file: each matrix row must contain three numbers") if(@values != 3);
+  foreach my $value (@values) {
+   return (0,"Invalid CCMX file: non-numeric matrix value") if($value!~/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/);
+  }
+ }
+ return (1,"");
+}
+
 sub webui_ccss_upload (@) {
  my ($body)=@_;
  # Expect JSON: { name: "...", content: "base64...", filename: "...", display_type: "..." }
@@ -6435,9 +6466,6 @@ sub webui_ccss_upload (@) {
   return '{"status":"error","message":"Name and file content required"}';
  }
 
- # Sanitize name for filesystem use
- my $safe_name=&_webui_ccss_safe_filename($name);
-
  my $raw=decode_base64($content_b64);
  if(length($raw) < 10 || length($raw) > 5*1024*1024) {
   return '{"status":"error","message":"Invalid file size"}';
@@ -6449,6 +6477,26 @@ sub webui_ccss_upload (@) {
  if($custom_storage_dir eq "") {
   return '{"status":"error","message":"Custom storage unavailable"}';
  }
+
+ # A CCMX is already the finished, instrument-specific 3x3 correction. It
+ # cannot be synthesized from a CCSS alone because the target colorimeter's
+ # measurements are required.
+ if($raw=~/\ACCMX[ \t]*(?:\r?\n|$)/i || $orig_filename=~/\.ccmx$/i) {
+  my ($valid,$error)=&_webui_ccmx_validate_content($raw);
+  return '{"status":"error","message":"'.&_webui_json_escape($error).'"}' if(!$valid);
+  my $safe_name=&_webui_ccss_safe_filename($name,"ccmx");
+  my $out_path="$custom_storage_dir/$safe_name";
+  if(open(my $fh,">:raw",$out_path)) {
+   print $fh $raw;
+   close($fh);
+   &log("WebUI: custom CCMX uploaded: $safe_name");
+   return "{\"status\":\"ok\",\"filename\":\"$safe_name\",\"format\":\"ccmx\",\"message\":\"CCMX profile saved\"}";
+  }
+  return '{"status":"error","message":"Failed to write CCMX file"}';
+ }
+
+ # Remaining imports produce or contain CCSS data.
+ my $safe_name=&_webui_ccss_safe_filename($name,"ccss");
 
  # Detect file type: CCSS, TI3, or CSV.
  if($raw=~/^CCSS\s/) {
@@ -6772,6 +6820,21 @@ sub webui_ccss_validate (@) {
  return '{"ok":false,"error":"File not found"}' if($resolved eq "");
  my ($sz)=(-s $resolved);
  return '{"ok":false,"error":"File is empty"}' if(!$sz || $sz<200);
+
+ if($resolved=~/\.ccmx$/i) {
+  my $raw=&read_from_file($resolved);
+  my ($valid,$error)=&_webui_ccmx_validate_content($raw);
+  return '{"ok":false,"error":"'.&_webui_json_escape($error).'"}' if(!$valid);
+  my $meta=&_webui_ccss_meta($resolved);
+  my $desc=$meta->{display} ne "" ? $meta->{display} : $fname;
+  return '{"ok":true'
+   .',"format":"ccmx"'
+   .',"description":"'.&_webui_json_escape($desc).'"'
+   .',"instrument":"'.&_webui_json_escape($meta->{instrument}).'"'
+   .',"reference":"'.&_webui_json_escape($meta->{reference}).'"'
+   .',"path":"'.&_webui_json_escape($resolved).'"'
+   .'}';
+ }
 
  my ($display,$technology,$refresh)=("","","");
  my $has_spectral_format=0;
@@ -7237,7 +7300,18 @@ sub webui_ccss_validate (@) {
 
    my ($resolved,$resolved_source,$safe_name)=&_webui_ccss_resolve_named_path($fname,$source);
    return (0,400,'application/json','',"{\"status\":\"error\",\"message\":\"Missing or invalid filename\"}") if($safe_name eq "");
-   return (0,404,'application/json','',"{\"status\":\"error\",\"message\":\"CCSS file not found\"}") if($resolved eq "");
+   return (0,404,'application/json','',"{\"status\":\"error\",\"message\":\"Correction profile not found\"}") if($resolved eq "");
+
+   if($resolved=~/\.ccmx$/i) {
+    my $raw=&read_from_file($resolved);
+    my ($valid,$error)=&_webui_ccmx_validate_content($raw);
+    return (0,400,'application/json','',"{\"status\":\"error\",\"message\":\"".&_webui_json_escape($error)."\"}") if(!$valid);
+    my $base_name=$safe_name;
+    $base_name=~s/\.[^.]+$//;
+    $base_name=~s/[^a-zA-Z0-9._\-]+/_/g;
+    return (1,200,'text/plain; charset=utf-8',"${base_name}.ccmx",$raw) if($format eq "ccmx" || $format eq "ccss");
+    return (0,415,'application/json','',"{\"status\":\"error\",\"message\":\"CCMX profiles can only be exported as CCMX\"}");
+   }
 
    my ($parsed,$error)=&_webui_ccss_parse_file($resolved,$safe_name);
    if(!$parsed) {
@@ -7274,7 +7348,31 @@ sub webui_ccss_preview (@) {
 
  my ($resolved,$resolved_source,$safe_name)=&_webui_ccss_resolve_named_path($fname,$source);
  return '{"ok":false,"error":"Missing or invalid filename"}' if($safe_name eq "");
- return '{"ok":false,"error":"CCSS file not found"}' if($resolved eq "");
+ return '{"ok":false,"error":"Correction profile not found"}' if($resolved eq "");
+
+ if($resolved=~/\.ccmx$/i) {
+  my $raw=&read_from_file($resolved);
+  my ($valid,$error)=&_webui_ccmx_validate_content($raw);
+  return '{"ok":false,"error":"'.&_webui_json_escape($error).'"}' if(!$valid);
+  my $meta=&_webui_ccss_meta($resolved);
+  my ($data)=$raw=~/^BEGIN_DATA[ \t]*\r?\n(.*?)^END_DATA[ \t]*$/mis;
+  my @rows;
+  foreach my $line (grep { $_!~/^\s*$/ } split(/\r?\n/,$data||"")) {
+   my @values=grep { $_ ne "" } split(/\s+/,$line);
+   push @rows, '['.join(',',map { 0+$_ } @values).']';
+  }
+  my $desc=$meta->{display} ne "" ? $meta->{display} : $safe_name;
+  return '{"ok":true'
+   .',"format":"ccmx"'
+   .',"name":"'.&_webui_json_escape($safe_name).'"'
+   .',"source":"'.&_webui_json_escape($resolved_source).'"'
+   .',"description":"'.&_webui_json_escape($desc).'"'
+   .',"display":"'.&_webui_json_escape($meta->{display}).'"'
+   .',"instrument":"'.&_webui_json_escape($meta->{instrument}).'"'
+   .',"reference":"'.&_webui_json_escape($meta->{reference}).'"'
+   .',"matrix":['.join(',',@rows).']'
+   .'}';
+ }
 
    my ($parsed,$error)=&_webui_ccss_parse_file($resolved,$safe_name);
    return '{"ok":false,"error":"'.&_webui_json_escape($error||"Unable to parse CCSS file").'"}' if(!$parsed);
@@ -7294,14 +7392,17 @@ sub _webui_ccss_clean_name (@) {
 }
 
 sub _webui_ccss_safe_filename (@) {
- my ($name)=@_;
+ my ($name,$format)=@_;
  $name="" if(!defined $name);
+ $format=lc($format||"ccss");
+ $format="ccss" if($format ne "ccmx");
  my $safe=$name;
  $safe=~s/[^a-zA-Z0-9._\- ]//g;
  $safe=~s/\s+/_/g;
  $safe=substr($safe,0,60) if(length($safe)>60);
- $safe="custom_ccss" if($safe eq "");
- $safe.=".ccss" unless($safe=~/\.ccss$/i);
+ $safe="custom_$format" if($safe eq "");
+ $safe=~s/\.(?:ccss|ccmx)$//i;
+ $safe.=".$format";
  return $safe;
 }
 
@@ -8191,15 +8292,18 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- spotread Capabilities ---";
  my $spot_caps=`timeout 5 spotread -D1 -? 2>&1 | tail -40`; chomp($spot_caps);
  push @out, ($spot_caps ne "") ? $spot_caps : "(none found)";
- push @out, "", "--- CCSS Directory ---";
+ push @out, "", "--- Meter Correction Profiles ---";
  my $ccss_dir=`ls -la /usr/share/PGenerator/ccss/ 2>/dev/null`; chomp($ccss_dir);
  push @out, ($ccss_dir ne "") ? $ccss_dir : "(none found)";
  my $selected_ccss="";
  my $meter_settings=&read_from_file($_meter_settings_file);
- if($meter_settings ne "" && $meter_settings=~/"ccss_file"\s*:\s*"([^"]+)"/) {
+ if($meter_settings ne "" && $meter_settings=~/"ccss_override"\s*:\s*"([^"]+)"/) {
+  my $token=$1;
+  $selected_ccss=&resolve_ccss_override($token) if(lc($token) ne "none");
+ } elsif($meter_settings ne "" && $meter_settings=~/"ccss_file"\s*:\s*"([^"]+)"/) {
   my $ccss_name=$1;
   if($ccss_name=~m{^custom/([A-Za-z0-9._-]+)$}) {
-   $selected_ccss="$_ccss_dir/$1";
+   $selected_ccss="$_custom_ccss_dir/$1";
   } elsif($ccss_name=~m{^ccss_([A-Za-z0-9._-]+)$}) {
    $selected_ccss="$_ccss_dir/$1";
   }
@@ -8211,7 +8315,7 @@ sub webui_create_logs_bundle (@) {
    @ccss_lines=@ccss_lines[0..39];
    push @ccss_lines, "...";
   }
-  push @out, "", "--- Selected CCSS ($selected_ccss) ---";
+  push @out, "", "--- Selected Correction Profile ($selected_ccss) ---";
   push @out, join("\n",@ccss_lines);
  }
  my @csv_candidates=sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) } (glob("/var/lib/PGenerator/reports/*.csv"),glob("/var/lib/PGenerator/*.csv"),glob("/tmp/*.csv"));
@@ -11911,9 +12015,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
-     <label>Meter Profile (CCSS) <span class="meter-help-tip" title="Spectro/CCSS correction applied to meter readings. Defaults to the built-in profile for the selected Display Type; choose No Correction to read without a CCSS, or select a custom profile. Choose CCSS Editor… to import, create, or manage profiles." aria-label="Meter profile CCSS help">?</span></label>
-     <select id="meterCcssProfile"><option value="custom_editor">CCSS Editor…</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
-     <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2);margin-top:4px">SpyderX uses its native display calibration; CCSS profiles are not supported.</div>
+     <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
+     <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
+     <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2);margin-top:4px">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
     </div>
    </div>
   </div>
@@ -11926,8 +12030,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div id="customCcssPanel" class="custom-ccss-panel">
        <div class="custom-ccss-panel-row">
         <div class="custom-ccss-panel-copy">
-         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">CCSS Editor</div>
-         <div id="customCcssPanelSummary" style="font-size:.7rem;color:var(--text2);margin-top:3px;line-height:1.45">Open the importer to upload CCSS, TI3, or spectral CSV files, preview curves, and manage custom profiles.</div>
+         <div style="font-size:.76rem;color:#dfe6f6;font-weight:600;letter-spacing:.02em">Meter Profile Editor</div>
+         <div id="customCcssPanelSummary" style="font-size:.7rem;color:var(--text2);margin-top:3px;line-height:1.45">Import CCSS, CCMX, TI3, EDR, or spectral CSV files and manage custom profiles.</div>
         </div>
         <button id="customCcssPanelBtn" class="btn btn-sm btn-secondary custom-ccss-panel-btn" onclick="meterOpenCustomCcssEditor()">Open Editor</button>
        </div>
@@ -11957,7 +12061,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	     </div>
 	      <div class="meter-xyz-toggle-block">
        <div class="meter-xyz-toggle-row">
-        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
         <span class="meter-xyz-gear-wrap is-hidden">
          <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
          <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
@@ -12640,8 +12744,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
-      <div style="font-size:1rem;font-weight:700;color:#eee">CCSS Editor</div>
-       <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">PGenerator+ supports importing existing CCSS, EDR, TI3, or spectral CSV files, then choosing the active custom profile and inspecting its spectral curves.</div>
+      <div style="font-size:1rem;font-weight:700;color:#eee">Meter Profile Editor</div>
+       <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">Import CCSS spectral corrections or meter-specific CCMX matrices. TI3, EDR, and spectral CSV imports are converted to CCSS.</div>
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
@@ -12650,8 +12754,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div class="ccss-editor-layout" style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
      <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px">
-       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, EDR, TI3, or spectral CSV</label>
-       <input type="file" id="ccssFileInput" accept=".ccss,.edr,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Import CCSS, CCMX, EDR, TI3, or spectral CSV</label>
+       <input type="file" id="ccssFileInput" accept=".ccss,.ccmx,.edr,.csv,.ti3" style="font-size:.74rem;width:100%;margin-bottom:8px">
       <div style="display:flex;gap:6px;align-items:center">
        <input type="text" id="ccssName" placeholder="Profile name" style="flex:1;font-size:.8rem;padding:5px 7px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
        <button id="ccssUploadBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap;font-size:.74rem;padding:5px 10px" disabled>Upload</button>
@@ -12663,21 +12767,22 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </div>
      </div>
      <div class="ccss-editor-panel" style="background:#161d2a;border:1px solid #2a3140;border-radius:10px;padding:12px;min-width:0">
-      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Spectral Chart Viewer</label>
+       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Viewer</label>
       <select id="ccssPreviewSelect" style="width:100%;font-size:.78rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)">
-       <option value="">Choose installed CCSS profile...</option>
+       <option value="">Choose installed meter profile...</option>
       </select>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
          <select id="ccssExportFormat" style="min-width:160px;font-size:.74rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)" disabled>
           <option value="ccss">Export CCSS</option>
+          <option value="ccmx">Export CCMX</option>
           <option value="csv">Export CSV</option>
           <option value="edr">Export EDR</option>
          </select>
          <button id="ccssExportBtn" class="btn btn-sm btn-secondary" style="white-space:nowrap" onclick="ccssExportSelected()" disabled>Export</button>
          <button id="ccssDeleteSelectedBtn" class="btn btn-sm" style="white-space:nowrap;color:var(--red)" onclick="deleteSelectedCustomCcss()" disabled>Delete Profile</button>
-         <div id="ccssExportStatus" style="flex:1 1 220px;font-size:.72rem;color:var(--text2);min-height:1.1em">Select a CCSS profile to download. Custom profiles can also be deleted here.</div>
+         <div id="ccssExportStatus" style="flex:1 1 220px;font-size:.72rem;color:var(--text2);min-height:1.1em">Select a meter profile to download. Custom profiles can also be deleted here.</div>
         </div>
-      <div id="ccssPreviewMeta" style="font-size:.72rem;color:var(--text2);margin-top:8px;line-height:1.5;min-height:1.2em">Select any built-in or custom CCSS profile to inspect its spectral curves.</div>
+      <div id="ccssPreviewMeta" style="font-size:.72rem;color:var(--text2);margin-top:8px;line-height:1.5;min-height:1.2em">Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.</div>
       <canvas id="ccssPreviewCanvas" width="760" height="320" style="width:100%;height:320px;background:#0d0d15;border-radius:8px;margin-top:10px;display:block"></canvas>
       <div id="ccssPreviewLegend" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
      </div>
@@ -18052,7 +18157,18 @@ function meterApplyXyzMatrixEnableFromDraft(){
  return window._meterXyzMatrixApplied;
 }
 
+function meterSelectedCorrectionIsCcmx(){
+ const main=document.getElementById('meterCcssProfile');
+ if(main) return /\.ccmx$/i.test(String(main.value||''));
+ const wizard=document.getElementById('meterAutoCalCcssProfile');
+ return !!(wizard&&/\.ccmx$/i.test(String(wizard.value||'')));
+}
+
 function meterXyzCorrectionEnabled(){
+ // Argyll applies a selected CCMX to XYZ before returning the reading.
+ // Applying PGenerator's manual XYZ matrix as well would stack two
+ // colorimeter corrections, so retain the saved matrix but suspend it.
+ if(meterSelectedCorrectionIsCcmx()) return false;
  if(window._meterXyzMatrixApplied) return !!window._meterXyzMatrixApplied.enabled;
  return meterDraftXyzMatrixEnabled();
 }
@@ -18066,10 +18182,22 @@ function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
  const field=wrap&&wrap.closest('.meter-matrix-field');
  const actionRow=document.getElementById('meterXyzMatrixActionRow');
+ const toggle=document.getElementById('meterXyzMatrixEnabled');
+ const help=document.getElementById('meterXyzMatrixHelp');
+ const ccmxActive=meterSelectedCorrectionIsCcmx();
+ if(toggle){
+  toggle.disabled=ccmxActive;
+  toggle.title=ccmxActive?'Suspended while a CCMX meter profile is selected to prevent applying two XYZ correction matrices.':'';
+ }
+ if(help){
+  help.title=ccmxActive
+   ? 'The selected CCMX is already an XYZ correction matrix applied by ArgyllCMS. The saved PGenerator matrix is suspended until you select a CCSS or No Correction.'
+   : 'When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity.';
+ }
  // Matrix fields follow the draft enable checkbox; action row also stays open
  // while dirty so Apply remains reachable after unchecking enable.
- const enabled=meterDraftXyzMatrixEnabled();
- const showActions=enabled||meterXyzMatrixDraftDirty();
+ const enabled=meterDraftXyzMatrixEnabled()&&!ccmxActive;
+ const showActions=!ccmxActive&&(enabled||meterXyzMatrixDraftDirty());
  if(field) field.classList.toggle('visible',enabled);
  if(wrap) wrap.classList.toggle('visible',enabled);
  if(actionRow) actionRow.classList.toggle('visible',showActions);
@@ -23944,10 +24072,9 @@ function meterUpdateMeterCapabilityControls(){
  };
  for(const sel of [ccss,wizardCcss]){
   if(!sel) continue;
-  setCapabilityOptionText(sel,'SpyderX native: '+nativeLabel);
-  sel.disabled=spyderX;
+  sel.disabled=false;
   sel.title=spyderX
-   ? 'SpyderX does not support external CCSS files. Using its '+nativeLabel+' calibration.'
+   ? 'SpyderX supports matching CCMX matrices but not CCSS spectral profiles.'
    : '';
  }
  if(refresh){
@@ -23959,9 +24086,12 @@ function meterUpdateMeterCapabilityControls(){
  }
  if(ccssNote){
   ccssNote.style.display=spyderX?'':'none';
-  if(spyderX) ccssNote.textContent='SpyderX native mode: '+nativeLabel+'. External CCSS profiles are not supported.';
+  if(spyderX) ccssNote.textContent='SpyderX '+nativeLabel+' mode. Matching CCMX profiles are available; CCSS profiles are not supported.';
  }
  if(refreshNote) refreshNote.style.display=spyderX?'':'none';
+ if(Array.isArray(meterCcssLibrary)&&typeof populateMeterCcssProfileSelect==='function'){
+  populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+ }
 }
 
 function meterSelectedMeasurementMeter(){
@@ -38775,7 +38905,11 @@ function meterAutoCalDisplayTypeUpdateSummary(){
   if(dst.value==='lcd_wled') nativeMode='Standard LED';
   else if(dst.value==='lcd_rgbled') nativeMode='Wide Gamut LED';
   else if(dst.value==='lcd_gbled') nativeMode='GB-R LED';
-  summary+=' SpyderX will use its '+nativeMode+' native calibration; CCSS and manual refresh override are unavailable.';
+  const profile=document.getElementById('meterAutoCalCcssProfile');
+  const hasCcmx=profile&&/\.ccmx$/i.test(String(profile.value||''));
+  summary+=' SpyderX will use its '+nativeMode+' native calibration'
+   +(hasCcmx?' with the selected CCMX correction.':'.')
+   +' CCSS and manual refresh override are unavailable.';
  }
  out.textContent=summary;
 }
@@ -47222,7 +47356,7 @@ document.getElementById('ccssFileInput').addEventListener('change',function(){
  const nameInput=document.getElementById('ccssName');
  const btn=document.getElementById('ccssUploadBtn');
  if(file){
-  let baseName=file.name.replace(/\.(ccss|csv|ti3)$/i,'');
+  let baseName=file.name.replace(/\.(ccss|ccmx|edr|csv|ti3)$/i,'');
   nameInput.value=baseName;
   btn.disabled=false;
  } else {
@@ -47262,7 +47396,7 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
     await ccssPreviewLoadByValue('custom\t'+r.filename,false);
     meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
     saveMeterSettings();
-   toast(r.message||'CCSS profile saved');
+   toast(r.message||'Meter profile saved');
   } else {
    status.textContent=r&&r.message?r.message:'Upload failed';
    status.style.color='var(--red)';
@@ -47282,10 +47416,11 @@ async function loadCustomCcssList(){
  const el=document.getElementById('customCcssList');
  if(!r||!r.files||r.files.length===0){el.innerHTML='<div style="font-size:.7rem;color:var(--text2)">No custom profiles</div>';return;}
  el.innerHTML=r.files.map(f=>{
-  const label=f.replace(/\.ccss$/i,'');
+  const format=/\.ccmx$/i.test(f)?'CCMX':'CCSS';
+  const label=f.replace(/\.(?:ccss|ccmx)$/i,'');
   const active=customCcssFile===f;
   return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
-  +'<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="flex:1;font-size:.7rem;padding:2px 6px;text-align:left" onclick="selectCustomCcss(\''+f+'\')">'+(active?'\u2713 ':'')+label+'</button>'
+  +'<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="flex:1;font-size:.7rem;padding:2px 6px;text-align:left" onclick="selectCustomCcss(\''+f+'\')">'+(active?'\u2713 ':'')+'['+format+'] '+label+'</button>'
   +'<button class="btn btn-sm" style="font-size:.68rem;padding:2px 6px;color:var(--red)" onclick="deleteCustomCcss(\''+f+'\')">\u2715</button></div>';
  }).join('');
 }
@@ -47301,8 +47436,8 @@ async function selectCustomCcss(filename){
    body:JSON.stringify({ccss_file:'custom/'+filename}),
    _quiet:true,_timeoutMs:5000
   });
-  if(v && v.ok===false){ toast('CCSS invalid: '+(v.error||'parse failed'), true); }
-  else if(v && v.ok && v.description){ toast('CCSS: '+v.description); }
+  if(v && v.ok===false){ toast('Profile invalid: '+(v.error||'parse failed'), true); }
+  else if(v && v.ok && v.description){ toast(String(v.format||'CCSS').toUpperCase()+': '+v.description); }
  }catch(e){}
  customCcssFile=filename;
    // Post-split: select the custom profile on the new meter-profile
@@ -47314,7 +47449,7 @@ async function selectCustomCcss(filename){
 }
 
 function ccssCleanLabelPart(text){
- return String(text||'').replace(/\.ccss$/i,'').replace(/_/g,' ').replace(/\s+/g,' ').trim();
+ return String(text||'').replace(/\.(?:ccss|ccmx)$/i,'').replace(/_/g,' ').replace(/\s+/g,' ').trim();
 }
 
 function ccssPrettyTechnology(text){
@@ -47364,7 +47499,7 @@ function ccssFormatNameFromFilename(name){
  // suffix match must not contain a ')' after it, otherwise a '_-_' INSIDE
  // the parenthesised mode part ("(Lamp_Projector_-_High_Lamp_-_Filter_Off)")
  // truncates the name mid-parenthesis and drops the model number.
- const base=String(name||'').replace(/\.ccss$/i,'').replace(/_-_[^)]*$/,'');
+ const base=String(name||'').replace(/\.(?:ccss|ccmx)$/i,'').replace(/_-_[^)]*$/,'');
  let match=base.match(/^(.*)_\(([^)]+)\)$/);
  if(match){
   return ccssCleanLabelPart(match[1])+' ('+ccssPrettyTechnology(match[2])+')';
@@ -47381,6 +47516,11 @@ function ccssFormatNameFromFilename(name){
   }
 
 function ccssFormatDropdownLabel(entry){
+ if(meterCorrectionProfileFormat(entry)==='ccmx'){
+  const display=ccssCleanLabelPart(entry&&entry.display)||ccssFormatNameFromFilename(entry&&entry.name);
+  const instrument=ccssCleanLabelPart(entry&&entry.instrument);
+  return display+(instrument?' - '+instrument:'');
+ }
  const display=ccssCleanLabelPart(entry&&entry.display);
  const technology=ccssPrettyTechnology(entry&&entry.technology);
  const filenameLabel=ccssFormatNameFromFilename(entry&&entry.name);
@@ -47422,7 +47562,7 @@ function ccssPreviewCurrentDisplayValue(){
 
 function ccssPreviewDisplayLabelForValue(value){
  const entry=ccssPreviewFindEntry(value);
- return entry ? ccssFormatDropdownLabel(entry) : 'CCSS profile';
+ return entry ? ccssFormatDropdownLabel(entry) : 'meter profile';
 }
 
 function ccssExportSetStatus(message,isError){
@@ -47445,25 +47585,33 @@ function ccssExportSyncControls(message,isError){
  const enabled=!!entry;
  const canDelete=!!(entry&&entry.source==='custom');
  if(btn) btn.disabled=!enabled;
- if(format) format.disabled=!enabled;
+ if(format){
+  format.disabled=!enabled;
+  const isCcmx=!!(entry&&meterCorrectionProfileFormat(entry)==='ccmx');
+  for(const option of Array.from(format.options||[])){
+   option.disabled=isCcmx ? option.value!=='ccmx' : option.value==='ccmx';
+  }
+  if(isCcmx) format.value='ccmx';
+  else if(format.value==='ccmx') format.value='ccss';
+ }
  if(deleteBtn) deleteBtn.disabled=!canDelete;
  if(message!==undefined){
   ccssExportSetStatus(message,!!isError);
  }else if(!enabled){
-  ccssExportSetStatus('Select a CCSS profile to download. Custom profiles can also be deleted here.',false);
+  ccssExportSetStatus('Select a meter profile to download. Custom profiles can also be deleted here.',false);
  }
 }
 
 async function ccssExportSelected(){
  const entry=ccssExportCurrentEntry();
  if(!entry){
-  ccssExportSyncControls('Select a CCSS profile to download.',false);
-  toast('Select a CCSS profile first',true);
+  ccssExportSyncControls('Select a meter profile to download.',false);
+  toast('Select a meter profile first',true);
   return;
  }
  const btn=document.getElementById('ccssExportBtn');
  const formatSelect=document.getElementById('ccssExportFormat');
- const format=String(formatSelect&&formatSelect.value||'ccss');
+ const format=meterCorrectionProfileFormat(entry)==='ccmx'?'ccmx':String(formatSelect&&formatSelect.value||'ccss');
  const prevText=btn?btn.textContent:'Export';
  if(btn) btn.disabled=true;
  if(btn) btn.textContent='Preparing...';
@@ -47508,8 +47656,8 @@ async function ccssExportSelected(){
 async function deleteSelectedCustomCcss(){
  const entry=ccssExportCurrentEntry();
  if(!entry||entry.source!=='custom'){
-  ccssExportSyncControls('Only custom CCSS profiles can be deleted.',true);
-  toast('Select a custom CCSS profile first',true);
+  ccssExportSyncControls('Only custom meter profiles can be deleted.',true);
+  toast('Select a custom meter profile first',true);
   return;
  }
  const btn=document.getElementById('ccssDeleteSelectedBtn');
@@ -47539,7 +47687,7 @@ function ccssPreviewClear(message){
  const legend=document.getElementById('ccssPreviewLegend');
  const canvas=document.getElementById('ccssPreviewCanvas');
  ccssExportSyncControls();
- if(meta) meta.textContent=message||'Select any built-in or custom CCSS profile to inspect its spectral curves.';
+ if(meta) meta.textContent=message||'Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.';
  if(legend) legend.innerHTML='';
  if(!canvas) return;
  const ctx=setupCanvasHiDPI(canvas);
@@ -47550,14 +47698,14 @@ function ccssPreviewClear(message){
  ctx.font='14px sans-serif';
  ctx.textAlign='center';
  ctx.textBaseline='middle';
- ctx.fillText(message||'Select a CCSS profile to preview',ctx.w/2,ctx.h/2);
+ ctx.fillText(message||'Select a meter profile to preview',ctx.w/2,ctx.h/2);
 }
 
 function ccssPreviewPopulateOptions(files){
  const select=document.getElementById('ccssPreviewSelect');
  if(!select) return;
  const previous=select.value||ccssPreviewActiveValue||ccssPreviewCurrentDisplayValue()||(customCcssFile?('custom\t'+customCcssFile):'');
- select.innerHTML='<option value="">Choose installed CCSS profile...</option>';
+ select.innerHTML='<option value="">Choose installed meter profile...</option>';
  const customGroup=document.createElement('optgroup');
  customGroup.label='Custom';
  const systemGroup=document.createElement('optgroup');
@@ -47568,7 +47716,7 @@ function ccssPreviewPopulateOptions(files){
   .forEach(entry=>{
    const option=document.createElement('option');
    option.value=ccssPreviewValue(entry);
-   option.textContent=ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
+   option.textContent='['+meterCorrectionProfileFormat(entry).toUpperCase()+'] '+ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
    if(entry.source==='custom') customGroup.appendChild(option);
    else systemGroup.appendChild(option);
   });
@@ -47579,7 +47727,7 @@ function ccssPreviewPopulateOptions(files){
  ccssPreviewActiveValue=select.value||'';
  ccssExportSyncControls();
  if(ccssPreviewActiveValue) ccssPreviewLoadByValue(ccssPreviewActiveValue,true);
- else ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
+ else ccssPreviewClear('Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.');
  meterUpdateHdrDiffuseWhiteVisibility();
 }
 
@@ -47589,7 +47737,7 @@ async function ccssPreviewLoadByValue(value,quiet){
  if(!entry){
   ccssPreviewActiveValue='';
   if(select) select.value='';
-  ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
+  ccssPreviewClear('Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.');
   return;
  }
  ccssPreviewActiveValue=ccssPreviewValue(entry);
@@ -47605,8 +47753,8 @@ async function ccssPreviewLoadByValue(value,quiet){
   _timeoutMs:12000
  });
  if(!payload||payload.ok===false){
-  ccssPreviewClear((payload&&payload.error)||'Unable to load spectral data for this CCSS profile.');
-  if(!quiet) toast((payload&&payload.error)||'Unable to load spectral data',true);
+  ccssPreviewClear((payload&&payload.error)||'Unable to load this meter profile.');
+  if(!quiet) toast((payload&&payload.error)||'Unable to load meter profile',true);
   return;
  }
  ccssPreviewRender(payload);
@@ -47617,6 +47765,32 @@ function ccssPreviewRender(payload){
  const legend=document.getElementById('ccssPreviewLegend');
  const canvas=document.getElementById('ccssPreviewCanvas');
  if(!canvas) return;
+ if(String(payload&&payload.format||'').toLowerCase()==='ccmx'){
+  ccssPreviewLastPayload=payload;
+  const matrix=Array.isArray(payload.matrix)?payload.matrix:[];
+  if(meta){
+   meta.textContent=(payload.description||payload.name||'CCMX')
+    +' | Meter: '+(payload.instrument||'Unknown')
+    +' | Reference: '+(payload.reference||'Unknown');
+  }
+  if(legend) legend.innerHTML='';
+  const ctx=setupCanvasHiDPI(canvas);
+  if(!ctx) return;
+  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
+  ctx.fillRect(0,0,ctx.w,ctx.h);
+  ctx.fillStyle=pgThemeColor('--text','#e8ecf5');
+  ctx.font='600 15px monospace';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillText('XYZ correction matrix',ctx.w/2,Math.max(30,ctx.h*0.2));
+  ctx.font='15px monospace';
+  matrix.forEach((row,index)=>{
+   const text=(Array.isArray(row)?row:[]).map(value=>Number(value).toFixed(6)).join('   ');
+   ctx.fillText(text,ctx.w/2,ctx.h*0.42+(index*30));
+  });
+  ccssExportSyncControls();
+  return;
+ }
  const wavelengths=Array.isArray(payload&&payload.wavelengths)?payload.wavelengths:[];
  const samples=Array.isArray(payload&&payload.samples)?payload.samples:[];
  if(!wavelengths.length||!samples.length){
@@ -47758,11 +47932,13 @@ function getDisplayTechnology(){
 // the technology default"; the server falls back to $_dtype_info's CCSS
 // whenever this token is empty.
 function getCcssOverride(){
- if(typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX()) return 'none';
  const sel=document.getElementById('meterCcssProfile');
  if(!sel) return '';
  const v=String(sel.value||'');
  if(v==='custom_editor') return '';
+ if(typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX()){
+  return /\.ccmx$/i.test(v)?v:'none';
+ }
  return v;
 }
 
@@ -47808,6 +47984,36 @@ function meterRefreshCcssAutoLabel(wizardId){
  }
 }
 
+function meterCorrectionProfileFormat(entry){
+ const explicit=String((entry&&entry.format)||'').toLowerCase();
+ if(explicit==='ccmx'||explicit==='ccss') return explicit;
+ return /\.ccmx$/i.test(String((entry&&entry.name)||''))?'ccmx':'ccss';
+}
+
+function meterCorrectionInstrumentCompatible(entry,meter){
+ if(meterCorrectionProfileFormat(entry)!=='ccmx') return true;
+ const instrument=String((entry&&entry.instrument)||'').toLowerCase();
+ if(!instrument) return false;
+ const name=String((meter&&meter.name)||'').toLowerCase();
+ const usb=String((meter&&meter.usb_id)||'').toLowerCase();
+ if(usb==='085c:0a00') return /\bspyder\s*x\b/.test(instrument)&&!/\bspyder\s*x2\b/.test(instrument);
+ const compact=s=>String(s||'').replace(/datacolor|x-?rite|calibrite|spectracal/g,'').replace(/[^a-z0-9]/g,'');
+ const a=compact(instrument), b=compact(name);
+ if(!a||!b) return false;
+ if(a.includes(b)||b.includes(a)) return true;
+ if(/(?:i1display|colormunkidisplay|displaypro|c6)/.test(a)&&/(?:i1display|colormunkidisplay|displaypro|c6)/.test(b)) return true;
+ if(/spyder5/.test(a)&&/spyder5/.test(b)) return true;
+ return false;
+}
+
+function meterCorrectionProfileCompatible(entry){
+ const meter=meterSelectedMeasurementMeter();
+ if(!meter) return meterCorrectionProfileFormat(entry)==='ccss';
+ if(meterIsSpectrophotometer(meter)) return false;
+ if(meterIsSpyderX(meter)) return meterCorrectionProfileFormat(entry)==='ccmx'&&meterCorrectionInstrumentCompatible(entry,meter);
+ return meterCorrectionProfileFormat(entry)==='ccss'||meterCorrectionInstrumentCompatible(entry,meter);
+}
+
 // Populate the new #meterCcssProfile dropdown (and the wizard clone's
 // #meterAutoCalCcssProfile) from the cached meterCcssLibrary. Skips the
 // generic/system entries — those are the technology defaults and the
@@ -47827,7 +48033,7 @@ function populateMeterCcssProfileSelect(wizardId){
   sel.innerHTML='';
   const editorOpt=document.createElement('option');
   editorOpt.value='custom_editor';
-  editorOpt.textContent='CCSS Editor…';
+  editorOpt.textContent='Profile Editor...';
   sel.appendChild(editorOpt);
   const autoOpt=document.createElement('option');
   autoOpt.value='';
@@ -47840,13 +48046,14 @@ function populateMeterCcssProfileSelect(wizardId){
   for(const entry of library){
    if(!entry||!entry.name) continue;
    const name=String(entry.name);
-   if(!/\.ccss$/i.test(name)) continue;
+   if(!/\.(?:ccss|ccmx)$/i.test(name)) continue;
+   if(!meterCorrectionProfileCompatible(entry)) continue;
    const value=(entry.source==='custom'?'custom_':'ccss_')+name;
    if(seen.has(value+':'+id)) continue;
    seen.add(value+':'+id);
    const opt=document.createElement('option');
    opt.value=value;
-   opt.textContent=ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
+   opt.textContent='['+meterCorrectionProfileFormat(entry).toUpperCase()+'] '+ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
    sel.appendChild(opt);
   }
   if(prev==='custom_editor') prev='';
@@ -47891,6 +48098,12 @@ function meterOnCcssProfileChange(ev){
    other.dataset.lastStableValue=v;
   }
  }catch(e){}
+ try{
+  meterUpdateXyzMatrixVisibility();
+  if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
+  meterRefreshAfterXyzMatrixChange();
+  meterAutoCalDisplayTypeUpdateSummary();
+ }catch(e){}
  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
 }
 
@@ -47899,7 +48112,7 @@ function meterOnCcssProfileChange(ev){
 // "newest custom profile wins" rule from the spec lives here.
 function meterSelectNewestCustomCcss(){
  const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
- const customs=library.filter(f=>f&&f.source==='custom'&&/\.ccss$/i.test(String(f.name||'')));
+ const customs=library.filter(f=>f&&f.source==='custom'&&/\.(?:ccss|ccmx)$/i.test(String(f.name||''))&&meterCorrectionProfileCompatible(f));
  if(!customs.length) return '';
  // Most recently created (mtime descending) wins; fall back to last in the list.
  customs.sort((a,b)=>{
@@ -47924,6 +48137,11 @@ function meterSetCcssProfileSelection(token){
   sel.value=token;
   if(sel.value===token) delete sel.dataset.pendingValue;
  }
+ try{
+  meterUpdateXyzMatrixVisibility();
+  if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
+  meterRefreshAfterXyzMatrixChange();
+ }catch(e){}
 }
 
 // --- /end Panel technology / CCSS split helpers -----------------------------
@@ -47994,12 +48212,6 @@ function getMeterPatchSize(){
   return apl>10 ? 100+apl : apl;
  }
  return parseInt(raw,10);
-}
-
-function getEffectiveDisplayType(){
- const v=document.getElementById('meterDisplayType').value;
- if(v==='custom'&&customCcssFile) return 'custom_'+customCcssFile;
- return v;
 }
 
 function meterNormalizeStoredDisplayType(value,ccssFile){
@@ -48558,7 +48770,8 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
   const xy=document.getElementById('meterXyzMatrixEnabled');
   if(xy){
    // Keep the gear available while dirty so Apply is reachable after unchecking enable.
-   const showXyz=xy.checked||(typeof meterXyzMatrixDraftDirty==='function'&&meterXyzMatrixDraftDirty());
+   const ccmxActive=typeof meterSelectedCorrectionIsCcmx==='function'&&meterSelectedCorrectionIsCcmx();
+   const showXyz=!ccmxActive&&(xy.checked||(typeof meterXyzMatrixDraftDirty==='function'&&meterXyzMatrixDraftDirty()));
    const w=gearWrap('meterXyzGear');
    if(w) w.classList.toggle('is-hidden',!showXyz);
    if(!showXyz&&gears.xyz) gears.xyz.close();
