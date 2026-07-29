@@ -10976,13 +10976,16 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col{display:flex;flex-direction:column;gap:2px;min-width:0}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
-.meter-card-header-col-profile{flex:1 1 220px;max-width:360px}
+.meter-card-header-col-profile{flex:2 1 440px;max-width:820px}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
 /* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
 .meter-card-header-select{width:100%;max-width:100%;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 24px 6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
 .meter-card-header-select:focus{border-color:var(--accent)}
 .meter-card-header-select option,.meter-card-header-select optgroup{background:#0d0d15;color:var(--text)}
 .meter-ccss-profile-row{display:flex;flex-direction:column;gap:3px;width:100%;max-width:100%;min-width:0}
+.meter-ccss-profile-control-row{display:flex;align-items:center;gap:8px;width:100%;min-width:0}
+.meter-ccss-profile-control-row > #meterCcssProfile{flex:0 1 360px;width:360px;min-width:220px}
+#meterCcssCapabilityNote{flex:0 0 auto;white-space:nowrap;margin:0!important}
 .meter-ccss-profile-row > select,
 #meterCcssProfile,#meterAutoCalCcssProfile{width:100%;max-width:100%;box-sizing:border-box}
 #meterProfileGearPopover{width:280px}
@@ -12096,8 +12099,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
      <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
-     <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
-     <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2);margin-top:4px">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
+     <div class="meter-ccss-profile-control-row">
+      <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
+      <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2)">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
+     </div>
     </div>
    </div>
   </div>
@@ -22022,7 +22027,7 @@ function meterRgbBalanceFormula(){
 // Perceptual RGB balance: linearRGB → L*, diff + 100.
 // The ire>0 branch builds a luminance-compensated target (chroma-only) in
 // 'absolute'/'relative' modes, or an absolute target in 'eotf' mode.
-function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
+function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
  if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
@@ -22043,7 +22048,8 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
  if(ire!=null&&ire>=0){
  // Target: D65 white at the active grey-target luminance.
   const Lw=meterGreyTargetPeak(whiteXYZ.Y);
-  const Lb=meterBlackReadingY();
+  const explicitBlack=Number(blackLevel);
+  const Lb=Number.isFinite(explicitBlack)&&explicitBlack>=0?explicitBlack:meterBlackReadingY();
   // Route the gamma target through meterGreyTargetLuminanceForChartPoint so the
   // RGB-balance luminance-error bars share the SAME stimulus-based target the
   // gamma/EOTF chart and the per-point tooltip use. For SDR26 that path derives
@@ -22089,7 +22095,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl){
 // HCFR-style RGB balance for the luma-mode-OFF branch.
 // Modes 0 and 2 both use a unit-Y XYZ built from the measured chromaticity;
 // only mode 1 (Absolute Y w/gamma) rescales by measuredY / targetY.
-function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
+function rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
  if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
@@ -22100,7 +22106,8 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
  if(!(y>0)) return {R:100,G:100,B:100};
  let fact = 1.0;
  if(mode==='eotf'){
-  const Lb = meterBlackReadingY();
+  const explicitBlack=Number(blackLevel);
+  const Lb=Number.isFinite(explicitBlack)&&explicitBlack>=0?explicitBlack:meterBlackReadingY();
   const targetPeak = meterGreyTargetPeak(whiteXYZ.Y);
   const targetIre=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
   // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
@@ -22118,10 +22125,10 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl){
 
 // Dispatcher — keeps every existing caller working while honoring the
 // new <select id="meterRgbBalanceFormula"> selector.
-function rgbBalance(reading,whiteRef,modeOrIncl){
+function rgbBalance(reading,whiteRef,modeOrIncl,blackLevel){
  return meterRgbBalanceFormula()==='hcfr'
-  ? rgbBalanceHCFR(reading,whiteRef,modeOrIncl)
-  : rgbBalancePerceptual(reading,whiteRef,modeOrIncl);
+  ? rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel)
+  : rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel);
 }
 
 function meterLiveRgbData(reading){
@@ -22130,7 +22137,9 @@ function meterLiveRgbData(reading){
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  if(!isColorSeries||!measured||!(measured.Y>0)){
   const whiteRef=meterEffectiveGreyscaleWhiteReference(Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading]);
-  return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode())}:{mode:'balance',R:100,G:100,B:100};
+  const blackReadings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
+  const blackLevel=meterChartBlackLevel(blackReadings);
+  return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode(),blackLevel)}:{mode:'balance',R:100,G:100,B:100};
  }
  const gamut=meterAnalysisGamut();
  const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
@@ -24173,7 +24182,7 @@ function meterUpdateMeterCapabilityControls(){
  }
  if(ccssNote){
   ccssNote.style.display=spyderX?'':'none';
-  if(spyderX) ccssNote.textContent='SpyderX '+nativeLabel+' mode. Matching CCMX profiles are available; CCSS profiles are not supported.';
+  if(spyderX) ccssNote.textContent='SpyderX native mode: '+nativeLabel+'. CCMX supported; CCSS unavailable.';
  }
  if(refreshNote) refreshNote.style.display=spyderX?'':'none';
  if(Array.isArray(meterCcssLibrary)&&typeof populateMeterCcssProfileSelect==='function'){
@@ -44005,7 +44014,8 @@ function drawRGBChart(gs,allSteps,readingMap){
  // Compute RGB balance for all available readings (include 0%)
  const balMap={};
  const greyMode=meterGreyRefMode();
- gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode);});
+ const blackLevel=meterChartBlackLevel(gs);
+ gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode,blackLevel);});
  // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
  const allVals=Object.values(balMap).flatMap(b=>[b.R,b.G,b.B]);
  let yMin,yMax;
@@ -46488,6 +46498,7 @@ function chartRegisterInteraction(){
  const greyMode=meterGreyRefMode();
  const gwWeight=meterGrayWorldWeight();
  const effectiveWhiteRGB=meterGreyscaleRgbBalanceReference(gs);
+ const rgbBlackLevel=meterChartBlackLevel(gs);
  const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;
  const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;
  const xStepsBase=allSteps||[...meterFilterLgAutoCalChartItems(gs)].sort((a,b)=>a.ire-b.ire);
@@ -46529,7 +46540,7 @@ function chartRegisterInteraction(){
    if(!rd) return;
    const xNorm=meterGreyscaleInteractionXForChart(cid,step,chartSteps,idx);
    const cx=pad.l+xInset+xNorm*dw;
-   const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode):{R:100,G:100,B:100};
+   const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode,rgbBlackLevel):{R:100,G:100,B:100};
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
     rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deChroma:sepLum?deChroma[rd.ire]:null, deLabel:deLabel});
   });
@@ -46802,7 +46813,7 @@ function meterBuildGreyscaleReportTable(){
  const Lb=meterChartBlackLevel(report.raw);
  let rows='';
  gs.forEach(rd=>{
-  const bal=white?rgbBalance(rd,white,greyMode):{R:100,G:100,B:100};
+  const bal=white?rgbBalance(rd,white,greyMode,Lb):{R:100,G:100,B:100};
   const gamma=effectiveGamma(rd.luminance,white?(white.Y||white.luminance||rd.Y):rd.Y,rd.ire);
   let de='--';
   // Do not force 0.00 for a Y=0 reading: meterColorDeltaE2000 scores a
@@ -47386,7 +47397,7 @@ function meterExportCSV(){
    }
   }
   const g=effectiveGamma(rd.luminance,Lw,rd.ire);
-  const bal=whiteR?rgbBalance(rd,whiteR,greyMode):{R:100,G:100,B:100};
+  const bal=whiteR?rgbBalance(rd,whiteR,greyMode,Lb):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
