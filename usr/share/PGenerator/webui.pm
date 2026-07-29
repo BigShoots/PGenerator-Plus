@@ -30285,10 +30285,13 @@ function meterSaveLatticeGenerator(){
 
 // UI safety caps for very large (lattice) series: thumbnails and preset charts
 // are O(n) DOM/canvas work, and the status poll payload grows with readings.
+// Keep thumbnails available for imported verification series up to the same
+// 2,000-step boundary used by the full preset chart path. The former 500-step
+// cap hid the entire strip for common 1,024-point CalMAN imports.
 function meterSeriesUiCaps(stepCount){
  const count=Math.max(0,Number(stepCount)||0);
  return {
-  thumbs:count<=500,
+  thumbs:count<=2000,
   presetSample:(count>2000)?2000:0,
   pollScale:count>20000?5:(count>5000?3:(count>2000?2:1)),
   confirmStart:count>2000
