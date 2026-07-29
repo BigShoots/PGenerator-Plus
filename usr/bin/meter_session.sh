@@ -283,6 +283,58 @@ perform_colorimeter_dark_calibration() {
  return 1
 }
 
+# Run an operator-requested ArgyllCMS instrument calibration inside the
+# existing spotread process. The interactive 'k' command asks the selected
+# instrument what calibration it needs, so spectros get their white-tile
+# workflow while Spyder colorimeters get their covered-sensor dark reference.
+# Keeping this in the persistent session preserves the new calibration for
+# subsequent Read Once, Continuous, and Read Series operations.
+perform_requested_calibration() {
+ local scan_offset waited clean prompted
+ log "manual meter calibration requested"
+ scan_offset=$(output_size)
+ write_state '{"status":"measuring","setup_busy":true,"message":"Checking the meter calibration requirements..."}'
+ printf "k" >&3
+ waited=0
+ prompted=0
+ while (( waited < 900 )); do
+  clean=$(clean_output_since "$scan_offset")
+  if colorimeter_dark_cal_prompt "$clean"; then
+   if perform_colorimeter_dark_calibration "manual request"; then
+    write_state '{"status":"ok","message":"Meter calibration complete"}'
+    return 0
+   fi
+   write_state '{"status":"error","message":"Meter dark calibration did not complete"}'
+   return 1
+  fi
+  if manual_calibration_setup_prompt "$clean"; then
+   prompted=1
+   await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
+   scan_offset=$(output_size)
+   printf " " >&3
+   waited=0
+   continue
+  fi
+  if printf '%s' "$clean" | grep -q "to take a reading:"; then
+   if (( prompted == 1 )); then
+    await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+   fi
+   write_state '{"status":"ok","message":"Meter calibration complete"}'
+   return 0
+  fi
+  if printf '%s' "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected|calibration failed|fatal error"; then
+   log "manual calibration failed: $(printf '%s' "$clean" | tr '\n' ' ' | cut -c1-300)"
+   write_state '{"status":"error","message":"Meter calibration failed"}'
+   return 1
+  fi
+  sleep 0.1
+  waited=$((waited + 1))
+ done
+ log "manual calibration timed out"
+ write_state '{"status":"error","message":"Meter calibration timed out"}'
+ return 1
+}
+
 patch_request_body() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" transport_signal_range="$8" input_max="${9:-255}"
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
@@ -891,11 +943,27 @@ startup_marker "startup ready signaled"
 log "command loop ready"
 
 LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE="" LAST_TRANSPORT_SIGNAL_RANGE="" LAST_INPUT_MAX=""
+STARTUP_CALIBRATION_COMPLETED=0
+if (( WHITE_REF_DONE == 1 || DARK_CAL_DONE == 1 )); then
+ STARTUP_CALIBRATION_COMPLETED=1
+fi
 
 # --- Main command loop ---
 while read -t "$IDLE_TIMEOUT" -u 4 line; do
  case "$line" in
+  CALIBRATE)
+   # A cold session can be forced through calibration before its command loop
+   # starts. In that case the queued button request is already satisfied and
+   # must not immediately ask the operator to calibrate a second time.
+   if (( STARTUP_CALIBRATION_COMPLETED == 1 )); then
+    STARTUP_CALIBRATION_COMPLETED=0
+    write_state '{"status":"ok","message":"Meter calibration complete"}'
+   else
+    perform_requested_calibration || true
+   fi
+   ;;
   READ\ *)
+	    STARTUP_CALIBRATION_COMPLETED=0
 	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE]
 	    # LOW_LIGHT_MODE (15th, optional) is the PER-READ handler mode. When
 	    # it differs from the currently-running spotread's mode the session

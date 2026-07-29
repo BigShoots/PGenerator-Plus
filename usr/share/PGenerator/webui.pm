@@ -2145,7 +2145,8 @@ sub webui_meter_read (@) {
  my $now=Time::HiRes::time();
  my $is_continuous=0;
  $is_continuous=1 if($body=~/"continuous"\s*:\s*true/i);
- if(!$is_continuous && ($now - $_meter_last_read_time < 0.25)) {
+ my $calibrate_only=($body=~/"calibrate_only"\s*:\s*true/i) ? 1 : 0;
+ if(!$is_continuous && !$calibrate_only && ($now - $_meter_last_read_time < 0.25)) {
   return '{"status":"measuring"}';
  }
  $_meter_last_read_time=$now if(!$is_continuous);
@@ -2396,7 +2397,10 @@ sub webui_meter_read (@) {
  # can't return the previous reading by mistake.
  my $state_before_send=&webui_meter_read_state_read();
  if($state_before_send!~/"awaiting_ready"\s*:\s*true/i && $state_before_send!~/"status"\s*:\s*"setup"/i) {
-	  if(open(my $fh,">",$_meter_read_file)) { print $fh '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$read_timeout.'}'; close($fh); }
+	  my $pending_state=$calibrate_only
+	   ? '{"status":"measuring","setup_busy":true,"message":"Preparing meter calibration...","timeout_sec":210}'
+	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$read_timeout.'}';
+	  if(open(my $fh,">",$_meter_read_file)) { print $fh $pending_state; close($fh); }
  }
 
  # Send the READ command to the daemon. The session helper applies this
@@ -2404,13 +2408,13 @@ sub webui_meter_read (@) {
  # The trailing 15th field is the PER-READ low_light mode: meter_session.sh
  # uses it to decide whether to respawn spotread with -Y/-x flags for this
  # specific read (the session-level METER_AVERAGING stays put).
-			 my $read_command="READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
+			 my $read_command=$calibrate_only ? "CALIBRATE" : "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
 			 my $cmd_request_id=($request_id ne "") ? $request_id : "-";
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
 			 my $cmd_low_light_mode=($avg_mode ne "") ? $avg_mode : "-";
-			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode";
+			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode" if(!$calibrate_only);
 		 $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
@@ -11318,6 +11322,7 @@ body.is-custom-series-patch-dragging{cursor:grabbing!important;user-select:none!
 #meterCard.meter-patterns-only #meterExportRow,
 #meterCard.meter-patterns-only #meterSeriesHeader,
 #meterCard.meter-patterns-only #meterClearChartBtn,
+#meterCard.meter-patterns-only #meterCalibrateBtn,
 #meterCard.meter-patterns-only #meterReadOnce,
 #meterCard.meter-patterns-only #meterContinuous,
 #meterCard.meter-patterns-only #meterResetRow,
@@ -12394,6 +12399,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
    <div class="btn-row" id="meterReadBtnRow" style="margin:0">
+    <button class="btn btn-sm btn-secondary" id="meterCalibrateBtn" onclick="meterCalibrateSelectedMeter()" style="display:none" disabled>Calibrate Meter</button>
     <button class="btn btn-sm btn-danger" id="meterClearChartBtn" onclick="meterClearResults()" style="display:none">Clear Chart Data</button>
     <button class="btn btn-sm btn-secondary" id="meterReadOnce" onclick="meterReadOnce()" style="display:none" disabled>&#9679; Read Once</button>
     <button class="btn btn-sm btn-secondary" id="meterContinuous" onclick="meterToggleContinuous()" style="display:none" disabled>&#8635; Continuous</button>
@@ -24480,6 +24486,15 @@ function meterIsSpyderX(meter){
  return String((meter&&meter.usb_id)||'').toLowerCase()==='085c:0a00';
 }
 
+function meterRequiresManualCalibration(meter){
+ if(!meter) return false;
+ if(meterIsSpectrophotometer(meter)) return true;
+ // Argyll's Spyder drivers expose an operator-triggered dark calibration.
+ // i1d3-family colorimeters calibrate internally and should not show a
+ // misleading covered-sensor button.
+ return /(?:^|[^a-z0-9])spyder\s*(?:x2|x|[2-5])(?:[^a-z0-9]|$)/i.test(String(meter.name||''));
+}
+
 function meterSelectedMeasurementIsSpyderX(){
  return meterIsSpyderX(meterSelectedMeasurementMeter());
 }
@@ -24538,6 +24553,14 @@ function meterUpdateMeterCapabilityControls(){
  if(refreshNote) refreshNote.style.display=spyderX?'':'none';
  if(Array.isArray(meterCcssLibrary)&&typeof populateMeterCcssProfileSelect==='function'){
   populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
+ }
+ // The SpyderX built-in display calibration is represented by the Auto
+ // option. Do not replace the visible name of a selected CCMX file.
+ if(spyderX){
+  for(const sel of [ccss,wizardCcss]){
+   const autoOpt=sel&&sel.querySelector('option[value=""]');
+   if(autoOpt) autoOpt.textContent='SpyderX native: '+nativeLabel;
+  }
  }
 }
 
@@ -27177,7 +27200,9 @@ function meterSpectroSetupLabel(step){
 // calibrate_dark is the colorimeter (SpyderX) dark reference, not a spectro
 // step, so the modal title has to follow the step instead of being hardcoded.
 function meterSpectroSetupTitleText(step){
- return step==='calibrate_dark' ? 'Meter Setup' : 'Spectrophotometer Setup';
+ return step==='calibrate_dark' ? 'Meter Setup'
+  : !meterIsSpectrophotometer(meterSelectedMeasurementMeter()) ? 'Meter Setup'
+  : 'Spectrophotometer Setup';
 }
 function meterSpectroSetupStepText(step){
  return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',calibrate_dark:'Step 1 of 2: Dark calibration',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
@@ -27236,6 +27261,50 @@ async function meterSpectroSetupCancel(){
  // Cancel the right job: the CCSS helper during CCSS creation, otherwise the
  // meter session.
  await fetchJSON(meterSpectroSetupCancelEndpoint||'/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000}).catch(()=>null);
+}
+
+async function meterCalibrateSelectedMeter(){
+ if(meterActionPending){toast('Meter operation already in progress',true);return;}
+ if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+ const selected=meterSelectedMeasurementMeter();
+ if(!meterRequiresManualCalibration(selected)){toast('The selected meter does not require manual calibration',true);return;}
+ if(meterSeriesRunning||meterContinuousActive){toast('Stop the active meter run before calibrating',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()) return;
+ meterActionPending=true;
+ meterUpdateReadButtons();
+ const button=document.getElementById('meterCalibrateBtn');
+ if(button) button.textContent='Calibrating...';
+ document.getElementById('meterDot').style.background='var(--orange)';
+ meterSpectroSetupApply({keepBusy:true,message:'Preparing meter calibration...'},'/api/meter/setup/ack');
+ try{
+  const payload=meterMeasurementSignalContext({
+   display_type:getEffectiveDisplayType(),
+   refresh_rate:getMeterRefreshRate()||undefined,
+   delay_ms:0,
+   ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
+   require_device_ready:meterSelectedMeasurementRequiresReady(),
+   calibrate_only:true
+  });
+  const start=await fetchJSON('/api/meter/read',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(payload),
+   _quiet:true,
+   _timeoutMs:90000
+  });
+  if(!start||start.status==='error') throw new Error((start&&start.message)||'Could not start meter calibration');
+  const result=await meterPollRead(240000);
+  if(result&&result.status==='ok') toast(result.message||'Meter calibration complete');
+  else throw new Error((result&&result.message)||'Meter calibration did not complete');
+ }catch(e){
+  toast('Meter calibration error: '+e.message,true);
+ }finally{
+  meterSpectroSetupApply(null);
+  meterActionPending=false;
+  if(button) button.textContent='Calibrate Meter';
+  document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
+  meterUpdateReadButtons();
+ }
 }
 
 function meterSeriesSpectroSetupApplyFromStatus(r){
@@ -28240,6 +28309,7 @@ function meterUpdateReadButtons(){
  // Clear Chart is meaningless on an empty 3D LUT tab (and would expose leftover ColorChecker data).
  const showClear=hasData&&meterDetected&&!empty3dLutTab;
  const clearBtn=document.getElementById('meterClearChartBtn');
+ const calibrateBtn=document.getElementById('meterCalibrateBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
  const readSelectionBtn=document.getElementById('meterReadSelectionBtn');
  const readOnceBtn=document.getElementById('meterReadOnce');
@@ -28256,6 +28326,16 @@ function meterUpdateReadButtons(){
  if(clearBtn){
   clearBtn.style.display=(showClear&&!hideSeriesControlsForAutoCal)?'':'none';
   clearBtn.disabled=!hasData||busy||hideSeriesControlsForAutoCal||empty3dLutTab;
+ }
+ if(calibrateBtn){
+  const showCalibration=meterDetected&&meterRequiresManualCalibration(meterSelectedMeasurementMeter())&&!on3dLutTab;
+  calibrateBtn.style.display=(showCalibration&&!hideSeriesControlsForAutoCal)?'':'none';
+  calibrateBtn.disabled=!showCalibration||settingsDirty||busy;
+  calibrateBtn.title=settingsDirty
+   ? 'Apply & Restart first so calibration uses the active meter settings'
+   : busy
+    ? 'Meter operation already in progress'
+    : 'Run the selected meter calibration';
  }
  // On the 3D LUT tab, only expose Build 3D LUT once a profiling series is selected.
  const seriesControlsOk=on3dLutTab?has3dLutSeries:showSeries;
@@ -49225,14 +49305,17 @@ function meterTechnologyDefaultCcssLabel(){
 // current technology's built-in default. The wizard clone uses a separate
 // dropdown id; pass it in to update that one too.
 function meterRefreshCcssAutoLabel(wizardId){
- const label=meterTechnologyDefaultCcssLabel();
+ const spyderX=typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX();
+ const label=spyderX
+  ? ('SpyderX native: '+meterSpyderXNativeModeLabel())
+  : ('Auto ('+meterTechnologyDefaultCcssLabel()+')');
  const ids=['meterCcssProfile'];
  if(wizardId) ids.push(wizardId);
  for(const id of ids){
   const sel=document.getElementById(id);
   if(!sel) continue;
   const autoOpt=sel.querySelector('option[value=""]');
-  if(autoOpt) autoOpt.textContent='Auto ('+label+')';
+  if(autoOpt) autoOpt.textContent=label;
  }
 }
 
@@ -49267,14 +49350,16 @@ function meterCorrectionProfileCompatible(entry){
 }
 
 // Populate the new #meterCcssProfile dropdown (and the wizard clone's
-// #meterAutoCalCcssProfile) from the cached meterCcssLibrary. Skips the
-// generic/system entries — those are the technology defaults and the
-// operator already has them via the "Auto" option. The "value" matches the
+// #meterAutoCalCcssProfile) from the cached meterCcssLibrary. Incompatible
+// files remain visible but disabled so SpyderX users can see why a CCSS or a
+// CCMX made for another instrument cannot be selected. The "value" matches the
 // existing ccss_<file> / custom_<file> token contract so the backend's
 // resolve_ccss_override() resolves it without further translation.
 function populateMeterCcssProfileSelect(wizardId){
  const ids=wizardId?['meterCcssProfile',wizardId]:['meterCcssProfile'];
  const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ const selectedMeter=meterSelectedMeasurementMeter();
+ const spyderX=meterIsSpyderX(selectedMeter);
  const seen=new Set();
  for(const id of ids){
   const sel=document.getElementById(id);
@@ -49294,22 +49379,40 @@ function populateMeterCcssProfileSelect(wizardId){
   const noneOpt=document.createElement('option');
   noneOpt.value='none';
   noneOpt.textContent='No Correction';
+  noneOpt.disabled=spyderX;
+  if(spyderX) noneOpt.title='Use a SpyderX native display mode or a matching CCMX.';
   sel.appendChild(noneOpt);
   for(const entry of library){
    if(!entry||!entry.name) continue;
    const name=String(entry.name);
    if(!/\.(?:ccss|ccmx)$/i.test(name)) continue;
-   if(!meterCorrectionProfileCompatible(entry)) continue;
    const value=(entry.source==='custom'?'custom_':'ccss_')+name;
    if(seen.has(value+':'+id)) continue;
    seen.add(value+':'+id);
    const opt=document.createElement('option');
    opt.value=value;
    opt.textContent='['+meterCorrectionProfileFormat(entry).toUpperCase()+'] '+ccssFormatDropdownLabel(entry)+(entry.source==='custom'?' (custom)':'');
+   const compatible=meterCorrectionProfileCompatible(entry);
+   opt.disabled=!compatible;
+   if(!compatible){
+    const format=meterCorrectionProfileFormat(entry);
+    opt.title=spyderX&&format==='ccss'
+     ? 'SpyderX does not support CCSS spectral profiles. Select a matching CCMX or a native display mode.'
+     : format==='ccmx'
+      ? 'This CCMX was created for a different meter.'
+      : 'This correction profile is not supported by the selected meter.';
+   }
    sel.appendChild(opt);
   }
   if(prev==='custom_editor') prev='';
   sel.value=prev;
+  if(sel.selectedIndex>=0&&sel.options[sel.selectedIndex].disabled){
+   // Never leave a stale CCSS or another meter's CCMX visibly selected after
+   // the operator switches to SpyderX. Auto uses Argyll's native Spyder mode.
+   sel.value='';
+   prev='';
+   delete sel.dataset.pendingValue;
+  }
   if(sel.value!==prev){
    // pending token not in library yet — keep until next catalog refresh
    if(prev){ sel.dataset.pendingValue=prev; sel.value=''; }
