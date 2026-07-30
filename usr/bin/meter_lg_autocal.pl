@@ -16369,7 +16369,7 @@ sub lg_autocal_26_commit_sdr_1d_dpg_single_socket {
 # Returns: ($converged,$last_reading,$final_dpg). On a fatal precondition
 # returns (undef, undef, undef) and sets $state->{message} to the error.
 sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
- my ($config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,$current_dpg_ref,$done_ref)=@_;
+ my ($config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,$current_dpg_ref,$done_ref,$cal_active_in)=@_;
  my $converged=0;
  my $last_reading=undef;
  my $_anchor_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : 50.0));
@@ -16560,7 +16560,15 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # the FIRST upload only (calibration_mode_active=0); subsequent uploads
  # keep it on (calibration_mode_active=1, keep_calibration_mode=1). The
  # inner loop's $cal_active flag is closed-over by $upload_dpg.
- my $cal_active_inner=0;
+ #
+ # Seed it from the caller. This sub is invoked once per anchor, so starting
+ # from 0 re-sent CAL_START on the first upload of every anchor and the TV
+ # raised its calibration overlay between patches -- an on-screen overlay
+ # during a measurement corrupts the reading. The HDR20 greyscale keeps one
+ # flag for its whole run ("raised ONCE at the start"); the SDR path lost that
+ # when it was split into outer + inner subs, because the outer tracked the
+ # session but never fed it back in.
+ my $cal_active_inner=$cal_active_in ? 1 : 0;
  my $upload_dpg=sub {
   my ($dpg)=@_;
   my $tries=4;
@@ -17874,7 +17882,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
    }
    my $budget=lg_autocal_26_sdr26_dpg_low_ire_iter_budget($config,$label =~ /(\d+(?:\.\d+)?)/ ? ($1+0) : 100.0);
    my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
-    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done,$cal_active
    );
    $total_inner_iters+=$inner_iters;
    $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
@@ -17960,7 +17968,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
     write_state($state);
    }
   my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
-   $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done
+   $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done,$cal_active
   );
   $total_inner_iters+=$inner_iters;
   $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
