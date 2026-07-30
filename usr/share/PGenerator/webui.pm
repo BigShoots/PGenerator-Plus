@@ -12682,7 +12682,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="ciemb_2">MacLeod-Boynton lMB sMB (2&deg;)</option>
      <option value="ciemb_10">MacLeod-Boynton lMB sMB (10&deg;)</option>
      <option value="cieopp_2">Cone-Opponent Polar (2&deg;)</option>
-     <option value="cieopp_10">Cone-Opponent Polar (10&deg;)</option>
     </select>
    </div>
   	   <div class="field field-delay">
@@ -22581,7 +22580,7 @@ const CIE_LOCUS_MB_10=[[.6927375,.8357751],[.6870832,.8206594],[.6797181,.848825
 function meterChromaticityChartMode(){
  const el=document.getElementById('meterChromaticityChart');
  const mode=String(el&&el.value||'cie1931_2');
- return /^(cie1931_2|cie1964_10|cie1976_2|cie1976_10|cie2015_2|cie2015_10|ciemb_2|ciemb_10|cieopp_2|cieopp_10)$/.test(mode)?mode:'cie1931_2';
+ return /^(cie1931_2|cie1964_10|cie1976_2|cie1976_10|cie2015_2|cie2015_10|ciemb_2|ciemb_10|cieopp_2)$/.test(mode)?mode:'cie1931_2';
 }
 function meterCieIsOpponentMode(mode){
  return /^cieopp_/.test(String(mode||meterChromaticityChartMode()));
@@ -22883,8 +22882,7 @@ const CIE_D65_COORDS={
  cie2015_10:[.3137862795,.3312747630],
  ciemb_2:[.6495102165,1.0757493978],
  ciemb_10:[.6492472717,1.0717425460],
- cieopp_2:[0,0],
- cieopp_10:[0,0]
+ cieopp_2:[0,0]
 };
 function meterCieD65Coord(){
  const mode=meterChromaticityChartMode();
@@ -22933,9 +22931,6 @@ function meterCieChartLocus(){
  if(mode==='ciemb_10') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_10,CIE_MB_LOCUS_S_SCALE_10,true);
  if(mode==='cieopp_2') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_2,CIE_MB_LOCUS_S_SCALE_2,false).map(p=>{
   const c=meterCieOpponentFromMb({x:p[0],y:p[1]},false);return [c.x,c.y];
- });
- if(mode==='cieopp_10') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_10,CIE_MB_LOCUS_S_SCALE_10,true).map(p=>{
-  const c=meterCieOpponentFromMb({x:p[0],y:p[1]},true);return [c.x,c.y];
  });
  const locus=(mode==='cie1964_10'||mode==='cie1976_10')?CIE_LOCUS_1964:CIE_LOCUS;
  if(mode.indexOf('cie1976_')===0){
@@ -47378,7 +47373,7 @@ function meterCie3dVectorFromXYZ(xyz,referenceY){
  }
  if(meterCieIsOpponentMode(mode)){
   const Yn=Math.max(1e-9,Number(referenceY)||1);
-  return {a:coord.x,b:coord.y,c:Math.max(0,Y/Yn),source:xyz};
+  return {a:coord.x,b:coord.y,c:Y/Yn-1,source:xyz};
  }
  if(mode.indexOf('ciemb_')===0){
   return {a:coord.L,b:coord.M,c:coord.S,source:xyz};
@@ -47396,7 +47391,7 @@ function meterCie3dVectorFromChroma(coord,level,referenceY){
   return {a:13*L*(coord.x-d65.x),b:13*L*(coord.y-d65.y),c:L,reference:true};
  }
  if(meterCieIsOpponentMode(mode)){
-  return {a:coord.x,b:coord.y,c:Math.max(0,k/Math.max(1e-9,Number(referenceY)||1)),reference:true};
+  return {a:coord.x,b:coord.y,c:0,reference:true};
  }
  if(mode.indexOf('ciemb_')===0){
   return {a:coord.x*k,b:(1-coord.x)*k,c:coord.y*k,reference:true};
@@ -47408,7 +47403,7 @@ function meterCie3dD65Vector(referenceY){
  const mode=meterChromaticityChartMode();
  const d65=meterCieD65Coord(),k=Math.max(1,Number(referenceY)||1);
  if(mode.indexOf('cie1976_')===0) return {a:0,b:0,c:100,reference:true};
- if(meterCieIsOpponentMode(mode)) return {a:0,b:0,c:1,reference:true};
+ if(meterCieIsOpponentMode(mode)) return {a:0,b:0,c:0,reference:true};
  if(mode.indexOf('ciemb_')===0) return {a:d65.x*k,b:(1-d65.x)*k,c:d65.y*k,reference:true};
  const y=Math.max(1e-9,d65.y),z=Math.max(0,1-d65.x-d65.y);
  return {a:d65.x*k/y,b:z*k/y,c:k,reference:true};
@@ -47422,8 +47417,8 @@ function meterCie3dBoundsForVectors(vectors){
  if(meterCieIsOpponentMode()){
   const radial=Math.max(60,...vals.map(v=>Math.hypot(v.a,v.b)))*1.12;
   const r=meterCieNiceCeil(radial);
-  const cMax=Math.max(1,...vals.map(v=>v.c))*1.08;
-  return {aMin:-r,aMax:r,bMin:-r,bMax:r,cMin:0,cMax:cMax};
+  const cRadius=Math.max(1,...vals.map(v=>Math.abs(v.c)))*1.08;
+  return {aMin:-r,aMax:r,bMin:-r,bMax:r,cMin:-cRadius,cMax:cRadius};
  }
  const range=key=>{
   let lo=Math.min(0,...vals.map(v=>v[key])),hi=Math.max(0,...vals.map(v=>v[key]));
@@ -48177,8 +48172,8 @@ function drawCIEChart3D(readings,opts){
   if(meterCieViewOpts.targets&&meterCieIsOpponentMode()){
    const declared=meterCieDeclaredMbTargetCoord(rd);
    if(declared) targetVector={
-    a:declared.x,b:declared.y,
-    c:Math.max(0,Number(targetXYZ&&targetXYZ.Y||declared.Y||0)/referenceY),
+   a:declared.x,b:declared.y,
+    c:Number(targetXYZ&&targetXYZ.Y||declared.Y||0)/referenceY-1,
     reference:true
    };
   }
@@ -48221,7 +48216,13 @@ function drawCIEChart3D(readings,opts){
  });
  if(gamutVectors) allVectors.push(...gamutVectors);
  if(measuredGamutVectors) allVectors.push(...measuredGamutVectors);
- const bounds=meterCie3dBoundsForVectors(allVectors);
+ // The spectral locus reaches very large threshold-scaled opponent values.
+ // It remains a useful reference overlay, but must not collapse ordinary
+ // display targets into the centre by controlling the 3D camera frame.
+ const framingVectors=meterCieIsOpponentMode()
+  ?allVectors.filter((v,i)=>i===0||i>locusVectors.length)
+  :allVectors;
+ const bounds=meterCie3dBoundsForVectors(framingVectors);
  const layout=cie3dMakeLayout(ctx,bounds);
  const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
  const prims=[];
