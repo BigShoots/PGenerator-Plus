@@ -18235,6 +18235,21 @@ function meterCanonicalRecoveredSteps(type,points,steps,status){
 	  const customSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
 	  if(customSeries&&existing.length){
 	   const freshCustom=meterBuildStepsJS(type,points);
+	   if(Array.isArray(freshCustom)&&freshCustom.length===existing.length&&meterRecoveredStepsMatchSeries(existing,freshCustom)){
+	    const targetChanged=existing.some((step,idx)=>{
+	     const fresh=freshCustom[idx]||{};
+	     return ['target_x','target_y','target_Yn'].some(field=>{
+	      const a=Number(step&&step[field]),b=Number(fresh[field]);
+	      if(!Number.isFinite(a)&&!Number.isFinite(b)) return false;
+	      if(!Number.isFinite(a)||!Number.isFinite(b)) return true;
+	      return Math.abs(a-b)>0.000001;
+	     });
+	    });
+	    // Target math is derived, not measured state. Refresh it after an
+	    // importer/container fix while the cached readings remain attached to
+	    // their name-identical patch steps.
+	    if(targetChanged) return freshCustom;
+	   }
 	   if(Array.isArray(freshCustom)&&freshCustom.length>existing.length){
 	    const freshKeys=new Set(freshCustom.map(s=>meterStepNameKey(s)||String((s&&s.name)||'')));
 	    const isSubset=existing.every(s=>freshKeys.has(meterStepNameKey(s)||String((s&&s.name)||'')));
