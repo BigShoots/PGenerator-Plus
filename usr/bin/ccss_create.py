@@ -67,6 +67,7 @@ class Runner:
         self.switch_sent = False
         self.target_choice_sent = False
         self.target_measure_sent = False
+        self.target_measure_accepted = False
         self.current_role = "reference"
 
     def profile_type(self):
@@ -227,6 +228,8 @@ class Runner:
             self.reference_done = True
         if "[Got colorimeter readings]" in text:
             self.target_done = True
+        if self.current_role == "target" and text == "'2'":
+            self.target_measure_accepted = True
         low = self.recent.lower()
         # ccxxmake cannot open the instrument (held by another process or a USB
         # wedge). A single failure is usually transient -- ccxxmake retries and
@@ -320,7 +323,7 @@ class Runner:
         elif "measure" in lowered or "reading" in lowered:
             role_name = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
             self.write_state("running", "Measuring display patches with the %s" % role_name, detail=text)
-        elif "comput" in lowered or "save" in lowered:
+        elif self.compute_sent and ("comput" in lowered or "save" in lowered):
             self.write_state("running", "Computing and saving the %s profile" % self.profile_type(), detail=text)
 
     def maybe_advance_menu(self, window):
@@ -343,7 +346,8 @@ class Runner:
         if not self.measure_sent:
             # Wait for the full menu to render before selecting, otherwise the
             # keystroke can land mid-redraw and the instrument open misfires.
-            if "2) Measure" not in window:
+            menu_at = window.lower().rfind("press 1")
+            if menu_at < 0 or window.lower().rfind("4) exit") < menu_at:
                 return
             self.send("2\n")
             self.measure_sent = True
@@ -363,13 +367,15 @@ class Runner:
             self.switch_sent = True
             self.write_state("running", "Switching ccxxmake to the target colorimeter")
             return
-        if self.args.format == "ccmx" and self.target_choice_sent and not self.target_measure_sent:
+        if self.args.format == "ccmx" and self.target_choice_sent and not self.target_measure_accepted:
             select_at = window.lower().rfind("select device")
             menu_at = window.lower().rfind("press 1")
-            if menu_at > select_at:
+            exit_at = window.lower().rfind("4) exit")
+            now = time.time()
+            if menu_at > select_at and exit_at > menu_at and now - getattr(self, "last_target_measure_send", 0.0) > 1.5:
                 self.send("2\n")
                 self.target_measure_sent = True
-                self.last_option3 = ""
+                self.last_target_measure_send = now
                 self.write_state(
                     "running",
                     "Starting the target colorimeter pass. Follow its calibration and positioning prompts.",
