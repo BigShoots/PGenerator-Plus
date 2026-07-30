@@ -12371,6 +12371,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800124" data-sdr-only="1">HCFR GCD Classic (24)</option>
        <option value="800096" data-sdr-only="1">ColorChecker SG (96)</option>
        <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
+       <option value="800137" data-sdr-only="1">MacLeod-Boynton Hue Circle (37)</option>
       </select>
       <span class="meter-help-tip" title="Choose a built-in display verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Each preset keeps a separate measurement cache." aria-label="ColorChecker series help">?</span>
      </label>
@@ -30359,7 +30360,8 @@ const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800024,name:'Classic (24)',category:'color',mode:'any',kind:'verification',preset:'classic-24',builtin_verification:true,patches:[]},
  {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'sdr',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
  {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'sdr',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
- {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]}
+ {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
+ {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'sdr',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]}
 ];
 
 const METER_COLORCHECKER_SG_NAMES=[
@@ -30402,6 +30404,53 @@ function meterBuiltinFixedLegal8Rows(names,codes){
  ]);
 }
 
+// A common MacLeod-Boynton experiment samples an equal-luminance hue circle
+// at 10-degree intervals. Build 36 chromatic directions around the active
+// gamut's neutral plus the neutral reference itself. The two axis radii use
+// the established 2754 / 4099 threshold-scaled MB units; a single global
+// scale keeps the complete circle inside the selected RGB gamut.
+function meterBuildMbHueCircleSteps(){
+ const gamut=meterAnalysisGamut(),matrix=gamut.rgbToXyz;
+ const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
+ const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+ const lmsMatrix=ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2;
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const center=[.5,.5,.5],yr=matrix[1][0],yg=matrix[1][1],yb=matrix[1][2];
+ const basisA=[1,-yr/Math.max(1e-9,yg),0];
+ const rg=Math.max(1e-9,yr+yg),basisB=[-yb/rg,-yb/rg,1];
+ const xyzFor=rgb=>linRgbToXyz(rgb[0],rgb[1],rgb[2],matrix);
+ const mbFor=rgb=>{
+  const lms=meterCieApplyMatrix(xyzFor(rgb),lmsMatrix);
+  const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
+  return {x:L/lm,y:S/lm};
+ };
+ const c=mbFor(center);
+ const addVec=(base,vec)=>base.map((value,i)=>value+vec[i]);
+ const a=mbFor(addVec(center,basisA)),b=mbFor(addVec(center,basisB));
+ const d00=a.x-c.x,d01=b.x-c.x,d10=a.y-c.y,d11=b.y-c.y;
+ const det=d00*d11-d01*d10;
+ if(Math.abs(det)<1e-12) return [];
+ const vectors=[];
+ for(let angle=0;angle<360;angle+=10){
+  const rad=angle*Math.PI/180,dx=50*Math.cos(rad)/2754,dy=50*Math.sin(rad)/4099;
+  const alpha=(dx*d11-d01*dy)/det,beta=(d00*dy-dx*d10)/det;
+  vectors.push({angle:angle,delta:basisA.map((value,i)=>value*alpha+basisB[i]*beta)});
+ }
+ let scale=1;
+ vectors.forEach(item=>item.delta.forEach(delta=>{
+  if(Math.abs(delta)>1e-9) scale=Math.min(scale,.48/Math.abs(delta));
+ }));
+ const makeStep=(name,rgb,angle)=>{
+  const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z;
+  return {ire:Math.round(xyz.Y*100),r:meterEncodeColorCheckerLinear(rgb[0]),g:meterEncodeColorCheckerLinear(rgb[1]),b:meterEncodeColorCheckerLinear(rgb[2]),
+   name:name,target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,input_max:inputMax,
+   series_mode:'mb-hue-circle-sdr',mb_hue_angle:angle};
+ };
+ const steps=[makeStep('MB Neutral',center,null)];
+ vectors.forEach(item=>steps.push(makeStep('MB Hue '+item.angle+'\u00b0',center.map((value,i)=>Math.max(0,Math.min(1,value+scale*item.delta[i]))),item.angle)));
+ return steps;
+}
+
 function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
  if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
@@ -30410,6 +30459,7 @@ function meterBuildBuiltinColorCheckerSteps(series){
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg-sdr');
  if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin-sdr');
+ if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
  return [];
 }
 
@@ -33233,7 +33283,7 @@ function meterDefaultTargetsForColorSeries(type,points){
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
 const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
-const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019];
+const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137];
 function meterHcfrFixedCodesAvailable(){
  return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
 }
@@ -33258,7 +33308,7 @@ function meterColorCheckerSeriesStoredValue(){
  return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
 }
 function meterColorCheckerSeriesIsSdrOnly(id){
- return [29,800124,800096,800019].includes(Math.round(Number(id)));
+ return [29,800124,800096,800019,800137].includes(Math.round(Number(id)));
 }
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
@@ -45614,7 +45664,7 @@ function meterCie2dWorld(){
  // The CIE-normalized spectral sMB maximum is one, while practical display
  // colours occupy roughly the bottom quarter. Use a readable working view;
  // meterDrawMbFullLocusInset retains the complete spectral-locus context.
- if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:0.25};
+ if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:0.38};
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return CIE2D_WORLD;
 }
@@ -47116,10 +47166,10 @@ function drawCIEChart(readings){
  ctx.restore(); // end plot clip
  // Axis labels outside the clip so they stay readable at any zoom.
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
- const labDec=xStep<0.01?3:(xStep<0.05?2:1);
- for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ const xLabDec=xStep<0.01?3:(xStep<0.05?2:1),yLabDec=yStep<0.01?3:(yStep<0.05?2:1);
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
- for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(yLabDec),pad.l-4,toY(y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
  const axis=meterCieChartAxis();
  ctx.fillText(axis.x,pad.l+w/2,ctx.h-2);
@@ -47409,11 +47459,11 @@ function drawCIEChartPreset(steps){
   ctx.restore();
  });
  ctx.restore(); // end plot clip
- const labDec=xStep<0.01?3:(xStep<0.05?2:1);
+ const xLabDec=xStep<0.01?3:(xStep<0.05?2:1),yLabDec=yStep<0.01?3:(yStep<0.05?2:1);
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
- for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(labDec),toX(x),pad.t+h+14);
+ for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
- for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(labDec),pad.l-4,toY(y)+3);
+ for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(yLabDec),pad.l-4,toY(y)+3);
  ctx.fillStyle=pgThemeColor('--chart-label','#c4d0e6');ctx.font='11px sans-serif';ctx.textAlign='center';
  const axis=meterCieChartAxis();
  ctx.fillText(axis.x,pad.l+w/2,ctx.h-2);
@@ -48128,17 +48178,13 @@ function meterBuildHcfrExportModel(){
  const nearWhiteEntry=importedGroup('nearWhite');
  const satEntries=byType('saturations'),colorEntries=byType('colors');
  // Sat Sweep keeps its own native/fixed-code checkbox. ColorChecker follows
- // the dropdown when the selected library maps to the 24 Classic result slots.
- // SG libraries contain a different layout, so CHC export falls back to the
- // newest measured Classic variant instead of mislabelling SG patches.
+ // the dropdown exactly. HCFR stores Classic, SG and SG Skin Tones in the same
+ // sparse arrays but interprets their indices through preferences.colorCheckerMode.
  const preferHcfrSat=(mode==='sdr')&&meterHcfrFixedCodesEnabled();
  const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfrSat?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
  const selectedColorPoints=(typeof meterColorCheckerSeriesStoredValue==='function')?meterColorCheckerSeriesStoredValue():30;
- const classicColorIds=[30,800024,29,800124];
- const preferredClassicId=classicColorIds.includes(Number(selectedColorPoints))?Number(selectedColorPoints):null;
- const colorEntry=(preferredClassicId!=null?colorEntries.find(e=>Number(e.snap.points)===preferredClassicId):null)
-  ||colorEntries.find(e=>classicColorIds.includes(Number(e.snap.points)))
-  ||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
+ const colorEntry=importedGroup('colorChecker')
+  ||colorEntries.find(e=>Number(e.snap.points)===Number(selectedColorPoints))||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);
  const nearBlack=valid(nearBlackEntry&&nearBlackEntry.snap).slice(0,5);
@@ -48147,8 +48193,15 @@ function meterBuildHcfrExportModel(){
  valid(satEntry&&satEntry.snap).forEach(rd=>{const name=String(rd.name||'').toLowerCase();for(const key of Object.keys(satGroups)){const hue=key.replace('Saturation','').toLowerCase();if(name.includes(hue)){satGroups[key].push(rd);break;}}});
  Object.keys(satGroups).forEach(key=>{const list=satGroups[key].sort((a,b)=>Number(a.sat_pct||a.ire||0)-Number(b.sat_pct||b.ire||0));satGroups[key]=list.length===4?[null,...list]:list;});
  const colors=valid(colorEntry&&colorEntry.snap), fixed={};
+ const colorPoints=Number(colorEntry&&colorEntry.snap&&colorEntry.snap.points);
+ const importedColorModeRaw=colorEntry&&colorEntry.snap&&colorEntry.snap.hcfr_preferences
+  ?colorEntry.snap.hcfr_preferences.colorCheckerMode:null;
+ const importedColorMode=(importedColorModeRaw!=null&&importedColorModeRaw!=='')?Number(importedColorModeRaw):NaN;
+ const colorCheckerMode=Number.isFinite(importedColorMode)?importedColorMode:(colorPoints===800096?6:(colorPoints===800019?4:0));
  const fixedMap=[['redPrimary',24],['greenPrimary',25],['bluePrimary',26],['cyanSecondary',27],['magentaSecondary',28],['yellowSecondary',29]];
- fixedMap.forEach(([name,index])=>{fixed[name]=colors[index]||null;});
+ const hasAppendedFixed=(colorPoints===29||colorPoints===30)
+  ||!!(colorEntry&&colorEntry.snap&&colorEntry.snap.source_format==='hcfr-chc'&&colors.length>=30);
+ fixedMap.forEach(([name,index])=>{fixed[name]=hasAppendedFixed?(colors[index]||null):null;});
  // HCFR stores its primary/secondary measurements separately from the
  // saturation arrays even though the 100% saturation endpoints use the same
  // stimuli. When no ColorChecker endpoint was measured, mirror the matching
@@ -48180,14 +48233,31 @@ function meterBuildHcfrExportModel(){
  const free=[];
  entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');if(free.length) warnings.push(free.length+' imported HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');
  // HCFR SDR GCD aligns the 18 chromatic patches plus PGenerator's full black
  // and white anchors. The native SDR neutral chips use different stimuli from
  // fixed GCD's named grays, so preserve those as free measurements. HDR-class
  // native series do use the four neutral ColorChecker slots and retain them.
  let colorCheckerItems=[];
- const colorUsesHcfrSlots=colorEntry&&(Number(colorEntry.snap.points)===29||(colorEntry.snap.source_format==='hcfr-chc'&&colorEntry.snap.source_group==='colorChecker'));
- if(colorUsesHcfrSlots&&colors.length>=24){
+ const colorUsesHcfrSlots=colorEntry&&([29,800124].includes(Number(colorEntry.snap.points))
+  ||(colorEntry.snap.source_format==='hcfr-chc'&&colorEntry.snap.source_group==='colorChecker'));
+ const indexedByNames=names=>{
+  const slots=new Map((Array.isArray(names)?names:[]).map((name,index)=>[String(name).toLowerCase(),index]));
+  return colors.map((rd,fallbackIndex)=>{
+   const named=slots.get(String(rd&&rd.name||'').toLowerCase());
+   return {...rd,index:Number.isFinite(named)?named:fallbackIndex};
+  });
+ };
+ if(colorPoints===800137){
+  // HCFR has no built-in MacLeod-Boynton hue-circle mode. Keep every reading
+  // as a Free Measurement rather than assigning false Classic slot meanings.
+  free.push(...colors);
+  warnings.push('MacLeod-Boynton hue-circle readings were exported as HCFR Free Measurements because CHC has no matching built-in series mode.');
+ }else if(colorCheckerMode===6){
+  colorCheckerItems=indexedByNames(METER_COLORCHECKER_SG_NAMES).slice(0,96);
+ }else if(colorCheckerMode===4){
+  colorCheckerItems=indexedByNames(METER_COLORCHECKER_SG_SKIN_NAMES).slice(0,19);
+ }else if(colorUsesHcfrSlots&&colors.length>=24){
   const slotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan'];
   const byName=new Map(colors.map(rd=>[String(rd.name||'').toLowerCase(),rd]));
   colorCheckerItems=slotNames.map((name,index)=>{const rd=byName.get(name.toLowerCase());return rd?{...rd,index:index}:null;}).filter(Boolean);
@@ -48205,8 +48275,10 @@ function meterBuildHcfrExportModel(){
   colors.slice(6,24).forEach((rd,offset)=>colorCheckerItems.push({...rd,index:offset+6}));
   free.push(...colors.slice(2,6));
  }else colorCheckerItems=colors.slice(0,24).map((rd,index)=>({...rd,index}));
+ if(free.length) warnings.push(free.length+' HCFR free measurements preserved; stimulus RGB is not retained by CHC.');
  const importedContextEntry=[greyEntry,satEntry,colorEntry].find(e=>e&&e.snap&&e.snap.source_format==='hcfr-chc'&&e.snap.hcfr_preferences)||null;
  const preferences=importedContextEntry?{...meterHcfrPreferenceModel(mode,white,black),...importedContextEntry.snap.hcfr_preferences}:meterHcfrPreferenceModel(mode,white,black);
+ preferences.colorCheckerMode=colorCheckerMode;
  const importedRangeEntry=entries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_session_id===activeImportedSession&&['limited','full'].includes(e.snap.source_rgb_range));
  const rgbRange=importedRangeEntry?importedRangeEntry.snap.source_rgb_range:((typeof meterPatchUsesVideoRange==='function'&&meterPatchUsesVideoRange())?'limited':'full');
  return {model:{preferences:preferences,generator:{type:'gdi',rgbRange:rgbRange},groups:{grayscale:grey,nearBlack:nearBlack.length?nearBlack:Array(5).fill(null),nearWhite:nearWhite.length?nearWhite:Array(5).fill(null),...satGroups,colorChecker:{declaredCount:1000,items:colorCheckerItems},colorCheckerMaster:{declaredCount:5000,items:colorCheckerItems.map(item=>({...item}))},freeMeasurements:free},fixed,notes:'Calibration by: \r\nDisplay: \r\nNote: Exported from PGenerator+ '+now+'; '+mode.toUpperCase()+'; RGB '+rgbRange+'.'+(warnings.length?' '+warnings.join(' '):'')+'\r\n',ireScaleMode:false},summary:{mode,rgbRange,grayscale:grey.length,nearBlack:nearBlack.length,nearWhite:nearWhite.length,saturations:Object.values(satGroups).reduce((n,a)=>n+a.filter(Boolean).length,0),colorChecker:colorCheckerItems.length,free:free.length,warnings}};
@@ -48313,8 +48385,12 @@ async function meterImportHcfrChcFile(input){
   const nwkey=meterHcfrImportSnapshot('greyscale',nearWhite,file.name+' near white',stamp+2,mode,sourceRange,importContext,'nearWhite');if(nwkey)keys.push(nwkey);
   const sat=[];[['redSaturation','Red'],['greenSaturation','Green'],['blueSaturation','Blue'],['yellowSaturation','Yellow'],['cyanSaturation','Cyan'],['magentaSaturation','Magenta']].forEach(([group,hue])=>{const all=(parsed.groups[group]&&parsed.groups[group].items)||[];all.forEach((c,i)=>{if(c.valid){const pct=all.length>1?i*100/(all.length-1):0,step=meterBuildHcfrSaturationStep(hue,pct);sat.push(Object.assign(meterHcfrImportedReading(c,step.name,pct),step,{X:c.X,Y:c.Y,Z:c.Z,luminance:c.Y,x:c.x,y:c.y,raw_X:c.X,raw_Y:c.Y,raw_Z:c.Z,source_format:'hcfr-chc',measurement_only:true}));}});});
   const skey=meterHcfrImportSnapshot('saturations',sat,file.name,stamp+3,mode,sourceRange,importContext,'saturations');if(skey)keys.push(skey);
-  const ccGroup=parsed.groups.colorChecker,ccSteps=meterBuildHcfrColorCheckerStepsJS(),ccByName=new Map(ccSteps.map(step=>[step.name,step]));
-  const ccSlotNames=['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan'];
+  const ccGroup=parsed.groups.colorChecker,ccMode=Number(parsed.preferences.colorCheckerMode)||0;
+  const ccSeries=ccMode===6?METER_BUILTIN_COLORCHECKER_SERIES.find(s=>s.id===800096):(ccMode===4?METER_BUILTIN_COLORCHECKER_SERIES.find(s=>s.id===800019):null);
+  const ccSteps=ccSeries?meterBuildBuiltinColorCheckerSteps(ccSeries):meterBuildHcfrColorCheckerStepsJS();
+  const ccByName=new Map(ccSteps.map(step=>[step.name,step]));
+  const ccSlotNames=ccMode===6?METER_COLORCHECKER_SG_NAMES:(ccMode===4?METER_COLORCHECKER_SG_SKIN_NAMES:
+   ['Black','Gray 35','Gray 50','Gray 65','Gray 80','White','Dark Skin','Light Skin','Blue Sky','Foliage','Blue Flower','Bluish Green','Orange','Purplish Blue','Moderate Red','Purple','Yellow Green','Orange Yellow','Blue','Green','Red','Yellow','Magenta','Cyan']);
   const importColor=(c,step)=>Object.assign(meterHcfrImportedReading(c,step.name,step.ire),step,{X:c.X,Y:c.Y,Z:c.Z,luminance:c.Y,x:c.x,y:c.y,raw_X:c.X,raw_Y:c.Y,raw_Z:c.Z,source_format:'hcfr-chc',measurement_only:true});
   const colors=ccGroup?ccGroup.validItems.map((c,i)=>{const name=ccSlotNames[c.index!=null?c.index:i],step=ccByName.get(name);return step?importColor(c,step):null;}).filter(Boolean):[];
   [['redPrimary','100% Red'],['greenPrimary','100% Green'],['bluePrimary','100% Blue'],['cyanSecondary','100% Cyan'],['magentaSecondary','100% Magenta'],['yellowSecondary','100% Yellow']].forEach(([key,name])=>{const c=parsed.fixed[key],step=ccByName.get(name);if(c&&c.valid&&step)colors.push(importColor(c,step));});
