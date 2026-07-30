@@ -12512,7 +12512,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
-     <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
+     <label>Meter Profile (CCSS / CCMX) <span class="meter-help-tip" id="meterCorrectionProfileHelp" title="CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter's native response." aria-label="Meter correction profile help">?</span></label>
      <div class="meter-ccss-profile-control-row">
       <select id="meterCcssProfile"><option value="custom_editor">Profile Editor...</option><option value="">Auto (technology default)</option><option value="none">No Correction</option></select>
       <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2)">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
@@ -12560,7 +12560,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	     </div>
 	      <div class="meter-xyz-toggle-block">
        <div class="meter-xyz-toggle-row">
-        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="Software correction applied by PGenerator after Argyll returns XYZ. Unlike a CCMX, this matrix is not an Argyll meter profile and is not automatically tied to a specific meter. A selected CCMX is applied by Argyll and temporarily disables this matrix to prevent double correction." aria-label="XYZ correction matrix help">?</span></label>
+        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="Both options use 3x3 XYZ correction math, but at different stages. A CCMX is an Argyll meter profile made for a particular colorimeter and display by comparing it with a reference meter. Argyll applies the selected CCMX before returning XYZ. This XYZ Correction Matrix is a generic PGenerator post-measurement transform. It is not identified with a meter or display and changes the returned XYZ before charts and analysis. Use a CCMX for normal meter profiling. Use this tool only for a known manual matrix or an intentional software transform. PGenerator suspends it while a CCMX is selected to prevent double correction." aria-label="XYZ correction matrix help">?</span></label>
         <span class="meter-xyz-gear-wrap is-hidden">
          <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
          <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
@@ -18735,6 +18735,12 @@ function meterStoredXyzMatrixEnabled(settings){
  return settings.xyz_matrix_enabled===true||settings.xyz_matrix_enabled==='1'||settings.xyz_matrix_enabled===1;
 }
 
+function meterXyzMatrixHelpText(ccmxActive){
+ const difference='Both options use 3x3 XYZ correction math, but at different stages. A CCMX is an Argyll meter profile made for a particular colorimeter and display by comparing it with a reference meter. Argyll applies the selected CCMX before returning XYZ. This XYZ Correction Matrix is a generic PGenerator post-measurement transform. It is not identified with a meter or display and changes the returned XYZ before charts and analysis.';
+ if(ccmxActive) return difference+' The selected CCMX is active, so PGenerator has suspended the software matrix to prevent double correction. Select a CCSS or No Correction before using the software matrix.';
+ return difference+' Use a CCMX for normal meter profiling. Use this tool only for a known manual matrix or an intentional software transform. PGenerator suspends it while a CCMX is selected to prevent double correction.';
+}
+
 function meterUpdateXyzMatrixVisibility(){
  const wrap=document.getElementById('meterXyzMatrixFields');
  const field=wrap&&wrap.closest('.meter-matrix-field');
@@ -18747,9 +18753,7 @@ function meterUpdateXyzMatrixVisibility(){
   toggle.title=ccmxActive?'Suspended while a CCMX meter profile is selected to prevent applying two XYZ correction matrices.':'';
  }
  if(help){
-  help.title=ccmxActive
-   ? 'The selected CCMX is already an XYZ correction matrix applied by ArgyllCMS. The saved PGenerator matrix is suspended until you select a CCSS or No Correction.'
-   : 'When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity.';
+  help.title=meterXyzMatrixHelpText(ccmxActive);
  }
  // Matrix fields follow the draft enable checkbox; action row also stays open
  // while dirty so Apply remains reachable after unchecking enable.
@@ -25086,12 +25090,23 @@ function meterSpyderXNativeModeLabel(){
  return 'General';
 }
 
+function meterSpyderXNativeModeHelp(){
+ const mode=meterSpyderXNativeModeLabel();
+ let purpose='';
+ if(mode==='Standard LED') purpose='This is ArgyllCMS display type -y e for white LED backlit LCDs.';
+ else if(mode==='Wide Gamut LED') purpose='This is ArgyllCMS display type -y b for RGB LED backlit LCDs.';
+ else if(mode==='GB-R LED') purpose='This is ArgyllCMS display type -y i for GB-R phosphor LED backlit LCDs.';
+ else purpose='This is ArgyllCMS display type -y l, its default General LCD/CCFL calibration. PGenerator uses General as the fallback when the selected display has no matching SpyderX built-in mode, including OLED, QD-OLED, plasma, projector, and CRT.';
+ return 'The Display Type selection chooses the SpyderX built-in calibration. '+purpose+' SpyderX does not support CCSS spectral profiles in ArgyllCMS. For a display without a matching built-in mode, use a CCMX created for this SpyderX and display.';
+}
+
 function meterUpdateMeterCapabilityControls(){
  const spyderX=meterSelectedMeasurementIsSpyderX();
  const ccss=document.getElementById('meterCcssProfile');
  const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
  const refresh=document.getElementById('meterRefreshRate');
  const ccssNote=document.getElementById('meterCcssCapabilityNote');
+ const profileHelp=document.getElementById('meterCorrectionProfileHelp');
  const refreshNote=document.getElementById('meterRefreshCapabilityNote');
  const nativeLabel=meterSpyderXNativeModeLabel();
  const setCapabilityOptionText=(sel,text)=>{
@@ -25128,6 +25143,11 @@ function meterUpdateMeterCapabilityControls(){
  if(ccssNote){
   ccssNote.style.display=spyderX?'':'none';
   if(spyderX) ccssNote.textContent='SpyderX native mode: '+nativeLabel+'. CCMX supported; CCSS unavailable.';
+ }
+ if(profileHelp){
+  profileHelp.title=spyderX
+   ? meterSpyderXNativeModeHelp()
+   : 'CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter\'s native response.';
  }
  if(refreshNote) refreshNote.style.display=spyderX?'':'none';
  if(Array.isArray(meterCcssLibrary)&&typeof populateMeterCcssProfileSelect==='function'){
