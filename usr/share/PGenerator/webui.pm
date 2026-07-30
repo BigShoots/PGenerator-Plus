@@ -14,6 +14,15 @@
 BEGIN { require bytes; }
 use Fcntl qw(O_NONBLOCK O_WRONLY);
 use Time::HiRes ();
+# Required for the ":shared" attributes and lock() below: webui_http dispatches
+# requests to a worker thread pool, so the cross-call state at this file scope
+# has to be genuinely shared rather than silently cloned per thread.
+use threads;
+use threads::shared;
+use Thread::Queue;
+# POSIX::dup / POSIX::close: the accept thread hands workers a raw duplicated
+# fd, because an IO::Socket object cannot cross an ithread boundary.
+use POSIX ();
  
 ###############################################
 #             mDNS Route Helpers              #
@@ -304,6 +313,17 @@ sub webui_mdns (@) {
 ###############################################
 #              HTTP Server                    #
 ###############################################
+# THREAD LOCALITY (webui_http now dispatches to a worker pool).
+#
+# Every "my" variable at this file scope is cloned into each ithread, so a
+# per-worker PRIVATE copy is what you get unless it is explicitly :shared.
+# The triage rule used below:
+#   - Pure result cache  -> a private copy only costs hit rate. The work is
+#                           still correct, just repeated. Left unshared.
+#   - Cross-call accumulator, once-only latch, or rate limiter for a side
+#     effect -> a private copy is a CORRECTNESS bug (deltas computed against
+#     a stale baseline, latches firing once per worker, throttles firing N
+#     times per window). These are :shared.
 my $_info_cache="";
 my $_info_cache_time=0;
 my $_INFO_CACHE_TTL=5;
@@ -315,7 +335,10 @@ my $_CEC_CACHE_TTL=30;
 # webui must not pay a CEC power query (~500ms worst case when the TV is off)
 # on every poll, so we do at most one live query per this many seconds and
 # serve the cached reading in between.
-my $_cec_last_power_query=0;
+# :shared - this is a RATE LIMITER for a side effect (spawning pgcec against
+# the single /dev/cec0 adapter), not a cache. A private copy per worker would
+# multiply the live query rate by the pool size and silently undo a6d6b029.
+my $_cec_last_power_query :shared = 0;
 # 15s, not 4s: with the TV powered OFF a live power query costs the
 # single-threaded daemon ~2s of wall time (pgcec tries first and gives
 # nothing, then pgenerator-cec's GIVE_DEVICE_POWER_STATUS hangs until
@@ -324,17 +347,26 @@ my $_cec_last_power_query=0;
 # was polled -- the WebUI starved and looked "down" with the TV off.
 my $_CEC_POWER_QUERY_THROTTLE=15;
 
-my $_caps_cache="";
-my $_caps_cache_time=0;
-my $_modes_cache="";
-my $_modes_cache_time=0;
+# :shared - these two are caches, but they are EXPLICITLY INVALIDATED after a
+# mode-changing apply (webui_apply_config clears them so the UI stops serving
+# a pre-apply EDID/mode snapshot). A private copy per worker would mean the
+# invalidation only cleared the applying worker's copy and the other workers
+# kept serving the stale snapshot for the rest of the TTL.
+my $_caps_cache :shared = "";
+my $_caps_cache_time :shared = 0;
+my $_modes_cache :shared = "";
+my $_modes_cache_time :shared = 0;
 my $_MODES_CACHE_TTL=30;
+# Pure result cache, 2s TTL: a private copy per worker only costs hit rate.
 my $_stats_cache="";
 my $_stats_cache_time=0;
 my $_STATS_CACHE_TTL=2;
-my $_stats_cpu_total=0;
-my $_stats_cpu_idle=0;
-my $_stats_cpu_last=0;
+# :shared - CPU% is a DELTA against the previous /api/stats call. Private
+# baselines per worker make every delta span a different, staler interval and
+# the reported percentage becomes erratic. One baseline for the whole pool.
+my $_stats_cpu_total :shared = 0;
+my $_stats_cpu_idle :shared = 0;
+my $_stats_cpu_last :shared = 0;
 
 # Meter state
 my $_meter_series_file="/tmp/meter_series.json";
@@ -366,7 +398,10 @@ my $_ccss_create_continue_file="/tmp/ccss_create.cont";
 my $_ccss_create_runner="/usr/bin/ccss_create.py";
 my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
 my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
-my $_meter_last_read_time=0;
+# :shared - 0.25s debounce guarding a PHYSICAL meter read (see the check in
+# webui_meter_read). A private copy per worker would let one read per worker
+# through each window instead of one read total.
+my $_meter_last_read_time :shared = 0;
 my $_ccss_dir="/usr/share/PGenerator/ccss";
 my $_custom_ccss_dir="$var_dir/ccss/custom";
 
@@ -572,9 +607,55 @@ sub resolve_ccss_override (@) {
  return "";
 }
 
+# Worker pool size. The Pi4 has 4 cores; the workers are pre-spawned ONCE so
+# the cost is paid at startup, not per request.
+$WEBUI_WORKER_POOL_SIZE=4;
+# fds of accepted client sockets, handed from the accept thread to the workers.
+$_webui_worker_queue=undef;
+# Replaces the accidental global mutex the single accept loop used to provide.
+# A file lock rather than a thread mutex: it costs the same here, and it is the
+# idiom already used for the apply worker (webui-apply.lock), which has to
+# exclude a separate PROCESS.
+$_webui_serial_lock_file="";
+
+sub webui_acquire_serial_lock (@) {
+ # Returns an open, flock'd filehandle. The caller keeps it in a lexical; the
+ # lock drops when that goes out of scope. Fails OPEN: if the lock file cannot
+ # be created we return undef and the request proceeds unserialized rather
+ # than hanging, which is how this behaved before the pool existed anyway.
+ return undef if($_webui_serial_lock_file eq "");
+ my $fh;
+ return undef if(!open($fh,'>',$_webui_serial_lock_file));
+ return undef if(!flock($fh,2));
+ return $fh;
+}
+
+sub webui_route_is_concurrent_safe (@) {
+ # Allowlist, deliberately conservative: a route qualifies only if its handler
+ # touches no shared mutable state, spawns no helper that contends for a
+ # single device, and writes no file. Everything not listed here keeps the
+ # old serialized behaviour.
+ my ($method,$path)=@_;
+ $method="" if(!defined($method));
+ $path="" if(!defined($path));
+ # CORS preflight: writes a constant response.
+ return 1 if($method eq "OPTIONS");
+ # Liveness probe: returns a literal. This is the one that matters most --
+ # it is what the browser uses to decide the WebUI is up, so it must answer
+ # even while a slow handler holds the serial lock.
+ return 1 if($path eq "/api/ping");
+ # Static assets: read a fixed file from disk and stream it.
+ return 1 if($path eq "/favicon.ico" || $path eq "/pgen-logo-light.png" || $path eq "/hcfr_chc.js");
+ # Reads /proc plus a 2s response cache. Its cross-call CPU delta baseline is
+ # :shared, so the pool does not corrupt the percentage.
+ return 1 if($path eq "/api/stats");
+ return 0;
+}
+
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
  my $http_port=80;
+ $_webui_serial_lock_file="$var_dir/running/webui-serial.lock";
 
  my $http_server = IO::Socket::INET->new(
   LocalHost => "0.0.0.0",
@@ -603,10 +684,78 @@ sub webui_http (@) {
  # double-forked instead (see the /api/config POST handler) so they
  # are reparented to init and need no reaping in this process.
 
+ # Hand each accepted socket to a pre-spawned worker instead of handling it on
+ # the accept thread. Passing the raw fd through a Thread::Queue (rather than
+ # the IO::Socket object, which cannot cross an ithread boundary) keeps the
+ # accept loop free to drain the backlog while a slow handler runs.
+ $_webui_worker_queue=Thread::Queue->new();
+ for my $i (1..$WEBUI_WORKER_POOL_SIZE) {
+  threads->create(\&webui_http_worker,$i)->detach();
+ }
+ &log("WebUI: request worker pool started ($WEBUI_WORKER_POOL_SIZE workers)");
+
  while(1) {
   my $client=$http_server->accept();
   next if(!$client);
+  my $fd=eval { POSIX::dup(fileno($client)) };
+  # Close our copy either way: the worker owns the duplicate now.
+  eval { close($client); };
+  if(!defined($fd)) {
+   &log("WebUI: could not duplicate client fd: $!");
+   next;
+  }
+  $_webui_worker_queue->enqueue($fd);
+ }
+}
+
+###############################################
+#            WebUI Request Worker             #
+###############################################
+# One of $WEBUI_WORKER_POOL_SIZE pre-spawned threads. Created ONCE at startup:
+# Perl ithreads clone the whole interpreter, so a thread-per-request would be
+# ruinous on a Pi with this codebase. Each worker owns the fd it dequeues and
+# is responsible for closing it on every path, including errors -- the daemon
+# is long-lived and a leaked fd is eventually fatal.
+sub webui_http_worker (@) {
+ my $worker_id=shift;
+ $SIG{PIPE}='IGNORE';
+ while(defined(my $fd=$_webui_worker_queue->dequeue())) {
+  my $client;
   eval {
+   $client=IO::Socket::INET->new_from_fd($fd,"+<");
+   # IO::Socket::INET->new() enables autoflush, but new_from_fd() does NOT.
+   # Without this the handler's response sits in the buffer and the
+   # shutdown() below discards it, so every request returns an empty body.
+   $client->autoflush(1) if($client);
+   1;
+  };
+  if(!$client) {
+   &log("WebUI: worker $worker_id could not adopt fd $fd: $@");
+   eval { POSIX::close($fd); };
+   next;
+  }
+  eval { &webui_handle_request($client); };
+  if($@) {
+   &log("WebUI: request error: $@");
+  }
+  # Closing the IO::Socket closes the duplicated fd. Guard against the object
+  # having gone away so the descriptor can never leak.
+  if($client) {
+   eval { shutdown($client, 2); };
+   eval { close($client); };
+  } else {
+   eval { POSIX::close($fd); };
+  }
+ }
+}
+
+###############################################
+#          WebUI Request Handler              #
+###############################################
+# The request body below is the former accept-loop body, moved verbatim.
+sub webui_handle_request (@) {
+ my $client=shift;
+  {
    # Per-socket read/write timeout (thread-safe, unlike alarm/SIGALRM which is process-wide)
    setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_RCVTIMEO(), pack('l!l!', 5, 0));
    setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_SNDTIMEO(), pack('l!l!', 5, 0));
@@ -640,6 +789,23 @@ sub webui_http (@) {
     $request_query=$1 if(defined($path) && $path=~/\?(.*)$/);
     $path=~s/\?.*$// if(defined($path));
     &log("WebUI: $method $path");
+
+   # Preserve the serialization the single accept loop used to provide.
+   #
+   # That loop was an ACCIDENTAL GLOBAL MUTEX over every WebUI operation, and
+   # a great deal of request-reachable code quietly depends on it: the
+   # renderer restart ladder, %pgenerator_conf read-modify-write, the LG
+   # clients.json load/save pairs, the meter state machine, and the fixed-name
+   # "$command_file.tmp" that /api/pattern renames into place. Rather than
+   # audit-and-lock all of that in one change, only routes that provably touch
+   # no shared state run concurrently; everything else takes this lock and is
+   # therefore exactly as serialized as it was before the pool existed.
+   #
+   # Held for the whole handler body and released by scope exit.
+   my $serial_lock;
+   if(!&webui_route_is_concurrent_safe($method,$path)) {
+    $serial_lock=&webui_acquire_serial_lock();
+   }
 
    # CORS headers for API
    my $cors="Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n";
@@ -1318,25 +1484,28 @@ sub webui_http (@) {
     my $msg="404 Not Found";
     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
    }
-  };
-  if($@) {
-   &log("WebUI: request error: $@");
+   # $serial_lock (if held) is released here by scope exit: closing the
+   # filehandle drops its flock. Doing it implicitly rather than with an
+   # explicit call means an exception anywhere in the body above still
+   # releases it.
   }
-  if($client) {
-   eval { shutdown($client, 2); };
-   eval { close($client); };
-  }
- }
 }
 
 ###############################################
 #         Meter API Functions                 #
 ###############################################
-my $_meter_was_detected=0;
-my $_meter_boot_recovery_attempted=0;
-my $_meter_last_reset_time=0;
-my $_meter_last_seen_time=0;
-my $_meter_last_good_status='{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}';
+# :shared - this is a cross-call state machine, not a cache.
+# $_meter_boot_recovery_attempted is a ONCE-ONLY latch (a private copy per
+# worker would run the USB recovery once per worker), $_meter_last_reset_time
+# is a cooldown between physical USB resets, and $_meter_last_good_status is
+# the fallback /api/meter/status serves on a transient miss -- private copies
+# make consecutive polls answer differently depending on which worker they
+# land on.
+my $_meter_was_detected :shared = 0;
+my $_meter_boot_recovery_attempted :shared = 0;
+my $_meter_last_reset_time :shared = 0;
+my $_meter_last_seen_time :shared = 0;
+my $_meter_last_good_status :shared = '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}';
 
 sub webui_meter_usb_present (@) {
  my ($usb_id)=@_;
@@ -7696,8 +7865,38 @@ sub _interp_spectral (@) {
 #           API Helper Functions              #
 ###############################################
 sub webui_reload_pgenerator_conf (@) {
- %pgenerator_conf=();
- &get_pgenerator_conf();
+ # This used to be "%pgenerator_conf=(); &get_pgenerator_conf();".
+ #
+ # %pgenerator_conf is share()d (variables.pm), so that clear published an
+ # EMPTY conf to every other thread for the whole duration of the file read,
+ # and every reader degrades silently to its "|| 0" / "|| ''" defaults -- a
+ # plain /api/config poll could blank the conf out from under a concurrent
+ # pattern request. Parse into a private hash first, then apply the delta
+ # under a lock, so readers always observe a complete, consistent conf.
+ my %fresh;
+ if(open(my $fh,"<",$pattern_conf)) {
+  while(my $line=<$fh>) {
+   $line=~s/\r|\n//g;
+   next if($line=~/^#/ || $line eq "");
+   $line=~s/^\s//g;
+   $fresh{$1}=$2 if($line=~/(.*)=(.*)/);
+  }
+  close($fh);
+ } else {
+  # Could not read the conf at all: leave the live hash untouched rather than
+  # publishing a half-empty one.
+  &sync_pattern_bits_default();
+  return;
+ }
+ {
+  lock(%pgenerator_conf);
+  foreach my $k (keys %fresh) {
+   $pgenerator_conf{$k}=$fresh{$k} if(!exists($pgenerator_conf{$k}) || $pgenerator_conf{$k} ne $fresh{$k});
+  }
+  foreach my $k (keys %pgenerator_conf) {
+   delete($pgenerator_conf{$k}) if(!exists($fresh{$k}));
+  }
+ }
  &sync_pattern_bits_default();
 }
 
