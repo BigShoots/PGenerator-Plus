@@ -12364,7 +12364,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
       <span>ColorChecker</span>
-      <select id="meterColorCheckerSeriesSelect" onchange="meterSelectBuiltinColorChecker(this.value)" style="max-width:220px">
+      <select id="meterColorCheckerSeriesSelect" class="inline-select" onchange="meterSelectBuiltinColorChecker(this.value)" style="max-width:220px">
        <option value="30">Classic + Primaries (30)</option>
        <option value="800024">Classic (24)</option>
        <option value="29" data-sdr-only="1">HCFR GCD + Primaries (30)</option>
