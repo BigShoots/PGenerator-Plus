@@ -9,6 +9,7 @@ use Digest::SHA qw(sha1_base64);
 use File::Path qw(make_path);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Time::HiRes qw(time);
+use POSIX ();
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -230,6 +231,20 @@ $WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 $REQUEST_ENV="PGEN_LG_REQUEST_B64";
 $DEFAULT_CONNECT_TIMEOUT=5;
 $DEFAULT_PAIR_TIMEOUT=55;
+# Hard ceiling on the TCP/TLS connect phase alone, independent of the much
+# longer per-request read budgets derived from $connect_timeout.
+#
+# A powered-off LG panel does not refuse connections, it drops the SYNs, so an
+# unbounded connect runs to the kernel's tcp_syn_retries budget (~127s at the
+# default 6). Every invocation of this helper sits under an outer "timeout Ns"
+# wrapper applied by lg.pm, and that wrapper is a synchronous backtick on the
+# daemon's single WebUI request thread -- so an unbounded connect meant the
+# wrapper was always consumed in full and the whole WebUI froze for that long.
+# A live TV on the LAN completes the handshake in milliseconds, so this only
+# ever truncates the pathological case.
+$MAX_CONNECT_TIMEOUT=5;
+# Grace period for reaping a socat child that is still stuck in connect().
+$CONNECT_CHILD_REAP_GRACE=3;
 $MAX_FRAME_SIZE=1024*1024;
 $LG_REMOTE_APP_SIGNATURE=(
  "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
@@ -541,6 +556,40 @@ sub websocket_recv_json (@) {
  return undef;
 }
 
+sub connect_timeout_for (@) {
+ # Connect-phase budget derived from, but capped independently of, the
+ # caller's $connect_timeout (which also seeds every per-request read
+ # timeout and is therefore intentionally generous).
+ my $timeout=shift;
+ $timeout=$DEFAULT_CONNECT_TIMEOUT if(!defined($timeout) || $timeout !~ /^\d+(?:\.\d+)?$/ || $timeout <= 0);
+ $timeout=$MAX_CONNECT_TIMEOUT if($timeout > $MAX_CONNECT_TIMEOUT);
+ $timeout=1 if($timeout < 1);
+ return $timeout;
+}
+
+sub reap_child_bounded (@) {
+ # waitpid($pid,0) here used to be unbounded. Closing our pipes does NOT
+ # interrupt a socat child still blocked in connect(), so against a
+ # powered-off TV this call parked for the full kernel SYN timeout -- it was
+ # where the "5 second connect timeout" actually became ~127s. Poll with
+ # WNOHANG to a deadline, then escalate TERM -> KILL. Never blocks forever,
+ # never leaves a zombie behind for the caller.
+ my ($pid,$grace)=@_;
+ return if(!defined($pid) || !$pid);
+ $grace=$CONNECT_CHILD_REAP_GRACE if(!defined($grace) || $grace <= 0);
+ foreach my $phase ([$grace,'TERM'],[1,'KILL'],[1,'']) {
+  my $deadline=time() + $phase->[0];
+  while(time() < $deadline) {
+   my $r=waitpid($pid,POSIX::WNOHANG());
+   return if($r == $pid || $r < 0);
+   select(undef,undef,undef,0.05);
+  }
+  last if($phase->[1] eq "");
+  kill($phase->[1],$pid);
+ }
+ return;
+}
+
 sub websocket_close (@) {
  my $session=shift;
  return if(ref($session) ne "HASH");
@@ -555,7 +604,7 @@ sub websocket_close (@) {
   eval { close($session->{"socket"}); };
  }
  if($session->{"pid"}) {
-  eval { waitpid($session->{"pid"},0); };
+  eval { &reap_child_bounded($session->{"pid"},$CONNECT_CHILD_REAP_GRACE); };
  }
 }
 
@@ -565,7 +614,11 @@ sub websocket_connect_candidate (@) {
  my $session;
  if($scheme eq "wss") {
   my ($reader,$writer);
-  my $pid=eval { IPC::Open2::open2($reader,$writer,"sh","-c","exec socat -T $timeout - OPENSSL:$host:$port,verify=0 2>/dev/null"); };
+  # socat's -T is an INACTIVITY timeout, not a connect timeout; on its own it
+  # does nothing for a TV that never answers the SYN. connect-timeout is the
+  # address option that actually bounds the connect phase.
+  my $ctimeout=&connect_timeout_for($timeout);
+  my $pid=eval { IPC::Open2::open2($reader,$writer,"sh","-c","exec socat -T $timeout - OPENSSL:$host:$port,verify=0,connect-timeout=$ctimeout 2>/dev/null"); };
   return undef if(!$pid);
   binmode($reader);
   binmode($writer);
@@ -585,7 +638,7 @@ sub websocket_connect_candidate (@) {
    PeerHost => $host,
    PeerPort => $port,
    Proto => 'tcp',
-   Timeout => $timeout,
+   Timeout => &connect_timeout_for($timeout),
   );
   return undef if(!$sock);
   $session={
