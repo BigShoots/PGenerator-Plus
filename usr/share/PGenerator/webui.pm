@@ -12114,8 +12114,7 @@ body.layout-desktop #uiSettingsCard .ui-settings-zoom{display:block}
    UI Settings. Restrict this to mode/series/pattern selectors: primary action
    buttons retain their higher-emphasis gradient. */
 .pat-btn.active,#meterSeriesTabRow [data-series-tab].btn-primary,#meterSeriesBtnRow [data-series].btn-primary,
-#meterSeriesGroupAutoCal [data-autocal-series].btn-primary,#meterCustomSeriesBtnGrey.btn-primary,
-#meterCustomSeriesBtn3dLut.btn-primary{
+#meterSeriesGroupAutoCal [data-autocal-series].btn-primary,#meterCustomSeriesBtn3dLut.btn-primary{
  border:1px solid var(--accent);background:var(--selected-bg);color:var(--text-primary);
  box-shadow:inset 4px 0 0 var(--accent);padding-left:12px
 }
@@ -12734,13 +12733,20 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
      <div id="meterSeriesGroupGreyscale" style="display:flex;gap:4px;flex-wrap:wrap">
-      <button class="btn btn-sm btn-secondary" data-series="greyscale-2" onclick="meterSelectSeries('greyscale',2)">Greyscale 2pt</button>
-	      <button class="btn btn-sm btn-secondary" data-series="greyscale-11" onclick="meterSelectSeries('greyscale',11)">Greyscale 11pt</button>
-	      <button class="btn btn-sm btn-secondary" data-series="greyscale-21" onclick="meterSelectSeries('greyscale',21)">Greyscale 21pt</button>
-	      <button class="btn btn-sm btn-secondary" data-series="greyscale-30" onclick="meterSelectSeries('greyscale',30)" style="display:none">Greyscale HDR 30pt</button>
-	      <button class="btn btn-sm btn-secondary" data-series="greyscale-26" onclick="meterSelectSeries('greyscale',26)">Greyscale 26pt</button>
-      <button class="btn btn-sm btn-secondary" data-series="greyscale-100" onclick="meterSelectSeries('greyscale',100)">Greyscale 101pt</button>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnGrey" onclick="meterOpenCustomSeriesManager('greyscale')" title="Load, create, edit, import and export custom greyscale series">Custom Series</button>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
+       <span>Series</span>
+       <select id="meterGreyscaleSeriesSelect" class="inline-select" onchange="meterSelectGreyscaleSeries(this.value)" style="max-width:240px">
+        <option value="custom" data-custom-active="1" disabled hidden>Custom Series</option>
+        <option value="custom-manager">Custom Series&hellip;</option>
+        <option value="2">Greyscale 2pt</option>
+        <option value="11">Greyscale 11pt</option>
+        <option value="21" selected>Greyscale 21pt</option>
+        <option value="30" data-hdr-series="1" disabled hidden>Greyscale HDR 30pt</option>
+        <option value="26" data-autocal-active="1" disabled hidden>Greyscale 26pt</option>
+        <option value="100">Greyscale 101pt</option>
+       </select>
+       <span class="meter-help-tip" title="Choose a built-in greyscale series, or choose Custom Series to load, create, edit, import or export a custom greyscale series. Each series keeps a separate measurement cache." aria-label="Greyscale series help">?</span>
+      </label>
       <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
@@ -22941,7 +22947,7 @@ function meterOnChromaticityChartChange(){
  // The MacLeod series are only selectable on an MB chart, so the option list has
  // to follow the chart the moment it changes.
  if(typeof meterSyncColorCheckerSeriesUi==='function'){
-  try{ meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null); }catch(e){}
+  try{ meterSyncColorCheckerSeriesUi(['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesPoints:null); }catch(e){}
  }
  meterUpdateReadButtons();
 }
@@ -28916,6 +28922,8 @@ function meterUpdateReadButtons(){
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive;
  const colorCheckerSelect=document.getElementById('meterColorCheckerSeriesSelect');
  if(colorCheckerSelect) colorCheckerSelect.disabled=busy;
+ const greyscaleSelect=document.getElementById('meterGreyscaleSeriesSelect');
+ if(greyscaleSelect) greyscaleSelect.disabled=busy;
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
@@ -29286,25 +29294,22 @@ function meterUseHdrGreyscale30(points){
  return normalized===30&&mode==='hdr10';
 }
 
-function meterSetSeriesButtonVisible(seriesKey,visible){
- const btn=document.querySelector('#meterSeriesBtnRow button[data-series="'+seriesKey+'"]');
- if(!btn) return null;
- btn.style.display=visible?'':'none';
- btn.hidden=!visible;
- btn.disabled=!visible;
- return btn;
-}
-
 function meterUpdateSeriesLabels(){
- const lgTvAvailable=meterGreyTvControlsActive();
- const grey21=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-21"]');
+ const select=document.getElementById('meterGreyscaleSeriesSelect');
+ const grey21=select&&select.querySelector('option[value="21"]');
  if(grey21) grey21.textContent=meterGreyscale21SeriesLabel();
- const grey26=meterSetSeriesButtonVisible('greyscale-26',false);
+ const grey26=select&&select.querySelector('option[value="26"]');
  if(grey26) grey26.textContent=meterGreyscale26SeriesLabel();
- meterSetSeriesButtonVisible('greyscale-30',meterHdrGreyscaleSeriesAvailable());
+ const grey30=select&&select.querySelector('option[value="30"]');
+ const hdrAvailable=meterHdrGreyscaleSeriesAvailable();
+ if(grey30){
+  grey30.hidden=!hdrAvailable;
+  grey30.disabled=!hdrAvailable;
+ }
  if(meterActiveSeriesKey==='greyscale-30'&&!meterHdrGreyscaleSeriesAvailable()){
   meterActiveSeriesKey='';
  }
+ meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null);
  const edit21=document.getElementById('meterGreyEdit21Btn');
  if(edit21) edit21.textContent=meterUseLgGreyscale21(21)?'LG 22pt':'21pt';
 }
@@ -29506,6 +29511,7 @@ function meterShow3dLutAutoCalContext(){
 }
 
 function meterDefaultSeriesButtonForTab(tab){
+ if(tab==='greyscale') return {dataset:{series:'greyscale-21'},hidden:false,disabled:false,style:{display:''}};
  const group=document.getElementById(tab==='color'?'meterSeriesGroupColor':(tab==='3dlut'?'meterSeriesGroup3dLut':'meterSeriesGroupGreyscale'));
  if(!group) return null;
  return Array.from(group.querySelectorAll('button[data-series]')).find(btn=>!btn.hidden&&btn.style.display!=='none'&&!btn.disabled)||null;
@@ -33126,14 +33132,13 @@ function meterSelectionRunStepsWithMeasuredEndpoints(steps,opts){
 let meterCustomSeriesEditor=null;
 
 function meterRenderCustomSeriesButtons(){
- // Custom series LOAD from the Custom Series manager. The per-group
- // buttons keep a STATIC label; Color uses the Series select instead. The
- // loaded custom series is named in the tag beside its category control.
- // Nothing is loaded by default.
+ // Custom series LOAD from the Custom Series manager. Greyscale and Color use
+ // their Series selects; 3D LUT retains its manager button. The loaded custom
+ // series is named in the tag beside its category control.
  const custom=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
  const active=(custom&&!custom.builtin_verification)?custom:null;
  const activeCat=active?(active.kind==='lattice'?'3dlut':(active.category==='color'?'color':'greyscale')):null;
- [['meterCustomSeriesBtnGrey','meterCustomSeriesLoadedGrey','greyscale'],
+ [[null,'meterCustomSeriesLoadedGrey','greyscale'],
   [null,'meterCustomSeriesLoadedColor','color'],
   ['meterCustomSeriesBtn3dLut','meterCustomSeriesLoaded3dLut','3dlut']].forEach(row=>{
   const btn=row[0]?document.getElementById(row[0]):null;
@@ -33149,6 +33154,7 @@ function meterRenderCustomSeriesButtons(){
    tag.title=on?String(active.name||''):'';
   }
  });
+ try{ meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null); }catch(e){}
  try{ meterSyncColorCheckerSeriesUi(['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesPoints:null); }catch(e){}
 }
 
@@ -34159,7 +34165,7 @@ function meterHcfrFixedCodesEnabled(){
 function meterSyncHcfrFixedCodesUi(){
  // The sat sweeps live in the Series select now, so there is no checkbox or
  // separate button left to sync -- just re-render the select.
- meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null);
+ meterSyncColorCheckerSeriesUi(['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesPoints:null);
 }
 function meterColorCheckerSeriesStoredValue(){
  let id=30;
@@ -34180,6 +34186,20 @@ function meterMbChartActive(){
 }
 function meterColorCheckerSeriesIsMbOnly(id){
  return [800008,800064].includes(Math.round(Number(id)));
+}
+function meterSyncGreyscaleSeriesUi(activePoints){
+ const select=document.getElementById('meterGreyscaleSeriesSelect');
+ if(!select) return;
+ const activeId=Math.round(Number(activePoints));
+ const builtins=[2,11,21,26,30,100];
+ const activeCustom=(!builtins.includes(activeId)&&typeof meterCustomSeriesById==='function')?meterCustomSeriesById(activePoints):null;
+ const activeKind=String((activeCustom&&activeCustom.kind)||'');
+ if(activeCustom&&!activeCustom.builtin_verification&&activeCustom.category!=='color'
+  &&!['lattice','hybrid','skeleton'].includes(activeKind)){
+  select.value='custom';
+  return;
+ }
+ select.value=(builtins.includes(activeId)?String(activeId):'21');
 }
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
@@ -34235,6 +34255,19 @@ function meterSelectBuiltinColorChecker(selected){
  if(meterColorCheckerSeriesUsesFullDeltaE(points)) meterEnableFullColorDeltaE();
  meterSyncColorCheckerSeriesUi(points);
  return meterSelectSeries('colors',points);
+}
+function meterSelectGreyscaleSeries(value){
+ if(String(value)==='custom-manager'){
+  meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null);
+  meterOpenCustomSeriesManager('greyscale');
+  return;
+ }
+ const points=Math.round(Number(value));
+ if(![2,11,21,30,100].includes(points)){
+  meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null);
+  return;
+ }
+ return meterSelectSeries('greyscale',points);
 }
 // One selector now covers ColorChecker, saturation and MacLeod-Boynton series.
 // Saturation ids persist through the same preference key the removed checkbox
@@ -34322,6 +34355,7 @@ async function meterSelectSeries(type,points,opts){
   }
   meterUpdateReadButtons();
   meterUpdateDeltaEFormControl();
+  meterRenderCustomSeriesButtons();
   return;
   }
  }
