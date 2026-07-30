@@ -12754,6 +12754,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800096" data-sdr-only="1">ColorChecker SG (96)</option>
        <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
        <option value="800137" data-sdr-only="1">MacLeod-Boynton Hue Circle (37)</option>
+       <option value="800008" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton Focal Colours (8)</option>
       </select>
       <span class="meter-help-tip" title="Choose a built-in display verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Each preset keeps a separate measurement cache." aria-label="ColorChecker series help">?</span>
      </label>
@@ -30817,7 +30818,8 @@ const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'sdr',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
  {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'sdr',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
  {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
- {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'sdr',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]}
+ {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'sdr',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
+ {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'sdr',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]}
 ];
 
 const METER_COLORCHECKER_SG_NAMES=[
@@ -30928,6 +30930,50 @@ function meterMbChartToXyz(l,s){
  return meterCieApplyMatrix({X:lv/factors[0],Y:(1-lv)/factors[1],Z:(Number(s)||0)/factors[2]},inv);
 }
 
+// Scale a chromaticity to the brightest luminance the active gamut can show.
+// A chromaticity outside the gamut cannot be reproduced at ANY luminance, so it
+// is clamped -- something has to be sent -- and reported, letting the caller
+// declare it instead of measuring a silently altered colour and calling it a pass.
+function meterMbMaxInGamutRgb(xyz,matrix){
+ const det=(M)=>M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])
+  -M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
+  +M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+ const solve=(M,v)=>{
+  const d=det(M);
+  if(!isFinite(d)||Math.abs(d)<1e-12) return [0,0,0];
+  const col=(i)=>{const C=M.map(row=>row.slice());for(let r=0;r<3;r++) C[r][i]=v[r];return det(C);};
+  return [col(0)/d,col(1)/d,col(2)/d];
+ };
+ let rgb=solve(matrix,[xyz.X,xyz.Y,xyz.Z]);
+ if(!rgb.every(v=>isFinite(v))) return {rgb:[0,0,0],scale:0,outOfGamut:true};
+ const outOfGamut=(Math.min.apply(null,rgb)<-1e-6);
+ const max=Math.max.apply(null,rgb);
+ if(!(max>0)) return {rgb:[0,0,0],scale:0,outOfGamut:true};
+ const scale=1/max;
+ rgb=rgb.map(v=>Math.max(0,Math.min(1,v*scale)));
+ return {rgb:rgb,scale:scale,outOfGamut:outOfGamut};
+}
+
+// Fig 1b focal colours (Table 3). Chromaticity is exact; luminance is whatever
+// the active gamut allows, so it differs from patch to patch.
+function meterBuildMbFocalColourSteps(){
+ const matrix=meterAnalysisGamut().rgbToXyz;
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ return METER_MB_PAPER_FOCAL.map(entry=>{
+  const mb=meterMbPaperToChart(entry.l,entry.s);
+  const fit=meterMbMaxInGamutRgb(meterMbChartToXyz(mb.l,mb.s),matrix);
+  const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
+  const sum=xyz.X+xyz.Y+xyz.Z;
+  return {ire:Math.round(xyz.Y*100),
+   r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
+   name:'MB Focal '+entry.name+(fit.outOfGamut?' (out of gamut)':''),
+   target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
+   input_max:inputMax,series_mode:'mb-focal-sdr',
+   mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:entry.l,mb_paper_s:entry.s,
+   out_of_gamut:fit.outOfGamut};
+ });
+}
+
 function meterBuildMbHueCircleSteps(){
  const gamut=meterAnalysisGamut(),matrix=gamut.rgbToXyz;
  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
@@ -30979,6 +31025,7 @@ function meterBuildBuiltinColorCheckerSteps(series){
  if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin-sdr');
  if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
+ if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
  return [];
 }
 
@@ -33802,7 +33849,7 @@ function meterDefaultTargetsForColorSeries(type,points){
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
 const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
-const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137];
+const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,800008];
 function meterHcfrFixedCodesAvailable(){
  return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
 }
@@ -33827,7 +33874,7 @@ function meterColorCheckerSeriesStoredValue(){
  return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
 }
 function meterColorCheckerSeriesIsSdrOnly(id){
- return [29,800124,800096,800019,800137].includes(Math.round(Number(id)));
+ return [29,800124,800096,800019,800137,800008].includes(Math.round(Number(id)));
 }
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
