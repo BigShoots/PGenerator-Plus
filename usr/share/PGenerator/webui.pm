@@ -12804,7 +12804,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -34484,6 +34484,34 @@ function meterMbChartActive(){
 function meterColorCheckerSeriesIsMbOnly(id){
  return [800008,800064].includes(Math.round(Number(id)));
 }
+function meterHueCircleSeriesActive(type,points){
+ const t=type!=null?String(type):String(meterActiveSeriesType||'');
+ const p=points!=null?Math.round(Number(points)):Math.round(Number(meterActiveSeriesPoints));
+ return t==='colors'&&p===800137;
+}
+function meterSelectChartForSeries(type,points){
+ const chart=document.getElementById('meterChromaticityChart');
+ if(!chart) return;
+ const hue=meterHueCircleSeriesActive(type,points);
+ let next='';
+ if(hue&&chart.value!=='cieopp_2') next='cieopp_2';
+ else if(!hue&&meterCieIsOpponentMode(chart.value)) next='cie1931_2';
+ if(!next) return;
+ chart.value=next;
+ meterOnChromaticityChartChange();
+}
+function meterSyncOpponentChartAvailability(type,points){
+ const chart=document.getElementById('meterChromaticityChart');
+ if(!chart) return;
+ const hue=meterHueCircleSeriesActive(type,points);
+ Array.from(chart.options||[]).forEach(option=>{
+  if(option.value==='cieopp_2') option.disabled=!hue;
+ });
+ const opponent=typeof meterCieIsOpponentMode==='function'&&meterCieIsOpponentMode();
+ chart.title=opponent
+  ?'Cone-Opponent Polar is dedicated to the MacLeod-Boynton Hue Circle series.'
+  :'';
+}
 function meterSyncGreyscaleSeriesUi(activePoints){
  const select=document.getElementById('meterGreyscaleSeriesSelect');
  if(!select) return;
@@ -34502,8 +34530,11 @@ function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
  if(!select) return;
  const mb=meterMbChartActive();
+ const opponent=typeof meterCieIsOpponentMode==='function'&&meterCieIsOpponentMode();
  Array.from(select.options||[]).forEach(option=>{
-  option.disabled=(option.dataset.customActive==='1')||(option.dataset.mbOnly==='1'&&!mb);
+  option.disabled=opponent
+   ?option.value!=='800137'
+   :(option.dataset.customActive==='1')||(option.dataset.mbOnly==='1'&&!mb);
  });
  const activeId=Math.round(Number(activePoints));
  const selectable=(typeof METER_SERIES_SELECT_IDS!=='undefined')?METER_SERIES_SELECT_IDS:METER_COLORCHECKER_SERIES_IDS;
@@ -34521,6 +34552,10 @@ function meterSyncColorCheckerSeriesUi(activePoints){
  // series and its measurement cache survive the chart change. Switching series
  // here would discard readings.
  select.value=String(wanted);
+ meterSyncOpponentChartAvailability(
+  ['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesType:null,
+  activePoints
+ );
 }
 function meterEnableFullColorDeltaE(){
  const includeLum=document.getElementById('meterColorIncludeLumError');
@@ -34548,6 +34583,7 @@ function meterSelectBuiltinColorChecker(selected){
  if(!explicit&&meterSelectImportedHcfrGroup('colorChecker')) return true;
  let points=explicit?Math.round(Number(selected)):meterColorCheckerSeriesStoredValue();
  if(!METER_COLORCHECKER_SERIES_IDS.includes(points)) points=30;
+ if(points===800137) meterSelectChartForSeries('colors',points);
  try{localStorage.setItem(METER_COLORCHECKER_SERIES_KEY,String(points));}catch(e){}
  if(meterColorCheckerSeriesUsesFullDeltaE(points)) meterEnableFullColorDeltaE();
  meterSyncColorCheckerSeriesUi(points);
@@ -34608,8 +34644,11 @@ async function meterSelectSeries(type,points,opts){
    toast('Series scan is running — stop it before reloading this chart',true);
    return;
   }
-  const ok=await meterShowChoiceModal({title:'Switch series?',body:'Leave the current series and cancel the running series read?',acceptLabel:'Switch',cancelLabel:'Stay'});
-  if(!ok) return;
+ const ok=await meterShowChoiceModal({title:'Switch series?',body:'Leave the current series and cancel the running series read?',acceptLabel:'Switch',cancelLabel:'Stay'});
+ if(!ok) return;
+ }
+ if(!meterHueCircleSeriesActive(type,points)&&meterCieIsOpponentMode()){
+  meterSelectChartForSeries(type,points);
  }
  clearActive();
  // Past every early return (unavailable series, running-series switch declined),
@@ -34681,6 +34720,7 @@ async function meterSelectSeries(type,points,opts){
  meterGreyscaleLastCurrentKey=null;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
+ meterSyncOpponentChartAvailability(type,points);
  meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
