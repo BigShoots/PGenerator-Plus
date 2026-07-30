@@ -22507,8 +22507,10 @@ const CIE_LOCUS=[[.1741,.005],[.174,.005],[.1733,.0048],[.1726,.0048],[.1714,.00
 const CIE_LOCUS_1964=[[.181333,.019685],[.180313,.0193476],[.178387,.0187109],[.175488,.0181337],[.170634,.0178493],[.165027,.0202828],[.159022,.0257251],[.151001,.0364389],[.138922,.0589201],[.11518,.10904],[.0727766,.229239],[.0209874,.440113],[.00558634,.674543],[.0495405,.802302],[.125236,.810194],[.207057,.766282],[.278588,.7113],[.347296,.65009],[.414213,.585787],[.479038,.520962],[.53856,.46144],[.58996,.41004],[.630629,.369371],[.661224,.338776],[.68266,.31734],[.695483,.304517],[.705873,.294127],[.713713,.286287],[.71679,.28321],[.718732,.281268],[.719763,.280237],[.72016,.27984],[.720358,.279642]];
 const CIE_LOCUS_2015_2=[[.16638,.0182998],[.164995,.0182721],[.162958,.0165252],[.159581,.0158926],[.155404,.0176748],[.150365,.0217336],[.144232,.0289496],[.133916,.0458814],[.115738,.0832027],[.0805505,.176011],[.0311653,.355796],[.00418288,.591944],[.0238164,.796176],[.0932183,.840635],[.170905,.806175],[.243156,.749116],[.311614,.685758],[.380606,.618505],[.450008,.549684],[.518078,.481808],[.577571,.422385],[.624569,.375412],[.659999,.339992],[.683693,.316307],[.699072,.300928],[.708867,.291133],[.715279,.284721],[.719116,.280884],[.721541,.278459],[.722647,.277353],[.723143,.276857],[.723291,.276709]];
 const CIE_LOCUS_2015_10=[[.17842,.0246367],[.176521,.024325],[.173723,.0218546],[.169345,.0209976],[.164082,.0234899],[.157689,.0292501],[.149774,.0395764],[.136265,.0639734],[.112468,.117502],[.0692931,.244778],[.0182574,.463233],[.00817345,.691305],[.0502997,.831847],[.128254,.831344],[.20946,.776992],[.283155,.712361],[.35114,.647341],[.417162,.582324],[.480878,.518942],[.540968,.458964],[.593121,.406852],[.633963,.366025],[.664977,.335017],[.685958,.314042],[.699774,.300226],[.708708,.291292],[.714655,.285345],[.718244,.281756],[.720535,.279465],[.721581,.278419],[.722049,.277951],[.722187,.277813]];
-// CIE 170-2 spectral MacLeod-Boynton coordinates at 5 nm. The previous
-// 10 nm subset made the short-wave peak visibly angular in both 2D and 3D.
+// CIE 170-2 spectral MacLeod-Boynton coordinates at 5 nm in the source table's
+// spectral-maximum S normalization. meterCieChartLocus converts these to the
+// relative cone-troland display convention. The previous 10 nm subset made the
+// short-wave peak visibly angular in both 2D and 3D.
 const CIE_LOCUS_MB_2=[[.690547,.855670],[.684874,.835495],[.677571,.858452],[.670708,.915226],[.662656,.953597],[.645977,.991436],[.627777,.996399],[.605668,.959504],[.585916,.898535],[.565891,.807527],[.551744,.731596],[.539800,.641510],[.531511,.548520],[.527476,.441625],[.524357,.343327],[.525096,.258774],[.528335,.184906],[.533931,.125009],[.540738,.081120],[.547797,.052248],[.555470,.033091],[.563711,.020925],[.572275,.013104],[.580161,.007722],[.588088,.004342],[.596380,.002563],[.603889,.001511],[.611831,.000907],[.619954,.000546],[.627978,.000332],[.636807,.000198],[.646077,.000120],[.655844,.000074],[.666621,.000045],[.679293,.000028],[.692851,.000017],[.708852,.000011],[.726397,.000007],[.746141,.000005],[.767738,.000003],[.788583,.000002],[.810139,.000001],[.831629,.000001],[.852855,.000001],[.871948,.000001],[.888841,0],[.903949,0],[.917401,0],[.927421,0],[.935885,0],[.943662,0],[.950920,0],[.954901,0],[.958448,0],[.961871,0],[.964655,0],[.966375,0],[.967596,0],[.968455,0],[.969042,0],[.969394,0],[.969636,0],[.969674,0]];
 const CIE_LOCUS_MB_10=[[.6927375,.8357751],[.6870832,.8206594],[.6797181,.8488253],[.6727481,.9095265],[.6645833,.9510032],[.6476727,.9906852],[.6292175,.996258],[.6067605,.9579689],[.5866436,.893601],[.5661608,.7979728],[.551633,.7181829],[.539265,.6246675],[.5305491,.5292222],[.5260994,.420745],[.5224176,.3229995],[.5226151,.2402932],[.5253855,.1693177],[.5306679,.1129544],[.5371162,.07240147],[.5437788,.04611277],[.5512122,.02891989],[.5591616,.01809867],[.5677017,.01123174],[.5756501,.00656182],[.5838496,.003660485],[.5926899,.002146038],[.6007595,.00125562],[.609689,.0007499602],[.6190357,.0004504866],[.6283244,.0002728945],[.6386031,.0001626139],[.6493716,.00009850216],[.6605153,.00006059423],[.6726908,.00003686778],[.6867121,.00002280989],[.7013987,.00001418905],[.7183437,.000008957794],[.7364157,.000005776205],[.7562422,.000003822312],[.7778403,.000002526004],[.7982168,.000001709524],[.8189538,.000001189292],[.8394434,.0000008480996],[.8595312,.0000006193677],[.8774655,.0000004661395],[.8932797,.0000003608705],[.907444,0],[.9201038,0],[.9294768,0],[.9374403,0],[.9448365,0],[.9518048,0],[.9555935,0],[.9589933,0],[.9623054,0],[.9650123,0],[.9666802,0],[.9678665,0],[.9687004,0],[.96927,0],[.9696107,0],[.969845,0],[.9698788,0]];
 
@@ -22623,11 +22625,31 @@ const CIE_LMS_TO_CIE2015_10=[
  [.692839451,.349675448,.000000091],
  [.000000048,-.000000066,2.146879535]
 ];
-// CIE 170-2 MacLeod-Boynton normalization. L and M are weighted so their
-// sum is the cone-fundamental luminous-efficiency value. S is weighted so
-// the maximum spectral sMB coordinate is one.
-const CIE_MB_FACTORS_2=[0.68990078,0.34832169,0.03715959];
-const CIE_MB_FACTORS_10=[0.69283938,0.34967553,0.05546866];
+// MacLeod-Boynton relative cone-troland normalization. L and M are weighted so
+// their sum is the cone-fundamental luminous-efficiency value. S is normalized
+// so an equal-energy spectrum has S/(L+M)=1, matching MacLeod-Boynton practice
+// and the coordinate convention used by Cao, Pokorny & Smith (2005), Fig. 1.
+// The former S factors (0.03715959 / 0.05546866) normalized the spectral maximum
+// to one instead, compressing the paper's s targets by 52x / 39x.
+const CIE_MB_FACTORS_2=[0.68990078,0.34832169,1.934859310];
+const CIE_MB_FACTORS_10=[0.69283938,0.34967553,2.146879535];
+const CIE_MB_LOCUS_S_SCALE_2=1.934859310/0.03715959;
+const CIE_MB_LOCUS_S_SCALE_10=2.146879535/0.05546866;
+const CIE_MB_EES_RAW_L_2=0.7078236164536152;
+const CIE_MB_EES_RAW_L_10=0.6992367760459623;
+function meterCieMbRelativeL(rawL,ten){
+ const x=Math.max(0,Math.min(1,Number(rawL)||0));
+ const e=ten?CIE_MB_EES_RAW_L_10:CIE_MB_EES_RAW_L_2;
+ const r=e*.34/(.66*(1-e));
+ return x/(x+r*(1-x));
+}
+function meterCieMbRawL(relativeL,ten){
+ const x=Math.max(0,Math.min(1,Number(relativeL)||0));
+ const e=ten?CIE_MB_EES_RAW_L_10:CIE_MB_EES_RAW_L_2;
+ const r=e*.34/(.66*(1-e));
+ const den=1-x+r*x;
+ return Math.abs(den)>1e-12?(r*x/den):x;
+}
 function meterCieApplyMatrix(xyz,M){
  const X=Number(xyz.X),Y=Number(xyz.Y),Z=Number(xyz.Z);
  return {X:M[0][0]*X+M[0][1]*Y+M[0][2]*Z,Y:M[1][0]*X+M[1][1]*Y+M[1][2]*Z,Z:M[2][0]*X+M[2][1]*Y+M[2][2]*Z};
@@ -22646,7 +22668,9 @@ function meterCieReferenceCoordFromXYZ(xyz){
   const lms=meterCieApplyMatrix({X:X,Y:Y,Z:Z},ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
   const f=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
   const L=f[0]*lms.X,M=f[1]*lms.Y,S=f[2]*lms.Z,lm=L+M;
-  return lm>0?{x:L/lm,y:S/lm,Y:lm,L:L,M:M,S:S,reference:true}:null;
+  if(!(lm>0)) return null;
+  const l=meterCieMbRelativeL(L/lm,ten);
+  return {x:l,y:S/lm,Y:lm,L:l*lm,M:(1-l)*lm,S:S,reference:true};
  }
  if(mode.indexOf('cie1976_')===0){
   const d=X+15*Y+3*Z;
@@ -22688,7 +22712,9 @@ function meterCieChartCoordFromXYZ(xyz){
   const f=wantsTen?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
   const L=f[0]*lms.X,M=f[1]*lms.Y,S=f[2]*lms.Z;
   const lm=L+M;
-  return lm>0?{x:L/lm,y:S/lm,Y:lm,L:L,M:M,S:S}:{x:0,y:0,Y:0,L:0,M:0,S:0};
+  if(!(lm>0)) return {x:0,y:0,Y:0,L:0,M:0,S:0};
+  const l=meterCieMbRelativeL(L/lm,wantsTen);
+  return {x:l,y:S/lm,Y:lm,L:l*lm,M:(1-l)*lm,S:S};
  }
  if(mode.indexOf('cie1976_')===0){
   const d=X+15*Y+3*Z;
@@ -22702,6 +22728,25 @@ function meterCieChartCoordFromXy(x,y,Y){
  if(!(x>=0&&y>0)) return null;
  return meterCieReferenceCoordFromXYZ({X:x*Y/y,Y:Y,Z:(1-x-y)*Y/y});
 }
+function meterCieDeclaredMbTargetCoord(reading){
+ if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!reading) return null;
+ let source=reading;
+ if((!Number.isFinite(Number(source.mb_target_l))||!Number.isFinite(Number(source.mb_target_s)))
+    &&typeof meterCanonicalSeriesStep==='function'){
+  const step=meterCanonicalSeriesStep(reading);
+  if(step) source=step;
+ }
+ const l=Number(source.mb_target_l),s=Number(source.mb_target_s);
+ return Number.isFinite(l)&&Number.isFinite(s)?{x:l,y:s}:null;
+}
+function meterCieChartTargetCoord(reading,targetXYZ){
+ const declared=meterCieDeclaredMbTargetCoord(reading);
+ if(declared){
+  declared.Y=targetXYZ&&Number.isFinite(Number(targetXYZ.Y))?Number(targetXYZ.Y):0;
+  return declared;
+ }
+ return targetXYZ?meterCieChartCoordFromXYZ(targetXYZ):null;
+}
 function meterCieReferenceXyForChartCoord(x,y){
  const mode=meterChromaticityChartMode();
  x=Number(x);y=Number(y);
@@ -22712,7 +22757,8 @@ function meterCieReferenceXyForChartCoord(x,y){
  }
  if(mode.indexOf('ciemb_')===0){
   const ten=/_10$/.test(mode),f=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
-  const raw={X:x/f[0],Y:(1-x)/f[1],Z:y/f[2]};
+  const rawL=meterCieMbRawL(x,ten);
+  const raw={X:rawL/f[0],Y:(1-rawL)/f[1],Z:y/f[2]};
   const xyz=meterCieApplyMatrix(raw,ten?CIE_LMS_TO_CIE2015_10:CIE_LMS_TO_CIE2015_2);
   const s=xyz.X+xyz.Y+xyz.Z;
   return s>0?{x:xyz.X/s,y:xyz.Y/s}:null;
@@ -22727,8 +22773,8 @@ const CIE_D65_COORDS={
  cie1964_10:[.3138236469,.3309989855],
  cie2015_2:[.3134524493,.3308018280],
  cie2015_10:[.3137862795,.3312747630],
- ciemb_2:[.6981344636,.0206601102],
- ciemb_10:[.6891404791,.0276904791]
+ ciemb_2:[.6495102165,1.0757493978],
+ ciemb_10:[.6492472717,1.0717425460]
 };
 function meterCieD65Coord(){
  const mode=meterChromaticityChartMode();
@@ -22746,8 +22792,9 @@ function meterCieD65Coord(){
 function meterCieTargetsAvailable(){
  return true;
 }
-function meterCieMacLeodDisplayLocus(source){
- const locus=source.map(p=>[p[0],p[1]]);
+function meterCieMacLeodDisplayLocus(source,sScale,ten){
+ const scale=(Number(sScale)>0)?Number(sScale):1;
+ const locus=source.map(p=>[meterCieMbRelativeL(p[0],!!ten),p[1]*scale]);
  if(locus.length<5) return locus;
  // In this projection the 390 nm endpoint and its tiny 395 nm reversal sit
  // high on the diagram, where the straight purple boundary meets the spectral
@@ -22772,8 +22819,8 @@ function meterCieChartLocus(){
  const mode=meterChromaticityChartMode();
  if(mode==='cie2015_2') return CIE_LOCUS_2015_2;
  if(mode==='cie2015_10') return CIE_LOCUS_2015_10;
- if(mode==='ciemb_2') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_2);
- if(mode==='ciemb_10') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_10);
+ if(mode==='ciemb_2') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_2,CIE_MB_LOCUS_S_SCALE_2,false);
+ if(mode==='ciemb_10') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_10,CIE_MB_LOCUS_S_SCALE_10,true);
  const locus=(mode==='cie1964_10'||mode==='cie1976_10')?CIE_LOCUS_1964:CIE_LOCUS;
  if(mode.indexOf('cie1976_')===0){
   return locus.map(p=>{
@@ -22850,7 +22897,7 @@ function meterCieChartAxis(){
  const ten=/_10$/.test(mode),degree=ten?'10\u00B0':'2\u00B0';
  if(mode.indexOf('cie1976_')===0) return {x:'u\u2032',y:'v\u2032',title:'CIE 1976 UCS Chromaticity ('+degree+')',threeD:'CIE 1976 L*u*v* ('+degree+', 3D)'};
  if(mode.indexOf('cie2015_')===0) return {x:'xF',y:'yF',title:'CIE 170-2:2015 Chromaticity ('+degree+')',threeD:'CIE 170-2 XF YF ZF ('+degree+', 3D)'};
- if(mode.indexOf('ciemb_')===0) return {x:'lMB',y:'sMB',title:'MacLeod-Boynton Chromaticity ('+degree+')',threeD:'MacLeod-Boynton LMB MMB SMB ('+degree+', 3D)'};
+ if(mode.indexOf('ciemb_')===0) return {x:'L/(L+M)',y:'S/(L+M)',title:'MacLeod-Boynton Relative Cone-Troland Chromaticity ('+degree+')',threeD:'MacLeod-Boynton Relative Cone Trolands ('+degree+', 3D)'};
  if(mode==='cie1964_10') return {x:'x',y:'y',title:'CIE 1964 Chromaticity (10\u00B0)',threeD:'CIE 1964 X10 Y10 Z10 (3D)'};
  return {x:'x',y:'y',title:'CIE 1931 Chromaticity (2\u00B0)',threeD:'CIE 1931 XYZ (2\u00B0, 3D)'};
 }
@@ -30947,21 +30994,16 @@ const METER_MB_PAPER_REGION_EDGES=[
  {pair:['Orange','Red'],a:5.02,b:-5.97},{pair:['Red','Pink'],a:38.40,b:-50.85}
 ];
 
-// The paper plots Smith-Pokorny fundamentals on the CIE 1964 10 degree observer
-// normalised to equal-energy = (0.66, 1.0); these charts use CIE 170-2, where
-// equal-energy is near (0.699, 0.026) at 10 degrees. The s axes differ by ~39x
-// and l by ~0.04, which is about the width of the paper's colour regions -- using
-// the published numbers raw would put Blue in White's column. So anchor
-// equal-energy onto equal-energy: s is a pure ratio and takes a single scale k,
-// while l needs the one-parameter Mobius transform that carries the paper's
-// l_E=0.66 onto this chart's l_E. Both are derived from the live chart mode, so
-// switching between the 2 and 10 degree MB charts re-derives them.
+// The paper uses Smith-Pokorny fundamentals and equal-energy = (0.66, 1.0).
+// The chart's CIE 170-2 fundamentals are globally normalized to that same
+// relative cone-troland origin. Derive the anchors from the selected observer
+// so the paper reconstruction remains numerically aligned in both MB modes.
 function meterMbPaperAnchors(){
  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
  const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
  const lms=meterCieApplyMatrix({X:1,Y:1,Z:1},ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
  const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
- const lE=L/lm,sE=S/lm;
+ const lE=meterCieMbRelativeL(L/lm,ten),sE=S/lm;
  return {ten:ten,lE:lE,sE:sE,k:sE,r:(0.66/0.34)*((1-lE)/lE)};
 }
 function meterMbPaperToChart(l,s){
@@ -30974,7 +31016,7 @@ function meterMbChartToXyz(l,s){
  const a=meterMbPaperAnchors();
  const factors=a.ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
  const inv=a.ten?CIE_LMS_TO_CIE2015_10:CIE_LMS_TO_CIE2015_2;
- const lv=Number(l)||0;
+ const lv=meterCieMbRawL(Number(l)||0,a.ten);
  return meterCieApplyMatrix({X:lv/factors[0],Y:(1-lv)/factors[1],Z:(Number(s)||0)/factors[2]},inv);
 }
 
@@ -31141,7 +31183,7 @@ function meterBuildMbHueCircleSteps(){
  const mbFor=rgb=>{
   const lms=meterCieApplyMatrix(xyzFor(rgb),lmsMatrix);
   const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
-  return {x:L/lm,y:S/lm};
+  return {x:meterCieMbRelativeL(L/lm,ten),y:S/lm};
  };
  const c=mbFor(center);
  const addVec=(base,vec)=>base.map((value,i)=>value+vec[i]);
@@ -46474,22 +46516,28 @@ function meterCieMbGamutSMax(){
  }catch(e){ return 0; }
 }
 // Widest lMB/sMB actually present in the loaded series and its readings. The
-// gamut apex is a poor guide on its own: a display's blue primary sits very high
-// in sMB (BT.2020 reaches 0.46 at 10 degrees) while real patch sets rarely pass
-// 0.08, so framing on the gamut still left everything squashed along the bottom.
+// gamut apex is a poor guide on its own: a display's blue primary sits much
+// higher in S/(L+M) than many ordinary patch sets.
 function meterCieMbContentBounds(){
  let lMin=Infinity,lMax=-Infinity,sMax=-Infinity,n=0;
- const add=(x,y)=>{
-  const c=meterCieChartCoordFromXy(x,y,1);
+ const addCoord=c=>{
   if(!c||!isFinite(c.x)||!isFinite(c.y)) return;
   if(c.x<lMin) lMin=c.x;
   if(c.x>lMax) lMax=c.x;
   if(c.y>sMax) sMax=c.y;
   n++;
  };
+ const add=(x,y)=>{
+  const c=meterCieChartCoordFromXy(x,y,1);
+  addCoord(c);
+ };
  try{
   if(typeof meterSeriesSteps!=='undefined'&&Array.isArray(meterSeriesSteps)){
-   meterSeriesSteps.forEach(st=>{ if(st&&Number(st.target_x)>0&&Number(st.target_y)>0) add(Number(st.target_x),Number(st.target_y)); });
+   meterSeriesSteps.forEach(st=>{
+    const declared=meterCieDeclaredMbTargetCoord(st);
+    if(declared) addCoord(declared);
+    else if(st&&Number(st.target_x)>0&&Number(st.target_y)>0) add(Number(st.target_x),Number(st.target_y));
+   });
   }
   if(typeof meterReadings!=='undefined'&&Array.isArray(meterReadings)){
    meterReadings.forEach(rd=>{ if(rd&&Number(rd.x)>0&&Number(rd.y)>0) add(Number(rd.x),Number(rd.y)); });
@@ -46520,8 +46568,14 @@ function meterCie2dWorld(){
  // inset draws at default zoom too. Falls back to the gamut when nothing is
  // loaded yet, and never goes below lMB 0.45 since the locus stops near 0.52.
  if(mode.indexOf('ciemb_')===0){
+  // Reproduce the scientific frame for the Cao/Pokorny/Smith Fig. 1a
+  // reconstruction instead of tightening the x axis around its 64 samples.
+  if(typeof meterActiveSeriesPoints!=='undefined'&&Number(meterActiveSeriesPoints)===800064){
+   return {xMin:.45,xMax:.95,yMin:0,yMax:3};
+  }
   const gamutS=meterCieMbGamutSMax();
-  const cap=(gamutS>0)?Math.min(1.02,gamutS*1.18):1.02;
+  const full=meterCie2dZoomOutWorld();
+  const cap=(gamutS>0)?Math.min(full.yMax,gamutS*1.18):full.yMax;
   const content=meterCieMbContentBounds();
   let xMin=0.48,xMax=1,yMax=cap;
   if(content&&content.count>=2&&content.sMax>0){
@@ -46537,7 +46591,9 @@ function meterCie2dWorld(){
 }
 function meterCie2dZoomOutWorld(){
  if(meterChromaticityChartMode().indexOf('ciemb_')===0){
-  return {xMin:0.4,xMax:1,yMin:0,yMax:1.05};
+  const locus=meterCieChartLocus();
+  const maxS=Math.max(3,...(Array.isArray(locus)?locus.map(p=>Number(p&&p[1])||0):[]));
+  return {xMin:0.4,xMax:1,yMin:0,yMax:meterCieNiceCeil(maxS*1.03)};
  }
  return meterCie2dWorld();
 }
@@ -46555,12 +46611,13 @@ function meterDrawMbFullLocusInset(ctx,geom){
  // true when zoomed in, and now also at default zoom because the reset view is
  // framed on the display gamut rather than the full spectral sMB range.
  if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!meterCieViewOpts.locus) return;
- if(geom.scale<=1.001&&Number(geom.yMax)>=0.95) return;
+ const fullWorld=meterCie2dZoomOutWorld();
+ if(geom.scale<=1.001&&Number(geom.yMax)>=fullWorld.yMax*.99) return;
  const locus=meterCieChartLocus();
  if(!locus||locus.length<2) return;
  const iw=112,ih=92,margin=7;
  const ix=geom.pad.l+margin,iy=geom.pad.t+margin;
- const xMin=.4,xMax=1,yMin=0,yMax=1.05;
+ const xMin=fullWorld.xMin,xMax=fullWorld.xMax,yMin=fullWorld.yMin,yMax=fullWorld.yMax;
  const tx=x=>ix+(x-xMin)/(xMax-xMin)*iw;
  const ty=y=>iy+ih-(y-yMin)/(yMax-yMin)*ih;
  ctx.save();
@@ -46631,6 +46688,22 @@ function meterCie2dNiceStep(range){
  if(r<=0.2) return 0.02;
  if(r<=0.45) return 0.05;
  return 0.1;
+}
+function meterCie2dGridSpec(xMin,xMax,yMin,yMax){
+ const paperFrame=meterChromaticityChartMode().indexOf('ciemb_')===0
+  &&typeof meterActiveSeriesPoints!=='undefined'
+  &&Number(meterActiveSeriesPoints)===800064
+  &&Math.abs(xMin-.45)<1e-6&&Math.abs(xMax-.95)<1e-6
+  &&Math.abs(yMin)<1e-6&&Math.abs(yMax-3)<1e-6;
+ if(paperFrame) return {xStep:.1,yStep:.5,x0:.45,y0:0,xDecimals:2,yDecimals:1};
+ const xStep=meterCie2dNiceStep(xMax-xMin),yStep=meterCie2dNiceStep(yMax-yMin);
+ return {
+  xStep:xStep,yStep:yStep,
+  x0:Math.ceil(xMin/xStep-1e-9)*xStep,
+  y0:Math.ceil(yMin/yStep-1e-9)*yStep,
+  xDecimals:xStep<.01?3:(xStep<.1?2:1),
+  yDecimals:yStep<.01?3:(yStep<.1?2:1)
+ };
 }
 // 2D CIE layout: full plot area with optional zoom/pan viewport.
 // Zoom inset is drawn over the top-right of the plot (not a side gutter).
@@ -46782,7 +46855,10 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 // Drag rotates (orbit), wheel zooms, double-click resets.
 function meterCie3dLegacyChromaBounds(){
  const mode=meterChromaticityChartMode();
- if(mode.indexOf('ciemb_')===0) return {xMin:0,xMax:1,yMin:0,yMax:1.05};
+ if(mode.indexOf('ciemb_')===0){
+  const full=meterCie2dZoomOutWorld();
+  return {xMin:0,xMax:1,yMin:0,yMax:full.yMax};
+ }
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return {xMin:0,xMax:0.8,yMin:0,yMax:0.9};
 }
@@ -47362,7 +47438,9 @@ function drawCIEChart3DLegacy(readings,opts){
   const axis=meterCieChartAxis();
   ctx.fillText(axis.x,ax.sx,ax.sy+14);
   ctx.fillText(axis.y,ay.sx-10,ay.sy+4);
-  ctx.fillText(meterChromaticityChartMode().indexOf('cie2015_')===0||meterChromaticityChartMode().indexOf('ciemb_')===0?'YF':'Y',aY.sx-8,aY.sy-6);
+  const chartMode=meterChromaticityChartMode();
+  const verticalAxis=chartMode.indexOf('ciemb_')===0?'L+M':(chartMode.indexOf('cie2015_')===0?'YF':'Y');
+  ctx.fillText(verticalAxis,aY.sx-8,aY.sy-6);
   // Y ticks
   ctx.font='9px sans-serif';ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.textAlign='right';
   const tickN=4;
@@ -47387,7 +47465,7 @@ function drawCIEChart3DLegacy(readings,opts){
    const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
     ? meterTargetChromaticityForReading(rd)
     : targetChromaticityXY(rd.r,rd.g,rd.b));
-   const chartTgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
+   const chartTgt=meterCieDeclaredMbTargetCoord(rd)||(tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1));
    if(chartTgt){ tx=chartTgt.x; ty=chartTgt.y; }
    try{
     const tXYZ=meterTargetXYZForReading(rd);
@@ -47400,7 +47478,7 @@ function drawCIEChart3DLegacy(readings,opts){
    const targetXYZ=meterTargetXYZForReading(rd);
    const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
    if(!hasMeasuredXY&&!hasTarget) return;
-   const targetCoord=hasTarget?meterCieChartCoordFromXYZ(targetXYZ):null;
+   const targetCoord=hasTarget?meterCieChartTargetCoord(rd,targetXYZ):null;
    const tgt=meterCieViewOpts.targets?targetCoord:null;
    const lum=meterColorLuminanceInfo(rd);
    if(tgt){ tx=tgt.x; ty=tgt.y; tY=(targetCoord&&targetCoord.Y!=null)?targetCoord.Y:((lum.targetY!=null)?lum.targetY:0); }
@@ -47942,7 +48020,8 @@ function drawCIEChart(readings){
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
- const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
+ const grid=meterCie2dGridSpec(xMin,xMax,yMin,yMax);
+ const xStep=grid.xStep,yStep=grid.yStep,x0=grid.x0,y0=grid.y0;
  // Background
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  // Clip plot so locus/points outside the zoomed window stay off-canvas.
@@ -47967,7 +48046,6 @@ function drawCIEChart(readings){
  }catch(e){}
  // Grid (step scales with zoom)
  ctx.strokeStyle='rgba(56,72,102,0.65)';ctx.lineWidth=1;
- const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
  for(let x=x0;x<=xMax+1e-9;x+=xStep){ctx.beginPath();ctx.moveTo(toX(x),pad.t);ctx.lineTo(toX(x),pad.t+h);ctx.stroke();}
  for(let y=y0;y<=yMax+1e-9;y+=yStep){ctx.beginPath();ctx.moveTo(pad.l,toY(y));ctx.lineTo(pad.l+w,toY(y));ctx.stroke();}
  // Axes
@@ -48023,7 +48101,7 @@ function drawCIEChart(readings){
      ? meterTargetChromaticityForReading(s)
      : targetChromaticityXY(s.r,s.g,s.b);
    }catch(e){ tgt=null; }
-   tgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
+   tgt=meterCieDeclaredMbTargetCoord(s)||(tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1));
    if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
    const pc=meterCiePlotColor(meterPreviewColorForStep(s));
    const sq=meterCieLightMode()?4.2:3.5;
@@ -48039,7 +48117,7 @@ function drawCIEChart(readings){
   const targetXYZ=meterTargetXYZForReading(rd);
   const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
   if(!hasMeasuredXY&&!hasTarget) return;
-  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterCieChartCoordFromXYZ(targetXYZ):null;
+  const tgt=(hasTarget&&meterCieViewOpts.targets)?meterCieChartTargetCoord(rd,targetXYZ):null;
   const lumInfo=meterColorLuminanceInfo(rd);
   const measuredCoord=hasMeasuredXY?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
   const hasMeasuredCoord=!!measuredCoord;
@@ -48079,7 +48157,7 @@ function drawCIEChart(readings){
  ctx.restore(); // end plot clip
  // Axis labels outside the clip so they stay readable at any zoom.
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
- const xLabDec=xStep<0.01?3:(xStep<0.1?2:1),yLabDec=yStep<0.01?3:(yStep<0.1?2:1);
+ const xLabDec=grid.xDecimals,yLabDec=grid.yDecimals;
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(yLabDec),pad.l-4,toY(y)+3);
@@ -48300,8 +48378,8 @@ function drawCIEChartPreset(steps){
  const g=meterCie2dGeom(ctx.w,ctx.h);
  const pad=g.pad,w=g.w,h=g.h,xMin=g.xMin,xMax=g.xMax,yMin=g.yMin,yMax=g.yMax;
  const toX=g.toX,toY=g.toY;
- const xStep=meterCie2dNiceStep(xMax-xMin), yStep=meterCie2dNiceStep(yMax-yMin);
- const x0=Math.ceil(xMin/xStep-1e-9)*xStep, y0=Math.ceil(yMin/yStep-1e-9)*yStep;
+ const grid=meterCie2dGridSpec(xMin,xMax,yMin,yMax);
+ const xStep=grid.xStep,yStep=grid.yStep,x0=grid.x0,y0=grid.y0;
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
@@ -48362,7 +48440,7 @@ function drawCIEChartPreset(steps){
     ? meterTargetChromaticityForReading(s)
     : targetChromaticityXY(s.r,s.g,s.b);
   }catch(e){ tgt=null; }
-  tgt=tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1);
+  tgt=meterCieDeclaredMbTargetCoord(s)||(tgt&&meterCieChartCoordFromXy(tgt.x,tgt.y,1));
   if(!tgt||!isFinite(tgt.x)||!isFinite(tgt.y)) return;
   const pc=meterCiePlotColor(meterPreviewColorForStep(s));
   const sq=meterCieLightMode()?4.2:3.5;
@@ -48372,7 +48450,7 @@ function drawCIEChartPreset(steps){
   ctx.restore();
  });
  ctx.restore(); // end plot clip
- const xLabDec=xStep<0.01?3:(xStep<0.1?2:1),yLabDec=yStep<0.01?3:(yStep<0.1?2:1);
+ const xLabDec=grid.xDecimals,yLabDec=grid.yDecimals;
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
