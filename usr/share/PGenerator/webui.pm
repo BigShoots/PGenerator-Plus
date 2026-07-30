@@ -12745,24 +12745,27 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
      <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
-      <span>ColorChecker</span>
-      <select id="meterColorCheckerSeriesSelect" class="inline-select" onchange="meterSelectBuiltinColorChecker(this.value)" style="max-width:220px">
+      <span>Series</span>
+      <select id="meterColorCheckerSeriesSelect" class="inline-select" onchange="meterSelectBuiltinSeries(this.value)" style="max-width:240px">
+       <optgroup label="ColorChecker">
        <option value="30">Classic + Primaries (30)</option>
        <option value="800024">Classic (24)</option>
        <option value="29" data-sdr-only="1">HCFR GCD + Primaries (30)</option>
        <option value="800124" data-sdr-only="1">HCFR GCD Classic (24)</option>
        <option value="800096" data-sdr-only="1">ColorChecker SG (96)</option>
        <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
+       </optgroup>
+       <optgroup label="Saturation">
+       <option value="24">Sat Sweep (24)</option>
+       <option value="25" data-sdr-only="1">HCFR Sat Sweep (25)</option>
+       </optgroup>
+       <optgroup label="MacLeod-Boynton">
        <option value="800137" data-sdr-only="1">MacLeod-Boynton Hue Circle (37)</option>
        <option value="800008" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton Focal Colours (8)</option>
        <option value="800064" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
+       </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in display verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Each preset keeps a separate measurement cache." aria-label="ColorChecker series help">?</span>
-     </label>
-     <button class="btn btn-sm btn-secondary" id="meterSaturationSeriesBtn" data-series="saturations-24" onclick="meterSelectBuiltinSaturationSweep()">Sat Sweep</button>
-     <label id="meterHcfrFixedCodesWrap" style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
-      <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed Sat Sweep Codes
-      <span class="meter-help-tip" title="Use the HCFR constant-luminance SDR saturation sweep instead of the native fixed-maximum-channel sweep. Levels are quantized into the active Limited or Full output range. The ColorChecker dropdown selects its own native or HCFR-compatible sequence." aria-label="HCFR fixed saturation sweep codes help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager('color')" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
@@ -25730,7 +25733,6 @@ function meterRecoverSeries(s){
  if(!activeBtn&&meterSeriesSnapshotIsImported(importedSnap)){
   if(type==='greyscale') activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-'+points+'"]');
   else if(type==='colors') activeBtn=null;
-  else if(type==='saturations') activeBtn=document.getElementById('meterSaturationSeriesBtn');
  }
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
  meterRenderCustomSeriesButtons();
@@ -33975,22 +33977,27 @@ function meterDefaultTargetsForColorSeries(type,points){
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
 const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
 const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,800008,800064];
+// Everything the Series select can show. Deliberately separate from
+// METER_COLORCHECKER_SERIES_IDS: that list feeds
+// meterColorCheckerSeriesStoredValue(), which the HCFR CHC export uses to pick a
+// COLOUR series, so a saturation id in it would make the export write a
+// saturation sweep as its ColorChecker.
+const METER_SERIES_SELECT_IDS=[30,800024,29,800124,800096,800019,24,25,800137,800008,800064];
 function meterHcfrFixedCodesAvailable(){
  return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
 }
+// Sourced from the persisted preference rather than a checkbox: the sat sweeps
+// are now entries in the Series select. Same key, same truthiness, so the HCFR
+// CHC export and meterSelectBuiltinSaturationSweep() need no changes.
 function meterHcfrFixedCodesEnabled(){
- const el=document.getElementById('meterHcfrFixedCodes');
- return !!(meterHcfrFixedCodesAvailable()&&el&&el.checked);
+ if(!meterHcfrFixedCodesAvailable()) return false;
+ let stored='0';
+ try{stored=String(localStorage.getItem(METER_HCFR_FIXED_CODES_KEY)||'0');}catch(e){stored='0';}
+ return stored==='1';
 }
 function meterSyncHcfrFixedCodesUi(){
- const available=meterHcfrFixedCodesAvailable();
- const wrap=document.getElementById('meterHcfrFixedCodesWrap');
- const checkbox=document.getElementById('meterHcfrFixedCodes');
- if(wrap) wrap.style.display=available?'inline-flex':'none';
- if(checkbox) checkbox.disabled=!available;
- const enabled=available&&!!(checkbox&&checkbox.checked);
- const satBtn=document.getElementById('meterSaturationSeriesBtn');
- if(satBtn){satBtn.dataset.series='saturations-'+(enabled?25:24);satBtn.title=enabled?'HCFR constant-luminance saturation sweep':'PGenerator native fixed-maximum-channel saturation sweep';}
+ // The sat sweeps live in the Series select now, so there is no checkbox or
+ // separate button left to sync -- just re-render the select.
  meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null);
 }
 function meterColorCheckerSeriesStoredValue(){
@@ -34036,9 +34043,9 @@ function meterEnableFullColorDeltaE(){
  }
 }
 function meterRestoreHcfrFixedCodesPreference(){
- const el=document.getElementById('meterHcfrFixedCodes');
- if(!el) return;
- try{el.checked=localStorage.getItem(METER_HCFR_FIXED_CODES_KEY)==='1';}catch(e){el.checked=false;}
+ // Nothing to restore into: the saturation choice is an entry in the Series
+ // select and meterHcfrFixedCodesEnabled() reads the stored preference directly.
+ // Kept as the startup hook that renders the select from that preference.
  meterSyncHcfrFixedCodesUi();
 }
 function meterSelectImportedHcfrGroup(group){
@@ -34064,20 +34071,19 @@ function meterSelectBuiltinColorChecker(selected){
  meterSyncColorCheckerSeriesUi(points);
  return meterSelectSeries('colors',points);
 }
-function meterSelectBuiltinSaturationSweep(){if(meterSelectImportedHcfrGroup('saturations'))return true;return meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24);}
-function meterOnHcfrFixedCodesChange(checked){
- try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0');}catch(e){}
- meterSyncHcfrFixedCodesUi();
- if(checked){
-  // HCFR's CIE2000 result is full Lab Delta E and therefore includes the
-  // luminance term. Keep PGenerator's analysis comparable when HCFR patch
-  // encoding is selected; the operator can still turn this back off.
-  meterEnableFullColorDeltaE();
+// One selector now covers ColorChecker, saturation and MacLeod-Boynton series.
+// Saturation ids persist through the same preference key the removed checkbox
+// used, so HCFR export and the full-Lab dE side effect are unchanged.
+function meterSelectBuiltinSeries(value){
+ const id=Math.round(Number(value));
+ if(id===24||id===25){
+  try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,id===25?'1':'0');}catch(e){}
+  if(id===25&&typeof meterEnableFullColorDeltaE==='function') meterEnableFullColorDeltaE();
+  return meterSelectSeries('saturations',id);
  }
- const type=String(meterActiveSeriesType||'');
- if(type==='saturations'&&(Number(meterActiveSeriesPoints)===24||Number(meterActiveSeriesPoints)===25)) meterSelectBuiltinSaturationSweep();
+ return meterSelectBuiltinColorChecker(String(value));
 }
-
+function meterSelectBuiltinSaturationSweep(){if(meterSelectImportedHcfrGroup('saturations'))return true;return meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24);}
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
  if(meterActionPending) return;
