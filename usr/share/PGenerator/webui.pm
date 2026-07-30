@@ -12681,8 +12681,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="cie2015_10">CIE 170-2 xF yF (10&deg;)</option>
      <option value="ciemb_2">MacLeod-Boynton lMB sMB (2&deg;)</option>
      <option value="ciemb_10">MacLeod-Boynton lMB sMB (10&deg;)</option>
-     <option value="cieopp_2">Opponent Polar L-M / S-(L+M) (2&deg;)</option>
-     <option value="cieopp_10">Opponent Polar L-M / S-(L+M) (10&deg;)</option>
+     <option value="cieopp_2">Cone-Opponent Polar (2&deg;)</option>
+     <option value="cieopp_10">Cone-Opponent Polar (10&deg;)</option>
     </select>
    </div>
   	   <div class="field field-delay">
@@ -47488,7 +47488,9 @@ function meterUpdateCie3dLabel(){
  const xyy=document.getElementById('meterXYYColorLabel');
  if(xyy){
   const mode=meterChromaticityChartMode();
-  xyy.textContent=axis.x+axis.y+((mode.indexOf('cie2015_')===0||mode.indexOf('ciemb_')===0)?'YF':'Y');
+  xyy.textContent=meterCieIsOpponentMode(mode)
+   ?'Opponent coordinates'
+   :axis.x+axis.y+((mode.indexOf('cie2015_')===0||mode.indexOf('ciemb_')===0)?'YF':'Y');
  }
 }
 // CIE layout: 3D uses free row width; expand (2D or 3D) fills the card.
