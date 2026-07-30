@@ -1628,9 +1628,16 @@ sub webui_lg_picture_settings_set (@) {
  # the previous patch.  A direct picture-mode selection is an idle/display
  # control operation (the calibration writers send larger settings maps),
  # so resynchronise the renderer immediately and come back on black.
+ #
+ # Only when the TV was actually written to. On a pre-2022 set (webOS <= 6,
+ # ddc_only) the helper answers virtual_picture_settings: it records the DDC
+ # target mode and never asks the TV to switch, so there is no HDMI link
+ # reset to recover from -- restarting the renderer there is a black-out for
+ # nothing on every picture-mode selection.
  if(($result->{"status"}||"") eq "ok"
     && exists($settings->{"pictureMode"})
-    && scalar(keys(%{$settings})) == 1) {
+    && scalar(keys(%{$settings})) == 1
+    && !$result->{"virtual_picture_settings"}) {
   &pattern_generator_stop();
   &pattern_generator_start();
   $result->{"renderer_resynced"}=&pattern_generator_is_running() ? &lg_json_true() : &lg_json_false();
@@ -4570,7 +4577,17 @@ async function lgSetPictureMode(){
    lgPictureModeValue=mode;
    lgPictureModeSignalMode=signal;
    lgRememberPictureMode(mode,signal);
-   toast('LG picture mode set to '+lgPictureModeLabel(mode));
+   // A pre-2022 set (webOS <= 6) does not expose picture-mode switching over
+   // the settings API: the daemon only records the mode as the DDC calibration
+   // target and the TV stays on whatever the operator last selected with the
+   // remote. Saying "set to X" there reads as though the TV switched, which is
+   // how this got mistaken for a broken picture-mode control -- say what
+   // actually happened and what the operator still has to do.
+   if(r.virtual_picture_settings){
+    toast(r.message||('PGenerator will calibrate '+lgPictureModeLabel(mode)+', but this LG generation cannot be switched over the network -- select '+lgPictureModeLabel(mode)+' on the TV with the remote.'),true);
+   }else{
+    toast('LG picture mode set to '+lgPictureModeLabel(mode));
+   }
 	   if(typeof meterLgGreySyncForCurrentStep==='function'){
 	    try{meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};}catch(e){}
 	    meterLgGreySyncForCurrentStep(true);
