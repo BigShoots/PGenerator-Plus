@@ -699,6 +699,23 @@ sub lg_message_register (@) {
  };
 }
 
+# The TV tells us in its hello payload which pairing types it supports
+# (e.g. ["PIN","PROMPT","COMBINED"]). Prompt pairing on a PIN-capable TV
+# hands back a basic-permission client key that registers fine but cannot
+# reach the calibration-class picture keys, so we must never accept a
+# prompt pairing silently when PIN is on offer.
+sub lg_hello_supports_pin (@) {
+ my $hello_info=shift;
+ return 0 if(ref($hello_info) ne "HASH");
+ my $types=$hello_info->{"pairingTypes"};
+ return 0 if(ref($types) ne "ARRAY");
+ foreach my $type (@{$types}) {
+  next if(!defined($type));
+  return 1 if(uc($type) =~ /^(PIN|COMBINED|LGSWITCH-PIN)$/);
+ }
+ return 0;
+}
+
 sub lg_request (@) {
  my ($session,$id,$uri,$payload,$timeout)=@_;
  $payload={} if(ref($payload) ne "HASH");
@@ -750,6 +767,7 @@ sub lg_authenticated_session (@) {
  my $system_info={};
  my $software_info={};
  my $pair_prompted=0;
+ my $needs_pin_pairing=0;
  my $message="";
  my $response;
 
@@ -773,6 +791,12 @@ sub lg_authenticated_session (@) {
    $message="Connected using stored LG TV pairing.";
   } elsif(($response->{"type"}||"") eq "response" && ($response->{"payload"}{"pairingType"}||"") eq "PROMPT") {
    die "LG TV is not paired. Connect / Pair first\n" if(!$allow_pair);
+   # Accepting this prompt would mint a crippled client key (see
+   # lg_hello_supports_pin). Bail out and let the caller run PIN pairing.
+   if(&lg_hello_supports_pin($hello_info)) {
+    $needs_pin_pairing=1;
+    die "LG TV requires PIN pairing. Use Pair With PIN so the TV grants full picture control.\n";
+   }
    $pair_prompted=1;
    $message="Accept the LG pairing prompt on the TV.";
    $response=&websocket_recv_json($session,$pair_timeout,"");
@@ -797,7 +821,7 @@ sub lg_authenticated_session (@) {
  if($err) {
   $err =~ s/[\r\n]+$//;
   &websocket_close($session);
-  return &json_error($err,{ ip => $ip, pair_prompted => &json_bool($pair_prompted) });
+  return &json_error($err,{ ip => $ip, pair_prompted => &json_bool($pair_prompted), needs_pin_pairing => &json_bool($needs_pin_pairing) });
  }
 
  return {
@@ -6246,6 +6270,15 @@ sub lg_connect_workflow (@) {
  my $pair_prompted=$auth->{"pair_prompted"};
  my $client_key_out=$auth->{"client_key"}||$client_key;
  my $message=$auth->{"message"}||"";
+ # A prompt-paired (or otherwise unprivileged) client key still registers
+ # fine, but the TV then answers getSystemSettings with "Some keys are not
+ # allowed for the request" and returns no pictureMode. Prove the key has
+ # real access here, so the WebUI can send the operator back through PIN
+ # pairing instead of failing later in the middle of a calibration. Probe
+ # twice: a single empty read can also be a transient timeout.
+ my $probed_picture_mode=&lg_current_picture_mode($session,$connect_timeout + 2);
+ $probed_picture_mode=&lg_current_picture_mode($session,$connect_timeout + 2) if($probed_picture_mode eq "");
+ my $limited_permissions=($probed_picture_mode eq "") ? 1 : 0;
  &websocket_close($session);
 
  my $model_name=&lg_extract_model_name($system_info,$software_info,$hello_info);
@@ -6265,7 +6298,10 @@ sub lg_connect_workflow (@) {
   model_name => $model_name,
   name => $name,
   software_version => $software_version,
-  message => $pair_prompted ? "LG TV pairing completed. The TV prompt was accepted." : ($message || "LG TV connection succeeded."),
+  limited_permissions => &json_bool($limited_permissions),
+  needs_pin_pairing => &json_bool($limited_permissions),
+  picture_mode => $probed_picture_mode,
+  message => $limited_permissions ? "Connected, but the TV granted only limited access -- this pairing was made without a PIN. Re-pair with PIN to restore picture-mode control." : ($pair_prompted ? "LG TV pairing completed. The TV prompt was accepted." : ($message || "LG TV connection succeeded.")),
  });
 }
 

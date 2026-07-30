@@ -1446,12 +1446,19 @@ sub webui_lg_connect (@) {
  # the probe fails (TV unreachable, etc.) we fall back to the active/flat key
  # and the original behaviour.
  my $client_key="";
+ my $probe_identified=0;
  my $probe=&lg_helper_run({ action => "probe", ip => $ip, connect_timeout => 5 });
  if(ref($probe) eq "HASH" && ($probe->{"status"}||"") eq "ok") {
   my ($p_uuid,$p_mac)=&lg_device_identity($probe);
+  $probe_identified=1 if(($p_uuid||"") ne "" || ($p_mac||"") ne "");
   $client_key=&lg_keyring_client_key($clients,$p_uuid,$p_mac);
  }
- if($client_key eq "") {
+ # Only borrow the active/flat key when the probe could not tell us WHICH TV
+ # is at this IP. Handing TV A's key to TV B makes the TV fall back to a
+ # prompt pairing ("press OK"), and a prompt-paired key comes back without
+ # access to the picture keys, so picture modes stop working. With no key the
+ # helper reports needs_pin_pairing instead and the WebUI runs PIN pairing.
+ if($client_key eq "" && !$probe_identified) {
   my $client=&lg_primary_client($clients);
   $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  }
@@ -3473,6 +3480,19 @@ function lgSelectedPairingMode(){
  return /^(PIN|COMBINED|LGSWITCH-PIN)$/.test(mode)?mode:'PIN';
 }
 
+// True when a /api/lg/connect response says this TV still has to go through
+// PIN pairing. Two cases, both of which used to look like a dead end:
+//  - needs_pin_pairing: the daemon refused to accept a "press OK" prompt
+//    pairing on a TV that advertises PIN, because that mints a client key
+//    with no access to the picture keys.
+//  - limited_permissions: the stored key registered fine but cannot even read
+//    pictureMode, i.e. it came from an earlier prompt pairing. Re-pairing with
+//    a PIN replaces it.
+function lgResponseNeedsPinPairing(r){
+ if(!r) return false;
+ return !!(r.needs_pin_pairing||r.limited_permissions);
+}
+
 function lgRevealPinEntry(){
  // The PIN field lives inside the LG Connect modal -- that is the only
  // PIN entry point in the new flow (see lgConnectModalShow / Submit).
@@ -4292,9 +4312,10 @@ async function lgConnect(){
  // POSTs to /api/lg/connect to open the WebOS session. Modal is
  // already up (show() ran synchronously above); transitions to
  // success/error on the result.
- async function runSavedKeyConnect(){
+ async function runSavedKeyConnect(allowPinFallback){
   if(button){button.disabled=true;button.textContent='Connecting...';}
   const commandHandle=lgBeginCommand('Connecting to LG TV');
+  let pinFallback=false;
   try{
    const r=await fetchJSON('/api/lg/connect',{
     method:'POST',
@@ -4305,7 +4326,15 @@ async function lgConnect(){
    if(aborted()) return;
    if(r){
     renderLgStatus(r);
-    if(r.status==='ok'){
+    if(allowPinFallback&&lgResponseNeedsPinPairing(r)){
+     // This TV has never been PIN-paired on this box (or its stored key
+     // came from a "press OK" prompt pairing and cannot touch the picture
+     // keys). Don't report a dead error -- run PIN pairing, then retry the
+     // connect with the fresh key.
+     pinFallback=true;
+     if(showModal) lgConnectModalPinStatus('This TV needs PIN pairing. Watch the TV for a PIN…');
+     else toast('This TV needs PIN pairing. Watch the TV for a PIN.');
+    }else if(r.status==='ok'){
      if(showModal) lgConnectModalSuccess(r.message);
      else toast(r.message||'LG TV connected');
     }else{
@@ -4322,29 +4351,37 @@ async function lgConnect(){
    else toast('Unable to connect to LG TV','err');
   }finally{
    lgEndCommand(commandHandle);
-   if(button&&!aborted()){button.disabled=false;button.textContent='Connect';}
+   if(button&&!aborted()){button.disabled=false;button.textContent=pinFallback?'Pair With PIN':'Connect';}
    else if(button){bail();}
   }
+  if(!pinFallback) return;
+  if(aborted()){bail();return;}
+  const paired=await runPinPairing();
+  if(!paired) return;
+  // Fresh PIN-paired key in place -- retry once, with the fallback closed so
+  // a TV that still reports needs_pin_pairing cannot loop.
+  await runSavedKeyConnect(false);
  }
 
- if(!hasSavedKey){
-  // First-time pairing: /api/lg/pair-pin/start triggers the TV to show
-  // its PIN. After it succeeds, the modal reveals the PIN field and
-  // waits (via _lgPinResolver) for the operator to type and submit.
-  // On PIN success we fall through to runSavedKeyConnect() below.
+ // First-time (or repeat) PIN pairing: /api/lg/pair-pin/start triggers the
+ // TV to show its PIN. After it succeeds, the modal reveals the PIN field
+ // and waits (via _lgPinResolver) for the operator to type and submit.
+ // Returns true when a key is in place and the caller should go on to the
+ // saved-key connect; false when it already reported the failure and bailed.
+ async function runPinPairing(){
   if(button){button.disabled=true;button.textContent='Starting Pairing...';}
   const commandHandle=lgBeginCommand('Starting LG PIN pairing');
   try{
    await lgStartPinPairing();
    // If the operator hit Cancel during the 15s pair-pin/start wait,
    // bail out without touching the (now-owned-by-elsewhere) modal.
-   if(aborted()){bail();return;}
+   if(aborted()){bail();return false;}
    const postState=window.lgStatusState||{};
    if(!lgStatusHasSavedKey(postState)||postState.pinPending){
     // PIN is required. Reveal the modal's inline PIN field and wait
     // for the operator to submit. The modal stays up the entire time;
     // it transitions to success/error after submitPinThenConnect +
-    // runSavedKeyConnect below.
+    // runSavedKeyConnect.
     if(showModal){
      lgConnectModalPinStatus('Enter the PIN shown on the TV.');
      if(typeof lgConnectModalRevealPinField==='function') lgConnectModalRevealPinField();
@@ -4357,31 +4394,36 @@ async function lgConnect(){
      // Modal closed without a PIN (safety timeout, hide() call, or
      // a newer lgConnect() took over).
      bail();
-     return;
+     return false;
     }
     const ok=await submitPinThenConnect(pin);
-    if(aborted()){bail();return;}
+    if(aborted()){bail();return false;}
     if(!ok){
      bail();
-     return;
+     return false;
     }
-    // PIN accepted; saved key is now in place. Fall through to the
-    // saved-key connect POST below.
+    // PIN accepted; saved key is now in place.
    }
+   return true;
   }catch(e){
-   if(aborted()){bail();return;}
+   if(aborted()){bail();return false;}
    if(showModal) lgConnectModalError((e&&e.message)||'LG PIN pairing failed to start.');
    else toast('LG PIN pairing failed to start.','err');
    bail();
-   return;
+   return false;
   }finally{
    lgEndCommand(commandHandle);
   }
  }
+
+ if(!hasSavedKey){
+  const paired=await runPinPairing();
+  if(!paired) return;
+ }
  // Saved-key path (or post-PIN-submit continuation): open the WebOS
  // session. The modal is still up (showing the spinner) from the
  // synchronous show() at the top; transition to success/error after.
- await runSavedKeyConnect();
+ await runSavedKeyConnect(true);
 }
 
 // Resolves with the PIN when the operator submits the modal's PIN
