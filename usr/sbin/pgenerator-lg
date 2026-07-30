@@ -2762,17 +2762,6 @@ sub lg_lut_mismatch_summary (@) {
  };
 }
 
-sub lg_generation_write_accepted_readback_unavailable_ok (@) {
- my $generation=shift;
- return 0 if(ref($generation) ne "HASH");
- my $webos_major=int($generation->{"webos_major"}||0);
- my $ddc_only=$generation->{"ddc_only_white_balance"} ? 1 : 0;
- my $picture_mode_read_forbidden=$generation->{"picture_mode_read_forbidden"} ? 1 : 0;
- return 1 if($ddc_only && $picture_mode_read_forbidden);
- return 1 if($ddc_only && $webos_major && $webos_major <= 6);
- return 0;
-}
-
 sub lg_1d_lut_readback_unavailable_reason (@) {
  my $verify_info=shift;
  return "" if(ref($verify_info) ne "HASH");
@@ -4959,7 +4948,13 @@ sub lg_generation_profile (@) {
   reset_method          => "ddc_cal_identity",
   white_balance_channel => "ddc_1d",
   picturemode_readable  => ($g->{"picture_mode_read_forbidden"} ? &json_false() : &json_true()),
-  readback_supported    => (($year && $year <= 2020) ? &json_false() : &json_true()),
+  # A ddc_only set (webOS <= 6, so 2021 and earlier) cannot be read back over
+  # this transport: getSystemSettings answers nothing for pictureMode and the
+  # 1D LUT readback comes back with no samples, so a strict verify can never
+  # pass. Do not narrow this to platform_year <= 2020 -- that silently made a
+  # 2021 panel strict and failed its calibration reset with "did not verify
+  # against the TV 1D LUT readback" even though the write was accepted.
+  readback_supported    => ((($year && $year <= 2020) || $ddc_only) ? &json_false() : &json_true()),
   hdr_tonemap           => &json_true(),
   dv_mode               => "1d_only",
   lut_grid              => 33,
