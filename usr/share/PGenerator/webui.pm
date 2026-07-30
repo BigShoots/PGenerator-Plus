@@ -30860,6 +30860,69 @@ function meterBuiltinFixedLegal8Rows(names,codes){
 // gamut's neutral plus the neutral reference itself. The two axis radii use
 // the established 2754 / 4099 threshold-scaled MB units; a single global
 // scale keeps the complete circle inside the selected RGB gamut.
+// Colour-appearance data from Cao, Pokorny & Smith (2005), Vision Research 45,
+// 1929-1934, figures 1a/1b. Coordinates are the paper's own MacLeod-Boynton cone
+// chromaticities: L/(L+M) and S/(L+M), with S normalised so the equal-energy
+// spectrum sits at s=1.0 (relative cone troland space).
+// Table 3 - focal colours, the black squares in Fig 1b.
+const METER_MB_PAPER_FOCAL=[
+ {name:'Red',l:0.777,s:0.54},{name:'Green',l:0.630,s:0.44},
+ {name:'Blue',l:0.595,s:2.72},{name:'Yellow',l:0.687,s:0.13},
+ {name:'Purple',l:0.659,s:2.15},{name:'Orange',l:0.730,s:0.33},
+ {name:'Pink',l:0.687,s:1.15},{name:'White',l:0.660,s:0.87}
+];
+// Table 4 - the OSA-UCS sample gamut in the same coordinates. Straight edges are
+// y = a + b x; the lower-left edge is the cubic y = a + b x + c x^2 + d x^3.
+const METER_MB_PAPER_GAMUT={
+ upper:{a:2.91,b:0.00},lower:{a:0.13,b:0.00},right:{a:14.98,b:-18.50},
+ upperLeft:{a:79.44,b:-131.18},
+ lowerLeft:{a:1417.43,b:-6522.35,c:10007.04,d:-5118.66}
+};
+// Table 4 - equal-probability boundaries between adjacent colour names.
+// The Red-Pink intercept is +38.40. The published table's minus sign does not
+// survive text extraction as a usable line: with a=-38.40 the Red and Pink focal
+// colours fall on the SAME side of it (+78.45 and +74.48), so it cannot be the
+// boundary between them; with a=+38.40 they separate (+1.65 and -2.32). Every
+// other row separates its own pair exactly as published, and all eight focal
+// colours land inside the gamut edges above.
+const METER_MB_PAPER_REGION_EDGES=[
+ {pair:['Blue','Purple'],a:31.95,b:-47.44},{pair:['Purple','Pink'],a:0.89,b:0.47},
+ {pair:['Blue','Green'],a:1.74,b:-1.05},{pair:['Green','Yellow'],a:37.17,b:-54.08},
+ {pair:['Yellow','Orange'],a:8.08,b:-10.98},{pair:['Orange','Pink'],a:1.58,b:-1.32},
+ {pair:['Orange','Red'],a:5.02,b:-5.97},{pair:['Red','Pink'],a:38.40,b:-50.85}
+];
+
+// The paper plots Smith-Pokorny fundamentals on the CIE 1964 10 degree observer
+// normalised to equal-energy = (0.66, 1.0); these charts use CIE 170-2, where
+// equal-energy is near (0.699, 0.026) at 10 degrees. The s axes differ by ~39x
+// and l by ~0.04, which is about the width of the paper's colour regions -- using
+// the published numbers raw would put Blue in White's column. So anchor
+// equal-energy onto equal-energy: s is a pure ratio and takes a single scale k,
+// while l needs the one-parameter Mobius transform that carries the paper's
+// l_E=0.66 onto this chart's l_E. Both are derived from the live chart mode, so
+// switching between the 2 and 10 degree MB charts re-derives them.
+function meterMbPaperAnchors(){
+ const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
+ const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+ const lms=meterCieApplyMatrix({X:1,Y:1,Z:1},ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
+ const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
+ const lE=L/lm,sE=S/lm;
+ return {ten:ten,lE:lE,sE:sE,k:sE,r:(0.66/0.34)*((1-lE)/lE)};
+}
+function meterMbPaperToChart(l,s){
+ const a=meterMbPaperAnchors(),lp=Number(l)||0;
+ return {l:lp/(lp+a.r*(1-lp)),s:a.k*(Number(s)||0)};
+}
+// MacLeod-Boynton chromaticity in THIS chart's convention back to XYZ, with L+M
+// normalised to 1 so Y is a relative luminance the caller then scales.
+function meterMbChartToXyz(l,s){
+ const a=meterMbPaperAnchors();
+ const factors=a.ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+ const inv=a.ten?CIE_LMS_TO_CIE2015_10:CIE_LMS_TO_CIE2015_2;
+ const lv=Number(l)||0;
+ return meterCieApplyMatrix({X:lv/factors[0],Y:(1-lv)/factors[1],Z:(Number(s)||0)/factors[2]},inv);
+}
+
 function meterBuildMbHueCircleSteps(){
  const gamut=meterAnalysisGamut(),matrix=gamut.rgbToXyz;
  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
