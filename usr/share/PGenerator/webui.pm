@@ -12750,22 +12750,22 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <optgroup label="ColorChecker">
        <option value="30">Classic + Primaries (30)</option>
        <option value="800024">Classic (24)</option>
-       <option value="29" data-sdr-only="1">HCFR GCD + Primaries (30)</option>
-       <option value="800124" data-sdr-only="1">HCFR GCD Classic (24)</option>
-       <option value="800096" data-sdr-only="1">ColorChecker SG (96)</option>
-       <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
+       <option value="29">HCFR GCD + Primaries (30)</option>
+       <option value="800124">HCFR GCD Classic (24)</option>
+       <option value="800096">ColorChecker SG (96)</option>
+       <option value="800019">SG Skin Tones (19)</option>
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
-       <option value="25" data-sdr-only="1">HCFR Sat Sweep (25)</option>
+       <option value="25">HCFR Sat Sweep (25)</option>
        </optgroup>
        <optgroup label="MacLeod-Boynton">
-       <option value="800137" data-sdr-only="1">MacLeod-Boynton Hue Circle (37)</option>
-       <option value="800008" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton Focal Colours (8)</option>
-       <option value="800064" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
+       <option value="800137">MacLeod-Boynton Hue Circle (37)</option>
+       <option value="800008" data-mb-only="1">MacLeod-Boynton Focal Colours (8)</option>
+       <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager('color')" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
@@ -21967,14 +21967,25 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
  const gamut=meterAnalysisGamut(),wp=meterTargetWhitePoint();
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const signalMode=String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
  const add=(name,rPct,gPct,bPct,ire)=>{
-  const codes=[rPct,gPct,bPct].map(v=>Math.round(min+Math.max(0,Math.min(100,v))*span/100));
-  const linear=codes.map(code=>meterDecodeColorCheckerSignal(span>0?(code-min)/span:0));
+  const sourceSignal=[rPct,gPct,bPct].map(v=>Math.max(0,Math.min(100,Number(v)||0))/100);
+  // These libraries are defined as SDR legal-range signal values. Preserve
+  // their exact codes in SDR. In HDR/DV, first recover the BT.1886 relative
+  // light values, then encode those values with the active transfer function.
+  // Applying PQ or DV directly to the source percentages changes both
+  // chromaticity and luminance because each RGB channel follows a new EOTF.
+  const linear=(signalMode==='sdr')
+   ?sourceSignal.map(v=>meterDecodeColorCheckerSignal(v))
+   :sourceSignal.map(v=>Math.pow(v,2.4));
+  const codes=(signalMode==='sdr')
+   ?sourceSignal.map(v=>Math.round(min+v*span))
+   :linear.map(v=>meterEncodeColorCheckerLinear(v));
   const xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
   const sum=xyz.X+xyz.Y+xyz.Z;
   steps.push({ire:ire!=null?ire:Math.round(xyz.Y*100),r:codes[0],g:codes[1],b:codes[2],name:name,
    target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:Math.max(0,xyz.Y),
-   input_max:inputMax,series_mode:seriesMode||'fixed-video-sdr'});
+   input_max:inputMax,series_mode:(seriesMode||'fixed-video')+'-'+signalMode});
  };
  (Array.isArray(rows)?rows:[]).forEach((row,idx)=>add(row[0]||('Patch '+(idx+1)),row[1],row[2],row[3]));
  return steps;
@@ -21982,7 +21993,7 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
 
 function meterBuildHcfrColorCheckerStepsJS(includePrimaries){
  const rows=[['White',100,100,100],['Black',0,0,0],...meterHcfrGcdColorCheckerSource()];
- const steps=meterBuildFixedVideoCodeColorSteps(rows,'hcfr-gcd-sdr');
+ const steps=meterBuildFixedVideoCodeColorSteps(rows,'hcfr-gcd');
  if(includePrimaries===false) return steps;
  [['100% Red','Red'],['100% Green','Green'],['100% Blue','Blue'],['100% Cyan','Cyan'],['100% Magenta','Magenta'],['100% Yellow','Yellow']].forEach(([name,colorName])=>{
   const rgb=meterBuildSaturationStepRgb(colorName,100),target=meterBuildSaturationTargetStepMeta(colorName,100);
@@ -30819,16 +30830,17 @@ const METER_BUILTIN_3D_PROFILE_SERIES=[
 
 // Built-in display-verification libraries use reserved high ids so every
 // sequence has its own cache key without entering the editable custom-series
-// manager. Fixed-code libraries are SDR-only; Classic xyY sets are solved into
-// the active signal mode and target gamut by the existing ColorChecker builder.
+// manager. Fixed-code libraries retain their standard wire codes in SDR and are
+// converted through relative linear light in HDR/DV. Classic xyY sets are
+// solved into the active signal mode and target gamut by the existing builder.
 const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800024,name:'Classic (24)',category:'color',mode:'any',kind:'verification',preset:'classic-24',builtin_verification:true,patches:[]},
- {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'sdr',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
- {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'sdr',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
- {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
- {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'sdr',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
- {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'sdr',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]},
- {id:800064,name:'MacLeod-Boynton OSA-UCS Map (64)',category:'color',mode:'sdr',kind:'verification',preset:'mb-osa-ucs-64',builtin_verification:true,patches:[]}
+ {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'any',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
+ {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'any',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
+ {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
+ {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'any',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
+ {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'any',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]},
+ {id:800064,name:'MacLeod-Boynton OSA-UCS Map (64)',category:'color',mode:'any',kind:'verification',preset:'mb-osa-ucs-64',builtin_verification:true,patches:[]}
 ];
 
 const METER_COLORCHECKER_SG_NAMES=[
@@ -30988,7 +31000,7 @@ function meterBuildMbFocalColourSteps(){
    r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
    name:'MB Focal '+entry.name+(fit.outOfGamut?' (out of gamut)':''),
    target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
-   input_max:inputMax,series_mode:'mb-focal-sdr',
+   input_max:inputMax,series_mode:'mb-focal-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
    mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:entry.l,mb_paper_s:entry.s,
    out_of_gamut:fit.outOfGamut};
  });
@@ -31092,7 +31104,7 @@ function meterBuildMbOsaUcsMapSteps(){
     r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
     name:'1a '+name+' '+(n+1)+(fit.outOfGamut?' (out of gamut)':''),
     target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
-    input_max:inputMax,series_mode:'mb-osa-ucs-sdr',mb_region:name,
+    input_max:inputMax,series_mode:'mb-osa-ucs-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_region:name,
     mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:pt.l,mb_paper_s:pt.s,
     out_of_gamut:fit.outOfGamut});
   }
@@ -31135,7 +31147,7 @@ function meterBuildMbHueCircleSteps(){
   const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z;
   return {ire:Math.round(xyz.Y*100),r:meterEncodeColorCheckerLinear(rgb[0]),g:meterEncodeColorCheckerLinear(rgb[1]),b:meterEncodeColorCheckerLinear(rgb[2]),
    name:name,target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,input_max:inputMax,
-   series_mode:'mb-hue-circle-sdr',mb_hue_angle:angle};
+   series_mode:'mb-hue-circle-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_hue_angle:angle};
  };
  const steps=[makeStep('MB Neutral',center,null)];
  vectors.forEach(item=>steps.push(makeStep('MB Hue '+item.angle+'\u00b0',center.map((value,i)=>Math.max(0,Math.min(1,value+scale*item.delta[i]))),item.angle)));
@@ -31147,9 +31159,9 @@ function meterBuildBuiltinColorCheckerSteps(series){
  if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
  if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
  if(preset==='sg-96') return meterBuildFixedVideoCodeColorSteps(
-  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg-sdr');
+  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg');
  if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
-  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin-sdr');
+  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin');
  if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
  if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
  if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
@@ -33655,7 +33667,7 @@ function meterBuildStepsJS(type,points){
 	   });
 	  }
  } else if(type==='colors'){
-  if(Number(points)===29&&String(meterChartSignalMode()||'sdr').toLowerCase()==='sdr') steps.push(...meterBuildHcfrColorCheckerStepsJS());
+  if(Number(points)===29) steps.push(...meterBuildHcfrColorCheckerStepsJS());
   else steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
   ['Red','Green','Blue','Cyan','Magenta','Yellow'].forEach(name=>{
@@ -33984,7 +33996,9 @@ const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,80
 // saturation sweep as its ColorChecker.
 const METER_SERIES_SELECT_IDS=[30,800024,29,800124,800096,800019,24,25,800137,800008,800064];
 function meterHcfrFixedCodesAvailable(){
- return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
+ // The stored HCFR definitions remain exact in SDR and are adapted from their
+ // SDR source light values for HDR10, HLG and Dolby Vision.
+ return true;
 }
 // Sourced from the persisted preference rather than a checkbox: the sat sweeps
 // are now entries in the Series select. Same key, same truthiness, so the HCFR
@@ -34005,9 +34019,12 @@ function meterColorCheckerSeriesStoredValue(){
  try{id=Math.round(Number(localStorage.getItem(METER_COLORCHECKER_SERIES_KEY)||30));}catch(e){}
  return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
 }
-function meterColorCheckerSeriesIsSdrOnly(id){
+function meterColorCheckerSeriesUsesFullDeltaE(id){
  return [29,800124,800096,800019,800137,800008,800064].includes(Math.round(Number(id)));
 }
+// Compatibility for saved pages and local regression harnesses that still
+// call the former gate. No built-in verification series is SDR-only now.
+function meterColorCheckerSeriesIsSdrOnly(){return false;}
 // The MacLeod series carry MacLeod-Boynton targets and their paper-to-chart
 // mapping is derived from the live chart mode, so they are only offered while an
 // MB chart is selected.
@@ -34020,15 +34037,13 @@ function meterColorCheckerSeriesIsMbOnly(id){
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
  if(!select) return;
- const sdr=meterHcfrFixedCodesAvailable();
  const mb=meterMbChartActive();
  Array.from(select.options||[]).forEach(option=>{
-  option.disabled=(option.dataset.sdrOnly==='1'&&!sdr)||(option.dataset.mbOnly==='1'&&!mb);
+  option.disabled=(option.dataset.mbOnly==='1'&&!mb);
  });
  const activeId=Math.round(Number(activePoints));
  const selectable=(typeof METER_SERIES_SELECT_IDS!=='undefined')?METER_SERIES_SELECT_IDS:METER_COLORCHECKER_SERIES_IDS;
  let wanted=selectable.includes(activeId)?activeId:meterColorCheckerSeriesStoredValue();
- if(!sdr&&meterColorCheckerSeriesIsSdrOnly(wanted)) wanted=30;
  // An mb-only series that is already active is deliberately NOT reset when the
  // chart moves away from MB: it shows disabled-but-selected so the operator's
  // series and its measurement cache survive the chart change. Switching series
@@ -34061,13 +34076,8 @@ function meterSelectBuiltinColorChecker(selected){
  if(!explicit&&meterSelectImportedHcfrGroup('colorChecker')) return true;
  let points=explicit?Math.round(Number(selected)):meterColorCheckerSeriesStoredValue();
  if(!METER_COLORCHECKER_SERIES_IDS.includes(points)) points=30;
- if(meterColorCheckerSeriesIsSdrOnly(points)&&!meterHcfrFixedCodesAvailable()){
-  toast('That ColorChecker series is available in SDR only',true);
-  meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:30);
-  return false;
- }
  try{localStorage.setItem(METER_COLORCHECKER_SERIES_KEY,String(points));}catch(e){}
- if(meterColorCheckerSeriesIsSdrOnly(points)) meterEnableFullColorDeltaE();
+ if(meterColorCheckerSeriesUsesFullDeltaE(points)) meterEnableFullColorDeltaE();
  meterSyncColorCheckerSeriesUi(points);
  return meterSelectSeries('colors',points);
 }
@@ -34096,11 +34106,6 @@ async function meterSelectSeries(type,points,opts){
  }
  if(type==='greyscale' && Number(points)===30 && !meterHdrGreyscaleSeriesAvailable()){
   toast('Greyscale HDR 30pt is unavailable',true);
-  return;
- }
- const requestedSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
- if(((type==='colors'&&(Number(points)===29||(requestedSeries&&requestedSeries.builtin_verification&&requestedSeries.mode==='sdr')))||(type==='saturations'&&Number(points)===25))&&String(meterChartSignalMode()||'sdr').toLowerCase()!=='sdr'){
-  toast('HCFR-compatible verification series are currently available in SDR only',true);
   return;
  }
  const key=type+'-'+points;
@@ -42661,7 +42666,11 @@ async function meterRunSeries(options){
 		  if(meterSeriesSelectionRunActive&&Array.isArray(selectedRunSteps)){
 		   _seriesBody.custom_series=true;
 		   _seriesBody.custom_steps=selectedRunSteps.map(_serializeStep);
-		  } else if((meterActiveSeriesIsCustom()||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))&&Array.isArray(meterSeriesSteps)){
+		  } else if((meterActiveSeriesIsCustom()
+		   ||(meterActiveSeriesType==='colors'&&Number(meterActiveSeriesPoints)===29)
+		   ||(meterActiveSeriesType==='saturations'&&Number(meterActiveSeriesPoints)===25)
+		   ||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()))
+		   &&Array.isArray(meterSeriesSteps)){
 		   _seriesBody.custom_series=true;
 		   const _activeCustom=meterCustomSeriesById(meterActiveSeriesPoints);
 			  if(_activeCustom&&_activeCustom.kind==='lattice'){
