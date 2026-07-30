@@ -3481,16 +3481,16 @@ function lgSelectedPairingMode(){
 }
 
 // True when a /api/lg/connect response says this TV still has to go through
-// PIN pairing. Two cases, both of which used to look like a dead end:
-//  - needs_pin_pairing: the daemon refused to accept a "press OK" prompt
-//    pairing on a TV that advertises PIN, because that mints a client key
-//    with no access to the picture keys.
-//  - limited_permissions: the stored key registered fine but cannot even read
-//    pictureMode, i.e. it came from an earlier prompt pairing. Re-pairing with
-//    a PIN replaces it.
+// PIN pairing: the daemon refused to accept a "press OK" prompt pairing on a
+// TV that advertises PIN, because prompt pairing is not how this box pairs.
+// Note this is deliberately NOT inferred from what the key can reach on the
+// TV afterwards -- the readable picture-key set varies by model (a 2021 C1
+// exposes far fewer keys than a 2022 C2 with an equally valid PIN-paired
+// key), so treating a short key list as "needs re-pairing" would put such a
+// set into a pairing loop and trip the TV's pairing-request throttle.
 function lgResponseNeedsPinPairing(r){
  if(!r) return false;
- return !!(r.needs_pin_pairing||r.limited_permissions);
+ return !!r.needs_pin_pairing;
 }
 
 function lgRevealPinEntry(){
