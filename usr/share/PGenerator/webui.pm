@@ -13265,14 +13265,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
-    <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+    <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" oninput="meterCcssCreateUpdateStartState()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
     </div>
     <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select your spectrophotometer and display type, then start.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
       <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateSetupAck()" style="display:none">Continue</button>
-      <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()">Start Creation</button>
+      <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()" disabled title="Checking for a ready spectrophotometer.">Start Creation</button>
     </div>
    </div>
   </div>
@@ -17816,6 +17816,9 @@ let meterManualPromptMessage='';
 let meterManualPromptContinueResolver=null;
 let meterCcssCreatePolling=null;
 let meterCcssCreateHandledToken='';
+let meterCcssCreateFreshOpen=true;
+let meterCcssCreateInventoryReady=false;
+let meterCcssCreateJobActive=false;
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
@@ -25193,6 +25196,7 @@ function meterPopulateRoleSelects(meters,detectedPort){
  meterInventory=Array.isArray(meters)
   ? meters.filter(m=>meterNormalizePortValue(m&&m.port_num))
   : [];
+ meterCcssCreateInventoryReady=true;
  const select=document.getElementById('meterMeasurementPort');
  const autoMeter=meterFindByPort(detectedPort)||meterFindByPort(savedMeasurementPort)||(meterInventory[0]||null);
  const current=meterNormalizePortValue(select&&select.value)||savedMeasurementPort;
@@ -25286,9 +25290,26 @@ function meterCcssCreateDisplayTypeValue(){
 }
 
 function meterCcssCreateCanStart(){
- // Only a spectrophotometer must be selected; other meters (e.g. a colorimeter)
- // may stay connected during a calibration.
- return !!meterCcssCreateSelectedMeter();
+ return meterCcssCreateStartBlockReason()==='';
+}
+
+function meterCcssCreateStartBlockReason(){
+ if(!meterCcssCreateInventoryReady) return 'Checking for a ready spectrophotometer.';
+ if(!meterCcssCreateSelectedMeter()) return 'Connect and select a reference spectrophotometer.';
+ const nameInput=document.getElementById('meterCcssCreateName');
+ if(!String((nameInput&&nameInput.value)||'').trim()) return 'Enter a profile name.';
+ if(!meterCcssCreateDisplayTypeValue()) return 'Choose a display technology.';
+ if(typeof hasUnsavedSettings==='function'&&hasUnsavedSettings()) return 'Apply & Restart before creating the profile.';
+ if(meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning) return 'Wait for the current meter operation to finish.';
+ return '';
+}
+
+function meterCcssCreateUpdateStartState(){
+ const startBtn=document.getElementById('meterCcssCreateStartBtn');
+ if(!startBtn) return;
+ const reason=meterCcssCreateStartBlockReason();
+ startBtn.disabled=reason!=='';
+ startBtn.title=reason;
 }
 
 function meterCcssCreateSetUi(status){
@@ -25303,7 +25324,7 @@ function meterCcssCreateSetUi(status){
   // output for the log/diagnostics and must NOT be surfaced to the operator.
   progress.textContent=status.message;
  }
- if(startBtn){ startBtn.style.display=running?'none':''; startBtn.disabled=!meterCcssCreateCanStart(); }
+ if(startBtn){ startBtn.style.display=running?'none':''; meterCcssCreateUpdateStartState(); }
  if(stopBtn) stopBtn.style.display=running?'':'none';
  // The action button is driven by meterCcssCreateRefreshStatus for setup steps;
  // for any non-setup status (handled here) keep it hidden.
@@ -25328,20 +25349,25 @@ async function meterCcssCreateSetupAck(){
 function meterRenderCcssCreateChoices(){
  const wrap=document.getElementById('meterCcssCreateChoices');
  const status=document.getElementById('meterCcssCreateStatus');
- const startBtn=document.getElementById('meterCcssCreateStartBtn');
  if(!wrap||!status) return;
+ if(!meterCcssCreateInventoryReady){
+  wrap.innerHTML='';
+  status.textContent='Checking connected spectrophotometers...';
+  meterCcssCreateUpdateStartState();
+  return;
+ }
  const spectros=meterCcssCreateSpectros();
  const selected=meterSelectedProfilingPort();
  if(!meterInventory||meterInventory.length===0){
   wrap.innerHTML='';
   status.textContent='No supported meter detected. Connect a spectrophotometer, then choose Create Custom CCSS again.';
-  if(startBtn) startBtn.disabled=true;
+  meterCcssCreateUpdateStartState();
   return;
  }
  if(!spectros.length){
   wrap.innerHTML='';
   status.textContent='No spectrophotometer detected. Connect only the reference spectro you want to use for CCSS creation.';
-  if(startBtn) startBtn.disabled=true;
+  meterCcssCreateUpdateStartState();
   return;
  }
  const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
@@ -25358,7 +25384,7 @@ function meterRenderCcssCreateChoices(){
   const active=meterProfilingPort===port;
   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationMeter(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
  }).join('');
- if(startBtn) startBtn.disabled=!meterCcssCreateCanStart();
+ meterCcssCreateUpdateStartState();
 }
 
 // Fixed modals that live under .dashboard get trapped under the AutoCal mask
@@ -25374,6 +25400,17 @@ function meterOpenCcssCreateModal(){
  meterCloseCustomCcssEditor();
  const modal=meterEnsureModalOnBody(document.getElementById('meterCcssCreateModal'));
  if(!modal) return;
+ meterCcssCreateFreshOpen=true;
+ meterCcssCreateInventoryReady=false;
+ meterCcssCreateJobActive=false;
+ meterCcssSetupStepId=0;
+ meterCcssCreateHandledToken='';
+ const progress=document.getElementById('meterCcssCreateProgress');
+ if(progress) progress.textContent='Select your spectrophotometer and display type, then start.';
+ const continueBtn=document.getElementById('meterCcssCreateContinueBtn');
+ if(continueBtn) continueBtn.style.display='none';
+ const stopBtn=document.getElementById('meterCcssCreateStopBtn');
+ if(stopBtn) stopBtn.style.display='none';
  const createSel=document.getElementById('meterCcssCreateDisplayType');
  if(createSel){
   const preferred=String(meterCcssCreateDisplayType||'').trim();
@@ -25387,6 +25424,13 @@ function meterOpenCcssCreateModal(){
  meterRenderCcssCreateChoices();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
+ Promise.resolve(meterCheckStatus()).finally(()=>{
+  if(modal.style.display==='flex'&&!meterCcssCreateInventoryReady){
+   const status=document.getElementById('meterCcssCreateStatus');
+   if(status) status.textContent='Could not confirm that the spectrophotometer is ready. Check the connection and reopen this window.';
+   meterCcssCreateUpdateStartState();
+  }
+ });
  meterCcssCreateRefreshStatus(true);
  if(meterCcssCreatePolling) clearInterval(meterCcssCreatePolling);
  meterCcssCreatePolling=setInterval(()=>meterCcssCreateRefreshStatus(true),2000);
@@ -25396,12 +25440,13 @@ function meterCloseCcssCreateModal(restoreSelection){
  const modal=document.getElementById('meterCcssCreateModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
- const _wasRunning=!!meterCcssCreatePolling;
+ const _wasRunning=meterCcssCreateJobActive;
  if(meterCcssCreatePolling){clearInterval(meterCcssCreatePolling);meterCcssCreatePolling=null;}
  // If a CCSS job was in progress, closing the window must stop it -- otherwise it
  // keeps running (e.g. parked at a wizard step), holds the meter, and blocks every
  // subsequent read via the "busy creating a CCSS" guard.
  if(_wasRunning){ try{ fetchJSON('/api/ccss/create/stop',{method:'POST',_quiet:true,_timeoutMs:5000}); }catch(e){} }
+ meterCcssCreateJobActive=false;
  if(restoreSelection){
   const sel=document.getElementById('meterDisplayType');
   if(sel){
@@ -25434,6 +25479,13 @@ async function meterCcssCreateRefreshStatus(quiet){
  // calibrate/aim steps and the working messages all render here.
  meterSpectroSetupApply(null);
  const contBtn=document.getElementById('meterCcssCreateContinueBtn');
+ const activeStatus=r.status==='starting'||r.status==='running'||r.status==='setup';
+ meterCcssCreateJobActive=activeStatus;
+ if(meterCcssCreateFreshOpen&&!activeStatus){
+  meterCcssCreateSetUi({status:'idle'});
+  return r;
+ }
+ if(activeStatus) meterCcssCreateFreshOpen=false;
  if(r.status==='setup'){
   meterCcssSetupStepId=Number(r.step_id)||0;
   if(progress) progress.textContent=r.message||'';
@@ -25468,8 +25520,11 @@ async function meterStartCcssCreate(){
  // then fails with "Instrument Access Failed" because the meter is still held.
  // (The backend webui_ccss_create_start also frees the session before launch.)
  meterStopContinuous();
+ meterCcssCreateInventoryReady=false;
  await meterCheckStatus();
  meterRenderCcssCreateChoices();
+ const blocked=meterCcssCreateStartBlockReason();
+ if(blocked){toast(blocked,true);return;}
  const spectros=meterCcssCreateSpectros();
  if(!spectros.length){toast('Connect a spectrophotometer first',true);return;}
  const meter=meterCcssCreateSelectedMeter();
@@ -25480,11 +25535,14 @@ async function meterStartCcssCreate(){
  if(!name){toast('Enter a profile name',true);return;}
  const displayType=meterCcssCreateDisplayTypeValue();
  if(!displayType){toast('Choose a display technology',true);return;}
+ meterCcssCreateFreshOpen=false;
+ meterCcssCreateJobActive=true;
  meterActionPending=true;
  try{
   const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(meterMeasurementSignalContext({name:name,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
   if(!r||r.status==='error'){
+   meterCcssCreateJobActive=false;
    meterCcssCreateSetUi(r||{status:'error',message:'Failed to start CCSS creation'});
    toast(r&&r.message?r.message:'Failed to start CCSS creation',true);
    return;
@@ -25503,6 +25561,7 @@ async function meterStopCcssCreate(){
   toast(r&&r.message?r.message:'Failed to stop CCSS creation',true);
   return;
  }
+ meterCcssCreateJobActive=false;
  await meterCcssCreateRefreshStatus(false);
 }
 
