@@ -12747,6 +12747,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
       <span>Series</span>
       <select id="meterColorCheckerSeriesSelect" class="inline-select" onchange="meterSelectBuiltinSeries(this.value)" style="max-width:240px">
+       <option value="custom" disabled>Custom Series</option>
        <optgroup label="ColorChecker">
        <option value="30">Classic + Primaries (30)</option>
        <option value="800024">Classic (24)</option>
@@ -34091,6 +34092,14 @@ function meterSyncColorCheckerSeriesUi(activePoints){
  });
  const activeId=Math.round(Number(activePoints));
  const selectable=(typeof METER_SERIES_SELECT_IDS!=='undefined')?METER_SERIES_SELECT_IDS:METER_COLORCHECKER_SERIES_IDS;
+ const activeCustom=(!selectable.includes(activeId)&&typeof meterCustomSeriesById==='function')
+  ?meterCustomSeriesById(activePoints):null;
+ const activeCustomKind=String((activeCustom&&activeCustom.kind)||'');
+ if(activeCustom&&!activeCustom.builtin_verification&&activeCustom.category==='color'
+  &&!['lattice','hybrid','skeleton'].includes(activeCustomKind)){
+  select.value='custom';
+  return;
+ }
  let wanted=selectable.includes(activeId)?activeId:meterColorCheckerSeriesStoredValue();
  // An mb-only series that is already active is deliberately NOT reset when the
  // chart moves away from MB: it shows disabled-but-selected so the operator's
