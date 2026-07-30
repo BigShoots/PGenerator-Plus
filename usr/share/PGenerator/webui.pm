@@ -47197,7 +47197,14 @@ function meterCie2dGeom(cw,ch){
 function meterCieDrawOpponentPolar(ctx,g){
  if(!meterCieIsOpponentMode()) return;
  const cx=g.toX(0),cy=g.toY(0);
- const radius=Math.min(g.w,g.h)/2;
+ const world=meterCie2dWorld();
+ const worldRadius=Math.max(Math.abs(world.xMin),Math.abs(world.xMax),Math.abs(world.yMin),Math.abs(world.yMax));
+ // Keep the guide in opponent-coordinate space. Wheel zoom and pan must move
+ // and scale the polar disc with the targets instead of pinning it to the card.
+ const radius=Math.min(
+  Math.abs(g.toX(worldRadius)-cx),
+  Math.abs(g.toY(worldRadius)-cy)
+ );
  ctx.save();
  ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.clip();
  if(meterCieViewOpts.locus){
