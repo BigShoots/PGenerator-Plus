@@ -25619,6 +25619,19 @@ function syncTopStatusStack(){
  stack.classList.toggle('active',visible);
 }
 
+function meterSyncBusyStatusDot(){
+ const dot=document.getElementById('meterDot');
+ if(!dot) return;
+ const busy=!!(
+  meterActionPending||meterSeriesRunning||meterContinuousActive||meterContinuousSuspendedForLgWrite
+  ||meterContinuousReadInFlight||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning
+  ||meterDvAutoCalProfileRunning||meterDvProfileStandaloneRunning||meterLgGreyBusy
+  ||meterSeriesAwaitingReady||meterManualPromptAwaiting||meterReadySignalPending
+  ||window._meterToneMapBusy
+ );
+ dot.style.background=meterDetected?(busy?'var(--orange)':'var(--green)'):'var(--text2)';
+}
+
 let _meterUsbPowerWarned=false;
 // Show/hide the persistent "Meter USB Unstable" badge (and a one-shot toast on
 // transition) from the /api/meter/status usb_power_warning field. The badge
@@ -29145,7 +29158,8 @@ function meterUpdateReadButtons(){
     manualPromptBtn.style.display=promptVisible?'':'none';
     manualPromptBtn.disabled=!promptVisible||meterReadySignalPending;
     manualPromptBtn.textContent=meterReadySignalPending?'Sending...':meterManualPromptActionLabel();
-   }
+	   }
+ meterSyncBusyStatusDot();
  try{ meterSync3dLutWorkspaceUi(); }catch(e){}
 }
 function meterUpdateCardMode(){
