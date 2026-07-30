@@ -38832,6 +38832,16 @@ function meterFullAutoCalSleep(ms){
 	 return snap.readings.length?snap:null;
 	}
 
+// A report pins its own three series, which leaves the Series selector showing
+// whichever one it measured last. Put the operator's choice back so running a
+// workflow does not silently repoint the control.
+function meterFullAutoCalRestoreSeriesSelection(){
+ try{
+  const stored=meterColorCheckerSeriesStoredValue();
+  if(typeof meterSyncColorCheckerSeriesUi==='function') meterSyncColorCheckerSeriesUi(stored);
+ }catch(e){}
+}
+
 async function meterFullAutoCalCaptureReportSet(stage){
  const isPre=stage==='pre';
  const phase=isPre?'precal-report':'postcal-report';
@@ -38893,6 +38903,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
  meterFullAutoCalSaveReportData();
  meterFullAutoCalArchiveReportData(stage+'-complete');
  meterSetWorkflowProgress({status:'running',current_step:series.length,total_steps:series.length,current_name:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'},{workflow:'full',label:(isPre?'Pre-Cal':'Post-Cal')+' measurements saved'});
+ meterFullAutoCalRestoreSeriesSelection();
  return true;
 }
 
