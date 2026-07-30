@@ -47111,6 +47111,22 @@ function meterCie2dGridSpec(xMin,xMax,yMin,yMax){
   &&Math.abs(xMin-.45)<1e-6&&Math.abs(xMax-.95)<1e-6
   &&Math.abs(yMin)<1e-6&&Math.abs(yMax-3)<1e-6;
  if(paperFrame) return {xStep:.1,yStep:.5,x0:.45,y0:0,xDecimals:2,yDecimals:1};
+ if(meterCieIsOpponentMode()){
+  const nice=range=>{
+   const target=Math.max(1e-9,range/6);
+   const pow=Math.pow(10,Math.floor(Math.log10(target)));
+   const n=target/pow;
+   return (n<=1?1:(n<=2?2:(n<=5?5:10)))*pow;
+  };
+  const xStep=nice(xMax-xMin),yStep=nice(yMax-yMin);
+  const decimals=step=>step>=1?0:Math.max(0,Math.ceil(-Math.log10(step)));
+  return {
+   xStep:xStep,yStep:yStep,
+   x0:Math.ceil(xMin/xStep-1e-9)*xStep,
+   y0:Math.ceil(yMin/yStep-1e-9)*yStep,
+   xDecimals:decimals(xStep),yDecimals:decimals(yStep)
+  };
+ }
  const xStep=meterCie2dNiceStep(xMax-xMin),yStep=meterCie2dNiceStep(yMax-yMin);
  return {
   xStep:xStep,yStep:yStep,
@@ -48226,9 +48242,14 @@ function drawCIEChart3D(readings,opts){
  // The spectral locus reaches very large threshold-scaled opponent values.
  // It remains a useful reference overlay, but must not collapse ordinary
  // display targets into the centre by controlling the 3D camera frame.
- const framingVectors=meterCieIsOpponentMode()
-  ?allVectors.filter((v,i)=>i===0||i>locusVectors.length)
-  :allVectors;
+ let framingVectors=allVectors;
+ if(meterCieIsOpponentMode()){
+  framingVectors=[d65Vector];
+  records.forEach(r=>{
+   if(r.targetVector) framingVectors.push(r.targetVector);
+   if(r.measuredVector) framingVectors.push(r.measuredVector);
+  });
+ }
  const bounds=meterCie3dBoundsForVectors(framingVectors);
  const layout=cie3dMakeLayout(ctx,bounds);
  const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
