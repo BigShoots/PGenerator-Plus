@@ -11403,7 +11403,7 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 #meterCard > h2{align-items:center;gap:10px 12px}
 #meterCard > h2::after{display:none}
 .meter-card-header-title{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
-.meter-config-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--text2);cursor:pointer;font-size:.82rem;transition:transform .2s,color .15s,background .15s}
+.meter-config-toggle{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;font-size:1.15rem;line-height:1;transition:transform .2s,color .15s,background .15s}
 .meter-config-toggle:hover{color:var(--text);background:var(--hover-bg)}
 .meter-config-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 #meterCard.meter-config-collapsed .meter-config-toggle{transform:rotate(-90deg)}
@@ -15210,6 +15210,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	 updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
+ meterUpdateCardMode();
  meterQueueOutputSettingsRefresh(true);
 });
 
@@ -29306,13 +29307,21 @@ function meterUpdateReadButtons(){
  meterSyncBusyStatusDot();
  try{ meterSync3dLutWorkspaceUi(); }catch(e){}
 }
+function meterCalibrationModeTitle(){
+ const mode=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
+ if(mode==='hdr10') return 'HDR Calibration';
+ if(mode==='hlg') return 'HLG Calibration';
+ if(mode==='dv') return 'DV Calibration';
+ return 'SDR Calibration';
+}
+
 function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
  const title=document.getElementById('meterCardTitleText');
  if(!card||!title) return;
  if(meterDetected){
   card.classList.remove('meter-patterns-only');
-  title.textContent='Calibration';
+  title.textContent=meterCalibrationModeTitle();
  } else {
   card.classList.add('meter-patterns-only');
   title.textContent='Test Patterns';
