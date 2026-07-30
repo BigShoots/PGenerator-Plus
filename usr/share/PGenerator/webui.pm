@@ -32643,6 +32643,28 @@ function meterLutSolveDoneClose(){
  try{ uiSyncBodyScrollLock(); }catch(e){}
 }
 
+function meterCustomSeriesCodeGamut(series){
+ // HDR10, HLG and Dolby Vision RGB patch definitions ride in the BT.2020
+ // signal container even when the intended verification gamut is P3. CalMAN
+ // CCFX P3 sets therefore already contain BT.2020 RGB values that reproduce
+ // P3 chromaticities. Interpreting those values with the selected P3 matrix
+ // applies the gamut conversion a second time and pulls every edge inward.
+ const mode=(typeof meterCustomSeriesModeKey==='function')
+  ?meterCustomSeriesModeKey(series&&series.mode):String((series&&series.mode)||'sdr').toLowerCase();
+ if((mode==='hdr'||mode==='dv')&&typeof GAMUT_PRESETS!=='undefined'&&GAMUT_PRESETS.bt2020) return GAMUT_PRESETS.bt2020;
+ return meterAnalysisGamut();
+}
+
+function meterCustomSeriesCodeXYZ(step,series,unclamped){
+ const gamut=meterCustomSeriesCodeGamut(series);
+ return linRgbToXyz(
+  meterDecodeColorTargetChannel(step.r,unclamped?{unclamped:true}:undefined),
+  meterDecodeColorTargetChannel(step.g,unclamped?{unclamped:true}:undefined),
+  meterDecodeColorTargetChannel(step.b,unclamped?{unclamped:true}:undefined),
+  gamut.rgbToXyz
+ );
+}
+
 function meterCustomSeriesStepTargets(step,series,patch){
  const out={};
  // Explicit per-patch target chromaticity (operator-entered) is authoritative;
@@ -32652,10 +32674,20 @@ function meterCustomSeriesStepTargets(step,series,patch){
   out.target_y=Number(patch.target_y);
  } else {
  try{
-  const xy=targetChromaticityXY(step.r,step.g,step.b);
-  if(xy&&Number.isFinite(xy.x)&&Number.isFinite(xy.y)){
-   out.target_x=Math.round(xy.x*10000)/10000;
-   out.target_y=Math.round(xy.y*10000)/10000;
+  if(typeof meterCustomSeriesCodeXYZ==='function'){
+   const xyz=meterCustomSeriesCodeXYZ(step,series,true);
+   const sum=xyz.X+xyz.Y+xyz.Z;
+   if(sum>0&&Number.isFinite(sum)){
+    out.target_x=Math.round((xyz.X/sum)*10000)/10000;
+    out.target_y=Math.round((xyz.Y/sum)*10000)/10000;
+   }
+  } else {
+   // Compatibility for an older cached page or an isolated chart harness.
+   const xy=targetChromaticityXY(step.r,step.g,step.b);
+   if(xy&&Number.isFinite(xy.x)&&Number.isFinite(xy.y)){
+    out.target_x=Math.round(xy.x*10000)/10000;
+    out.target_y=Math.round(xy.y*10000)/10000;
+   }
   }
  }catch(e){}
  }
@@ -32678,7 +32710,8 @@ function meterCustomSeriesStepTargets(step,series,patch){
   out.target_Yn=Math.round(Math.pow(frac,2.2)*100000)/100000;
  } else {
   try{
-   const abs=targetColorXYZAbs(step.r,step.g,step.b);
+   const abs=(typeof meterCustomSeriesCodeXYZ==='function')
+    ?meterCustomSeriesCodeXYZ(step,series,false):targetColorXYZAbs(step.r,step.g,step.b);
    if(abs&&Number.isFinite(abs.Y)&&refNits>0) out.target_Yn=Math.round((abs.Y/refNits)*100000)/100000;
   }catch(e){}
  }
