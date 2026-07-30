@@ -46113,16 +46113,49 @@ function meterSelectedCIETargetColor(rd,baseColor){
 // uses a slightly wider 1.15:1 presentation so the plot fills more of its
 // card without restoring the old unused x=.9-1.0 world-coordinate gutter.
 const CIE2D_WORLD={xMin:0,xMax:0.9,yMin:0,yMax:0.9};
+// Tallest sMB the active gamut can reach, i.e. the top of its primary triangle.
+// The spectral sMB maximum is ~1.0, but no display gets close: BT.709 tops out
+// near 0.25 at 2 degrees and BT.2020 near 0.46 at 10 degrees. Sizing the default
+// view by the locus therefore squeezed every real measurement into the bottom
+// quarter of the chart. Returns 0 when the gamut cannot be resolved so the
+// caller can fall back.
+function meterCieMbGamutSMax(){
+ try{
+  const matrix=meterAnalysisGamut().rgbToXyz;
+  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
+  const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+  const lmsMatrix=ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2;
+  let max=0;
+  [[1,0,0],[0,1,0],[0,0,1]].forEach(rgb=>{
+   const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],matrix);
+   const lms=meterCieApplyMatrix(xyz,lmsMatrix);
+   const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
+   if(lm>1e-9){const s=S/lm;if(isFinite(s)&&s>max) max=s;}
+  });
+  return max;
+ }catch(e){ return 0; }
+}
 function meterCie2dWorld(){
  const mode=meterChromaticityChartMode();
- // The CIE-normalized spectral sMB maximum is approximately one. Reset/fully
- // zoomed-out view must include the complete locus, not only display colours.
- if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:1.02};
+ // Frame the reset/zoomed-out MacLeod-Boynton view on what the display can
+ // actually produce, with headroom above the gamut apex, instead of on the
+ // spectral locus. The locus stays available as the corner inset, which is why
+ // that inset now draws at default zoom too. x starts at 0.48 because the
+ // spectral locus itself never goes below lMB ~0.52, so 0.40-0.48 was blank.
+ if(mode.indexOf('ciemb_')===0){
+  const sMax=meterCieMbGamutSMax();
+  const yMax=(sMax>0)?Math.max(0.12,Math.min(1.02,sMax*1.18)):1.02;
+  return {xMin:0.48,xMax:1,yMin:0,yMax:yMax};
+ }
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return CIE2D_WORLD;
 }
 function meterDrawMbFullLocusInset(ctx,geom){
- if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!meterCieViewOpts.locus||geom.scale<=1.001) return;
+ // Draw whenever the main plot does not already contain the whole locus: that is
+ // true when zoomed in, and now also at default zoom because the reset view is
+ // framed on the display gamut rather than the full spectral sMB range.
+ if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!meterCieViewOpts.locus) return;
+ if(geom.scale<=1.001&&Number(geom.yMax)>=0.95) return;
  const locus=meterCieChartLocus();
  if(!locus||locus.length<2) return;
  const iw=112,ih=92,margin=7;
@@ -46198,9 +46231,18 @@ function meterCie2dGeom(cw,ch){
  // forcing equal screen units creates a short strip for its practical sMB
  // range. Fill the chart card while keeping the numeric ticks explicit.
  const isMb=typeof meterChromaticityChartMode==='function'&&meterChromaticityChartMode().indexOf('ciemb_')===0;
- const targetAspect=isMb?1.15:1.15*(xSpan/ySpan);
- let w=availableW,h=w/targetAspect;
- if(h>availableH){h=availableH;w=h*targetAspect;}
+ let w,h;
+ if(isMb){
+  // Both MB axes are independently normalized physiological ratios, so there is
+  // no true aspect to preserve. Forcing 1.15:1 left a wide band of dead canvas
+  // above and below the plot whenever the card was taller than that box; fill
+  // the card instead and let the ticks carry the scale.
+  w=availableW;h=availableH;
+ }else{
+  const targetAspect=1.15*(xSpan/ySpan);
+  w=availableW;h=w/targetAspect;
+  if(h>availableH){h=availableH;w=h*targetAspect;}
+ }
  pad.l+=(availableW-w)/2;
  pad.t+=(availableH-h)/2;
  return {
