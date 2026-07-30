@@ -48246,10 +48246,11 @@ function drawCIEChart3D(readings,opts){
   try{ lum=meterColorLuminanceInfo(rd); }catch(e){}
   records.push({rd,itemPreset,targetVector,measuredVector,lum});
  });
- const locusVectors=meterCieViewOpts.locus?meterCie3dLocusVectors(referenceY):[];
+ const opponentMode=meterCieIsOpponentMode();
+ const locusVectors=(meterCieViewOpts.locus&&!opponentMode)?meterCie3dLocusVectors(referenceY):[];
  const d65Vector=meterCie3dD65Vector(referenceY);
  const gamut=meterAnalysisGamut();
- const measuredGamutPoints=(!isPreset&&meterCieViewOpts.gamut)
+ const measuredGamutPoints=(!opponentMode&&!isPreset&&meterCieViewOpts.gamut)
   ?meterMeasuredGamutOutlinePoints(readings):null;
  let measuredGamutVectors=null;
  if(measuredGamutPoints&&measuredGamutPoints.length>=3){
@@ -48259,7 +48260,7 @@ function drawCIEChart3D(readings,opts){
   if(measuredGamutVectors.length<3) measuredGamutVectors=null;
  }
  let gamutVectors=null;
- if(meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
+ if(!opponentMode&&meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
   const p=gamut.primaries;
   const gamutCoords=meterCieGamutCoords(p);
   const cR=gamutCoords.R,cG=gamutCoords.G,cB=gamutCoords.B;
@@ -48426,7 +48427,8 @@ function drawCIEChart3D(readings,opts){
   ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');
   ctx.fillText('Reference targets need spectral data',ctx.w-12,42);
  } else if(colorInclLum){
-  ctx.fillStyle='#7ec8ff';ctx.fillText('True tristimulus magnitude \u00B7 ring = |\u0394Y|%',ctx.w-12,42);
+  ctx.fillStyle='#7ec8ff';
+  ctx.fillText(opponentMode?'Achromatic = Y/reference - 1 \u00B7 ring = |\u0394Y|%':'True tristimulus magnitude \u00B7 ring = |\u0394Y|%',ctx.w-12,42);
  }
  const fmt=v=>Math.abs(v)>=100?v.toFixed(0):v.toFixed(Math.abs(v)>=10?1:2);
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='9px sans-serif';ctx.textAlign='left';
