@@ -12253,7 +12253,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div class="meter-matrix-field" style="display:none">
        <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
    </div>
-   </div>
+  </div>
   <div class="field field-gamma">
     <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets and error calculations. This changes the analysis target, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
@@ -28029,6 +28029,12 @@ let meterSeriesSteps=null; // steps for loaded series
 let meterActiveSeriesKey=null; // track which series button is active
 let meterActiveSeriesType=null; // series type (greyscale/colors/saturations)
 let meterActiveSeriesPoints=null; // series point count
+// Last series the operator chose per tab. Switching to the 3D LUT workspace
+// sets the 3dlut tab, and coming back sets the greyscale tab again -- a tab
+// CHANGE, so the guard in meterSetSeriesTab falls through to the tab's default
+// button (the first visible one, Greyscale 2pt) and silently discarded a 21pt
+// or 26pt selection. Remember the choice and return to it instead.
+const meterLastSeriesByTab={};
 let meterActiveSeriesSignalMode=null; // signal mode tied to active series snapshot
 let meterActiveSeriesTargetGamma=null; // target transfer function tied to active series snapshot
 let meterActiveSeriesMaxLuma=null; // HDR/DV peak tied to active series snapshot
@@ -29219,9 +29225,15 @@ function meterSetSeriesTab(tab,skipAutoSelect){
   meterSelectBuiltinColorChecker();
   return;
  }
- const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
- const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
- if(match) meterSelectSeries(match[1],parseInt(match[2],10));
+ // preserveTab: this IS meterSetSeriesTab, and the tab UI is already in sync.
+ const remembered=meterLastSeriesByTab[meterSeriesTab];
+ if(remembered){
+  meterSelectSeries(remembered.type,remembered.points,{preserveTab:true});
+ } else {
+  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
+  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
+  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
+ }
  // Leaving Tone Map / 3D LUT empty shell: restore charts if another series is live.
  try{
   if(meterSeriesTab!=='3dlut'&&meterActiveSeriesType&&meterDetected){
@@ -33470,6 +33482,9 @@ async function meterSelectSeries(type,points,opts){
   if(!ok) return;
  }
  clearActive();
+ // Past every early return (unavailable series, running-series switch declined),
+ // so this only records a selection the operator actually committed to.
+ try{ meterLastSeriesByTab[meterSeriesTabForSeries(type,points)]={type:type,points:points}; }catch(e){}
  if(meterSeriesRunning) meterStop();
  // Do not run the continuous-stop UI teardown when continuous reading is
  // already idle. That path rebuilds every thumbnail in the OLD series; on a
