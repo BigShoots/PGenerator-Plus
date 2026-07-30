@@ -46683,9 +46683,8 @@ function meterDrawMbFullLocusInset(ctx,geom){
  ctx.beginPath();ctx.rect(ix,iy,iw,ih);ctx.clip();
  ctx.strokeStyle='rgba(176,190,220,.9)';ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';
  meterStrokeCieLocus2d(ctx,locus,tx,ty);
- const view=meterCie2dViewport();
  ctx.strokeStyle='rgba(90,190,255,.95)';ctx.lineWidth=1;
- ctx.strokeRect(tx(view.xMin),ty(view.yMax),tx(view.xMax)-tx(view.xMin),ty(view.yMin)-ty(view.yMax));
+ ctx.strokeRect(tx(geom.xMin),ty(geom.yMax),tx(geom.xMax)-tx(geom.xMin),ty(geom.yMin)-ty(geom.yMax));
  ctx.restore();
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='8px sans-serif';ctx.textAlign='left';
  ctx.fillText('full locus',ix+4,iy+11);
@@ -46761,13 +46760,41 @@ function meterCie2dGridSpec(xMin,xMax,yMin,yMax){
   yDecimals:yStep<.01?3:(yStep<.1?2:1)
  };
 }
+// A hue circle is generated in threshold-scaled MacLeod-Boynton coordinates.
+// Recover its displayed horizontal/vertical radii from the actual cardinal
+// targets so canvas resizing and wheel zoom preserve the ring's pixel aspect
+// after those coordinates are mapped to relative cone trolands.
+function meterCieMbHueCirclePresentationRatio(){
+ if(meterChromaticityChartMode().indexOf('ciemb_')!==0) return 0;
+ const steps=(typeof meterSeriesSteps!=='undefined'&&Array.isArray(meterSeriesSteps))?meterSeriesSteps:[];
+ const coord=step=>{
+  if(!step) return null;
+  const declared=meterCieDeclaredMbTargetCoord(step);
+  return declared&&Number.isFinite(declared.x)&&Number.isFinite(declared.y)?declared:null;
+ };
+ const neutral=steps.find(step=>/^MB Neutral$/i.test(String(step&&step.name||'')));
+ const hue0=steps.find(step=>/^MB Hue 0(?:\u00b0|deg)?$/i.test(String(step&&step.name||'')));
+ const hue90=steps.find(step=>/^MB Hue 90(?:\u00b0|deg)?$/i.test(String(step&&step.name||'')));
+ const c=coord(neutral),p0=coord(hue0),p90=coord(hue90);
+ if(!c||!p0||!p90) return 0;
+ const dx=Math.abs(p0.x-c.x),dy=Math.abs(p90.y-c.y);
+ return dx>1e-9&&dy>1e-9?dx/dy:0;
+}
+function meterCieMbFitHorizontalSpan(vp,span){
+ const outer=meterCie2dZoomOutWorld();
+ const outerSpan=Math.max(1e-9,outer.xMax-outer.xMin);
+ const width=Math.min(outerSpan,Math.max(1e-9,Number(span)||0));
+ const center=(Number(vp.xMin)+Number(vp.xMax))/2;
+ let xMin=center-width/2,xMax=center+width/2;
+ if(xMin<outer.xMin){xMax+=outer.xMin-xMin;xMin=outer.xMin;}
+ if(xMax>outer.xMax){xMin-=xMax-outer.xMax;xMax=outer.xMax;}
+ return Object.assign({},vp,{xMin:xMin,xMax:xMax,cx:(xMin+xMax)/2});
+}
 // 2D CIE layout: full plot area with optional zoom/pan viewport.
 // Zoom inset is drawn over the top-right of the plot (not a side gutter).
 function meterCie2dGeom(cw,ch){
  const pad={t:15,r:15,b:35,l:45};
- const vp=meterCie2dViewport();
- const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
- const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
+ let vp=meterCie2dViewport();
  // A modest 15% horizontal presentation stretch uses the otherwise empty
  // sides of the chart card in both normal and expanded layouts. All drawing,
  // hit testing, zooming and inset placement consume this same geometry.
@@ -46776,12 +46803,20 @@ function meterCie2dGeom(cw,ch){
  // forcing equal screen units creates a short strip for its practical sMB
  // range. Fill the chart card while keeping the numeric ticks explicit.
  const isMb=typeof meterChromaticityChartMode==='function'&&meterChromaticityChartMode().indexOf('ciemb_')===0;
+ const hueRatio=isMb?meterCieMbHueCirclePresentationRatio():0;
+ if(hueRatio>0){
+  // Preserve the Y window chosen by zoom. Derive X from the canvas aspect and
+  // the actual hue-circle radii. A wider canvas therefore reveals more X
+  // range instead of stretching every point horizontally.
+  const ySpan=Math.max(1e-9,vp.yMax-vp.yMin);
+  vp=meterCieMbFitHorizontalSpan(vp,ySpan*(availableW/availableH)*hueRatio);
+ }
+ const xMin=vp.xMin,xMax=vp.xMax,yMin=vp.yMin,yMax=vp.yMax;
+ const xSpan=Math.max(1e-9,xMax-xMin), ySpan=Math.max(1e-9,yMax-yMin);
  let w,h;
  if(isMb){
-  // Both MB axes are independently normalized physiological ratios, so there is
-  // no true aspect to preserve. Forcing 1.15:1 left a wide band of dead canvas
-  // above and below the plot whenever the card was taller than that box; fill
-  // the card instead and let the ticks carry the scale.
+  // Fill the card. Hue-circle data has already received its threshold-space
+  // aspect correction above; other MB series retain their explicit axis frame.
   w=availableW;h=availableH;
  }else{
   const targetAspect=1.15*(xSpan/ySpan);
