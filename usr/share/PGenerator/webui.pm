@@ -12362,11 +12362,22 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <span id="meterCustomSeriesLoadedGrey" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <div id="meterSeriesGroupColor" style="display:none;gap:4px;flex-wrap:wrap">
-     <button class="btn btn-sm btn-secondary" id="meterColorCheckerSeriesBtn" data-series="colors-30" onclick="meterSelectBuiltinColorChecker()">ColorChecker</button>
+     <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
+      <span>ColorChecker</span>
+      <select id="meterColorCheckerSeriesSelect" onchange="meterSelectBuiltinColorChecker(this.value)" style="max-width:220px">
+       <option value="30">Classic + Primaries (30)</option>
+       <option value="800024">Classic (24)</option>
+       <option value="29" data-sdr-only="1">HCFR GCD + Primaries (30)</option>
+       <option value="800124" data-sdr-only="1">HCFR GCD Classic (24)</option>
+       <option value="800096" data-sdr-only="1">ColorChecker SG (96)</option>
+       <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
+      </select>
+      <span class="meter-help-tip" title="Choose a built-in display verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Each preset keeps a separate measurement cache." aria-label="ColorChecker series help">?</span>
+     </label>
      <button class="btn btn-sm btn-secondary" id="meterSaturationSeriesBtn" data-series="saturations-24" onclick="meterSelectBuiltinSaturationSweep()">Sat Sweep</button>
      <label id="meterHcfrFixedCodesWrap" style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2);padding:0 5px;cursor:pointer;user-select:none">
-      <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed GCD Video Codes
-      <span class="meter-help-tip" title="Use this before measuring ColorChecker or Sat Sweep when the results will be exported to HCFR. ColorChecker emits HCFR Classic GCD fixed video levels instead of PGenerator's xyY-derived patches, and Sat Sweep uses HCFR constant-luminance encoding instead of holding the maximum RGB channel fixed. The levels are quantized into the active Limited or Full output range. Enabling this also turns on luminance error so PGenerator's CIE2000 result is comparable to HCFR's full Lab Delta E. Native and HCFR measurements are stored separately, and CHC export follows this checkbox." aria-label="HCFR fixed GCD video codes help">?</span>
+      <input type="checkbox" id="meterHcfrFixedCodes" onchange="meterOnHcfrFixedCodesChange(this.checked)"> HCFR Fixed Sat Sweep Codes
+      <span class="meter-help-tip" title="Use the HCFR constant-luminance SDR saturation sweep instead of the native fixed-maximum-channel sweep. Levels are quantized into the active Limited or Full output range. The ColorChecker dropdown selects its own native or HCFR-compatible sequence." aria-label="HCFR fixed saturation sweep codes help">?</span>
      </label>
       <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager('color')" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
@@ -18081,7 +18092,8 @@ function meterRestoreLatestPersistedSeries(){
  // USER custom series (id >= 1001) are never auto-loaded at boot — they load
  // only through the Custom Series manager's Load button.
  const parsed=meterParseSeriesKey(lastKey)||{};
- const userCustom=Number(parsed.points)>=1001&&(typeof meterCustomSeriesById==='function')&&!!meterCustomSeriesById(parsed.points);
+ const restoredSeries=Number(parsed.points)>=1001&&(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(parsed.points):null;
+ const userCustom=!!(restoredSeries&&!restoredSeries.builtin_verification);
  if(userCustom) return false;
  if(lastKey && meterSeriesSnapshotCanRestore(meterSeriesCache[lastKey])) return meterRestoreSeriesFromCache(lastKey);
  return false;
@@ -21563,20 +21575,28 @@ function meterHcfrGcdColorCheckerSource(){
  ];
 }
 
-function meterBuildHcfrColorCheckerStepsJS(){
+function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
  const steps=[];
- const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan(),max=min+span;
+ const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
  const gamut=meterAnalysisGamut(),wp=meterTargetWhitePoint();
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const add=(name,rPct,gPct,bPct,ire)=>{
   const codes=[rPct,gPct,bPct].map(v=>Math.round(min+Math.max(0,Math.min(100,v))*span/100));
   const linear=codes.map(code=>meterDecodeColorCheckerSignal(span>0?(code-min)/span:0));
   const xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
   const sum=xyz.X+xyz.Y+xyz.Z;
   steps.push({ire:ire!=null?ire:Math.round(xyz.Y*100),r:codes[0],g:codes[1],b:codes[2],name:name,
-   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:Math.max(0,xyz.Y),series_mode:'hcfr-gcd-sdr'});
+   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:Math.max(0,xyz.Y),
+   input_max:inputMax,series_mode:seriesMode||'fixed-video-sdr'});
  };
- add('White',100,100,100,100);add('Black',0,0,0,0);
- meterHcfrGcdColorCheckerSource().forEach(row=>add(row[0],row[1],row[2],row[3]));
+ (Array.isArray(rows)?rows:[]).forEach((row,idx)=>add(row[0]||('Patch '+(idx+1)),row[1],row[2],row[3]));
+ return steps;
+}
+
+function meterBuildHcfrColorCheckerStepsJS(includePrimaries){
+ const rows=[['White',100,100,100],['Black',0,0,0],...meterHcfrGcdColorCheckerSource()];
+ const steps=meterBuildFixedVideoCodeColorSteps(rows,'hcfr-gcd-sdr');
+ if(includePrimaries===false) return steps;
  [['100% Red','Red'],['100% Green','Green'],['100% Blue','Blue'],['100% Cyan','Cyan'],['100% Magenta','Magenta'],['100% Yellow','Yellow']].forEach(([name,colorName])=>{
   const rgb=meterBuildSaturationStepRgb(colorName,100),target=meterBuildSaturationTargetStepMeta(colorName,100);
   steps.push({ire:100,r:rgb[0],g:rgb[1],b:rgb[2],name:name,series_color:colorName,sat_pct:100,...target});
@@ -21584,7 +21604,7 @@ function meterBuildHcfrColorCheckerStepsJS(){
  return steps;
 }
 
-function meterBuildColorCheckerStepsJS(){
+function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const steps=[];
 	 const min=meterChromaPatchRangeMin();
 	 const max=min+meterChromaPatchRangeSpan();
@@ -21653,7 +21673,7 @@ function meterBuildColorCheckerStepsJS(){
    input_max:inputMax
   });
  });
- [
+ if(includePrimaries!==false) [
   ['100% Red','Red'],
   ['100% Green','Green'],
   ['100% Blue','Blue'],
@@ -25257,7 +25277,7 @@ function meterRecoverSeries(s){
  let activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
  if(!activeBtn&&meterSeriesSnapshotIsImported(importedSnap)){
   if(type==='greyscale') activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-'+points+'"]');
-  else if(type==='colors') activeBtn=document.getElementById('meterColorCheckerSeriesBtn');
+  else if(type==='colors') activeBtn=null;
   else if(type==='saturations') activeBtn=document.getElementById('meterSaturationSeriesBtn');
  }
  if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
@@ -28320,6 +28340,8 @@ function meterUpdateReadButtons(){
  const settingsDirty=hasUnsavedSettings();
  const continuousUiActive=meterContinuousActive||meterContinuousSuspendedForLgWrite;
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive;
+ const colorCheckerSelect=document.getElementById('meterColorCheckerSeriesSelect');
+ if(colorCheckerSelect) colorCheckerSelect.disabled=busy;
  const hasData=Array.isArray(meterReadings)&&meterReadings.some(r=>r&&r.luminance!=null);
  const hideSeriesControlsForAutoCal=meterHideSeriesControlsForAutoCal();
  const autoCalSignalAllowed=meterAutoCalControlsAllowedForSignal();
@@ -29124,6 +29146,10 @@ function meterSetSeriesTab(tab,skipAutoSelect){
   return;
  }
  if(previousTab===meterSeriesTab&&meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
+ if(meterSeriesTab==='color'){
+  meterSelectBuiltinColorChecker();
+  return;
+ }
  const defaultBtn=meterDefaultSeriesButtonForTab(meterSeriesTab);
  const match=defaultBtn?String(defaultBtn.dataset.series||'').match(/^([^-]+)-(\d+)$/):null;
  if(match) meterSelectSeries(match[1],parseInt(match[2],10));
@@ -30325,6 +30351,68 @@ const METER_BUILTIN_3D_PROFILE_SERIES=[
  {id:929,name:'Hybrid 9³',category:'color',mode:'any',kind:'hybrid',params:{size:9,grey_points:0,threshold_pct:0,order:'spread',reverse:false,levels:[0,5,10,20,30,40,50,60,70,80,90,100]},patches:[]}
 ];
 
+// Built-in display-verification libraries use reserved high ids so every
+// sequence has its own cache key without entering the editable custom-series
+// manager. Fixed-code libraries are SDR-only; Classic xyY sets are solved into
+// the active signal mode and target gamut by the existing ColorChecker builder.
+const METER_BUILTIN_COLORCHECKER_SERIES=[
+ {id:800024,name:'Classic (24)',category:'color',mode:'any',kind:'verification',preset:'classic-24',builtin_verification:true,patches:[]},
+ {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'sdr',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
+ {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'sdr',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
+ {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]}
+];
+
+const METER_COLORCHECKER_SG_NAMES=[
+ 'White','6J','5F','6I','6K','5G','6H','5H','7K','6G','5I','6F','8K','5J','Black',
+ '2B','2C','2D','2E','2F','2G','2H','2I','2J','2K','2L','2M',
+ '3B','3C','3D','3E','3F','3G','3H','3I','3J','3K','3L','3M',
+ '4B','4C','4D','4E','4F','4G','4H','4I','4J','4K','4L','4M',
+ '5B','5C','5D','5K','5L','5M','6B','6C','6D','6L','6M',
+ '7B','7C','7D','7E','7F','7G','7H','7I','7J','7L','7M',
+ '8B','8C','8D','8E','8F','8G','8H','8I','8J','8L','8M',
+ '9B','9C','9D','9E','9F','9G','9H','9I','9J','9K','9L','9M'
+];
+const METER_COLORCHECKER_SG_LEGAL8=[
+ [235,235,235],[207,207,207],[185,185,185],[174,174,174],[163,163,163],[150,150,150],[139,139,139],[117,117,117],
+ [108,108,108],[97,97,97],[88,88,88],[80,80,80],[62,62,62],[53,53,53],[16,16,16],[141,40,88],[80,55,77],
+ [202,196,182],[112,71,49],[191,134,104],[93,112,128],[88,99,42],[126,117,141],[108,171,139],[235,187,147],
+ [101,40,51],[180,42,80],[178,126,150],[110,93,134],[233,187,171],[215,112,16],[69,84,139],[187,71,75],
+ [86,49,86],[161,171,16],[217,145,16],[200,215,171],[191,16,34],[90,44,62],[117,42,112],[16,62,93],
+ [178,204,174],[27,53,117],[73,136,51],[169,16,38],[228,180,16],[182,73,121],[16,126,136],[215,191,180],
+ [200,117,119],[180,16,49],[16,123,165],[88,147,165],[235,187,163],[180,200,182],[207,117,104],[222,60,49],
+ [58,154,158],[16,66,75],[204,198,130],[235,104,16],[235,154,16],[16,66,60],[117,143,167],[204,121,77],
+ [228,163,123],[187,136,95],[139,95,60],[193,145,115],[154,90,44],[200,130,95],[187,169,16],[235,180,16],
+ [16,154,139],[16,136,117],[196,134,106],[231,147,115],[187,139,108],[189,136,108],[191,139,106],
+ [121,80,49],[202,136,97],[174,139,36],[176,169,16],[71,62,47],[93,154,93],[16,134,84],[42,71,51],
+ [66,154,110],[121,150,64],[60,134,38],[80,161,51],[189,130,53],[152,145,38],[158,176,16],[82,53,38]
+];
+const METER_COLORCHECKER_SG_SKIN_NAMES=[
+ 'White','Black','2E','2F','2K','5D','7E','7F','7G','7H','7I','7J','8D','8E','8F','8G','8H','8I','8J'
+];
+const METER_COLORCHECKER_SG_SKIN_LEGAL8=[
+ [235,235,235],[16,16,16],[112,71,49],[191,134,104],[235,187,147],[235,187,163],[228,163,123],
+ [187,136,95],[139,95,60],[193,145,115],[154,90,44],[200,130,95],[196,134,106],[231,147,115],
+ [187,139,108],[189,136,108],[191,139,106],[121,80,49],[202,136,97]
+];
+
+function meterBuiltinFixedLegal8Rows(names,codes){
+ const pct=code=>(Math.max(16,Math.min(235,Number(code)||16))-16)*100/219;
+ return (Array.isArray(codes)?codes:[]).map((rgb,idx)=>[
+  (Array.isArray(names)&&names[idx])||('Patch '+(idx+1)),pct(rgb[0]),pct(rgb[1]),pct(rgb[2])
+ ]);
+}
+
+function meterBuildBuiltinColorCheckerSteps(series){
+ const preset=String((series&&series.preset)||'');
+ if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
+ if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
+ if(preset==='sg-96') return meterBuildFixedVideoCodeColorSteps(
+  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg-sdr');
+ if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
+  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin-sdr');
+ return [];
+}
+
 // Built-in cube lattices pick node spacing from the CURRENT signal mode:
 // SDR stays signal-uniform (the display gamma already spreads decoded light),
 // HDR switches to light-uniform PQ spacing up to the mastering peak so the
@@ -30352,6 +30440,10 @@ function meterBuiltinCubeSeriesForMode(builtin){
 
 function meterCustomSeriesById(id){
  const numeric=Math.round(Number(id));
+ if(Number.isFinite(numeric)&&typeof METER_BUILTIN_COLORCHECKER_SERIES!=='undefined'){
+  const verification=METER_BUILTIN_COLORCHECKER_SERIES.find(s=>s.id===numeric)||null;
+  if(verification) return verification;
+ }
  if(Number.isFinite(numeric)&&numeric>=900&&numeric<1000){
   let builtin=METER_BUILTIN_CUBE_SERIES.find(s=>s.id===numeric)||null;
   if(!builtin&&typeof METER_BUILTIN_3D_PROFILE_SERIES!=='undefined')
@@ -32136,7 +32228,8 @@ function meterRenderCustomSeriesButtons(){
  // "Custom Series" buttons keep a STATIC label; the loaded custom series is
  // named in the tag beside the button of its category. Nothing is loaded by
  // default — the tag only appears after the operator loads a series.
- const active=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ const custom=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
+ const active=(custom&&!custom.builtin_verification)?custom:null;
  const activeCat=active?(active.kind==='lattice'?'3dlut':(active.category==='color'?'color':'greyscale')):null;
  [['meterCustomSeriesBtnGrey','meterCustomSeriesLoadedGrey','greyscale'],
   ['meterCustomSeriesBtnColor','meterCustomSeriesLoadedColor','color'],
@@ -32154,6 +32247,7 @@ function meterRenderCustomSeriesButtons(){
    tag.title=on?String(active.name||''):'';
   }
  });
+ try{ meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null); }catch(e){}
 }
 
 function meterOpenCustomSeriesEditor(category,id){
@@ -32740,7 +32834,8 @@ function meterBuildStepsJS(type,points){
 	 const steps=[];
 	 const customSeries=(Number(points)>=900)?meterCustomSeriesById(points):null;
 	 if(customSeries){
-	  steps.push(...meterBuildCustomSeriesSteps(customSeries));
+	  if(customSeries.builtin_verification) steps.push(...meterBuildBuiltinColorCheckerSteps(customSeries));
+	  else steps.push(...meterBuildCustomSeriesSteps(customSeries));
 	  return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 	 }
 	 if(type==='greyscale'){
@@ -33137,6 +33232,8 @@ function meterDefaultTargetsForColorSeries(type,points){
 }
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
+const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
+const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019];
 function meterHcfrFixedCodesAvailable(){
  return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
 }
@@ -33151,10 +33248,36 @@ function meterSyncHcfrFixedCodesUi(){
  if(wrap) wrap.style.display=available?'inline-flex':'none';
  if(checkbox) checkbox.disabled=!available;
  const enabled=available&&!!(checkbox&&checkbox.checked);
- const colorBtn=document.getElementById('meterColorCheckerSeriesBtn');
  const satBtn=document.getElementById('meterSaturationSeriesBtn');
- if(colorBtn){colorBtn.dataset.series='colors-'+(enabled?29:30);colorBtn.title=enabled?'HCFR Classic GCD fixed video-level ColorChecker':'PGenerator native xyY ColorChecker';}
  if(satBtn){satBtn.dataset.series='saturations-'+(enabled?25:24);satBtn.title=enabled?'HCFR constant-luminance saturation sweep':'PGenerator native fixed-maximum-channel saturation sweep';}
+ meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null);
+}
+function meterColorCheckerSeriesStoredValue(){
+ let id=30;
+ try{id=Math.round(Number(localStorage.getItem(METER_COLORCHECKER_SERIES_KEY)||30));}catch(e){}
+ return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
+}
+function meterColorCheckerSeriesIsSdrOnly(id){
+ return [29,800124,800096,800019].includes(Math.round(Number(id)));
+}
+function meterSyncColorCheckerSeriesUi(activePoints){
+ const select=document.getElementById('meterColorCheckerSeriesSelect');
+ if(!select) return;
+ const sdr=meterHcfrFixedCodesAvailable();
+ Array.from(select.options||[]).forEach(option=>{
+  option.disabled=option.dataset.sdrOnly==='1'&&!sdr;
+ });
+ const activeId=Math.round(Number(activePoints));
+ let wanted=METER_COLORCHECKER_SERIES_IDS.includes(activeId)?activeId:meterColorCheckerSeriesStoredValue();
+ if(!sdr&&meterColorCheckerSeriesIsSdrOnly(wanted)) wanted=30;
+ select.value=String(wanted);
+}
+function meterEnableFullColorDeltaE(){
+ const includeLum=document.getElementById('meterColorIncludeLumError');
+ if(includeLum&&!includeLum.checked){
+  includeLum.checked=true;
+  meterOnColorIncludeLumChange();
+ }
 }
 function meterRestoreHcfrFixedCodesPreference(){
  const el=document.getElementById('meterHcfrFixedCodes');
@@ -33170,7 +33293,21 @@ function meterSelectImportedHcfrGroup(group){
  if(!match) return false;
  return meterRestoreSeriesFromCache(match.key,{signalMode:match.snap.signal_mode});
 }
-function meterSelectBuiltinColorChecker(){if(meterSelectImportedHcfrGroup('colorChecker'))return true;return meterSelectSeries('colors',meterHcfrFixedCodesEnabled()?29:30);}
+function meterSelectBuiltinColorChecker(selected){
+ const explicit=selected!=null&&selected!=='';
+ if(!explicit&&meterSelectImportedHcfrGroup('colorChecker')) return true;
+ let points=explicit?Math.round(Number(selected)):meterColorCheckerSeriesStoredValue();
+ if(!METER_COLORCHECKER_SERIES_IDS.includes(points)) points=30;
+ if(meterColorCheckerSeriesIsSdrOnly(points)&&!meterHcfrFixedCodesAvailable()){
+  toast('That ColorChecker series is available in SDR only',true);
+  meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:30);
+  return false;
+ }
+ try{localStorage.setItem(METER_COLORCHECKER_SERIES_KEY,String(points));}catch(e){}
+ if(meterColorCheckerSeriesIsSdrOnly(points)) meterEnableFullColorDeltaE();
+ meterSyncColorCheckerSeriesUi(points);
+ return meterSelectSeries('colors',points);
+}
 function meterSelectBuiltinSaturationSweep(){if(meterSelectImportedHcfrGroup('saturations'))return true;return meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24);}
 function meterOnHcfrFixedCodesChange(checked){
  try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,checked?'1':'0');}catch(e){}
@@ -33179,15 +33316,10 @@ function meterOnHcfrFixedCodesChange(checked){
   // HCFR's CIE2000 result is full Lab Delta E and therefore includes the
   // luminance term. Keep PGenerator's analysis comparable when HCFR patch
   // encoding is selected; the operator can still turn this back off.
-  const includeLum=document.getElementById('meterColorIncludeLumError');
-  if(includeLum&&!includeLum.checked){
-   includeLum.checked=true;
-   meterOnColorIncludeLumChange();
-  }
+  meterEnableFullColorDeltaE();
  }
  const type=String(meterActiveSeriesType||'');
- if(type==='colors'&&(Number(meterActiveSeriesPoints)===29||Number(meterActiveSeriesPoints)===30)) meterSelectBuiltinColorChecker();
- else if(type==='saturations'&&(Number(meterActiveSeriesPoints)===24||Number(meterActiveSeriesPoints)===25)) meterSelectBuiltinSaturationSweep();
+ if(type==='saturations'&&(Number(meterActiveSeriesPoints)===24||Number(meterActiveSeriesPoints)===25)) meterSelectBuiltinSaturationSweep();
 }
 
 async function meterSelectSeries(type,points,opts){
@@ -33204,7 +33336,8 @@ async function meterSelectSeries(type,points,opts){
   toast('Greyscale HDR 30pt is unavailable',true);
   return;
  }
- if(((type==='colors'&&Number(points)===29)||(type==='saturations'&&Number(points)===25))&&String(meterChartSignalMode()||'sdr').toLowerCase()!=='sdr'){
+ const requestedSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
+ if(((type==='colors'&&(Number(points)===29||(requestedSeries&&requestedSeries.builtin_verification&&requestedSeries.mode==='sdr')))||(type==='saturations'&&Number(points)===25))&&String(meterChartSignalMode()||'sdr').toLowerCase()!=='sdr'){
   toast('HCFR-compatible verification series are currently available in SDR only',true);
   return;
  }
@@ -47994,15 +48127,18 @@ function meterBuildHcfrExportModel(){
  const nearBlackEntry=importedGroup('nearBlack');
  const nearWhiteEntry=importedGroup('nearWhite');
  const satEntries=byType('saturations'),colorEntries=byType('colors');
- // The visible checkbox chooses which built-in variant export consumes. Each
- // variant keeps its own cache key, so toggling never re-labels measurements.
- // Do not fall back to the opposite built-in variant when the selected cache
- // was cleared; that would resurrect measurements the operator removed.
- // Fixed GCD video-code variants describe HCFR's SDR series. HDR/PQ exports
- // always consume the native HDR ColorChecker and saturation snapshots.
- const preferHcfr=(mode==='sdr')&&meterHcfrFixedCodesEnabled();
- const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfr?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
- const colorEntry=colorEntries.find(e=>Number(e.snap.points)===(preferHcfr?29:30))||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
+ // Sat Sweep keeps its own native/fixed-code checkbox. ColorChecker follows
+ // the dropdown when the selected library maps to the 24 Classic result slots.
+ // SG libraries contain a different layout, so CHC export falls back to the
+ // newest measured Classic variant instead of mislabelling SG patches.
+ const preferHcfrSat=(mode==='sdr')&&meterHcfrFixedCodesEnabled();
+ const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfrSat?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
+ const selectedColorPoints=(typeof meterColorCheckerSeriesStoredValue==='function')?meterColorCheckerSeriesStoredValue():30;
+ const classicColorIds=[30,800024,29,800124];
+ const preferredClassicId=classicColorIds.includes(Number(selectedColorPoints))?Number(selectedColorPoints):null;
+ const colorEntry=(preferredClassicId!=null?colorEntries.find(e=>Number(e.snap.points)===preferredClassicId):null)
+  ||colorEntries.find(e=>classicColorIds.includes(Number(e.snap.points)))
+  ||colorEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='colorChecker')||null;
  const valid=snap=>(snap&&snap.readings||[]).filter(meterHcfrValidReading);
  const grey=meterHcfrAlignedGrayscale(greyEntry&&greyEntry.snap);
  const nearBlack=valid(nearBlackEntry&&nearBlackEntry.snap).slice(0,5);
