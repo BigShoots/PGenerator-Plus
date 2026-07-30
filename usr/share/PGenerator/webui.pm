@@ -10833,6 +10833,11 @@ body.modal-open{position:fixed;left:0;right:0;width:100%;overflow:hidden;overscr
 #colorTopLayout.cie-3d-layout #colorReadingDetail{
  flex:0 0 205px!important;width:205px!important;height:480px!important;flex-shrink:0
 }
+/* MacLeod-Boynton's sMB locus is much taller than its practical display-gamut
+   region. Give the complete 2D diagram enough vertical room to stay legible. */
+#colorTopLayout.cie-mb-layout:not(.cie-3d-layout) #chartCIE{
+ height:min(78vh,780px)!important
+}
 /* A phone cannot fit the 3D CIE canvas beside 565px of fixed companion panels.
    Give 3D the full row and hide only those companions at phone dimensions.
    Normal 2D color layout keeps the original fixed 180px RGB panel below. */
@@ -13091,7 +13096,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label id="meterCieOptGamutLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the target colourspace triangle">
         <input type="checkbox" id="meterCieOptGamut" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Gamut
        </label>
-       <label id="meterCieOptLocusLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the CIE spectral locus (horseshoe) outline">
+       <label id="meterCieOptLocusLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the spectral locus outline and its chromaticity gradient">
         <input type="checkbox" id="meterCieOptLocus" checked onchange="meterCieViewOptChange()" style="vertical-align:middle"> Locus
        </label>
        <label id="meterCieOptLumRingsLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show the luminance-error rings and stems (applies when Include luminance error is on)">
@@ -22094,8 +22099,10 @@ const CIE_LOCUS=[[.1741,.005],[.174,.005],[.1733,.0048],[.1726,.0048],[.1714,.00
 const CIE_LOCUS_1964=[[.181333,.019685],[.180313,.0193476],[.178387,.0187109],[.175488,.0181337],[.170634,.0178493],[.165027,.0202828],[.159022,.0257251],[.151001,.0364389],[.138922,.0589201],[.11518,.10904],[.0727766,.229239],[.0209874,.440113],[.00558634,.674543],[.0495405,.802302],[.125236,.810194],[.207057,.766282],[.278588,.7113],[.347296,.65009],[.414213,.585787],[.479038,.520962],[.53856,.46144],[.58996,.41004],[.630629,.369371],[.661224,.338776],[.68266,.31734],[.695483,.304517],[.705873,.294127],[.713713,.286287],[.71679,.28321],[.718732,.281268],[.719763,.280237],[.72016,.27984],[.720358,.279642]];
 const CIE_LOCUS_2015_2=[[.16638,.0182998],[.164995,.0182721],[.162958,.0165252],[.159581,.0158926],[.155404,.0176748],[.150365,.0217336],[.144232,.0289496],[.133916,.0458814],[.115738,.0832027],[.0805505,.176011],[.0311653,.355796],[.00418288,.591944],[.0238164,.796176],[.0932183,.840635],[.170905,.806175],[.243156,.749116],[.311614,.685758],[.380606,.618505],[.450008,.549684],[.518078,.481808],[.577571,.422385],[.624569,.375412],[.659999,.339992],[.683693,.316307],[.699072,.300928],[.708867,.291133],[.715279,.284721],[.719116,.280884],[.721541,.278459],[.722647,.277353],[.723143,.276857],[.723291,.276709]];
 const CIE_LOCUS_2015_10=[[.17842,.0246367],[.176521,.024325],[.173723,.0218546],[.169345,.0209976],[.164082,.0234899],[.157689,.0292501],[.149774,.0395764],[.136265,.0639734],[.112468,.117502],[.0692931,.244778],[.0182574,.463233],[.00817345,.691305],[.0502997,.831847],[.128254,.831344],[.20946,.776992],[.283155,.712361],[.35114,.647341],[.417162,.582324],[.480878,.518942],[.540968,.458964],[.593121,.406852],[.633963,.366025],[.664977,.335017],[.685958,.314042],[.699774,.300226],[.708708,.291292],[.714655,.285345],[.718244,.281756],[.720535,.279465],[.721581,.278419],[.722049,.277951],[.722187,.277813]];
-const CIE_LOCUS_MB_2=[[.690547,.85567],[.677571,.858452],[.662656,.953597],[.627777,.996399],[.585916,.898535],[.551744,.731596],[.531511,.54852],[.524357,.343327],[.528335,.184906],[.540738,.08112],[.55547,.033091],[.572275,.013104],[.588088,.004342],[.603889,.001511],[.619954,.000546],[.636807,.000198],[.655844,.000074],[.679293,.000028],[.708852,.000011],[.746141,.000005],[.788583,.000002],[.831629,.000001],[.871948,.000001],[.903949,0],[.927421,0],[.943662,0],[.954901,0],[.961871,0],[.966375,0],[.968455,0],[.969394,0],[.969674,0]];
-const CIE_LOCUS_MB_10=[[.6927375,.8357751],[.6797181,.8488253],[.6645833,.9510032],[.6292175,.996258],[.5866436,.893601],[.551633,.7181829],[.5305491,.5292222],[.5224176,.3229995],[.5253855,.1693177],[.5371162,.07240147],[.5512122,.02891989],[.5677017,.01123174],[.5838496,.003660485],[.6007595,.00125562],[.6190357,.0004504866],[.6386031,.0001626139],[.6605153,.00006059423],[.6867121,.00002280989],[.7183437,.000008957794],[.7562422,.000003822312],[.7982168,.000001709524],[.8394434,.0000008480997],[.8774655,.0000004661395],[.907444,0],[.9294768,0],[.9448365,0],[.9555935,0],[.9623054,0],[.9666802,0],[.9687004,0],[.9696107,0],[.9698788,0]];
+// CIE 170-2 spectral MacLeod-Boynton coordinates at 5 nm. The previous
+// 10 nm subset made the short-wave peak visibly angular in both 2D and 3D.
+const CIE_LOCUS_MB_2=[[.690547,.855670],[.684874,.835495],[.677571,.858452],[.670708,.915226],[.662656,.953597],[.645977,.991436],[.627777,.996399],[.605668,.959504],[.585916,.898535],[.565891,.807527],[.551744,.731596],[.539800,.641510],[.531511,.548520],[.527476,.441625],[.524357,.343327],[.525096,.258774],[.528335,.184906],[.533931,.125009],[.540738,.081120],[.547797,.052248],[.555470,.033091],[.563711,.020925],[.572275,.013104],[.580161,.007722],[.588088,.004342],[.596380,.002563],[.603889,.001511],[.611831,.000907],[.619954,.000546],[.627978,.000332],[.636807,.000198],[.646077,.000120],[.655844,.000074],[.666621,.000045],[.679293,.000028],[.692851,.000017],[.708852,.000011],[.726397,.000007],[.746141,.000005],[.767738,.000003],[.788583,.000002],[.810139,.000001],[.831629,.000001],[.852855,.000001],[.871948,.000001],[.888841,0],[.903949,0],[.917401,0],[.927421,0],[.935885,0],[.943662,0],[.950920,0],[.954901,0],[.958448,0],[.961871,0],[.964655,0],[.966375,0],[.967596,0],[.968455,0],[.969042,0],[.969394,0],[.969636,0],[.969674,0]];
+const CIE_LOCUS_MB_10=[[.6927375,.8357751],[.6870832,.8206594],[.6797181,.8488253],[.6727481,.9095265],[.6645833,.9510032],[.6476727,.9906852],[.6292175,.996258],[.6067605,.9579689],[.5866436,.893601],[.5661608,.7979728],[.551633,.7181829],[.539265,.6246675],[.5305491,.5292222],[.5260994,.420745],[.5224176,.3229995],[.5226151,.2402932],[.5253855,.1693177],[.5306679,.1129544],[.5371162,.07240147],[.5437788,.04611277],[.5512122,.02891989],[.5591616,.01809867],[.5677017,.01123174],[.5756501,.00656182],[.5838496,.003660485],[.5926899,.002146038],[.6007595,.00125562],[.609689,.0007499602],[.6190357,.0004504866],[.6283244,.0002728945],[.6386031,.0001626139],[.6493716,.00009850216],[.6605153,.00006059423],[.6726908,.00003686778],[.6867121,.00002280989],[.7013987,.00001418905],[.7183437,.000008957794],[.7364157,.000005776205],[.7562422,.000003822312],[.7778403,.000002526004],[.7982168,.000001709524],[.8189538,.000001189292],[.8394434,.0000008480996],[.8595312,.0000006193677],[.8774655,.0000004661395],[.8932797,.0000003608705],[.907444,0],[.9201038,0],[.9294768,0],[.9374403,0],[.9448365,0],[.9518048,0],[.9555935,0],[.9589933,0],[.9623054,0],[.9650123,0],[.9666802,0],[.9678665,0],[.9687004,0],[.96927,0],[.9696107,0],[.969845,0],[.9698788,0]];
 
 function meterChromaticityChartMode(){
  const el=document.getElementById('meterChromaticityChart');
@@ -22331,12 +22338,34 @@ function meterCieD65Coord(){
 function meterCieTargetsAvailable(){
  return true;
 }
+function meterCieMacLeodDisplayLocus(source){
+ const locus=source.map(p=>[p[0],p[1]]);
+ if(locus.length<5) return locus;
+ // In this projection the 390 nm endpoint and its tiny 395 nm reversal sit
+ // high on the diagram, where the straight purple boundary meets the spectral
+ // arc as a conspicuous hook. Preserve the official table above and round only
+ // that display seam with a short quadratic transition into the 405 nm point.
+ const violet=locus[0],spectralJoin=locus[3],red=locus[locus.length-1];
+ const purpleJoin=[
+  violet[0]+(red[0]-violet[0])*.06,
+  violet[1]+(red[1]-violet[1])*.06
+ ];
+ const rounded=[];
+ for(let i=1;i<=5;i++){
+  const t=i/5,u=1-t;
+  rounded.push([
+   u*u*purpleJoin[0]+2*u*t*violet[0]+t*t*spectralJoin[0],
+   u*u*purpleJoin[1]+2*u*t*violet[1]+t*t*spectralJoin[1]
+  ]);
+ }
+ return locus.slice(3).concat([purpleJoin],rounded);
+}
 function meterCieChartLocus(){
  const mode=meterChromaticityChartMode();
  if(mode==='cie2015_2') return CIE_LOCUS_2015_2;
  if(mode==='cie2015_10') return CIE_LOCUS_2015_10;
- if(mode==='ciemb_2') return CIE_LOCUS_MB_2;
- if(mode==='ciemb_10') return CIE_LOCUS_MB_10;
+ if(mode==='ciemb_2') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_2);
+ if(mode==='ciemb_10') return meterCieMacLeodDisplayLocus(CIE_LOCUS_MB_10);
  const locus=(mode==='cie1964_10'||mode==='cie1976_10')?CIE_LOCUS_1964:CIE_LOCUS;
  if(mode.indexOf('cie1976_')===0){
   return locus.map(p=>{
@@ -22345,6 +22374,45 @@ function meterCieChartLocus(){
   });
  }
  return locus;
+}
+function meterCiePointInsideLocus(point,locus){
+ if(!point||!Array.isArray(locus)||locus.length<3) return false;
+ const px=Number(point.x),py=Number(point.y);
+ if(!Number.isFinite(px)||!Number.isFinite(py)) return false;
+ let inside=false;
+ for(let i=0,j=locus.length-1;i<locus.length;j=i++){
+  const xi=locus[i][0],yi=locus[i][1],xj=locus[j][0],yj=locus[j][1];
+  if((yi>py)!==(yj>py)&&px<(xj-xi)*(py-yi)/(yj-yi)+xi) inside=!inside;
+ }
+ return inside;
+}
+// Reference gamut primaries specified without spectra can project just beyond
+// an alternate observer's spectral boundary. A display gamut cannot extend
+// outside the visible-colour locus, so constrain only that reference outline
+// to its nearest boundary segment. Measured points remain completely raw.
+function meterCieGamutCoordWithinLocus(coord){
+ if(!coord) return null;
+ const locus=meterCieChartLocus();
+ if(!Array.isArray(locus)||locus.length<3||meterCiePointInsideLocus(coord,locus)) return coord;
+ const xs=locus.map(p=>p[0]),ys=locus.map(p=>p[1]);
+ const xScale=Math.max(1e-9,Math.max(...xs)-Math.min(...xs));
+ const yScale=Math.max(1e-9,Math.max(...ys)-Math.min(...ys));
+ let best=null,bestD=Infinity;
+ for(let i=0;i<locus.length;i++){
+  const a=locus[i],b=locus[(i+1)%locus.length];
+  const ax=a[0]/xScale,ay=a[1]/yScale,bx=b[0]/xScale,by=b[1]/yScale;
+  const px=coord.x/xScale,py=coord.y/yScale,dx=bx-ax,dy=by-ay;
+  const den=dx*dx+dy*dy;
+  const t=den>0?Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/den)):0;
+  const qx=ax+t*dx,qy=ay+t*dy,d=(px-qx)*(px-qx)+(py-qy)*(py-qy);
+  if(d<bestD){bestD=d;best={x:(qx*xScale),y:(qy*yScale)};}
+ }
+ return best?Object.assign({},coord,best,{locusConstrained:true}):coord;
+}
+function meterCieGamutCoords(primaries){
+ if(!primaries) return {R:null,G:null,B:null};
+ const convert=p=>meterCieGamutCoordWithinLocus(meterCieChartCoordFromXy(p.x,p.y,1));
+ return {R:convert(primaries.R),G:convert(primaries.G),B:convert(primaries.B)};
 }
 function meterStrokeCieLocus2d(ctx,points,toX,toY){
  if(!points||points.length<2) return;
@@ -45661,15 +45729,14 @@ function meterSelectedCIETargetColor(rd,baseColor){
 const CIE2D_WORLD={xMin:0,xMax:0.9,yMin:0,yMax:0.9};
 function meterCie2dWorld(){
  const mode=meterChromaticityChartMode();
- // The CIE-normalized spectral sMB maximum is one, while practical display
- // colours occupy roughly the bottom quarter. Use a readable working view;
- // meterDrawMbFullLocusInset retains the complete spectral-locus context.
- if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:0.38};
+ // The CIE-normalized spectral sMB maximum is approximately one. Reset/fully
+ // zoomed-out view must include the complete locus, not only display colours.
+ if(mode.indexOf('ciemb_')===0) return {xMin:0.4,xMax:1,yMin:0,yMax:1.02};
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return CIE2D_WORLD;
 }
 function meterDrawMbFullLocusInset(ctx,geom){
- if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!meterCieViewOpts.locus) return;
+ if(meterChromaticityChartMode().indexOf('ciemb_')!==0||!meterCieViewOpts.locus||geom.scale<=1.001) return;
  const locus=meterCieChartLocus();
  if(!locus||locus.length<2) return;
  const iw=112,ih=92,margin=7;
@@ -45978,6 +46045,7 @@ function meterApplyCie3dLayout(){
  if(!layout||!canvas) return;
  const is3d=meterCie3dViewEnabled();
  layout.classList.toggle('cie-3d-layout',is3d);
+ layout.classList.toggle('cie-mb-layout',meterChromaticityChartMode().indexOf('ciemb_')===0);
  // Keep expand state across 2D/3D toggle; re-assert class from flag.
  layout.classList.toggle('cie-expanded',!!meterChartExpanded.cie);
  const cieExpandBtn=document.getElementById('chartCIEExpandBtn');
@@ -46401,7 +46469,7 @@ function drawCIEChart3DLegacy(readings,opts){
  // Gamut triangle
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
+ const gamutCoords=meterCieGamutCoords(prim),pR=gamutCoords.R,pG=gamutCoords.G,pB=gamutCoords.B;
  const targetGamutAvailable=!!(pR&&pG&&pB);
  if(meterCieViewOpts.gamut&&targetGamutAvailable){
   const gPts=[
@@ -46670,9 +46738,8 @@ function drawCIEChart3D(readings,opts){
  let gamutVectors=null;
  if(meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
   const p=gamut.primaries;
-  const cR=meterCieChartCoordFromXy(p.R.x,p.R.y,1);
-  const cG=meterCieChartCoordFromXy(p.G.x,p.G.y,1);
-  const cB=meterCieChartCoordFromXy(p.B.x,p.B.y,1);
+  const gamutCoords=meterCieGamutCoords(p);
+  const cR=gamutCoords.R,cG=gamutCoords.G,cB=gamutCoords.B;
   if(cR&&cG&&cB){
    const level=referenceY*.55;
    gamutVectors=[
@@ -47036,8 +47103,9 @@ function drawCIEChart(readings){
  // Clip plot so locus/points outside the zoomed window stay off-canvas.
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
- // Chromaticity wash cropped to the current viewport.
- try{
+ // The locus option owns the complete visible-colour layer: both its outline
+ // and the gradient wash clipped inside it.
+ if(meterCieViewOpts.locus) try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
    const gradWorld=meterCie2dWorld();
@@ -47066,7 +47134,7 @@ function drawCIEChart(readings){
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
+ const gamutCoords=meterCieGamutCoords(prim),pR=gamutCoords.R,pG=gamutCoords.G,pB=gamutCoords.B;
  const targetGamutAvailable=!!(pR&&pG&&pB);
  if(meterCieViewOpts.gamut&&targetGamutAvailable){
   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
@@ -47300,8 +47368,8 @@ function drawCIETargetInset(ctx,readings,geom){
  const pw=insetSize-plotPad*2, ph=insetSize-plotPad*2;
  const ZtoX=v=>ix+plotPad+(v-xMn)/(xMx-xMn)*pw;
  const ZtoY=v=>iy+plotPad+ph-(v-yMn)/(yMx-yMn)*ph;
- // Paint the CIE chromaticity gradient cropped to the zoom window.
- try{
+ // The inset follows the same Locus toggle as the main chart.
+ if(meterCieViewOpts.locus) try{
   const grad=getCIEGradient(Math.max(1,Math.round(g.w)),Math.max(1,Math.round(g.h)));
   if(grad){
    const CX_MIN=0,CX_MAX=1.0,CY_MIN=0,CY_MAX=0.9;
@@ -47392,7 +47460,7 @@ function drawCIEChartPreset(steps){
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  ctx.save();
  ctx.beginPath();ctx.rect(pad.l,pad.t,w,h);ctx.clip();
- try{
+ if(meterCieViewOpts.locus) try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
    const gradWorld=meterCie2dWorld();
@@ -47420,7 +47488,7 @@ function drawCIEChartPreset(steps){
  }
  const gamut=meterAnalysisGamut();
  const prim=gamut.primaries;
- const pR=meterCieChartCoordFromXy(prim.R.x,prim.R.y,1),pG=meterCieChartCoordFromXy(prim.G.x,prim.G.y,1),pB=meterCieChartCoordFromXy(prim.B.x,prim.B.y,1);
+ const gamutCoords=meterCieGamutCoords(prim),pR=gamutCoords.R,pG=gamutCoords.G,pB=gamutCoords.B;
  const targetGamutAvailable=!!(pR&&pG&&pB);
  if(meterCieViewOpts.gamut&&targetGamutAvailable){
   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,0.9)');ctx.lineWidth=1.05;ctx.setLineDash([4,4]);
