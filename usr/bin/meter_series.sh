@@ -2011,6 +2011,13 @@ EOJSON
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
 
+ # Generic colour/profile series can carry a leading reference-only white
+ # patch. Publish it through white_reading immediately so target luminance is
+ # fixed before the first scored series patch is drawn.
+ if [[ "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
+  WHITE_READING="$READING"
+ fi
+
  # Accumulate
  if [[ $READING_COUNT -gt 0 ]]; then
   READINGS="$READINGS,$READING"

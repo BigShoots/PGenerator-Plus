@@ -3321,6 +3321,17 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
  $target_black_luminance=$1 if($body=~/"target_black_luminance"\s*:\s*"?([0-9.]+)"?/);
  my $target_white_use_measured=($body=~/"target_white_use_measured"\s*:\s*true/i) ? 1 : 0;
  my $target_black_use_measured=($body=~/"target_black_use_measured"\s*:\s*true/i) ? 1 : 0;
+ my $series_has_saved_white_reference=($body=~/"series_has_saved_white_reference"\s*:\s*true/i) ? 1 : 0;
+ my $series_has_saved_black_reference=($body=~/"series_has_saved_black_reference"\s*:\s*true/i) ? 1 : 0;
+ my $series_reference_white_code=255;
+ my $series_reference_black_code=0;
+ my $series_reference_input_max=255;
+ $series_reference_white_code=int($1) if($body=~/"series_reference_white_code"\s*:\s*(\d+)/);
+ $series_reference_black_code=int($1) if($body=~/"series_reference_black_code"\s*:\s*(\d+)/);
+ $series_reference_input_max=int($1) if($body=~/"series_reference_input_max"\s*:\s*(\d+)/);
+ $series_reference_input_max=255 if($series_reference_input_max<1);
+ $series_reference_white_code=$series_reference_input_max if($series_reference_white_code>$series_reference_input_max);
+ $series_reference_black_code=$series_reference_input_max if($series_reference_black_code>$series_reference_input_max);
  # Manual white override takes precedence over the measured/autocal reference.
  if(!$target_white_use_measured && $target_white_luminance ne "" && ($target_white_luminance+0)>0) {
   $series_target_white_y_num=$target_white_luminance+0;
@@ -4580,6 +4591,50 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
 	   }
 	  }
+	 }
+
+	 # Colour, saturation, and profiling series do not necessarily contain
+	 # neutral endpoints. When "Use measured" is enabled, prepend reference-only
+	 # white/black reads before any scored patch. A valid black cache already
+	 # supplies the black floor, so do not needlessly re-read it.
+	 if($type ne "greyscale") {
+	  my $cached_black=($series_target_black_y_source=~/^cached_measured:/) ? 1 : 0;
+	  my($white_index,$black_index)=(-1,-1);
+	  for(my $index=0;$index<scalar(@steps);$index++) {
+	   my $step=$steps[$index];
+	   my $decoded=eval { require JSON::PP; JSON::PP::decode_json($step); };
+	   next unless(ref($decoded) eq "HASH");
+	   my $name=lc($decoded->{"name"} || "");
+	   my $r=defined($decoded->{"r"}) ? $decoded->{"r"}+0 : -1;
+	   my $g=defined($decoded->{"g"}) ? $decoded->{"g"}+0 : -2;
+	   my $b=defined($decoded->{"b"}) ? $decoded->{"b"}+0 : -3;
+	   next unless($r==$g && $g==$b);
+	   $white_index=$index if($white_index<0
+	    &&($r==$series_reference_white_code || $name eq "white" || $name eq "100% white" || $name eq "white ref"));
+	   $black_index=$index if($black_index<0
+	    &&($r==$series_reference_black_code || $name eq "black" || $name eq "0% black" || $name eq "black ref"));
+	  }
+	  my @reference_steps;
+	  if($target_white_use_measured && !$series_has_saved_white_reference) {
+	   if($white_index>=0) {
+	    push @reference_steps,splice(@steps,$white_index,1);
+	    $black_index-- if($black_index>$white_index);
+	   } else {
+	    push @reference_steps,'{"ire":100,"stimulus":100,"signal_r_pct":100,"signal_g_pct":100,"signal_b_pct":100'
+	     .',"r":'.$series_reference_white_code.',"g":'.$series_reference_white_code.',"b":'.$series_reference_white_code
+	     .',"input_max":'.$series_reference_input_max.',"name":"White Ref","series_type":"reference"}';
+	   }
+	  }
+	  if($target_black_use_measured && !$series_has_saved_black_reference && !$cached_black) {
+	   if($black_index>=0) {
+	    push @reference_steps,splice(@steps,$black_index,1);
+	   } else {
+	    push @reference_steps,'{"ire":0,"stimulus":0,"signal_r_pct":0,"signal_g_pct":0,"signal_b_pct":0'
+	     .',"r":'.$series_reference_black_code.',"g":'.$series_reference_black_code.',"b":'.$series_reference_black_code
+	     .',"input_max":'.$series_reference_input_max.',"name":"Black Ref","series_type":"reference"}';
+	   }
+	  }
+	  @steps=(@reference_steps,@steps) if(@reference_steps);
 	 }
 
 	 my $stamp_series_target_white_y=0;
@@ -20825,6 +20880,14 @@ function meterChartBlackLevel(readings){
  const measuredBlack=gs.filter(r=>(r.ire||0)===0&&Number.isFinite(Number(r.luminance))&&Number(r.luminance)>=0)
   .map(r=>Number(r.luminance));
  if(measuredBlack.length>0) return Math.min(...measuredBlack);
+ // A new colour series normally does not contain a black patch. Retain the
+ // last measured black from the same live calibration context until its
+ // reference pre-read replaces it.
+ if(meterSeriesBaselineBlack){
+  const baseline=Number(meterSeriesBaselineBlack.luminance!=null
+   ?meterSeriesBaselineBlack.luminance:meterSeriesBaselineBlack.Y);
+  if(Number.isFinite(baseline)&&baseline>=0) return baseline;
+ }
  // Fall back to the server-stamped cached 0% black. The webui stamps this
  // on every step at series start so the chart has a sensible target even
  // before any 0% reading lands in the current series (or when that reading
@@ -26379,7 +26442,7 @@ function meterReadingHasChromaticity(rd){
 function meterIsWhiteReferenceReading(rd){
  if(!rd) return false;
  const name=String(rd.name||'').trim().toLowerCase();
- return name==='white ref';
+ return name==='white ref'||name==='black ref';
 }
 
 function meterCacheSeriesState(status,options){
@@ -28848,6 +28911,10 @@ let meterSelectionBaselineReadings=null;
 // without this, post-run error math falls back to the brightest selected patch.
 let meterSelectionBaselineWhite=null;
 let meterSelectionWillMeasureWhite=false;
+// Full-series references retained from the current mode until a new reference
+// pre-read replaces them. They are not plotted as series patches.
+let meterSeriesBaselineBlack=null;
+let meterSeriesWaitingForWhiteReference=false;
 let meterAutoCalRecoveryInFlight=false; // true while a refreshed page is checking for a backend AutoCal run
 let meterVisibleStepsCacheSource=null;
 let meterVisibleStepsCacheType=null;
@@ -28867,12 +28934,12 @@ function meterRecoveryDisplaySteps(type,points,workerSteps){
  if(!run.length) return run;
  const candidates=[];
  if(meterActiveSeriesType===type&&Number(meterActiveSeriesPoints)===Number(points)
-    &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length>run.length){
+    &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length+2>=run.length){
   candidates.push(meterSeriesSteps);
  }
  try{
   const rebuilt=meterBuildStepsJS(type,points);
-  if(Array.isArray(rebuilt)&&rebuilt.length>run.length) candidates.push(rebuilt);
+  if(Array.isArray(rebuilt)&&rebuilt.length+2>=run.length) candidates.push(rebuilt);
  }catch(e){}
  const runKeys=run.map(step=>meterStepNameKey(step)).filter(Boolean);
  for(const candidate of candidates){
@@ -33240,6 +33307,15 @@ function meterHasSavedMeasuredBlack(){
    &&(r.luminance!=null||r.Y!=null)&&!r.error);
  }catch(e){}
  return false;
+}
+
+function meterSavedMeasuredBlackReading(){
+ try{
+  const list=Array.isArray(meterReadings)?meterReadings:[];
+  return list.find(r=>r&&Math.abs(Number(r.ire||0))<0.05
+   &&(r.luminance!=null||r.Y!=null)&&!r.error&&!r.synthetic_target)||null;
+ }catch(e){}
+ return null;
 }
 
 // Merge incoming series readings into an existing chart set by step key so
@@ -43052,6 +43128,16 @@ async function meterRunSeries(options){
  // saved measurement, otherwise target Y has no white/black reference.
  const selectionHasSavedWhite=meterHasSavedMeasuredWhite();
  const selectionHasSavedBlack=meterHasSavedMeasuredBlack();
+ const savedWhiteSnapshot=selectionHasSavedWhite
+  ?meterCloneReadingSnapshot(
+    (meterWhiteReading&&meterReadingHasLuminance(meterWhiteReading)&&!meterWhiteReading.synthetic_target)
+     ?meterWhiteReading
+     :(typeof meterFindSeriesWhiteReading==='function'?meterFindSeriesWhiteReading(meterReadings):null)
+   )
+  :null;
+ const savedBlackSnapshot=selectionHasSavedBlack
+  ?meterCloneReadingSnapshot(meterSavedMeasuredBlackReading())
+  :null;
  if(selectedRunSteps&&selectedRunSteps.length){
   selectedRunSteps=meterSelectionRunStepsWithMeasuredEndpoints(selectedRunSteps,{
    hasSavedWhite:selectionHasSavedWhite,
@@ -43088,8 +43174,11 @@ async function meterRunSeries(options){
  }else{
   meterClearSelectionBaseline();
   meterReadings=[];
-  meterWhiteReading=null;
+  meterWhiteReading=savedWhiteSnapshot;
+  meterSeriesBaselineBlack=savedBlackSnapshot;
  }
+ const targetWhiteState=meterTargetWhiteLevel();
+ meterSeriesWaitingForWhiteReference=!!(targetWhiteState.useMeasured&&!selectionHasSavedWhite);
  meterStopContinuous();
  meterSelectedThumbIre=null;
  meterClearMultiPatchSelection();
@@ -43142,6 +43231,8 @@ async function meterRunSeries(options){
   const isColorKeep=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
   const keepSorted=isColorKeep?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
   drawAllCharts(keepSorted);
+ }else if(meterSeriesWaitingForWhiteReference){
+  drawAllCharts([]);
  }else{
   drawAllChartsPreset(uiCaps.presetSample?meterSampleSteps(sortedSteps,uiCaps.presetSample):sortedSteps);
  }
@@ -43184,7 +43275,7 @@ async function meterRunSeries(options){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_has_saved_white_reference:selectionHasSavedWhite,series_has_saved_black_reference:selectionHasSavedBlack,series_reference_white_code:meterCodeFromSignalPercent(100),series_reference_black_code:meterCodeFromSignalPercent(0),series_reference_input_max:meterPatchInputMax(),series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
 		  // Always stamp input_max: ColorChecker/sat client steps often omit it,
 		  // and the server defaults missing input_max to 255 — clamping 10-bit
 		  // chroma codes and wrecking stimulus on Read Selection custom_steps.
@@ -43249,6 +43340,7 @@ async function meterRunSeries(options){
   toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+  meterSeriesWaitingForWhiteReference=false;
  meterClearSelectionBaseline();
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
@@ -43301,6 +43393,7 @@ async function meterPollSeries(){
  if(r.white_reading&&r.white_reading.luminance!=null
     &&!(meterSeriesSelectionRunActive&&!meterSelectionWillMeasureWhite)){
   meterWhiteReading=r.white_reading;
+  meterSeriesWaitingForWhiteReference=false;
   if(meterWhiteReading.synthetic_target) meterWhiteReading=meterSyntheticGreyWhiteReading(meterColorReferenceNits());
   else meterNormalizeMeasuredReading(meterWhiteReading);
  }
@@ -43311,6 +43404,7 @@ async function meterPollSeries(){
   }
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+  meterSeriesWaitingForWhiteReference=false;
  meterClearSelectionBaseline();
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
@@ -43340,6 +43434,25 @@ async function meterPollSeries(){
  let currentIre=null;
 
 	 if(r.readings&&r.readings.length>0) {
+	  const rawBlackReference=[...r.readings].reverse().find(rd=>{
+	   if(!rd||rd.error) return false;
+	   const name=String(rd.name||'').trim().toLowerCase();
+	   return name==='black ref'||(Math.abs(Number(rd.ire||0))<0.05
+	    &&Number(rd.r_code!=null?rd.r_code:rd.r)===Number(rd.g_code!=null?rd.g_code:rd.g)
+	    &&Number(rd.g_code!=null?rd.g_code:rd.g)===Number(rd.b_code!=null?rd.b_code:rd.b)
+	    &&Number(rd.r_code!=null?rd.r_code:rd.r)===Number(meterCodeFromSignalPercent(0)));
+	  });
+	  if(rawBlackReference){
+	   meterSeriesBaselineBlack=meterCloneReadingSnapshot(rawBlackReference);
+	   try{ meterNormalizeMeasuredReading(meterSeriesBaselineBlack); }catch(e){}
+	  }
+	  // If the reference read failed, allow the run to continue with the
+	  // mode-aware fallback instead of leaving charts permanently suppressed.
+	  if(meterSeriesWaitingForWhiteReference
+	     &&String(r.current_name||'').trim().toLowerCase()!=='white ref'
+	     &&r.readings.some(rd=>String(rd&&rd.name||'').trim().toLowerCase()==='white ref')){
+	   meterSeriesWaitingForWhiteReference=false;
+	  }
 	  const incoming=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(r.readings,meterActiveSeriesType));
 	  // Read Selection: merge into the pre-run chart. Full series: replace.
 	  if(meterSeriesSelectionRunActive){
@@ -43439,6 +43552,7 @@ async function meterPollSeries(){
   clearInterval(meterSeriesPolling);
   meterSeriesPolling=null;
   meterSeriesRunning=false;
+  meterSeriesWaitingForWhiteReference=false;
   // Re-seat pre-run 100% white before dropping the selection baseline so
   // greyscale error math keeps the original series peak.
   if(meterSeriesSelectionRunActive&&!meterSelectionWillMeasureWhite){
@@ -47543,6 +47657,15 @@ function meterUpdateCie3dLabel(){
  if(help){
   help.title=axis.threeD+': drag = rotate, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
  }
+ const gamutLabel=document.getElementById('meterCieOptGamutLabel');
+ const locusLabel=document.getElementById('meterCieOptLocusLabel');
+ if(meterCieIsOpponentMode()&&meterCie3dViewEnabled()){
+  if(gamutLabel) gamutLabel.title='Show the hue-circle target envelope in the opponent chromaticity plane';
+  if(locusLabel) locusLabel.title='Show the cone-opponent reference sphere and coordinate grid';
+ }else{
+  if(gamutLabel) gamutLabel.title='Show the target colourspace triangle';
+  if(locusLabel) locusLabel.title='Show the spectral locus outline and its chromaticity gradient';
+ }
  const xyy=document.getElementById('meterXYYColorLabel');
  if(xyy){
   const mode=meterChromaticityChartMode();
@@ -48273,6 +48396,17 @@ function drawCIEChart3D(readings,opts){
    ];
   }
  }
+ if(opponentMode&&meterCieViewOpts.gamut){
+  gamutVectors=records
+   .filter(rec=>rec&&rec.targetVector&&/^MB Hue \d+/i.test(String(rec.rd&&rec.rd.name||'')))
+   .sort((left,right)=>{
+    const a=Number((String(left.rd.name||'').match(/(\d+(?:\.\d+)?)/)||[])[1])||0;
+    const b=Number((String(right.rd.name||'').match(/(\d+(?:\.\d+)?)/)||[])[1])||0;
+    return a-b;
+   })
+   .map(rec=>rec.targetVector);
+  if(gamutVectors.length<3) gamutVectors=null;
+ }
  const allVectors=[d65Vector].concat(locusVectors);
  records.forEach(r=>{
   if(r.targetVector) allVectors.push(r.targetVector);
@@ -48296,7 +48430,9 @@ function drawCIEChart3D(readings,opts){
  const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
  const prims=[];
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
- meterCie3dOpponentSpherePrimitives(ctx,prims,layout,bounds);
+ if(!opponentMode||meterCieViewOpts.locus){
+  meterCie3dOpponentSpherePrimitives(ctx,prims,layout,bounds);
+ }
 
  // Base-plane grid in the selected observer-native coordinate space.
  const gridN=5;
@@ -48330,10 +48466,12 @@ function drawCIEChart3D(readings,opts){
   prims.push({z:cie3dAvgZ(pts),draw:()=>{
    ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,.9)');
    ctx.lineWidth=1.05;ctx.setLineDash([4,4]);cie3dStrokePoly(ctx,pts,true);ctx.setLineDash([]);
-   ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
-   ctx.textAlign='left';ctx.fillText('R',pts[0].sx+4,pts[0].sy-4);
-   ctx.fillText('G',pts[1].sx-12,pts[1].sy-6);
-   ctx.textAlign='right';ctx.fillText('B',pts[2].sx-4,pts[2].sy+12);
+   if(!opponentMode){
+    ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
+    ctx.textAlign='left';ctx.fillText('R',pts[0].sx+4,pts[0].sy-4);
+    ctx.fillText('G',pts[1].sx-12,pts[1].sy-6);
+    ctx.textAlign='right';ctx.fillText('B',pts[2].sx-4,pts[2].sy+12);
+   }
   }});
  }
  if(measuredGamutVectors){
