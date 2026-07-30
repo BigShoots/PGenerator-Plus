@@ -46115,13 +46115,13 @@ let _cieGrad=null,_cieGradKey='';
 function getCIEGradient(innerPxW,innerPxH){
  const gw=Math.max(1,Math.round(innerPxW)), gh=Math.max(1,Math.round(innerPxH));
  const mode=meterChromaticityChartMode();
- const key=mode+'@'+gw+'x'+gh;
+ const world=(typeof meterCie2dGradientWorld==='function')?meterCie2dGradientWorld():meterCie2dWorld();
+ const key=mode+'@'+gw+'x'+gh+'@'+[world.xMin,world.xMax,world.yMin,world.yMax].join(',');
  if(_cieGrad&&_cieGradKey===key) return _cieGrad;
  const oc=document.createElement('canvas');oc.width=gw;oc.height=gh;
  const ox=oc.getContext('2d');
  const img=ox.createImageData(gw,gh);
  const d=img.data;
- const world=meterCie2dWorld();
  const xMn=world.xMin,xMx=world.xMax,yMn=world.yMin,yMx=world.yMax;
  const locus=meterCieChartLocus(), M=M_XYZ_TO_RGB;
  function pip(px,py){
@@ -46535,6 +46535,21 @@ function meterCie2dWorld(){
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return CIE2D_WORLD;
 }
+function meterCie2dZoomOutWorld(){
+ if(meterChromaticityChartMode().indexOf('ciemb_')===0){
+  return {xMin:0.4,xMax:1,yMin:0,yMax:1.05};
+ }
+ return meterCie2dWorld();
+}
+function meterCie2dScaleMin(){
+ return meterChromaticityChartMode().indexOf('ciemb_')===0?0.2:CIE2D_SCALE_MIN;
+}
+function meterCie2dGradientWorld(){
+ if(meterChromaticityChartMode().indexOf('ciemb_')===0&&Number(_cie2d.scale)<0.999){
+  return meterCie2dZoomOutWorld();
+ }
+ return meterCie2dWorld();
+}
 function meterDrawMbFullLocusInset(ctx,geom){
  // Draw whenever the main plot does not already contain the whole locus: that is
  // true when zoomed in, and now also at default zoom because the reset view is
@@ -46575,7 +46590,23 @@ function meterCie2dViewport(){
  const world=(typeof meterCie2dWorld==='function')?meterCie2dWorld():CIE2D_WORLD;
  const defW=world.xMax-world.xMin;
  const defH=world.yMax-world.yMin;
- const scale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+ const scaleMin=(typeof meterCie2dScaleMin==='function')?meterCie2dScaleMin():CIE2D_SCALE_MIN;
+ const scale=Math.max(scaleMin,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+ // The MacLeod reset view is deliberately framed on the selected series.
+ // Below scale 1, expand each independent physiological axis toward the full
+ // locus bounds instead of uniformly magnifying that small content window.
+ // Uniform expansion would need an extreme scale for sMB and would waste most
+ // of the horizontal chart on meaningless negative lMB values.
+ if(scale<0.999&&meterChromaticityChartMode().indexOf('ciemb_')===0){
+  const outer=meterCie2dZoomOutWorld();
+  const t=Math.max(0,Math.min(1,(1-scale)/Math.max(1e-9,1-scaleMin)));
+  const mix=(a,b)=>a+(b-a)*t;
+  const xMin=mix(world.xMin,outer.xMin),xMax=mix(world.xMax,outer.xMax);
+  const yMin=mix(world.yMin,outer.yMin),yMax=mix(world.yMax,outer.yMax);
+  _cie2d.panX=0;_cie2d.panY=0;
+  return {xMin:xMin,xMax:xMax,yMin:yMin,yMax:yMax,scale:scale,
+   cx:(xMin+xMax)/2,cy:(yMin+yMax)/2};
+ }
  const vw=defW/scale, vh=defH/scale;
  const worldCx=(world.xMin+world.xMax)/2;
  const worldCy=(world.yMin+world.yMax)/2;
@@ -46692,11 +46723,12 @@ function cie2dBindHandlers(canvas){
   if(mx<g0.pad.l||mx>g0.pad.l+g0.w||my<g0.pad.t||my>g0.pad.t+g0.h) return;
   const xy={x:g0.fromX(mx),y:g0.fromY(my)};
   const factor=e.deltaY<0?1.12:1/1.12;
-  const oldScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
-  const newScale=Math.max(CIE2D_SCALE_MIN,Math.min(CIE2D_SCALE_MAX,oldScale*factor));
+  const scaleMin=(typeof meterCie2dScaleMin==='function')?meterCie2dScaleMin():CIE2D_SCALE_MIN;
+  const oldScale=Math.max(scaleMin,Math.min(CIE2D_SCALE_MAX,Number(_cie2d.scale)||1));
+  const newScale=Math.max(scaleMin,Math.min(CIE2D_SCALE_MAX,oldScale*factor));
   if(Math.abs(newScale-oldScale)<1e-6) return;
   _cie2d.scale=newScale;
-  if(newScale<=1.0001){ cie2dResetView(); }
+  if(newScale<=1.0001){ _cie2d.panX=0;_cie2d.panY=0; }
   else {
    // Keep the CIE point under the cursor fixed.
    const g1=meterCie2dGeom(rect.width,rect.height);
@@ -47921,7 +47953,7 @@ function drawCIEChart(readings){
  if(meterCieViewOpts.locus) try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
-   const gradWorld=meterCie2dWorld();
+   const gradWorld=(typeof meterCie2dGradientWorld==='function')?meterCie2dGradientWorld():meterCie2dWorld();
    const CX_MIN=gradWorld.xMin,CX_MAX=gradWorld.xMax,CY_MIN=gradWorld.yMin,CY_MAX=gradWorld.yMax;
    const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
    const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
@@ -48276,7 +48308,7 @@ function drawCIEChartPreset(steps){
  if(meterCieViewOpts.locus) try{
   const grad=getCIEGradient(Math.max(1,Math.round(w*dpr)),Math.max(1,Math.round(h*dpr)));
   if(grad){
-   const gradWorld=meterCie2dWorld();
+   const gradWorld=(typeof meterCie2dGradientWorld==='function')?meterCie2dGradientWorld():meterCie2dWorld();
    const CX_MIN=gradWorld.xMin,CX_MAX=gradWorld.xMax,CY_MIN=gradWorld.yMin,CY_MAX=gradWorld.yMax;
    const sx=(xMin-CX_MIN)/(CX_MAX-CX_MIN)*grad.width;
    const sw=(xMax-xMin)/(CX_MAX-CX_MIN)*grad.width;
