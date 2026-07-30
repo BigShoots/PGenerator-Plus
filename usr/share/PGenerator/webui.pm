@@ -2990,9 +2990,9 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
   $series_target_black_y_num=$target_black_luminance+0;
   $series_target_black_y_source="manual";
  }
- # "Use measured" path: the worker's 0% IRE step is the LAST step to
- # complete (after patch_insert + 100% white + the 90->1.4 sweep), so the
- # chart would sit at 0 nits from series start until step 1 lands. Look up
+ # "Use measured" path: the 0% IRE step is measured early (second, right
+ # after the 100% white anchor) but not at t=0, so the chart would sit at
+ # 0 nits for the first few patches without a seed. Look up
  # the most recent measured 0% black from the per-signal-mode cache (the
  # worker writes /var/lib/PGenerator/cache/last_black_<sig>_<bpc>_<cf>_<rr>.json
  # at series completion) and stamp it on every step so the chart target
@@ -20353,24 +20353,23 @@ function meterChartBlackLevel(readings){
  if(_tb && !_tb.useMeasured && _tb.value!=null && _tb.value>=0) return _tb.value;
  const gs=(Array.isArray(readings)?readings:[]).map(r=>meterNormalizeOledBlackReading(r))
   .filter(r=>r && meterReadingIsGreyscale(r) && r.luminance!=null && r.luminance>=0);
- // Prefer the CURRENT series's 0% IRE measurement. If it has a real
- // luminance, the operator's "Use measured" intent is satisfied by the
- // actual measurement — don't keep the chart target locked to a stale
- // value from the previous series's cache. The server stamp is only used
- // when the in-series 0% patch meter-times-out (luminance=0 on OLED) and
- // no other 0% reading is available.
- const trueBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0).filter(v=>v>0);
- if(trueBlack.length>0) return Math.min(...trueBlack);
+ // Prefer the CURRENT series's 0% IRE measurement, INCLUDING a measured
+ // 0.000. That is a real result, not a failed read: the worker medians
+ // several samples and only collapses the black to 0 when it is at or below
+ // the ambient floor. The old `v>0` filter discarded it, so "Use measured"
+ // stayed pinned to the PREVIOUS series' cached black and the chart showed a
+ // lifted target against a measured 0.000 (Y error -100%, dE ITP ~18 at 0%).
+ // The server stamp below now only covers the window before the 0% reading
+ // lands, which is early -- the ladder measures 0% second, after 100%.
+ const measuredBlack=gs.filter(r=>(r.ire||0)===0&&Number.isFinite(Number(r.luminance))&&Number(r.luminance)>=0)
+  .map(r=>Number(r.luminance));
+ if(measuredBlack.length>0) return Math.min(...measuredBlack);
  // Fall back to the server-stamped cached 0% black. The webui stamps this
  // on every step at series start so the chart has a sensible target even
  // before any 0% reading lands in the current series (or when that reading
  // is timed-out to 0 on OLED).
  const stamped=gs.map(r=>r.series_target_black_y).filter(v=>v!=null&&Number.isFinite(v)&&v>=0);
  if(stamped.length>0) return Math.min(...stamped);
- // Last 0% IRE measurement in the series (even timed-out ones) — keeps the
- // chart target at least non-negative even on the OLED black-out path.
- const anyZeroBlack=gs.filter(r=>(r.ire||0)===0).map(r=>r.luminance||0);
- if(anyZeroBlack.length>0) return Math.min(...anyZeroBlack);
  if(meterDisplayIsOled()) return 0;
  if(!meterChartIsHdr()) return 0;
  const nearBlack=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||0);
