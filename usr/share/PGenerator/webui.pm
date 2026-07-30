@@ -2456,12 +2456,12 @@ sub webui_meter_session_start (@) {
 sub webui_meter_read (@) {
  my ($body)=@_;
 
- # The meter is exclusively owned by ccxxmake during CCSS creation. Refuse to
+ # The meter is exclusively owned by ccxxmake during profile creation. Refuse to
  # (re)start the spotread session so a stray continuous-read loop (e.g. a stale
  # browser tab still polling) cannot reclaim the instrument out from under
  # ccxxmake -- that contention is what produces "Instrument Access Failed".
  if(&_webui_ccss_create_alive()) {
-  return '{"status":"idle","message":"Spectrophotometer is busy creating a CCSS"}';
+  return '{"status":"idle","message":"Selected meters are busy creating a meter profile"}';
  }
 
  &webui_pattern_stop_guard_clear();
@@ -6510,6 +6510,14 @@ sub _webui_ccss_ccxxmake_disptech (@) {
  return $_ccxxmake_disptech_map->{$display_type_key} || "";
 }
 
+sub _webui_ccmx_base_yflag (@) {
+ my ($display_type_key)=@_;
+ $display_type_key=lc($display_type_key||"");
+ return "c" if($display_type_key=~/^(?:refresh|plasma|crt)$/);
+ return "p" if($display_type_key=~/^projector/);
+ return "l";
+}
+
 sub _webui_ccss_from_ti3 (@) {
  my ($raw,$profile_name,$display_type_key)=@_;
  my $ccxxmake_bin="/usr/bin/ccxxmake";
@@ -7041,9 +7049,9 @@ sub webui_ccss_create_status (@) {
    my $tail=`tail -n 20 $_ccss_create_log_file 2>/dev/null`;
    $tail=~s/\s+/ /g;
    $tail=~s/^\s+|\s+$//g;
-   &log("WebUI: CCSS create helper exited unexpectedly; ccxxmake log tail: $tail") if($tail ne "");
+   &log("WebUI: meter profile create helper exited unexpectedly; ccxxmake log tail: $tail") if($tail ne "");
   }
-  my $msg="CCSS creation could not access the spectrophotometer. Make sure no other measurement is running and only the reference spectro is connected, then try again.";
+  my $msg="Meter profile creation stopped unexpectedly. Make sure no other measurement is running and the selected meters are still connected, then try again.";
   my $escaped=&_webui_json_escape($msg);
   $json="{\"status\":\"error\",\"message\":\"$escaped\"}";
   &_webui_ccss_create_write_state($json);
@@ -7070,9 +7078,9 @@ sub webui_ccss_create_stop (@) {
  # behind, holding the meter so the next read/CCSS fails to claim it.
  system("sudo pkill -9 -f 'ccxxmake' 2>/dev/null");
  unlink($_ccss_create_pid_file);
- my $json='{"status":"cancelled","message":"CCSS creation cancelled"}';
+ my $json='{"status":"cancelled","message":"Meter profile creation cancelled"}';
  &_webui_ccss_create_write_state($json);
- return '{"status":"ok","message":"CCSS creation stopped"}';
+ return '{"status":"ok","message":"Meter profile creation stopped"}';
 }
 
 sub webui_ccss_create_start (@) {
@@ -7081,6 +7089,8 @@ sub webui_ccss_create_start (@) {
  $name=$1 if($body=~/"name"\s*:\s*"([^"\\]{1,80})"/);
  my $display_type_key="";
  $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,80})"/);
+ my $format="ccss";
+ $format=lc($1) if($body=~/"format"\s*:\s*"(ccss|ccmx)"/i);
  my $signal_mode=&webui_pattern_signal_mode($body);
  my $max_luma=&webui_pattern_max_luma($body);
  my $patch_size=18;
@@ -7089,17 +7099,19 @@ sub webui_ccss_create_start (@) {
  $refresh_rate=$1 if($body=~/"refresh_rate"\s*:\s*"([\d.]+)"/);
  my $profiling_port="";
  $profiling_port=$1 if($body=~/"profiling_meter_port"\s*:\s*"?(\d+)"?/);
+ my $target_port="";
+ $target_port=$1 if($body=~/"target_meter_port"\s*:\s*"?(\d+)"?/);
 
  return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
- return '{"status":"error","message":"Interactive CCSS creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
- return '{"status":"error","message":"CCSS create helper is missing"}' if(!-x $_ccss_create_runner || !-x $_ccss_create_patch_cmd);
+ return '{"status":"error","message":"Interactive meter profile creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
+ return '{"status":"error","message":"Meter profile create helper is missing"}' if(!-x $_ccss_create_runner || !-x $_ccss_create_patch_cmd);
  my $python_runner=`command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
  chomp($python_runner);
  $python_runner=~s/[^A-Za-z0-9_\/.-]//g;
- return '{"status":"error","message":"python2 or python3 is required for live CCSS creation on this image"}' if($python_runner eq "");
+ return '{"status":"error","message":"python2 or python3 is required for live meter profile creation on this image"}' if($python_runner eq "");
 
  my $disptech=&_webui_ccss_ccxxmake_disptech($display_type_key);
- return '{"status":"error","message":"Choose a concrete display type before creating a CCSS"}' if($disptech eq "");
+ return '{"status":"error","message":"Choose a concrete display technology before creating the profile"}' if($disptech eq "");
 
  my $status_json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
  my @meters;
@@ -7107,23 +7119,34 @@ sub webui_ccss_create_start (@) {
   push @meters,{port_num=>$1,port=>$2,usb_id=>$3||"",name=>$4,meter_type=>lc($5||"")};
  }
  my @spectros=grep { ($_->{meter_type}||"") eq "spectro" } @meters;
- return '{"status":"error","message":"Connect a spectrophotometer before creating a CCSS"}' if(!@spectros);
+ my @colorimeters=grep { ($_->{meter_type}||"") eq "colorimeter" } @meters;
+ return '{"status":"error","message":"Connect a reference spectrophotometer before creating the profile"}' if(!@spectros);
  # Other meters (e.g. a colorimeter) may stay connected during a calibration.
  # Pick the requested spectro by port; fall back to the sole spectro if unambiguous.
  my ($chosen)=grep { $_->{port_num} eq $profiling_port } @spectros;
  ($chosen)=@spectros if(!$chosen && scalar(@spectros) == 1);
- return '{"status":"error","message":"Select which spectrophotometer to use for CCSS creation"}' if(!$chosen);
+ return '{"status":"error","message":"Select which reference spectrophotometer to use"}' if(!$chosen);
  my $chosen_port=$chosen->{port_num};
  $chosen_port=~s/[^0-9]//g;
  return '{"status":"error","message":"Selected spectrophotometer has no usable port"}' if($chosen_port eq "");
+ my $target;
+ if($format eq "ccmx") {
+  ($target)=grep { $_->{port_num} eq $target_port } @colorimeters;
+  ($target)=@colorimeters if(!$target && scalar(@colorimeters) == 1);
+  return '{"status":"error","message":"Connect and select the target colorimeter for CCMX creation"}' if(!$target);
+  $target_port=$target->{port_num};
+  $target_port=~s/[^0-9]//g;
+  return '{"status":"error","message":"The target colorimeter has no usable Argyll port"}' if($target_port!~/^[1-9]$/);
+  return '{"status":"error","message":"Reference and target must be different meters"}' if($target_port eq $chosen_port);
+ }
 
  my $custom_storage_dir=&_webui_custom_ccss_storage_dir();
  return '{"status":"error","message":"Custom storage unavailable"}' if($custom_storage_dir eq "");
 
- my $safe_name=&_webui_ccss_safe_filename($name);
+ my $safe_name=&_webui_ccss_safe_filename($name,$format);
  my $out_path="$custom_storage_dir/$safe_name";
- return '{"status":"error","message":"A custom CCSS with that name already exists"}' if(-f $out_path);
- return '{"status":"error","message":"A CCSS creation job is already running"}' if(&_webui_ccss_create_alive());
+ return '{"status":"error","message":"A custom '.uc($format).' with that name already exists"}' if(-f $out_path);
+ return '{"status":"error","message":"A meter profile creation job is already running"}' if(&_webui_ccss_create_alive());
 
  &webui_meter_stop();
  &webui_pattern_stop_guard_clear();
@@ -7142,13 +7165,20 @@ sub webui_ccss_create_start (@) {
  unlink($_ccss_create_continue_file);
 
  my $escaped_name=&_webui_json_escape($safe_name);
- &_webui_ccss_create_write_state("{\"status\":\"starting\",\"message\":\"Preparing CCSS creation...\",\"filename\":\"$escaped_name\"}");
+ my $format_upper=uc($format);
+ &_webui_ccss_create_write_state("{\"status\":\"starting\",\"message\":\"Preparing $format_upper creation...\",\"filename\":\"$escaped_name\",\"format\":\"$format\",\"target_port\":\"$target_port\"}");
 
  my $profile_label=$name;
  $profile_label=~s/'/'"'"'/g;
- my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
+ my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --format '$format' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
  $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
  $cmd.=" --comport '$chosen_port'" if($chosen_port ne "");
+ if($format eq "ccmx") {
+  my $target_label=$target->{name}||"target colorimeter";
+  $target_label=~s/'/'"'"'/g;
+  my $target_yflag=&_webui_ccmx_base_yflag($display_type_key);
+  $cmd.=" --target-comport '$target_port' --target-label '$target_label' --target-display-type '$target_yflag'";
+ }
  $cmd.=" --continue-file '$_ccss_create_continue_file'";
  $cmd.=" </dev/null >/dev/null 2>&1 &";
  system($cmd);
@@ -13235,12 +13265,20 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 
   <!-- CCSS create/editor: reparented to document.body on open so they beat the AutoCal mask (same trap as spectro setup when nested under .dashboard). -->
   <div id="meterCcssCreateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10050;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
-   <div style="width:min(520px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
+   <div style="width:min(580px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:14px;box-sizing:border-box">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap">
      <div>
-      <div style="font-size:.95rem;font-weight:700;color:#eee">Create Custom CCSS</div>
-        <div style="font-size:.68rem;color:var(--text2);max-width:48ch;line-height:1.45">Creates a new CCSS from a connected spectrophotometer using on-device ccxxmake. Choose the display technology below, connect only the reference spectro, then follow the prompts and press the meter button for each read.</div>
+      <div id="meterCcssCreateTitle" style="font-size:.95rem;font-weight:700;color:#eee">Create Meter Profile</div>
+      <div id="meterCcssCreateIntro" style="font-size:.68rem;color:var(--text2);max-width:68ch;line-height:1.45"></div>
      </div>
+    </div>
+    <div style="margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Type</label>
+     <select id="meterCcssCreateFormat" onchange="meterCcssCreateFormatChanged()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+      <option value="ccss">CCSS - spectral display correction</option>
+      <option value="ccmx">CCMX - meter correction matrix</option>
+     </select>
+     <div id="meterCcssCreateFormatHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
     </div>
       <div style="margin-bottom:12px">
        <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
@@ -13256,18 +13294,23 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         <option value="projector_ccss">Projector</option>
         <option value="crt">CRT</option>
        </select>
-       <div style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">This sets the ccxxmake display technology used to build the new CCSS.</div>
+       <div id="meterCcssCreateDisplayHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
       </div>
     <div style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Spectrophotometer</label>
      <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
      <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
     </div>
+    <div id="meterCcssCreateTargetSection" style="display:none;margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Target Colorimeter</label>
+     <div id="meterCcssCreateTargetChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
+     <div id="meterCcssCreateTargetStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
+    </div>
     <div style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
     <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" oninput="meterCcssCreateUpdateStartState()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
     </div>
-    <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select your spectrophotometer and display type, then start.</div>
+    <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select a profile type and the required meter or meters, then start.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
@@ -17819,6 +17862,8 @@ let meterCcssCreateHandledToken='';
 let meterCcssCreateFreshOpen=true;
 let meterCcssCreateInventoryReady=false;
 let meterCcssCreateJobActive=false;
+let meterCcssCreateFormat='ccss';
+let meterCcssCreateTargetPort='';
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
@@ -25074,6 +25119,10 @@ function meterIsSpectrophotometer(meter){
  return meterKind(meter)==='spectro';
 }
 
+function meterIsColorimeter(meter){
+ return meterKind(meter)==='colorimeter';
+}
+
 function meterIsSpyderX(meter){
  return String((meter&&meter.usb_id)||'').toLowerCase()==='085c:0a00';
 }
@@ -25268,11 +25317,55 @@ function meterCcssCreateSpectros(){
  return (meterInventory||[]).filter(meter=>meterIsSpectrophotometer(meter));
 }
 
+function meterCcssCreateColorimeters(){
+ return (meterInventory||[]).filter(meter=>meterIsColorimeter(meter));
+}
+
+function meterCcssCreateFormatValue(){
+ const select=document.getElementById('meterCcssCreateFormat');
+ const value=String((select&&select.value)||meterCcssCreateFormat||'ccss').toLowerCase();
+ meterCcssCreateFormat=value==='ccmx'?'ccmx':'ccss';
+ return meterCcssCreateFormat;
+}
+
 function meterCcssCreateSelectedMeter(){
  const selected=meterFindByPort(meterSelectedProfilingPort());
  if(selected&&meterIsSpectrophotometer(selected)) return selected;
  const spectros=meterCcssCreateSpectros();
  return spectros[0]||null;
+}
+
+function meterCcssCreateSelectedTarget(){
+ const selected=meterFindByPort(meterCcssCreateTargetPort);
+ if(selected&&meterIsColorimeter(selected)) return selected;
+ const current=meterFindByPort(meterSelectedMeasurementPort());
+ if(current&&meterIsColorimeter(current)) return current;
+ return meterCcssCreateColorimeters()[0]||null;
+}
+
+function meterCcssCreateFormatChanged(){
+ meterCcssCreateFormatValue();
+ meterRenderCcssCreateChoices();
+ meterCcssCreateUpdateCopy();
+ meterCcssCreateUpdateStartState();
+}
+
+function meterCcssCreateUpdateCopy(){
+ const mode=meterCcssCreateFormatValue();
+ const intro=document.getElementById('meterCcssCreateIntro');
+ const help=document.getElementById('meterCcssCreateFormatHelp');
+ const displayHelp=document.getElementById('meterCcssCreateDisplayHelp');
+ const targetSection=document.getElementById('meterCcssCreateTargetSection');
+ if(intro) intro.textContent=mode==='ccmx'
+  ? 'Creates a correction matrix by measuring the same display patches with a reference spectrophotometer and the colorimeter being corrected. Follow each setup prompt and keep both meters connected.'
+  : 'Creates spectral display correction data from a reference spectrophotometer. Follow the setup prompts to calibrate the spectro, aim it at the display, and measure the patch set.';
+ if(help) help.textContent=mode==='ccmx'
+  ? 'A CCMX is a small matrix made for one colorimeter model or unit on this specific display. It corrects that colorimeter to agree with the selected reference spectro and is not a general display spectral profile.'
+  : 'A CCSS stores the display spectrum. Compatible colorimeters use that spectral data with their own sensor characteristics, so a CCSS can be shared across supported meter units measuring the same display technology.';
+ if(displayHelp) displayHelp.textContent=mode==='ccmx'
+  ? 'This identifies the display technology in the CCMX. The target colorimeter is measured in its uncorrected base mode so the new matrix is not stacked on another profile.'
+  : 'This sets the ccxxmake display technology used to build the new CCSS.';
+ if(targetSection) targetSection.style.display=mode==='ccmx'?'':'none';
 }
 
 function meterCcssCreateDisplayTypeValue(){
@@ -25296,6 +25389,7 @@ function meterCcssCreateCanStart(){
 function meterCcssCreateStartBlockReason(){
  if(!meterCcssCreateInventoryReady) return 'Checking for a ready spectrophotometer.';
  if(!meterCcssCreateSelectedMeter()) return 'Connect and select a reference spectrophotometer.';
+ if(meterCcssCreateFormatValue()==='ccmx'&&!meterCcssCreateSelectedTarget()) return 'Connect and select the target colorimeter.';
  const nameInput=document.getElementById('meterCcssCreateName');
  if(!String((nameInput&&nameInput.value)||'').trim()) return 'Enter a profile name.';
  if(!meterCcssCreateDisplayTypeValue()) return 'Choose a display technology.';
@@ -25318,6 +25412,7 @@ function meterCcssCreateSetUi(status){
  const stopBtn=document.getElementById('meterCcssCreateStopBtn');
  const nameInput=document.getElementById('meterCcssCreateName');
  const displayTypeSel=document.getElementById('meterCcssCreateDisplayType');
+ const formatSel=document.getElementById('meterCcssCreateFormat');
  const running=!!(status&&(status.status==='starting'||status.status==='running'));
  if(progress&&status&&status.message){
   // Show only our curated message. status.detail carries the raw ccxxmake
@@ -25332,6 +25427,7 @@ function meterCcssCreateSetUi(status){
  if(continueBtn) continueBtn.style.display='none';
  if(nameInput) nameInput.disabled=running;
  if(displayTypeSel) displayTypeSel.disabled=running;
+ if(formatSel) formatSel.disabled=running;
 }
 
 let meterCcssSetupStepId=0;
@@ -25349,41 +25445,63 @@ async function meterCcssCreateSetupAck(){
 function meterRenderCcssCreateChoices(){
  const wrap=document.getElementById('meterCcssCreateChoices');
  const status=document.getElementById('meterCcssCreateStatus');
+ const targetWrap=document.getElementById('meterCcssCreateTargetChoices');
+ const targetStatus=document.getElementById('meterCcssCreateTargetStatus');
  if(!wrap||!status) return;
+ const mode=meterCcssCreateFormatValue();
  if(!meterCcssCreateInventoryReady){
   wrap.innerHTML='';
   status.textContent='Checking connected spectrophotometers...';
+  if(targetWrap) targetWrap.innerHTML='';
+  if(targetStatus) targetStatus.textContent=mode==='ccmx'?'Checking connected colorimeters...':'';
   meterCcssCreateUpdateStartState();
   return;
  }
  const spectros=meterCcssCreateSpectros();
+ const colorimeters=meterCcssCreateColorimeters();
  const selected=meterSelectedProfilingPort();
  if(!meterInventory||meterInventory.length===0){
   wrap.innerHTML='';
-  status.textContent='No supported meter detected. Connect a spectrophotometer, then choose Create Custom CCSS again.';
+  status.textContent='No supported meter detected. Connect the required meter or meters, then reopen this creator.';
+  if(targetWrap) targetWrap.innerHTML='';
+  if(targetStatus) targetStatus.textContent=mode==='ccmx'?'A CCMX also requires a target colorimeter.':'';
   meterCcssCreateUpdateStartState();
   return;
  }
  if(!spectros.length){
   wrap.innerHTML='';
-  status.textContent='No spectrophotometer detected. Connect only the reference spectro you want to use for CCSS creation.';
+  status.textContent='No spectrophotometer detected. Connect the reference spectro you want to use.';
+  if(targetWrap) targetWrap.innerHTML='';
+  if(targetStatus&&mode==='ccmx') targetStatus.textContent=colorimeters.length?'Select a reference spectro before starting.':'No target colorimeter detected.';
   meterCcssCreateUpdateStartState();
   return;
  }
  const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
  if(chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
  if(spectros.length>1){
-  status.textContent=chosen?('Using '+meterOptionLabel(chosen)+' for CCSS creation. Tap another to switch.'):'Select which spectrophotometer to use for CCSS creation.';
+  status.textContent=chosen?('Reference: '+meterOptionLabel(chosen)+'. Tap another to switch.'):'Select the reference spectrophotometer.';
  }else if(chosen){
-  status.textContent='Selected spectrophotometer: '+meterOptionLabel(chosen)+(((meterInventory||[]).length>spectros.length)?' (other meters can stay connected).':'');
+  status.textContent='Selected reference: '+meterOptionLabel(chosen)+'.';
  }else {
-  status.textContent='Choose which attached spectrophotometer to use for custom CCSS creation.';
+  status.textContent='Choose the reference spectrophotometer.';
  }
  wrap.innerHTML=spectros.map(meter=>{
   const port=meterNormalizePortValue(meter.port_num);
   const active=meterProfilingPort===port;
   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationMeter(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
  }).join('');
+ if(mode==='ccmx'&&targetWrap&&targetStatus){
+  const chosenTarget=meterCcssCreateSelectedTarget();
+  if(chosenTarget) meterCcssCreateTargetPort=meterNormalizePortValue(chosenTarget.port_num);
+  targetWrap.innerHTML=colorimeters.map(meter=>{
+   const port=meterNormalizePortValue(meter.port_num);
+   const active=meterCcssCreateTargetPort===port;
+   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationTarget(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
+  }).join('');
+  targetStatus.textContent=chosenTarget
+   ? 'Selected target: '+meterOptionLabel(chosenTarget)+'. The finished CCMX will be selected for this meter.'
+   : 'No colorimeter detected. Connect the colorimeter that this matrix will correct.';
+ }
  meterCcssCreateUpdateStartState();
 }
 
@@ -25406,7 +25524,7 @@ function meterOpenCcssCreateModal(){
  meterCcssSetupStepId=0;
  meterCcssCreateHandledToken='';
  const progress=document.getElementById('meterCcssCreateProgress');
- if(progress) progress.textContent='Select your spectrophotometer and display type, then start.';
+ if(progress) progress.textContent='Select a profile type and the required meter or meters, then start.';
  const continueBtn=document.getElementById('meterCcssCreateContinueBtn');
  if(continueBtn) continueBtn.style.display='none';
  const stopBtn=document.getElementById('meterCcssCreateStopBtn');
@@ -25421,6 +25539,9 @@ function meterOpenCcssCreateModal(){
   createSel.value=hasChoice?fallback:'oled_generic';
   meterCcssCreateDisplayType=createSel.value;
  }
+ const formatSel=document.getElementById('meterCcssCreateFormat');
+ if(formatSel) formatSel.value=meterCcssCreateFormat==='ccmx'?'ccmx':'ccss';
+ meterCcssCreateUpdateCopy();
  meterRenderCcssCreateChoices();
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -25463,18 +25584,27 @@ function meterChooseCcssCreationMeter(port){
  meterRenderCcssCreateChoices();
  saveMeterSettings();
  const chosen=meterFindByPort(normalized);
- if(chosen) toast('CCSS creation meter: '+meterOptionLabel(chosen));
- else toast('CCSS creation meter selected');
+ if(chosen) toast('Reference spectrophotometer: '+meterOptionLabel(chosen));
+ else toast('Reference spectrophotometer selected');
+}
+
+function meterChooseCcssCreationTarget(port){
+ const normalized=meterNormalizePortValue(port);
+ const chosen=meterFindByPort(normalized);
+ if(!chosen||!meterIsColorimeter(chosen)) return;
+ meterCcssCreateTargetPort=normalized;
+ meterRenderCcssCreateChoices();
+ toast('Target colorimeter: '+meterOptionLabel(chosen));
 }
 
 async function meterCcssCreateRefreshStatus(quiet){
  const progress=document.getElementById('meterCcssCreateProgress');
  const r=await fetchJSON('/api/ccss/create/status',{_quiet:true,_timeoutMs:5000});
  if(!r){
-  if(progress&&!quiet) progress.textContent='Unable to load CCSS creation status.';
+  if(progress&&!quiet) progress.textContent='Unable to load meter profile creation status.';
   return null;
  }
- // CCSS runs entirely inside THIS modal -- never the separate shared wizard
+ // Meter profile creation runs entirely inside THIS modal, never the separate shared wizard
  // popup (that one is only for meter reads). One popup, one theme: the
  // calibrate/aim steps and the working messages all render here.
  meterSpectroSetupApply(null);
@@ -25500,16 +25630,27 @@ async function meterCcssCreateRefreshStatus(quiet){
  if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
   meterCcssCreateHandledToken=token;
   if(r.filename){
+   if(String(r.format||'').toLowerCase()==='ccmx'&&meterNormalizePortValue(r.target_port)){
+    const targetPort=meterNormalizePortValue(r.target_port);
+    const meterSelect=document.getElementById('meterMeasurementPort');
+    if(meterSelect&&Array.from(meterSelect.options).some(opt=>meterNormalizePortValue(opt.value)===targetPort)){
+     meterSelect.value=targetPort;
+     meterMeasurementPort=targetPort;
+     meterSavedMeasurementPort=targetPort;
+     meterResolvedMeasurementPort=targetPort;
+     meterSelect.dispatchEvent(new Event('change',{bubbles:true}));
+    }
+   }
    await refreshMeterCcssCatalog();
    meterSetCcssProfileSelection('custom_'+r.filename);
    await loadCustomCcssList();
    await ccssPreviewLoadByValue('custom\t'+r.filename,false);
    saveMeterSettings();
   }
-  if(!quiet) toast(r.message||'CCSS profile created');
+  if(!quiet) toast(r.message||'Meter profile created');
  }
- if(!quiet&&r.status==='error') toast(r.message||'CCSS creation failed',true);
- if(!quiet&&r.status==='cancelled') toast(r.message||'CCSS creation cancelled');
+ if(!quiet&&r.status==='error') toast(r.message||'Meter profile creation failed',true);
+ if(!quiet&&r.status==='cancelled') toast(r.message||'Meter profile creation cancelled');
  return r;
 }
 
@@ -25529,6 +25670,9 @@ async function meterStartCcssCreate(){
  if(!spectros.length){toast('Connect a spectrophotometer first',true);return;}
  const meter=meterCcssCreateSelectedMeter();
  if(!meter){toast('No spectrophotometer selected',true);return;}
+ const format=meterCcssCreateFormatValue();
+ const target=format==='ccmx'?meterCcssCreateSelectedTarget():null;
+ if(format==='ccmx'&&!target){toast('No target colorimeter selected',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const nameInput=document.getElementById('meterCcssCreateName');
  const name=String((nameInput&&nameInput.value)||'').trim();
@@ -25540,11 +25684,11 @@ async function meterStartCcssCreate(){
  meterActionPending=true;
  try{
   const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({name:name,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
+   body:JSON.stringify(meterMeasurementSignalContext({name:name,format:format,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),target_meter_port:target?meterNormalizePortValue(target.port_num):'',patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
   if(!r||r.status==='error'){
    meterCcssCreateJobActive=false;
-   meterCcssCreateSetUi(r||{status:'error',message:'Failed to start CCSS creation'});
-   toast(r&&r.message?r.message:'Failed to start CCSS creation',true);
+   meterCcssCreateSetUi(r||{status:'error',message:'Failed to start meter profile creation'});
+   toast(r&&r.message?r.message:'Failed to start meter profile creation',true);
    return;
   }
   if(meterCcssCreatePolling) clearInterval(meterCcssCreatePolling);
@@ -25558,7 +25702,7 @@ async function meterStartCcssCreate(){
 async function meterStopCcssCreate(){
  const r=await fetchJSON('/api/ccss/create/stop',{method:'POST',_timeoutMs:5000});
  if(!r||r.status!=='ok'){
-  toast(r&&r.message?r.message:'Failed to stop CCSS creation',true);
+  toast(r&&r.message?r.message:'Failed to stop meter profile creation',true);
   return;
  }
  meterCcssCreateJobActive=false;

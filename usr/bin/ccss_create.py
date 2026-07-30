@@ -62,9 +62,25 @@ class Runner:
         self.recent = ""
         self.setup_step_id = 0
         self.positioned = False
+        self.reference_done = False
+        self.target_done = False
+        self.switch_sent = False
+        self.target_choice_sent = False
+        self.target_measure_sent = False
+        self.current_role = "reference"
+
+    def profile_type(self):
+        return "CCMX" if self.args.format == "ccmx" else "CCSS"
 
     def write_state(self, status, message, **extra):
-        payload = {"status": status, "message": message, "filename": os.path.basename(self.args.output_path)}
+        payload = {
+            "status": status,
+            "message": message,
+            "filename": os.path.basename(self.args.output_path),
+            "format": self.args.format,
+        }
+        if self.args.target_comport:
+            payload["target_port"] = re.sub(r"[^0-9]", "", str(self.args.target_comport))
         # Never surface raw ccxxmake text to the operator. The raw output is kept
         # in the log file for diagnostics; the state carries only curated fields.
         # Drop any 'detail' so even a stale/cached UI cannot render it.
@@ -122,8 +138,10 @@ class Runner:
         # the patch sweep each take several seconds -- instead of vanishing.
         working = {
             "calibrate_tile": "Calibrating the spectrophotometer on its tile - please wait a few seconds...",
+            "calibrate_dark": "Calibrating the target colorimeter dark reference - please wait...",
             "position_screen": "Measuring the test patches - keep the meter aimed at the screen...",
             "calibrate_retry": "Re-calibrating the spectrophotometer - please wait...",
+            "switch_target": "Preparing the target colorimeter pass...",
         }.get(step, "Working with the spectrophotometer - please wait...")
         self.write_state("running", working)
 
@@ -176,7 +194,7 @@ class Runner:
 
     def terminate(self, signum=None, frame=None):
         self.cancel_requested = True
-        self.write_state("cancelled", "CCSS creation cancelled")
+        self.write_state("cancelled", "%s creation cancelled" % self.profile_type())
         if self.child and self.child.poll() is None:
             try:
                 self.child.terminate()
@@ -205,6 +223,10 @@ class Runner:
         self.recent = (self.recent + " " + text)[-800:]
         if text.startswith("3)"):
             self.last_option3 = text
+        if "[Got spectrometer readings]" in text:
+            self.reference_done = True
+        if "[Got colorimeter readings]" in text:
+            self.target_done = True
         low = self.recent.lower()
         # ccxxmake cannot open the instrument (held by another process or a USB
         # wedge). A single failure is usually transient -- ccxxmake retries and
@@ -217,7 +239,7 @@ class Runner:
             if self.access_fail_count >= 4:
                 self.write_state(
                     "error",
-                    "Could not open the spectrophotometer for measurement. Make sure no other measurement is running and only the reference spectro is connected, then try again.",
+                    "Could not open the selected meter. Make sure no other measurement is running and both selected meters remain connected, then try again.",
                 )
                 self.cancel_requested = True
                 try:
@@ -230,9 +252,10 @@ class Runner:
         # this BEFORE the generic continue handling so a failed cal isn't silently
         # auto-advanced into another bad reading.
         if "reading is too low" in low or "calibration failed" in low:
+            role_name = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
             self.await_setup_step(
                 "calibrate_retry",
-                "Calibration failed. Re-seat the spectro flat on its tile, then click Retry.",
+                "Calibration failed. Reposition the %s on its calibration reference, then click Retry." % role_name,
             )
             self.recent = ""
             self.send("\n")
@@ -245,10 +268,21 @@ class Runner:
                 # Headless: no keyboard, and the instrument button isn't
                 # delivered to ccxxmake's stdin. Surface a wizard step and let
                 # await_setup_step inject the keypress once the operator acks.
+                if self.current_role == "target" and (
+                    "black" in low or "cover" in low or "dark" in low
+                ):
+                    self.await_setup_step(
+                        "calibrate_dark",
+                        "Cover the target colorimeter sensor or place it on its dark reference as required, then click Calibrate.",
+                    )
+                    self.recent = ""
+                    self.send("\n")
+                    return
                 if "white reference" in low or "reflective" in low:
+                    subject = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
                     self.await_setup_step(
                         "calibrate_tile",
-                        "Place the spectrophotometer flat on its white calibration tile, then click Calibrate.",
+                        "Place the %s on its calibration reference as instructed, then click Calibrate." % subject,
                     )
                     self.recent = ""
                     self.send("\n")
@@ -256,9 +290,10 @@ class Runner:
                 if not self.positioned:
                     # FIRST screen prompt: have the operator aim at the screen once.
                     self.positioned = True
+                    subject = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
                     self.await_setup_step(
                         "position_screen",
-                        "Aim the meter at the center of the screen, then click Ready.",
+                        "Position the %s at the center of the screen, then click Ready." % subject,
                     )
                     self.recent = ""
                     self.send("\n")
@@ -281,13 +316,28 @@ class Runner:
             return
         lowered = text.lower()
         if "button" in lowered or "switch" in lowered:
-            self.write_state("running", "Press the i1 Pro button to take the current reading", detail=text)
+            self.write_state("running", "Use the current meter as instructed to take the reading", detail=text)
         elif "measure" in lowered or "reading" in lowered:
-            self.write_state("running", "Measuring display patches with the i1 Pro", detail=text)
+            role_name = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
+            self.write_state("running", "Measuring display patches with the %s" % role_name, detail=text)
         elif "comput" in lowered or "save" in lowered:
-            self.write_state("running", "Computing and saving the CCSS profile", detail=text)
+            self.write_state("running", "Computing and saving the %s profile" % self.profile_type(), detail=text)
 
     def maybe_advance_menu(self, window):
+        if self.args.format == "ccmx" and self.switch_sent and not self.target_choice_sent:
+            if re.search(r"Select device\s+1\s*-\s*\d+", window, re.I):
+                target = re.sub(r"[^0-9]", "", str(self.args.target_comport or ""))
+                if not re.match(r"^[1-9]$", target):
+                    self.write_state("error", "The target colorimeter has no selectable Argyll port")
+                    self.cancel_requested = True
+                    return
+                self.send(target + "\n")
+                self.target_choice_sent = True
+                self.current_role = "target"
+                self.positioned = False
+                self.recent = ""
+                self.write_state("running", "Selecting the target colorimeter")
+                return
         if not MENU_RE.search(window):
             return
         if not self.measure_sent:
@@ -299,13 +349,39 @@ class Runner:
             self.measure_sent = True
             self.write_state(
                 "running",
-                "Starting measurement. When prompted, calibrate the i1 Pro on its white tile, then aim it at the screen and use its button.",
+                "Starting the reference pass. Follow the prompts to calibrate and position the reference spectrophotometer.",
             )
             return
-        if self.measure_sent and not self.compute_sent and self.last_option3 and "[" not in self.last_option3:
+        if self.args.format == "ccmx" and self.reference_done and not self.switch_sent:
+            self.await_setup_step(
+                "switch_target",
+                "Reference measurements are complete. Position the target colorimeter for its pass, then click Continue.",
+            )
+            if self.cancel_requested:
+                return
+            self.send("1\n")
+            self.switch_sent = True
+            self.write_state("running", "Switching ccxxmake to the target colorimeter")
+            return
+        if self.args.format == "ccmx" and self.target_choice_sent and not self.target_measure_sent:
+            select_at = window.lower().rfind("select device")
+            menu_at = window.lower().rfind("press 1")
+            if menu_at > select_at:
+                self.send("2\n")
+                self.target_measure_sent = True
+                self.last_option3 = ""
+                self.write_state(
+                    "running",
+                    "Starting the target colorimeter pass. Follow its calibration and positioning prompts.",
+                )
+            return
+        ready_to_compute = self.measure_sent
+        if self.args.format == "ccmx":
+            ready_to_compute = self.target_done
+        if ready_to_compute and not self.compute_sent and self.last_option3 and "[" not in self.last_option3:
             self.send("3\n")
             self.compute_sent = True
-            self.write_state("running", "Computing and saving the CCSS profile")
+            self.write_state("running", "Computing and saving the %s profile" % self.profile_type())
             return
         if self.compute_sent:
             # Keep nudging Exit until ccxxmake actually quits. The first '4' can
@@ -320,7 +396,7 @@ class Runner:
                 self.exit_sent = True
 
     def run(self):
-        self.write_state("starting", "Starting CCSS creation")
+        self.write_state("starting", "Starting %s creation" % self.profile_type())
         with io.open(self.args.pid_file, "w", encoding="utf-8") as handle:
             handle.write(utf8_text(str(os.getpid())))
 
@@ -344,7 +420,6 @@ class Runner:
             # display. "dummy" is Argyll's invisible no-op display.
             "-d",
             "dummy",
-            "-S",
             "-t",
             self.args.disptech,
             "-C",
@@ -354,6 +429,10 @@ class Runner:
             "-E",
             self.args.display_name,
         ]
+        if self.args.format == "ccss":
+            cmd.insert(3, "-S")
+        else:
+            cmd.extend(["-y", self.args.target_display_type or "l"])
         comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
         if comport:
             cmd.extend(["-c", comport])
@@ -434,10 +513,10 @@ class Runner:
         if self.cancel_requested:
             return 1
         if returncode == 0 and os.path.isfile(self.args.output_path):
-            self.write_state("complete", "CCSS profile created", filename=os.path.basename(self.args.output_path))
+            self.write_state("complete", "%s profile created and selected" % self.profile_type(), filename=os.path.basename(self.args.output_path))
             return 0
 
-        detail = self.last_message or "ccxxmake failed to create a CCSS profile"
+        detail = self.last_message or "ccxxmake failed to create a %s profile" % self.profile_type()
         if os.path.isfile(self.args.log_file):
             try:
                 with io.open(self.args.log_file, "r", encoding="utf-8", errors="ignore") as handle:
@@ -452,7 +531,7 @@ class Runner:
         # output in `detail` for the log/diagnostics (the UI does not show it).
         self.write_state(
             "error",
-            "CCSS creation failed. Make sure the reference spectrophotometer (and its serial-matched calibration tile) is connected, then try again.",
+            "%s creation failed. Make sure the selected meters and their calibration references are connected, then try again." % self.profile_type(),
             detail=detail,
         )
         return 1
@@ -465,6 +544,7 @@ def main():
     parser.add_argument("--log-file", required=True)
     parser.add_argument("--patch-cmd", required=True)
     parser.add_argument("--output-path", required=True)
+    parser.add_argument("--format", choices=["ccss", "ccmx"], default="ccss")
     parser.add_argument("--disptech", required=True)
     parser.add_argument("--display-name", required=True)
     parser.add_argument("--signal-mode", default="sdr")
@@ -473,6 +553,9 @@ def main():
     parser.add_argument("--refresh-rate", default="")
     parser.add_argument("--ccxxmake-bin", default="")
     parser.add_argument("--comport", default="")
+    parser.add_argument("--target-comport", default="")
+    parser.add_argument("--target-label", default="target colorimeter")
+    parser.add_argument("--target-display-type", default="l")
     parser.add_argument("--continue-file", default="")
     args = parser.parse_args()
 
@@ -481,7 +564,7 @@ def main():
         return runner.run()
     except Exception as exc:
         runner.append_log(traceback.format_exc())
-        runner.write_state("error", "CCSS create helper crashed", detail=utf8_text(exc))
+        runner.write_state("error", "Meter profile create helper crashed", detail=utf8_text(exc))
         return 1
     finally:
         # Always leave the panel on black (burn-in safety) regardless of how
