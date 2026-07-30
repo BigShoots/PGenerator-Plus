@@ -46431,14 +46431,20 @@ function meterCieMbContentBounds(){
  }catch(e){}
  return n?{lMin:lMin,lMax:lMax,sMax:sMax,count:n}:null;
 }
-// Round a span up to the next 1/2/5 x 10^k so the axis lands on clean ticks and
-// stops twitching every time a reading nudges the maximum.
+// Round a span up to the next nice number so the axis lands on clean ticks and
+// stops twitching every time a reading nudges the maximum. The ladder is finer
+// than 1/2/5 on purpose: 1/2/5 turned a 0.053 span into 0.1 and gave back half
+// the height the content framing had just won.
+const METER_CIE_NICE_STEPS=[1,1.2,1.5,2,2.5,3,4,5,6,8,10];
 function meterCieNiceCeil(v){
  const x=Number(v);
  if(!(x>0)) return 0;
  const pow=Math.pow(10,Math.floor(Math.log10(x)));
  const n=x/pow;
- return ((n<=1)?1:(n<=2)?2:(n<=5)?5:10)*pow;
+ for(let i=0;i<METER_CIE_NICE_STEPS.length;i++){
+  if(n<=METER_CIE_NICE_STEPS[i]+1e-12) return METER_CIE_NICE_STEPS[i]*pow;
+ }
+ return 10*pow;
 }
 function meterCie2dWorld(){
  const mode=meterChromaticityChartMode();
@@ -46453,7 +46459,7 @@ function meterCie2dWorld(){
   const content=meterCieMbContentBounds();
   let xMin=0.48,xMax=1,yMax=cap;
   if(content&&content.count>=2&&content.sMax>0){
-   yMax=Math.min(cap,Math.max(0.02,meterCieNiceCeil(content.sMax*1.2)));
+   yMax=Math.min(cap,Math.max(0.02,meterCieNiceCeil(content.sMax*1.08)));
    const padX=Math.max(0.02,(content.lMax-content.lMin)*0.08);
    xMin=Math.max(0.45,Math.min(content.lMin-padX,0.9));
    xMax=Math.min(1,Math.max(content.lMax+padX,xMin+0.08));
