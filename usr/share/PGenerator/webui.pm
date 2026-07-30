@@ -25407,6 +25407,28 @@ function meterCcssCreateUpdateStartState(){
  startBtn.title=reason;
 }
 
+function meterCcssCreateSetStartingFeedback(starting,format){
+ const startBtn=document.getElementById('meterCcssCreateStartBtn');
+ const progress=document.getElementById('meterCcssCreateProgress');
+ if(startBtn){
+  startBtn.textContent=starting?'Starting...':'Start Creation';
+  if(starting){
+   startBtn.disabled=true;
+   startBtn.title='Starting meter profile creation';
+  }else{
+   meterCcssCreateUpdateStartState();
+  }
+ }
+ if(progress&&starting){
+  const profileType=String(format||meterCcssCreateFormatValue()||'ccss').toUpperCase();
+  progress.textContent='Starting '+profileType+' creation...';
+  progress.dataset.starting='1';
+ }else if(progress&&progress.dataset.starting==='1'){
+  progress.textContent='Select a profile type and the required meter or meters, then start.';
+  delete progress.dataset.starting;
+ }
+}
+
 function meterCcssCreateSetUi(status){
  const progress=document.getElementById('meterCcssCreateProgress');
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
@@ -25419,8 +25441,9 @@ function meterCcssCreateSetUi(status){
   // Show only our curated message. status.detail carries the raw ccxxmake
   // output for the log/diagnostics and must NOT be surfaced to the operator.
   progress.textContent=status.message;
+  delete progress.dataset.starting;
  }
- if(startBtn){ startBtn.style.display=running?'none':''; meterCcssCreateUpdateStartState(); }
+ if(startBtn){ startBtn.textContent='Start Creation'; startBtn.style.display=running?'none':''; meterCcssCreateUpdateStartState(); }
  if(stopBtn) stopBtn.style.display=running?'':'none';
  // The action button is driven by meterCcssCreateRefreshStatus for setup steps;
  // for any non-setup status (handled here) keep it hidden.
@@ -25619,7 +25642,7 @@ async function meterCcssCreateRefreshStatus(quiet){
  if(activeStatus) meterCcssCreateFreshOpen=false;
  if(r.status==='setup'){
   meterCcssSetupStepId=Number(r.step_id)||0;
-  if(progress) progress.textContent=r.message||'';
+  if(progress){ progress.textContent=r.message||''; delete progress.dataset.starting; }
   if(contBtn){ contBtn.textContent=meterSpectroSetupLabel(r.step||''); contBtn.style.display=''; contBtn.disabled=false; }
   const sBtn=document.getElementById('meterCcssCreateStartBtn'); if(sBtn) sBtn.style.display='none';
   const stBtn=document.getElementById('meterCcssCreateStopBtn'); if(stBtn) stBtn.style.display='';
@@ -25657,6 +25680,8 @@ async function meterCcssCreateRefreshStatus(quiet){
 
 async function meterStartCcssCreate(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
+ const initialFormat=meterCcssCreateFormatValue();
+ meterCcssCreateSetStartingFeedback(true,initialFormat);
  // Stop any continuous read loop first. Otherwise it keeps re-POSTing reads,
  // which restarts the spotread session and re-claims the instrument -- ccxxmake
  // then fails with "Instrument Access Failed" because the meter is still held.
@@ -25666,23 +25691,24 @@ async function meterStartCcssCreate(){
  await meterCheckStatus();
  meterRenderCcssCreateChoices();
  const blocked=meterCcssCreateStartBlockReason();
- if(blocked){toast(blocked,true);return;}
+ if(blocked){meterCcssCreateSetStartingFeedback(false);toast(blocked,true);return;}
  const spectros=meterCcssCreateSpectros();
- if(!spectros.length){toast('Connect a spectrophotometer first',true);return;}
+ if(!spectros.length){meterCcssCreateSetStartingFeedback(false);toast('Connect a spectrophotometer first',true);return;}
  const meter=meterCcssCreateSelectedMeter();
- if(!meter){toast('No spectrophotometer selected',true);return;}
+ if(!meter){meterCcssCreateSetStartingFeedback(false);toast('No spectrophotometer selected',true);return;}
  const format=meterCcssCreateFormatValue();
  const target=format==='ccmx'?meterCcssCreateSelectedTarget():null;
- if(format==='ccmx'&&!target){toast('No target colorimeter selected',true);return;}
- if(!meterEnsureAppliedGeneratorSettings()) return;
+ if(format==='ccmx'&&!target){meterCcssCreateSetStartingFeedback(false);toast('No target colorimeter selected',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()){meterCcssCreateSetStartingFeedback(false);return;}
  const nameInput=document.getElementById('meterCcssCreateName');
  const name=String((nameInput&&nameInput.value)||'').trim();
- if(!name){toast('Enter a profile name',true);return;}
+ if(!name){meterCcssCreateSetStartingFeedback(false);toast('Enter a profile name',true);return;}
  const displayType=meterCcssCreateDisplayTypeValue();
- if(!displayType){toast('Choose a display technology',true);return;}
+ if(!displayType){meterCcssCreateSetStartingFeedback(false);toast('Choose a display technology',true);return;}
  meterCcssCreateFreshOpen=false;
  meterCcssCreateJobActive=true;
  meterActionPending=true;
+ meterCcssCreateSetStartingFeedback(true,format);
  try{
   const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(meterMeasurementSignalContext({name:name,format:format,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),target_meter_port:target?meterNormalizePortValue(target.port_num):'',patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
@@ -25697,6 +25723,7 @@ async function meterStartCcssCreate(){
   await meterCcssCreateRefreshStatus(false);
  }finally{
   meterActionPending=false;
+  meterCcssCreateSetStartingFeedback(false);
  }
 }
 
