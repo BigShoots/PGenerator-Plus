@@ -12755,6 +12755,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800019" data-sdr-only="1">SG Skin Tones (19)</option>
        <option value="800137" data-sdr-only="1">MacLeod-Boynton Hue Circle (37)</option>
        <option value="800008" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton Focal Colours (8)</option>
+       <option value="800064" data-sdr-only="1" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
       </select>
       <span class="meter-help-tip" title="Choose a built-in display verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones use standardized SDR video-code sequences. Each preset keeps a separate measurement cache." aria-label="ColorChecker series help">?</span>
      </label>
@@ -30819,7 +30820,8 @@ const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'sdr',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
  {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'sdr',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
  {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'sdr',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
- {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'sdr',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]}
+ {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'sdr',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]},
+ {id:800064,name:'MacLeod-Boynton OSA-UCS Map (64)',category:'color',mode:'sdr',kind:'verification',preset:'mb-osa-ucs-64',builtin_verification:true,patches:[]}
 ];
 
 const METER_COLORCHECKER_SG_NAMES=[
@@ -30885,6 +30887,17 @@ const METER_MB_PAPER_GAMUT={
  upperLeft:{a:79.44,b:-131.18},
  lowerLeft:{a:1417.43,b:-6522.35,c:10007.04,d:-5118.66}
 };
+// Table 2 - the White region. Table 4 has NO boundary rows for White: the paper
+// puts White "around the cone chromaticity of EES ... surrounded by other basic
+// colors" and represents it with an ellipse instead, so a boundary-only
+// classifier can never award a point to White. These are the published CENTROID
+// ellipse parameters (a and b are semi-axes along the axis rotated theta degrees
+// from l, centred on x0/y0). Note this is the spread of the eight observers'
+// centroids and is therefore narrow; Fig 1c's larger white region ellipse was
+// fitted to the Fig 1a naming data and its parameters are not published, and the
+// paper states that for red and white in Fig 1b "a circle of arbitrary size was
+// plotted" because only one data point existed. This is the published stand-in.
+const METER_MB_PAPER_WHITE_ELLIPSE={a:0.127,b:0.004,theta:92.68,x0:0.661,y0:0.905};
 // Table 4 - equal-probability boundaries between adjacent colour names.
 // The Red-Pink intercept is +38.40. The published table's minus sign does not
 // survive text extraction as a usable line: with a=-38.40 the Red and Pink focal
@@ -30974,6 +30987,112 @@ function meterBuildMbFocalColourSteps(){
  });
 }
 
+// Table 4 gamut test, evaluated in the paper's own coordinates.
+function meterMbPaperGamutContains(l,s){
+ const G=METER_MB_PAPER_GAMUT,x=Number(l)||0,y=Number(s)||0;
+ const line=(e)=>e.a+e.b*x;
+ const cubic=G.lowerLeft.a+G.lowerLeft.b*x+G.lowerLeft.c*x*x+G.lowerLeft.d*x*x*x;
+ return y<=G.upper.a+1e-9&&y>=G.lower.a-1e-9&&y<=line(G.right)+1e-9
+  &&y>=line(G.upperLeft)-1e-9&&y>=cubic-1e-6;
+}
+// Colour name for a point, from Table 4's equal-probability boundaries. Each row
+// only decides between its own two names, so score how many pairwise contests
+// each name wins and take the leader; the focal colours say which side of a line
+// belongs to which name. Ties break toward the nearer focal colour, which is what
+// keeps White reachable -- it has no boundary rows of its own. The l distance is
+// weighted by ~39 so both axes count comparably, since s spans a ~39x wider range.
+function meterMbPaperRegionFor(l,s){
+ const x=Number(l)||0,y=Number(s)||0,wins={};
+ // White first: it owns an ellipse rather than any boundary row.
+ const W=METER_MB_PAPER_WHITE_ELLIPSE,th=W.theta*Math.PI/180;
+ const dx=x-W.x0,dy=y-W.y0;
+ const u=dx*Math.cos(th)+dy*Math.sin(th),v=-dx*Math.sin(th)+dy*Math.cos(th);
+ if((u*u)/(W.a*W.a)+(v*v)/(W.b*W.b)<=1) return 'White';
+ METER_MB_PAPER_FOCAL.forEach(f=>{wins[f.name]=0;});
+ METER_MB_PAPER_REGION_EDGES.forEach(edge=>{
+  const ref=METER_MB_PAPER_FOCAL.find(f=>f.name===edge.pair[0]);
+  if(!ref) return;
+  const above=y>(edge.a+edge.b*x);
+  const refAbove=ref.s>(edge.a+edge.b*ref.l);
+  const winner=(above===refAbove)?edge.pair[0]:edge.pair[1];
+  wins[winner]=(wins[winner]||0)+1;
+ });
+ let best='',bestScore=-1,bestDist=Infinity;
+ METER_MB_PAPER_FOCAL.forEach(f=>{
+  const d=Math.sqrt(Math.pow((f.l-x)*39,2)+Math.pow(f.s-y,2));
+  const score=wins[f.name]||0;
+  if(score>bestScore||(score===bestScore&&d<bestDist)){best=f.name;bestScore=score;bestDist=d;}
+ });
+ return best;
+}
+// Fig 1a reconstruction: a deterministic grid inside the Table 4 gamut, labelled
+// by colour region and thinned so each region's share follows its area. The
+// paper's own 424 sample coordinates are not published, so this reconstructs the
+// figure's structure and is never a copy of its samples. Deterministic on purpose
+// -- a fixed stride over sorted points, no RNG -- so the same 64 patches come out
+// every run and measurements stay comparable across runs and machines.
+function meterBuildMbOsaUcsMapSteps(){
+ const TARGET=64,STEPS_L=61,STEPS_S=61;
+ const G=METER_MB_PAPER_GAMUT;
+ const grid=[];
+ // Seed with the eight published focal colours. Each certainly belongs to its
+ // own region, and it guarantees every region is represented even where the grid
+ // misses a narrow one -- White's published ellipse is only +/-0.004 wide in l.
+ METER_MB_PAPER_FOCAL.forEach(f=>{
+  if(meterMbPaperGamutContains(f.l,f.s)) grid.push({l:f.l,s:f.s,region:f.name});
+ });
+ for(let i=0;i<STEPS_L;i++){
+  const l=0.45+(0.95-0.45)*(i/(STEPS_L-1));
+  for(let j=0;j<STEPS_S;j++){
+   const s=G.lower.a+(G.upper.a-G.lower.a)*(j/(STEPS_S-1));
+   if(!meterMbPaperGamutContains(l,s)) continue;
+   grid.push({l:l,s:s,region:meterMbPaperRegionFor(l,s)});
+  }
+ }
+ if(!grid.length) return [];
+ const byRegion={};
+ grid.forEach(p=>{(byRegion[p.region]=byRegion[p.region]||[]).push(p);});
+ const regions=Object.keys(byRegion).sort();
+ const quota={};let assigned=0;
+ regions.forEach(name=>{
+  const q=Math.max(1,Math.round(TARGET*byRegion[name].length/grid.length));
+  quota[name]=q;assigned+=q;
+ });
+ // Settle the rounding on the largest regions first so the total is exactly
+ // TARGET without ever emptying a small region.
+ const order=regions.slice().sort((a,b)=>(byRegion[b].length-byRegion[a].length)||(a<b?-1:1));
+ let guard=0;
+ while(assigned!==TARGET&&guard++<1000){
+  for(const name of order){
+   if(assigned===TARGET) break;
+   if(assigned<TARGET){quota[name]++;assigned++;}
+   else if(quota[name]>1){quota[name]--;assigned--;}
+  }
+ }
+ const matrix=meterAnalysisGamut().rgbToXyz;
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const steps=[];
+ regions.forEach(name=>{
+  const pts=byRegion[name].slice().sort((p,q)=>(p.l-q.l)||(p.s-q.s));
+  const want=Math.min(quota[name],pts.length),stride=pts.length/want;
+  for(let n=0;n<want;n++){
+   const pt=pts[Math.min(pts.length-1,Math.floor(n*stride))];
+   const mb=meterMbPaperToChart(pt.l,pt.s);
+   const fit=meterMbMaxInGamutRgb(meterMbChartToXyz(mb.l,mb.s),matrix);
+   const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
+   const sum=xyz.X+xyz.Y+xyz.Z;
+   steps.push({ire:Math.round(xyz.Y*100),
+    r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
+    name:'1a '+name+' '+(n+1)+(fit.outOfGamut?' (out of gamut)':''),
+    target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
+    input_max:inputMax,series_mode:'mb-osa-ucs-sdr',mb_region:name,
+    mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:pt.l,mb_paper_s:pt.s,
+    out_of_gamut:fit.outOfGamut});
+  }
+ });
+ return steps;
+}
+
 function meterBuildMbHueCircleSteps(){
  const gamut=meterAnalysisGamut(),matrix=gamut.rgbToXyz;
  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
@@ -31026,6 +31145,7 @@ function meterBuildBuiltinColorCheckerSteps(series){
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin-sdr');
  if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
  if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
+ if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
  return [];
 }
 
@@ -33849,7 +33969,7 @@ function meterDefaultTargetsForColorSeries(type,points){
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
 const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
-const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,800008];
+const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,800008,800064];
 function meterHcfrFixedCodesAvailable(){
  return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase()==='sdr';
 }
@@ -33874,7 +33994,7 @@ function meterColorCheckerSeriesStoredValue(){
  return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
 }
 function meterColorCheckerSeriesIsSdrOnly(id){
- return [29,800124,800096,800019,800137,800008].includes(Math.round(Number(id)));
+ return [29,800124,800096,800019,800137,800008,800064].includes(Math.round(Number(id)));
 }
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
