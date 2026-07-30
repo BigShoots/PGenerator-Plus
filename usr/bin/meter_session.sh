@@ -63,11 +63,14 @@ fi
 # stored one is reused. Without it every spotread spawn re-calibrates, so a
 # dark cal done for Read Once was demanded again for Read Series (a separate
 # spotread process). Argyll still forces the prompt when the stored cal is
-# missing or stale, which is the same safety property the spectro relies on.
+# missing or stale.
 NOINITCAL_FLAG=""
 case "${METER_USB_ID,,}" in
  085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
 esac
+SPECTRO_MARKER_ID=$(printf '%s' "${METER_USB_ID:-unknown}" | tr -cd 'A-Za-z0-9')
+[[ -n "$SPECTRO_MARKER_ID" ]] || SPECTRO_MARKER_ID="unknown"
+SPECTRO_STARTUP_MARKER="/tmp/pg_spectro_startup_checked_${SPECTRO_MARKER_ID}"
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -280,6 +283,31 @@ perform_colorimeter_dark_calibration() {
   waited=$((waited + 1))
  done
  log "dark calibration did not return to the read prompt during $context"
+ return 1
+}
+
+perform_spectro_white_calibration() {
+ local context="${1:-read}"
+ local cal_offset waited clean
+ log "spectrophotometer white-tile calibration prompt during $context"
+ await_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
+ cal_offset=$(output_size)
+ printf " " >&3
+ waited=0
+ while (( waited < 900 )); do
+  clean=$(clean_output_since "$cal_offset")
+  if printf '%s' "$clean" | grep -q "to take a reading:"; then
+   await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+   return 0
+  fi
+  if printf '%s' "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected|calibration failed|reading is too low"; then
+   log "spectrophotometer calibration failed during $context: $(printf '%s' "$clean" | tr '\n' ' ' | cut -c1-300)"
+   return 1
+  fi
+  sleep 0.1
+  waited=$((waited + 1))
+ done
+ log "spectrophotometer calibration did not return to the read prompt during $context"
  return 1
 }
 
@@ -559,16 +587,12 @@ build_sr_cmd () {
   # concept; spotread emits "Display/calibration type ignored" for a spectro).
    local cmd
    if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
-    # Spectrophotometer (i1 Pro 2 etc.). -N disables Argyll's PROACTIVE
-    # re-calibration so the instrument reuses its stored wavelength cal
-    # instead of demanding a white-tile read on every (re)spawn. -N only
-    # suppresses the auto re-cal -- when the stored cal is genuinely
-    # invalid/missing, spotread still emits the mandatory
-    # "Spot read needs a calibration before continuing" prompt, which the
-    # calibrate_tile / calibrate_retry steps below surface to the operator.
-    # So -N is safe unconditionally for spectros. Spyder colorimeters also
-    # use it above to reuse a still-valid stored dark calibration.
-    cmd="$SPOTREAD_BIN -N -e -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
+    # The first spectro process after boot runs without -N so Argyll performs
+    # its calibration check before any measurement. Later session respawns and
+    # series launches reuse that checked calibration with -N.
+    local spectro_noinit=""
+    [[ -f "$SPECTRO_STARTUP_MARKER" ]] && spectro_noinit="-N"
+    cmd="$SPOTREAD_BIN $spectro_noinit -e -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
    elif [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" ]]; then
    cmd="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -X '$CCSS_FILE' -c $PORT_NUM -Q $OBSERVER -x $new_ll_flags"
   else
@@ -937,6 +961,9 @@ fi
 if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_CAL_DONE" == "1" ]]; then
  await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ touch "$SPECTRO_STARTUP_MARKER" 2>/dev/null || true
+fi
 
 signal_startup_ready
 startup_marker "startup ready signaled"
@@ -1098,7 +1125,10 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
         fi
         if [[ -n "$PROMPT_REASON" ]]; then
          log "manual prompt during read: reason=$PROMPT_REASON name=$NAME"
-         wait_for_device_ready "$PROMPT_REASON"
+         if ! perform_spectro_white_calibration "read"; then
+          write_state '{"status":"error","message":"Meter white-tile calibration did not complete"}'
+          break
+         fi
          printf " " >&3
          READ_START=$SECONDS
          READ_TIMEOUT=$((READ_TIMEOUT + 30))

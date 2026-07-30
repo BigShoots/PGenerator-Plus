@@ -12560,7 +12560,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	     </div>
 	      <div class="meter-xyz-toggle-block">
        <div class="meter-xyz-toggle-row">
-        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="When enabled, applies the 3x3 matrix to measured XYZ before live x/y, CIE, luminance, and delta analysis. Leave matrix values blank for identity." aria-label="XYZ correction matrix help">?</span></label>
+        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="Software correction applied by PGenerator after Argyll returns XYZ. Unlike a CCMX, this matrix is not an Argyll meter profile and is not automatically tied to a specific meter. A selected CCMX is applied by Argyll and temporarily disables this matrix to prevent double correction." aria-label="XYZ correction matrix help">?</span></label>
         <span class="meter-xyz-gear-wrap is-hidden">
          <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
          <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
@@ -13303,6 +13303,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="">Choose installed meter profile...</option>
       </select>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+         <label style="font-size:.72rem;color:var(--text2);display:inline-flex;align-items:center;gap:5px;white-space:nowrap" title="Keep every CCSS preview on the same 380 to 780 nm wavelength scale">
+          <input type="checkbox" id="ccssPreviewLockXAxis" checked onchange="if(ccssPreviewLastPayload) ccssPreviewRender(ccssPreviewLastPayload)"> Lock X axis (380-780 nm)
+         </label>
          <select id="ccssExportFormat" style="min-width:160px;font-size:.74rem;padding:6px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text)" disabled>
           <option value="ccss">Export CCSS</option>
           <option value="ccmx">Export CCMX</option>
@@ -13919,7 +13922,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <!-- Spectro setup wizard: kept at body level (sibling of the AutoCal overlay) so its z-index beats the AutoCal mask; inside the Calibration card it was stacking-capped behind it. -->
   <div id="meterSpectroSetupModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:10001;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(460px,100%);background:#111723;border:1px solid #2a3140;border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
-    <div id="meterSpectroSetupTitle" style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Spectrophotometer Setup</div>
+    <div id="meterSpectroSetupTitle" style="font-size:1rem;font-weight:700;color:#eee;margin-bottom:4px">Meter Setup</div>
     <div id="meterSpectroSetupStepLabel" style="font-size:.72rem;color:var(--text2);margin-bottom:10px">Step</div>
     <div id="meterSpectroSetupMessage" style="font-size:.86rem;color:var(--text);line-height:1.5;margin-bottom:16px;min-height:3em">Preparing the meter…</div>
     <div style="display:flex;justify-content:flex-end;gap:8px">
@@ -25413,15 +25416,8 @@ async function meterCcssCreateRefreshStatus(quiet){
  if(r.status==='complete'&&token!==meterCcssCreateHandledToken){
   meterCcssCreateHandledToken=token;
   if(r.filename){
-   customCcssFile=r.filename;
    await refreshMeterCcssCatalog();
-   const sel=document.getElementById('meterDisplayType');
-   const nextValue='custom_'+r.filename;
-   if(sel){
-    sel.value=nextValue;
-    sel.dataset.lastStableValue=nextValue;
-   }
-   meterApplyDisplayTypeSelection(nextValue,{patchSizeDefault:true});
+   meterSetCcssProfileSelection('custom_'+r.filename);
    await loadCustomCcssList();
    await ccssPreviewLoadByValue('custom\t'+r.filename,false);
    saveMeterSettings();
@@ -27761,6 +27757,7 @@ async function meterFinishSingleRead(){
 }
 
 let meterSpectroSetupStepId=0;
+let meterSpectroSetupStep='';
 let meterSpectroSetupAckEndpoint='/api/meter/setup/ack';
 let meterSpectroSetupCancelEndpoint='/api/meter/stop';
 function meterSpectroSetupLabel(step){
@@ -27774,7 +27771,10 @@ function meterSpectroSetupTitleText(step){
   : 'Spectrophotometer Setup';
 }
 function meterSpectroSetupStepText(step){
- return ({calibrate_tile:'Step 1 of 2 — Calibrate on the white tile',calibrate_dark:'Step 1 of 2: Dark calibration',position_screen:'Step 2 of 2 — Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
+ return ({calibrate_tile:'Step 1 of 2: Calibrate on the white tile',calibrate_dark:'Step 1 of 2: Dark calibration',position_screen:'Step 2 of 2: Aim at the screen',calibrate_retry:'Calibration retry'})[step]||'Setup';
+}
+function meterSpectroSetupWorkingText(step){
+ return ({calibrate_tile:'Calibrating the meter on its tile. Please wait...',calibrate_dark:'Calibrating the meter black reference. Please wait...',position_screen:'Preparing the measurement...',calibrate_retry:'Retrying meter calibration. Please wait...'})[step]||'Preparing the meter. Please wait...';
 }
 // Driven by the read-result poll. Shows the modal during status:"setup",
 // updates per step, hides it otherwise.
@@ -27791,6 +27791,7 @@ function meterSpectroSetupApply(r,ackEndpoint){
  }
  if(r && r.status==='setup' && r.step_id){
   meterSpectroSetupStepId=Number(r.step_id)||0;
+  meterSpectroSetupStep=String(r.step||'');
   if(ttl) ttl.textContent=meterSpectroSetupTitleText(r.step||'');
   if(lbl) lbl.textContent=meterSpectroSetupStepText(r.step||'');
   if(msg) msg.textContent=String(r.message||'');
@@ -27802,23 +27803,36 @@ function meterSpectroSetupApply(r,ackEndpoint){
   // take several seconds; hiding the modal here left the operator staring at a
   // blank screen. Show a 'working' message and no action button instead.
   meterSpectroSetupStepId=0;
+  if(r.step) meterSpectroSetupStep=String(r.step);
+  if(ttl) ttl.textContent=meterSpectroSetupTitleText(meterSpectroSetupStep);
   if(lbl) lbl.textContent='Working…';
   if(msg) msg.textContent=String(r.message||'Please wait…');
   if(btn){ btn.style.display='none'; }
   modal.style.display='flex';
   uiSyncBodyScrollLock();
  } else {
+  meterSpectroSetupStep='';
   if(modal.style.display!=='none'){ modal.style.display='none'; uiSyncBodyScrollLock(); }
  }
 }
 async function meterSpectroSetupAck(){
  const btn=document.getElementById('meterSpectroSetupBtn');
  const id=meterSpectroSetupStepId;
+ const step=meterSpectroSetupStep;
  if(!id) return;
  if(btn) btn.disabled=true;
- const r=await fetchJSON(meterSpectroSetupAckEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
- if(!r||r.status==='error'){ if(btn) btn.disabled=false; toast(r&&r.message?r.message:'Could not continue setup',true); }
- // On ok/ignored the next read-result poll updates or hides the modal.
+ try{
+  const r=await fetchJSON(meterSpectroSetupAckEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({step_id:id}),_timeoutMs:5000});
+  if(!r||r.status!=='ok'){
+   if(btn) btn.disabled=false;
+   toast(r&&r.message?r.message:'Could not continue setup',true);
+   return;
+  }
+  meterSpectroSetupApply({keepBusy:true,step:step,message:meterSpectroSetupWorkingText(step)},meterSpectroSetupAckEndpoint);
+ }catch(e){
+  if(btn) btn.disabled=false;
+  toast('Could not continue meter setup',true);
+ }
 }
 async function meterSpectroSetupCancel(){
  const modal=document.getElementById('meterSpectroSetupModal');
@@ -49938,21 +49952,24 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
   if(r&&r.status==='ok'){
    status.textContent=r.message||'Uploaded';
    status.style.color='var(--green)';
-   customCcssFile=r.filename;
    document.getElementById('ccssFileInput').value='';
    document.getElementById('ccssName').value='';
     await refreshMeterCcssCatalog();
-    await loadCustomCcssList();
     // Post-split: selecting a custom CCSS goes through the new
     // #meterCcssProfile dropdown (NOT the legacy combined display_type
     // select). The technology dropdown stays on whatever the operator
     // already had selected; the custom profile attaches to the new CCSS
     // profile control without affecting WRGB / y-flag.
-    meterSetCcssProfileSelection('custom_'+r.filename);
+    const selectedForMeter=meterSetCcssProfileSelection('custom_'+r.filename);
+    await loadCustomCcssList();
     await ccssPreviewLoadByValue('custom\t'+r.filename,false);
     meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
     saveMeterSettings();
-   toast(r.message||'Meter profile saved');
+   const activeMeter=meterSelectedMeasurementMeter();
+   const activeMeterLabel=activeMeter?meterOptionLabel(activeMeter):'the active meter';
+   toast(selectedForMeter
+    ? ((r.message||'Meter profile saved')+' and selected for '+activeMeterLabel)
+    : ((r.message||'Meter profile saved')+'. It is not compatible with the selected meter, so the current correction was left unchanged.'));
   } else {
    status.textContent=r&&r.message?r.message:'Upload failed';
    status.style.color='var(--red)';
@@ -50354,8 +50371,11 @@ function ccssPreviewRender(payload){
   return;
  }
  ccssPreviewLastPayload=payload;
- const minNm=Number(payload.start_nm)||Number(wavelengths[0])||380;
- const maxNm=Number(payload.end_nm)||Number(wavelengths[wavelengths.length-1])||780;
+ const profileMinNm=Number(payload.start_nm)||Number(wavelengths[0])||380;
+ const profileMaxNm=Number(payload.end_nm)||Number(wavelengths[wavelengths.length-1])||780;
+ const lockXAxis=!!((document.getElementById('ccssPreviewLockXAxis')||{}).checked);
+ const minNm=lockXAxis?380:profileMinNm;
+ const maxNm=lockXAxis?780:profileMaxNm;
  let maxValue=Number(payload.max_value)||0;
  if(!(maxValue>0)){
   samples.forEach(sample=>{
@@ -50414,12 +50434,13 @@ function ccssPreviewRender(payload){
   const points=[];
   for(let i=0;i<pointCount;i++){
    const nm=Number(wavelengths[i]);
+   if(!Number.isFinite(nm)||nm<minNm||nm>maxNm) continue;
    const value=Number(values[i])||0;
    const x=maxNm!==minNm ? ((nm-minNm)/(maxNm-minNm)) : 0;
    const y=maxValue>0 ? (value/maxValue) : 0;
    points.push([Math.max(0,Math.min(1,x)),Math.max(0,Math.min(1,y))]);
   }
-  drawLine(ctx,chart,points,color,2);
+  if(points.length>=2) drawLine(ctx,chart,points,color,2);
  });
 
  ctx.fillStyle='#aeb8cd';
@@ -50707,20 +50728,37 @@ function meterSelectNewestCustomCcss(){
 // ccss-upload success handlers and by meterOpenCustomCcssEditor's auto-select
 // on close (the spec's "select the newest custom profile").
 function meterSetCcssProfileSelection(token){
- if(!token) return;
+ if(!token) return false;
+ const raw=String(token);
+ const source=raw.startsWith('custom_')?'custom':(raw.startsWith('ccss_')?'system':'');
+ const name=source==='custom'?raw.slice(7):(source==='system'?raw.slice(5):'');
+ const entry=(Array.isArray(meterCcssLibrary)?meterCcssLibrary:[]).find(item=>
+  item&&String(item.source||'')===source&&String(item.name||'')===name);
+ if(!entry||!meterCorrectionProfileCompatible(entry)) return false;
  const ids=['meterCcssProfile','meterAutoCalCcssProfile'];
+ let selected=false;
  for(const id of ids){
   const sel=document.getElementById(id);
   if(!sel) continue;
   sel.dataset.pendingValue=token;
   sel.value=token;
-  if(sel.value===token) delete sel.dataset.pendingValue;
+  const option=sel.selectedIndex>=0?sel.options[sel.selectedIndex]:null;
+  if(sel.value===token&&option&&!option.disabled){
+   delete sel.dataset.pendingValue;
+   sel.dataset.lastStableValue=token;
+   selected=true;
+  }
  }
+ if(!selected) return false;
+ if(source==='custom') customCcssFile=name;
  try{
   meterUpdateXyzMatrixVisibility();
   if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
   meterRefreshAfterXyzMatrixChange();
+  meterAutoCalDisplayTypeUpdateSummary();
  }catch(e){}
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
+ return true;
 }
 
 // --- /end Panel technology / CCSS split helpers -----------------------------

@@ -80,6 +80,9 @@ USB_CANCEL_SUPPRESS_FILE="/tmp/meter_series_cancel_usb_suppress.uptime"
 SPOTREAD_BIN="/usr/bin/spotread"
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
+SPECTRO_MARKER_ID=$(printf '%s' "${METER_USB_ID:-unknown}" | tr -cd 'A-Za-z0-9')
+[[ -n "$SPECTRO_MARKER_ID" ]] || SPECTRO_MARKER_ID="unknown"
+SPECTRO_STARTUP_MARKER="/tmp/pg_spectro_startup_checked_${SPECTRO_MARKER_ID}"
 INITIAL_READY_PENDING=0
 [[ "$REQUIRE_DEVICE_READY" == "1" ]] && INITIAL_READY_PENDING=1
 SETUP_STEP_ID=0
@@ -473,6 +476,28 @@ handle_series_manual_prompt() {
    waited=$((waited + 1))
   done
   echo "[$(date '+%H:%M:%S.%3N')] dark calibration timed out: step=$step_num name=$step_name" >> /tmp/meter_series_debug.log
+  return 1
+ fi
+ if [[ "$reason" == "calibration_setup" ]]; then
+  series_setup_step "calibrate_tile" "Place the spectrophotometer flat on its white calibration tile, then click Calibrate." "Calibrating the meter on its tile - please wait a few seconds..."
+  cal_offset=$(output_size)
+  printf " " >&3
+  waited=0
+  while (( waited < 900 )); do
+   series_stop_requested && series_cancel_exit
+   clean=$(clean_output_since "$cal_offset")
+   if printf '%s' "$clean" | grep -q "to take a reading:"; then
+    series_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+    return 0
+   fi
+   if printf '%s' "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected|calibration failed|reading is too low"; then
+    echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer calibration failed: step=$step_num name=$step_name output=$(printf '%s' "$clean" | tr '\n' ' ' | cut -c1-300)" >> /tmp/meter_series_debug.log
+    return 1
+   fi
+   sleep 0.1
+   waited=$((waited + 1))
+  done
+  echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer calibration timed out: step=$step_num name=$step_name" >> /tmp/meter_series_debug.log
   return 1
  fi
  if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
@@ -1202,11 +1227,12 @@ EOJSON
    # spotread print "Display/calibration type ignored", which the init-error
    # classifier below used to treat as fatal ("Meter does not support
    # requested mode") even though the read would have worked.
-   # -N disables Argyll's proactive re-calibration so the i1 Pro 2 reuses its
-   # stored wavelength cal instead of re-calibrating on every series launch.
-   # Mandatory re-cal (stale/missing cal) still triggers and is surfaced via
-   # the calibrate_tile / calibrate_retry steps below, so -N is safe here.
-   SR_CMD="$SPOTREAD_BIN -N -e -c $PORT_NUM -Q $OBSERVER -x"
+   # The first spectro process after boot runs without -N so Argyll performs
+   # its calibration check before any measurement. Later series launches reuse
+   # the checked calibration with -N.
+   SPECTRO_NOINITCAL_FLAG=""
+   [[ -f "$SPECTRO_STARTUP_MARKER" ]] && SPECTRO_NOINITCAL_FLAG="-N"
+   SR_CMD="$SPOTREAD_BIN $SPECTRO_NOINITCAL_FLAG -e -c $PORT_NUM -Q $OBSERVER -x"
    [[ -n "$CCSS_FILE" ]] && echo "[$(date '+%H:%M:%S.%3N')] spectrophotometer selected: skipping CCSS ($CCSS_FILE)" >> /tmp/meter_series_debug.log
   fi
  if [[ -n "$CCSS_FILE" && -f "$CCSS_FILE" && "$REQUIRE_DEVICE_READY" != "1" ]]; then
@@ -1398,6 +1424,9 @@ if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_C
  # wait loop above already shows "Connecting to meter..." (the preparing popup)
  # and surfaces the calibrate_tile wizard only when spotread requests it.
  series_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
+fi
+if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+ touch "$SPECTRO_STARTUP_MARKER" 2>/dev/null || true
 fi
 INITIAL_READY_PENDING=0
 
