@@ -12115,7 +12115,7 @@ body.layout-desktop #uiSettingsCard .ui-settings-zoom{display:block}
    buttons retain their higher-emphasis gradient. */
 .pat-btn.active,#meterSeriesTabRow [data-series-tab].btn-primary,#meterSeriesBtnRow [data-series].btn-primary,
 #meterSeriesGroupAutoCal [data-autocal-series].btn-primary,#meterCustomSeriesBtnGrey.btn-primary,
-#meterCustomSeriesBtnColor.btn-primary,#meterCustomSeriesBtn3dLut.btn-primary{
+#meterCustomSeriesBtn3dLut.btn-primary{
  border:1px solid var(--accent);background:var(--selected-bg);color:var(--text-primary);
  box-shadow:inset 4px 0 0 var(--accent);padding-left:12px
 }
@@ -12747,7 +12747,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <label style="display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)">
       <span>Series</span>
       <select id="meterColorCheckerSeriesSelect" class="inline-select" onchange="meterSelectBuiltinSeries(this.value)" style="max-width:240px">
-       <option value="custom" disabled>Custom Series</option>
+       <option value="custom" data-custom-active="1" disabled hidden>Custom Series</option>
+       <option value="custom-manager">Custom Series&hellip;</option>
        <optgroup label="ColorChecker">
        <option value="30">Classic + Primaries (30)</option>
        <option value="800024">Classic (24)</option>
@@ -12766,9 +12767,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The MacLeod-Boynton series need a MacLeod-Boynton chromaticity chart and carry published cone-chromaticity targets. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
-      <button class="btn btn-sm btn-secondary" id="meterCustomSeriesBtnColor" onclick="meterOpenCustomSeriesManager('color')" title="Load, create, edit, import and export custom colour series">Custom Series</button>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
      <span id="meter3dLutSeriesHome" hidden></span>
@@ -33127,16 +33127,16 @@ let meterCustomSeriesEditor=null;
 
 function meterRenderCustomSeriesButtons(){
  // Custom series LOAD from the Custom Series manager. The per-group
- // "Custom Series" buttons keep a STATIC label; the loaded custom series is
- // named in the tag beside the button of its category. Nothing is loaded by
- // default — the tag only appears after the operator loads a series.
+ // buttons keep a STATIC label; Color uses the Series select instead. The
+ // loaded custom series is named in the tag beside its category control.
+ // Nothing is loaded by default.
  const custom=(typeof meterActiveSeriesIsCustom==='function'&&meterActiveSeriesIsCustom())?meterCustomSeriesById(meterActiveSeriesPoints):null;
  const active=(custom&&!custom.builtin_verification)?custom:null;
  const activeCat=active?(active.kind==='lattice'?'3dlut':(active.category==='color'?'color':'greyscale')):null;
  [['meterCustomSeriesBtnGrey','meterCustomSeriesLoadedGrey','greyscale'],
-  ['meterCustomSeriesBtnColor','meterCustomSeriesLoadedColor','color'],
+  [null,'meterCustomSeriesLoadedColor','color'],
   ['meterCustomSeriesBtn3dLut','meterCustomSeriesLoaded3dLut','3dlut']].forEach(row=>{
-  const btn=document.getElementById(row[0]);
+  const btn=row[0]?document.getElementById(row[0]):null;
   const tag=document.getElementById(row[1]);
   const on=!!(active&&activeCat===row[2]);
   if(btn){
@@ -33149,7 +33149,7 @@ function meterRenderCustomSeriesButtons(){
    tag.title=on?String(active.name||''):'';
   }
  });
- try{ meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null); }catch(e){}
+ try{ meterSyncColorCheckerSeriesUi(['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesPoints:null); }catch(e){}
 }
 
 function meterOpenCustomSeriesEditor(category,id){
@@ -34186,7 +34186,7 @@ function meterSyncColorCheckerSeriesUi(activePoints){
  if(!select) return;
  const mb=meterMbChartActive();
  Array.from(select.options||[]).forEach(option=>{
-  option.disabled=(option.dataset.mbOnly==='1'&&!mb);
+  option.disabled=(option.dataset.customActive==='1')||(option.dataset.mbOnly==='1'&&!mb);
  });
  const activeId=Math.round(Number(activePoints));
  const selectable=(typeof METER_SERIES_SELECT_IDS!=='undefined')?METER_SERIES_SELECT_IDS:METER_COLORCHECKER_SERIES_IDS;
@@ -34240,6 +34240,14 @@ function meterSelectBuiltinColorChecker(selected){
 // Saturation ids persist through the same preference key the removed checkbox
 // used, so HCFR export and the full-Lab dE side effect are unchanged.
 function meterSelectBuiltinSeries(value){
+ if(String(value)==='custom-manager'){
+  // This select entry is an action, not a series. Restore the series that is
+  // actually loaded before opening the manager so closing it without loading
+  // anything leaves both the charts and selector unchanged.
+  meterSyncColorCheckerSeriesUi(['colors','saturations'].includes(meterActiveSeriesType)?meterActiveSeriesPoints:null);
+  meterOpenCustomSeriesManager('color');
+  return;
+ }
  const id=Math.round(Number(value));
  if(id===24||id===25){
   try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,id===25?'1':'0');}catch(e){}
