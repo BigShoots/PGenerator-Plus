@@ -11736,6 +11736,11 @@ body.is-custom-series-patch-dragging{cursor:grabbing!important;user-select:none!
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
+/* The Chromaticity Chart selector picks the observer applied to meter reads, so
+   it has nothing to act on while the card is a plain pattern generator. Patch
+   Size (.field-patch) is deliberately absent from this list: it sets the
+   displayed window/APL area, which is what this mode is for. */
+#meterCard.meter-patterns-only #meterSettingsGrid .field-chromaticity,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-refresh{display:none !important}
 [data-widget].drag-over{outline:2px dashed var(--accent);outline-offset:-2px}
 [data-widget].dragging{opacity:.55;cursor:grabbing;z-index:5;position:relative}
