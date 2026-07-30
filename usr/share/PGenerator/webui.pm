@@ -46407,17 +46407,58 @@ function meterCieMbGamutSMax(){
   return max;
  }catch(e){ return 0; }
 }
+// Widest lMB/sMB actually present in the loaded series and its readings. The
+// gamut apex is a poor guide on its own: a display's blue primary sits very high
+// in sMB (BT.2020 reaches 0.46 at 10 degrees) while real patch sets rarely pass
+// 0.08, so framing on the gamut still left everything squashed along the bottom.
+function meterCieMbContentBounds(){
+ let lMin=Infinity,lMax=-Infinity,sMax=-Infinity,n=0;
+ const add=(x,y)=>{
+  const c=meterCieChartCoordFromXy(x,y,1);
+  if(!c||!isFinite(c.x)||!isFinite(c.y)) return;
+  if(c.x<lMin) lMin=c.x;
+  if(c.x>lMax) lMax=c.x;
+  if(c.y>sMax) sMax=c.y;
+  n++;
+ };
+ try{
+  if(typeof meterSeriesSteps!=='undefined'&&Array.isArray(meterSeriesSteps)){
+   meterSeriesSteps.forEach(st=>{ if(st&&Number(st.target_x)>0&&Number(st.target_y)>0) add(Number(st.target_x),Number(st.target_y)); });
+  }
+  if(typeof meterReadings!=='undefined'&&Array.isArray(meterReadings)){
+   meterReadings.forEach(rd=>{ if(rd&&Number(rd.x)>0&&Number(rd.y)>0) add(Number(rd.x),Number(rd.y)); });
+  }
+ }catch(e){}
+ return n?{lMin:lMin,lMax:lMax,sMax:sMax,count:n}:null;
+}
+// Round a span up to the next 1/2/5 x 10^k so the axis lands on clean ticks and
+// stops twitching every time a reading nudges the maximum.
+function meterCieNiceCeil(v){
+ const x=Number(v);
+ if(!(x>0)) return 0;
+ const pow=Math.pow(10,Math.floor(Math.log10(x)));
+ const n=x/pow;
+ return ((n<=1)?1:(n<=2)?2:(n<=5)?5:10)*pow;
+}
 function meterCie2dWorld(){
  const mode=meterChromaticityChartMode();
- // Frame the reset/zoomed-out MacLeod-Boynton view on what the display can
- // actually produce, with headroom above the gamut apex, instead of on the
- // spectral locus. The locus stays available as the corner inset, which is why
- // that inset now draws at default zoom too. x starts at 0.48 because the
- // spectral locus itself never goes below lMB ~0.52, so 0.40-0.48 was blank.
+ // Frame the reset/zoomed-out MacLeod-Boynton view on the CONTENT -- the loaded
+ // series targets and any readings -- capped by what the display can produce.
+ // The full spectral locus stays available as the corner inset, which is why that
+ // inset draws at default zoom too. Falls back to the gamut when nothing is
+ // loaded yet, and never goes below lMB 0.45 since the locus stops near 0.52.
  if(mode.indexOf('ciemb_')===0){
-  const sMax=meterCieMbGamutSMax();
-  const yMax=(sMax>0)?Math.max(0.12,Math.min(1.02,sMax*1.18)):1.02;
-  return {xMin:0.48,xMax:1,yMin:0,yMax:yMax};
+  const gamutS=meterCieMbGamutSMax();
+  const cap=(gamutS>0)?Math.min(1.02,gamutS*1.18):1.02;
+  const content=meterCieMbContentBounds();
+  let xMin=0.48,xMax=1,yMax=cap;
+  if(content&&content.count>=2&&content.sMax>0){
+   yMax=Math.min(cap,Math.max(0.02,meterCieNiceCeil(content.sMax*1.2)));
+   const padX=Math.max(0.02,(content.lMax-content.lMin)*0.08);
+   xMin=Math.max(0.45,Math.min(content.lMin-padX,0.9));
+   xMax=Math.min(1,Math.max(content.lMax+padX,xMin+0.08));
+  }
+  return {xMin:xMin,xMax:xMax,yMin:0,yMax:yMax};
  }
  if(mode.indexOf('cie1976_')===0) return {xMin:0,xMax:0.7,yMin:0,yMax:0.7};
  return CIE2D_WORLD;
