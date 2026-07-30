@@ -22848,6 +22848,11 @@ function meterOnChromaticityChartChange(){
   if(meterReadings&&meterReadings.length) drawAllCharts(meterReadings);
   else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
  }
+ // The MacLeod series are only selectable on an MB chart, so the option list has
+ // to follow the chart the moment it changes.
+ if(typeof meterSyncColorCheckerSeriesUi==='function'){
+  try{ meterSyncColorCheckerSeriesUi(meterActiveSeriesType==='colors'?meterActiveSeriesPoints:null); }catch(e){}
+ }
  meterUpdateReadButtons();
 }
 
@@ -33996,16 +34001,31 @@ function meterColorCheckerSeriesStoredValue(){
 function meterColorCheckerSeriesIsSdrOnly(id){
  return [29,800124,800096,800019,800137,800008,800064].includes(Math.round(Number(id)));
 }
+// The MacLeod series carry MacLeod-Boynton targets and their paper-to-chart
+// mapping is derived from the live chart mode, so they are only offered while an
+// MB chart is selected.
+function meterMbChartActive(){
+ return /^ciemb_/.test(String((typeof meterChromaticityChartMode==='function')?meterChromaticityChartMode():''));
+}
+function meterColorCheckerSeriesIsMbOnly(id){
+ return [800008,800064].includes(Math.round(Number(id)));
+}
 function meterSyncColorCheckerSeriesUi(activePoints){
  const select=document.getElementById('meterColorCheckerSeriesSelect');
  if(!select) return;
  const sdr=meterHcfrFixedCodesAvailable();
+ const mb=meterMbChartActive();
  Array.from(select.options||[]).forEach(option=>{
-  option.disabled=option.dataset.sdrOnly==='1'&&!sdr;
+  option.disabled=(option.dataset.sdrOnly==='1'&&!sdr)||(option.dataset.mbOnly==='1'&&!mb);
  });
  const activeId=Math.round(Number(activePoints));
- let wanted=METER_COLORCHECKER_SERIES_IDS.includes(activeId)?activeId:meterColorCheckerSeriesStoredValue();
+ const selectable=(typeof METER_SERIES_SELECT_IDS!=='undefined')?METER_SERIES_SELECT_IDS:METER_COLORCHECKER_SERIES_IDS;
+ let wanted=selectable.includes(activeId)?activeId:meterColorCheckerSeriesStoredValue();
  if(!sdr&&meterColorCheckerSeriesIsSdrOnly(wanted)) wanted=30;
+ // An mb-only series that is already active is deliberately NOT reset when the
+ // chart moves away from MB: it shows disabled-but-selected so the operator's
+ // series and its measurement cache survive the chart change. Switching series
+ // here would discard readings.
  select.value=String(wanted);
 }
 function meterEnableFullColorDeltaE(){
