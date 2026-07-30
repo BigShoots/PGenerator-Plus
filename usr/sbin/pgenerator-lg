@@ -724,10 +724,46 @@ sub lg_request (@) {
  return &websocket_recv_json($session,$timeout,$id);
 }
 
+# Send a request straight to an internal service-bus URI. "ssap://" only
+# reaches the public app API, and "luna://" is not honoured on every webOS
+# release; pre-2022 sets accept the older "palm://" scheme for the same
+# services. This is the transport that reaches settings the public route
+# reports as unsupported (e.g. pictureMode on a 2021 panel, which answers
+# nothing at all over ssap://settings/getSystemSettings).
+sub lg_palm_request (@) {
+ my ($session,$id,$service_uri,$payload,$timeout)=@_;
+ $payload={} if(ref($payload) ne "HASH");
+ my $message={ id => $id, type => "request", uri => "palm://$service_uri", payload => $payload };
+ return undef if(!&websocket_send_json($session,$message));
+ return &websocket_recv_json($session,$timeout,$id);
+}
+
+# Read one picture setting over the palm:// transport. Returns "" when the
+# transport or the key is unavailable, so callers can fall back.
+sub lg_palm_picture_setting (@) {
+ my ($session,$id,$key,$timeout)=@_;
+ my $response=&lg_palm_request($session,$id,"com.webos.settingsservice/getSystemSettings",{
+  category => "picture",
+  keys => [$key],
+ },$timeout);
+ return "" if(ref($response) ne "HASH");
+ my ($failed)=&response_is_app_failure($response);
+ return "" if($failed);
+ return "" if(ref($response->{"payload"}) ne "HASH" || ref($response->{"payload"}{"settings"}) ne "HASH");
+ my $value=$response->{"payload"}{"settings"}{$key};
+ return defined($value) ? "$value" : "";
+}
+
 sub lg_luna_request (@) {
- my ($session,$id_prefix,$luna_uri,$params,$timeout)=@_;
+ my ($session,$id_prefix,$luna_uri,$params,$timeout,$scheme)=@_;
  $params={} if(ref($params) ne "HASH");
- my $target_uri="luna://$luna_uri";
+ # The ssap channel does not route service URIs directly (a plain
+ # palm://com.webos.settingsservice request answers "404 no such service or
+ # method"), which is why the internal services are reached through this
+ # notification-alert bridge instead. Older sets accept the request under the
+ # legacy palm:// scheme where luna:// is ignored, so the scheme is selectable.
+ $scheme="luna" if(!defined($scheme) || $scheme !~ /^(?:luna|palm)$/);
+ my $target_uri="$scheme://$luna_uri";
  my $alert_payload={
   message => " ",
   buttons => [
@@ -5401,6 +5437,89 @@ sub lg_picture_set_workflow (@) {
  my $picture_mode_only=($caller_picture_mode ne "" && scalar(keys(%{$settings}))==1) ? 1 : 0;
  my $active_picture_mode=$caller_picture_mode || $fallback_picture_mode;
  if($picture_mode_only && $generation->{"ddc_only_white_balance"}) {
+  # This generation does not expose pictureMode over the public ssap://
+  # settings route at all -- getSystemSettings answers with no value for it
+  # and setSystemSettings cannot switch the mode. The internal service bus
+  # still can, reached with the older palm:// scheme these sets accept, so
+  # try a real switch before falling back to only recording a DDC target.
+  # Verified by readback over the same transport, because the public route
+  # cannot confirm the mode on this generation.
+  my $palm_switched=0;
+  my $palm_verified=0;
+  my $palm_attempted="";
+  my $palm_before="";
+  my $palm_after="";
+  if($active_picture_mode ne "") {
+   $palm_before=&lg_palm_picture_setting($session,"get_picture_mode_palm_pre","pictureMode",$connect_timeout + 2);
+   my $bare_payload={ category => "picture", settings => { pictureMode => $active_picture_mode } };
+   # Scoped form: some sets bind the transition to the foreground HDMI
+   # pipeline. Tried after the plain one, since the extra dimension is itself
+   # rejected on parts of this generation.
+   my $scoped_payload=($tv_input ne "") ? {
+    category => "picture",
+    settings => { pictureMode => $active_picture_mode },
+    current_app => &json_true(),
+    dimension => { input => $tv_input, "_3dStatus" => "2d" },
+   } : undef;
+   my @palm_attempts=(
+    { label => "palm-bridge", scheme => "palm", payload => $bare_payload },
+    { label => "luna-bridge", scheme => "luna", payload => $bare_payload },
+   );
+   push(@palm_attempts,{ label => "palm-bridge-scoped", scheme => "palm", payload => $scoped_payload }) if($scoped_payload);
+   push(@palm_attempts,{ label => "luna-bridge-scoped", scheme => "luna", payload => $scoped_payload }) if($scoped_payload);
+   foreach my $attempt (@palm_attempts) {
+    my $response=&lg_luna_request($session,"set_picture_mode_".$attempt->{"label"},"com.webos.settingsservice/setSystemSettings",$attempt->{"payload"},$connect_timeout + 2,$attempt->{"scheme"});
+    my ($failed,$failure_message)=&response_is_app_failure($response);
+    select(undef,undef,undef,0.65) if(!$failed);
+    # Readback over whichever route can answer. On this generation both the
+    # public route and the bridge are silent about pictureMode (the bridge is
+    # fire-and-forget: it returns the alert-close reply, not the service
+    # reply), so an empty readback means "unverifiable", NOT "failed".
+    $palm_after=&lg_palm_picture_setting($session,"get_picture_mode_post_".$attempt->{"label"},"pictureMode",$connect_timeout + 2);
+    $palm_after=&lg_current_picture_mode($session,$connect_timeout + 2) if($palm_after eq "");
+    &diag_log_append("picture_set:palm-picture-mode",{
+     ip => $ip,
+     attempt => $attempt->{"label"},
+     scheme => $attempt->{"scheme"},
+     requested => $active_picture_mode,
+     before => $palm_before,
+     after => $palm_after,
+     failed => $failed ? 1 : 0,
+     error => $failure_message||"",
+     raw_response => $response,
+    });
+    next if($failed);
+    # Accepted. Hardware-confirmed on a 2021 panel: an accepted bridge write
+    # does perform the transition, so stop here rather than firing the
+    # remaining transports at the TV. The readback only upgrades this to
+    # "verified" on sets that can answer it.
+    $palm_switched=1;
+    $palm_attempted=$attempt->{"label"};
+    $palm_verified=1 if($palm_after ne "" && lc($palm_after) eq lc($active_picture_mode));
+    last;
+   }
+  }
+  if($palm_switched) {
+   my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
+   $picture_settings->{"pictureMode"}=$active_picture_mode;
+   &websocket_close($session);
+   return &json_ok({
+    ip => $ip,
+    client_key => $auth->{"client_key"},
+    picture_settings => $picture_settings,
+    applied => { pictureMode => $active_picture_mode },
+    active_picture_mode => $active_picture_mode,
+    palm_picture_mode => &json_true(),
+    picture_mode_transport => $palm_attempted,
+    picture_mode_readback => $palm_after,
+    picture_mode_verified => &json_bool($palm_verified),
+    lg_generation => $generation,
+    hello_info => $auth->{"hello_info"},
+    system_info => $auth->{"system_info"},
+    software_info => $auth->{"software_info"},
+    message => "LG picture mode switched to '$active_picture_mode'.",
+   });
+  }
   my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
   $picture_settings->{"pictureMode"}=$active_picture_mode if($active_picture_mode ne "");
   &websocket_close($session);
