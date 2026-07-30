@@ -22628,16 +22628,17 @@ const CIE_LMS_TO_CIE2015_10=[
  [.692839451,.349675448,.000000091],
  [.000000048,-.000000066,2.146879535]
 ];
-// MacLeod-Boynton relative cone-troland normalization. L and M are weighted so
-// their sum is the cone-fundamental luminous-efficiency value. S is normalized
-// so an equal-energy spectrum has S/(L+M)=1, matching MacLeod-Boynton practice
-// and the coordinate convention used by Cao, Pokorny & Smith (2005), Fig. 1.
-// The former S factors (0.03715959 / 0.05546866) normalized the spectral maximum
-// to one instead, compressing the paper's s targets by 52x / 39x.
+// Native CIE 170-2 MacLeod-Boynton factors use the spectral-maximum S
+// normalization. Keep them explicit because threshold-scaled opponent spaces
+// such as 2754/4099 are defined in these native coordinates.
+const CIE_MB_NATIVE_FACTORS_2=[0.68990078,0.34832169,0.03715959];
+const CIE_MB_NATIVE_FACTORS_10=[0.69283938,0.34967553,0.05546866];
+// Display factors use relative cone trolands: equal-energy S/(L+M)=1, matching
+// MacLeod-Boynton practice and Cao, Pokorny & Smith (2005), Fig. 1.
 const CIE_MB_FACTORS_2=[0.68990078,0.34832169,1.934859310];
 const CIE_MB_FACTORS_10=[0.69283938,0.34967553,2.146879535];
-const CIE_MB_LOCUS_S_SCALE_2=1.934859310/0.03715959;
-const CIE_MB_LOCUS_S_SCALE_10=2.146879535/0.05546866;
+const CIE_MB_LOCUS_S_SCALE_2=CIE_MB_FACTORS_2[2]/CIE_MB_NATIVE_FACTORS_2[2];
+const CIE_MB_LOCUS_S_SCALE_10=CIE_MB_FACTORS_10[2]/CIE_MB_NATIVE_FACTORS_10[2];
 const CIE_MB_EES_RAW_L_2=0.7078236164536152;
 const CIE_MB_EES_RAW_L_10=0.6992367760459623;
 function meterCieMbRelativeL(rawL,ten){
@@ -22740,12 +22741,17 @@ function meterCieDeclaredMbTargetCoord(reading){
   if(step) source=step;
  }
  const l=Number(source.mb_target_l),s=Number(source.mb_target_s);
- return Number.isFinite(l)&&Number.isFinite(s)?{x:l,y:s}:null;
+ const lm=Number(source.mb_target_lm);
+ return Number.isFinite(l)&&Number.isFinite(s)
+  ?{x:l,y:s,Y:Number.isFinite(lm)?lm:null}
+  :null;
 }
 function meterCieChartTargetCoord(reading,targetXYZ){
  const declared=meterCieDeclaredMbTargetCoord(reading);
  if(declared){
-  declared.Y=targetXYZ&&Number.isFinite(Number(targetXYZ.Y))?Number(targetXYZ.Y):0;
+  if(declared.Y==null||!Number.isFinite(Number(declared.Y))){
+   declared.Y=targetXYZ&&Number.isFinite(Number(targetXYZ.Y))?Number(targetXYZ.Y):0;
+  }
   return declared;
  }
  return targetXYZ?meterCieChartCoordFromXYZ(targetXYZ):null;
@@ -31033,6 +31039,11 @@ function meterMbChartToXyz(l,s){
  const lv=meterCieMbRawL(Number(l)||0,a.ten);
  return meterCieApplyMatrix({X:lv/factors[0],Y:(1-lv)/factors[1],Z:(Number(s)||0)/factors[2]},inv);
 }
+function meterMbLuminanceFromXyz(xyz,ten){
+ const lms=meterCieApplyMatrix(xyz,ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2);
+ const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+ return factors[0]*lms.X+factors[1]*lms.Y;
+}
 
 // Scale a chromaticity to the brightest luminance the active gamut can show.
 // A chromaticity outside the gamut cannot be reproduced at ANY luminance, so it
@@ -31062,6 +31073,7 @@ function meterMbMaxInGamutRgb(xyz,matrix){
 // the active gamut allows, so it differs from patch to patch.
 function meterBuildMbFocalColourSteps(){
  const matrix=meterAnalysisGamut().rgbToXyz;
+ const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  return METER_MB_PAPER_FOCAL.map(entry=>{
   const mb=meterMbPaperToChart(entry.l,entry.s);
@@ -31073,7 +31085,8 @@ function meterBuildMbFocalColourSteps(){
    name:'MB Focal '+entry.name+(fit.outOfGamut?' (out of gamut)':''),
    target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
    input_max:inputMax,series_mode:'mb-focal-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
-   mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:entry.l,mb_paper_s:entry.s,
+   mb_target_l:mb.l,mb_target_s:mb.s,mb_target_lm:meterMbLuminanceFromXyz(xyz,ten),
+   mb_paper_l:entry.l,mb_paper_s:entry.s,
    out_of_gamut:fit.outOfGamut};
  });
 }
@@ -31161,6 +31174,7 @@ function meterBuildMbOsaUcsMapSteps(){
   }
  }
  const matrix=meterAnalysisGamut().rgbToXyz;
+ const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const steps=[];
  regions.forEach(name=>{
@@ -31177,7 +31191,8 @@ function meterBuildMbOsaUcsMapSteps(){
     name:'1a '+name+' '+(n+1)+(fit.outOfGamut?' (out of gamut)':''),
     target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
     input_max:inputMax,series_mode:'mb-osa-ucs-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_region:name,
-    mb_target_l:mb.l,mb_target_s:mb.s,mb_paper_l:pt.l,mb_paper_s:pt.s,
+    mb_target_l:mb.l,mb_target_s:mb.s,mb_target_lm:meterMbLuminanceFromXyz(xyz,ten),
+    mb_paper_l:pt.l,mb_paper_s:pt.s,
     out_of_gamut:fit.outOfGamut});
   }
  });
@@ -31187,21 +31202,27 @@ function meterBuildMbOsaUcsMapSteps(){
 function meterBuildMbHueCircleSteps(){
  const gamut=meterAnalysisGamut(),matrix=gamut.rgbToXyz;
  const ten=/_10$/.test(String(meterChromaticityChartMode()||'ciemb_2'));
- const factors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
+ const nativeFactors=ten?CIE_MB_NATIVE_FACTORS_10:CIE_MB_NATIVE_FACTORS_2;
+ const displayFactors=ten?CIE_MB_FACTORS_10:CIE_MB_FACTORS_2;
  const lmsMatrix=ten?CIE2015_TO_LMS_10:CIE2015_TO_LMS_2;
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const center=[.5,.5,.5],yr=matrix[1][0],yg=matrix[1][1],yb=matrix[1][2];
  const basisA=[1,-yr/Math.max(1e-9,yg),0];
  const rg=Math.max(1e-9,yr+yg),basisB=[-yb/rg,-yb/rg,1];
  const xyzFor=rgb=>linRgbToXyz(rgb[0],rgb[1],rgb[2],matrix);
- const mbFor=rgb=>{
+ const mbFor=(rgb,factors,relativeL)=>{
   const lms=meterCieApplyMatrix(xyzFor(rgb),lmsMatrix);
   const L=factors[0]*lms.X,M=factors[1]*lms.Y,S=factors[2]*lms.Z,lm=L+M;
-  return {x:meterCieMbRelativeL(L/lm,ten),y:S/lm};
+  const l=L/lm;
+  return {x:relativeL?meterCieMbRelativeL(l,ten):l,y:S/lm,lm:lm};
  };
- const c=mbFor(center);
+ // The 2754/4099 sensitivity scaling is defined in native MB coordinates,
+ // before the displayed S axis is expanded to equal-energy = 1.
+ const nativeFor=rgb=>mbFor(rgb,nativeFactors,false);
+ const displayFor=rgb=>mbFor(rgb,displayFactors,true);
+ const c=nativeFor(center);
  const addVec=(base,vec)=>base.map((value,i)=>value+vec[i]);
- const a=mbFor(addVec(center,basisA)),b=mbFor(addVec(center,basisB));
+ const a=nativeFor(addVec(center,basisA)),b=nativeFor(addVec(center,basisB));
  const d00=a.x-c.x,d01=b.x-c.x,d10=a.y-c.y,d11=b.y-c.y;
  const det=d00*d11-d01*d10;
  if(Math.abs(det)<1e-12) return [];
@@ -31216,10 +31237,11 @@ function meterBuildMbHueCircleSteps(){
   if(Math.abs(delta)>1e-9) scale=Math.min(scale,.48/Math.abs(delta));
  }));
  const makeStep=(name,rgb,angle)=>{
-  const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z;
+  const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z,mb=displayFor(rgb);
   return {ire:Math.round(xyz.Y*100),r:meterEncodeColorCheckerLinear(rgb[0]),g:meterEncodeColorCheckerLinear(rgb[1]),b:meterEncodeColorCheckerLinear(rgb[2]),
    name:name,target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,input_max:inputMax,
-   series_mode:'mb-hue-circle-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_hue_angle:angle};
+   series_mode:'mb-hue-circle-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
+   mb_hue_angle:angle,mb_target_l:mb.x,mb_target_s:mb.y,mb_target_lm:mb.lm};
  };
  const steps=[makeStep('MB Neutral',center,null)];
  vectors.forEach(item=>steps.push(makeStep('MB Hue '+item.angle+'\u00b0',center.map((value,i)=>Math.max(0,Math.min(1,value+scale*item.delta[i]))),item.angle)));
