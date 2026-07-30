@@ -23,6 +23,12 @@ use Thread::Queue;
 # POSIX::dup / POSIX::close: the accept thread hands workers a raw duplicated
 # fd, because an IO::Socket object cannot cross an ithread boundary.
 use POSIX ();
+# Explicit rather than relying on another module in the process having loaded
+# them: Socket::MSG_PEEK for the accept thread's non-consuming readiness peek,
+# IO::Select for the bounded read deadlines, Errno for %! on non-blocking reads.
+use Socket ();
+use IO::Select ();
+use Errno ();
  
 ###############################################
 #             mDNS Route Helpers              #
@@ -610,8 +616,42 @@ sub resolve_ccss_override (@) {
 # Worker pool size. The Pi4 has 4 cores; the workers are pre-spawned ONCE so
 # the cost is paid at startup, not per request.
 $WEBUI_WORKER_POOL_SIZE=4;
+# Longest the accept thread waits in one can_read() pass. Only bounds how
+# quickly the idle sweep runs; readable sockets wake it immediately.
+$WEBUI_ACCEPT_POLL_INTERVAL=0.5;
+# How much of the request we MSG_PEEK looking for the header terminator. Real
+# requests here are far smaller; anything at this size is treated as complete
+# and handed on so a pathological header cannot be used to park a socket.
+$WEBUI_HEADER_PEEK_BYTES=16384;
+# A socket that connects but never delivers a complete header is reclaimed
+# after this long. Matches the old socket read timeout, so a genuinely slow
+# client is treated exactly as before -- it just no longer costs a worker
+# while it dawdles.
+$WEBUI_PENDING_IDLE_TIMEOUT=5;
+# Ceiling on accepted-but-unread sockets before the oldest is shed.
+$WEBUI_MAX_PENDING=512;
+# Pause when a partially-sent header is present, so re-peeking the same bytes
+# cannot become a busy loop.
+$WEBUI_PARTIAL_HEADER_BACKOFF=0.02;
+# Total budget for reading request headers in a worker. Headers arrive in a
+# single packet on a LAN; this is a deadline for the whole read, not per
+# recv(), so a client dribbling one byte at a time cannot extend it.
+$WEBUI_HEADER_READ_TIMEOUT=2;
+# Total budget for reading a request BODY, which is legitimately large and
+# slow: 3D LUT and 1D DPG uploads post multi-hundred-KB JSON.
+$WEBUI_BODY_READ_TIMEOUT=60;
 # fds of accepted client sockets, handed from the accept thread to the workers.
 $_webui_worker_queue=undef;
+# Dedicated fast lane. Keeping idle sockets off the workers is not enough on
+# its own: when all general workers are legitimately busy (a live CEC power
+# query can take ~2.4s with the TV off, /api/meter/status ~1.1s), an
+# allowlisted request still had to queue behind them and the liveness probe
+# blew its budget. The accept thread already has the request header in hand
+# from the readiness peek, so it can route allowlisted requests to workers
+# that never run anything slow. That makes the probe answerable regardless of
+# what the rest of the UI is doing.
+$_webui_fast_queue=undef;
+$WEBUI_FAST_WORKER_COUNT=2;
 # Replaces the accidental global mutex the single accept loop used to provide.
 # A file lock rather than a thread mutex: it costs the same here, and it is the
 # idiom already used for the apply worker (webui-apply.lock), which has to
@@ -689,22 +729,112 @@ sub webui_http (@) {
  # the IO::Socket object, which cannot cross an ithread boundary) keeps the
  # accept loop free to drain the backlog while a slow handler runs.
  $_webui_worker_queue=Thread::Queue->new();
+ $_webui_fast_queue=Thread::Queue->new();
  for my $i (1..$WEBUI_WORKER_POOL_SIZE) {
-  threads->create(\&webui_http_worker,$i)->detach();
+  threads->create(\&webui_http_worker,$i,0)->detach();
  }
- &log("WebUI: request worker pool started ($WEBUI_WORKER_POOL_SIZE workers)");
+ for my $i (1..$WEBUI_FAST_WORKER_COUNT) {
+  threads->create(\&webui_http_worker,"F$i",1)->detach();
+ }
+ &log("WebUI: request worker pool started ($WEBUI_WORKER_POOL_SIZE workers + $WEBUI_FAST_WORKER_COUNT fast-lane)");
 
+ # A worker is committed only once a COMPLETE request header has arrived.
+ #
+ # accept() returns as soon as the TCP handshake finishes, before a single
+ # byte of request exists. Handing that bare socket straight to a worker meant
+ # an idle connection owned a worker until the read timed out, and browsers
+ # routinely open speculative preconnect sockets and leave them silent -- so a
+ # handful of ordinary sockets could occupy the whole pool and even the
+ # allowlisted liveness probe went unanswered. That is the same "WebUI is
+ # offline" symptom this work exists to remove, just from a different cause.
+ #
+ # So the accept thread parks new sockets in a pending set and watches them
+ # with MSG_PEEK, which inspects without consuming: the worker still reads the
+ # request normally. Only when the header terminator is present does the fd go
+ # to the queue. A socket that never speaks costs one fd here and zero
+ # workers, and is reaped by the idle sweep.
+ #
+ # The accept thread must never block on any one client, so every wait is a
+ # bounded can_read() across the whole set.
+ my $sel=IO::Select->new($http_server);
+ my %pending;          # fileno => [ handle, accepted_at ]
+ my $listen_fno=fileno($http_server);
  while(1) {
-  my $client=$http_server->accept();
-  next if(!$client);
-  my $fd=eval { POSIX::dup(fileno($client)) };
-  # Close our copy either way: the worker owns the duplicate now.
-  eval { close($client); };
-  if(!defined($fd)) {
-   &log("WebUI: could not duplicate client fd: $!");
-   next;
+  my @ready=$sel->can_read($WEBUI_ACCEPT_POLL_INTERVAL);
+  my $saw_partial=0;
+  foreach my $h (@ready) {
+   my $fno=fileno($h);
+   next if(!defined($fno));
+   if($fno == $listen_fno) {
+    my $client=$http_server->accept();
+    next if(!$client);
+    # Overload valve: shed the oldest waiter rather than let the pending set
+    # grow without bound and exhaust our descriptors.
+    if(scalar(keys %pending) >= $WEBUI_MAX_PENDING) {
+     my $oldest=(sort { $pending{$a}->[1] <=> $pending{$b}->[1] } keys %pending)[0];
+     if(defined($oldest)) {
+      my $victim=$pending{$oldest}->[0];
+      $sel->remove($victim);
+      delete($pending{$oldest});
+      eval { close($victim); };
+     }
+    }
+    $client->blocking(0);
+    $sel->add($client);
+    $pending{fileno($client)}=[$client,Time::HiRes::time()];
+    next;
+   }
+   # An already-accepted socket has something to say. Peek, do not consume.
+   my $peek="";
+   my $got=eval { recv($h,$peek,$WEBUI_HEADER_PEEK_BYTES,Socket::MSG_PEEK()) };
+   if(!defined($got) || !defined($peek) || $peek eq "") {
+    # EOF or error: the peer went away before completing a request.
+    $sel->remove($h);
+    delete($pending{$fno});
+    eval { close($h); };
+    next;
+   }
+   # Not a complete header yet. Leave it pending and keep waiting; the idle
+   # sweep below will eventually reclaim it if it never finishes.
+   if($peek !~ /\r\n\r\n/ && $peek !~ /\n\n/ && length($peek) < $WEBUI_HEADER_PEEK_BYTES) {
+    $saw_partial=1;
+    next;
+   }
+   # Complete (or oversized) header: now it is worth a worker.
+   $sel->remove($h);
+   delete($pending{$fno});
+   my $fd=eval { POSIX::dup($fno) };
+   eval { close($h); };
+   if(!defined($fd)) {
+    &log("WebUI: could not duplicate client fd: $!");
+    next;
+   }
+   # Route from the header we already peeked. The worker re-parses the
+   # request itself -- this only decides which lane it waits in, so a
+   # mis-parse here can never change how the request is handled.
+   my ($peek_method,$peek_path)=$peek=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
+   $peek_path="" if(!defined($peek_path));
+   $peek_path=~s/\?.*$//;
+   if(&webui_route_is_concurrent_safe($peek_method,$peek_path)) {
+    $_webui_fast_queue->enqueue($fd);
+   } else {
+    $_webui_worker_queue->enqueue($fd);
+   }
   }
-  $_webui_worker_queue->enqueue($fd);
+  # Reclaim sockets that connected but never produced a usable request.
+  if(scalar(keys %pending)) {
+   my $now=Time::HiRes::time();
+   foreach my $fno (keys %pending) {
+    next if(($now - $pending{$fno}->[1]) <= $WEBUI_PENDING_IDLE_TIMEOUT);
+    my $stale=$pending{$fno}->[0];
+    $sel->remove($stale);
+    delete($pending{$fno});
+    eval { close($stale); };
+   }
+  }
+  # A half-sent header leaves the socket permanently readable, so without this
+  # the loop would spin at full CPU re-peeking the same bytes.
+  Time::HiRes::sleep($WEBUI_PARTIAL_HEADER_BACKOFF) if($saw_partial);
  }
 }
 
@@ -718,8 +848,10 @@ sub webui_http (@) {
 # is long-lived and a leaked fd is eventually fatal.
 sub webui_http_worker (@) {
  my $worker_id=shift;
+ my $fast_lane=shift;
  $SIG{PIPE}='IGNORE';
- while(defined(my $fd=$_webui_worker_queue->dequeue())) {
+ my $queue=$fast_lane ? $_webui_fast_queue : $_webui_worker_queue;
+ while(defined(my $fd=$queue->dequeue())) {
   my $client;
   eval {
    $client=IO::Socket::INET->new_from_fd($fd,"+<");
@@ -756,26 +888,67 @@ sub webui_http_worker (@) {
 sub webui_handle_request (@) {
  my $client=shift;
   {
-   # Per-socket read/write timeout (thread-safe, unlike alarm/SIGALRM which is process-wide)
+   # Per-socket read/write timeout (thread-safe, unlike alarm/SIGALRM which is process-wide).
+   # Kept as a backstop; the real bounds are the explicit deadlines below.
    setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_RCVTIMEO(), pack('l!l!', 5, 0));
    setsockopt($client, Socket::SOL_SOCKET(), Socket::SO_SNDTIMEO(), pack('l!l!', 5, 0));
-   # Read request
+   $client->blocking(0);
+   my $rsel=IO::Select->new($client);
+
+   # Headers and body get SEPARATE budgets, and each is a deadline for the
+   # whole read rather than a per-recv() timeout -- a peer trickling one byte
+   # at a time cannot hold a worker open indefinitely by resetting the clock.
+   # Headers are tiny and arrive in one packet, so their budget is short. The
+   # body budget stays generous because 3D LUT and 1D DPG uploads legitimately
+   # POST multi-hundred-KB payloads over a slow link.
+   #
+   # All reads here are sysread(): mixing buffered reads with select() would
+   # strand bytes in Perl's buffer where can_read() cannot see them.
    my $req="";
-   while(my $line=<$client>) {
-    $req.=$line;
-    last if($line=~/^\r?\n$/);
-   }
-   # Read body if Content-Length present
    my $body="";
+   my $hdr_deadline=Time::HiRes::time() + $WEBUI_HEADER_READ_TIMEOUT;
+   while(1) {
+    my $idx=index($req,"\r\n\r\n");
+    my $term=4;
+    if($idx < 0) { $idx=index($req,"\n\n"); $term=2; }
+    if($idx >= 0) {
+     # sysread() can overshoot the header terminator, so anything past it is
+     # the first slice of the body.
+     $body=substr($req,$idx+$term);
+     $req=substr($req,0,$idx+$term);
+     last;
+    }
+    my $remaining=$hdr_deadline - Time::HiRes::time();
+    last if($remaining <= 0);
+    last if(length($req) >= $WEBUI_HEADER_PEEK_BYTES);
+    last if(!$rsel->can_read($remaining));
+    my $chunk="";
+    my $n=sysread($client,$chunk,4096);
+    if(!defined($n)) { next if($!{EAGAIN} || $!{EWOULDBLOCK} || $!{EINTR}); last; }
+    last if($n <= 0);
+    $req.=$chunk;
+   }
+
+   # Read body if Content-Length present
    if($req=~/Content-Length:\s*(\d+)/i) {
     my $cl=$1;
+    my $body_deadline=Time::HiRes::time() + $WEBUI_BODY_READ_TIMEOUT;
     while(length($body) < $cl) {
+     my $remaining=$body_deadline - Time::HiRes::time();
+     last if($remaining <= 0);
+     last if(!$rsel->can_read($remaining));
      my $chunk="";
-     my $read_bytes=read($client,$chunk,$cl-length($body));
-     last if(!defined $read_bytes || $read_bytes <= 0);
+     my $n=sysread($client,$chunk,$cl-length($body));
+     if(!defined($n)) { next if($!{EAGAIN} || $!{EWOULDBLOCK} || $!{EINTR}); last; }
+     last if($n <= 0);
      $body.=$chunk;
     }
+   } else {
+    $body="";
    }
+   # Responses are written with buffered print(); put the handle back into
+   # blocking mode so a large body cannot come back as a short write.
+   $client->blocking(1);
 
    my ($method,$path)=$req=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
     $path="" if(!defined $path);
