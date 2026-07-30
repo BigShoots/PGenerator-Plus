@@ -47166,7 +47166,7 @@ function drawCIEChart(readings){
  ctx.restore(); // end plot clip
  // Axis labels outside the clip so they stay readable at any zoom.
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
- const xLabDec=xStep<0.01?3:(xStep<0.05?2:1),yLabDec=yStep<0.01?3:(yStep<0.05?2:1);
+ const xLabDec=xStep<0.01?3:(xStep<0.1?2:1),yLabDec=yStep<0.01?3:(yStep<0.1?2:1);
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
  for(let y=y0;y<=yMax+1e-9;y+=yStep) ctx.fillText(y.toFixed(yLabDec),pad.l-4,toY(y)+3);
@@ -47459,7 +47459,7 @@ function drawCIEChartPreset(steps){
   ctx.restore();
  });
  ctx.restore(); // end plot clip
- const xLabDec=xStep<0.01?3:(xStep<0.05?2:1),yLabDec=yStep<0.01?3:(yStep<0.05?2:1);
+ const xLabDec=xStep<0.01?3:(xStep<0.1?2:1),yLabDec=yStep<0.01?3:(yStep<0.1?2:1);
  ctx.fillStyle=pgThemeColor('--chart-label','#aab6cb');ctx.font='10px sans-serif';ctx.textAlign='center';
  for(let x=x0;x<=xMax+1e-9;x+=xStep) ctx.fillText(x.toFixed(xLabDec),toX(x),pad.t+h+14);
  ctx.textAlign='right';
