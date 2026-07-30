@@ -28963,7 +28963,8 @@ function meterVisibleSeriesSteps(){
   : meterGreyscaleSeriesSteps(source);
  meterVisibleStepsCacheSource=source;
  meterVisibleStepsCacheType=meterActiveSeriesType;
- meterVisibleStepsCacheResult=meterFilterLgAutoCalChartItems(ordered);
+ meterVisibleStepsCacheResult=meterFilterLgAutoCalChartItems(ordered)
+  .filter(step=>!meterIsWhiteReferenceReading(step));
  meterVisibleStepsIndexCacheSource=null;
  meterVisibleStepsIndexCache=null;
  return meterVisibleStepsCacheResult;
@@ -48339,7 +48340,7 @@ function drawCIEChart3D(readings,opts){
     &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
   const readNames=new Set(items.map(r=>(r&&r.name!=null)?String(r.name):''));
   items=items.concat(meterSeriesSteps
-   .filter(s=>s&&s.name!=null&&!readNames.has(String(s.name)))
+   .filter(s=>s&&s.name!=null&&!meterIsWhiteReferenceReading(s)&&!readNames.has(String(s.name)))
    .map(s=>Object.assign({},s,{_presetStep:true})));
  }
  const yMax=cie3dComputeYMax(items,isPreset);
@@ -48849,7 +48850,7 @@ function drawCIEChart(readings){
     &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
   const readNames=new Set(readings.map(r=>(r&&r.name!=null)?String(r.name):''));
   meterSeriesSteps.forEach(s=>{
-   if(!s||s.name==null||readNames.has(String(s.name))) return;
+   if(!s||s.name==null||meterIsWhiteReferenceReading(s)||readNames.has(String(s.name))) return;
    let tgt=null;
    try{
     tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
@@ -49119,6 +49120,7 @@ function drawCIETargetInset(ctx,readings,geom){
 }
 
 function drawCIEChartPreset(steps){
+ steps=(Array.isArray(steps)?steps:[]).filter(step=>!meterIsWhiteReferenceReading(step));
  try{ meterApplyCie3dLayout(); }catch(e){}
  if(meterCie3dViewEnabled()){
   drawCIEChart3D(steps||[],{preset:true});
@@ -49255,7 +49257,7 @@ function drawColorDeltaE2000Chart(readings){
  let axisNames=null, axisIndex=null;
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
     &&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
-  const steps=meterSeriesSteps.filter(s=>s&&s.name!=null);
+  const steps=meterSeriesSteps.filter(s=>s&&s.name!=null&&!meterIsWhiteReferenceReading(s));
   const idx=new Map();
   steps.forEach((s,i)=>{ if(!idx.has(String(s.name))) idx.set(String(s.name),i); });
   if(steps.length>=deData.length&&deData.every(d=>idx.has(String(d.name)))){
@@ -49292,6 +49294,7 @@ function drawColorDeltaE2000Chart(readings){
 function drawColorDeltaE2000Preset(steps){
  const ctx=getChartCtx('chartColorDE');
  if(!ctx) return;
+ steps=(Array.isArray(steps)?steps:[]).filter(step=>!meterIsWhiteReferenceReading(step));
  let yMax=5;
  yMax=meterApplyTopYZoom('chartColorDE',yMax,0).max;
  const n=steps.length;
