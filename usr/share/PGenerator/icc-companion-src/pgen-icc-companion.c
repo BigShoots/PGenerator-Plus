@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.2"
+#define APP_VERSION "1.0.3"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -62,6 +62,21 @@ typedef struct {
     bool alignment;
     bool quit;
     uint64_t next_poll_ms;
+    SDL_Thread *network_thread;
+    SDL_Mutex *network_mutex;
+    SDL_AtomicInt quit_requested;
+    bool command_pending;
+    uint64_t command_sequence;
+    bool command_alignment;
+    double command_r, command_g, command_b;
+    char command_mode[32];
+    bool ack_pending;
+    uint64_t ack_sequence;
+    bool ack_ok;
+    char ack_message[256];
+    char ack_renderer[64];
+    bool ack_hdr_active;
+    bool status_dirty;
     char renderer_name[64];
     char status[256];
 } AppState;
@@ -345,37 +360,73 @@ static bool render_patch(const char *mode, double r, double g, double b)
     return true;
 }
 
-static void acknowledge(uint64_t sequence, bool ok, const char *message)
+static void acknowledge(uint64_t sequence, bool ok, const char *message,
+                        const char *renderer, bool hdr_active)
 {
     char path[256], body[1024], response[2048];
     SDL_snprintf(path, sizeof(path), "/api/icc/companion/ack");
     SDL_snprintf(body, sizeof(body),
                  "{\"token\":\"%s\",\"client\":\"%s\",\"sequence\":%llu,\"status\":\"%s\",\"renderer\":\"%s\",\"hdr_active\":%s,\"version\":\"%s\",\"message\":\"%s\"}",
                  app.config.token, app.config.client, (unsigned long long)sequence,
-                 ok ? "ok" : "error", app.renderer_name, app.hdr_active ? "true" : "false", APP_VERSION, message ? message : "");
+                 ok ? "ok" : "error", renderer, hdr_active ? "true" : "false", APP_VERSION, message ? message : "");
     http_request(&app.config, "POST", path, body, response, sizeof(response));
+}
+
+static void queue_status(const char *text)
+{
+    SDL_LockMutex(app.network_mutex);
+    SDL_strlcpy(app.status, text, sizeof(app.status));
+    app.status_dirty = true;
+    SDL_UnlockMutex(app.network_mutex);
+}
+
+static void send_pending_ack(void)
+{
+    uint64_t sequence = 0;
+    bool ok = false, hdr_active = false;
+    char message[256] = "", renderer[64] = "unknown";
+    SDL_LockMutex(app.network_mutex);
+    if (app.ack_pending) {
+        sequence = app.ack_sequence;
+        ok = app.ack_ok;
+        hdr_active = app.ack_hdr_active;
+        SDL_strlcpy(message, app.ack_message, sizeof(message));
+        SDL_strlcpy(renderer, app.ack_renderer, sizeof(renderer));
+        app.ack_pending = false;
+    }
+    SDL_UnlockMutex(app.network_mutex);
+    if (sequence) acknowledge(sequence, ok, message, renderer, hdr_active);
 }
 
 static void poll_server(void)
 {
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
+    char reported_renderer[64] = "starting";
     double sequence_value, r, g, b, input_max, code_min, code_max;
     uint64_t sequence;
-    bool is_alignment;
+    bool is_alignment, reported_hdr_active = false;
     int status;
+    SDL_LockMutex(app.network_mutex);
+    if (app.ack_renderer[0]) SDL_strlcpy(reported_renderer, app.ack_renderer, sizeof(reported_renderer));
+    reported_hdr_active = app.ack_hdr_active;
+    SDL_UnlockMutex(app.network_mutex);
     SDL_snprintf(path, sizeof(path),
                  "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d",
                  app.config.token, app.config.client, APP_VERSION,
-                 app.renderer_name[0] ? app.renderer_name : "starting", app.hdr_active ? 1 : 0);
+                 reported_renderer, reported_hdr_active ? 1 : 0);
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
-        SDL_snprintf(app.status, sizeof(app.status), "Waiting for %s", app.config.server);
-        SDL_SetWindowTitle(app.window, app.status);
+        char title[256];
+        SDL_snprintf(title, sizeof(title), "Waiting for %s", app.config.server);
+        queue_status(title);
         app.next_poll_ms = SDL_GetTicks() + 1000;
         return;
     }
-    SDL_snprintf(app.status, sizeof(app.status), "Connected to %s", app.config.server);
-    SDL_SetWindowTitle(app.window, app.status);
+    {
+        char title[256];
+        SDL_snprintf(title, sizeof(title), "Connected to %s", app.config.server);
+        queue_status(title);
+    }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
         app.next_poll_ms = SDL_GetTicks() + 250;
@@ -386,14 +437,19 @@ static void poll_server(void)
         return;
     }
     sequence = (uint64_t)sequence_value;
-    if (sequence == app.sequence) { app.next_poll_ms = SDL_GetTicks() + 250; return; }
+    SDL_LockMutex(app.network_mutex);
+    if (sequence == app.sequence || (app.command_pending && sequence == app.command_sequence)) {
+        SDL_UnlockMutex(app.network_mutex);
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
+    }
+    SDL_UnlockMutex(app.network_mutex);
     if (is_alignment) {
-        if (!render_alignment()) {
-            acknowledge(sequence, false, "The renderer could not display the alignment target");
-        } else {
-            app.sequence = sequence;
-            acknowledge(sequence, true, "");
-        }
+        SDL_LockMutex(app.network_mutex);
+        app.command_sequence = sequence;
+        app.command_alignment = true;
+        app.command_pending = true;
+        SDL_UnlockMutex(app.network_mutex);
         app.next_poll_ms = SDL_GetTicks() + 50;
         return;
     }
@@ -406,20 +462,73 @@ static void poll_server(void)
     }
     json_string(response, "signal_mode", mode, sizeof(mode));
     if (input_max <= 0 || code_max <= code_min) {
-        acknowledge(sequence, false, "Invalid patch range");
+        acknowledge(sequence, false, "Invalid patch range", "network", false);
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }
     r = fmax(0.0, fmin(1.0, (r - code_min) / (code_max - code_min)));
     g = fmax(0.0, fmin(1.0, (g - code_min) / (code_max - code_min)));
     b = fmax(0.0, fmin(1.0, (b - code_min) / (code_max - code_min)));
-    if (!render_patch(mode, r, g, b)) {
-        acknowledge(sequence, false, !strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" : "The renderer could not display the patch");
-    } else {
-        app.sequence = sequence;
-        acknowledge(sequence, true, "");
-    }
+    SDL_LockMutex(app.network_mutex);
+    app.command_sequence = sequence;
+    app.command_alignment = false;
+    app.command_r = r;
+    app.command_g = g;
+    app.command_b = b;
+    SDL_strlcpy(app.command_mode, mode, sizeof(app.command_mode));
+    app.command_pending = true;
+    SDL_UnlockMutex(app.network_mutex);
     app.next_poll_ms = SDL_GetTicks() + 50;
+}
+
+static int SDLCALL network_thread_main(void *unused)
+{
+    (void)unused;
+    while (!SDL_GetAtomicInt(&app.quit_requested)) {
+        send_pending_ack();
+        if (SDL_GetTicks() >= app.next_poll_ms) poll_server();
+        SDL_Delay(10);
+    }
+    send_pending_ack();
+    return 0;
+}
+
+static void process_network_updates(void)
+{
+    bool have_command = false, alignment = false, status_dirty = false;
+    uint64_t sequence = 0;
+    double r = 0.0, g = 0.0, b = 0.0;
+    char mode[32] = "sdr", title[256] = "";
+    SDL_LockMutex(app.network_mutex);
+    if (app.status_dirty) {
+        status_dirty = true;
+        SDL_strlcpy(title, app.status, sizeof(title));
+        app.status_dirty = false;
+    }
+    if (app.command_pending) {
+        have_command = true;
+        sequence = app.command_sequence;
+        alignment = app.command_alignment;
+        r = app.command_r; g = app.command_g; b = app.command_b;
+        SDL_strlcpy(mode, app.command_mode, sizeof(mode));
+        app.command_pending = false;
+    }
+    SDL_UnlockMutex(app.network_mutex);
+    if (status_dirty) SDL_SetWindowTitle(app.window, title);
+    if (have_command) {
+        bool ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+        const char *message = ok ? "" : (alignment ? "The renderer could not display the alignment target" :
+                              (!strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" : "The renderer could not display the patch"));
+        SDL_LockMutex(app.network_mutex);
+        if (ok) app.sequence = sequence;
+        app.ack_sequence = sequence;
+        app.ack_ok = ok;
+        SDL_strlcpy(app.ack_message, message, sizeof(app.ack_message));
+        SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
+        app.ack_hdr_active = app.hdr_active;
+        app.ack_pending = true;
+        SDL_UnlockMutex(app.network_mutex);
+    }
 }
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
@@ -438,12 +547,19 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         return SDL_APP_FAILURE;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
+    app.network_mutex = SDL_CreateMutex();
+    if (!app.network_mutex) return SDL_APP_FAILURE;
     app.window = SDL_CreateWindow("PGenerator ICC Companion", 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
     app.fullscreen = false;
     if (!create_renderer(false)) return SDL_APP_FAILURE;
     if (!render_alignment()) return SDL_APP_FAILURE;
+    SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
+    app.ack_hdr_active = app.hdr_active;
+    SDL_SetAtomicInt(&app.quit_requested, 0);
+    app.network_thread = SDL_CreateThread(network_thread_main, "PGen ICC network", NULL);
+    if (!app.network_thread) return SDL_APP_FAILURE;
     *appstate = &app;
     return SDL_APP_CONTINUE;
 }
@@ -469,7 +585,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 SDL_AppResult SDL_AppIterate(void *appstate)
 {
     AppState *state = (AppState *)appstate;
-    if (SDL_GetTicks() >= state->next_poll_ms) poll_server();
+    process_network_updates();
     SDL_Delay(5);
     return state->quit ? SDL_APP_SUCCESS : SDL_APP_CONTINUE;
 }
@@ -479,9 +595,12 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     AppState *state = (AppState *)appstate;
     (void)result;
     if (state) {
+        SDL_SetAtomicInt(&state->quit_requested, 1);
+        if (state->network_thread) SDL_WaitThread(state->network_thread, NULL);
         if (state->texture) SDL_DestroyTexture(state->texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
         if (state->window) SDL_DestroyWindow(state->window);
+        if (state->network_mutex) SDL_DestroyMutex(state->network_mutex);
     }
     SDL_Quit();
 #ifdef _WIN32
