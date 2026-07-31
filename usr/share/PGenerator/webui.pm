@@ -13170,7 +13170,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
-       <option value="25">HCFR Sat Sweep (25)</option>
+       <option value="25">HCFR Constant Luminance Sat Sweep (25)</option>
        </optgroup>
        <optgroup label="MacLeod-Boynton">
        <option value="800137">MacLeod-Boynton Hue Circle (37)</option>
@@ -13178,7 +13178,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep; HCFR Sat Sweep is the constant-luminance one, quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep keeps Y fixed for each hue and is quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -21639,6 +21639,24 @@ function meterColorTargetCodeRange(){
  return limited?{min:16,span:219}:{min:0,span:255};
 }
 
+// Resolve the display peak used to grade HDR color-series luminance. PQ patch
+// codes remain absolute below the roll-off knee, but high-luminance colors
+// must roll toward the same measured/manual Target White as greyscale. The
+// mastering peak is still used when BT.2390 is disabled, matching the EOTF
+// chart's native-PQ mode.
+function meterHdrColorTargetPeak(){
+ let reference=(typeof meterChartHdrPeak==='function')?meterChartHdrPeak():1000;
+ try{
+  const selected=(typeof meterColorSeriesReferenceNits==='function')?Number(meterColorSeriesReferenceNits()):NaN;
+  if(Number.isFinite(selected)&&selected>0) reference=selected;
+ }catch(e){}
+ if(typeof meterGreyTargetPeak==='function'){
+  const resolved=Number(meterGreyTargetPeak(reference));
+  if(Number.isFinite(resolved)&&resolved>0) return resolved;
+ }
+ return Math.max(1,reference);
+}
+
 function meterDecodeColorTargetChannel(code,opts){
  const rng=meterColorTargetCodeRange();
  const norm=Math.max(0,Math.min(1,((Number(code)||0)-rng.min)/rng.span));
@@ -21651,7 +21669,14 @@ function meterDecodeColorTargetChannel(code,opts){
   // R clamped 10000->1000 and G (981) untouched the "target" said ~1:1
   // (yellow) — nowhere near what the signal means or what a panel shows.
   // Chromaticity consumers pass unclamped:true to keep the encoded ratios.
-  return (opts&&opts.unclamped)?nits:Math.min(nits,meterChartHdrPeak());
+  if(opts&&opts.unclamped) return nits;
+  const peak=meterHdrColorTargetPeak();
+  if(typeof meterChartBt2390Enabled==='function'&&meterChartBt2390Enabled()
+   &&typeof bt2390Tonemap==='function'){
+   const master=(typeof meterChartMasterPeak==='function')?Number(meterChartMasterPeak()):Number(meterChartHdrPeak());
+   if(master>0) return bt2390Tonemap(Math.min(nits,master),master,peak);
+  }
+  return Math.min(nits,peak);
  }
  // SDR/DV: decode with the active target EOTF so the reconstructed target
  // XYZ for r/g/b-code patches matches the chromaticity the display actually
@@ -28284,12 +28309,26 @@ function meterApplyTargetLevelsDisplayDefaults(forceAll,saved){
 }
 // Resolve the effective Target White level. Returns {useMeasured,value}.
 function meterTargetWhiteLevel(){
+ const useMeasured=document.getElementById('meterTargetWhiteUseMeasured');
+ const input=document.getElementById('meterTargetWhite');
+ if(useMeasured&&input){
+  const raw=String(input.value==null?'':input.value).trim();
+  const value=raw===''?null:Number(raw);
+  return {useMeasured:!!useMeasured.checked,value:Number.isFinite(value)?value:null};
+ }
  const s=meterReadTargetLevelsState();
  if(s) return {useMeasured:!!s.white.useMeasured,value:s.white.value};
  return {useMeasured:true,value:null};
 }
 // Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
+ const useMeasured=document.getElementById('meterTargetBlackUseMeasured');
+ const input=document.getElementById('meterTargetBlack');
+ if(useMeasured&&input){
+  const raw=String(input.value==null?'':input.value).trim();
+  const value=raw===''?null:Number(raw);
+  return {useMeasured:!!useMeasured.checked,value:Number.isFinite(value)?value:null};
+ }
  const s=meterReadTargetLevelsState();
  if(s){
   return {useMeasured:!!s.black.useMeasured,value:s.black.value};
@@ -50694,7 +50733,7 @@ function meterSeriesLabelFromKey(key){
   'colors-29':'HCFR ColorChecker',
   'colors-30':'ColorChecker',
   'saturations-24':'Sat Sweep',
-  'saturations-25':'HCFR Sat Sweep'
+  'saturations-25':'HCFR Constant Luminance Sat Sweep'
  }[key]||String(key||'Series');
 }
 
@@ -50720,7 +50759,7 @@ function meterAllSeriesReportOptions(){
   {key:'colors-29',label:'HCFR ColorChecker'},
   {key:'colors-30',label:'ColorChecker'},
   {key:'saturations-24',label:'Sat Sweep'},
-  {key:'saturations-25',label:'HCFR Sat Sweep'}
+  {key:'saturations-25',label:'HCFR Constant Luminance Sat Sweep'}
  ].map(item=>{
   const snap=meterGetSeriesSnapshotByKey(item.key);
   const count=snap&&snap.readings?snap.readings.length:0;
@@ -51221,7 +51260,7 @@ function meterBuildHcfrExportModel(){
  const free=[];
  entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Sat Sweep series for directly comparable intermediate Delta E values.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Constant Luminance Sat Sweep series for directly comparable intermediate Delta E values.');
  // HCFR SDR GCD aligns the 18 chromatic patches plus PGenerator's full black
  // and white anchors. The native SDR neutral chips use different stimuli from
  // fixed GCD's named grays, so preserve those as free measurements. HDR-class
