@@ -6342,7 +6342,9 @@ sub webui_icc_companion_ack (@) {
 sub webui_icc_companion_status (@) {
  my $content="";
  my @st=stat($_icc_companion_status_file);
- if(@st && time()-($st[9]||0)<=4 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
+ # The companion's synchronous HTTP poll can take about three seconds on a
+ # busy or remote link. Allow several missed polls before declaring it gone.
+ if(@st && time()-($st[9]||0)<=12 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
  return '{"status":"ok","connected":false}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
  return '{"status":"ok","connected":true,'.$content;
@@ -32617,6 +32619,7 @@ let meterIccPollTimer=null;
 let meterIccRunConfig=null;
 let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
+let meterIccCompanionLastSeenAt=0;
 let meterIccCompanionTimer=null;
 let meterIccPollPending=false;
 
@@ -32828,15 +32831,17 @@ function meterIccShowCompanionStatus(connected,text){
 async function meterIccRefreshCompanionStatus(){
  try{
   const state=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:3500});
-  meterIccCompanionConnected=!!(state&&state.connected);
-  if(meterIccCompanionConnected){
+  const reportedConnected=!!(state&&state.connected);
+  if(reportedConnected) meterIccCompanionLastSeenAt=Date.now();
+  meterIccCompanionConnected=reportedConnected||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
+  if(reportedConnected){
    const client=String(state.client||'target computer');
    const renderer=String(state.renderer||'renderer');
    meterIccShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
-  }else meterIccShowCompanionStatus(false,'Companion not connected');
+  }else if(!meterIccCompanionConnected) meterIccShowCompanionStatus(false,'Companion not connected');
  }catch(error){
-  meterIccCompanionConnected=false;
-  meterIccShowCompanionStatus(false,'Companion not connected');
+  meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
+  if(!meterIccCompanionConnected) meterIccShowCompanionStatus(false,'Companion not connected');
  }
  meterIccSyncUi();
  return meterIccCompanionConnected;
