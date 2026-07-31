@@ -18520,8 +18520,33 @@ function meterGreyscaleReadingMatchesStep(reading,step){
  return meterReadingMatchesStepForPlot(reading,step);
 }
 
+// Normalised full-scale tolerance for "is this reading the same patch as this
+// step". Sized from what it must separate:
+//   - ACCEPT: the same nominal level expressed on two slightly different
+//     ladders. The worst legitimate disagreement is ~3/1023 = 0.29% of full
+//     scale (integer rounding between code maps at the same bit depth).
+//   - REJECT: the same nominal level driven at a genuinely different SIGNAL,
+//     which is what this check exists to catch. Limited vs Full at the same
+//     IRE are furthest apart in the upper mid-range and are still ~1.0% apart
+//     (50%: 502/1023=0.4907 vs 512/1023=0.5005), widening to 8% at 100% and
+//     6% at 0%. 0.4% keeps a >2x margin on the tightest case.
+const METER_CODE_MATCH_TOLERANCE=0.004;
+function meterCodeInputMaxFor(obj,fallback){
+ const im=Number(obj&&obj.input_max);
+ if(Number.isFinite(im)&&im>0) return im;
+ return fallback;
+}
 function meterReadingCodesMatchStep(reading,step){
  if(!reading||!step) return false;
+ // Compare NORMALISED level, not raw integers. A reading carries the codes the
+ // server actually drove (stamped with their own input_max); the step carries
+ // the codes the client rebuilt. Those can legitimately be on different scales
+ // -- 8-bit vs 10-bit, or two code maps at the same depth -- and a raw integer
+ // compare turns any such difference into a total mismatch. Normalising means
+ // a scale difference no longer masquerades as a different patch.
+ const defaultMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const readingMax=meterCodeInputMaxFor(reading,defaultMax);
+ const stepMax=meterCodeInputMaxFor(step,defaultMax);
  const pairs=[['r_code','r'],['g_code','g'],['b_code','b']];
  for(const pair of pairs){
   const rv=reading[pair[0]];
@@ -18529,7 +18554,10 @@ function meterReadingCodesMatchStep(reading,step){
   if(rv==null||sv==null) continue;
   const rn=Number(rv);
   const sn=Number(sv);
-  if(Number.isFinite(rn)&&Number.isFinite(sn)&&Math.abs(rn-sn)>0.5) return false;
+  if(!Number.isFinite(rn)||!Number.isFinite(sn)) continue;
+  if(Math.abs(rn-sn)<=0.5) continue;              // identical on a shared scale
+  if(!(readingMax>0)||!(stepMax>0)) return false;
+  if(Math.abs((rn/readingMax)-(sn/stepMax))>METER_CODE_MATCH_TOLERANCE) return false;
  }
  return true;
 }
@@ -18831,14 +18859,62 @@ function meterReadingsWouldRecoverAsBlackOnly(readings,type,steps){
  return hadNonBlack&&!matchedNonBlack;
 }
 
+// A measurement must never be discarded silently.
+//
+// What this filter is FOR: dropping leftovers from a PREVIOUS series so they
+// are not attributed to the current one (e.g. ColorChecker dots still plotting
+// after loading a custom grid, or a status poll that caught the state file
+// before the new run overwrote it). Those leftovers belong to different
+// patches -- different names, different nominal slots -- and are still dropped.
+//
+// What it must NOT do: delete a reading that IS one of the current patches
+// merely because the two sides computed its drive code slightly differently.
+// That is a presentation-layer disagreement, not evidence the meter measured
+// the wrong thing, and deleting the measurement is the worst available
+// response -- the operator sees "no reading" mid-calibration with no clue that
+// real data was thrown away. A code disagreement now KEEPS the reading, tags
+// it, and is reported.
+let _meterCodeMismatchNotified='';
+function meterNoteCodeMismatch(mismatched,type){
+ if(!mismatched.length) return;
+ const key=String(type||'')+'|'+(typeof meterActiveSeriesKey!=='undefined'?meterActiveSeriesKey:'')+'|'+mismatched.length;
+ if(_meterCodeMismatchNotified===key) return;
+ _meterCodeMismatchNotified=key;
+ const detail=mismatched.slice(0,12).map(rd=>{
+  const label=(rd&&rd.name!=null&&String(rd.name)!=='')?String(rd.name):(rd&&rd.ire!=null?rd.ire+'%':'?');
+  return label+' (r_code='+(rd&&rd.r_code!=null?rd.r_code:'?')+')';
+ }).join(', ');
+ try{
+  console.warn('Series reading/step drive codes disagree for '+mismatched.length+' patch(es); '
+   +'the measurements were KEPT and plotted against their nominal slot. '
+   +'This means the client and server code ladders are out of step: '+detail);
+ }catch(e){}
+ try{ toast(mismatched.length+' patch(es) measured at a different drive code than expected - kept, but check the bit depth/range settings',true); }catch(e){}
+}
 function meterFilterReadingsForSteps(readings,type,steps,options){
  const list=Array.isArray(readings)?readings:[];
  if(!Array.isArray(steps)||!steps.length) return list;
  if(type==='greyscale'){
   if(options&&options.dropStaleBlackOnly&&meterReadingsWouldRecoverAsBlackOnly(list,type,steps)) return [];
-  return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
+  const kept=[]; const mismatched=[];
+  list.forEach(rd=>{
+   if(meterReadingMatchesStepList(rd,type,steps)){ kept.push(rd); return; }
+   // Same patch by nominal slot (name or IRE), rejected only on drive code:
+   // keep it rather than lose a real measurement.
+   if(steps.some(step=>meterReadingNominalSlotMatchesStep(rd,step))){
+    if(rd&&typeof rd==='object') rd.code_mismatch=true;
+    kept.push(rd);
+    if(meterReadingHasLuminance(rd)) mismatched.push(rd);
+    return;
+   }
+   // Belongs to no current patch at all -> genuine leftover, drop it.
+  });
+  meterNoteCodeMismatch(mismatched,type);
+  return kept;
  }
  if(type==='colors'||type==='saturations'){
+  // Colour/sat matching is already name-based (meterColorReadingMatchesStep),
+  // so a code disagreement cannot delete a measurement here.
   return list.filter(rd=>meterReadingMatchesStepList(rd,type,steps));
  }
  return list;
@@ -20260,13 +20336,43 @@ function meterCodeFromSignalPercentWithOptions(percent,opts){
  if(opts.lgExtendedSdr) return meterLgSdrExtendedCodeFromPercent(percent);
  if(opts.lgLegalSdrDdc) return meterLgSdrLegalDdcCodeFromPercent(percent);
  const ire=clampNum(percent,0,100);
- // SDR Full 10-bit: 8bit<<2 (LG DPG index), not linear *1023.
+ // SDR Full 10-bit: derive the code from the stimulus AT the transport bit
+ // depth -- round(pct*1023/100).
+ //
+ // This used to be 8bit<<2. That map belongs to the SDR-26 AutoCal ladder and
+ // still lives there in meterLgAutoCalCodeForSlot(), because those client-side
+ // codes have to equal the ones the AutoCal WORKER builds for itself
+ // (@sdr26_codes in meter_lg_autocal.pl, from the same 8bit<<2 helper) or the
+ // chart and step strip stop matching the run. Note the DPG write index itself
+ // is NOT code-derived -- the solver picks it by IRE lookup ($idx_for_sdr over
+ // @sdr26_labels/@sdr26_indexes) -- so AutoCal's ladder is about agreeing with
+ // the worker, not about steering node selection. Either way it was
+ // ALSO applied here, which is every OTHER SDR consumer -- above all the plain
+ // 11/21/30/100-point greyscale series read built by meterBuildStepsJS(). A
+ // series read is a measurement, not a LUT-node write: it wants the finest
+ // stimulus resolution the link can carry. 8bit<<2 yields only 256 distinct
+ // values inside a 10-bit container (every code a multiple of 4, ~0.392% per
+ // step) instead of the ~0.098% true 10-bit gives, i.e. it bakes 8-bit
+ // quantisation into a 10-bit signal.
+ //
+ // It also silently destroyed data. The SERVER builds the steps a series read
+ // actually measures (webui_grey_code_for_stimulus, which uses round(pct*1023
+ // /100) here) and stamps those codes onto every reading as r_code/g_code/
+ // b_code; the browser then matches readings to its own rebuilt steps BY CODE.
+ // The two ladders agree only at 0/50/70/100, so an 11-point greyscale lost 7
+ // of its 11 measured patches -- reproducibly, mid-calibration, with no
+ // indication anything was missing.
+ //
+ // AutoCal is unaffected by this change: the SDR-26 body codes come from
+ // meterLgAutoCalCodeForSlot(), its SDR 0%/100% anchors are literals, and the
+ // remaining meterCodeFromSignalPercentWithOptions() call sites inside
+ // meterBuildLgAutoCalSteps() are all HDR10/DV-guarded -- and this branch
+ // cannot fire for HDR or DV.
  if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10
     && typeof meterIsLimitedRange==='function' && !meterIsLimitedRange()
     && typeof meterChartIsHdr==='function' && !meterChartIsHdr()
     && typeof meterChartIsDv==='function' && !meterChartIsDv()){
-  if(ire>=99.95) return 1023;
-  return (Math.round(ire/100*255)<<2);
+  return Math.round(ire/100*1023);
  }
  const clamped=ire/100;
  const range=meterGreyCodeRange();
