@@ -13420,6 +13420,18 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
       </div>
       <div class="meter-icc-field">
+       <label for="meterIccDisplayType">Display type</label>
+       <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
+      </div>
+      <div class="meter-icc-field">
+       <label for="meterIccMeterProfile">Meter profile (CCSS / CCMX)</label>
+       <select id="meterIccMeterProfile" onchange="meterIccLinkedMeterProfileChanged()"></select>
+      </div>
+      <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem">
+       <input id="meterIccPatternInsertion" type="checkbox" onchange="meterIccLinkedPatternInsertionChanged()"> Pattern insertion
+      </label>
+      <div class="meter-icc-note" style="margin-bottom:8px">Pattern insertion uses the timing and level settings configured in the Calibration workspace.</div>
+      <div class="meter-icc-field">
        <label for="meterIccStartDelay">Start delay in seconds</label>
        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
       </div>
@@ -32487,6 +32499,66 @@ let meterIccCompanionConnected=false;
 let meterIccCompanionTimer=null;
 let meterIccPollPending=false;
 
+function meterIccCopySelectOptions(sourceId,targetId,excludeValues){
+ const source=document.getElementById(sourceId);
+ const target=document.getElementById(targetId);
+ if(!source||!target) return;
+ const excluded=new Set(excludeValues||[]);
+ const signature=Array.from(source.options).filter(option=>!excluded.has(String(option.value))).map(option=>String(option.value)+'\t'+String(option.textContent||'')+'\t'+(option.disabled?'1':'0')).join('\n');
+ if(target.dataset.sourceSignature!==signature){
+  target.innerHTML='';
+  Array.from(source.children).forEach(child=>{
+   const clone=child.cloneNode(true);
+   if(clone.tagName==='OPTION'&&excluded.has(String(clone.value))) return;
+   target.appendChild(clone);
+  });
+  target.dataset.sourceSignature=signature;
+ }
+ const values=Array.from(target.options).map(option=>String(option.value));
+ target.value=values.includes(String(source.value))?String(source.value):'';
+ if(!values.includes(String(target.value))&&values.length) target.value=values[0];
+}
+
+function meterIccPrepareMeasurementControls(){
+ meterIccCopySelectOptions('meterDisplayType','meterIccDisplayType',[]);
+ meterIccCopySelectOptions('meterCcssProfile','meterIccMeterProfile',['custom_editor']);
+ const insertion=document.getElementById('meterIccPatternInsertion');
+ if(insertion) insertion.checked=!!((document.getElementById('meterPatchInsert')||{}).checked);
+}
+
+function meterIccLinkedDisplayTypeChanged(){
+ const linked=document.getElementById('meterIccDisplayType');
+ const source=document.getElementById('meterDisplayType');
+ if(linked&&source&&source.value!==linked.value){
+  source.value=linked.value;
+  source.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ meterIccPrepareMeasurementControls();
+ meterIccSyncUi();
+}
+
+function meterIccLinkedMeterProfileChanged(){
+ const linked=document.getElementById('meterIccMeterProfile');
+ const source=document.getElementById('meterCcssProfile');
+ if(linked&&source&&source.value!==linked.value){
+  source.value=linked.value;
+  source.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ meterIccPrepareMeasurementControls();
+ meterIccSyncUi();
+}
+
+function meterIccLinkedPatternInsertionChanged(){
+ const linked=document.getElementById('meterIccPatternInsertion');
+ const source=document.getElementById('meterPatchInsert');
+ if(linked&&source){
+  source.checked=!!linked.checked;
+  source.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(error){}
+ meterIccSyncUi();
+}
+
 function meterIccProfileInfo(type){
  const info={
   sdr:{
@@ -32568,6 +32640,7 @@ function meterIccProfileTypeChanged(){
 }
 
 function meterIccSyncUi(){
+ meterIccPrepareMeasurementControls();
  const typeEl=document.getElementById('meterIccProfileType');
  const type=String(typeEl&&typeEl.value||'sdr');
  const info=meterIccProfileInfo(type);
@@ -32580,9 +32653,12 @@ function meterIccSyncUi(){
  if(desc) desc.textContent=info.description;
  if(compatibility) compatibility.textContent=info.compatibility;
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
- const correction=(document.getElementById('meterCcssProfile')||{}).selectedOptions;
+ const displayOptions=(document.getElementById('meterIccDisplayType')||{}).selectedOptions;
+ const displayLabel=displayOptions&&displayOptions[0]?String(displayOptions[0].textContent||'').trim():'Auto';
+ const correction=(document.getElementById('meterIccMeterProfile')||{}).selectedOptions;
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
- if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Meter correction: '+correctionLabel+'. '+count+' patches.';
+ const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
+ if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.';
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   start.disabled=!meterDetected||!meterIccCompanionConnected||busy;
@@ -32598,6 +32674,7 @@ async function meterOpenIccProfileBuilder(){
   return;
  }
  modal.style.display='flex';
+ meterIccPrepareMeasurementControls();
  meterIccSyncUi();
  await meterIccRefreshCompanionStatus();
  if(!meterIccCompanionTimer) meterIccCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
@@ -32745,12 +32822,14 @@ async function meterIccStart(){
   meterIccSetProgress('Starting meter',0,steps.length);
   const body=meterMeasurementSignalContext({
    type:'colors',points:990001,custom_series:true,custom_steps:steps,
-   display_type:getEffectiveDisplayType(),ccss_override:getCcssOverride(),
+   display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
+   ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
    target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
    target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
    patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
    refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady(),
-   pattern_provider:'companion'
+   pattern_provider:'companion',
+   ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
   });
   // The target-computer companion owns the signal path. Do not inherit the
   // Pi renderer's current mode, bit depth or quantization range.
@@ -52505,8 +52584,8 @@ function meterNumberInput(id,fallback,min,max){
  return value;
 }
 
-function meterPatternInsertionPayload(){
- const master=document.getElementById('meterPatchInsert');
+function meterPatternInsertionPayload(masterOverride){
+ const master=masterOverride||document.getElementById('meterPatchInsert');
  return {
   pattern_delay_ms:meterSecondsInputMs('meterPatternDelay',0),
   patch_insert:!!(master&&master.checked),
