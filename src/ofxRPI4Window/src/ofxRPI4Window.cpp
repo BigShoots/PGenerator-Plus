@@ -417,12 +417,16 @@ static int pg_read_conf_int(const char *path, const char *key, int fallback) {
 	return out;
 }
 
-// CTA-861-G: min_dml is in 0.0001 cd/m^2 units. Matches /usr/bin/pgsethdr.c
-// (usr/bin/pgsethdr.c:227-230) and EGL_METADATA_SCALING_EXT (10000).
+// conf min_luma is already the CTA-861 wire field (units of 0.0001 cd/m^2),
+// matching stock PGenerator 1.6 and /usr/bin/pgsethdr.c. Values in (0, 1)
+// are treated as legacy Plus nits (e.g. 0.005) so older conf files do not
+// collapse to min_dml=0.
 static uint16_t pg_min_luma_to_u16(double value) {
 	if (value < 0.0) value = 0.0;
-	if (value > 6.5535) value = 6.5535;
-	return (uint16_t)((value / 0.0001) + 0.5);
+	if (value > 0.0 && value < 1.0)
+		value = value / 0.0001;
+	if (value > 65535.0) value = 65535.0;
+	return (uint16_t)(value + 0.5);
 }
 
 void dovi_output_metadata_info(int fd, uint32_t blob_id)
@@ -3667,7 +3671,7 @@ void ofxRPI4Window::updateHDR_Infoframe(hdmi_eotf eotf, int idx)
 	// (per AGENTS.md) and rebuilds this struct on every page flip; reading
 	// from conf each call keeps the live blob in sync with what the user
 	// (or pgsethdr) last wrote to /etc/PGenerator/PGenerator.conf.
-	double pg_min_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "min_luma", 0.005);
+	double pg_min_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "min_luma", 50.0);
 	double pg_max_luma = pg_read_conf_double(PG_HDR_CONF_PATH, "max_luma", 1000.0);
 	int    pg_max_cll  = pg_read_conf_int(PG_HDR_CONF_PATH, "max_cll", 1000);
 	int    pg_max_fall = pg_read_conf_int(PG_HDR_CONF_PATH, "max_fall", 400);

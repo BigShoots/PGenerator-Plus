@@ -205,7 +205,8 @@ static void read_config(struct config_state *cfg) {
  cfg->primaries = 1;
  cfg->eotf = 0;
  cfg->max_luma = 1000;
- cfg->min_luma = 0.005;
+ /* conf min_luma is CTA-861 wire units (0.0001 cd/m^2), matching 1.6. */
+ cfg->min_luma = 50;
  cfg->max_cll = 1000;
  cfg->max_fall = 400;
  parse_int("/etc/PGenerator/PGenerator.conf", "is_hdr", &cfg->is_hdr);
@@ -224,10 +225,15 @@ static uint16_t coord_to_u16(double value) {
  return (uint16_t)((value / 0.00002) + 0.5);
 }
 
+/* conf min_luma is already the CTA-861 wire field (units of 0.0001 cd/m^2),
+ * matching stock PGenerator 1.6. Values in (0, 1) are treated as legacy Plus
+ * nits (e.g. 0.005) so older conf files do not collapse to min_dml=0. */
 static uint16_t min_luma_to_u16(double value) {
  if (value < 0.0) value = 0.0;
- if (value > 6.5535) value = 6.5535;
- return (uint16_t)((value / 0.0001) + 0.5);
+ if (value > 0.0 && value < 1.0)
+  value = value / 0.0001;
+ if (value > 65535.0) value = 65535.0;
+ return (uint16_t)(value + 0.5);
 }
 
 static uint16_t clamp_u16_int(int value) {
