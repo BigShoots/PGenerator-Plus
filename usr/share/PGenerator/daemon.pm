@@ -1765,14 +1765,8 @@ sub pattern_daemon {
       $calman_save_setting->("primaries","$prim_val");
 	      # Set bit depth based on EOTF unless the reference sent or implied a source bit depth.
 	      $calman_save_setting->("max_bpc",$calman_preferred_bpc->($eotf_val >= 2 ? "10" : "8",$eotf_val >= 2));
-      # Luminance metadata. Conf min_luma is CTA-861 wire units
-      # (0.0001 cd/m^2), matching 1.6. Calman MinL is nits.
-      if($hdr_min_luma_present) {
-       my $min_wire=int(($hdr_min_luma / 0.0001) + 0.5);
-       $min_wire=0 if($min_wire < 0);
-       $min_wire=65535 if($min_wire > 65535);
-       $calman_save_setting->("min_luma","$min_wire");
-      }
+      # Luminance metadata
+      $calman_save_setting->("min_luma","$hdr_min_luma") if($hdr_min_luma_present);
       $calman_save_setting->("max_luma","$hdr_max_luma") if($hdr_max_luma > 0);
       $calman_save_setting->("max_cll","$hdr_max_cll") if($hdr_max_cll_present);
       $calman_save_setting->("max_fall","$hdr_max_fall") if($hdr_max_fall_present);
@@ -1968,12 +1962,7 @@ sub pattern_daemon {
      # MINL / HDR_MINL — Minimum mastering display luminance (nits)
      #
      if($type eq "MINL" || $type eq "HDR_MINL") {
-      # Calman MinL is nits; conf stores CTA-861 wire units (0.0001 cd/m^2).
-      my $min_nits=$pattern_cmd+0;
-      my $min_wire=int(($min_nits / 0.0001) + 0.5);
-      $min_wire=0 if($min_wire < 0);
-      $min_wire=65535 if($min_wire > 65535);
-      $calman_save_setting->("min_luma","$min_wire");
+      $calman_save_setting->("min_luma","$pattern_cmd");
       &send_key_to_client($connection,"");
       last;
      }

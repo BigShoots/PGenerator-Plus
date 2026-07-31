@@ -6466,8 +6466,7 @@ sub webui_meter_settings_load (@) {
  my $peak=$pgenerator_conf{"max_luma"};
  $peak=1000 if(!defined $peak || $peak eq "");
  my $min=$pgenerator_conf{"min_luma"};
- # conf min_luma is CTA-861 wire units (0.0001 cd/m^2). Default 50 = 0.005 nits.
- $min=50 if(!defined $min || $min eq "");
+ $min=0.005 if(!defined $min || $min eq "");
  my $delay_default_ms=1000;
  my $meter_target_gamma_auto="";
  my $meter_target_gamut_auto="";
@@ -12779,8 +12778,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <input type="number" id="max_luma" min="0" max="10000" step="1">
    </div>
    <div class="field">
-    <label>Min Luma (x0.0001 nits)</label>
-    <input type="number" id="min_luma" min="0" max="65535" step="1" title="CTA-861 wire units. 50 = 0.005 nits. Matches stock PGenerator 1.6 conf.">
+    <label>Min Luma (nits)</label>
+    <input type="number" id="min_luma" min="0" max="100" step="0.0001">
    </div>
    <div class="field">
     <label>MaxCLL</label>
@@ -12817,8 +12816,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <input type="number" id="dv_max_luma" min="0" max="10000" step="1">
      </div>
      <div class="field">
-      <label>Min Luma (x0.0001 nits)</label>
-      <input type="number" id="dv_min_luma" min="0" max="65535" step="1" title="CTA-861 wire units. 50 = 0.005 nits. Matches stock PGenerator 1.6 conf.">
+      <label>Min Luma (nits)</label>
+      <input type="number" id="dv_min_luma" min="0" max="100" step="0.0001">
      </div>
      <div class="field">
       <label>MaxCLL</label>
@@ -15274,7 +15273,7 @@ function applyConfigState(nextConfig){
  setVal('primaries',config.primaries||'0');
  applyMeterTargetGamutDefault(false);
  document.getElementById('max_luma').value=config.max_luma||'1000';
- document.getElementById('min_luma').value=config.min_luma||'50';
+ document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
@@ -15400,7 +15399,7 @@ function meterSyncHdrMetadata(){
  meterSyncHdrMetadataFieldMirrors();
  if(!meterPeak||!meterMin) return;
  const peakVal=meterHdrMetadataFieldValue('max_luma')||((config&&config.max_luma)||'1000');
- const minVal=meterHdrMetadataFieldValue('min_luma')||((config&&config.min_luma)||'50');
+ const minVal=meterHdrMetadataFieldValue('min_luma')||((config&&config.min_luma)||'0.005');
  meterPeak.value=peakVal;
  meterMin.value=minVal;
 }
@@ -16849,7 +16848,7 @@ function resetDefaults(){
  setVal('eotf','0');
  setVal('primaries','0');
  document.getElementById('max_luma').value='1000';
- document.getElementById('min_luma').value='50';
+ document.getElementById('min_luma').value='0.005';
  document.getElementById('max_cll').value='1000';
 	 document.getElementById('max_fall').value='400';
 	 setVal('dv_transport','standard');
@@ -17913,10 +17912,10 @@ function pgSyncDesktopUtilityDrawer(){
  let metadata=[];
  if(signal==='dv'){
   if(metadataTitle) metadataTitle.textContent='Dolby Vision Metadata';
-  metadata=[['Transport',pgUtilityControlText('dv_transport')],['Map Mode',pgUtilityControlText('dv_map_mode')],['Max Luma',pgUtilityControlText('dv_max_luma')+' nits'],['Min Luma',pgUtilityControlText('dv_min_luma')+' x0.0001'],['MaxCLL',pgUtilityControlText('dv_max_cll')],['MaxFALL',pgUtilityControlText('dv_max_fall')]];
+  metadata=[['Transport',pgUtilityControlText('dv_transport')],['Map Mode',pgUtilityControlText('dv_map_mode')],['Max Luma',pgUtilityControlText('dv_max_luma')+' nits'],['Min Luma',pgUtilityControlText('dv_min_luma')+' nits'],['MaxCLL',pgUtilityControlText('dv_max_cll')],['MaxFALL',pgUtilityControlText('dv_max_fall')]];
  }else if(signal==='hdr10'||signal==='hlg'){
   if(metadataTitle) metadataTitle.textContent='HDR Metadata';
-  metadata=[['EOTF',pgUtilityControlText('eotf')],['Primaries',pgUtilityControlText('primaries')],['Max Luma',pgUtilityControlText('max_luma')+' nits'],['Min Luma',pgUtilityControlText('min_luma')+' x0.0001'],['MaxCLL',pgUtilityControlText('max_cll')],['MaxFALL',pgUtilityControlText('max_fall')]];
+  metadata=[['EOTF',pgUtilityControlText('eotf')],['Primaries',pgUtilityControlText('primaries')],['Max Luma',pgUtilityControlText('max_luma')+' nits'],['Min Luma',pgUtilityControlText('min_luma')+' nits'],['MaxCLL',pgUtilityControlText('max_cll')],['MaxFALL',pgUtilityControlText('max_fall')]];
  }else{
   if(metadataTitle) metadataTitle.textContent='HDMI Metadata';
   metadata=[['EOTF',pgUtilityControlText('eotf')],['Primaries',pgUtilityControlText('primaries')]];
@@ -24783,20 +24782,12 @@ function meterChartMasterPeak(){
  return meterChartHdrPeak();
 }
 
-// conf / UI min_luma is CTA-861 wire units (0.0001 nits). Chart math wants nits.
-function pgMinLumaWireToNits(raw){
- const n=parseFloat(raw);
- if(!isFinite(n)||n<0) return 0;
- // Legacy Plus conf stored nits in (0,1); pass those through as nits.
- if(n>0&&n<1) return n;
- return n*0.0001;
-}
 function meterChartMasterMin(){
  const top=document.getElementById('min_luma');
  const live=top?parseFloat(top.value):NaN;
- const cfg=parseFloat((config&&config.min_luma)||'50');
- if(live>=0&&isFinite(live)) return pgMinLumaWireToNits(live);
- return (cfg>=0&&isFinite(cfg))?pgMinLumaWireToNits(cfg):0.005;
+ const cfg=parseFloat((config&&config.min_luma)||'0.005');
+ if(live>=0&&isFinite(live)) return live;
+ return (cfg>=0&&isFinite(cfg))?cfg:0.005;
 }
 
 function meterChartBt2390Enabled(){
@@ -51168,7 +51159,7 @@ function meterHcfrPreferenceModel(mode,white,black){
  const masterMax=(activeMax>0&&Number.isFinite(activeMax))?activeMax:value('max_luma',mode==='sdr'?100:1000);
  return {
   bt2390BlackStart:1,bt2390WhiteStart:0,bt2390WhiteStart1:25,targetSystemGamma:mode==='hlg'?1.2:1.2,
-  masterMinLuminance:(typeof pgMinLumaWireToNits==='function'?pgMinLumaWireToNits(value('min_luma',50)):value('min_luma',0)*0.0001),masterMaxLuminance:masterMax,
+  masterMinLuminance:value('min_luma',0),masterMaxLuminance:masterMax,
   targetMinLuminance:checked('meterTargetBlackUseMeasured')?(black?Number(black.Y||black.luminance)||0:0):value('meterTargetBlack',0),
   targetMaxLuminance:checked('meterTargetWhiteUseMeasured')?(white?Number(white.Y||white.luminance)||masterMax:masterMax):value('meterTargetWhite',masterMax),
   contentMaxLuminance:value('max_cll',masterMax)||masterMax,frameAverageMaxLuminance:value('max_fall',400)||400,
