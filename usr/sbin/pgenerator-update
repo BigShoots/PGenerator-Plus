@@ -459,7 +459,7 @@ case "$cmd" in
   chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
   chmod +x /usr/bin/PGenerator_*.pl 2>/dev/null || true
   chmod +x /usr/bin/pgenerator-* 2>/dev/null || true
-  chmod +x /usr/bin/spotread 2>/dev/null || true
+  chmod +x /usr/bin/spotread /usr/bin/chartread /usr/bin/colprof /usr/bin/pgsethdr 2>/dev/null || true
   chmod +x /usr/bin/spotread_wrapper.sh 2>/dev/null || true
   chmod +x /usr/bin/meter_*.sh 2>/dev/null || true
   chmod +x /usr/bin/spotread_measure.py 2>/dev/null || true
