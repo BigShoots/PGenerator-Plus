@@ -93,6 +93,30 @@ sub set_pgenerator_conf_runtime(@) {
  $pgenerator_conf{$key}="$value";
 }
 
+# Classic CMD protocol (DeviceControl / custom clients) uses 1.6 wire units for
+# MIN_LUMA: integer steps of 0.0001 nits (e.g. 5 = 0.0005 nits). Plus stores
+# conf min_luma as nits for the WebUI/renderer, so convert at the CMD boundary.
+sub pg_min_luma_cmd_wire_to_nits(@) {
+ my ($wire)=@_;
+ $wire=0 if(!defined($wire) || $wire eq "");
+ $wire=$wire+0;
+ $wire=0 if($wire < 0);
+ $wire=65535 if($wire > 65535);
+ my $nits=$wire * 0.0001;
+ return sprintf("%.10g",$nits);
+}
+
+sub pg_min_luma_cmd_nits_to_wire(@) {
+ my ($nits)=@_;
+ $nits=0 if(!defined($nits) || $nits eq "");
+ $nits=$nits+0;
+ return 0 if($nits <= 0);
+ my $wire=int(($nits / 0.0001) + 0.5);
+ $wire=0 if($wire < 0);
+ $wire=65535 if($wire > 65535);
+ return $wire;
+}
+
 sub dv_metadata_for_map_mode(@) {
  my $dv_map_mode=shift;
  return "3" if(defined $dv_map_mode && $dv_map_mode eq "1");
@@ -886,6 +910,10 @@ sub pgenerator_cmd (@) {
  if($cmd =~/SET_PGENERATOR_CONF_(IS_SDR|IS_HDR|IS_LL_DOVI|IS_STD_DOVI|EOTF|PRIMARIES|MAX_LUMA|MIN_LUMA|MAX_CLL|MAX_FALL|COLOR_FORMAT|COLORIMETRY|RGB_QUANT_RANGE|MAX_BPC|DV_STATUS|DV_INTERFACE|DV_PROFILE|DV_MAP_MODE|DV_MINPQ|DV_MAXPQ|DV_DIAGONAL|MODE_IDX|DV_METADATA|DV_COLOR_SPACE|DV_TRANSPORT|SIGNAL_MODE|CALMAN_MODE_IDX):(.*)/) {
   my $conf_key=lc($1);
   my $conf_value=$2;
+  # 1.6 compatibility: CMD MIN_LUMA is wire units (0.0001 nits), conf is nits.
+  if($conf_key eq "min_luma") {
+   $conf_value=&pg_min_luma_cmd_wire_to_nits($conf_value);
+  }
   &sudo("SET_PGENERATOR_CONF",$conf_key,$conf_value);
   $pgenerator_conf{$conf_key}=$conf_value;
   if($conf_key eq "dv_metadata") {
@@ -1227,6 +1255,10 @@ sub get_cmd_generic(@) {
   foreach my $key (keys(%pgenerator_conf)) {
    next if($key ne $conf_var && $conf_var ne "all");
    $response=$pgenerator_conf{$key};
+   # 1.6 compatibility: CMD MIN_LUMA is wire units; conf stores nits.
+   if($key eq "min_luma") {
+    $response=&pg_min_luma_cmd_nits_to_wire($response);
+   }
    $all_pgenerator_conf.="$key:$response\n";
   }
   $response=encode_base64($all_pgenerator_conf,"") if($conf_var eq "all");
