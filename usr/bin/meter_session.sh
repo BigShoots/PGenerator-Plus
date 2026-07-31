@@ -7,7 +7,7 @@
 # patch series; this is the per-patch equivalent for ad-hoc reads.
 #
 # Usage:
-#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id] [observer]
+#   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id] [observer] [pattern_provider]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
 #   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode]
@@ -48,6 +48,8 @@ case "$OBSERVER" in
  *) OBSERVER="1931_2" ;;
 esac
 export OBSERVER
+PATTERN_PROVIDER="${13:-local}"
+[[ "$PATTERN_PROVIDER" == "companion" ]] || PATTERN_PROVIDER="local"
 
 # SpyderX supports its built-in display calibrations and device-specific CCMX
 # matrices. It does not expose CCSS spectral-sample or manual refresh-override
@@ -84,6 +86,9 @@ LOG_FILE="/tmp/meter_session.log"
 READY_FILE="/tmp/meter_session_ready.signal"
 STARTUP_READY_FILE="/tmp/meter_session_start_ready.signal"
 ACK_FILE="/tmp/meter_session.ack"
+COMPANION_COMMAND_FILE="/tmp/pgen_icc_companion.command.json"
+COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
+COMPANION_SEQUENCE=0
 SETUP_STEP_ID=0
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
@@ -378,13 +383,68 @@ patch_request_body() {
 }
 
 post_patch() {
+ if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
+  post_companion_patch "$@"
+  return $?
+ fi
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
+ if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
+  post_companion_patch "$@"
+  return $?
+ fi
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9")" >/dev/null 2>&1 || true
+}
+
+post_companion_patch() {
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
+ local code_min=0 code_max scale sequence payload tmp deadline ack ack_sequence ack_status
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ code_max="$input_max"
+ if [[ "$signal_range" == "1" ]]; then
+  case "$input_max" in 1023) scale=4 ;; 4095) scale=16 ;; *) scale=1 ;; esac
+  code_min=$((16 * scale)); code_max=$((235 * scale))
+ fi
+ sequence=$(date +%s%3N)
+ (( sequence <= COMPANION_SEQUENCE )) && sequence=$((COMPANION_SEQUENCE + 1))
+ COMPANION_SEQUENCE=$sequence
+ payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma}"
+ tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
+ printf '%s' "$payload" > "$tmp" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
+ chmod 644 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$COMPANION_COMMAND_FILE" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
+ deadline=$((SECONDS + 10))
+ while (( SECONDS < deadline )); do
+  if [[ -f "$COMPANION_ACK_FILE" ]]; then
+   ack=$(cat "$COMPANION_ACK_FILE" 2>/dev/null || true)
+   ack_sequence=$(printf '%s' "$ack" | sed -n 's/.*"sequence"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+   if [[ "$ack_sequence" == "$sequence" ]]; then
+    ack_status=$(printf '%s' "$ack" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [[ "$ack_status" == "ok" ]] && return 0
+    write_state '{"status":"error","message":"The ICC Companion could not render the requested patch"}'
+    return 1
+   fi
+  fi
+  sleep 0.05
+ done
+ write_state '{"status":"error","message":"The ICC Companion did not acknowledge the patch"}'
+ return 1
+}
+
+companion_show_alignment() {
+ [[ "$PATTERN_PROVIDER" == "companion" ]] || return 0
+ local sequence tmp
+ sequence=$(date +%s%3N)
+ (( sequence <= COMPANION_SEQUENCE )) && sequence=$((COMPANION_SEQUENCE + 1))
+ COMPANION_SEQUENCE=$sequence
+ tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
+ printf '{"status":"align","sequence":%s}' "$sequence" > "$tmp" 2>/dev/null || return 0
+ chmod 644 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$COMPANION_COMMAND_FILE" 2>/dev/null || true
 }
 
 # Single-instance lock — refuse to start if another session is alive.
@@ -394,8 +454,8 @@ if ! flock -n 9; then
  exit 0
 fi
 echo $$ > "$PID_FILE"
-printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" "$METER_USB_ID" "$OBSERVER" > "$CONFIG_FILE"
-log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT usb_id=$METER_USB_ID observer=$OBSERVER ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$DISPLAY_TYPE" "$CCSS_FILE" "$REFRESH_RATE" "$DISABLE_AIO" "$METER_PORT" "$REQUIRE_DEVICE_READY" "${METER_AVERAGING:-off}" "$METER_USB_ID" "$OBSERVER" "$PATTERN_PROVIDER" > "$CONFIG_FILE"
+log "session $$ starting (display=$DISPLAY_TYPE ccss=$CCSS_FILE refresh=$REFRESH_RATE aio_off=$DISABLE_AIO port=$METER_PORT usb_id=$METER_USB_ID observer=$OBSERVER provider=$PATTERN_PROVIDER ready_gate=$REQUIRE_DEVICE_READY averaging=${METER_AVERAGING:-off} idle=${IDLE_TIMEOUT}s)"
 startup_marker "pid/config written"
 
 # --- spotread bring-up (mirrors meter_series.sh) ---
@@ -523,6 +583,7 @@ else:
 
 cleanup() {
  log "cleanup: tearing down spotread"
+ companion_show_alignment
  # Ask spotread to quit cleanly, then close its stdin (EOF via the cat pipe).
  # spotread may be mid-reading (an active USB transaction); SIGKILLing it now
  # wedges the Pi's dwc2 USB controller, which then fails the NEXT session with
@@ -1032,8 +1093,11 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 
   # Re-display when the rendered patch changes, including transport fields
   # like signal mode and mastering peak that affect how the same RGB codes map.
-	  if [[ "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" || "$INPUT_MAX" != "$LAST_INPUT_MAX" ]]; then
-	   post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	  if [[ "$PATTERN_PROVIDER" == "companion" || "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" || "$INPUT_MAX" != "$LAST_INPUT_MAX" ]]; then
+	   if ! post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"; then
+	    log "pattern provider failed for $NAME"
+	    continue
+	   fi
 	   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"; LAST_INPUT_MAX="$INPUT_MAX"
 	   fi
 

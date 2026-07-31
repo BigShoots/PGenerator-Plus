@@ -1559,6 +1559,10 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_status();
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/icc/companion/pattern" && $method eq "POST") {
+    my $result=&webui_icc_companion_pattern($body);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/icc/companion/poll") {
     my $result=&webui_icc_companion_poll($request_query);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
@@ -2444,11 +2448,12 @@ sub webui_meter_session_stop_only (@) {
 }
 
 sub webui_meter_session_start (@) {
- my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging,$meter_usb_id,$observer)= @_;
+ my ($display_type,$ccss_file,$refresh_rate,$disable_aio,$config,$signal_mode,$max_luma,$meter_port,$require_device_ready,$averaging,$meter_usb_id,$observer,$pattern_provider)= @_;
  $averaging="" if(!defined($averaging));
  $meter_usb_id="" if(!defined($meter_usb_id));
  $meter_usb_id="" if($meter_usb_id!~/^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$/);
  $observer="1931_2" if(!defined($observer) || $observer!~/^(?:1931_2|1964_10|2015_2|2015_10)$/);
+ $pattern_provider="local" if(!defined($pattern_provider) || $pattern_provider ne "companion");
  my $aio_flag=$disable_aio ? "1" : "0";
  $require_device_ready=0 if(!defined($require_device_ready) || $require_device_ready!~/^1$/);
  $signal_mode=&webui_pattern_signal_mode("") if(!defined($signal_mode) || $signal_mode eq "");
@@ -2466,7 +2471,7 @@ sub webui_meter_session_start (@) {
   # Launch detached as root. The daemon writes its own PID/config files once it
   # grabs the lock; wait for an actionable startup state before reporting success.
   my $started_at=time();
-  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' '$observer' </dev/null >/dev/null 2>&1 &");
+  system("setsid sudo /bin/bash $_meter_session '$display_type' '$ccss_file' '$refresh_rate' '$aio_flag' '$signal_mode' '$max_luma' '$meter_port' '900' '$require_device_ready' '$averaging' '$meter_usb_id' '$observer' '$pattern_provider' </dev/null >/dev/null 2>&1 &");
   my $waited=0;
   # Some CCSS/meter combinations trigger spotread refresh calibration on first
   # start and can legitimately take 35-45 seconds before the helper reaches a
@@ -2588,6 +2593,7 @@ sub webui_meter_read (@) {
  }
  my $observer="1931_2";
  $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
+ my $pattern_provider=($body=~/"pattern_provider"\s*:\s*"companion"/i)?"companion":"local";
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   # SpyderX exposes four built-in display calibrations and device-specific
   # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
@@ -2753,7 +2759,7 @@ sub webui_meter_read (@) {
  # run. The per-read $avg_mode flows through the READ command line, not the
  # session config -- otherwise the persistent session respawns (35-90s on
  # OLED) every time the per-read mode flips at the 5 cd/m2 trigger.
- my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer";
+ my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer|$pattern_provider";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
  if($needs_restart) {
@@ -2788,7 +2794,9 @@ sub webui_meter_read (@) {
   # does not need to call back into the active HTTP request path.
   if($display_type eq "c") {
    my $startup_level=int($signal_range)==1 ? int(16 + 0.8 * 219 + .5) : int(0.8 * 255 + .5);
-   &webui_pattern('{"name":"patch","r":'.$startup_level.',"g":'.$startup_level.',"b":'.$startup_level.',"size":100,"input_max":255,"signal_mode":"'.$signal_mode.'","max_luma":'.$max_luma.',"signal_range":"'.$signal_range.'","transport_signal_range":"'.$transport_signal_range.'"}');
+   my $startup_patch='{"name":"patch","r":'.$startup_level.',"g":'.$startup_level.',"b":'.$startup_level.',"size":100,"input_max":255,"signal_mode":"'.$signal_mode.'","max_luma":'.$max_luma.',"signal_range":"'.$signal_range.'","transport_signal_range":"'.$transport_signal_range.'"}';
+   if($pattern_provider eq "companion") { &webui_icc_companion_pattern($startup_patch); }
+   else { &webui_pattern($startup_patch); }
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
@@ -2796,7 +2804,7 @@ sub webui_meter_read (@) {
   # METER_AVERAGING, not the per-read $avg_mode -- they have to match the
   # 7th field of want_config so the new session doesn't immediately look
   # like a config-changed session to the next request.
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer,$pattern_provider)) {
     return &webui_meter_session_start_error_json($want_config);
   }
  }
@@ -2828,7 +2836,7 @@ sub webui_meter_read (@) {
   &log("WebUI: meter session command send failed, restarting daemon");
   &webui_meter_session_stop();
   &webui_meter_read_state_write('{"status":"starting"}');
-  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer)) {
+  if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer,$pattern_provider)) {
      &log("WebUI: meter session restart failed after FIFO send error");
      return &webui_meter_session_start_error_json($want_config);
   }
@@ -6026,7 +6034,7 @@ sub webui_meter_settings_save (@) {
  my ($body)=@_;
  # Validate: only allow known keys. New color-science keys are additive.
  my %allowed=map {$_=>1} qw(
-	 display_type ccss_override target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
+	 display_type ccss_override pattern_provider target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
@@ -6353,6 +6361,45 @@ sub webui_icc_companion_status (@) {
  return '{"status":"ok","connected":false}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
  return '{"status":"ok","connected":true,'.$content;
+}
+
+# Publish a calibration-card patch to the paired target-computer companion.
+# The companion ignores patch size and fills its resizable window, but retain
+# the field in the wire format for compatibility with profiling sessions.
+sub webui_icc_companion_pattern (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Invalid companion pattern request"}' unless(defined($body) && length($body)<8192);
+ my $connected=&webui_icc_companion_status();
+ return '{"status":"error","message":"ICC Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
+ my $sequence=int(Time::HiRes::time()*1000);
+ if(open(my $fh,"<",$_icc_companion_command_file)) {
+  local $/; my $previous=<$fh>||""; close($fh);
+  my $last=0; $last=$1 if($previous=~/"sequence"\s*:\s*(\d+)/);
+  $sequence=$last+1 if($sequence<=$last);
+ }
+ my $payload="";
+ if($body=~/"(?:name|status)"\s*:\s*"(?:stop|align|alignment)"/i) {
+  $payload='{"status":"align","sequence":'.$sequence.'}';
+ } else {
+  my ($r,$g,$b)=(0,0,0);
+  $r=$1 if($body=~/"(?:r|patch_r)"\s*:\s*(\d+)/);
+  $g=$1 if($body=~/"(?:g|patch_g)"\s*:\s*(\d+)/);
+  $b=$1 if($body=~/"(?:b|patch_b)"\s*:\s*(\d+)/);
+  my $input_max=255; $input_max=$1 if($body=~/"(?:input_max|patch_input_max)"\s*:\s*(\d+)/);
+  $input_max=255 if($input_max<1 || $input_max>65535);
+  $r=$input_max if($r>$input_max); $g=$input_max if($g>$input_max); $b=$input_max if($b>$input_max);
+  my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/); $size=100 if($size<1 || $size>100);
+  my $signal_mode="sdr"; $signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"(sdr|hdr10|hlg|dv)"/);
+  my $max_luma=1000; $max_luma=$1 if($body=~/"max_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $signal_range=""; $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
+  my $scale=1; $scale=4 if($input_max==1023); $scale=16 if($input_max==4095);
+  my $code_min=($signal_range eq "1") ? 16*$scale : 0;
+  my $code_max=($signal_range eq "1") ? 235*$scale : $input_max;
+  $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).'}';
+ }
+ return &webui_icc_companion_write_atomic($_icc_companion_command_file,$payload,0644)
+  ? '{"status":"ok","sequence":'.$sequence.'}'
+  : '{"status":"error","message":"Could not send a pattern to the ICC Companion"}';
 }
 
 sub webui_icc_companion_download (@) {
@@ -11734,6 +11781,11 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
 .meter-card-header-col-profile{flex:2 1 440px;max-width:820px}
+.meter-card-header-col-generator{flex:1 1 210px;max-width:310px}
+.meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
+.meter-companion-downloads{display:none;gap:5px;flex-wrap:wrap;margin-top:3px}
+.meter-card-header-col-generator.companion-selected .meter-companion-downloads{display:flex}
+.meter-companion-downloads .btn{font-size:.6rem;padding:2px 6px}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
 /* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
 .meter-card-header-select{width:100%;max-width:100%;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 24px 6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
@@ -12887,6 +12939,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div id="meterCcssCapabilityNote" style="display:none;font-size:.64rem;color:var(--text2)">SpyderX supports matching CCMX profiles, but not CCSS profiles.</div>
      </div>
     </div>
+   </div>
+   <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
+    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. ICC Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading." aria-label="Patch generator help">?</span></label>
+    <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
+     <option value="local">PGenerator output</option>
+     <option value="companion">ICC Companion</option>
+    </select>
+    <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
+    <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download KDE/Linux</button></div>
    </div>
   </div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
@@ -27942,7 +28003,8 @@ function meterBuildManualReadPayload(step,ctx){
   // single-step tools) carry the operator's chosen CCSS, not just the tech.
   ccss_override:(opts&&typeof opts.ccss_override==='string')?opts.ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,
   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-  target_gamma:meterAutoCalTargetGammaValue()
+  target_gamma:meterAutoCalTargetGammaValue(),
+  pattern_provider:meterCalibrationReadPatternProvider()
  });
  if(step){
   meterApplyReadStepPayload(readPayload,step);
@@ -28904,6 +28966,7 @@ function meterSeriesSpectroSetupApplyFromStatus(r){
 async function meterReadOnce(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+ if(!(await meterCalibrationRequirePatternProvider())) return;
  if(meterSeriesRunning){toast('Series scan is running \u2014 stop it first',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()) return;
  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
@@ -29015,6 +29078,7 @@ async function meterToggleContinuous(){
   meterStopContinuous();
  } else {
   if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
+  if(!(await meterCalibrationRequirePatternProvider())) return;
   if(!meterEnsureAppliedGeneratorSettings()) return;
   // Enter manual continuous mode and cut off any leftover series state.
   const _priorSeriesRunning=meterSeriesRunning;
@@ -29088,7 +29152,7 @@ async function meterContinuousLoop(){
   const delay=meterDelayMs();
 	  const requestedStep=meterClonePatchStep(meterCurrentPatchStep);
   const patternSignalRange=meterMeasurementPatchSignalRange();
-	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue()});
+	  const readPayload=meterMeasurementSignalContext({display_type:dtype,refresh_rate:rr||undefined,delay_ms:delay,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),pattern_provider:meterCalibrationReadPatternProvider()});
 	  if(requestedStep){
 	   meterApplyReadStepPayload(readPayload,requestedStep);
 	   readPayload.patch_size=getMeterPatchSize();
@@ -29361,10 +29425,10 @@ async function meterStop(){
    const stopResult=await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:15000});
    stopRequestConfirmed=!!(stopResult&&stopResult.status==='ok');
   }
-  // Blank the patch immediately, but leave the modal and interaction lock in
-  // place until the helper has reaped spotread.
+  // Blank the Pi output or restore the companion alignment pattern immediately,
+  // but leave the modal and interaction lock in place until spotread exits.
   try{
-   await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+   await meterStopCalibrationPattern();
    patternStopped=true;
   }catch(e){}
   if(hadSeriesStop) await waitForSeriesTeardown();
@@ -29375,7 +29439,7 @@ async function meterStop(){
  }finally{
   if(!patternStopped){
    try{
-    await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+    await meterStopCalibrationPattern();
    }catch(e){}
   }
   meterActionPending=false;
@@ -32825,6 +32889,60 @@ function meterIccDownloadCompanion(platform){
  window.location.href='/api/icc/companion/download?platform='+encodeURIComponent(platform);
 }
 
+let meterCalibrationCompanionTimer=null;
+function meterCalibrationPatternProvider(){
+ const select=document.getElementById('meterPatternProvider');
+ return select&&select.value==='companion'?'companion':'local';
+}
+function meterCalibrationUsesCompanion(){ return meterCalibrationPatternProvider()==='companion'; }
+function meterCalibrationReadPatternProvider(){
+ if(meterAutoCalRunning||meterLg3dAutoCalRunning||meterDvAutoCalProfileRunning) return 'local';
+ return meterCalibrationPatternProvider();
+}
+function meterCalibrationShowCompanionStatus(connected,text){
+ const target=document.getElementById('meterCalibrationCompanionStatus');
+ if(!target) return;
+ target.textContent='';
+ if(!meterCalibrationUsesCompanion()) return;
+ const dot=document.createElement('span');
+ dot.style.color=connected?'var(--success)':'var(--danger)';
+ dot.textContent='\u25cf';
+ target.append(dot,document.createTextNode(' '+text));
+}
+function meterCalibrationSyncPatternProviderUi(){
+ const col=document.getElementById('meterPatternProviderCol');
+ if(col) col.classList.toggle('companion-selected',meterCalibrationUsesCompanion());
+ if(meterCalibrationUsesCompanion()){
+  if(!meterCalibrationCompanionTimer) meterCalibrationCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
+ }else{
+  if(meterCalibrationCompanionTimer){clearInterval(meterCalibrationCompanionTimer);meterCalibrationCompanionTimer=null;}
+  meterCalibrationShowCompanionStatus(false,'');
+ }
+}
+async function meterCalibrationPatternProviderChanged(){
+ if(meterActionPending||meterSeriesRunning||meterContinuousActive){
+  toast('Stop the active measurement before changing the patch generator',true);
+  const select=document.getElementById('meterPatternProvider');
+  if(select) select.value=select.dataset.previousValue||'local';
+  return;
+ }
+ const select=document.getElementById('meterPatternProvider');
+ if(select) select.dataset.previousValue=select.value;
+ meterCalibrationSyncPatternProviderUi();
+ saveMeterSettings();
+ const connected=await meterIccRefreshCompanionStatus();
+ if(meterCalibrationUsesCompanion()&&connected){
+  try{ await fetchJSON('/api/icc/companion/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'align'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ }
+}
+async function meterCalibrationRequirePatternProvider(){
+ if(meterCalibrationReadPatternProvider()!=='companion') return true;
+ const connected=await meterIccRefreshCompanionStatus();
+ if(connected) return true;
+ toast('Run the paired ICC Companion on the target computer before reading',true);
+ return false;
+}
+
 function meterIccShowCompanionStatus(connected,text){
  const target=document.getElementById('meterIccCompanionStatus');
  if(!target) return;
@@ -32845,10 +32963,11 @@ async function meterIccRefreshCompanionStatus(){
    const client=String(state.client||'target computer');
    const renderer=String(state.renderer||'renderer');
    meterIccShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
-  }else if(!meterIccCompanionConnected) meterIccShowCompanionStatus(false,'Companion not connected');
+   meterCalibrationShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
+  }else if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }catch(error){
   meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
-  if(!meterIccCompanionConnected) meterIccShowCompanionStatus(false,'Companion not connected');
+  if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }
  meterIccSyncUi();
  return meterIccCompanionConnected;
@@ -36236,8 +36355,10 @@ async function meterDisplayPatch(step,options){
 	 const payload=meterMeasurementSignalContext({name:'patch',r:freshStep.r,g:freshStep.g,b:freshStep.b,size:psize,input_max:meterStepInputMax(freshStep),signal_range:signalRange||undefined,pattern_session:String(displayToken)});
 	 if(options&&options.allowAfterStop) payload.allow_after_stop=true;
 	 if(displayToken!==meterPatternDisplayToken) return;
-	 await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},
+	 const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
+	 const result=await fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(payload),_quiet:true,_timeoutMs:10000});
+	 if(result&&result.status==='error') toast(result.message||'Could not display the patch',true);
 }
 
 let meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
@@ -37533,7 +37654,12 @@ function meterAutoCalCloseComplete(){
 // (which calls this via meterAutoCalCloseCompleteAction). Call it the moment a
 // run reaches a terminal state so the panel returns to idle immediately.
 function meterClearDisplayPattern(){
- try{ fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(function(){}); }catch(e){}
+ const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
+ try{ fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(function(){}); }catch(e){}
+}
+async function meterStopCalibrationPattern(){
+ const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
+ return fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
 }
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
@@ -44202,6 +44328,7 @@ async function meterRunSeries(options){
   : [];
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return false;}
+ if(!(await meterCalibrationRequirePatternProvider())) return false;
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
  if(!meterEnsureAppliedGeneratorSettings()) return false;
  meterHdrAutoCalChartContextHeld=false;
@@ -44376,7 +44503,7 @@ async function meterRunSeries(options){
   return false;
  };
  try{
-	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_has_saved_white_reference:selectionHasSavedWhite,series_has_saved_black_reference:selectionHasSavedBlack,series_reference_white_code:meterCodeFromSignalPercent(100),series_reference_black_code:meterCodeFromSignalPercent(0),series_reference_input_max:meterPatchInputMax(),series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,pattern_provider:meterCalibrationReadPatternProvider(),ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_has_saved_white_reference:selectionHasSavedWhite,series_has_saved_black_reference:selectionHasSavedBlack,series_reference_white_code:meterCodeFromSignalPercent(100),series_reference_black_code:meterCodeFromSignalPercent(0),series_reference_input_max:meterPatchInputMax(),series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
 		  // Always stamp input_max: ColorChecker/sat client steps often omit it,
 		  // and the server defaults missing input_max to 255 — clamping 10-bit
 		  // chroma codes and wrecking stimulus on Read Selection custom_steps.
@@ -52853,6 +52980,7 @@ function saveMeterSettings(){
   // string when on the "Auto" option, which the server resolves to the
   // $_dtype_info default for the chosen display_type).
   ccss_override:(()=>{ const v=val('meterCcssProfile'); return (v==='custom_editor')?'':v; })(),
+  pattern_provider:meterCalibrationPatternProvider(),
   ccss_create_display_type:meterCcssCreateDisplayTypeValue(),
   low_light_enabled:(()=>{ try{ const e=document.getElementById('meterLowLightEnabled'); return !!(e&&e.checked); }catch(e){ return false; } })(),
   low_light_mode:(()=>{ try{ const e=document.getElementById('meterLowLightMode'); return String((e&&e.value)||'off'); }catch(e){ return 'off'; } })(),
@@ -53067,6 +53195,10 @@ async function loadMeterSettings(){
 	 meterApplyPatternInsertionDefaults(true);
 	 meterSecondsLoadValue('meterPatternDelay',s.pattern_delay,0);
 	 if(s.patch_size) document.getElementById('meterPatchSize').value=s.patch_size;
+ setVal('meterPatternProvider',s.pattern_provider==='companion'?'companion':'local');
+ const patternProviderEl=document.getElementById('meterPatternProvider');
+ if(patternProviderEl) patternProviderEl.dataset.previousValue=patternProviderEl.value;
+ meterCalibrationSyncPatternProviderUi();
  setVal('meterTwoPointLow', s.grey_two_point_low, String(METER_TWO_POINT_DEFAULTS.low));
  setVal('meterTwoPointHigh', s.grey_two_point_high, String(METER_TWO_POINT_DEFAULTS.high));
  meterSyncTwoPointInputs();
