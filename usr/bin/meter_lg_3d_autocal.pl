@@ -4410,7 +4410,7 @@ eval {
  # Volume multi-anchor WRGB drift: re-sample W/R/G/B periodically and map every
  # profile XYZ back to the first-anchor epoch before residual/matrix solve.
  my $volume_drift_on=is_volume_profile_method($method) && !$config->{"fixture_mode"}
-  && !($config->{"volume_drift_disable"}+0);
+  && !(defined($config->{"volume_drift_disable"}) && ($config->{"volume_drift_disable"}+0));
  my $drift_interval_s=(defined($config->{"drift_interval_s"}) && ($config->{"drift_interval_s"}+0) > 0)
   ? ($config->{"drift_interval_s"}+0) : 180;
  my $drift_interval_patches=(defined($config->{"drift_interval_patches"}) && ($config->{"drift_interval_patches"}+0) > 0)
