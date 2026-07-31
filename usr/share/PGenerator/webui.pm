@@ -19860,9 +19860,24 @@ function meterGreyCodeRange(){
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:876}:{min:16,span:219};
  const eightBitRange=(meterGreyscaleUsesFullSourceRange()||!meterPatchUsesVideoRange())?{min:0,span:255}:{min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
  if(meterPatchBitDepth()===10){
-  // 8-bit -> 10-bit: full range scales by 1023/255=4.0117; limited by *4
-  // with min offset (16*4=64). Round to nearest integer.
-  return {min:Math.round(eightBitRange.min*4),span:Math.round(eightBitRange.span*4)};
+  // Scale the ENDPOINTS, not the span.
+  //
+  // This used to be span*4, which the comment above it already contradicted
+  // ("full range scales by 1023/255"). Full range came out 0..1020, so 100%
+  // white went on the wire as 1020 instead of 1023 -- a real signal error at
+  // peak, not just a chart-matching one, and PQ is least forgiving exactly
+  // there. Limited was unaffected because its endpoints happen to be exact
+  // <<2 mappings.
+  //
+  // Full scale is full scale at either depth: 8-bit 255 IS 10-bit 1023.
+  // Sub-full-scale endpoints (legal 16..235) are exact <<2 mappings
+  // (64..940), so they must keep using *4 rather than being stretched to
+  // full scale.
+  const min8=eightBitRange.min;
+  const max8=eightBitRange.min+eightBitRange.span;
+  const min10=Math.round(min8*4);
+  const max10=(max8>=255)?1023:Math.round(max8*4);
+  return {min:min10,span:max10-min10};
  }
  return eightBitRange;
 }
