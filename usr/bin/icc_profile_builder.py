@@ -21,7 +21,12 @@ import sys
 import tempfile
 
 
-PROFILE_TYPES = {"sdr": "SDR display", "kde-hdr": "KDE Plasma HDR", "windows-hdr": "Windows HDR"}
+PROFILE_TYPES = {
+    "sdr": "SDR display",
+    "windows-sdr": "Windows SDR hardware calibration",
+    "kde-hdr": "KDE Plasma HDR",
+    "windows-hdr": "Windows HDR",
+}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
@@ -196,7 +201,78 @@ def s15fixed16(value):
     return struct.pack(">i", int(round(value * 65536.0)))
 
 
-def mhc2_payload(profile_type, black, white, primaries):
+def srgb_to_linear(value):
+    value = max(0.0, min(1.0, value))
+    if value <= 0.04045:
+        return value / 12.92
+    return ((value + 0.055) / 1.055) ** 2.4
+
+
+def monotonic_channel_samples(rows, black, primary, channel):
+    axis = [primary["xyz"][index] - black["xyz"][index] for index in range(3)]
+    denominator = sum(value * value for value in axis)
+    if denominator <= 1e-12:
+        fail("Measured channel response is invalid")
+    samples = []
+    for row in rows:
+        rgb = row["rgb"]
+        if any(rgb[index] > 0.002 for index in range(3) if index != channel):
+            continue
+        vector = [row["xyz"][index] - black["xyz"][index] for index in range(3)]
+        response = sum(vector[index] * axis[index] for index in range(3)) / denominator
+        samples.append((rgb[channel], max(0.0, min(1.0, response))))
+    samples.sort(key=lambda item: item[0])
+    merged = []
+    for code, response in samples:
+        if merged and abs(code - merged[-1][0]) < 1e-7:
+            merged[-1] = (code, (merged[-1][1] + response) * 0.5)
+        else:
+            merged.append((code, response))
+    if len(merged) < 5 or merged[0][0] > 0.002 or merged[-1][0] < 0.998:
+        fail("Windows SDR calibration requires black-to-primary channel ramps")
+    monotonic = []
+    previous = 0.0
+    for code, response in merged:
+        previous = max(previous, response)
+        monotonic.append((code, previous))
+    peak = monotonic[-1][1]
+    if peak <= 1e-6:
+        fail("Measured channel response has no usable range")
+    return [(code, response / peak) for code, response in monotonic]
+
+
+def invert_channel_response(samples, target):
+    if target <= samples[0][1]:
+        return samples[0][0]
+    for index in range(1, len(samples)):
+        x0, y0 = samples[index - 1]
+        x1, y1 = samples[index]
+        if target <= y1:
+            if y1 <= y0 + 1e-12:
+                return x1
+            fraction = (target - y0) / (y1 - y0)
+            return x0 + fraction * (x1 - x0)
+    return samples[-1][0]
+
+
+def windows_sdr_adjustment_luts(rows, black, primaries, entries):
+    luts = []
+    for channel in range(3):
+        samples = monotonic_channel_samples(rows, black, primaries[channel], channel)
+        values = []
+        previous = 0.0
+        for index in range(entries):
+            encoded = index / float(entries - 1)
+            value = invert_channel_response(samples, srgb_to_linear(encoded))
+            previous = max(previous, max(0.0, min(1.0, value)))
+            values.append(previous)
+        values[0] = 0.0
+        values[-1] = 1.0
+        luts.append(values)
+    return luts
+
+
+def mhc2_payload(profile_type, black, white, primaries, rows):
     physical = measured_primary_matrix(black, white, primaries)
     if profile_type == "windows-hdr":
         wire = xy_matrix(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046)), (0.3127, 0.3290))
@@ -219,14 +295,19 @@ def mhc2_payload(profile_type, black, white, primaries):
     for row in adjustment:
         for value in (row[0], row[1], row[2], 0.0):
             data.extend(s15fixed16(value))
-    # Identity adjustment curves are deliberate. Windows already supplies the
-    # active wire transfer function (PQ for HDR); baking PQ into this tag would
-    # apply it twice. The measured primary/white correction lives in the matrix.
-    for _channel in range(3):
+    # MHC2 curves operate after Windows applies the wire transfer function.
+    # HDR keeps identity curves so PQ is not applied twice. SDR inverts each
+    # measured channel ramp so the resulting scanout follows the sRGB wire
+    # response while the matrix corrects primaries and white point.
+    if profile_type == "windows-sdr":
+        luts = windows_sdr_adjustment_luts(rows, black, primaries, entries)
+    else:
+        luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
+    for values in luts:
         data.extend(b"sf32" + b"\0\0\0\0")
-        for index in range(entries):
-            data.extend(s15fixed16(index / float(entries - 1)))
-    return bytes(data), adjustment
+        for value in values:
+            data.extend(s15fixed16(value))
+    return bytes(data), adjustment, luts
 
 
 def xyz_tag(xyz):
@@ -320,8 +401,8 @@ def build(payload, output_dir):
     if profile_type not in PROFILE_TYPES:
         fail("Unsupported ICC profile type")
     signal_mode = str(payload.get("signal_mode", "")).lower()
-    if profile_type == "sdr" and signal_mode != "sdr":
-        fail("The standard SDR profile requires SDR output")
+    if profile_type in ("sdr", "windows-sdr") and signal_mode != "sdr":
+        fail("SDR profiles require SDR output")
     if profile_type in ("kde-hdr", "windows-hdr") and signal_mode != "hdr10":
         fail("HDR ICC profiles require HDR10 (PQ) output")
     rows = normalize_measurements(payload)
@@ -334,18 +415,25 @@ def build(payload, output_dir):
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, 0o755)
     stem = safe_basename(payload.get("name", "PGenerator display profile"))
-    suffix = {"sdr": "SDR", "kde-hdr": "KDE-HDR", "windows-hdr": "Windows-HDR"}[profile_type]
+    suffix = {
+        "sdr": "SDR",
+        "windows-sdr": "Windows-SDR-MHC2",
+        "kde-hdr": "KDE-HDR",
+        "windows-hdr": "Windows-HDR",
+    }[profile_type]
     filename = "{}-{}.icc".format(stem, suffix)
     output_path = os.path.join(output_dir, filename)
     run_colprof(payload, ti3, output_path)
     matrix = None
-    if profile_type == "windows-hdr":
+    adjustment_luts = None
+    if profile_type in ("windows-sdr", "windows-hdr"):
         with open(output_path, "rb") as handle:
             profile = handle.read()
-        full_frame_white = full_frame_rows[0]
-        mhc2, matrix = mhc2_payload(profile_type, black, white, primaries)
-        # lumi is max full-frame luminance. Peak and minimum live in MHC2.
-        profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, full_frame_white["xyz"][1], 0.0))})
+        mhc2, matrix, adjustment_luts = mhc2_payload(profile_type, black, white, primaries, profile_rows)
+        # lumi is max full-frame luminance. SDR profiles use the measured
+        # profiling white; HDR has a dedicated full-frame measurement.
+        luminance = full_frame_rows[0]["xyz"][1] if full_frame_rows else white["xyz"][1]
+        profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
         with open(output_path, "wb") as handle:
             handle.write(profile)
     size = os.path.getsize(output_path)
@@ -359,6 +447,7 @@ def build(payload, output_dir):
         "full_frame_white_nits": full_frame_rows[0]["xyz"][1] if full_frame_rows else None,
         "black_nits": black["xyz"][1],
         "mhc2_matrix": matrix,
+        "mhc2_lut_entries": len(adjustment_luts[0]) if adjustment_luts else None,
     }
 
 

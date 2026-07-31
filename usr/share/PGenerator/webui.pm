@@ -13498,6 +13498,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label for="meterIccProfileType">Profile type</label>
        <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
         <option value="sdr">Standard SDR ICC for color-managed applications</option>
+        <option value="windows-sdr">Windows SDR calibration (MHC2)</option>
         <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
         <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
        </select>
@@ -32862,6 +32863,11 @@ function meterIccProfileInfo(type){
    description:'Creates a measured ICC v2 matrix and per-channel shaper profile with ArgyllCMS. Use it for SDR color-managed applications on Windows, KDE Plasma, macOS and other ICC-aware systems.',
    compatibility:'This profile has no video-card calibration curve. On Windows 11 it affects ICC-aware applications, not the unmanaged desktop or raw Companion verification patches. Use an ICC-aware application to verify it.'
   },
+  'windows-sdr':{
+   mode:'sdr',
+   description:'Creates a Windows MHC2 hardware-calibration profile for SDR. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the sRGB wire curve.',
+   compatibility:'Requires Windows 10 version 2004 or newer, Windows 11 recommended, a supported WDDM driver and GPU. Install the profile and set it as the default for this display. Windows then loads the correction automatically, including for raw Companion verification patches.'
+  },
   'kde-hdr':{
    mode:'hdr10',
    description:'Creates a measured ICC profile for the separate HDR profile slot added in KDE Plasma 6.7. Measure with the output in HDR10 (PQ), then select the downloaded file as the display HDR ICC profile in Plasma.',
@@ -32907,7 +32913,8 @@ function meterIccPatchFractions(quality){
 }
 
 function meterIccSteps(quality,profileType){
- const inputMax=profileType==='sdr'?255:1023;
+ const hdr=profileType==='kde-hdr'||profileType==='windows-hdr';
+ const inputMax=hdr?1023:255;
  const code=value=>Math.round(Math.max(0,Math.min(1,value))*inputMax);
  const steps=meterIccPatchFractions(quality).map((patch,index)=>({
   ire:index,
@@ -33149,7 +33156,7 @@ async function meterIccRetryBuild(){
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||String((readings[0]||{}).name)!=='ICC White') throw new Error('No completed ICC measurements are available');
   meterIccRunConfig={
    profile_type:type,name,quality,signal_mode:info.mode,steps:[],
-   code_min:0,code_max:type==='sdr'?255:1023,
+   code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
   await meterIccBuild(readings);
@@ -33202,7 +33209,7 @@ async function meterIccStart(){
  meterIccSyncUi();
  meterIccRunConfig={
   profile_type:type,name,quality,signal_mode:mode,steps,
-  code_min:0,code_max:type==='sdr'?255:1023,
+  code_min:0,code_max:mode==='sdr'?255:1023,
   meter_name:meterSelectedMeasurementLabel(null)
  };
  try{
@@ -33311,7 +33318,10 @@ async function meterIccBuild(readings){
   delete payload.steps;
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:110000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
-  if(status) status.textContent='Profile created: '+response.file+'. Download it below.';
+  if(status){
+   const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
+   status.textContent='Profile created: '+response.file+'. Download it below.'+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
+  }
   const retry=document.getElementById('meterIccRetryBuildBtn');
   if(retry) retry.style.display='none';
   toast('ICC profile created');
