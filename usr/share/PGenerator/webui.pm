@@ -4558,10 +4558,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
-  # Saturation sweep runs at a SUB-PEAK level so sub-100% saturations do not
-  # clip to white. Driving the sweep at full level (100%) pushes every channel
-  # to the top of PQ where the panel clips, crushing the saturation ratio to
-  # white for every patch except the pure 100%-saturation primaries.
+  # The native sweep runs at a sub-peak level so sub-100% saturations do not
+  # clip to white. HCFR authors a different, constant-Y sequence: SDR and HLG
+  # use a unit-linear reference, while HDR10 maps that reference to HCFR's
+  # fixed 94.37844 cd/m2 diffuse white before applying the PQ OETF.
   my $level_pct=((($signal_mode eq "hdr10") || ($signal_mode eq "dv")) ? 50 : 75);
   my $hcfr_constant_luminance=($points==25)?1:0;
   # $max_code is the outer-scope bit-depth-aware $chroma_max_code set
@@ -4610,6 +4610,34 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    $level_code=int($min_code + $level_encoded*$span_code + .5);
   }
   my $level_signal=$span_code>0?($level_code-$min_code)/$span_code:0;
+  my $hcfr_pq_reference_nits=94.37844;
+  my $hcfr_level_linear=1;
+  $hcfr_level_linear=$hcfr_pq_reference_nits/10000 if($signal_mode eq "hdr10");
+  # HCFR has no Dolby Vision generator mode. Preserve PGenerator's existing
+  # safe DV adaptation instead of presenting an invented full-scale stimulus.
+  $hcfr_level_linear=0.5 if($signal_mode eq "dv");
+  my $encode_hcfr_channel=sub {
+   my ($linear)=@_;
+   $linear=0 if(!defined $linear || $linear < 0);
+   $linear=1 if($linear > 1);
+   my $signal=0;
+   if($signal_mode eq "hdr10") {
+    $signal=&webui_pattern_pq_encode_normalized($linear*10000);
+   } elsif($signal_mode eq "hlg") {
+    # ITU-R BT.2100 HLG OETF, matching HCFR getL_EOTF(..., mode=-7).
+    $signal=($linear<=1/12)
+     ? sqrt(3*$linear)
+     : 0.17883277*log(12*$linear-0.28466892)+0.55991073;
+   } elsif($signal_mode eq "dv") {
+    $signal=$linear**(1/2.2);
+   } else {
+    # HCFR fixes saturation-pattern encoding at gamma 2.22, independently of
+    # the analysis gamma selected by the user.
+    $signal=$linear**(1/2.22);
+   }
+   $signal=0 if($signal<0);$signal=1 if($signal>1);
+   return int($min_code+$signal*$span_code+.5);
+  };
   # The two DV saturation-fraction remaps that used to live here are gone.
   # Absolute applied  f + 0.8*f*(1-f)  and Relative  f - 0.8*f*f*(1-f), so a
   # patch labelled "Red 25%" actually targeted 40% saturation (25/50/75/100 ->
@@ -4638,7 +4666,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    my $mix_sum=$mix_X+$mix_Y+$mix_Z;
   my $px=$mix_sum>0?$mix_X/$mix_sum:$target_wx;
   my $py=$mix_sum>0?$mix_Y/$mix_sum:$target_wy;
-   foreach my $sat (25,50,75,100) {
+   my @sat_levels=$hcfr_constant_luminance ? (0,25,50,75,100) : (25,50,75,100);
+   foreach my $sat (@sat_levels) {
     my $f=$sat/100;
     my $tx=$target_wx+$f*($px-$target_wx);
     my $ty=$target_wy+$f*($py-$target_wy);
@@ -4652,24 +4681,27 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
 	     if($hcfr_constant_luminance) {
 	      # HCFR saturation sweeps keep Y fixed at the endpoint luma K while
-	      # chromaticity moves from white to the primary/secondary. Preserve
-	      # PGenerator's safe sub-peak signal level, but do not normalize the
-	      # intermediate RGB vector by its maximum channel.
+	      # chromaticity moves from white to the primary/secondary. Each hue has
+	      # its own 0% neutral (RGB=K), so all five HCFR CHC slots are measured.
 	      $rl*=$mix_Y;$gl*=$mix_Y;$bl*=$mix_Y;
-	      $target_Yn_for_step=$level_linear*$mix_Y;
+	      $target_Yn_for_step=($signal_mode eq "hdr10" && $sat_white_ref>0)
+	       ? (($hcfr_pq_reference_nits/$sat_white_ref)*$mix_Y)
+	       : ($hcfr_level_linear*$mix_Y);
 	     } else {
 	      # Native PGenerator sweep keeps the maximum channel fixed.
 	      $target_Yn_for_step=($level_linear/$mx)*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1)) if($mx>0);
 	      if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
 	     }
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-	     $rl*=$level_linear;$gl*=$level_linear;$bl*=$level_linear;
-	    $r=$encode_channel->($rl,$name);
-	    $g=$encode_channel->($gl,$name);
-	    $b=$encode_channel->($bl,$name);
+	     my $stimulus_level=$hcfr_constant_luminance?$hcfr_level_linear:$level_linear;
+	     $rl*=$stimulus_level;$gl*=$stimulus_level;$bl*=$stimulus_level;
+	    $r=$hcfr_constant_luminance?$encode_hcfr_channel->($rl):$encode_channel->($rl,$name);
+	    $g=$hcfr_constant_luminance?$encode_hcfr_channel->($gl):$encode_channel->($gl,$name);
+	    $b=$hcfr_constant_luminance?$encode_hcfr_channel->($bl):$encode_channel->($bl,$name);
 	    }
 	    $target_Yn_for_step=0 if($target_Yn_for_step < 0);
-	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+	    my $series_mode_json=$hcfr_constant_luminance?',\"series_mode\":\"hcfr-constant-luminance\"':'';
+	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$series_mode_json}";
 	   }
 	  }
 	 }
@@ -13169,7 +13201,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
-       <option value="25">HCFR Constant Luminance Sat Sweep (25)</option>
+       <option value="25">HCFR Constant Luminance Sat Sweep (30)</option>
        </optgroup>
        <optgroup label="MacLeod-Boynton">
        <option value="800137">MacLeod-Boynton Hue Circle (37)</option>
@@ -13177,7 +13209,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep keeps Y fixed for each hue and is quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and are quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -19216,6 +19248,10 @@ function meterSeriesSnapshotHasLgAutoCal26Markers(status){
  return meterSeriesStepsHaveLgAutoCal26Markers(status.readings);
 }
 
+function meterSeriesStepsHaveHcfrSaturationMarkers(steps){
+ return Array.isArray(steps)&&steps.some(step=>String(step&&step.series_mode||'')==='hcfr-constant-luminance');
+}
+
 function meterSharedSeriesStatusCanRecover(status){
  const s=String((status&&status.status)||'').toLowerCase();
  return !!(status&&status.series_id&&(s==='running'||s==='setup'||s==='complete'||s==='cancelled'||s==='error'));
@@ -19236,7 +19272,7 @@ function meterSharedSeriesStatusKey(status){
  const total=Number(status.total_steps||0)||0;
  const stepCount=steps?steps.length:0;
  if(type==='colors') points=(points>=900)?points:((points===29||total===29||stepCount===29)?29:30);
- else if(type==='saturations') points=(points===25||total===25||stepCount===25)?25:24;
+ else if(type==='saturations') points=(points===25||total===25||stepCount===25||total===30||stepCount===30||total===31||stepCount===31||meterSeriesStepsHaveHcfrSaturationMarkers(steps))?25:24;
  else if(type==='greyscale'){
   // User-defined greyscale series use their id as points, just like custom
   // colour series. Do not collapse a cached 40-patch custom series to 21pt.
@@ -21393,6 +21429,28 @@ function meterEncodeSaturationLinear(linear,colorName){
  return Math.round(min+meterTargetLinearToSignal(clamped)*span);
 }
 
+const METER_HCFR_HDR_DIFFUSE_WHITE_NITS=94.37844;
+function meterHcfrSaturationLinearLevel(){
+ if(meterChartIsPq()&&!meterChartIsDv()) return METER_HCFR_HDR_DIFFUSE_WHITE_NITS/10000;
+ // HCFR has no Dolby Vision generator mode. Keep the existing PGenerator DV
+ // adaptation at a safe half-linear stimulus.
+ if(meterChartIsDv()) return 0.5;
+ // HCFR SDR and HLG saturation patterns are built at unit-linear reference.
+ return 1;
+}
+
+function meterEncodeHcfrSaturationLinear(linear){
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
+ const clamped=Math.max(0,Math.min(1,Number(linear)||0));
+ let signal=0;
+ if(meterChartIsPq()&&!meterChartIsDv()) signal=meterChartPqEncodeNormalized(clamped*10000);
+ else if(meterChartIsHlg()) signal=hlgOetf(clamped);
+ else if(meterChartIsDv()) signal=Math.pow(clamped,1/2.2);
+ else signal=Math.pow(clamped,1/2.22);
+ return Math.round(min+Math.max(0,Math.min(1,signal))*span);
+}
+
 function meterGamutStimulusLinearLevel(){
  if(meterChartIsPq()&&!meterChartIsDv()) return 1;
  // The server authors both standard-DV color map modes at a fixed 50%
@@ -21534,10 +21592,15 @@ function meterBuildHcfrSaturationStep(colorName,satPercent){
  const endpointXyz=linRgbToXyz(endpointRgb[0],endpointRgb[1],endpointRgb[2],targetGamut.rgbToXyz);
  const K=Math.max(0,Number(endpointXyz.Y)||0);
  const coeffs=y>0?xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb):[0,0,0];
- const level=meterSaturationStimulusLinearLevel(colorName);
+ const level=meterHcfrSaturationLinearLevel();
  const linear=coeffs.map(v=>Math.max(0,Math.min(1,v*K))*level);
- const rgb=linear.map(v=>meterEncodeSaturationLinear(v,colorName));
- return {ire:satPercent,r:rgb[0],g:rgb[1],b:rgb[2],name:colorName+' '+satPercent+'%',series_color:colorName,sat_pct:satPercent,target_x:x,target_y:y,target_Yn:level*K,series_mode:'hcfr-constant-luminance'};
+ const rgb=linear.map(v=>meterEncodeHcfrSaturationLinear(v));
+ let targetYn=level*K;
+ if(meterChartIsPq()&&!meterChartIsDv()){
+  const whiteRef=Number(meterColorSeriesReferenceNits());
+  if(whiteRef>0) targetYn=(METER_HCFR_HDR_DIFFUSE_WHITE_NITS/whiteRef)*K;
+ }
+ return {ire:satPercent,r:rgb[0],g:rgb[1],b:rgb[2],name:colorName+' '+satPercent+'%',series_color:colorName,sat_pct:satPercent,target_x:x,target_y:y,target_Yn:targetYn,series_mode:'hcfr-constant-luminance'};
 }
 
 function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
@@ -26745,7 +26808,7 @@ function meterRecoverSeries(s){
 	  // Preserve custom/lattice color-series ids (>=900) and custom greyscale
 	  // ids (>=1001); their patch count is not a built-in point preset.
 	  if(seriesType==='colors') return (points>=900)?points:((points===29||count===29||stepCount===29)?29:30);
-	  if(seriesType==='saturations') return (points===25||count===25||stepCount===25)?25:24;
+	  if(seriesType==='saturations') return (points===25||count===25||stepCount===25||count===30||stepCount===30||count===31||stepCount===31||meterSeriesStepsHaveHcfrSaturationMarkers(steps))?25:24;
 	  if(seriesType==='greyscale'&&points>=1001) return points;
 	  if(seriesType==='greyscale'&&meterSeriesStepsHaveLgAutoCal26Markers(steps)) return 26;
 	  const basis=count||stepCount;
@@ -35441,7 +35504,7 @@ function meterBuildStepsJS(type,points){
   else steps.push(...meterBuildColorCheckerStepsJS());
  } else if(type==='saturations'){
   ['Red','Green','Blue','Cyan','Magenta','Yellow'].forEach(name=>{
-   [25,50,75,100].forEach(sat=>{
+   (Number(points)===25?[0,25,50,75,100]:[25,50,75,100]).forEach(sat=>{
     if(Number(points)===25) steps.push(meterBuildHcfrSaturationStep(name,sat));
     else {
      const rgb=meterBuildSaturationStepRgb(name,sat);
@@ -51198,8 +51261,9 @@ function meterBuildHcfrExportModel(){
  // Sat Sweep keeps its own native/fixed-code checkbox. ColorChecker follows
  // the dropdown exactly. HCFR stores Classic, SG and SG Skin Tones in the same
  // sparse arrays but interprets their indices through preferences.colorCheckerMode.
- const preferHcfrSat=(mode==='sdr')&&meterHcfrFixedCodesEnabled();
- const satEntry=satEntries.find(e=>Number(e.snap.points)===(preferHcfrSat?25:24))||satEntries.find(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='saturations')||null;
+ const preferHcfrSat=meterHcfrFixedCodesEnabled();
+ const satEntry=importedGroup('saturations')
+  ||satEntries.find(e=>Number(e.snap.points)===(preferHcfrSat?25:24))||null;
  const selectedColorPoints=(typeof meterColorCheckerSeriesStoredValue==='function')?meterColorCheckerSeriesStoredValue():30;
  const colorEntry=importedGroup('colorChecker')
   ||colorEntries.find(e=>Number(e.snap.points)===Number(selectedColorPoints))||null;
@@ -51208,7 +51272,15 @@ function meterBuildHcfrExportModel(){
  const nearBlack=valid(nearBlackEntry&&nearBlackEntry.snap).slice(0,5);
  const nearWhite=valid(nearWhiteEntry&&nearWhiteEntry.snap).slice(0,5);
  const satGroups={redSaturation:[],greenSaturation:[],blueSaturation:[],yellowSaturation:[],cyanSaturation:[],magentaSaturation:[]};
- valid(satEntry&&satEntry.snap).forEach(rd=>{const name=String(rd.name||'').toLowerCase();for(const key of Object.keys(satGroups)){const hue=key.replace('Saturation','').toLowerCase();if(name.includes(hue)){satGroups[key].push(rd);break;}}});
+ const satReadings=valid(satEntry&&satEntry.snap);
+ satReadings.forEach(rd=>{
+  const explicit=String(rd.series_color||'').toLowerCase();
+  const name=String(rd.name||'').toLowerCase();
+  for(const key of Object.keys(satGroups)){
+   const hue=key.replace('Saturation','').toLowerCase();
+   if(explicit===hue||(!explicit&&name.includes(hue))){satGroups[key].push(rd);break;}
+  }
+ });
  Object.keys(satGroups).forEach(key=>{const list=satGroups[key].sort((a,b)=>Number(a.sat_pct||a.ire||0)-Number(b.sat_pct||b.ire||0));satGroups[key]=list.length===4?[null,...list]:list;});
  const colors=valid(colorEntry&&colorEntry.snap), fixed={};
  const colorPoints=Number(colorEntry&&colorEntry.snap&&colorEntry.snap.points);
@@ -51237,13 +51309,26 @@ function meterBuildHcfrExportModel(){
  const black=grey.find(rd=>rd&&Math.abs(Number(meterReadingPlotIre(rd)||0))<0.05)||null;
  const white=[...grey].reverse().find(rd=>rd&&Number(meterReadingPlotIre(rd)||0)>=99)||null;
  // HCFR grades primary and saturation luminance against primeWhite: a white
- // patch at the SAME signal level as the chroma patches, not the full-scale
- // on/off white. SDR uses 75% chroma (about 50% linear at gamma 2.4); writing
- // full white here makes every otherwise-correct primary appear about -50% Y.
+ // patch at the SAME signal level as the chroma patches, not necessarily the
+ // full-scale on/off white. Native SDR uses a 75% stimulus; HCFR SDR/HLG use
+ // unit linear, and HCFR HDR10 uses its fixed 94.37844 cd/m2 reference.
+ const hcfrSatSelected=!!(satEntry&&Number(satEntry.snap.points)===25);
+ const satWhite=satReadings.find(rd=>{
+  const name=String(rd&&rd.name||'').toLowerCase();
+  return !rd.series_color&&(name==='white'||name==='white ref'||name==='100% white');
+ })||null;
+ const primeWhiteSource=satWhite||white;
  let chromaWhiteScale=1;
- try{chromaWhiteScale=meterSaturationStimulusLinearLevel('White');}catch(e){}
+ try{
+  chromaWhiteScale=hcfrSatSelected?meterHcfrSaturationLinearLevel():meterSaturationStimulusLinearLevel('White');
+  if(mode==='hdr10'&&primeWhiteSource){
+   const sourceY=Number(primeWhiteSource.Y!=null?primeWhiteSource.Y:primeWhiteSource.luminance);
+   const targetNits=hcfrSatSelected?METER_HCFR_HDR_DIFFUSE_WHITE_NITS:(chromaWhiteScale*10000);
+   if(sourceY>0) chromaWhiteScale=targetNits/sourceY;
+  }
+ }catch(e){}
  if(!(Number.isFinite(chromaWhiteScale)&&chromaWhiteScale>0)) chromaWhiteScale=1;
- fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=meterHcfrScaleXyz(white,chromaWhiteScale)||white;fixed.ansiBlack=null;fixed.ansiWhite=null;
+ fixed.onOffBlack=black;fixed.onOffWhite=white;fixed.primeWhite=meterHcfrScaleXyz(primeWhiteSource,chromaWhiteScale)||primeWhiteSource;fixed.ansiBlack=null;fixed.ansiWhite=null;
  // Do not dump every unselected cache snapshot into HCFR Free Measurements.
  // Alternate greyscale lengths, the opposite HCFR/native color variants and
  // 3D LUT/custom caches are separate workspaces, not part of this export.
