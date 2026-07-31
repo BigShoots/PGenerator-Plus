@@ -307,6 +307,33 @@ def isotonic_channel_samples(samples):
     return [(code, response / peak) for code, response in monotonic]
 
 
+def neutral_channel_samples(rows, black, primaries):
+    # A low-level primary measurement is mostly the display's black light and
+    # is a poor signal from which to infer a channel shaper. Neutral patches
+    # contain all three channels and provide much stronger meter signal. Solve
+    # each neutral XYZ reading against the measured primary axes to recover
+    # the three simultaneous channel responses used by the grey axis.
+    black_xyz = black["xyz"]
+    axes = [[primaries[column]["xyz"][row] - black_xyz[row] for column in range(3)] for row in range(3)]
+    inverse_axes = mat_inv(axes)
+    samples = [[] for _channel in range(3)]
+    for row in rows:
+        rgb = row["rgb"]
+        if max(rgb) - min(rgb) > 0.002:
+            continue
+        vector = [row["xyz"][axis] - black_xyz[axis] for axis in range(3)]
+        responses = mat_vec_mul(inverse_axes, vector)
+        for channel in range(3):
+            samples[channel].append((sum(rgb) / 3.0, max(0.0, responses[channel])))
+    result = []
+    for channel_samples in samples:
+        channel_samples.sort(key=lambda item: item[0])
+        if len(channel_samples) < 5 or channel_samples[0][0] > 0.002 or channel_samples[-1][0] < 0.998:
+            fail("Windows SDR calibration requires black-to-white neutral ramps")
+        result.append(isotonic_channel_samples(channel_samples))
+    return result
+
+
 def invert_channel_response(samples, target):
     if target <= samples[0][1]:
         return samples[0][0]
@@ -321,27 +348,12 @@ def invert_channel_response(samples, target):
     return samples[-1][0]
 
 
-def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer, wire, adjustment, calibrated_peak):
+def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer, wire, adjustment):
     luts = []
-    black_ratio = black["xyz"][1] / max(calibrated_peak, 1e-9)
-    channel_samples = [monotonic_channel_samples(rows, black, primaries[channel], channel) for channel in range(3)]
-    black_xyz = black["xyz"]
-    primary_axes = [[primaries[column]["xyz"][axis] - black_xyz[axis] for column in range(3)] for axis in range(3)]
-    inverse_primary_axes = mat_inv(primary_axes)
-    target_white_xyz = mat_vec_mul(wire, (1.0, 1.0, 1.0))
+    black_ratio = black["xyz"][1] / max(white["xyz"][1], 1e-9)
+    channel_samples = neutral_channel_samples(rows, black, primaries)
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
-
-    def target_channel_responses(source_encoded):
-        target_normalized = target_transfer_to_linear(source_encoded, transfer, black_ratio)
-        target_y = black["xyz"][1] + target_normalized * (calibrated_peak - black["xyz"][1])
-        incremental_xyz = [target_white_xyz[axis] * target_y - black_xyz[axis] for axis in range(3)]
-        # Include the measured black XYZ vector, not just its Y value. On an
-        # LCD the colored black floor can be a large fraction of a 5% patch;
-        # solving only the light above a presumed-neutral black over-corrects
-        # the darkest neutral steps.
-        return mat_vec_mul(inverse_primary_axes, incremental_xyz)
-
     for channel in range(3):
         samples = channel_samples[channel]
         gain = neutral_gains[channel]
@@ -352,9 +364,9 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
         for index in range(entries):
             lut_input = index / float(entries - 1)
             linear_input = srgb_to_linear(lut_input)
-            if linear_input <= gain + 1e-9:
+            if linear_input <= gain:
                 source_encoded = linear_to_srgb(linear_input / gain)
-                target = max(0.0, target_channel_responses(source_encoded)[channel])
+                target = gain * target_transfer_to_linear(source_encoded, transfer, black_ratio)
             else:
                 # Neutral white never enters this part of a channel LUT when
                 # its matrix gain is below one. Preserve usable headroom for
@@ -364,6 +376,7 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
             previous = max(previous, max(0.0, min(1.0, value)))
             values.append(previous)
         values[0] = 0.0
+        values[-1] = 1.0
         luts.append(values)
     return luts
 
@@ -408,7 +421,7 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     # measured channel ramp so the resulting scanout follows the sRGB wire
     # response while the matrix corrects primaries and white point.
     if profile_type == "windows-sdr":
-        luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment, calibrated_peak)
+        luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
     else:
         luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
     for values in luts:
