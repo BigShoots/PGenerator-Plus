@@ -14001,7 +14001,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         <option value="hcfr">Chromaticity</option>
        </select>
       </label>
-      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Changes the greyscale ΔE calculation.">
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Changes the greyscale ΔE calculation. At 0%, chromaticity is undefined, so only black-level luminance is scored.">
        Grey ΔE
        <select id="meterDeltaEForm" class="inline-select" onchange="meterOnGreyRefChange()">
         <option value="deitp" selected>ΔE ITP (default)</option>
@@ -22344,7 +22344,7 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  // This used to be inline here and required X and Z within 1e-9 of zero, but
  // it was unreachable anyway -- meterColorDeltaE2000 bailed on the null XYZ
  // before ever calling this.
- const xyz=meterMeasuredXYZOrBlack(reading);
+ let xyz=meterMeasuredXYZOrBlack(reading);
  if(!reading||!xyz) return {value:0,de2000:0};
  form = form || meterDeltaEForm();
  if(gwWeight==null) gwWeight = meterGrayWorldWeight();
@@ -22358,6 +22358,15 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  // dE against {0,0,0} measured so the luminance gap is reported even when the
  // meter read 0 on OLED true black.
  if(!(xyz.Y>0) && !(target&&target.Y>0)) return {value:0,de2000:0};
+ // Chromaticity has no meaningful definition at black. A meter still returns
+ // noisy XYZ ratios at a raised LCD black floor, which previously turned the
+ // 0% bar into a large apparent chroma error. Preserve the measured and target
+ // luminance, but place both on the target white axis so this patch scores only
+ // the black-level error.
+ if(meterReadingTargetsBlack(reading)){
+  const wp=meterTargetWhitePoint();
+  xyz={X:wp.X*Math.max(0,xyz.Y||0),Y:Math.max(0,xyz.Y||0),Z:wp.Z*Math.max(0,xyz.Y||0)};
+ }
  if(mode==='absolute'){
   const stepY=Math.max(xyz.Y||0,target.Y||0,0);
   if(stepY>0 && wR.Y>0){
@@ -33428,7 +33437,12 @@ async function meterIccBuild(readings){
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
    const transferText=response.target_transfer?(' Target transfer: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
-   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
+   const measuredWhite=Number(response.white_nits);
+   const calibratedWhite=Number(response.calibrated_white_nits);
+   const whiteText=(windowsMhc&&calibratedWhite>0&&measuredWhite>calibratedWhite+0.1)
+    ?(' Calibrated white was reduced from '+measuredWhite.toFixed(1)+' to '+calibratedWhite.toFixed(1)+' cd/m² to preserve the target white point without channel clipping.')
+    :'';
+   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+whiteText+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
   if(retry) retry.style.display='none';

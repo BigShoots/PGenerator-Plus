@@ -173,6 +173,10 @@ def mat_mul(left, right):
     return [[sum(left[r][k] * right[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
 
 
+def mat_vec_mul(matrix, vector):
+    return [sum(matrix[row][column] * vector[column] for column in range(3)) for row in range(3)]
+
+
 def mat_inv(matrix):
     a, b, c = matrix[0]
     d, e, f = matrix[1]
@@ -223,6 +227,13 @@ def srgb_to_linear(value):
     return ((value + 0.055) / 1.055) ** 2.4
 
 
+def linear_to_srgb(value):
+    value = max(0.0, min(1.0, value))
+    if value <= 0.0031308:
+        return value * 12.92
+    return 1.055 * (value ** (1.0 / 2.4)) - 0.055
+
+
 def target_transfer_to_linear(value, transfer, black_ratio=0.0):
     value = max(0.0, min(1.0, value))
     black_ratio = max(0.0, min(0.999, black_ratio))
@@ -268,28 +279,59 @@ def monotonic_channel_samples(rows, black, primary, channel):
             merged.append((code, response))
     if len(merged) < 5 or merged[0][0] > 0.002 or merged[-1][0] < 0.998:
         fail("Windows SDR calibration requires black-to-primary channel ramps")
+    return isotonic_channel_samples(merged)
+
+
+def isotonic_channel_samples(samples):
     # Fit a non-decreasing response with pool-adjacent-violators instead of a
     # cumulative maximum. Near-black readings are noisy; cumulative-max turns
     # one high sample into a permanent shoulder in the inverse calibration
     # curve, while isotonic regression distributes that noise across only the
     # conflicting samples.
     blocks = []
-    for index, (_code, response) in enumerate(merged):
+    for index, (_code, response) in enumerate(samples):
         blocks.append([index, index, response, 1.0])
         while len(blocks) >= 2 and blocks[-2][2] / blocks[-2][3] > blocks[-1][2] / blocks[-1][3]:
             right = blocks.pop()
             left = blocks.pop()
             blocks.append([left[0], right[1], left[2] + right[2], left[3] + right[3]])
-    fitted = [0.0] * len(merged)
+    fitted = [0.0] * len(samples)
     for start, end, total, weight in blocks:
         value = max(0.0, min(1.0, total / weight))
         for index in range(start, end + 1):
             fitted[index] = value
-    monotonic = [(merged[index][0], fitted[index]) for index in range(len(merged))]
+    monotonic = [(samples[index][0], fitted[index]) for index in range(len(samples))]
     peak = monotonic[-1][1]
     if peak <= 1e-6:
         fail("Measured channel response has no usable range")
     return [(code, response / peak) for code, response in monotonic]
+
+
+def neutral_channel_samples(rows, black, primaries):
+    # A low-level primary measurement is mostly the display's black light and
+    # is a poor signal from which to infer a channel shaper. Neutral patches
+    # contain all three channels and provide much stronger meter signal. Solve
+    # each neutral XYZ reading against the measured primary axes to recover
+    # the three simultaneous channel responses used by the grey axis.
+    black_xyz = black["xyz"]
+    axes = [[primaries[column]["xyz"][row] - black_xyz[row] for column in range(3)] for row in range(3)]
+    inverse_axes = mat_inv(axes)
+    samples = [[] for _channel in range(3)]
+    for row in rows:
+        rgb = row["rgb"]
+        if max(rgb) - min(rgb) > 0.002:
+            continue
+        vector = [row["xyz"][axis] - black_xyz[axis] for axis in range(3)]
+        responses = mat_vec_mul(inverse_axes, vector)
+        for channel in range(3):
+            samples[channel].append((sum(rgb) / 3.0, max(0.0, responses[channel])))
+    result = []
+    for channel_samples in samples:
+        channel_samples.sort(key=lambda item: item[0])
+        if len(channel_samples) < 5 or channel_samples[0][0] > 0.002 or channel_samples[-1][0] < 0.998:
+            fail("Windows SDR calibration requires black-to-white neutral ramps")
+        result.append(isotonic_channel_samples(channel_samples))
+    return result
 
 
 def invert_channel_response(samples, target):
@@ -306,16 +348,30 @@ def invert_channel_response(samples, target):
     return samples[-1][0]
 
 
-def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer):
+def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer, wire, adjustment):
     luts = []
     black_ratio = black["xyz"][1] / max(white["xyz"][1], 1e-9)
+    channel_samples = neutral_channel_samples(rows, black, primaries)
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
     for channel in range(3):
-        samples = monotonic_channel_samples(rows, black, primaries[channel], channel)
+        samples = channel_samples[channel]
+        gain = neutral_gains[channel]
+        if gain <= 1e-6:
+            fail("Windows SDR calibration matrix has an invalid neutral response")
         values = []
         previous = 0.0
         for index in range(entries):
-            encoded = index / float(entries - 1)
-            target = target_transfer_to_linear(encoded, transfer, black_ratio)
+            lut_input = index / float(entries - 1)
+            linear_input = srgb_to_linear(lut_input)
+            if linear_input <= gain:
+                source_encoded = linear_to_srgb(linear_input / gain)
+                target = gain * target_transfer_to_linear(source_encoded, transfer, black_ratio)
+            else:
+                # Neutral white never enters this part of a channel LUT when
+                # its matrix gain is below one. Preserve usable headroom for
+                # saturated colors and meet the identity endpoint at 1.0.
+                target = linear_input
             value = invert_channel_response(samples, target)
             previous = max(previous, max(0.0, min(1.0, value)))
             values.append(previous)
@@ -332,6 +388,18 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     else:
         wire = xy_matrix(((0.640, 0.330), (0.300, 0.600), (0.150, 0.060)), (0.3127, 0.3290))
     adjustment = mat_mul(wire, mat_inv(physical))
+    calibrated_peak = max(white["xyz"][1], black["xyz"][1] + 0.0001)
+    if profile_type == "windows-sdr":
+        # A white-point correction that asks any channel for more than 1.0
+        # clips before reaching the requested chromaticity. Apply a uniform
+        # matrix scale so corrected neutral white remains inside RGB range.
+        rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+        neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+        maximum_gain = max(neutral_gains)
+        if maximum_gain > 1.0:
+            matrix_scale = 1.0 / maximum_gain
+            adjustment = [[value * matrix_scale for value in row] for row in adjustment]
+            calibrated_peak = black["xyz"][1] + matrix_scale * (white["xyz"][1] - black["xyz"][1])
     entries = 256
     header_size = 36
     matrix_offset = header_size
@@ -339,7 +407,7 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     lut_bytes = 8 + entries * 4
     offsets = (lut0_offset, lut0_offset + lut_bytes, lut0_offset + 2 * lut_bytes)
     min_luminance = max(0.0, black["xyz"][1])
-    peak_luminance = max(white["xyz"][1], min_luminance + 0.0001)
+    peak_luminance = max(calibrated_peak, min_luminance + 0.0001)
     data = bytearray(b"MHC2" + b"\0\0\0\0")
     data.extend(struct.pack(">I", entries))
     data.extend(s15fixed16(min_luminance))
@@ -353,14 +421,14 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     # measured channel ramp so the resulting scanout follows the sRGB wire
     # response while the matrix corrects primaries and white point.
     if profile_type == "windows-sdr":
-        luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer)
+        luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
     else:
         luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
     for values in luts:
         data.extend(b"sf32" + b"\0\0\0\0")
         for value in values:
             data.extend(s15fixed16(value))
-    return bytes(data), adjustment, luts
+    return bytes(data), adjustment, luts, calibrated_peak
 
 
 def xyz_tag(xyz):
@@ -484,13 +552,14 @@ def build(payload, output_dir):
     run_colprof(payload, ti3, output_path)
     matrix = None
     adjustment_luts = None
+    calibrated_white = None
     if profile_type in ("windows-sdr", "windows-hdr"):
         with open(output_path, "rb") as handle:
             profile = handle.read()
-        mhc2, matrix, adjustment_luts = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
+        mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
         # lumi is max full-frame luminance. SDR profiles use the measured
         # profiling white; HDR has a dedicated full-frame measurement.
-        luminance = full_frame_rows[0]["xyz"][1] if full_frame_rows else white["xyz"][1]
+        luminance = full_frame_rows[0]["xyz"][1] if full_frame_rows else calibrated_white
         profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
         with open(output_path, "wb") as handle:
             handle.write(profile)
@@ -503,6 +572,7 @@ def build(payload, output_dir):
         "target_transfer": target_transfer,
         "patches": len(rows),
         "white_nits": white["xyz"][1],
+        "calibrated_white_nits": calibrated_white,
         "full_frame_white_nits": full_frame_rows[0]["xyz"][1] if full_frame_rows else None,
         "black_nits": black["xyz"][1],
         "mhc2_matrix": matrix,
