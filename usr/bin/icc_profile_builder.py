@@ -225,20 +225,25 @@ def srgb_to_linear(value):
 
 def target_transfer_to_linear(value, transfer, black_ratio=0.0):
     value = max(0.0, min(1.0, value))
+    black_ratio = max(0.0, min(0.999, black_ratio))
     if transfer == "srgb":
-        return srgb_to_linear(value)
-    if transfer == "gamma22":
-        return value ** 2.2
-    if transfer == "gamma24":
-        return value ** 2.4
-    if transfer == "bt1886":
+        absolute = srgb_to_linear(value)
+    elif transfer == "gamma22":
+        absolute = value ** 2.2
+    elif transfer == "gamma24":
+        absolute = value ** 2.4
+    elif transfer == "bt1886":
         gamma = 2.4
-        black_ratio = max(0.0, min(0.999, black_ratio))
         black_root = black_ratio ** (1.0 / gamma)
         span = max(1e-9, 1.0 - black_root)
-        luminance = (span ** gamma) * ((value + black_root / span) ** gamma)
-        return max(0.0, min(1.0, (luminance - black_ratio) / max(1e-9, 1.0 - black_ratio)))
-    fail("Unsupported Windows SDR target transfer")
+        absolute = (span ** gamma) * ((value + black_root / span) ** gamma)
+    else:
+        fail("Unsupported Windows SDR target transfer")
+    # Channel measurements are normalized after subtracting the physical
+    # black level. Convert the requested absolute target into that same range.
+    # Without this conversion, sRGB and power-gamma profiles add black to the
+    # requested curve and incorrectly resemble BT.1886 in the shadows.
+    return max(0.0, min(1.0, (absolute - black_ratio) / max(1e-9, 1.0 - black_ratio)))
 
 
 def monotonic_channel_samples(rows, black, primary, channel):
