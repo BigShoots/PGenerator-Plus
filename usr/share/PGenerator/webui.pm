@@ -13016,7 +13016,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </select>
      </label>
     </div>
-    <div id="meterCustomSeriesEditorHint" style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Enter either the 8-bit or 10-bit code — the other converts automatically. For greyscale series a 100% white patch first is recommended (it becomes the white reference).</div>
+    <div id="meterCustomSeriesEditorHint" style="font-size:.7rem;color:var(--text2);margin-bottom:10px">Enter either the 8-bit or 10-bit code; the other converts automatically.</div>
     <div style="overflow:auto;margin-bottom:12px">
      <table style="width:100%;border-collapse:collapse;font-size:12px;color:#ddd">
       <thead><tr id="meterCustomSeriesEditorHead" style="border-bottom:1px solid #2a3140"></tr></thead>
