@@ -5953,7 +5953,6 @@ sub webui_meter_settings_save (@) {
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
-    xyz_matrix_enabled xyz_m11 xyz_m12 xyz_m13 xyz_m21 xyz_m22 xyz_m23 xyz_m31 xyz_m32 xyz_m33
   hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum simulate_spectro
  );
  my @parts;
@@ -12643,32 +12642,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	      </div>
 	     </div>
 	      <div class="meter-xyz-toggle-block">
-       <div class="meter-xyz-toggle-row">
-        <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterXyzMatrixEnabled"> XYZ Correction Matrix <span id="meterXyzMatrixHelp" class="meter-help-tip" title="A CCMX meter profile and PGenerator's XYZ Correction Matrix both use 3x3 XYZ correction math, but at different stages. A CCMX is an Argyll meter profile made for a particular colorimeter and display by comparing it with a reference meter. Argyll applies the selected CCMX before returning XYZ. The XYZ Correction Matrix is a generic PGenerator post-measurement transform. It is not identified with a meter or display and changes the returned XYZ before charts and analysis. Use a CCMX for normal meter profiling. Use this tool only for a known manual matrix or an intentional software transform. PGenerator suspends it while a CCMX is selected to prevent double correction." aria-label="XYZ correction matrix help">?</span></label>
-        <span class="meter-xyz-gear-wrap is-hidden">
-         <button type="button" id="meterXyzGear" class="meter-xyz-gear" aria-label="XYZ correction matrix options" aria-expanded="false" title="XYZ correction matrix options">&#9881;</button>
-         <div class="meter-xyz-gear-popover" id="meterXyzGearPopover" role="dialog" aria-label="XYZ correction matrix options">
-          <div class="meter-xyz-action-row" id="meterXyzMatrixActionRow">
-           <button class="btn btn-sm btn-secondary" type="button" onclick="meterOpenXyzMatrixImport()">Import</button>
-           <button class="btn btn-sm btn-secondary" type="button" onclick="meterExportXyzMatrix()">Export</button>
-           <button type="button" id="meterXyzMatrixApply" class="btn btn-sm btn-primary" style="display:none" onclick="meterApplyXyzMatrixEdits()">Apply</button>
-          </div>
-          <div class="meter-matrix-fields" id="meterXyzMatrixFields" style="margin-top:8px">
-           <div class="meter-matrix-grid">
-            <input type="number" id="meterXyzM11" step="0.0001" placeholder="1">
-            <input type="number" id="meterXyzM12" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM13" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM21" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM22" step="0.0001" placeholder="1">
-            <input type="number" id="meterXyzM23" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM31" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM32" step="0.0001" placeholder="0">
-            <input type="number" id="meterXyzM33" step="0.0001" placeholder="1">
-           </div>
-          </div>
-         </div>
-        </span>
-       </div>
         <div class="meter-xyz-toggle-row" id="meterCustomD65ToggleWrap">
          <label class="meter-toggle meter-field-label"><input type="checkbox" id="meterCustomD65Enabled"> Custom D65 <span class="meter-help-tip" title="Use a measured or entered whitepoint for D65 target colorspaces only." aria-label="Custom D65 help">?</span></label>
           <span class="meter-xyz-gear-wrap is-hidden">
@@ -12711,9 +12684,6 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="p3d65">DCI-P3 / D65</option>
       <option value="p3dci">DCI-P3 / DCI</option>
     </select>
-   <div class="meter-matrix-field" style="display:none">
-       <input type="file" id="meterXyzMatrixImportInput" accept=".json,.txt" style="display:none">
-   </div>
   </div>
   <div class="field field-gamma">
     <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets and error calculations. This changes the analysis target, not the generator signal mode." aria-label="Target gamma help">?</span></label>
@@ -13336,6 +13306,15 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </select>
      <div id="meterCcssCreateFormatHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
     </div>
+    <div id="meterCcssCreateMethodSection" style="display:none;margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">CCMX Creation Method</label>
+     <select id="meterCcssCreateMethod" onchange="meterCcssCreateMethodChanged()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+      <option value="measure">Measure with a reference spectrophotometer</option>
+      <option value="json">Import an XYZ correction matrix JSON</option>
+      <option value="manual">Enter a 3x3 correction matrix</option>
+     </select>
+     <div id="meterCcssCreateMethodHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
+    </div>
       <div style="margin-bottom:12px">
        <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
        <select id="meterCcssCreateDisplayType" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
@@ -13352,7 +13331,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
        <div id="meterCcssCreateDisplayHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
       </div>
-    <div style="margin-bottom:12px">
+    <div id="meterCcssCreateReferenceSection" style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Spectrophotometer</label>
      <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
      <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
@@ -13361,6 +13340,26 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Target Colorimeter</label>
      <div id="meterCcssCreateTargetChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
      <div id="meterCcssCreateTargetStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
+    </div>
+    <div id="meterCcssCreateMatrixSection" style="display:none;margin-bottom:12px">
+     <div id="meterCcssCreateJsonSection" style="display:none;margin-bottom:10px">
+      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">XYZ Correction Matrix JSON</label>
+      <input type="file" id="meterCcssCreateJsonInput" accept=".json,.txt,application/json" onchange="meterCcssCreateImportJson(event)" style="width:100%;font-size:.74rem;color:var(--text2)">
+      <div id="meterCcssCreateJsonStatus" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.</div>
+     </div>
+     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">3x3 XYZ Correction Matrix</label>
+     <div class="meter-matrix-grid">
+      <input type="number" id="meterCcmxM11" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM12" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM13" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM21" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM22" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM23" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM31" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM32" step="0.0001" value="0" oninput="meterCcssCreateUpdateStartState()">
+      <input type="number" id="meterCcmxM33" step="0.0001" value="1" oninput="meterCcssCreateUpdateStartState()">
+     </div>
+     <div style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">The CCMX applies corrected XYZ = matrix x measured XYZ. The selected target meter is written into the profile so ArgyllCMS can apply it as a meter correction.</div>
     </div>
     <div style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
@@ -13384,7 +13383,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">Import CCSS spectral corrections or meter-specific CCMX matrices. TI3, EDR, and spectral CSV imports are converted to CCSS.</div>
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-       <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create With Spectro</button>
+       <button class="btn btn-sm btn-secondary" onclick="meterOpenCcssCreateModal()">Create Profile</button>
        <button class="btn btn-sm btn-secondary ccss-editor-close-btn" onclick="meterCloseCustomCcssEditor()">Close</button>
       </div>
     </div>
@@ -17920,7 +17919,9 @@ let meterCcssCreateFreshOpen=true;
 let meterCcssCreateInventoryReady=false;
 let meterCcssCreateJobActive=false;
 let meterCcssCreateFormat='ccss';
+let meterCcssCreateMethod='measure';
 let meterCcssCreateTargetPort='';
+let meterCcssCreateJsonLoaded=false;
 let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
@@ -18749,241 +18750,10 @@ function meterSharedSeriesShouldRecover(status,opts){
 
 // D65 reference white chromaticity
 const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
-const METER_XYZ_MATRIX_DEFAULT=[[1,0,0],[0,1,0],[0,0,1]];
 
 function xyToUnitXyz(x,y){
  if(!(x>0) || !(y>0) || x+y>=1) return {X:D65.X,Y:1,Z:D65.Z};
  return {X:x/y,Y:1,Z:(1-x-y)/y};
-}
-
-function meterIdentityXyzCorrectionMatrix(){
- return METER_XYZ_MATRIX_DEFAULT.map(row=>row.slice());
-}
-
-// Applied snapshot used for analysis; draft edits live in the DOM until Apply.
-window._meterXyzMatrixApplied=null; // {enabled:bool, matrix:[[...],[...],[...]]}
-
-function meterDraftXyzMatrixEnabled(){
- const el=document.getElementById('meterXyzMatrixEnabled');
- return !!(el&&el.checked);
-}
-
-function meterSnapshotXyzMatrixAppliedFromDom(){
- const matrix=meterConfiguredXyzCorrectionMatrix().map(row=>row.slice());
- window._meterXyzMatrixApplied={
-  enabled:meterDraftXyzMatrixEnabled(),
-  matrix:matrix
- };
- return window._meterXyzMatrixApplied;
-}
-
-function meterXyzMatrixDraftDirty(){
- const applied=window._meterXyzMatrixApplied;
- if(!applied) return true;
- if(!!applied.enabled!==meterDraftXyzMatrixEnabled()) return true;
- const draft=meterConfiguredXyzCorrectionMatrix();
- const tol=1e-6;
- for(let r=0;r<3;r++){
-  for(let c=0;c<3;c++){
-   const a=Number(applied.matrix&&applied.matrix[r]?applied.matrix[r][c]:NaN);
-   const d=Number(draft[r][c]);
-   if(!Number.isFinite(a)||!Number.isFinite(d)||Math.abs(a-d)>tol) return true;
-  }
- }
- return false;
-}
-
-function meterUpdateXyzMatrixApplyButton(){
- const btn=document.getElementById('meterXyzMatrixApply');
- if(!btn) return;
- const dirty=meterXyzMatrixDraftDirty();
- btn.style.display=dirty?'':'none';
- // Gear / action-row visibility depend on dirty so Apply stays reachable.
- try{ meterUpdateXyzMatrixVisibility(); }catch(e){}
- try{ if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility(); }catch(e){}
-}
-
-function meterApplyXyzMatrixEdits(){
- meterSnapshotXyzMatrixAppliedFromDom();
- meterRefreshAfterXyzMatrixChange();
- saveMeterSettings();
- meterUpdateXyzMatrixApplyButton();
-}
-
-// Enable/disable applies immediately (refresh + persist). Matrix number cells stay deferred until Apply.
-// Only the enabled flag is written into the applied snapshot; draft matrix cells keep their dirty state.
-function meterApplyXyzMatrixEnableFromDraft(){
- const enabled=meterDraftXyzMatrixEnabled();
- if(!window._meterXyzMatrixApplied){
-  meterSnapshotXyzMatrixAppliedFromDom();
- }else{
-  window._meterXyzMatrixApplied.enabled=enabled;
- }
- meterRefreshAfterXyzMatrixChange();
- saveMeterSettings();
- meterUpdateXyzMatrixApplyButton();
- return window._meterXyzMatrixApplied;
-}
-
-function meterSelectedCorrectionIsCcmx(){
- const main=document.getElementById('meterCcssProfile');
- if(main) return /\.ccmx$/i.test(String(main.value||''));
- const wizard=document.getElementById('meterAutoCalCcssProfile');
- return !!(wizard&&/\.ccmx$/i.test(String(wizard.value||'')));
-}
-
-function meterXyzCorrectionEnabled(){
- // Argyll applies a selected CCMX to XYZ before returning the reading.
- // Applying PGenerator's manual XYZ matrix as well would stack two
- // colorimeter corrections, so retain the saved matrix but suspend it.
- if(meterSelectedCorrectionIsCcmx()) return false;
- if(window._meterXyzMatrixApplied) return !!window._meterXyzMatrixApplied.enabled;
- return meterDraftXyzMatrixEnabled();
-}
-
-function meterStoredXyzMatrixEnabled(settings){
- if(!settings||settings.xyz_matrix_enabled==null) return false;
- return settings.xyz_matrix_enabled===true||settings.xyz_matrix_enabled==='1'||settings.xyz_matrix_enabled===1;
-}
-
-function meterXyzMatrixHelpText(ccmxActive){
- const difference='A CCMX meter profile and PGenerator\'s XYZ Correction Matrix both use 3x3 XYZ correction math, but at different stages. A CCMX is an Argyll meter profile made for a particular colorimeter and display by comparing it with a reference meter. Argyll applies the selected CCMX before returning XYZ. The XYZ Correction Matrix is a generic PGenerator post-measurement transform. It is not identified with a meter or display and changes the returned XYZ before charts and analysis.';
- if(ccmxActive) return difference+' The selected CCMX is active, so PGenerator has suspended the software matrix to prevent double correction. Select a CCSS or No Correction before using the software matrix.';
- return difference+' Use a CCMX for normal meter profiling. Use this tool only for a known manual matrix or an intentional software transform. PGenerator suspends it while a CCMX is selected to prevent double correction.';
-}
-
-function meterUpdateXyzMatrixVisibility(){
- const wrap=document.getElementById('meterXyzMatrixFields');
- const field=wrap&&wrap.closest('.meter-matrix-field');
- const actionRow=document.getElementById('meterXyzMatrixActionRow');
- const toggle=document.getElementById('meterXyzMatrixEnabled');
- const help=document.getElementById('meterXyzMatrixHelp');
- const ccmxActive=meterSelectedCorrectionIsCcmx();
- if(toggle){
-  toggle.disabled=ccmxActive;
-  toggle.title=ccmxActive?'Suspended while a CCMX meter profile is selected to prevent applying two XYZ correction matrices.':'';
- }
- if(help){
-  help.title=meterXyzMatrixHelpText(ccmxActive);
- }
- // Matrix fields follow the draft enable checkbox; action row also stays open
- // while dirty so Apply remains reachable after unchecking enable.
- const enabled=meterDraftXyzMatrixEnabled()&&!ccmxActive;
- const showActions=!ccmxActive&&(enabled||meterXyzMatrixDraftDirty());
- if(field) field.classList.toggle('visible',enabled);
- if(wrap) wrap.classList.toggle('visible',enabled);
- if(actionRow) actionRow.classList.toggle('visible',showActions);
- ['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
-  const el=document.getElementById(id);
-  if(el) el.disabled=!enabled;
- });
-}
-
-function meterConfiguredXyzCorrectionMatrix(){
- const ids=[
-  ['meterXyzM11','meterXyzM12','meterXyzM13'],
-  ['meterXyzM21','meterXyzM22','meterXyzM23'],
-  ['meterXyzM31','meterXyzM32','meterXyzM33']
- ];
- return ids.map((row,rowIdx)=>row.map((id,colIdx)=>{
-  const el=document.getElementById(id);
-  const raw=parseFloat((el&&el.value)||'');
-  return Number.isFinite(raw)?raw:METER_XYZ_MATRIX_DEFAULT[rowIdx][colIdx];
- }));
-}
-
-function meterSetXyzCorrectionMatrix(matrix, enabled){
- const ids=[
-  ['meterXyzM11','meterXyzM12','meterXyzM13'],
-  ['meterXyzM21','meterXyzM22','meterXyzM23'],
-  ['meterXyzM31','meterXyzM32','meterXyzM33']
- ];
- ids.forEach((row,rowIdx)=>row.forEach((id,colIdx)=>{
-  const el=document.getElementById(id);
-  if(!el) return;
-  const value=matrix&&matrix[rowIdx]&&Number.isFinite(Number(matrix[rowIdx][colIdx]))?Number(matrix[rowIdx][colIdx]):METER_XYZ_MATRIX_DEFAULT[rowIdx][colIdx];
-  el.value=String(Math.round(value*10000)/10000);
- }));
- if(enabled!=null){
-  const toggle=document.getElementById('meterXyzMatrixEnabled');
-  if(toggle) toggle.checked=(enabled===true||enabled===1||enabled==='1');
- }
-}
-
-function meterExportXyzMatrix(){
- const payload={
-  format:'pgenerator-xyz-correction-matrix',
-  version:1,
-  enabled:meterDraftXyzMatrixEnabled(),
-  matrix:meterConfiguredXyzCorrectionMatrix()
- };
- const filename=meterPromptExportFilename('xyz-matrix','pgenerator-xyz-correction-matrix','json','Enter a file name for the XYZ correction matrix export');
- if(!filename) return;
- const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
- meterDownloadBlob(blob,filename);
-}
-
-function meterOpenXyzMatrixImport(){
- const input=document.getElementById('meterXyzMatrixImportInput');
- if(!input) return;
- input.value='';
- input.click();
-}
-
-function meterParseImportedXyzMatrix(rawText){
- const parsed=JSON.parse(String(rawText||'{}'));
- let enabled=null;
- let matrix=parsed;
- if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)){
-  if(parsed.enabled!=null) enabled=(parsed.enabled===true||parsed.enabled===1||parsed.enabled==='1');
-  if(Array.isArray(parsed.matrix)) matrix=parsed.matrix;
- }
- if(!Array.isArray(matrix)||matrix.length!==3||matrix.some(row=>!Array.isArray(row)||row.length!==3)){
-  throw new Error('Matrix must be a 3x3 array');
- }
- const normalized=matrix.map(row=>row.map(value=>{
-  const numeric=Number(value);
-  if(!Number.isFinite(numeric)) throw new Error('Matrix values must be numeric');
-  return numeric;
- }));
- return {matrix:normalized,enabled:enabled};
-}
-
-function meterImportXyzMatrix(evt){
- const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
- if(!file) return;
- const reader=new FileReader();
- reader.onload=()=>{
-  try{
-   const imported=meterParseImportedXyzMatrix(reader.result);
-   meterSetXyzCorrectionMatrix(imported.matrix, imported.enabled);
-   // Import is intentional: auto-apply draft into the analysis snapshot.
-   meterSnapshotXyzMatrixAppliedFromDom();
-   meterRefreshAfterXyzMatrixChange();
-   saveMeterSettings();
-   meterUpdateXyzMatrixApplyButton();
-   toast('XYZ correction matrix imported');
-  }catch(e){
-   toast('Invalid XYZ correction matrix file',true);
-  }
- };
- reader.readAsText(file);
-}
-
-function meterXyzCorrectionMatrix(){
- if(!meterXyzCorrectionEnabled()) return meterIdentityXyzCorrectionMatrix();
- if(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)
-  return window._meterXyzMatrixApplied.matrix.map(row=>row.slice());
- return meterConfiguredXyzCorrectionMatrix();
-}
-
-function meterApplyXyzCorrectionMatrix(X,Y,Z,matrix){
- const M=matrix||meterXyzCorrectionMatrix();
- return {
-  X:M[0][0]*X+M[0][1]*Y+M[0][2]*Z,
-  Y:M[1][0]*X+M[1][1]*Y+M[1][2]*Z,
-  Z:M[2][0]*X+M[2][1]*Y+M[2][2]*Z
- };
 }
 
 // Black-floor epsilon (cd/m²): a black (0%) read at or below this luminance is
@@ -19018,8 +18788,7 @@ function meterNormalizeMeasuredReading(reading){
   base={X:(rawx/rawy)*rawLum,Y:rawLum,Z:((1-rawx-rawy)/rawy)*rawLum};
  }
  if(!base) return reading;
- const enabled=meterXyzCorrectionEnabled();
- const corrected=enabled?meterApplyXyzCorrectionMatrix(base.X,base.Y,base.Z):base;
+ const corrected=base;
   reading.X=corrected.X;
   reading.Y=corrected.Y;
   reading.Z=corrected.Z;
@@ -25436,6 +25205,92 @@ function meterCcssCreateFormatValue(){
  return meterCcssCreateFormat;
 }
 
+function meterCcssCreateMethodValue(){
+ const select=document.getElementById('meterCcssCreateMethod');
+ const value=String((select&&select.value)||meterCcssCreateMethod||'measure').toLowerCase();
+ meterCcssCreateMethod=/^(?:json|manual)$/.test(value)?value:'measure';
+ return meterCcssCreateMethod;
+}
+
+function meterCcssCreateMethodChanged(){
+ meterCcssCreateMethodValue();
+ meterCcssCreateUpdateCopy();
+ meterRenderCcssCreateChoices();
+ meterCcssCreateUpdateStartState();
+}
+
+const METER_CCMX_MATRIX_IDS=[
+ ['meterCcmxM11','meterCcmxM12','meterCcmxM13'],
+ ['meterCcmxM21','meterCcmxM22','meterCcmxM23'],
+ ['meterCcmxM31','meterCcmxM32','meterCcmxM33']
+];
+
+function meterCcssCreateReadMatrix(){
+ return METER_CCMX_MATRIX_IDS.map(row=>row.map(id=>{
+  const el=document.getElementById(id);
+  const value=Number(el&&el.value);
+  if(!Number.isFinite(value)) throw new Error('Every matrix cell must contain a number.');
+  return value;
+ }));
+}
+
+function meterCcssCreateSetMatrix(matrix){
+ METER_CCMX_MATRIX_IDS.forEach((row,r)=>row.forEach((id,c)=>{
+  const el=document.getElementById(id);
+  if(el) el.value=String(Number(matrix[r][c]));
+ }));
+}
+
+function meterParseCcmxMatrixJson(rawText){
+ const parsed=JSON.parse(String(rawText||'{}'));
+ const matrix=parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&Array.isArray(parsed.matrix)
+  ? parsed.matrix
+  : parsed;
+ if(!Array.isArray(matrix)||matrix.length!==3||matrix.some(row=>!Array.isArray(row)||row.length!==3)){
+  throw new Error('Matrix must be a 3x3 array.');
+ }
+ return matrix.map(row=>row.map(value=>{
+  const numeric=Number(value);
+  if(!Number.isFinite(numeric)) throw new Error('Matrix values must be numeric.');
+  return numeric;
+ }));
+}
+
+function meterCcssCreateImportJson(evt){
+ const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
+ const status=document.getElementById('meterCcssCreateJsonStatus');
+ meterCcssCreateJsonLoaded=false;
+ if(!file){
+  if(status) status.textContent='Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.';
+  meterCcssCreateUpdateStartState();
+  return;
+ }
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   const matrix=meterParseCcmxMatrixJson(reader.result);
+   meterCcssCreateSetMatrix(matrix);
+   meterCcssCreateJsonLoaded=true;
+   if(status){
+    status.textContent='Loaded '+file.name+'. Review the matrix below, then create the CCMX.';
+    status.style.color='var(--green)';
+   }
+  }catch(e){
+   if(status){
+    status.textContent=e&&e.message?e.message:'Invalid XYZ correction matrix JSON.';
+    status.style.color='var(--red)';
+   }
+   toast('Invalid XYZ correction matrix JSON',true);
+  }
+  meterCcssCreateUpdateStartState();
+ };
+ reader.onerror=()=>{
+  if(status){status.textContent='Could not read the selected JSON file.';status.style.color='var(--red)';}
+  meterCcssCreateUpdateStartState();
+ };
+ reader.readAsText(file);
+}
+
 function meterCcssCreateSelectedMeter(){
  const selected=meterFindByPort(meterSelectedProfilingPort());
  if(selected&&meterIsSpectrophotometer(selected)) return selected;
@@ -25460,20 +25315,42 @@ function meterCcssCreateFormatChanged(){
 
 function meterCcssCreateUpdateCopy(){
  const mode=meterCcssCreateFormatValue();
+ const method=meterCcssCreateMethodValue();
  const intro=document.getElementById('meterCcssCreateIntro');
  const help=document.getElementById('meterCcssCreateFormatHelp');
  const displayHelp=document.getElementById('meterCcssCreateDisplayHelp');
  const targetSection=document.getElementById('meterCcssCreateTargetSection');
+ const methodSection=document.getElementById('meterCcssCreateMethodSection');
+ const methodHelp=document.getElementById('meterCcssCreateMethodHelp');
+ const referenceSection=document.getElementById('meterCcssCreateReferenceSection');
+ const matrixSection=document.getElementById('meterCcssCreateMatrixSection');
+ const jsonSection=document.getElementById('meterCcssCreateJsonSection');
+ const suppliedMatrix=mode==='ccmx'&&method!=='measure';
  if(intro) intro.textContent=mode==='ccmx'
-  ? 'Creates a correction matrix by measuring the same display patches with a reference spectrophotometer and the colorimeter being corrected. Follow each setup prompt and keep both meters connected.'
+  ? (method==='measure'
+    ? 'Creates a correction matrix by measuring the same display patches with a reference spectrophotometer and the colorimeter being corrected. Follow each setup prompt and keep both meters connected.'
+    : 'Creates a standard ArgyllCMS CCMX profile from a supplied 3x3 XYZ correction matrix and associates it with the selected target colorimeter.')
   : 'Creates spectral display correction data from a reference spectrophotometer. Follow the setup prompts to calibrate the spectro, aim it at the display, and measure the patch set.';
  if(help) help.textContent=mode==='ccmx'
-  ? 'A CCMX is a small matrix made for one colorimeter model or unit on this specific display. It corrects that colorimeter to agree with the selected reference spectro and is not a general display spectral profile.'
+  ? (method==='measure'
+    ? 'A CCMX is a small matrix made for one colorimeter model or unit on this specific display. It corrects that colorimeter to agree with the selected reference spectro and is not a general display spectral profile.'
+    : 'A CCMX is an ArgyllCMS meter profile containing a 3x3 XYZ correction matrix. The selected colorimeter and display technology are stored with the supplied matrix.')
   : 'A CCSS stores the display spectrum. Compatible colorimeters use that spectral data with their own sensor characteristics, so a CCSS can be shared across supported meter units measuring the same display technology.';
  if(displayHelp) displayHelp.textContent=mode==='ccmx'
-  ? 'This identifies the display technology in the CCMX. The target colorimeter is measured in its uncorrected base mode so the new matrix is not stacked on another profile.'
+  ? (method==='measure'
+    ? 'This identifies the display technology in the CCMX. The target colorimeter is measured in its uncorrected base mode so the new matrix is not stacked on another profile.'
+    : 'This identifies the display technology in the CCMX metadata. It does not alter the supplied matrix values.')
   : 'This sets the ccxxmake display technology used to build the new CCSS.';
+ if(methodHelp) methodHelp.textContent=method==='measure'
+  ? 'Measures both meters and calculates the correction matrix from their XYZ results.'
+  : (method==='json'
+    ? 'Imports the JSON format exported by the former software XYZ Correction Matrix tool and converts it into a meter profile.'
+    : 'Enter the matrix values directly. PGenerator will package them as a CCMX that ArgyllCMS applies to the selected meter.');
+ if(methodSection) methodSection.style.display=mode==='ccmx'?'':'none';
+ if(referenceSection) referenceSection.style.display=suppliedMatrix?'none':'';
  if(targetSection) targetSection.style.display=mode==='ccmx'?'':'none';
+ if(matrixSection) matrixSection.style.display=suppliedMatrix?'':'none';
+ if(jsonSection) jsonSection.style.display=suppliedMatrix&&method==='json'?'':'none';
 }
 
 function meterCcssCreateDisplayTypeValue(){
@@ -25495,13 +25372,20 @@ function meterCcssCreateCanStart(){
 }
 
 function meterCcssCreateStartBlockReason(){
- if(!meterCcssCreateInventoryReady) return 'Checking for a ready spectrophotometer.';
- if(!meterCcssCreateSelectedMeter()) return 'Connect and select a reference spectrophotometer.';
- if(meterCcssCreateFormatValue()==='ccmx'&&!meterCcssCreateSelectedTarget()) return 'Connect and select the target colorimeter.';
+ const mode=meterCcssCreateFormatValue();
+ const method=meterCcssCreateMethodValue();
+ const needsSpectro=mode==='ccss'||method==='measure';
+ if(!meterCcssCreateInventoryReady) return needsSpectro?'Checking for a ready spectrophotometer.':'Checking for a ready colorimeter.';
+ if(needsSpectro&&!meterCcssCreateSelectedMeter()) return 'Connect and select a reference spectrophotometer.';
+ if(mode==='ccmx'&&!meterCcssCreateSelectedTarget()) return 'Connect and select the target colorimeter.';
+ if(mode==='ccmx'&&method==='json'&&!meterCcssCreateJsonLoaded) return 'Choose a valid XYZ correction matrix JSON file.';
+ if(mode==='ccmx'&&method!=='measure'){
+  try{ meterCcssCreateReadMatrix(); }catch(e){ return e.message||'Enter a valid 3x3 correction matrix.'; }
+ }
  const nameInput=document.getElementById('meterCcssCreateName');
  if(!String((nameInput&&nameInput.value)||'').trim()) return 'Enter a profile name.';
  if(!meterCcssCreateDisplayTypeValue()) return 'Choose a display technology.';
- if(typeof hasUnsavedSettings==='function'&&hasUnsavedSettings()) return 'Apply & Restart before creating the profile.';
+ if(needsSpectro&&typeof hasUnsavedSettings==='function'&&hasUnsavedSettings()) return 'Apply & Restart before creating the profile.';
  if(meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning) return 'Wait for the current meter operation to finish.';
  return '';
 }
@@ -25510,6 +25394,8 @@ function meterCcssCreateUpdateStartState(){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
  if(!startBtn) return;
  const reason=meterCcssCreateStartBlockReason();
+ const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
+ if(!startBtn.dataset.starting) startBtn.textContent=supplied?'Create CCMX':'Start Creation';
  startBtn.disabled=reason!=='';
  startBtn.title=reason;
 }
@@ -25518,11 +25404,14 @@ function meterCcssCreateSetStartingFeedback(starting,format){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
  const progress=document.getElementById('meterCcssCreateProgress');
  if(startBtn){
-  startBtn.textContent=starting?'Starting...':'Start Creation';
+  const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
+  startBtn.textContent=starting?'Starting...':(supplied?'Create CCMX':'Start Creation');
   if(starting){
+   startBtn.dataset.starting='1';
    startBtn.disabled=true;
    startBtn.title='Starting meter profile creation';
   }else{
+   delete startBtn.dataset.starting;
    meterCcssCreateUpdateStartState();
   }
  }
@@ -25543,6 +25432,8 @@ function meterCcssCreateSetUi(status){
  const nameInput=document.getElementById('meterCcssCreateName');
  const displayTypeSel=document.getElementById('meterCcssCreateDisplayType');
  const formatSel=document.getElementById('meterCcssCreateFormat');
+ const methodSel=document.getElementById('meterCcssCreateMethod');
+ const jsonInput=document.getElementById('meterCcssCreateJsonInput');
  const running=!!(status&&(status.status==='starting'||status.status==='running'));
  if(progress&&status&&status.message){
   // Show only our curated message. status.detail carries the raw ccxxmake
@@ -25550,7 +25441,7 @@ function meterCcssCreateSetUi(status){
   progress.textContent=status.message;
   delete progress.dataset.starting;
  }
- if(startBtn){ startBtn.textContent='Start Creation'; startBtn.style.display=running?'none':''; meterCcssCreateUpdateStartState(); }
+ if(startBtn){ delete startBtn.dataset.starting; startBtn.style.display=running?'none':''; meterCcssCreateUpdateStartState(); }
  if(stopBtn) stopBtn.style.display=running?'':'none';
  // The action button is driven by meterCcssCreateRefreshStatus for setup steps;
  // for any non-setup status (handled here) keep it hidden.
@@ -25559,6 +25450,9 @@ function meterCcssCreateSetUi(status){
  if(nameInput) nameInput.disabled=running;
  if(displayTypeSel) displayTypeSel.disabled=running;
  if(formatSel) formatSel.disabled=running;
+ if(methodSel) methodSel.disabled=running;
+ if(jsonInput) jsonInput.disabled=running;
+ METER_CCMX_MATRIX_IDS.forEach(row=>row.forEach(id=>{const el=document.getElementById(id);if(el) el.disabled=running;}));
 }
 
 let meterCcssSetupStepId=0;
@@ -25580,9 +25474,11 @@ function meterRenderCcssCreateChoices(){
  const targetStatus=document.getElementById('meterCcssCreateTargetStatus');
  if(!wrap||!status) return;
  const mode=meterCcssCreateFormatValue();
+ const method=meterCcssCreateMethodValue();
+ const needsSpectro=mode==='ccss'||method==='measure';
  if(!meterCcssCreateInventoryReady){
   wrap.innerHTML='';
-  status.textContent='Checking connected spectrophotometers...';
+  status.textContent=needsSpectro?'Checking connected spectrophotometers...':'No reference spectrophotometer is required for a supplied matrix.';
   if(targetWrap) targetWrap.innerHTML='';
   if(targetStatus) targetStatus.textContent=mode==='ccmx'?'Checking connected colorimeters...':'';
   meterCcssCreateUpdateStartState();
@@ -25593,13 +25489,15 @@ function meterRenderCcssCreateChoices(){
  const selected=meterSelectedProfilingPort();
  if(!meterInventory||meterInventory.length===0){
   wrap.innerHTML='';
-  status.textContent='No supported meter detected. Connect the required meter or meters, then reopen this creator.';
+  status.textContent=needsSpectro
+   ? 'No supported meter detected. Connect the required meter or meters, then reopen this creator.'
+   : 'No supported colorimeter detected. Connect the meter that this matrix will correct.';
   if(targetWrap) targetWrap.innerHTML='';
   if(targetStatus) targetStatus.textContent=mode==='ccmx'?'A CCMX also requires a target colorimeter.':'';
   meterCcssCreateUpdateStartState();
   return;
  }
- if(!spectros.length){
+ if(needsSpectro&&!spectros.length){
   wrap.innerHTML='';
   status.textContent='No spectrophotometer detected. Connect the reference spectro you want to use.';
   if(targetWrap) targetWrap.innerHTML='';
@@ -25607,16 +25505,20 @@ function meterRenderCcssCreateChoices(){
   meterCcssCreateUpdateStartState();
   return;
  }
+ if(!needsSpectro){
+  wrap.innerHTML='';
+  status.textContent='No reference spectrophotometer is required for a supplied matrix.';
+ }
  const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
- if(chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
- if(spectros.length>1){
+ if(needsSpectro&&chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
+ if(needsSpectro&&spectros.length>1){
   status.textContent=chosen?('Reference: '+meterOptionLabel(chosen)+'. Tap another to switch.'):'Select the reference spectrophotometer.';
- }else if(chosen){
+ }else if(needsSpectro&&chosen){
   status.textContent='Selected reference: '+meterOptionLabel(chosen)+'.';
- }else {
+ }else if(needsSpectro) {
   status.textContent='Choose the reference spectrophotometer.';
  }
- wrap.innerHTML=spectros.map(meter=>{
+ if(needsSpectro) wrap.innerHTML=spectros.map(meter=>{
   const port=meterNormalizePortValue(meter.port_num);
   const active=meterProfilingPort===port;
   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationMeter(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
@@ -25652,6 +25554,7 @@ function meterOpenCcssCreateModal(){
  meterCcssCreateFreshOpen=true;
  meterCcssCreateInventoryReady=false;
  meterCcssCreateJobActive=false;
+ meterCcssCreateJsonLoaded=false;
  meterCcssSetupStepId=0;
  meterCcssCreateHandledToken='';
  const progress=document.getElementById('meterCcssCreateProgress');
@@ -25672,6 +25575,16 @@ function meterOpenCcssCreateModal(){
  }
  const formatSel=document.getElementById('meterCcssCreateFormat');
  if(formatSel) formatSel.value=meterCcssCreateFormat==='ccmx'?'ccmx':'ccss';
+ const methodSel=document.getElementById('meterCcssCreateMethod');
+ if(methodSel) methodSel.value=/^(?:json|manual)$/.test(meterCcssCreateMethod)?meterCcssCreateMethod:'measure';
+ const jsonInput=document.getElementById('meterCcssCreateJsonInput');
+ if(jsonInput) jsonInput.value='';
+ const jsonStatus=document.getElementById('meterCcssCreateJsonStatus');
+ if(jsonStatus){
+  jsonStatus.textContent='Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.';
+  jsonStatus.style.color='var(--text2)';
+ }
+ meterCcssCreateSetMatrix([[1,0,0],[0,1,0],[0,0,1]]);
  meterCcssCreateUpdateCopy();
  meterRenderCcssCreateChoices();
  modal.style.display='flex';
@@ -25679,7 +25592,10 @@ function meterOpenCcssCreateModal(){
  Promise.resolve(meterCheckStatus()).finally(()=>{
   if(modal.style.display==='flex'&&!meterCcssCreateInventoryReady){
    const status=document.getElementById('meterCcssCreateStatus');
-   if(status) status.textContent='Could not confirm that the spectrophotometer is ready. Check the connection and reopen this window.';
+   const needsSpectro=meterCcssCreateFormatValue()==='ccss'||meterCcssCreateMethodValue()==='measure';
+   if(status) status.textContent=needsSpectro
+    ? 'Could not confirm that the spectrophotometer is ready. Check the connection and reopen this window.'
+    : 'Could not confirm that the target colorimeter is ready. Check the connection and reopen this window.';
    meterCcssCreateUpdateStartState();
   }
  });
@@ -25785,6 +25701,108 @@ async function meterCcssCreateRefreshStatus(quiet){
  return r;
 }
 
+function meterCcmxHeaderValue(value){
+ return String(value==null?'':value).replace(/[\x00-\x1f\x7f"]/g,' ').replace(/\s+/g,' ').trim();
+}
+
+function meterCcmxInstrumentName(meter){
+ const name=String((meter&&meter.name)||'').toLowerCase();
+ const usb=String((meter&&meter.usb_id)||'').toLowerCase();
+ if(usb==='085c:0a00'||/\bspyder\s*x\b/.test(name)) return 'Datacolor SpyderX';
+ if(/\bspyder\s*5\b/.test(name)) return 'Datacolor Spyder5';
+ if(/i1\s*display|i1display|display\s*pro|colormunki\s*display|colorchecker\s*display|c6/.test(name)) return 'X-Rite i1 DisplayPro, ColorMunki Display';
+ return meterCcmxHeaderValue((meter&&meter.name)||'Colorimeter');
+}
+
+function meterCcmxTechnologyName(key){
+ return {
+  oled_generic:'LED WOLED',
+  qdoled:'OLED',
+  lcd_wled:'LCD White LED',
+  lcd_rgbled:'LCD RGB LED',
+  lcd_gbled:'LCD GB-R LED',
+  lcd_ccfl:'LCD CCFL',
+  lcd_wgccfl:'LCD Wide Gamut CCFL',
+  plasma:'Plasma',
+  projector_ccss:'Projector',
+  crt:'CRT'
+ }[String(key||'')]||meterCcmxHeaderValue(key)||'Unknown';
+}
+
+function meterBuildCcmxContent(name,target,matrix,displayType,method){
+ const rows=matrix.map(row=>row.map(value=>Number(value).toPrecision(12).replace(/(?:\.0+|(\.\d+?)0+)$/,'$1')).join(' '));
+ const reference=method==='json'?'Imported PGenerator XYZ correction matrix':'User entered 3x3 XYZ correction matrix';
+ const refresh=/^(?:plasma|crt)$/.test(String(displayType||''))?'YES':'NO';
+ return [
+  'CCMX',
+  '',
+  'DESCRIPTOR "'+meterCcmxHeaderValue(name)+'"',
+  'INSTRUMENT "'+meterCcmxInstrumentName(target)+'"',
+  'DISPLAY "'+meterCcmxHeaderValue(name)+'"',
+  'TECHNOLOGY "'+meterCcmxTechnologyName(displayType)+'"',
+  'DISPLAY_TYPE_BASE_ID "1"',
+  'DISPLAY_TYPE_REFRESH "'+refresh+'"',
+  'REFERENCE "'+reference+'"',
+  'ORIGINATOR "PGenerator+"',
+  'CREATED "'+new Date().toUTCString()+'"',
+  'COLOR_REP "XYZ"',
+  '',
+  'NUMBER_OF_FIELDS 3',
+  'BEGIN_DATA_FORMAT',
+  'XYZ_X XYZ_Y XYZ_Z',
+  'END_DATA_FORMAT',
+  '',
+  'NUMBER_OF_SETS 3',
+  'BEGIN_DATA',
+  ...rows,
+  'END_DATA',
+  ''
+ ].join('\n');
+}
+
+function meterBase64Utf8(text){
+ const bytes=new TextEncoder().encode(String(text||''));
+ let binary='';
+ for(let i=0;i<bytes.length;i+=8192) binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+ return btoa(binary);
+}
+
+async function meterSelectCreatedCcmxForTarget(filename,target){
+ const targetPort=meterNormalizePortValue(target&&target.port_num);
+ const meterSelect=document.getElementById('meterMeasurementPort');
+ if(targetPort&&meterSelect&&Array.from(meterSelect.options).some(opt=>meterNormalizePortValue(opt.value)===targetPort)){
+  meterSelect.value=targetPort;
+  meterMeasurementPort=targetPort;
+  meterSavedMeasurementPort=targetPort;
+  meterResolvedMeasurementPort=targetPort;
+  meterSelect.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ await refreshMeterCcssCatalog();
+ const selected=meterSetCcssProfileSelection('custom_'+filename);
+ await loadCustomCcssList();
+ await ccssPreviewLoadByValue('custom\t'+filename,false);
+ saveMeterSettings();
+ return selected;
+}
+
+async function meterCreateCcmxFromSuppliedMatrix(name,target,matrix,displayType,method){
+ const content=meterBuildCcmxContent(name,target,matrix,displayType,method);
+ const r=await fetchJSON('/api/ccss/upload',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({
+   name:name,
+   content:meterBase64Utf8(content),
+   filename:name+'.ccmx',
+   display_type:displayType
+  }),
+  _timeoutMs:15000
+ });
+ if(!r||r.status!=='ok') throw new Error(r&&r.message?r.message:'Failed to create CCMX profile');
+ const selected=await meterSelectCreatedCcmxForTarget(r.filename,target);
+ return {response:r,selected:selected};
+}
+
 async function meterStartCcssCreate(){
  if(meterActionPending){toast('Meter operation already in progress',true);return;}
  const initialFormat=meterCcssCreateFormatValue();
@@ -25799,19 +25817,44 @@ async function meterStartCcssCreate(){
  meterRenderCcssCreateChoices();
  const blocked=meterCcssCreateStartBlockReason();
  if(blocked){meterCcssCreateSetStartingFeedback(false);toast(blocked,true);return;}
- const spectros=meterCcssCreateSpectros();
- if(!spectros.length){meterCcssCreateSetStartingFeedback(false);toast('Connect a spectrophotometer first',true);return;}
- const meter=meterCcssCreateSelectedMeter();
- if(!meter){meterCcssCreateSetStartingFeedback(false);toast('No spectrophotometer selected',true);return;}
  const format=meterCcssCreateFormatValue();
+ const method=meterCcssCreateMethodValue();
  const target=format==='ccmx'?meterCcssCreateSelectedTarget():null;
  if(format==='ccmx'&&!target){meterCcssCreateSetStartingFeedback(false);toast('No target colorimeter selected',true);return;}
- if(!meterEnsureAppliedGeneratorSettings()){meterCcssCreateSetStartingFeedback(false);return;}
  const nameInput=document.getElementById('meterCcssCreateName');
  const name=String((nameInput&&nameInput.value)||'').trim();
  if(!name){meterCcssCreateSetStartingFeedback(false);toast('Enter a profile name',true);return;}
  const displayType=meterCcssCreateDisplayTypeValue();
  if(!displayType){meterCcssCreateSetStartingFeedback(false);toast('Choose a display technology',true);return;}
+ if(format==='ccmx'&&method!=='measure'){
+  meterActionPending=true;
+  try{
+   const matrix=meterCcssCreateReadMatrix();
+   const result=await meterCreateCcmxFromSuppliedMatrix(name,target,matrix,displayType,method);
+   const progress=document.getElementById('meterCcssCreateProgress');
+   if(progress){
+    progress.textContent=result.selected
+     ? 'CCMX profile created and selected for '+meterOptionLabel(target)+'.'
+     : 'CCMX profile created, but it could not be selected for '+meterOptionLabel(target)+'.';
+    delete progress.dataset.starting;
+   }
+   toast(result.selected?'CCMX profile created and selected':'CCMX profile created');
+  }catch(e){
+   const message=e&&e.message?e.message:'Failed to create CCMX profile';
+   const progress=document.getElementById('meterCcssCreateProgress');
+   if(progress){progress.textContent=message;delete progress.dataset.starting;}
+   toast(message,true);
+  }finally{
+   meterActionPending=false;
+   meterCcssCreateSetStartingFeedback(false);
+  }
+  return;
+ }
+ const spectros=meterCcssCreateSpectros();
+ if(!spectros.length){meterCcssCreateSetStartingFeedback(false);toast('Connect a spectrophotometer first',true);return;}
+ const meter=meterCcssCreateSelectedMeter();
+ if(!meter){meterCcssCreateSetStartingFeedback(false);toast('No spectrophotometer selected',true);return;}
+ if(!meterEnsureAppliedGeneratorSettings()){meterCcssCreateSetStartingFeedback(false);return;}
  meterCcssCreateFreshOpen=false;
  meterCcssCreateJobActive=true;
  meterActionPending=true;
@@ -51328,7 +51371,7 @@ function meterCorrectionInstrumentCompatible(entry,meter){
  const a=compact(instrument), b=compact(name);
  if(!a||!b) return false;
  if(a.includes(b)||b.includes(a)) return true;
- if(/(?:i1display|colormunkidisplay|displaypro|c6)/.test(a)&&/(?:i1display|colormunkidisplay|displaypro|c6)/.test(b)) return true;
+ if(/(?:i1display|colormunkidisplay|colorcheckerdisplay|displaypro|c6)/.test(a)&&/(?:i1display|colormunkidisplay|colorcheckerdisplay|displaypro|c6)/.test(b)) return true;
  if(/spyder5/.test(a)&&/spyder5/.test(b)) return true;
  return false;
 }
@@ -51446,9 +51489,7 @@ function meterOnCcssProfileChange(ev){
   }
  }catch(e){}
  try{
-  meterUpdateXyzMatrixVisibility();
   if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
-  meterRefreshAfterXyzMatrixChange();
   meterAutoCalDisplayTypeUpdateSummary();
  }catch(e){}
  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
@@ -51499,9 +51540,7 @@ function meterSetCcssProfileSelection(token){
  if(!selected) return false;
  if(source==='custom') customCcssFile=name;
  try{
-  meterUpdateXyzMatrixVisibility();
   if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
-  meterRefreshAfterXyzMatrixChange();
   meterAutoCalDisplayTypeUpdateSummary();
  }catch(e){}
  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
@@ -51802,17 +51841,6 @@ function saveMeterSettings(){
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
-    // Persist the applied XYZ matrix only — draft edits stay in the DOM until Apply.
-    xyz_matrix_enabled:(window._meterXyzMatrixApplied!=null)?!!window._meterXyzMatrixApplied.enabled:chk('meterXyzMatrixEnabled'),
-    xyz_m11:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][0]):val('meterXyzM11'),
-    xyz_m12:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][1]):val('meterXyzM12'),
-    xyz_m13:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[0][2]):val('meterXyzM13'),
-    xyz_m21:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][0]):val('meterXyzM21'),
-    xyz_m22:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][1]):val('meterXyzM22'),
-    xyz_m23:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[1][2]):val('meterXyzM23'),
-    xyz_m31:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][0]):val('meterXyzM31'),
-    xyz_m32:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][1]):val('meterXyzM32'),
-    xyz_m33:(window._meterXyzMatrixApplied&&window._meterXyzMatrixApplied.matrix)?String(window._meterXyzMatrixApplied.matrix[2][2]):val('meterXyzM33'),
   sep_lum:chk('meterSeparateLumError'),
   // HDR tone-mapping config
   hdr_bt2390:chk('meterHdrApplyBT2390'),
@@ -52024,19 +52052,6 @@ async function loadMeterSettings(){
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
  updateMeterTargetWhitepointVisibility();
- setVal('meterXyzM11', s.xyz_m11);
- setVal('meterXyzM12', s.xyz_m12);
- setVal('meterXyzM13', s.xyz_m13);
- setVal('meterXyzM21', s.xyz_m21);
- setVal('meterXyzM22', s.xyz_m22);
- setVal('meterXyzM23', s.xyz_m23);
- setVal('meterXyzM31', s.xyz_m31);
- setVal('meterXyzM32', s.xyz_m32);
- setVal('meterXyzM33', s.xyz_m33);
- setChk('meterXyzMatrixEnabled', meterStoredXyzMatrixEnabled(s));
- meterSnapshotXyzMatrixAppliedFromDom();
- meterUpdateXyzMatrixVisibility();
- meterUpdateXyzMatrixApplyButton();
  setChk('meterSeparateLumError', (greyMode==='eotf') ? s.sep_lum : false);
  meterUpdateSeparateLumVisibility();
  setChk('meterHdrApplyBT2390', s.hdr_bt2390);
@@ -52079,8 +52094,6 @@ async function loadMeterSettings(){
  meterSetSeriesTab(meterSeriesTab,true);
 }
 // Add change listeners for auto-save
-// Note: XYZ matrix number cells are deferred — they save only via meterApplyXyzMatrixEdits().
-// The enable checkbox applies immediately via meterApplyXyzMatrixEnableFromDraft().
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
 	 'meterGreyRefMode','meterGrayWorld','meterRgbBalanceFormula','meterDeltaEForm','meterColorDeltaEForm',
 	 'meterTargetGamma','meterTargetWhiteX','meterTargetWhiteY','meterCcssCreateDisplayType',
@@ -52099,8 +52112,6 @@ if(meterCcssCreateDisplayTypeEl) meterCcssCreateDisplayTypeEl.addEventListener('
  meterCcssCreateDisplayType=String(meterCcssCreateDisplayTypeEl.value||'oled_generic').trim()||'oled_generic';
  saveMeterSettings();
 });
-const meterXyzMatrixImportInputEl=document.getElementById('meterXyzMatrixImportInput');
-if(meterXyzMatrixImportInputEl) meterXyzMatrixImportInputEl.addEventListener('change',meterImportXyzMatrix);
 const meterMeasurementPortEl=document.getElementById('meterMeasurementPort');
 if(meterMeasurementPortEl) meterMeasurementPortEl.addEventListener('change',()=>{
  meterMeasurementPort=meterStoredMeasurementPort();
@@ -52135,7 +52146,6 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  };
  const gears={
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
-  xyz:setupGear('meterXyzGear','meterXyzGearPopover'),
   customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
   meterProfile:setupGear('meterProfileGear','meterProfileGearPopover')
  };
@@ -52143,27 +52153,11 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  window.meterUpdateGearVisibility=function(){
   const pi=document.getElementById('meterPatchInsert');
   if(pi){const w=gearWrap('meterPatternInsertGear');if(w) w.classList.toggle('is-hidden',!pi.checked);if(!pi.checked&&gears.patternInsert) gears.patternInsert.close();}
-  const xy=document.getElementById('meterXyzMatrixEnabled');
-  if(xy){
-   // Keep the gear available while dirty so Apply is reachable after unchecking enable.
-   const ccmxActive=typeof meterSelectedCorrectionIsCcmx==='function'&&meterSelectedCorrectionIsCcmx();
-   const showXyz=!ccmxActive&&(xy.checked||(typeof meterXyzMatrixDraftDirty==='function'&&meterXyzMatrixDraftDirty()));
-   const w=gearWrap('meterXyzGear');
-   if(w) w.classList.toggle('is-hidden',!showXyz);
-   if(!showXyz&&gears.xyz) gears.xyz.close();
-  }
   const d65=document.getElementById('meterCustomD65Enabled');
   if(d65){const w=gearWrap('meterCustomD65Gear');if(w) w.classList.toggle('is-hidden',!d65.checked);if(!d65.checked&&gears.customD65) gears.customD65.close();}
  };
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
- const xyEl=document.getElementById('meterXyzMatrixEnabled');
- if(xyEl) xyEl.addEventListener('change',()=>{
-  // Enable applies immediately (gear, charts, persist); matrix numbers stay deferred.
-  window.meterUpdateGearVisibility();
-  meterUpdateXyzMatrixVisibility();
-  meterApplyXyzMatrixEnableFromDraft();
- });
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
  try{ meterRelocateProfileControls(); }catch(e){}
@@ -52175,7 +52169,6 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-// meterXyzMatrixEnabled applies immediately (meterApplyXyzMatrixEnableFromDraft); only cells are deferred.
 ['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390','meterHdrDiffuseWhite','meterHdrDiffuseWhiteAuto'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
@@ -52335,26 +52328,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  });
 });
 
-function meterRefreshAfterXyzMatrixChange(){
- meterUpdateXyzMatrixVisibility();
- meterOnGreyRefChange();
- meterRefreshActiveSeriesCharts();
- const live=meterFindReadingForStep(meterCurrentPatchStep)||[...meterReadings].reverse().find(rd=>meterReadingHasLuminance(rd));
- if(live) updateLiveReading(live);
-}
-
-// Draft edits only mark the Apply button dirty — charts/live analysis stay on the applied snapshot.
-['meterXyzM11','meterXyzM12','meterXyzM13','meterXyzM21','meterXyzM22','meterXyzM23','meterXyzM31','meterXyzM32','meterXyzM33'].forEach(id=>{
- const el=document.getElementById(id);
- if(!el) return;
- el.addEventListener('input',meterUpdateXyzMatrixApplyButton);
-});
-// Seed applied snapshot from DOM defaults if settings have not loaded yet.
-if(!window._meterXyzMatrixApplied) meterSnapshotXyzMatrixAppliedFromDom();
-meterUpdateXyzMatrixApplyButton();
-
 updateMeterTargetWhitepointVisibility();
-meterUpdateXyzMatrixVisibility();
 
 // Wire up collapsible card headers. Click the h2 of any .card to toggle.
 // Persist state in localStorage so reloads keep the user's layout.
