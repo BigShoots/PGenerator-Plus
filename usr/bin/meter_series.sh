@@ -68,6 +68,13 @@ case "$OBSERVER" in
  *) OBSERVER="1931_2" ;;
 esac
 export OBSERVER
+# ICC profiling can display patches through a paired target-computer
+# companion. All other series continue to use the local PGenerator renderer.
+PATTERN_PROVIDER="${34:-local}"
+[[ "$PATTERN_PROVIDER" == "companion" ]] || PATTERN_PROVIDER="local"
+COMPANION_COMMAND_FILE="/tmp/pgen_icc_companion.command.json"
+COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
+COMPANION_SEQUENCE=0
 
 # SpyderX uses native -y display calibrations and device-specific CCMX
 # matrices. It does not accept CCSS or a manual refresh-frequency override.
@@ -257,6 +264,7 @@ series_cancel_exit() {
 {"status":"cancelled","series_id":"$SERIES_ID","current_step":0,"total_steps":${TOTAL:-0},"current_name":"Cancelled","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  series_quit_spotread "cancel"
+ companion_park_black
  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 0
 }
@@ -282,13 +290,89 @@ patch_request_body() {
 }
 
 post_patch() {
+ if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
+  post_companion_patch "$@"
+  return $?
+ fi
  curl -s --max-time 8 "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1
 }
 
 post_patch_timeout() {
+ if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
+  post_companion_patch "$@"
+  return $?
+ fi
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d "$(patch_request_body "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-$TRANSPORT_SIGNAL_RANGE}" "$9")" >/dev/null 2>&1 || true
+}
+
+companion_pattern_failure() {
+ local message="$1" escaped
+ escaped=$(json_escape "$message")
+ write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$escaped","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ series_quit_spotread "companion_error" 2>/dev/null || true
+ exit 1
+}
+
+post_companion_patch() {
+ local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
+ local code_min=0 code_max shift sequence payload tmp deadline ack ack_sequence ack_status
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ code_max="$input_max"
+ if [[ "$signal_range" == "1" ]]; then
+  case "$input_max" in
+   1023) shift=4 ;;
+   4095) shift=16 ;;
+   *) shift=1 ;;
+  esac
+  code_min=$((16 * shift))
+  code_max=$((235 * shift))
+ fi
+ sequence=$(date +%s%3N)
+ if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi
+ COMPANION_SEQUENCE=$sequence
+ payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma}"
+ tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
+ printf '%s' "$payload" > "$tmp" || companion_pattern_failure "Could not send a patch to the ICC Companion"
+ chmod 600 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$COMPANION_COMMAND_FILE" || companion_pattern_failure "Could not send a patch to the ICC Companion"
+ deadline=$((SECONDS + 10))
+ while (( SECONDS < deadline )); do
+  series_stop_requested && series_cancel_exit
+  if [[ -f "$COMPANION_ACK_FILE" ]]; then
+   ack=$(cat "$COMPANION_ACK_FILE" 2>/dev/null || true)
+   ack_sequence=$(printf '%s' "$ack" | sed -n 's/.*"sequence"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+   if [[ "$ack_sequence" == "$sequence" ]]; then
+    ack_status=$(printf '%s' "$ack" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [[ "$ack_status" == "ok" ]] && return 0
+    companion_pattern_failure "The ICC Companion could not render the requested patch"
+   fi
+  fi
+  sleep 0.05
+ done
+ companion_pattern_failure "The ICC Companion disconnected before displaying the patch"
+}
+
+companion_park_black() {
+ [[ "$PATTERN_PROVIDER" == "companion" ]] || return 0
+ local input_max=255 code_min=0 code_max=255 shift=1 sequence tmp payload
+ case "${PATTERN_SIGNAL_RANGE:-}" in
+  1)
+   code_min=16
+   code_max=235
+   ;;
+ esac
+ sequence=$(date +%s%3N)
+ if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi
+ COMPANION_SEQUENCE=$sequence
+ payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$code_min,\"g\":$code_min,\"b\":$code_min,\"size\":100,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}"
+ tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
+ printf '%s' "$payload" > "$tmp" 2>/dev/null || return 0
+ chmod 600 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" "$COMPANION_COMMAND_FILE" 2>/dev/null || true
 }
 
 wait_for_device_ready() {
@@ -2138,9 +2222,13 @@ fi
 # this also avoids the former unconditional SIGKILL after only 0.5 seconds.
 series_quit_spotread
 
-# Display black screen to prevent burn-in
-curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
- -d '{"name":"stop"}' >/dev/null 2>&1
+# Display black to prevent burn-in on whichever renderer owns this series.
+if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
+ companion_park_black
+else
+ curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"stop"}' >/dev/null 2>&1
+fi
 
 # Mark complete
 write_state_json << EOJSON

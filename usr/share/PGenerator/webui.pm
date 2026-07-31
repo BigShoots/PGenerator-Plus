@@ -406,6 +406,12 @@ my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
 my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
 my $_icc_profile_builder="/usr/bin/icc_profile_builder.py";
 my $_icc_profile_dir="$var_dir/icc";
+my $_icc_companion_packager="/usr/bin/icc_companion_package.py";
+my $_icc_companion_dir="$var_dir/icc-companion";
+my $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
+my $_icc_companion_command_file="/tmp/pgen_icc_companion.command.json";
+my $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
+my $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 # :shared - 0.25s debounce guarding a PHYSICAL meter read (see the check in
 # webui_meter_read). A private copy per worker would let one read per worker
 # through each window instead of one read total.
@@ -691,6 +697,10 @@ sub webui_route_is_concurrent_safe (@) {
  # Reads /proc plus a 2s response cache. Its cross-call CPU delta baseline is
  # :shared, so the pool does not corrupt the percentage.
  return 1 if($path eq "/api/stats");
+ # Companion traffic is authenticated and touches only its own atomic files.
+ # It must not take the global WebUI mutex four times per second while a
+ # measurement series and its status polling are active.
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status");
  return 0;
 }
 
@@ -963,6 +973,8 @@ sub webui_handle_request (@) {
     my $request_query="";
     $request_query=$1 if(defined($path) && $path=~/\?(.*)$/);
     $path=~s/\?.*$// if(defined($path));
+    my $request_host="";
+    $request_host=$1 if($req=~/^Host:\s*([A-Za-z0-9._\-\[\]:]+)\s*$/mi);
     &log("WebUI: $method $path");
 
    # Preserve the serialization the single accept loop used to provide.
@@ -1539,6 +1551,30 @@ sub webui_handle_request (@) {
      print $client $content;
     } else {
      my $err="{\"status\":\"error\",\"message\":\"ICC profile not found\"}";
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
+    }
+   }
+   elsif($path eq "/api/icc/companion/status") {
+    my $result=&webui_icc_companion_status();
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/poll") {
+    my $result=&webui_icc_companion_poll($request_query);
+    my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/ack" && $method eq "POST") {
+    my $result=&webui_icc_companion_ack($body);
+    my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/download") {
+    my ($fname,$content)=&webui_icc_companion_download($request_query,$request_host);
+    if($fname ne "") {
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
+     print $client $content;
+    } else {
+     my $err='{"status":"error","message":"Companion package is unavailable"}';
      print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
     }
    }
@@ -2550,6 +2586,7 @@ sub webui_meter_read (@) {
  }
  my $observer="1931_2";
  $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
+ my $pattern_provider=($body=~/"pattern_provider"\s*:\s*"companion"/i)?"companion":"local";
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   # SpyderX exposes four built-in display calibrations and device-specific
   # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
@@ -4791,7 +4828,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -6211,6 +6248,111 @@ sub webui_icc_profile_delete (@) {
  my $path="$_icc_profile_dir/$file";
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
  return unlink($path) ? '{"status":"ok"}' : '{"status":"error","message":"Could not delete the ICC profile"}';
+}
+
+sub webui_icc_companion_write_atomic (@) {
+ my ($path,$content,$mode)=@_;
+ my $tmp=$path.".".$$ .".".int(Time::HiRes::time()*1000000).".".int(rand(1000000)).".tmp";
+ return 0 unless(open(my $fh,">",$tmp));
+ print $fh $content;
+ close($fh);
+ chmod($mode||0600,$tmp);
+ return 1 if(rename($tmp,$path));
+ unlink($tmp);
+ return 0;
+}
+
+sub webui_icc_companion_token (@) {
+ if(open(my $fh,"<",$_icc_companion_token_file)) {
+  my $token=<$fh>||"";
+  close($fh);
+  chomp($token);
+  return $token if($token=~/^[0-9a-f]{64}$/);
+ }
+ eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
+ my $random="";
+ if(open(my $rf,"<:raw","/dev/urandom")) { read($rf,$random,32); close($rf); }
+ return "" unless(length($random)==32);
+ my $token=unpack("H*",$random);
+ return "" unless(&webui_icc_companion_write_atomic($_icc_companion_token_file,"$token\n",0600));
+ return $token;
+}
+
+sub webui_icc_companion_query_value (@) {
+ my ($query,$name)=@_;
+ return "" unless(defined($query) && $query=~/(?:^|&)\Q$name\E=([A-Za-z0-9._-]{1,128})(?:&|$)/);
+ return $1;
+}
+
+sub webui_icc_companion_poll (@) {
+ my ($query)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
+ my $client=&webui_icc_companion_query_value($query,"client")||"companion";
+ my $version=&webui_icc_companion_query_value($query,"version")||"unknown";
+ my $renderer=&webui_icc_companion_query_value($query,"renderer")||"unknown";
+ my $hdr=($query=~/(?:^|&)hdr=1(?:&|$)/)?1:0;
+ my $seen=time();
+ my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
+ &webui_icc_companion_write_atomic($_icc_companion_status_file,$status,0600);
+ my $command="";
+ if(open(my $fh,"<",$_icc_companion_command_file)) { local $/; $command=<$fh>||""; close($fh); }
+ if($command=~/^\s*\{/ && length($command)<8192) {
+  my $sequence=0;
+  $sequence=$1 if($command=~/"sequence"\s*:\s*(\d+)/);
+  my $acked=0;
+  if(open(my $af,"<",$_icc_companion_ack_file)) { local $/; my $ack=<$af>||""; close($af); $acked=$1 if($ack=~/"sequence"\s*:\s*(\d+)/); }
+  return $command if($sequence>0 && $sequence!=$acked);
+ }
+ return '{"status":"idle"}';
+}
+
+sub webui_icc_companion_ack (@) {
+ my ($body)=@_;
+ return '{"status":"unauthorized"}' unless(defined($body) && length($body)<4096);
+ my $token="";
+ $token=$1 if($body=~/"token"\s*:\s*"([0-9a-f]{64})"/);
+ my $expected=&webui_icc_companion_token();
+ return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
+ my $sequence=0;
+ $sequence=$1 if($body=~/"sequence"\s*:\s*(\d+)/);
+ return '{"status":"error","message":"Invalid patch sequence"}' if($sequence<1);
+ my $result=($body=~/"status"\s*:\s*"ok"/)?"ok":"error";
+ my $client="companion";
+ my $renderer="unknown";
+ my $message="";
+ $client=$1 if($body=~/"client"\s*:\s*"([A-Za-z0-9._-]{1,96})"/);
+ $renderer=$1 if($body=~/"renderer"\s*:\s*"([A-Za-z0-9._-]{1,96})"/);
+ $message=$1 if($body=~/"message"\s*:\s*"([^"\\]{0,240})"/);
+ my $ack="{\"sequence\":$sequence,\"status\":\"$result\",\"client\":\"".&_webui_json_escape($client)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"message\":\"".&_webui_json_escape($message)."\",\"time\":".time()."}";
+ return &webui_icc_companion_write_atomic($_icc_companion_ack_file,$ack,0600) ? '{"status":"ok"}' : '{"status":"error","message":"Could not acknowledge patch"}';
+}
+
+sub webui_icc_companion_status (@) {
+ my $content="";
+ my @st=stat($_icc_companion_status_file);
+ if(@st && time()-($st[9]||0)<=4 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
+ return '{"status":"ok","connected":false}' unless($content=~/^\s*\{/);
+ $content=~s/^\s*\{//;
+ return '{"status":"ok","connected":true,'.$content;
+}
+
+sub webui_icc_companion_download (@) {
+ my ($query,$host)=@_;
+ my $platform=&webui_icc_companion_query_value($query,"platform");
+ return ("","") unless($platform eq "windows-x64" || $platform eq "linux-x64");
+ return ("","") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/ && -f $_icc_companion_packager);
+ my $token=&webui_icc_companion_token();
+ return ("","") if($token eq "");
+ my $tmp="/tmp/pgen_icc_companion_".$$ ."_".int(rand(1000000)).".zip";
+ my $server="http://$host";
+ my $filename=`/usr/bin/python3 $_icc_companion_packager '$platform' '$server' '$token' '$tmp' 2>/dev/null`;
+ chomp($filename);
+ my $content="";
+ if($?==0 && $filename=~/^[A-Za-z0-9._-]+\.zip$/ && open(my $fh,"<:raw",$tmp)) { local $/; $content=<$fh>||""; close($fh); }
+ unlink($tmp);
+ return $content ne "" ? ($filename,$content) : ("","");
 }
 
 sub webui_lg_lut_download (@) {
@@ -13228,7 +13370,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
       <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
-      <div class="meter-icc-note">Measure the display through PGenerator, build the profile on the device, then download it to this computer.</div>
+      <div class="meter-icc-note">Measure patches displayed through the target computer, build the profile on PGenerator, then download the finished profile.</div>
      </div>
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
@@ -13264,11 +13406,21 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label for="meterIccStartDelay">Start delay in seconds</label>
        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
       </div>
-      <div class="meter-icc-note">Use the start delay when this browser is on the computer being profiled and you need time to switch the display input back to PGenerator.</div>
+      <div class="meter-icc-note">The delay gives you time to move the companion window onto the display being profiled and enter full-screen.</div>
      </div>
     </div>
     <div class="meter-icc-panel" style="margin-top:12px">
-     <h3>3. Measure and build</h3>
+     <h3>3. Connect the patch companion</h3>
+     <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator.</div>
+     <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
+     <div class="btn-row" style="margin:0 0 10px">
+      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
+     </div>
+     <div id="meterIccCompanionStatus" class="meter-icc-note"><span style="color:var(--danger)">&#9679;</span> Companion not connected</div>
+    </div>
+    <div class="meter-icc-panel" style="margin-top:12px">
+     <h3>4. Measure and build</h3>
      <div id="meterIccRunSummary" class="meter-icc-note" style="margin-bottom:10px"></div>
      <div id="meterIccProgress" style="display:none">
       <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:.72rem;color:var(--text2)">
@@ -17504,7 +17656,11 @@ function pgSelectDesktopWorkspace(workspace,options){
   meterPlaceIccWorkspaceForLayout();
   meterOpenIccProfileBuilder();
  }
- else if(previousWorkspace==='3d-lut'&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')) meterSetSeriesTab('greyscale');
+ if(workspace!=='icc-profile'&&workspaceChanged&&document.body.classList.contains('layout-desktop')&&meterIccCompanionTimer){
+  clearInterval(meterIccCompanionTimer);
+  meterIccCompanionTimer=null;
+ }
+ if(previousWorkspace==='3d-lut'&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')) meterSetSeriesTab('greyscale');
  if(workspaceChanged&&(workspace==='calibration'||workspace==='3d-lut')&&document.body.classList.contains('layout-desktop')){
   // Pick up series created/imported in another browser whenever the operator
   // returns to a measurement workspace; no page reload should be required.
@@ -32310,10 +32466,8 @@ let meterIccStartToken=0;
 let meterIccPollTimer=null;
 let meterIccRunConfig=null;
 let meterIccBuildPending=false;
-
-function meterIccMode(){
- return String((typeof meterChartSignalMode==='function'?meterChartSignalMode():getVal('signal_mode'))||'sdr').toLowerCase();
-}
+let meterIccCompanionConnected=false;
+let meterIccCompanionTimer=null;
 
 function meterIccProfileInfo(type){
  const info={
@@ -32367,21 +32521,22 @@ function meterIccPatchFractions(quality){
 }
 
 function meterIccSteps(quality,profileType){
- const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const inputMax=profileType==='sdr'?255:1023;
+ const code=value=>Math.round(Math.max(0,Math.min(1,value))*inputMax);
  const steps=meterIccPatchFractions(quality).map((patch,index)=>({
   ire:index,
-  r:meterCodeFromSignalPercent(patch.r*100),
-  g:meterCodeFromSignalPercent(patch.g*100),
-  b:meterCodeFromSignalPercent(patch.b*100),
+  r:code(patch.r),
+  g:code(patch.g),
+  b:code(patch.b),
   input_max:inputMax,
   name:patch.name
  }));
  if(profileType==='windows-hdr'){
   steps.push({
    ire:100,
-   r:meterCodeFromSignalPercent(100),
-   g:meterCodeFromSignalPercent(100),
-   b:meterCodeFromSignalPercent(100),
+   r:inputMax,
+   g:inputMax,
+   b:inputMax,
    input_max:inputMax,
    patch_size:100,
    name:'ICC Full Frame White'
@@ -32397,7 +32552,6 @@ function meterIccProfileTypeChanged(){
 function meterIccSyncUi(){
  const typeEl=document.getElementById('meterIccProfileType');
  const type=String(typeEl&&typeEl.value||'sdr');
- const mode=meterIccMode();
  const info=meterIccProfileInfo(type);
  const desc=document.getElementById('meterIccProfileDescription');
  const compatibility=document.getElementById('meterIccCompatibility');
@@ -32410,12 +32564,11 @@ function meterIccSyncUi(){
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
  const correction=(document.getElementById('meterCcssProfile')||{}).selectedOptions;
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
- if(summary) summary.textContent='Current output: '+mode.toUpperCase()+'. Meter: '+meterLabel+'. Meter correction: '+correctionLabel+'. '+count+' patches.';
- const modeOk=mode===info.mode;
+ if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Meter correction: '+correctionLabel+'. '+count+' patches.';
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
-  start.disabled=!meterDetected||!modeOk||hasUnsavedSettings()||busy;
-  start.title=!meterDetected?'Connect a meter first':!modeOk?('Switch and apply the output to '+info.mode.toUpperCase()+' first'):hasUnsavedSettings()?'Apply and Restart so the profile matches the live output':busy?'A meter operation is already running':'Start the ICC profiling measurements';
+  start.disabled=!meterDetected||!meterIccCompanionConnected||busy;
+  start.title=!meterDetected?'Connect a meter first':!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':busy?'A meter operation is already running':'Start the ICC profiling measurements';
  }
 }
 
@@ -32426,11 +32579,10 @@ async function meterOpenIccProfileBuilder(){
   pgSelectDesktopWorkspace('icc-profile',{focus:true});
   return;
  }
- const type=document.getElementById('meterIccProfileType');
- const mode=meterIccMode();
- if(type&&!meterIccRunning) type.value=mode==='sdr'?'sdr':'kde-hdr';
  modal.style.display='flex';
  meterIccSyncUi();
+ await meterIccRefreshCompanionStatus();
+ if(!meterIccCompanionTimer) meterIccCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
  await meterIccLoadProfiles();
  uiSyncBodyScrollLock();
 }
@@ -32439,7 +32591,39 @@ function meterCloseIccProfileBuilder(){
  if(document.body.classList.contains('layout-desktop')) return;
  const modal=document.getElementById('meterIccProfileModal');
  if(modal) modal.style.display='none';
+ if(meterIccCompanionTimer){ clearInterval(meterIccCompanionTimer); meterIccCompanionTimer=null; }
  uiSyncBodyScrollLock();
+}
+
+function meterIccDownloadCompanion(platform){
+ window.location.href='/api/icc/companion/download?platform='+encodeURIComponent(platform);
+}
+
+function meterIccShowCompanionStatus(connected,text){
+ const target=document.getElementById('meterIccCompanionStatus');
+ if(!target) return;
+ target.textContent='';
+ const dot=document.createElement('span');
+ dot.style.color=connected?'var(--success)':'var(--danger)';
+ dot.textContent='\u25cf';
+ target.append(dot,document.createTextNode(' '+text));
+}
+
+async function meterIccRefreshCompanionStatus(){
+ try{
+  const state=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:3500});
+  meterIccCompanionConnected=!!(state&&state.connected);
+  if(meterIccCompanionConnected){
+   const client=String(state.client||'target computer');
+   const renderer=String(state.renderer||'renderer');
+   meterIccShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
+  }else meterIccShowCompanionStatus(false,'Companion not connected');
+ }catch(error){
+  meterIccCompanionConnected=false;
+  meterIccShowCompanionStatus(false,'Companion not connected');
+ }
+ meterIccSyncUi();
+ return meterIccCompanionConnected;
 }
 
 async function meterIccLoadProfiles(){
@@ -32509,11 +32693,10 @@ function meterIccSetRunning(running){
 async function meterIccStart(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
+ if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  const info=meterIccProfileInfo(type);
- const mode=meterIccMode();
- if(mode!==info.mode){ toast('This profile requires '+info.mode.toUpperCase()+' output',true); return; }
- if(hasUnsavedSettings()){ toast('Apply and Restart before profiling',true); return; }
+ const mode=info.mode;
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
  if(!name){ toast('Enter a profile name',true); return; }
  const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
@@ -32529,13 +32712,13 @@ async function meterIccStart(){
  meterIccSyncUi();
  meterIccRunConfig={
   profile_type:type,name,quality,signal_mode:mode,steps,
-  code_min:meterCodeFromSignalPercent(0),code_max:meterCodeFromSignalPercent(100),
+  code_min:0,code_max:type==='sdr'?255:1023,
   meter_name:meterSelectedMeasurementLabel(null)
  };
  try{
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
-   if(status) status.textContent='Starting in '+remaining+' seconds. Switch the display input to PGenerator now.';
+   if(status) status.textContent='Starting in '+remaining+' seconds. Move the ICC Companion onto the target display and enter full-screen now.';
    meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
    await new Promise(resolve=>setTimeout(resolve,1000));
   }
@@ -32548,8 +32731,16 @@ async function meterIccStart(){
    target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
    target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
    patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
-   refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady()
+   refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady(),
+   pattern_provider:'companion'
   });
+  // The target-computer companion owns the signal path. Do not inherit the
+  // Pi renderer's current mode, bit depth or quantization range.
+  body.signal_mode=mode;
+  body.signal_range='2';
+  body.pattern_signal_range='2';
+  body.transport_signal_range='2';
+  body.max_luma='1000';
   const lowLight=meterLowLightReadState();
   if(lowLight) body.low_light=lowLight;
   const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
