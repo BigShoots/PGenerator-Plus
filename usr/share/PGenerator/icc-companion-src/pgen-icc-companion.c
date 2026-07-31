@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.4"
+#define APP_VERSION "1.0.5"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -419,7 +419,7 @@ static void poll_server(void)
 {
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     char reported_renderer[64] = "starting";
-    double sequence_value, r, g, b, input_max, code_min, code_max;
+    double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
     int status;
@@ -446,7 +446,10 @@ static void poll_server(void)
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
-        app.next_poll_ms = SDL_GetTicks() + 250;
+        poll_ms = 500;
+        json_number(response, "poll_ms", &poll_ms);
+        poll_ms = fmax(25.0, fmin(1000.0, poll_ms));
+        app.next_poll_ms = SDL_GetTicks() + (uint64_t)poll_ms;
         return;
     }
     if (!json_number(response, "sequence", &sequence_value)) {

@@ -27,6 +27,13 @@ PROFILE_TYPES = {
     "kde-hdr": "KDE Plasma HDR",
     "windows-hdr": "Windows HDR",
 }
+WINDOWS_SDR_TRANSFERS = ("srgb", "gamma22", "gamma24", "bt1886")
+WINDOWS_SDR_TRANSFER_LABELS = {
+    "srgb": "sRGB",
+    "gamma22": "Gamma 2.2",
+    "gamma24": "Gamma 2.4",
+    "bt1886": "BT.1886",
+}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
@@ -116,12 +123,20 @@ def cgats_quote(value):
     return str(value).replace("\\", "/").replace('"', "'").replace("\r", " ").replace("\n", " ")
 
 
+def profile_description(payload):
+    description = str(payload.get("name", "PGenerator display profile"))
+    if payload.get("profile_type") == "windows-sdr":
+        transfer = str(payload.get("target_transfer", "srgb")).lower()
+        description += " (Windows SDR MHC2, {})".format(WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB"))
+    return description[:120]
+
+
 def make_ti3(payload, rows):
     black, white, _ = profile_measurement_summary(rows)
     white_xyz = white["xyz"]
     white_y = white_xyz[1]
     instrument = cgats_quote(payload.get("meter_name", "PGenerator meter"))
-    description = cgats_quote(payload.get("name", "PGenerator display profile"))
+    description = cgats_quote(profile_description(payload))
     created = datetime.datetime.now().strftime("%a %b %d %H:%M:%S %Y")
     lines = [
         "CTI3",
@@ -208,6 +223,24 @@ def srgb_to_linear(value):
     return ((value + 0.055) / 1.055) ** 2.4
 
 
+def target_transfer_to_linear(value, transfer, black_ratio=0.0):
+    value = max(0.0, min(1.0, value))
+    if transfer == "srgb":
+        return srgb_to_linear(value)
+    if transfer == "gamma22":
+        return value ** 2.2
+    if transfer == "gamma24":
+        return value ** 2.4
+    if transfer == "bt1886":
+        gamma = 2.4
+        black_ratio = max(0.0, min(0.999, black_ratio))
+        black_root = black_ratio ** (1.0 / gamma)
+        span = max(1e-9, 1.0 - black_root)
+        luminance = (span ** gamma) * ((value + black_root / span) ** gamma)
+        return max(0.0, min(1.0, (luminance - black_ratio) / max(1e-9, 1.0 - black_ratio)))
+    fail("Unsupported Windows SDR target transfer")
+
+
 def monotonic_channel_samples(rows, black, primary, channel):
     axis = [primary["xyz"][index] - black["xyz"][index] for index in range(3)]
     denominator = sum(value * value for value in axis)
@@ -230,11 +263,24 @@ def monotonic_channel_samples(rows, black, primary, channel):
             merged.append((code, response))
     if len(merged) < 5 or merged[0][0] > 0.002 or merged[-1][0] < 0.998:
         fail("Windows SDR calibration requires black-to-primary channel ramps")
-    monotonic = []
-    previous = 0.0
-    for code, response in merged:
-        previous = max(previous, response)
-        monotonic.append((code, previous))
+    # Fit a non-decreasing response with pool-adjacent-violators instead of a
+    # cumulative maximum. Near-black readings are noisy; cumulative-max turns
+    # one high sample into a permanent shoulder in the inverse calibration
+    # curve, while isotonic regression distributes that noise across only the
+    # conflicting samples.
+    blocks = []
+    for index, (_code, response) in enumerate(merged):
+        blocks.append([index, index, response, 1.0])
+        while len(blocks) >= 2 and blocks[-2][2] / blocks[-2][3] > blocks[-1][2] / blocks[-1][3]:
+            right = blocks.pop()
+            left = blocks.pop()
+            blocks.append([left[0], right[1], left[2] + right[2], left[3] + right[3]])
+    fitted = [0.0] * len(merged)
+    for start, end, total, weight in blocks:
+        value = max(0.0, min(1.0, total / weight))
+        for index in range(start, end + 1):
+            fitted[index] = value
+    monotonic = [(merged[index][0], fitted[index]) for index in range(len(merged))]
     peak = monotonic[-1][1]
     if peak <= 1e-6:
         fail("Measured channel response has no usable range")
@@ -255,15 +301,17 @@ def invert_channel_response(samples, target):
     return samples[-1][0]
 
 
-def windows_sdr_adjustment_luts(rows, black, primaries, entries):
+def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer):
     luts = []
+    black_ratio = black["xyz"][1] / max(white["xyz"][1], 1e-9)
     for channel in range(3):
         samples = monotonic_channel_samples(rows, black, primaries[channel], channel)
         values = []
         previous = 0.0
         for index in range(entries):
             encoded = index / float(entries - 1)
-            value = invert_channel_response(samples, srgb_to_linear(encoded))
+            target = target_transfer_to_linear(encoded, transfer, black_ratio)
+            value = invert_channel_response(samples, target)
             previous = max(previous, max(0.0, min(1.0, value)))
             values.append(previous)
         values[0] = 0.0
@@ -272,7 +320,7 @@ def windows_sdr_adjustment_luts(rows, black, primaries, entries):
     return luts
 
 
-def mhc2_payload(profile_type, black, white, primaries, rows):
+def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb"):
     physical = measured_primary_matrix(black, white, primaries)
     if profile_type == "windows-hdr":
         wire = xy_matrix(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046)), (0.3127, 0.3290))
@@ -300,7 +348,7 @@ def mhc2_payload(profile_type, black, white, primaries, rows):
     # measured channel ramp so the resulting scanout follows the sRGB wire
     # response while the matrix corrects primaries and white point.
     if profile_type == "windows-sdr":
-        luts = windows_sdr_adjustment_luts(rows, black, primaries, entries)
+        luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer)
     else:
         luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
     for values in luts:
@@ -377,7 +425,7 @@ def run_colprof(payload, ti3, output_path):
     colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
     if not os.path.isfile(colprof) or not os.access(colprof, os.X_OK):
         fail("The bundled ArgyllCMS colprof executable is unavailable")
-    description = str(payload.get("name", "PGenerator display profile")).replace('"', "'")[:120]
+    description = profile_description(payload).replace('"', "'")
     temp_dir = tempfile.mkdtemp(prefix="pgen_icc_")
     try:
         base = os.path.join(temp_dir, "profile")
@@ -405,6 +453,11 @@ def build(payload, output_dir):
         fail("SDR profiles require SDR output")
     if profile_type in ("kde-hdr", "windows-hdr") and signal_mode != "hdr10":
         fail("HDR ICC profiles require HDR10 (PQ) output")
+    target_transfer = str(payload.get("target_transfer", "srgb")).lower()
+    if profile_type == "windows-sdr" and target_transfer not in WINDOWS_SDR_TRANSFERS:
+        fail("Unsupported Windows SDR target transfer")
+    if profile_type != "windows-sdr":
+        target_transfer = None
     rows = normalize_measurements(payload)
     full_frame_rows = [row for row in rows if row["name"] == "ICC Full Frame White"]
     profile_rows = [row for row in rows if row["name"] != "ICC Full Frame White"]
@@ -429,7 +482,7 @@ def build(payload, output_dir):
     if profile_type in ("windows-sdr", "windows-hdr"):
         with open(output_path, "rb") as handle:
             profile = handle.read()
-        mhc2, matrix, adjustment_luts = mhc2_payload(profile_type, black, white, primaries, profile_rows)
+        mhc2, matrix, adjustment_luts = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
         # lumi is max full-frame luminance. SDR profiles use the measured
         # profiling white; HDR has a dedicated full-frame measurement.
         luminance = full_frame_rows[0]["xyz"][1] if full_frame_rows else white["xyz"][1]
@@ -442,6 +495,7 @@ def build(payload, output_dir):
         "file": filename,
         "size": size,
         "profile_type": profile_type,
+        "target_transfer": target_transfer,
         "patches": len(rows),
         "white_nits": white["xyz"][1],
         "full_frame_white_nits": full_frame_rows[0]["xyz"][1] if full_frame_rows else None,

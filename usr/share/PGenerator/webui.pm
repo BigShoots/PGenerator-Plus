@@ -4131,7 +4131,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		     # pre-existing approximation we leave untouched.
 		     if(!$dv_series && $series_input_max == 1023) {
 		      if($lg_extended_sdr_codes) {
-		       $target_min_code=64; $target_span_code=956;
+		       # Extended SDR tops out at FULL scale, so 10-bit is 64..1023
+		       # (span 959). 956 was the 8-bit span 239 upshifted by 4.
+		       $target_min_code=64; $target_span_code=959;
 		      } elsif($lg_legal_sdr_ddc_codes) {
 		       $target_min_code=64; $target_span_code=876;
 		      } elsif($lim) {
@@ -6360,7 +6362,16 @@ sub webui_icc_companion_poll (@) {
   if(open(my $af,"<",$_icc_companion_ack_file)) { local $/; my $ack=<$af>||""; close($af); $acked=$1 if($ack=~/"sequence"\s*:\s*(\d+)/); }
   return $command if($sequence>0 && $sequence!=$acked);
  }
- return '{"status":"idle"}';
+ my $poll_ms=500;
+ foreach my $state_file ($_meter_series_file,$_meter_read_file) {
+  next unless(-f $state_file);
+  my @state_stat=stat($state_file);
+  next unless(@state_stat && time()-($state_stat[9]||0)<=30);
+  my $state="";
+  if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>||""; close($sf); }
+  if($state=~/"status"\s*:\s*"(?:running|measuring|setup)"/i) { $poll_ms=50; last; }
+ }
+ return '{"status":"idle","poll_ms":'.$poll_ms.'}';
 }
 
 sub webui_icc_companion_ack (@) {
@@ -10577,9 +10588,17 @@ sub webui_grey_code_for_stimulus (@) {
  # 12-bit links are coerced to 10-bit here, matching meterPatchBitDepth().
  my $_wb_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
  if($lg_extended_sdr_codes) {
+  # Extended SDR is the LG "16..255" ladder: legal black, FULL white. Its top
+  # is 100% at full scale, so at 10 bits that is 64..1023 (span 959), derived
+  # natively from the stimulus rather than by upshifting the 8-bit ladder.
+  # It was 64 + pct*956, i.e. the 8-bit span 239 multiplied by 4, which carried
+  # 8-bit quantisation into every point of a 10-bit ladder and left the top at
+  # 1020. (Do not confuse this with the SDR-26 super-white ladder, where 1023
+  # is 109% and 100% is 940 -- that is a different curve and is built by the
+  # autocal_26_codes branch above, which returns before reaching here.)
   $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
   if($_wb_bits == 10) {
-   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*956 + .5);
+   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*959 + .5);
   }
  } elsif($lg_legal_sdr_ddc_codes) {
   $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
@@ -12973,7 +12992,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
-    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. ICC Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading." aria-label="Patch generator help">?</span></label>
+    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. ICC Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
     <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
      <option value="local">PGenerator output</option>
      <option value="companion">ICC Companion</option>
@@ -13505,6 +13524,16 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </div>
       <div id="meterIccProfileDescription" class="meter-icc-note"></div>
       <div id="meterIccCompatibility" class="meter-icc-note" style="margin-top:8px;color:var(--warning)"></div>
+      <div class="meter-icc-field" id="meterIccTargetTransferField" style="display:none;margin-top:10px">
+       <label for="meterIccTargetTransfer">Target transfer</label>
+       <select id="meterIccTargetTransfer" onchange="meterIccSyncUi()">
+        <option value="srgb" selected>sRGB (Windows default)</option>
+        <option value="gamma22">Gamma 2.2</option>
+        <option value="gamma24">Gamma 2.4</option>
+        <option value="bt1886">BT.1886</option>
+       </select>
+       <div class="meter-icc-note" id="meterIccTargetTransferNote" style="margin-top:6px"></div>
+      </div>
      </div>
      <div class="meter-icc-panel">
       <h3>2. Configure the measurement</h3>
@@ -13515,9 +13544,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-icc-field">
        <label for="meterIccQuality">Patch set</label>
        <select id="meterIccQuality" onchange="meterIccSyncUi()">
-        <option value="quick">Quick, 51 patches</option>
-        <option value="standard" selected>Standard, 83 patches</option>
-        <option value="high">High, 237 patches</option>
+        <option value="quick">Quick</option>
+        <option value="standard" selected>Standard</option>
+        <option value="high">High</option>
        </select>
       </div>
       <div class="meter-icc-field">
@@ -19961,8 +19990,18 @@ function meterGreyCodeRange(){
  // generated by meterCodeFromSignalPercent are 10-bit (0-1023 full,
  // 64-940 limited) so the autocal's per-anchor patches match the panel's
  // 10-bit transport. 8-bit modes still use 16-235 (limited) or 0-255 (full).
+ // DV is 12-bit LEGAL range, 256..3760 (235*16), and meterPatchUsesVideoRange()
+ // is deliberately unconditional for DV. That is not an oversight: Dolby Vision
+ // is a FULL-RANGE TUNNEL CARRYING LIMITED-RANGE CODES, so the transport is
+ // full range while the codes inside it stay legal. There is no DV full-range
+ // code ladder to add here -- do not "fix" this into one.
  if(meterChartIsDv()) return {min:256,span:3504};
- if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:956}:{min:16,span:239};
+ // Extended SDR is LG's "16..255" ladder: legal black, FULL white. Its top is
+ // 100% at full scale, so 10-bit is 64..1023 (span 959), NOT the 8-bit span
+ // 239 upshifted by 4 (which gave 956 -> a 1020 top and 8-bit quantisation at
+ // every point). Distinct from the SDR-26 super-white ladder, where 1023 is
+ // 109% and 100% is 940 -- see meterGreySdr26HeadroomCodeRange().
+ if(meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:959}:{min:16,span:239};
  if(meterLgGreyscaleUsesLegalSdrDdcCodes(meterActiveSeriesPoints)) return meterPatchBitDepth()===10?{min:64,span:876}:{min:16,span:219};
  const eightBitRange=(meterGreyscaleUsesFullSourceRange()||!meterPatchUsesVideoRange())?{min:0,span:255}:{min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
  if(meterPatchBitDepth()===10){
@@ -20021,6 +20060,20 @@ function meterActiveSeriesCodesAre8Bit(){
  return Number.isFinite(wc) && wc>0 && wc<=255;
 }
 
+// The SDR-26 super-white ladder is NOT the extended-SDR ladder, even though
+// both run from legal black to full scale. On this one the TOP is 109%, not
+// 100%: 0%->64, 100%->940, 105%->984, 109%->1023, the piecewise ladder built by
+// meterLgAutoCalCodeForSlot (64 + S/100*876 up to 100%, then 940 + (S-100)/9*83).
+// Only YCbCr-Limited SDR-26 has it (meterGreyAllowsHeadroomTargets).
+//
+// It has its own range so that correcting the extended-SDR ladder can never
+// silently move SDR-26 chart targets again, and vice versa -- they were sharing
+// one constant while meaning two different things.
+function meterGreySdr26HeadroomCodeRange(){
+ return (typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10)
+  ? {min:64,span:959}    // 64..1023, top = 109%
+  : {min:16,span:239};   // 16..255,  top = 109%
+}
 function meterGreySignalFractionFromCode(code){
  let numeric=Number(code);
  const range=meterGreyCodeRange();
@@ -20035,18 +20088,22 @@ function meterGreySignalFractionFromCode(code){
   return Math.max(0,Math.min(1,((numeric||0)-range.min)/range.span));
  }
 if(Number.isFinite(numeric) && (meterGreyAllowsHeadroomTargets() || numeric>255)){
-   // 10-bit codes: rely on the live range (Full 10-bit: {min:0, span:1020};
-   // Limited 10-bit: {min:64, span:876}). The DV path is handled above.
-   // SDR26 headroom codes (code=1023 on a Limited range with min=64 span=956
-   // would otherwise return 1.003, not 1.0 -- the legal peak must clamp to
-   // exactly 1.0 because the chart's grey target Y for 109 = peak * signal^γ
-   // and signal MUST be 1.0 for the peak anchor. Without the clamp the
-   // bisection in meterGreySolvePeakFromHeadroomReading solves for peak =
-   // measured_Y / 1.003^γ which is ~0.75% below the actual 109 luminance,
-   // and every body anchor (50-105) then shows a target Y that's
-   // proportionally low, inflating ΔE ITP across the upper greyscale.
-   const headroomPeak=(numeric-range.min>=range.span*0.95) && numeric>=range.min+range.span;
-   return Math.max(0,Math.min(headroomPeak?1.0:1.1,(numeric-range.min)/range.span));
+   // SDR-26 headroom decode uses its OWN range, not meterGreyCodeRange(): the
+   // two ladders share endpoints but not meaning, and they were sharing one
+   // constant. See meterGreySdr26HeadroomCodeRange().
+   //
+   // The chart normalises against the TOP of the ladder, so the 109% anchor
+   // must come back as exactly 1.0: grey target Y for 109 = peak * signal^γ
+   // and the peak anchor needs signal 1.0. With the old span (956) code 1023
+   // returned 1.003 and only the clamp below hid it -- the bisection in
+   // meterGreySolvePeakFromHeadroomReading would otherwise solve peak =
+   // measured_Y / 1.003^γ, ~0.75% low, and every body anchor (50-105) would
+   // show a proportionally low target Y, inflating ΔE ITP across the upper
+   // greyscale. With span 959 (64..1023) it is exactly 1.0 arithmetically;
+   // the clamp stays as a guard rather than as the mechanism.
+   const hr=meterGreyAllowsHeadroomTargets()?meterGreySdr26HeadroomCodeRange():range;
+   const headroomPeak=(numeric-hr.min>=hr.span*0.95) && numeric>=hr.min+hr.span;
+   return Math.max(0,Math.min(headroomPeak?1.0:1.1,(numeric-hr.min)/hr.span));
   }
  return Math.max(0,Math.min(1,(numeric-range.min)/range.span));
 }
@@ -20150,7 +20207,12 @@ function meterCodeFromSignalPercent(percent){
 
 function meterLgSdrExtendedCodeFromPercent(percent){
  const clamped=clampNum(percent,0,100)/100;
- if(clamped<=0) return 0;
+ if(clamped<=0) return 0;   // 0% is true black, below legal black, at both depths
+ // Derive the code natively at the transport depth. This was 8-bit-only
+ // (16+pct*239) regardless of max_bpc, so on a 10-bit link it either shipped an
+ // 8-bit code or, once upshifted, carried 8-bit quantisation the whole way up.
+ // Extended SDR runs legal black to FULL white, so 10-bit is 64..1023.
+ if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10) return Math.round(64+clamped*959);
  return Math.round(16+clamped*239);
 }
 
@@ -32873,7 +32935,7 @@ function meterIccProfileInfo(type){
   },
   'windows-sdr':{
    mode:'sdr',
-   description:'Creates a Windows MHC2 hardware-calibration profile for SDR. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the sRGB wire curve.',
+   description:'Creates a Windows MHC2 hardware-calibration profile for SDR. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
    compatibility:'Requires Windows 10 version 2004 or newer, Windows 11 recommended, a supported WDDM driver and GPU. Install the profile and set it as the default for this display. Windows then loads the correction automatically, including for raw Companion verification patches.'
   },
   'kde-hdr':{
@@ -32890,7 +32952,22 @@ function meterIccProfileInfo(type){
  return info[type]||info.sdr;
 }
 
-function meterIccPatchFractions(quality){
+function meterIccTargetTransferInfo(value){
+ const info={
+  srgb:{label:'sRGB',note:'Recommended for the Windows SDR desktop and normal PC content. Validate it with sRGB selected as Target Gamma.'},
+  gamma22:{label:'Gamma 2.2',note:'Calibrates the raw Windows SDR output to a pure 2.2 power response. Validate it with Gamma 2.2.'},
+  gamma24:{label:'Gamma 2.4',note:'Calibrates the raw Windows SDR output to a pure 2.4 power response. This is mainly useful in a controlled dark-room workflow.'},
+  bt1886:{label:'BT.1886',note:'Uses the measured black and white levels to build a display-relative BT.1886 response. Validate it with BT.1886 and the same black reference.'}
+ };
+ return info[value]||info.srgb;
+}
+
+function meterIccTargetTransferValue(){
+ const select=document.getElementById('meterIccTargetTransfer');
+ return ['srgb','gamma22','gamma24','bt1886'].includes(String(select&&select.value||''))?String(select.value):'srgb';
+}
+
+function meterIccPatchFractions(quality,profileType){
  const rampCount=quality==='quick'?9:(quality==='high'?33:17);
  const cubeCount=quality==='quick'?3:(quality==='high'?5:3);
  const patches=[];
@@ -32906,8 +32983,17 @@ function meterIccPatchFractions(quality){
  add(1,0,0,'ICC Red 100');
  add(0,1,0,'ICC Green 100');
  add(0,0,1,'ICC Blue 100');
- for(let index=0;index<rampCount;index++){
-  const value=index/(rampCount-1);
+ const rampValues=[];
+ for(let index=0;index<rampCount;index++) rampValues.push(index/(rampCount-1));
+ // A standard 17-point encoded ramp does not take its first non-black sample
+ // until about 6.25%. That is too sparse to solve the shaper curves which
+ // Windows loads from an SDR MHC2 profile. Add exact low-end 8-bit codes while
+ // retaining the evenly spaced ramp across the rest of the range.
+ if(profileType==='windows-sdr'&&quality!=='quick'){
+  [3,5,8,10,13,19,26].forEach(code=>rampValues.push(code/255));
+ }
+ rampValues.sort((a,b)=>a-b);
+ for(const value of rampValues){
   add(value,value,value,'ICC Grey '+Math.round(value*100));
   add(value,0,0,'ICC Red '+Math.round(value*100));
   add(0,value,0,'ICC Green '+Math.round(value*100));
@@ -32924,7 +33010,7 @@ function meterIccSteps(quality,profileType){
  const hdr=profileType==='kde-hdr'||profileType==='windows-hdr';
  const inputMax=hdr?1023:255;
  const code=value=>Math.round(Math.max(0,Math.min(1,value))*inputMax);
- const steps=meterIccPatchFractions(quality).map((patch,index)=>({
+ const steps=meterIccPatchFractions(quality,profileType).map((patch,index)=>({
   ire:index,
   r:code(patch.r),
   g:code(patch.g),
@@ -32960,7 +33046,18 @@ function meterIccSyncUi(){
  const summary=document.getElementById('meterIccRunSummary');
  const start=document.getElementById('meterIccStartBtn');
  const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
- const count=meterIccPatchFractions(quality).length+(type==='windows-hdr'?1:0);
+ const count=meterIccPatchFractions(quality,type).length+(type==='windows-hdr'?1:0);
+ const transferField=document.getElementById('meterIccTargetTransferField');
+ const transferNote=document.getElementById('meterIccTargetTransferNote');
+ const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
+ if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
+ if(transferNote) transferNote.textContent=transfer.note;
+ const qualitySelect=document.getElementById('meterIccQuality');
+ if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
+  const optionCount=meterIccPatchFractions(String(option.value),type).length+(type==='windows-hdr'?1:0);
+  const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
+  option.textContent=label+', '+optionCount+' patches';
+ });
  if(desc) desc.textContent=info.description;
  if(compatibility) compatibility.textContent=info.compatibility;
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
@@ -32969,7 +33066,7 @@ function meterIccSyncUi(){
  const correction=(document.getElementById('meterIccMeterProfile')||{}).selectedOptions;
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
  const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
- if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.';
+ if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'');
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   start.disabled=!meterDetected||!meterIccCompanionConnected||busy;
@@ -33164,6 +33261,7 @@ async function meterIccRetryBuild(){
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||String((readings[0]||{}).name)!=='ICC White') throw new Error('No completed ICC measurements are available');
   meterIccRunConfig={
    profile_type:type,name,quality,signal_mode:info.mode,steps:[],
+   target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
@@ -33217,6 +33315,7 @@ async function meterIccStart(){
  meterIccSyncUi();
  meterIccRunConfig={
   profile_type:type,name,quality,signal_mode:mode,steps,
+  target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
   code_min:0,code_max:mode==='sdr'?255:1023,
   meter_name:meterSelectedMeasurementLabel(null)
  };
@@ -33328,7 +33427,8 @@ async function meterIccBuild(readings){
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
-   status.textContent='Profile created: '+response.file+'. Download it below.'+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
+   const transferText=response.target_transfer?(' Target transfer: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
+   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
   if(retry) retry.style.display='none';
