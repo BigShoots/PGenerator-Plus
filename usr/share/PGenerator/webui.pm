@@ -11820,7 +11820,7 @@ body.is-custom-series-patch-dragging{cursor:grabbing!important;user-select:none!
 #meterCard.meter-patterns-only #meterSettingsGrid .field-gamma,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-hdr,
 #meterCard.meter-patterns-only #meterSettingsGrid .field-delay,
-/* The Chromaticity Chart selector picks the observer applied to meter reads, so
+/* The Observer selector picks the observer applied to meter reads, so
    it has nothing to act on while the card is a plain pattern generator. Patch
    Size (.field-patch) is deliberately absent from this list: it sets the
    displayed window/APL area, which is what this mode is for. */
@@ -12696,7 +12696,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </select>
     </div>
    <div class="field field-chromaticity">
-    <label>Chromaticity Chart <span class="meter-help-tip" title="The selected observer is applied to new meter reads through Argyll. CIE 1964 and CIE 170-2 require a spectrometer or a colorimeter with a spectral CCSS correction. Existing readings made with another observer are not reinterpreted. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Chromaticity chart observer help">?</span></label>
+    <label>Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a spectrophotometer, or a CCSS-capable colorimeter with a compatible CCSS selected.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It has the same spectral requirement.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a spectrophotometer, or a CCSS-capable colorimeter with a compatible CCSS selected.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They have the same spectral requirement.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It has the same CIE 170-2 spectral requirement.&#10;&#10;A CCMX contains only a 3x3 XYZ matrix and does not provide the spectral data needed for a non-default observer. SpyderX does not support CCSS, so use the CIE 1931 or CIE 1976 2&deg; views with that meter. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
     <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
      <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
      <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
