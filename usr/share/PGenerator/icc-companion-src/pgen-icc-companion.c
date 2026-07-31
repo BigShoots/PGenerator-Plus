@@ -299,29 +299,19 @@ static bool create_renderer(bool hdr)
     return !hdr || app.hdr_active;
 }
 
-static bool render_patch(const char *mode, double r, double g, double b, double patch_size)
+static bool render_patch(const char *mode, double r, double g, double b)
 {
-    int width = 0, height = 0;
     float pixel[4];
-    float scale;
-    SDL_FRect destination;
     bool hdr = !strcmp(mode, "hdr10");
     if (!app.renderer || hdr != app.hdr) {
         if (!create_renderer(hdr)) return false;
     }
     patch_to_linear(mode, r, g, b, pixel);
     if (!SDL_UpdateTexture(app.texture, NULL, pixel, (int)sizeof(pixel))) return false;
-    if (!SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
-    patch_size = fmax(1.0, fmin(100.0, patch_size));
-    scale = (float)sqrt(patch_size / 100.0);
-    destination.w = width * scale;
-    destination.h = height * scale;
-    destination.x = (width - destination.w) * 0.5f;
-    destination.y = (height - destination.h) * 0.5f;
     for (int frame = 0; frame < 3; frame++) {
         SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
         SDL_RenderClear(app.renderer);
-        SDL_RenderTexture(app.renderer, app.texture, NULL, &destination);
+        SDL_RenderTexture(app.renderer, app.texture, NULL, NULL);
         SDL_RenderPresent(app.renderer);
     }
     return true;
@@ -341,7 +331,7 @@ static void acknowledge(uint64_t sequence, bool ok, const char *message)
 static void poll_server(void)
 {
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
-    double sequence_value, r, g, b, size, input_max, code_min, code_max;
+    double sequence_value, r, g, b, input_max, code_min, code_max;
     uint64_t sequence;
     int status;
     SDL_snprintf(path, sizeof(path),
@@ -363,7 +353,7 @@ static void poll_server(void)
     }
     if (!json_number(response, "sequence", &sequence_value) ||
         !json_number(response, "r", &r) || !json_number(response, "g", &g) ||
-        !json_number(response, "b", &b) || !json_number(response, "size", &size) ||
+        !json_number(response, "b", &b) ||
         !json_number(response, "input_max", &input_max) ||
         !json_number(response, "code_min", &code_min) || !json_number(response, "code_max", &code_max)) {
         app.next_poll_ms = SDL_GetTicks() + 500;
@@ -380,7 +370,7 @@ static void poll_server(void)
     r = fmax(0.0, fmin(1.0, (r - code_min) / (code_max - code_min)));
     g = fmax(0.0, fmin(1.0, (g - code_min) / (code_max - code_min)));
     b = fmax(0.0, fmin(1.0, (b - code_min) / (code_max - code_min)));
-    if (!render_patch(mode, r, g, b, size)) {
+    if (!render_patch(mode, r, g, b)) {
         acknowledge(sequence, false, !strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" : "The renderer could not display the patch");
     } else {
         app.sequence = sequence;

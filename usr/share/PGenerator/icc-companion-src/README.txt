@@ -5,7 +5,8 @@ This package is paired with the PGenerator from which it was downloaded.
 
 1. Keep PGenICCCompanion.conf beside the executable.
 2. Enable HDR in the operating system before starting an HDR profile.
-3. Run PGenICCCompanion. It opens in a movable, resizable window.
+3. Run PGenICCCompanion. It opens in a movable, resizable window. Each patch
+   fills the entire window, so resize the window to set the patch dimensions.
 4. Return to the PGenerator WebUI from another screen or device and start the
    ICC profile measurements.
 5. Press F11 if you want to toggle full-screen. Press Escape to exit.
