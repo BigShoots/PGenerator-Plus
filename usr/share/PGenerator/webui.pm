@@ -30098,6 +30098,7 @@ function meterToneMapSeriesAllowedForSignal(){
 }
 
 function meterUpdateReadButtons(){
+ meterCalibrationReflectActualPatternProvider();
  meterAutoCalRepairOverlayPointerState();
  try{ meterUpdateChromaticityChartLock(); }catch(e){}
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -33170,9 +33171,27 @@ function meterCalibrationPatternProvider(){
  return select&&select.value==='companion'?'companion':'local';
 }
 function meterCalibrationUsesCompanion(){ return meterCalibrationPatternProvider()==='companion'; }
+function meterCalibrationAutoCalUsesLocalOutput(){
+ return !!(meterAutoCalRunning||meterLg3dAutoCalRunning||meterDvAutoCalProfileRunning||meterFullAutoCalRunning);
+}
 function meterCalibrationReadPatternProvider(){
- if(meterAutoCalRunning||meterLg3dAutoCalRunning||meterDvAutoCalProfileRunning) return 'local';
+ if(meterCalibrationAutoCalUsesLocalOutput()) return 'local';
  return meterCalibrationPatternProvider();
+}
+function meterCalibrationSelectLocalOutput(){
+ const select=document.getElementById('meterPatternProvider');
+ if(!select||select.value!=='companion') return false;
+ select.value='local';
+ select.dataset.previousValue='local';
+ meterCalibrationSyncPatternProviderUi();
+ try{ saveMeterSettings(); }catch(error){}
+ return true;
+}
+function meterCalibrationReflectActualPatternProvider(){
+ if(meterCalibrationAutoCalUsesLocalOutput()) meterCalibrationSelectLocalOutput();
+}
+function meterCalibrationApplyCompanionAvailability(connected){
+ if(!connected) meterCalibrationSelectLocalOutput();
 }
 function meterCalibrationShowCompanionStatus(connected,text){
  const target=document.getElementById('meterCalibrationCompanionStatus');
@@ -33247,6 +33266,7 @@ async function meterIccRefreshCompanionStatus(){
   meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
   if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }
+ meterCalibrationApplyCompanionAvailability(meterIccCompanionConnected);
  meterIccSyncUi();
  return meterIccCompanionConnected;
 }
