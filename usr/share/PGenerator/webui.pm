@@ -6218,11 +6218,16 @@ sub webui_icc_profile_build (@) {
  return '{"status":"error","message":"Could not create the ICC profile directory"}' unless(-d $_icc_profile_dir);
  my $token=time()."_".$$."_".int(rand(1000000));
  my $input="/tmp/icc_profile_build_${token}.json";
- if(!open(my $fh,">",$input)) {
+ my $fh;
+ if(!open($fh,">",$input)) {
   return '{"status":"error","message":"Could not prepare the profile measurements"}';
  }
- print $fh $body;
- close($fh);
+ my $wrote=print {$fh} $body;
+ my $closed=close($fh);
+ if(!$wrote || !$closed) {
+  unlink($input);
+  return '{"status":"error","message":"Could not save the profile measurements"}';
+ }
  chmod(0600,$input);
  # Every command component is fixed or generated above. The profile name and
  # all measurement data remain inside the JSON file and never enter the shell.
@@ -13462,6 +13467,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </div>
      <div id="meterIccStatus" class="meter-icc-note" role="status" style="margin-top:10px"></div>
      <div class="btn-row" style="margin:12px 0 0;justify-content:flex-end">
+      <button type="button" class="btn btn-sm btn-secondary" id="meterIccRetryBuildBtn" onclick="meterIccRetryBuild()" style="display:none">Build Last Measurements</button>
       <button type="button" class="btn btn-sm btn-danger" id="meterIccStopBtn" onclick="meterIccStop()" style="display:none">Stop</button>
       <button type="button" class="btn btn-sm btn-primary" id="meterIccStartBtn" onclick="meterIccStart()">Start Profiling</button>
      </div>
@@ -32801,6 +32807,7 @@ async function meterOpenIccProfileBuilder(){
  meterIccPrepareMeasurementControls();
  meterIccSyncUi();
  await meterIccRefreshCompanionStatus();
+ await meterIccRefreshRecoveryAvailability();
  if(!meterIccCompanionTimer) meterIccCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
  await meterIccLoadProfiles();
  uiSyncBodyScrollLock();
@@ -32889,6 +32896,44 @@ async function meterIccDeleteProfile(file){
   toast('ICC profile deleted');
   meterIccLoadProfiles();
  }else toast(response&&response.message?response.message:'Could not delete ICC profile',true);
+}
+
+async function meterIccRefreshRecoveryAvailability(){
+ const retry=document.getElementById('meterIccRetryBuildBtn');
+ if(!retry) return false;
+ try{
+  const state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:5000});
+  const available=!!(state&&state.status==='complete'&&state.type==='colors'&&Number(state.points)===990001&&Number(state.total_steps)>=16);
+  retry.style.display=available?'':'none';
+  return available;
+ }catch(error){
+  retry.style.display='none';
+  return false;
+ }
+}
+
+async function meterIccRetryBuild(){
+ if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
+ const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
+ if(!name){ toast('Enter the profile name first',true); return; }
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const info=meterIccProfileInfo(type);
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
+ try{
+  const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+  const readings=state&&Array.isArray(state.readings)?state.readings:[];
+  if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||String((readings[0]||{}).name)!=='ICC White') throw new Error('No completed ICC measurements are available');
+  meterIccRunConfig={
+   profile_type:type,name,quality,signal_mode:info.mode,steps:[],
+   code_min:0,code_max:type==='sdr'?255:1023,
+   meter_name:meterSelectedMeasurementLabel(null)
+  };
+  await meterIccBuild(readings);
+ }catch(error){
+  const status=document.getElementById('meterIccStatus');
+  if(status) status.textContent=error&&error.message?error.message:'Could not recover the completed measurements.';
+  toast(error&&error.message?error.message:'Could not recover the completed measurements',true);
+ }
 }
 
 function meterIccSetProgress(label,current,total){
@@ -33043,10 +33088,14 @@ async function meterIccBuild(readings){
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:110000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   if(status) status.textContent='Profile created: '+response.file+'. Download it below.';
+  const retry=document.getElementById('meterIccRetryBuildBtn');
+  if(retry) retry.style.display='none';
   toast('ICC profile created');
   await meterIccLoadProfiles();
  }catch(error){
   if(status) status.textContent=error&&error.message?error.message:'ICC profile build failed.';
+  const retry=document.getElementById('meterIccRetryBuildBtn');
+  if(retry) retry.style.display='';
   toast(error&&error.message?error.message:'ICC profile build failed',true);
  }finally{
   meterIccBuildPending=false;
@@ -43719,6 +43768,10 @@ async function meterStartLg3dAutoCal(options){
  const dtype=getEffectiveDisplayType();
  const pictureMode=meterLgPictureModeValue();
  const preflightLut3d=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.lut3d;
+ // The preflight DDC reset records the LG generation hash durably (unlike the
+ // meterAutoCalPreflightLgGeneration global, which is cleared on error/reset),
+ // so the 3D stage can still identify the panel however it was reached.
+ const preflightDdc=meterFullAutoCalConfig&&meterFullAutoCalConfig.preflightReset&&meterFullAutoCalConfig.preflightReset.ddc;
  const preflightPictureMode=preflightLut3d&&preflightLut3d.picture_mode?String(preflightLut3d.picture_mode):'';
  const skipPreprofileUnityReset=!!(fullWorkflow&&preflightLut3d&&preflightLut3d.upload_verified===true&&(!preflightPictureMode||preflightPictureMode===pictureMode));
  const fullPostCommitPolish=(options&&Object.prototype.hasOwnProperty.call(options,'postCommitPolishEnabled'))?options.postCommitPolishEnabled!==false:meterFullAutoCalPostCommitPolishEnabled();
@@ -43812,7 +43865,18 @@ refresh_rate:getMeterRefreshRate()||undefined,
  preflight_3d_lut_completed_at:skipPreprofileUnityReset&&preflightLut3d.completed_at?preflightLut3d.completed_at:undefined,
   preflight_3d_lut_upload_command:skipPreprofileUnityReset&&preflightLut3d.upload_command?preflightLut3d.upload_command:undefined,
   preflight_3d_lut_get_command:skipPreprofileUnityReset&&preflightLut3d.get_command?preflightLut3d.get_command:undefined,
-   preflight_lg_generation:skipPreprofileUnityReset&&preflightLut3d.lg_generation?preflightLut3d.lg_generation:undefined,
+   // Send the generation whatever route we took here. It used to be gated on
+   // skipPreprofileUnityReset, so a default full workflow reached the 3D worker
+   // with no generation at all: the synthetic unity_reset seeds its lg_generation
+   // from this key, so both the legacy neutral-neighbourhood guard and the HDR20
+   // post-cal shadow seed lookup silently went dead on that path while standalone
+   // 3D runs (which adopt the generation from the real reset response) had both.
+   // The shadow seed file is keyed by SERIES, so a missing hash meant "c1" never
+   // matched and the loop started from 0 instead of its tuned seed.
+   preflight_lg_generation:(skipPreprofileUnityReset&&preflightLut3d&&preflightLut3d.lg_generation)
+    ||(preflightDdc&&preflightDdc.lg_generation)
+    ||meterAutoCalPreflightLgGeneration
+    ||undefined,
    // Full autocal only: pass the greyscale stage's measured peak luminance
    // and DPG array through to the 3D worker so it can upload the HDR
    // tone map inside the same CAL_START as the 3D LUT. The reference's relay
