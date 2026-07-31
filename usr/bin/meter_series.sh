@@ -337,7 +337,10 @@ post_companion_patch() {
  payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma}"
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
  printf '%s' "$payload" > "$tmp" || companion_pattern_failure "Could not send a patch to the ICC Companion"
- chmod 600 "$tmp" 2>/dev/null || true
+ # The root-run worker writes RGB patch commands, while the WebUI poll
+ # endpoint runs as pgenerator. The command contains no pairing token or
+ # measurement data, so make it readable after the atomic rename.
+ chmod 644 "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$COMPANION_COMMAND_FILE" || companion_pattern_failure "Could not send a patch to the ICC Companion"
  deadline=$((SECONDS + 10))
  while (( SECONDS < deadline )); do
@@ -353,7 +356,7 @@ post_companion_patch() {
   fi
   sleep 0.05
  done
- companion_pattern_failure "The ICC Companion disconnected before displaying the patch"
+ companion_pattern_failure "The ICC Companion did not acknowledge the patch"
 }
 
 companion_park_black() {
@@ -371,7 +374,7 @@ companion_park_black() {
  payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$code_min,\"g\":$code_min,\"b\":$code_min,\"size\":100,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}"
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
  printf '%s' "$payload" > "$tmp" 2>/dev/null || return 0
- chmod 600 "$tmp" 2>/dev/null || true
+ chmod 644 "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$COMPANION_COMMAND_FILE" 2>/dev/null || true
 }
 
