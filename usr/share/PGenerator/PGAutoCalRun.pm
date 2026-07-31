@@ -92,9 +92,17 @@ sub _prune {
  opendir(my $dh, $BASE_DIR) or return;
  my @dirs = grep { /\A\d{8}-\d{6}-/ && -d "$BASE_DIR/$_" } readdir($dh);
  closedir($dh);
+ my $current = current();
  @dirs = sort @dirs;   # timestamp+seq prefix => lexical order is chronological
  return if(scalar(@dirs) <= $KEEP);
- for my $d (@dirs[0 .. ($#dirs - $KEEP)]) {
+ # A Pi without a valid clock can create a 19700101 run beside retained 2026
+ # runs. Lexical pruning used to delete that newly-created active directory
+ # immediately, leaving `current` pointing nowhere and preventing the final
+ # greyscale state from reaching Calibration History. Always protect the
+ # active run; it can be considered for pruning after a later run replaces it.
+ my @candidates = grep { $_ ne $current } @dirs;
+ my $remove_count = scalar(@dirs) - $KEEP;
+ for my $d (@candidates[0 .. ($remove_count-1)]) {
   eval { remove_tree("$BASE_DIR/$d"); 1 };
  }
 }
