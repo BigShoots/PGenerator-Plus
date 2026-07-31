@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.3"
+#define APP_VERSION "1.0.4"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -58,6 +58,7 @@ typedef struct {
     uint64_t sequence;
     bool hdr;
     bool hdr_active;
+    float hdr_sdr_white_scale;
     bool fullscreen;
     bool alignment;
     bool quit;
@@ -275,6 +276,27 @@ static void patch_to_linear(const char *mode, double r, double g, double b, floa
     output[3] = 1.0f;
 }
 
+static bool update_renderer_hdr_state(void)
+{
+    SDL_PropertiesID renderer_props;
+    float sdr_white_scale = 1.0f;
+
+    if (!app.renderer) return false;
+    renderer_props = SDL_GetRendererProperties(app.renderer);
+    if (!renderer_props) return false;
+    app.hdr_active = SDL_GetBooleanProperty(renderer_props, SDL_PROP_RENDERER_HDR_ENABLED_BOOLEAN, false);
+    if (app.hdr) {
+        sdr_white_scale = SDL_GetFloatProperty(renderer_props, SDL_PROP_RENDERER_SDR_WHITE_POINT_FLOAT, 1.0f);
+        if (!isfinite(sdr_white_scale) || sdr_white_scale <= 0.0f) sdr_white_scale = 1.0f;
+    }
+    app.hdr_sdr_white_scale = sdr_white_scale;
+
+    /* SDL scales linear HDR rendering by the operating system's SDR white
+     * level. Our scRGB values are already absolute, with 1.0 equal to 80
+     * cd/m2, so cancel that relative-content scale before presentation. */
+    return SDL_SetRenderColorScale(app.renderer, app.hdr ? (1.0f / sdr_white_scale) : 1.0f);
+}
+
 static bool create_renderer(bool hdr)
 {
     const char *drivers[] = { "gpu", "direct3d12", "direct3d11", "vulkan", NULL };
@@ -294,21 +316,16 @@ static bool create_renderer(bool hdr)
         if (app.renderer || !hdr || !drivers[index]) break;
     }
     if (!app.renderer) return false;
+    app.hdr = hdr;
     {
         SDL_PropertiesID renderer_props = SDL_GetRendererProperties(app.renderer);
         const char *name = SDL_GetStringProperty(renderer_props, SDL_PROP_RENDERER_NAME_STRING, "unknown");
-        app.hdr_active = SDL_GetBooleanProperty(renderer_props, SDL_PROP_RENDERER_HDR_ENABLED_BOOLEAN, false);
         SDL_strlcpy(app.renderer_name, name, sizeof(app.renderer_name));
     }
+    if (!update_renderer_hdr_state()) return false;
     app.texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
     if (!app.texture) return false;
     SDL_SetTextureScaleMode(app.texture, SDL_SCALEMODE_NEAREST);
-    if (hdr) {
-        SDL_PropertiesID texture_props = SDL_GetTextureProperties(app.texture);
-        SDL_SetFloatProperty(texture_props, SDL_PROP_TEXTURE_SDR_WHITE_POINT_FLOAT, 1.0f);
-        SDL_SetFloatProperty(texture_props, SDL_PROP_TEXTURE_HDR_HEADROOM_FLOAT, 125.0f);
-    }
-    app.hdr = hdr;
     SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
     SDL_RenderClear(app.renderer);
     SDL_RenderPresent(app.renderer);
@@ -568,6 +585,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     AppState *state = (AppState *)appstate;
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
+    if (event->type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED && state->renderer) {
+        update_renderer_hdr_state();
+        SDL_LockMutex(state->network_mutex);
+        state->ack_hdr_active = state->hdr_active;
+        SDL_UnlockMutex(state->network_mutex);
+        if (state->alignment) render_alignment();
+    }
     if (event->type == SDL_EVENT_KEY_DOWN) {
         if (event->key.key == SDLK_ESCAPE) return SDL_APP_SUCCESS;
         if (event->key.key == SDLK_F11) {

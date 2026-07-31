@@ -13497,7 +13497,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-icc-field">
        <label for="meterIccProfileType">Profile type</label>
        <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
-        <option value="sdr">Standard SDR ICC</option>
+        <option value="sdr">Standard SDR ICC for color-managed applications</option>
         <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
         <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
        </select>
@@ -32860,7 +32860,7 @@ function meterIccProfileInfo(type){
   sdr:{
    mode:'sdr',
    description:'Creates a measured ICC v2 matrix and per-channel shaper profile with ArgyllCMS. Use it for SDR color-managed applications on Windows, KDE Plasma, macOS and other ICC-aware systems.',
-   compatibility:'This characterizes the display. It does not load a video-card calibration curve or change the display settings.'
+   compatibility:'This profile has no video-card calibration curve. On Windows 11 it affects ICC-aware applications, not the unmanaged desktop or raw Companion verification patches. Use an ICC-aware application to verify it.'
   },
   'kde-hdr':{
    mode:'hdr10',
@@ -33064,8 +33064,11 @@ async function meterIccRefreshCompanionStatus(){
   if(reportedConnected){
    const client=String(state.client||'target computer');
    const renderer=String(state.renderer||'renderer');
-   meterIccShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
-   meterCalibrationShowCompanionStatus(true,'Connected: '+client+' using '+renderer);
+   const version=String(state.version||'');
+   const hdr=state.hdr_active?' with native HDR active':'';
+   const detail='Connected: '+client+' using '+renderer+hdr+(version?' (v'+version+')':'');
+   meterIccShowCompanionStatus(true,detail);
+   meterCalibrationShowCompanionStatus(true,detail);
   }else if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }catch(error){
   meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
