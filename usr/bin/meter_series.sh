@@ -264,7 +264,7 @@ series_cancel_exit() {
 {"status":"cancelled","series_id":"$SERIES_ID","current_step":0,"total_steps":${TOTAL:-0},"current_name":"Cancelled","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  series_quit_spotread "cancel"
- companion_park_black
+ companion_show_alignment
  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 0
 }
@@ -314,6 +314,7 @@ companion_pattern_failure() {
 {"status":"error","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$escaped","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
 EOJSON
  series_quit_spotread "companion_error" 2>/dev/null || true
+ companion_show_alignment
  exit 1
 }
 
@@ -359,19 +360,13 @@ post_companion_patch() {
  companion_pattern_failure "The ICC Companion did not acknowledge the patch"
 }
 
-companion_park_black() {
+companion_show_alignment() {
  [[ "$PATTERN_PROVIDER" == "companion" ]] || return 0
- local input_max=255 code_min=0 code_max=255 shift=1 sequence tmp payload
- case "${PATTERN_SIGNAL_RANGE:-}" in
-  1)
-   code_min=16
-   code_max=235
-   ;;
- esac
+ local sequence tmp payload
  sequence=$(date +%s%3N)
  if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi
  COMPANION_SEQUENCE=$sequence
- payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$code_min,\"g\":$code_min,\"b\":$code_min,\"size\":100,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$SIGNAL_MODE\",\"max_luma\":$MAX_LUMA}"
+ payload="{\"status\":\"align\",\"sequence\":$sequence}"
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
  printf '%s' "$payload" > "$tmp" 2>/dev/null || return 0
  chmod 644 "$tmp" 2>/dev/null || true
@@ -2225,9 +2220,9 @@ fi
 # this also avoids the former unconditional SIGKILL after only 0.5 seconds.
 series_quit_spotread
 
-# Display black to prevent burn-in on whichever renderer owns this series.
+# Restore the companion's meter-alignment target after the series.
 if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
- companion_park_black
+ companion_show_alignment
 else
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
   -d '{"name":"stop"}' >/dev/null 2>&1

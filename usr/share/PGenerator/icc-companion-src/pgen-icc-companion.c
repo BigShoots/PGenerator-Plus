@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.0"
+#define APP_VERSION "1.0.1"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -59,6 +59,8 @@ typedef struct {
     bool hdr;
     bool hdr_active;
     bool fullscreen;
+    bool alignment;
+    bool server_initialized;
     bool quit;
     uint64_t next_poll_ms;
     char renderer_name[64];
@@ -299,6 +301,53 @@ static bool create_renderer(bool hdr)
     return !hdr || app.hdr_active;
 }
 
+static bool draw_circle(float center_x, float center_y, float radius)
+{
+    SDL_FPoint points[129];
+    const float two_pi = 6.2831853071795864769f;
+    for (int index = 0; index <= 128; index++) {
+        float angle = two_pi * (float)index / 128.0f;
+        points[index].x = center_x + cosf(angle) * radius;
+        points[index].y = center_y + sinf(angle) * radius;
+    }
+    return SDL_RenderLines(app.renderer, points, 129);
+}
+
+static bool render_alignment(void)
+{
+    int width, height;
+    float center_x, center_y, extent, radius;
+    if (!app.renderer || !SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
+    center_x = (float)width * 0.5f;
+    center_y = (float)height * 0.5f;
+    extent = (float)(width < height ? width : height);
+    radius = fmaxf(48.0f, extent * 0.14f);
+
+    for (int frame = 0; frame < 3; frame++) {
+        SDL_SetRenderDrawColorFloat(app.renderer, 0.24f, 0.24f, 0.24f, 1.0f);
+        if (!SDL_RenderClear(app.renderer)) return false;
+
+        SDL_SetRenderDrawColorFloat(app.renderer, 0.02f, 0.02f, 0.02f, 1.0f);
+        if (!draw_circle(center_x, center_y, radius) ||
+            !draw_circle(center_x, center_y, radius * 0.55f) ||
+            !SDL_RenderLine(app.renderer, center_x - radius * 1.45f, center_y,
+                           center_x + radius * 1.45f, center_y) ||
+            !SDL_RenderLine(app.renderer, center_x, center_y - radius * 1.45f,
+                           center_x, center_y + radius * 1.45f)) return false;
+
+        SDL_SetRenderDrawColorFloat(app.renderer, 0.92f, 0.92f, 0.92f, 1.0f);
+        if (!draw_circle(center_x, center_y, radius * 0.78f) ||
+            !draw_circle(center_x, center_y, radius * 0.18f) ||
+            !SDL_RenderLine(app.renderer, center_x - radius * 0.12f, center_y,
+                           center_x + radius * 0.12f, center_y) ||
+            !SDL_RenderLine(app.renderer, center_x, center_y - radius * 0.12f,
+                           center_x, center_y + radius * 0.12f)) return false;
+        SDL_RenderPresent(app.renderer);
+    }
+    app.alignment = true;
+    return true;
+}
+
 static bool render_patch(const char *mode, double r, double g, double b)
 {
     float pixel[4];
@@ -314,6 +363,7 @@ static bool render_patch(const char *mode, double r, double g, double b)
         SDL_RenderTexture(app.renderer, app.texture, NULL, NULL);
         SDL_RenderPresent(app.renderer);
     }
+    app.alignment = false;
     return true;
 }
 
@@ -333,6 +383,7 @@ static void poll_server(void)
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     double sequence_value, r, g, b, input_max, code_min, code_max;
     uint64_t sequence;
+    bool is_alignment;
     int status;
     SDL_snprintf(path, sizeof(path),
                  "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d",
@@ -347,12 +398,37 @@ static void poll_server(void)
     }
     SDL_snprintf(app.status, sizeof(app.status), "Connected to %s", app.config.server);
     SDL_SetWindowTitle(app.window, app.status);
-    if (!strstr(response, "\"status\":\"patch\"")) {
+    is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
+    if (!app.server_initialized) {
+        app.server_initialized = true;
+        if ((is_alignment || strstr(response, "\"status\":\"patch\"")) &&
+            json_number(response, "sequence", &sequence_value)) {
+            app.sequence = (uint64_t)sequence_value;
+        }
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }
-    if (!json_number(response, "sequence", &sequence_value) ||
-        !json_number(response, "r", &r) || !json_number(response, "g", &g) ||
+    if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
+    }
+    if (!json_number(response, "sequence", &sequence_value)) {
+        app.next_poll_ms = SDL_GetTicks() + 500;
+        return;
+    }
+    sequence = (uint64_t)sequence_value;
+    if (sequence == app.sequence) { app.next_poll_ms = SDL_GetTicks() + 250; return; }
+    if (is_alignment) {
+        if (!render_alignment()) {
+            acknowledge(sequence, false, "The renderer could not display the alignment target");
+        } else {
+            app.sequence = sequence;
+            acknowledge(sequence, true, "");
+        }
+        app.next_poll_ms = SDL_GetTicks() + 50;
+        return;
+    }
+    if (!json_number(response, "r", &r) || !json_number(response, "g", &g) ||
         !json_number(response, "b", &b) ||
         !json_number(response, "input_max", &input_max) ||
         !json_number(response, "code_min", &code_min) || !json_number(response, "code_max", &code_max)) {
@@ -360,8 +436,6 @@ static void poll_server(void)
         return;
     }
     json_string(response, "signal_mode", mode, sizeof(mode));
-    sequence = (uint64_t)sequence_value;
-    if (sequence == app.sequence) { app.next_poll_ms = SDL_GetTicks() + 250; return; }
     if (input_max <= 0 || code_max <= code_min) {
         acknowledge(sequence, false, "Invalid patch range");
         app.next_poll_ms = SDL_GetTicks() + 250;
@@ -400,6 +474,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     if (!app.window) return SDL_APP_FAILURE;
     app.fullscreen = false;
     if (!create_renderer(false)) return SDL_APP_FAILURE;
+    if (!render_alignment()) return SDL_APP_FAILURE;
     *appstate = &app;
     return SDL_APP_CONTINUE;
 }
@@ -414,6 +489,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
             state->fullscreen = !state->fullscreen;
             SDL_SetWindowFullscreen(state->window, state->fullscreen);
         }
+    }
+    if ((event->type == SDL_EVENT_WINDOW_RESIZED ||
+         event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) && state->alignment) {
+        render_alignment();
     }
     return SDL_APP_CONTINUE;
 }
