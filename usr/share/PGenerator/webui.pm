@@ -32980,8 +32980,8 @@ async function meterIccPoll(){
   const status=document.getElementById('meterIccStatus');
   if(status){
    if(state.status==='setup') status.textContent='Complete the meter setup prompt to continue.';
-   else if(state.current_name) status.textContent='Measuring patch '+Math.min(current+1,total)+' of '+total+'.';
-   else status.textContent='Initializing the meter. The first patch will appear when it is ready.';
+   else if(current>0) status.textContent='Measuring patch '+Math.min(current,total)+' of '+total+'.';
+   else status.textContent=state.current_name||'Initializing the meter. The first patch will appear when it is ready.';
   }
   if(!['complete','cancelled','error','cleared'].includes(String(state.status||'').toLowerCase())) return;
   if(state.status==='complete'){
