@@ -5,10 +5,10 @@ This package is paired with the PGenerator from which it was downloaded.
 
 1. Keep PGenICCCompanion.conf beside the executable.
 2. Enable HDR in the operating system before starting an HDR profile.
-3. Run PGenICCCompanion. It opens full-screen on the current display.
+3. Run PGenICCCompanion. It opens in a movable, resizable window.
 4. Return to the PGenerator WebUI from another screen or device and start the
    ICC profile measurements.
-5. Press F11 to leave or re-enter full-screen. Press Escape to exit.
+5. Press F11 if you want to toggle full-screen. Press Escape to exit.
 
 On KDE/Linux, extract the package with the desktop archive manager. If the
 executable bit is not preserved, run `chmod +x PGenICCCompanion` once before

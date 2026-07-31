@@ -1454,7 +1454,8 @@ sub webui_handle_request (@) {
 	    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
 	   }
    elsif($path eq "/api/meter/series/status") {
-    my $result=&webui_meter_series_status();
+    my $summary=($request_query=~/(?:^|&)summary=1(?:&|$)/) ? 1 : 0;
+    my $result=&webui_meter_series_status($summary);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
@@ -2587,7 +2588,6 @@ sub webui_meter_read (@) {
  }
  my $observer="1931_2";
  $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
- my $pattern_provider=($body=~/"pattern_provider"\s*:\s*"companion"/i)?"companion":"local";
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   # SpyderX exposes four built-in display calibrations and device-specific
   # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
@@ -3362,6 +3362,7 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  }
  my $observer="1931_2";
  $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
+ my $pattern_provider=($body=~/"pattern_provider"\s*:\s*"companion"/i)?"companion":"local";
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   $display_type=&webui_spyderx_native_display_type($display_type_key);
   $ccss_file="" if($ccss_file!~/\.ccmx$/i);
@@ -4847,6 +4848,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 }
 
 sub webui_meter_series_status (@) {
+ my ($summary)=@_;
  if(-f $_meter_series_file) {
   my $json="";
   if(open(my $fh,"<",$_meter_series_file)) { local $/; $json=<$fh>; close($fh); }
@@ -4876,6 +4878,13 @@ sub webui_meter_series_status (@) {
 	    if($steps ne "" && $json!~/"steps"/) {
 	     $json=~s/\}$/,"steps":$steps}/;
 	    }
+   }
+   if($summary) {
+    # Remote ICC clients only need progress while a run is active. Removing
+    # accumulated readings and the repeated step list keeps VPN polling fast;
+    # the completed run is fetched once in full before profile generation.
+    $json=~s/"readings"\s*:\s*\[[^\]]*\]/"readings":[]/s;
+    $json=~s/,"steps"\s*:\s*\[[^\]]*\]//s;
    }
    return $json;
   }
@@ -13414,7 +13423,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label for="meterIccStartDelay">Start delay in seconds</label>
        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
       </div>
-      <div class="meter-icc-note">The delay gives you time to move the companion window onto the display being profiled and enter full-screen.</div>
+      <div class="meter-icc-note">The delay gives you time to move and resize the companion window on the display being profiled.</div>
      </div>
     </div>
     <div class="meter-icc-panel" style="margin-top:12px">
@@ -32476,6 +32485,7 @@ let meterIccRunConfig=null;
 let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
 let meterIccCompanionTimer=null;
+let meterIccPollPending=false;
 
 function meterIccProfileInfo(type){
  const info={
@@ -32726,7 +32736,7 @@ async function meterIccStart(){
  try{
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
-   if(status) status.textContent='Starting in '+remaining+' seconds. Move the ICC Companion onto the target display and enter full-screen now.';
+   if(status) status.textContent='Starting in '+remaining+' seconds. Move and resize the ICC Companion on the target display now.';
    meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
    await new Promise(resolve=>setTimeout(resolve,1000));
   }
@@ -32758,6 +32768,7 @@ async function meterIccStart(){
   meterIccSetRunning(true);
   meterIccStarting=false;
   meterActionPending=false;
+  if(status) status.textContent='Measurement series started. Waiting for the first patch...';
   meterIccPollTimer=setInterval(meterIccPoll,1000);
   await meterIccPoll();
  }catch(error){
@@ -32771,18 +32782,28 @@ async function meterIccStart(){
 }
 
 async function meterIccPoll(){
- if(!meterIccRunning) return;
+ if(!meterIccRunning||meterIccPollPending) return;
+ meterIccPollPending=true;
  try{
-  const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
+  let state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:10000});
   if(!state) return;
   meterSeriesAwaitingReady=!!state.awaiting_ready;
   meterSpectroSetupApplyFromStatus(state);
   const current=Number(state.current_step)||0;
   const total=Number(state.total_steps)||((meterIccRunConfig&&meterIccRunConfig.steps.length)||0);
-  meterIccSetProgress(state.current_name||'Measuring',current,total);
+  meterIccSetProgress(state.current_name||'Initializing meter',current,total);
   const status=document.getElementById('meterIccStatus');
-  if(status) status.textContent=state.status==='setup'?'Complete the meter setup prompt to continue.':('Measuring patch '+Math.min(current+1,total)+' of '+total+'.');
+  if(status){
+   if(state.status==='setup') status.textContent='Complete the meter setup prompt to continue.';
+   else if(state.current_name) status.textContent='Measuring patch '+Math.min(current+1,total)+' of '+total+'.';
+   else status.textContent='Initializing the meter. The first patch will appear when it is ready.';
+  }
   if(!['complete','cancelled','error','cleared'].includes(String(state.status||'').toLowerCase())) return;
+  if(state.status==='complete'){
+   const completeState=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+   if(!completeState||completeState.status!=='complete') throw new Error('Could not retrieve completed ICC measurements');
+   state=completeState;
+  }
   clearInterval(meterIccPollTimer);
   meterIccPollTimer=null;
   meterSeriesRunning=false;
@@ -32795,7 +32816,12 @@ async function meterIccPoll(){
   }else{
    if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
   }
- }catch(error){}
+ }catch(error){
+  const status=document.getElementById('meterIccStatus');
+  if(status&&error&&error.message) status.textContent=error.message;
+ }finally{
+  meterIccPollPending=false;
+ }
 }
 
 async function meterIccBuild(readings){

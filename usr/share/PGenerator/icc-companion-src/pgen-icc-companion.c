@@ -406,9 +406,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
     app.window = SDL_CreateWindow("PGenerator ICC Companion", 1280, 720,
-                                  SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
+                                  SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
-    app.fullscreen = true;
+    app.fullscreen = false;
     if (!create_renderer(false)) return SDL_APP_FAILURE;
     *appstate = &app;
     return SDL_APP_CONTINUE;
