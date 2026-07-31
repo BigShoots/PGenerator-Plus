@@ -2772,6 +2772,9 @@ sub read_step_once {
  my $request_id=read_request_id($step);
  my $payload={
   display_type => $config->{"display_type"}||"lcd",
+  # Keep profile measurements on the observer selected when AutoCal began.
+  # The meter API otherwise defaults each request to CIE 1931.
+  observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
   # Forward the operator's CCSS override to the per-step payload so the
   # WebUI's meter session keeps the custom CCSS active through every patch.
   # The display_type token is now a tech key (post-split); the override
@@ -4380,6 +4383,7 @@ my $state={
  signal_mode => $config->{"signal_mode"},
  target_gamut => $config->{"target_gamut"},
  target_gamma => $config->{"target_gamma"},
+ observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 };
 if($config->{"full_workflow"}) {
  $state->{"full_workflow"}=json_true();

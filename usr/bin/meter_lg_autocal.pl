@@ -21790,6 +21790,10 @@ sub read_step_once {
 	 my $request_id=read_request_id($step);
 	 my $payload={
 	  display_type => $config->{"display_type"}||"lcd",
+	  # Keep AutoCal measurements on the observer selected when the run
+	  # started. Omitting this field makes /api/meter/read fall back to
+	  # CIE 1931 even when the calibration card is using another observer.
+	  observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 	  # Forward the operator's CCSS override to the per-step payload so the
 	  # WebUI's meter session keeps the custom CCSS active through every
 	  # patch read. The display_type token is now always a tech key
@@ -22009,6 +22013,7 @@ my $state={
 			 requested_signal_mode=>$signal_mode,
 			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
 			 display_type=>$config->{"display_type"}||"lcd",
+			 observer=>(($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 			 # Echo the CCSS override into the run state so the WebUI can
 			 # display it on the in-progress screen (and verify it survived
 			 # the wizard snapshot path).
