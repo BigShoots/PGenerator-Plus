@@ -32788,7 +32788,7 @@ async function meterIccPoll(){
   let state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:10000});
   if(!state) return;
   meterSeriesAwaitingReady=!!state.awaiting_ready;
-  meterSpectroSetupApplyFromStatus(state);
+  meterSeriesSpectroSetupApplyFromStatus(state);
   const current=Number(state.current_step)||0;
   const total=Number(state.total_steps)||((meterIccRunConfig&&meterIccRunConfig.steps.length)||0);
   meterIccSetProgress(state.current_name||'Initializing meter',current,total);
