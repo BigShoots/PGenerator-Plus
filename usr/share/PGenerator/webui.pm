@@ -1569,12 +1569,13 @@ sub webui_handle_request (@) {
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/icc/companion/download") {
-    my ($fname,$content)=&webui_icc_companion_download($request_query,$request_host);
+    my ($fname,$content,$message)=&webui_icc_companion_download($request_query,$request_host);
     if($fname ne "") {
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
      print $client $content;
     } else {
-     my $err='{"status":"error","message":"Companion package is unavailable"}';
+     $message="Companion package is unavailable" if(!defined($message) || $message eq "");
+     my $err='{"status":"error","message":"'.&_webui_json_escape($message).'"}';
      print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
     }
    }
@@ -6341,18 +6342,25 @@ sub webui_icc_companion_status (@) {
 sub webui_icc_companion_download (@) {
  my ($query,$host)=@_;
  my $platform=&webui_icc_companion_query_value($query,"platform");
- return ("","") unless($platform eq "windows-x64" || $platform eq "linux-x64");
- return ("","") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/ && -f $_icc_companion_packager);
+ return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "linux-x64");
+ return ("","","Could not determine this PGenerator address") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/);
+ return ("","","ICC Companion packager is not installed") unless(-f $_icc_companion_packager);
  my $token=&webui_icc_companion_token();
- return ("","") if($token eq "");
+ return ("","","Could not create the ICC Companion pairing token") if($token eq "");
  my $tmp="/tmp/pgen_icc_companion_".$$ ."_".int(rand(1000000)).".zip";
  my $server="http://$host";
- my $filename=`/usr/bin/python3 $_icc_companion_packager '$platform' '$server' '$token' '$tmp' 2>/dev/null`;
- chomp($filename);
+ my $output=`/usr/bin/python3 $_icc_companion_packager '$platform' '$server' '$token' '$tmp' 2>&1`;
+ chomp($output);
+ my $filename=$output;
  my $content="";
  if($?==0 && $filename=~/^[A-Za-z0-9._-]+\.zip$/ && open(my $fh,"<:raw",$tmp)) { local $/; $content=<$fh>||""; close($fh); }
  unlink($tmp);
- return $content ne "" ? ($filename,$content) : ("","");
+ return ($filename,$content,"") if($content ne "");
+ $output=~s/[\r\n]+/ /g;
+ $output=~s/[^A-Za-z0-9 ._:\/()\[\]-]+/?/g;
+ $output=substr($output,0,240);
+ &log("ICC Companion package failed: ".($output||"unknown packager error"));
+ return ("","",$output||"ICC Companion package generation failed");
 }
 
 sub webui_lg_lut_download (@) {

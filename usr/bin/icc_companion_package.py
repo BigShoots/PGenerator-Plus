@@ -4,6 +4,7 @@
 import os
 import re
 import sys
+import time
 import zipfile
 
 
@@ -21,10 +22,15 @@ def fail(message):
 
 
 def add_file(archive, path, name, mode=0o644):
-    info = zipfile.ZipInfo.from_file(path, name)
+    modified = time.localtime(os.path.getmtime(path))[:6]
+    if modified[0] < 1980:
+        modified = (1980, 1, 1, 0, 0, 0)
+    info = zipfile.ZipInfo(name, modified)
+    info.create_system = 3
     info.external_attr = (mode & 0xFFFF) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
     with open(path, "rb") as handle:
-        archive.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+        archive.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED)
 
 
 def build(platform, server, token, output_path):
@@ -38,8 +44,9 @@ def build(platform, server, token, output_path):
     binary_dir = os.path.join(ROOT, "icc-companion", platform)
     source_dir = os.path.join(ROOT, "icc-companion-src")
     config = "# Paired automatically by PGenerator\nSERVER={}\nTOKEN={}\n".format(server, token)
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
+        config_info.create_system = 3
         config_info.external_attr = 0o600 << 16
         archive.writestr(config_info, config)
         add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
