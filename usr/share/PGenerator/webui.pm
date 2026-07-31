@@ -23356,6 +23356,14 @@ function meterCieDeclaredMbTargetCoord(reading){
  return meterCieIsOpponentMode(mode)?meterCieOpponentFromMb(coord,/_10$/.test(mode)):coord;
 }
 function meterCieChartTargetCoord(reading,targetXYZ){
+ // A zero-luminance target has no defined chromaticity. Keep the black target
+ // on the reference-white chromaticity instead of allowing {0,0,0} to become
+ // the chart origin. This also keeps the target in the same place before and
+ // after the black patch is measured.
+ if(targetXYZ&&meterXyzIsBlack(targetXYZ)&&meterReadingTargetsBlack(reading)){
+  const white=meterCieD65Coord();
+  return {x:white.x,y:white.y,Y:0,reference:true,blackTarget:true};
+ }
  const declared=meterCieDeclaredMbTargetCoord(reading);
  if(declared){
   if(declared.Y==null||!Number.isFinite(Number(declared.Y))){
@@ -48167,7 +48175,7 @@ function showColorReadingDetail(rd,opts){
  const colorInclLum=(meterColorRefMode()==='eotf');
  const deLabel=meterDeltaEFormLabel(meterColorDeltaEForm());
  const targetXYZ=meterTargetXYZForReading(view);
- const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterCieChartCoordFromXYZ(targetXYZ):null;
+ const tgt=(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)))?meterCieChartTargetCoord(view,targetXYZ):null;
  // Measured fields: ONLY from a real sample. Never fall through to targets.
  const hasMeasuredXYZ=!isUnread&&!!meterReadingXYZ(view);
  const hasChroma=!isUnread&&hasMeasuredXYZ&&meterReadingHasChromaticity(view);
