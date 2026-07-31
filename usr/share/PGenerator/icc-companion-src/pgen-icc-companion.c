@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.1"
+#define APP_VERSION "1.0.2"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -60,7 +60,6 @@ typedef struct {
     bool hdr_active;
     bool fullscreen;
     bool alignment;
-    bool server_initialized;
     bool quit;
     uint64_t next_poll_ms;
     char renderer_name[64];
@@ -301,47 +300,26 @@ static bool create_renderer(bool hdr)
     return !hdr || app.hdr_active;
 }
 
-static bool draw_circle(float center_x, float center_y, float radius)
-{
-    SDL_FPoint points[129];
-    const float two_pi = 6.2831853071795864769f;
-    for (int index = 0; index <= 128; index++) {
-        float angle = two_pi * (float)index / 128.0f;
-        points[index].x = center_x + cosf(angle) * radius;
-        points[index].y = center_y + sinf(angle) * radius;
-    }
-    return SDL_RenderLines(app.renderer, points, 129);
-}
-
 static bool render_alignment(void)
 {
     int width, height;
-    float center_x, center_y, extent, radius;
+    float center_x, center_y, extent, arm;
     if (!app.renderer || !SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
     center_x = (float)width * 0.5f;
     center_y = (float)height * 0.5f;
     extent = (float)(width < height ? width : height);
-    radius = fmaxf(48.0f, extent * 0.14f);
+    arm = fmaxf(48.0f, extent * 0.12f);
 
     for (int frame = 0; frame < 3; frame++) {
-        SDL_SetRenderDrawColorFloat(app.renderer, 0.24f, 0.24f, 0.24f, 1.0f);
+        SDL_SetRenderDrawColorFloat(app.renderer, 0.0f, 0.0f, 0.0f, 1.0f);
         if (!SDL_RenderClear(app.renderer)) return false;
-
-        SDL_SetRenderDrawColorFloat(app.renderer, 0.02f, 0.02f, 0.02f, 1.0f);
-        if (!draw_circle(center_x, center_y, radius) ||
-            !draw_circle(center_x, center_y, radius * 0.55f) ||
-            !SDL_RenderLine(app.renderer, center_x - radius * 1.45f, center_y,
-                           center_x + radius * 1.45f, center_y) ||
-            !SDL_RenderLine(app.renderer, center_x, center_y - radius * 1.45f,
-                           center_x, center_y + radius * 1.45f)) return false;
-
-        SDL_SetRenderDrawColorFloat(app.renderer, 0.92f, 0.92f, 0.92f, 1.0f);
-        if (!draw_circle(center_x, center_y, radius * 0.78f) ||
-            !draw_circle(center_x, center_y, radius * 0.18f) ||
-            !SDL_RenderLine(app.renderer, center_x - radius * 0.12f, center_y,
-                           center_x + radius * 0.12f, center_y) ||
-            !SDL_RenderLine(app.renderer, center_x, center_y - radius * 0.12f,
-                           center_x, center_y + radius * 0.12f)) return false;
+        SDL_SetRenderDrawColorFloat(app.renderer, 1.0f, 1.0f, 1.0f, 1.0f);
+        for (int offset = -1; offset <= 1; offset++) {
+            if (!SDL_RenderLine(app.renderer, center_x - arm, center_y + (float)offset,
+                               center_x + arm, center_y + (float)offset) ||
+                !SDL_RenderLine(app.renderer, center_x + (float)offset, center_y - arm,
+                               center_x + (float)offset, center_y + arm)) return false;
+        }
         SDL_RenderPresent(app.renderer);
     }
     app.alignment = true;
@@ -399,15 +377,6 @@ static void poll_server(void)
     SDL_snprintf(app.status, sizeof(app.status), "Connected to %s", app.config.server);
     SDL_SetWindowTitle(app.window, app.status);
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
-    if (!app.server_initialized) {
-        app.server_initialized = true;
-        if ((is_alignment || strstr(response, "\"status\":\"patch\"")) &&
-            json_number(response, "sequence", &sequence_value)) {
-            app.sequence = (uint64_t)sequence_value;
-        }
-        app.next_poll_ms = SDL_GetTicks() + 250;
-        return;
-    }
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;

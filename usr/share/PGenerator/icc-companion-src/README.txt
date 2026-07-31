@@ -7,7 +7,7 @@ This package is paired with the PGenerator from which it was downloaded.
 2. Enable HDR in the operating system before starting an HDR profile.
 3. Run PGenICCCompanion. It opens in a movable, resizable window. Each patch
    fills the entire window, so resize the window to set the patch dimensions.
-   Use the alignment target shown at startup to center the meter.
+   Use the white crosshair on the black alignment screen to center the meter.
 4. Return to the PGenerator WebUI from another screen or device and start the
    ICC profile measurements.
 5. Press F11 if you want to toggle full-screen. Press Escape to exit.
