@@ -72,7 +72,7 @@ export OBSERVER
 # companion. All other series continue to use the local PGenerator renderer.
 PATTERN_PROVIDER="${34:-local}"
 [[ "$PATTERN_PROVIDER" == "companion" ]] || PATTERN_PROVIDER="local"
-COMPANION_COMMAND_FILE="/tmp/pgen_icc_companion.command.json"
+COMPANION_COMMAND_FILE="/var/lib/PGenerator/icc-companion/command.json"
 COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
 

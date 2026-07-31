@@ -409,7 +409,7 @@ my $_icc_profile_dir="$var_dir/icc";
 my $_icc_companion_packager="/usr/bin/icc_companion_package.py";
 my $_icc_companion_dir="$var_dir/icc-companion";
 my $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
-my $_icc_companion_command_file="/tmp/pgen_icc_companion.command.json";
+my $_icc_companion_command_file="$_icc_companion_dir/command.json";
 my $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 my $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 # :shared - 0.25s debounce guarding a PHYSICAL meter read (see the check in
