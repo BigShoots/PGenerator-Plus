@@ -627,7 +627,7 @@ for dst, src in (("r_code", "r"), ("g_code", "g"), ("b_code", "b")):
         reading[dst] = step[src]
 
 for field in (
-	"input_max", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
+	"input_max", "patch_size", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
 	"signal_mode", "target_gamma", "max_luma", "dv_map_mode",
 	"analysis_ire", "target_ire", "transport_stimulus",
 	"final_white_refresh",
@@ -1741,6 +1741,10 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 B=$(get_step_field $i b)
 	 INPUT_MAX=$(get_step_field $i input_max)
 	 [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
+	 STEP_PATCH_SIZE=$(get_step_field $i patch_size)
+	 if ! is_number "$STEP_PATCH_SIZE" || ! awk "BEGIN { exit !($STEP_PATCH_SIZE >= 1 && $STEP_PATCH_SIZE <= 100) }" 2>/dev/null; then
+	  STEP_PATCH_SIZE="$PATCH_SIZE"
+	 fi
 	 READ_DELAY_MS=$(get_step_field $i read_delay_ms)
 	 IRE=$(get_step_field $i ire)
 	 NAME=$(get_step_field $i name)
@@ -1764,7 +1768,7 @@ EOJSON
 	 maybe_pattern_insert_before_step "$i" "$IRE"
 
 	 # Display pattern
-		 post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+		 post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 
  # DV greyscale derives chart/patch targets from the first 100% read. Warm
  # that first white in place and do not replace it with a different final
@@ -1772,10 +1776,10 @@ EOJSON
  if (( i == 0 )) && [[ "$IRE" == "100" ]]; then
   if series_uses_first_white_warmup; then
    sleep "$DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC"
-	  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	  post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 	  elif should_apply_fresh_dv_first_white_warmup; then
 	   sleep "$FRESH_DV_FIRST_WHITE_EXTRA_SEC"
-		  post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+		  post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 	  fi
 	 fi
 	 sleep "$PATTERN_DELAY_SEC"
@@ -1870,7 +1874,7 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-	   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 	   sleep "$PATTERN_DELAY_SEC"
 	   sleep "$STEP_DELAY"
    PREV_COUNT=$(count_results)
@@ -1935,7 +1939,7 @@ EOJSON
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (redisplaying after zero read $zero_retry/$ZERO_READ_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
-	   post_patch "$R" "$G" "$B" "$PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	   post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 	   sleep "$PATTERN_DELAY_SEC"
 	   sleep "$STEP_DELAY"
    write_state_json << EOJSON

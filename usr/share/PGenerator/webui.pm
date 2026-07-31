@@ -404,6 +404,8 @@ my $_ccss_create_continue_file="/tmp/ccss_create.cont";
 my $_ccss_create_runner="/usr/bin/ccss_create.py";
 my $_ccss_create_patch_cmd="/usr/bin/ccss_create_patch.sh";
 my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
+my $_icc_profile_builder="/usr/bin/icc_profile_builder.py";
+my $_icc_profile_dir="$var_dir/icc";
 # :shared - 0.25s debounce guarding a PHYSICAL meter read (see the check in
 # webui_meter_read). A private copy per worker would let one read per worker
 # through each window instead of one read total.
@@ -1513,6 +1515,32 @@ sub webui_handle_request (@) {
     my $result=&webui_meter_custom_series_load($request_query);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/profiles") {
+    my $result=&webui_icc_profile_list();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/build" && $method eq "POST") {
+    my $result=&webui_icc_profile_build($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/delete" && $method eq "POST") {
+    my $result=&webui_icc_profile_delete($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/download") {
+    my ($fname,$content)=&webui_icc_profile_download($request_query);
+    my $len=length($content);
+    if($fname ne "") {
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.iccprofile\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $len\r\n$cors\r\n";
+     print $client $content;
+    } else {
+     my $err="{\"status\":\"error\",\"message\":\"ICC profile not found\"}";
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
+    }
    }
    elsif($path eq "/api/meter/settings") {
     if($method eq "POST") {
@@ -3133,7 +3161,7 @@ sub webui_custom_series_steps_from_body (@) {
   last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
-  foreach my $key (qw(ire r g b input_max target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
+  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
    $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
@@ -3167,6 +3195,12 @@ sub webui_custom_series_steps_from_body (@) {
   $ire=0 if($ire<0);
   $ire=110 if($ire>110);
   my $step="{\"ire\":$ire,\"r\":$num{r},\"g\":$num{g},\"b\":$num{b},\"name\":\"".&_webui_json_escape($name)."\",\"input_max\":$input_max";
+  if(defined $num{"patch_size"}) {
+   my $patch_size=$num{"patch_size"}+0;
+   $patch_size=1 if($patch_size<1);
+   $patch_size=100 if($patch_size>100);
+   $step.=",\"patch_size\":$patch_size";
+  }
   $step.=",\"target_x\":".($num{"target_x"}+0) if(defined $num{"target_x"});
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
@@ -6111,6 +6145,72 @@ sub webui_lg_lut_list (@) {
   closedir($dh);
  }
  return "{\"status\":\"ok\",\"luts\":[".join(",",@out)."]}";
+}
+
+sub webui_icc_profile_list (@) {
+ my @out;
+ if(opendir(my $dh,$_icc_profile_dir)) {
+  foreach my $file (sort readdir($dh)) {
+   next unless($file=~/^[A-Za-z0-9._-]+\.icc$/i);
+   my @st=stat("$_icc_profile_dir/$file");
+   push @out,"{\"name\":\"".&_webui_json_escape($file)."\",\"size\":".(($st[7]||0)+0).",\"mtime\":".(($st[9]||0)+0)."}";
+  }
+  closedir($dh);
+ }
+ return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
+}
+
+sub webui_icc_profile_build (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Profile request is empty"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":"Profile request is too large"}' if(length($body)>4*1024*1024);
+ return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
+ if(!-d $_icc_profile_dir) {
+  eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
+ }
+ return '{"status":"error","message":"Could not create the ICC profile directory"}' unless(-d $_icc_profile_dir);
+ my $token=time()."_".$$."_".int(rand(1000000));
+ my $input="/tmp/icc_profile_build_${token}.json";
+ if(!open(my $fh,">",$input)) {
+  return '{"status":"error","message":"Could not prepare the profile measurements"}';
+ }
+ print $fh $body;
+ close($fh);
+ chmod(0600,$input);
+ # Every command component is fixed or generated above. The profile name and
+ # all measurement data remain inside the JSON file and never enter the shell.
+ my $result=`timeout 100 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
+ my $exit=$?;
+ unlink($input);
+ $result=~s/^\s+|\s+$//g;
+ if($result!~/^\{/) {
+  return '{"status":"error","message":"ICC profile creation failed"}';
+ }
+ return $result if($exit==0);
+ return $result if($result=~/"status"\s*:\s*"error"/);
+ return '{"status":"error","message":"ICC profile creation failed"}';
+}
+
+sub webui_icc_profile_download (@) {
+ my ($query)=@_;
+ my $file="";
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.icc)(?:&|$)/i);
+ return ("","") if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file";
+ return ("","") unless(-f $path);
+ my $data="";
+ if(open(my $fh,"<",$path)) { binmode($fh); local $/; $data=<$fh>; close($fh); }
+ return ($file,$data);
+}
+
+sub webui_icc_profile_delete (@) {
+ my ($body)=@_;
+ my $file="";
+ $file=$1 if(defined($body) && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file";
+ return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
+ return unlink($path) ? '{"status":"ok"}' : '{"status":"error","message":"Could not delete the ICC profile"}';
 }
 
 sub webui_lg_lut_download (@) {
@@ -11917,6 +12017,7 @@ body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{border-b
 body.layout-desktop .dashboard > #meterCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
 body.layout-tablet #meterProfileCard{display:none!important}
 body.layout-tablet #meter3dLutWorkspaceCard{display:none!important}
+body.layout-tablet #meterIccWorkspaceCard{display:none!important}
 body.layout-desktop #sessionCard[data-desktop-active="true"]{border-bottom:0;padding-right:48px;box-sizing:border-box}
 .session-actions{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
 .session-button-wrap{display:inline-flex;align-items:center;gap:5px}
@@ -11928,7 +12029,8 @@ body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180p
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
 body.layout-desktop #meterProfileCard .ccss-editor-panel{background:var(--surface-inset)!important;border:0!important;border-radius:8px!important}
 body.layout-desktop #meterProfileCard #ccssPreviewCanvas{height:440px!important}
-body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"]{display:none!important}
+body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"],
+body.layout-desktop #meterSeriesTabRow [data-series-tab="icc"]{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{border-bottom:0}
 body.layout-desktop #meter3dLutWorkspaceCard[data-desktop-active="true"]{padding-right:48px;box-sizing:border-box}
 .meter-3dlut-workspace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
@@ -11946,6 +12048,23 @@ body.layout-tablet #meter3dLutWorkspaceBuildBtn{display:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meter3dLutWorkspaceCard #meterLutToolsModal>.meter-modal-scroll{display:block;position:relative;min-height:570px}
+body.layout-desktop #meterIccWorkspaceCard{border-bottom:0}
+body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
+body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
+body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
+.meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.meter-icc-panel{padding:12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
+.meter-icc-panel h3{font-size:.78rem;color:var(--text);margin:0 0 8px}
+.meter-icc-note{font-size:.72rem;color:var(--text2);line-height:1.5}
+.meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+.meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
+.meter-icc-field input,.meter-icc-field select{width:100%;box-sizing:border-box}
+.meter-icc-progress-track{height:10px;border:1px solid var(--border);border-radius:5px;overflow:hidden;background:var(--surface-inset)}
+.meter-icc-progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+.meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
+.meter-icc-profile-row:last-child{border-bottom:0}
+.meter-icc-profile-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+@media(max-width:760px){.meter-icc-grid{grid-template-columns:1fr}}
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head,
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import,
 body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel,
@@ -12318,6 +12437,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <button type="button" class="desktop-nav-btn" data-workspace-target="patterns" title="Patterns" onclick="pgSelectDesktopWorkspace('patterns')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="desktop-nav-label">Patterns</span></button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="calibration" title="Calibration" onclick="pgSelectDesktopWorkspace('calibration')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="desktop-nav-label">Calibration</span></button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="3d-lut" title="3D LUT" onclick="pgSelectDesktopWorkspace('3d-lut')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.8 8 4.5v9.4l-8 4.5-8-4.5V7.3zM4 7.3l8 4.6 8-4.6M12 11.9v9.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="desktop-nav-label">3D LUT</span></button>
+  <button type="button" class="desktop-nav-btn" data-workspace-target="icc-profile" title="ICC Profile" onclick="pgSelectDesktopWorkspace('icc-profile')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h10l4 4v14H5zM15 3v5h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="9" cy="14" r="2" fill="#e24b4b"/><circle cx="13" cy="14" r="2" fill="#55b85a"/><circle cx="11" cy="17" r="2" fill="#4b8ee8"/></svg></span><span class="desktop-nav-label">ICC Profile</span></button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="meter-profile" title="Meter Profile" onclick="pgSelectDesktopWorkspace('meter-profile')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8v4.5a4 4 0 0 1-8 0zM10 12v3.5a3.5 3.5 0 0 0 7 0V14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="17" cy="11" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="desktop-nav-label">Meter Profile</span></button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="display-control" title="LG Display" onclick="pgSelectDesktopWorkspace('display-control')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.8" y="4" width="18.4" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 21h8M12 17v4M6.5 9v4h3M17.5 9.7a2.2 2.2 0 1 0 0 2.6V11h-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="desktop-nav-label">LG Display</span></button>
   <button type="button" class="desktop-nav-btn" data-workspace-target="connectivity" title="Connectivity" onclick="pgSelectDesktopWorkspace('connectivity')"><span class="desktop-nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="18" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7 11 9.8-4M7 13l9.8 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="desktop-nav-label">Connectivity</span></button>
@@ -12785,6 +12905,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <button class="btn btn-sm btn-primary" data-series-tab="greyscale" onclick="meterSetSeriesTab('greyscale')">Greyscale</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="color" onclick="meterSetSeriesTab('color')">Color</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="3dlut" onclick="meterSetSeriesTab('3dlut')">3D LUT</button>
+     <button class="btn btn-sm btn-secondary" data-series-tab="icc" onclick="meterOpenIccProfileBuilder()">ICC Profile</button>
      <button class="btn btn-sm btn-secondary" data-series-tab="autocal" onclick="meterSetSeriesTab('autocal')">Auto Cal</button>
     </div>
     <div class="btn-row" id="meterSeriesBtnRow" style="margin:0">
@@ -13097,6 +13218,74 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div id="meterImportWizardBody" style="margin-bottom:12px"></div>
     <div id="meterImportWizardActions" style="display:none;text-align:right">
      <button class="btn btn-sm btn-primary" id="meterImportWizardCommitBtn" onclick="meterImportWizardCommit()">Import</button>
+    </div>
+   </div>
+  </div>
+
+  <span id="meterIccProfileHome" hidden></span>
+  <div id="meterIccProfileModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(900px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
+     <div>
+      <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
+      <div class="meter-icc-note">Measure the display through PGenerator, build the profile on the device, then download it to this computer.</div>
+     </div>
+     <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
+    </div>
+    <div class="meter-icc-grid">
+     <div class="meter-icc-panel">
+      <h3>1. Choose the destination</h3>
+      <div class="meter-icc-field">
+       <label for="meterIccProfileType">Profile type</label>
+       <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
+        <option value="sdr">Standard SDR ICC</option>
+        <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
+        <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
+       </select>
+      </div>
+      <div id="meterIccProfileDescription" class="meter-icc-note"></div>
+      <div id="meterIccCompatibility" class="meter-icc-note" style="margin-top:8px;color:var(--warning)"></div>
+     </div>
+     <div class="meter-icc-panel">
+      <h3>2. Configure the measurement</h3>
+      <div class="meter-icc-field">
+       <label for="meterIccProfileName">Profile name</label>
+       <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
+      </div>
+      <div class="meter-icc-field">
+       <label for="meterIccQuality">Patch set</label>
+       <select id="meterIccQuality" onchange="meterIccSyncUi()">
+        <option value="quick">Quick, 51 patches</option>
+        <option value="standard" selected>Standard, 83 patches</option>
+        <option value="high">High, 237 patches</option>
+       </select>
+      </div>
+      <div class="meter-icc-field">
+       <label for="meterIccStartDelay">Start delay in seconds</label>
+       <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
+      </div>
+      <div class="meter-icc-note">Use the start delay when this browser is on the computer being profiled and you need time to switch the display input back to PGenerator.</div>
+     </div>
+    </div>
+    <div class="meter-icc-panel" style="margin-top:12px">
+     <h3>3. Measure and build</h3>
+     <div id="meterIccRunSummary" class="meter-icc-note" style="margin-bottom:10px"></div>
+     <div id="meterIccProgress" style="display:none">
+      <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:.72rem;color:var(--text2)">
+       <span id="meterIccProgressLabel">Preparing measurement</span>
+       <span id="meterIccProgressCount">0 / 0</span>
+      </div>
+      <div class="meter-icc-progress-track"><div id="meterIccProgressFill" class="meter-icc-progress-fill"></div></div>
+     </div>
+     <div id="meterIccStatus" class="meter-icc-note" role="status" style="margin-top:10px"></div>
+     <div class="btn-row" style="margin:12px 0 0;justify-content:flex-end">
+      <button type="button" class="btn btn-sm btn-danger" id="meterIccStopBtn" onclick="meterIccStop()" style="display:none">Stop</button>
+      <button type="button" class="btn btn-sm btn-primary" id="meterIccStartBtn" onclick="meterIccStart()">Start Profiling</button>
+     </div>
+    </div>
+    <div class="meter-icc-panel" style="margin-top:12px">
+     <h3>Created profiles</h3>
+     <div id="meterIccProfileList" class="meter-icc-note">Loading profiles...</div>
     </div>
    </div>
   </div>
@@ -13746,6 +13935,12 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div id="meter3dLutWorkspaceStatus" class="meter-3dlut-workspace-status">Select a profiling series to begin.</div>
   </div>
   <div id="meter3dLutToolsWorkspaceHost"></div>
+ </div>
+
+ <!-- The same ICC builder is a modal in Tablet and an embedded workspace in
+      Desktop, matching the shared 3D LUT tools presentation model. -->
+ <div class="card span2" id="meterIccWorkspaceCard" data-desktop-workspace="icc-profile" data-desktop-order="10">
+  <div id="meterIccWorkspaceHost"></div>
  </div>
 
  <!-- Desktop hosts the existing CCSS editor here as a full workspace. Tablet
@@ -15705,6 +15900,7 @@ let _hdmiIgnored=false;
 const uiBlockingOverlayIds=[
  'meterGreyProfileModal','meterCustomSeriesModal','meterCustomSeriesManagerModal',
  'meterImportWizardModal','meterLutToolsModal','lutSolveProgressModal',
+ 'meterIccProfileModal',
  'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
  'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
  'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',
@@ -15720,6 +15916,7 @@ function uiAnyBlockingOverlayVisible(){
   if(!el) return false;
   if(id==='customCcssEditorModal'&&document.body.classList.contains('layout-desktop')) return false;
   if(id==='meterLutToolsModal'&&document.body.classList.contains('layout-desktop')) return false;
+  if(id==='meterIccProfileModal'&&document.body.classList.contains('layout-desktop')) return false;
   if(el.style.display) return el.style.display!=='none';
   return getComputedStyle(el).display!=='none';
  });
@@ -16975,7 +17172,7 @@ const PG_DESKTOP_SIDEBAR_STORAGE_KEY='pgen.ui.desktopSidebarCollapsed';
 const PG_METER_CONFIG_COLLAPSE_KEY='pgen.ui.meterConfigCollapsed';
 const PG_DESKTOP_MIN_WIDTH=1024;
 const PG_DESKTOP_WORKSPACES={
- output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','meter-profile':'Meter Profile',
+ output:'Output',patterns:'Patterns',calibration:'Calibration','3d-lut':'3D LUT','icc-profile':'ICC Profile','meter-profile':'Meter Profile',
  'display-control':'LG Display',connectivity:'Connectivity',session:'Session','ui-settings':'UI Settings',system:'System'
 };
 let pgThemeMode='dark';
@@ -17218,6 +17415,20 @@ function meterPlace3dLutWorkspaceForLayout(){
  }
  meterSync3dLutWorkspaceUi();
 }
+function meterPlaceIccWorkspaceForLayout(){
+ const modal=document.getElementById('meterIccProfileModal');
+ const home=document.getElementById('meterIccProfileHome');
+ const host=document.getElementById('meterIccWorkspaceHost');
+ const desktop=document.body.classList.contains('layout-desktop');
+ if(!modal||!home||!host) return;
+ if(desktop){
+  if(modal.parentNode!==host) host.appendChild(modal);
+ }else{
+  const returningFromDesktop=modal.parentNode===host;
+  if(modal.parentNode!==home.parentNode) home.insertAdjacentElement('afterend',modal);
+  if(returningFromDesktop) modal.style.display='none';
+ }
+}
 function meterActivate3dLutWorkspace(){
  if(!document.body.classList.contains('layout-desktop')) return;
  meterPlace3dLutWorkspaceForLayout();
@@ -17289,6 +17500,10 @@ function pgSelectDesktopWorkspace(workspace,options){
   meterActivateCcssEditorWorkspace();
  }
  if(workspace==='3d-lut'&&workspaceChanged&&document.body.classList.contains('layout-desktop')) meterActivate3dLutWorkspace();
+ if(workspace==='icc-profile'&&workspaceChanged&&document.body.classList.contains('layout-desktop')){
+  meterPlaceIccWorkspaceForLayout();
+  meterOpenIccProfileBuilder();
+ }
  else if(previousWorkspace==='3d-lut'&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')) meterSetSeriesTab('greyscale');
  if(workspaceChanged&&(workspace==='calibration'||workspace==='3d-lut')&&document.body.classList.contains('layout-desktop')){
   // Pick up series created/imported in another browser whenever the operator
@@ -17312,6 +17527,7 @@ function pgApplyLayout(options){
  pgApplyDesktopZoom();
  meterPlaceCcssEditorForLayout();
  meterPlace3dLutWorkspaceForLayout();
+ meterPlaceIccWorkspaceForLayout();
  uiSyncBodyScrollLock();
  meterSyncGreyscaleDesktopLayout();
  pgSyncCardCollapseForLayout();
@@ -32086,6 +32302,353 @@ function meterCloseLutTools(){
  const modal=document.getElementById('meterLutToolsModal');
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
+}
+
+let meterIccRunning=false;
+let meterIccStarting=false;
+let meterIccStartToken=0;
+let meterIccPollTimer=null;
+let meterIccRunConfig=null;
+let meterIccBuildPending=false;
+
+function meterIccMode(){
+ return String((typeof meterChartSignalMode==='function'?meterChartSignalMode():getVal('signal_mode'))||'sdr').toLowerCase();
+}
+
+function meterIccProfileInfo(type){
+ const info={
+  sdr:{
+   mode:'sdr',
+   description:'Creates a measured ICC v2 matrix and per-channel shaper profile with ArgyllCMS. Use it for SDR color-managed applications on Windows, KDE Plasma, macOS and other ICC-aware systems.',
+   compatibility:'This characterizes the display. It does not load a video-card calibration curve or change the display settings.'
+  },
+  'kde-hdr':{
+   mode:'hdr10',
+   description:'Creates a measured ICC profile for the separate HDR profile slot added in KDE Plasma 6.7. Measure with the output in HDR10 (PQ), then select the downloaded file as the display HDR ICC profile in Plasma.',
+   compatibility:'Requires KDE Plasma 6.7 or newer. This file is not a Windows Advanced Color MHC2 profile.'
+  },
+  'windows-hdr':{
+   mode:'hdr10',
+   description:'Creates an ICC v2 display profile with Microsoft MHC2 data for Windows Advanced Color. It records measured peak, black, full-frame luminance, primaries and white, and applies a measured XYZ primary/white correction matrix.',
+   compatibility:'MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. This builder leaves the MHC2 1D curves at identity so Windows supplies PQ once and does not apply it twice.'
+  }
+ };
+ return info[type]||info.sdr;
+}
+
+function meterIccPatchFractions(quality){
+ const rampCount=quality==='quick'?9:(quality==='high'?33:17);
+ const cubeCount=quality==='quick'?3:(quality==='high'?5:3);
+ const patches=[];
+ const seen=new Set();
+ const add=(r,g,b,name)=>{
+  const key=[r,g,b].map(value=>Math.round(value*100000)).join(':');
+  if(seen.has(key)) return;
+  seen.add(key);
+  patches.push({r,g,b,name});
+ };
+ add(1,1,1,'ICC White');
+ add(0,0,0,'ICC Black');
+ add(1,0,0,'ICC Red 100');
+ add(0,1,0,'ICC Green 100');
+ add(0,0,1,'ICC Blue 100');
+ for(let index=0;index<rampCount;index++){
+  const value=index/(rampCount-1);
+  add(value,value,value,'ICC Grey '+Math.round(value*100));
+  add(value,0,0,'ICC Red '+Math.round(value*100));
+  add(0,value,0,'ICC Green '+Math.round(value*100));
+  add(0,0,value,'ICC Blue '+Math.round(value*100));
+ }
+ for(let ri=0;ri<cubeCount;ri++) for(let gi=0;gi<cubeCount;gi++) for(let bi=0;bi<cubeCount;bi++){
+  const r=ri/(cubeCount-1),g=gi/(cubeCount-1),b=bi/(cubeCount-1);
+  add(r,g,b,'ICC Cube '+Math.round(r*100)+'/'+Math.round(g*100)+'/'+Math.round(b*100));
+ }
+ return patches;
+}
+
+function meterIccSteps(quality,profileType){
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const steps=meterIccPatchFractions(quality).map((patch,index)=>({
+  ire:index,
+  r:meterCodeFromSignalPercent(patch.r*100),
+  g:meterCodeFromSignalPercent(patch.g*100),
+  b:meterCodeFromSignalPercent(patch.b*100),
+  input_max:inputMax,
+  name:patch.name
+ }));
+ if(profileType==='windows-hdr'){
+  steps.push({
+   ire:100,
+   r:meterCodeFromSignalPercent(100),
+   g:meterCodeFromSignalPercent(100),
+   b:meterCodeFromSignalPercent(100),
+   input_max:inputMax,
+   patch_size:100,
+   name:'ICC Full Frame White'
+  });
+ }
+ return steps;
+}
+
+function meterIccProfileTypeChanged(){
+ meterIccSyncUi();
+}
+
+function meterIccSyncUi(){
+ const typeEl=document.getElementById('meterIccProfileType');
+ const type=String(typeEl&&typeEl.value||'sdr');
+ const mode=meterIccMode();
+ const info=meterIccProfileInfo(type);
+ const desc=document.getElementById('meterIccProfileDescription');
+ const compatibility=document.getElementById('meterIccCompatibility');
+ const summary=document.getElementById('meterIccRunSummary');
+ const start=document.getElementById('meterIccStartBtn');
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
+ const count=meterIccPatchFractions(quality).length+(type==='windows-hdr'?1:0);
+ if(desc) desc.textContent=info.description;
+ if(compatibility) compatibility.textContent=info.compatibility;
+ const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
+ const correction=(document.getElementById('meterCcssProfile')||{}).selectedOptions;
+ const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
+ if(summary) summary.textContent='Current output: '+mode.toUpperCase()+'. Meter: '+meterLabel+'. Meter correction: '+correctionLabel+'. '+count+' patches.';
+ const modeOk=mode===info.mode;
+ const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
+ if(start){
+  start.disabled=!meterDetected||!modeOk||hasUnsavedSettings()||busy;
+  start.title=!meterDetected?'Connect a meter first':!modeOk?('Switch and apply the output to '+info.mode.toUpperCase()+' first'):hasUnsavedSettings()?'Apply and Restart so the profile matches the live output':busy?'A meter operation is already running':'Start the ICC profiling measurements';
+ }
+}
+
+async function meterOpenIccProfileBuilder(){
+ const modal=document.getElementById('meterIccProfileModal');
+ if(!modal) return;
+ if(document.body.classList.contains('layout-desktop')&&pgDesktopWorkspace!=='icc-profile'){
+  pgSelectDesktopWorkspace('icc-profile',{focus:true});
+  return;
+ }
+ const type=document.getElementById('meterIccProfileType');
+ const mode=meterIccMode();
+ if(type&&!meterIccRunning) type.value=mode==='sdr'?'sdr':'kde-hdr';
+ modal.style.display='flex';
+ meterIccSyncUi();
+ await meterIccLoadProfiles();
+ uiSyncBodyScrollLock();
+}
+
+function meterCloseIccProfileBuilder(){
+ if(document.body.classList.contains('layout-desktop')) return;
+ const modal=document.getElementById('meterIccProfileModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+async function meterIccLoadProfiles(){
+ const list=document.getElementById('meterIccProfileList');
+ if(!list) return;
+ try{
+  const response=await fetchJSON('/api/icc/profiles',{_quiet:true,_timeoutMs:5000});
+  const profiles=response&&Array.isArray(response.profiles)?response.profiles:[];
+  if(!profiles.length){
+   list.textContent='No ICC profiles have been created yet.';
+   return;
+  }
+  list.innerHTML='';
+  profiles.forEach(profile=>{
+   const row=document.createElement('div');
+   row.className='meter-icc-profile-row';
+   const name=document.createElement('span');
+   name.className='meter-icc-profile-name';
+   name.textContent=profile.name;
+   const download=document.createElement('button');
+   download.type='button';
+   download.className='btn btn-sm btn-primary';
+   download.textContent='Download';
+   download.onclick=()=>{ window.location.href='/api/icc/download?file='+encodeURIComponent(profile.name); };
+   const remove=document.createElement('button');
+   remove.type='button';
+   remove.className='btn btn-sm btn-danger';
+   remove.textContent='Delete';
+   remove.onclick=()=>meterIccDeleteProfile(profile.name);
+   row.append(name,download,remove);
+   list.appendChild(row);
+  });
+ }catch(error){
+  list.textContent='Could not load created profiles.';
+ }
+}
+
+async function meterIccDeleteProfile(file){
+ if(!confirm('Delete '+file+'?')) return;
+ const response=await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file}),_timeoutMs:5000});
+ if(response&&response.status==='ok'){
+  toast('ICC profile deleted');
+  meterIccLoadProfiles();
+ }else toast(response&&response.message?response.message:'Could not delete ICC profile',true);
+}
+
+function meterIccSetProgress(label,current,total){
+ const wrap=document.getElementById('meterIccProgress');
+ const labelEl=document.getElementById('meterIccProgressLabel');
+ const count=document.getElementById('meterIccProgressCount');
+ const fill=document.getElementById('meterIccProgressFill');
+ if(wrap) wrap.style.display='';
+ if(labelEl) labelEl.textContent=label||'Measuring';
+ if(count) count.textContent=Math.max(0,Number(current)||0)+' / '+Math.max(0,Number(total)||0);
+ if(fill) fill.style.width=(total>0?Math.max(0,Math.min(100,100*current/total)):0)+'%';
+}
+
+function meterIccSetRunning(running){
+ meterIccRunning=!!running;
+ const stop=document.getElementById('meterIccStopBtn');
+ if(stop) stop.style.display=running?'':'none';
+ meterSyncBusyStatusDot();
+ meterIccSyncUi();
+ meterUpdateReadButtons();
+}
+
+async function meterIccStart(){
+ if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
+ if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const info=meterIccProfileInfo(type);
+ const mode=meterIccMode();
+ if(mode!==info.mode){ toast('This profile requires '+info.mode.toUpperCase()+' output',true); return; }
+ if(hasUnsavedSettings()){ toast('Apply and Restart before profiling',true); return; }
+ const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
+ if(!name){ toast('Enter a profile name',true); return; }
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
+ const steps=meterIccSteps(quality,type);
+ const delayEl=document.getElementById('meterIccStartDelay');
+ const startDelay=Math.max(0,Math.min(300,Math.round(Number(delayEl&&delayEl.value)||0)));
+ const status=document.getElementById('meterIccStatus');
+ const startToken=++meterIccStartToken;
+ meterIccStarting=true;
+ meterActionPending=true;
+ const stopButton=document.getElementById('meterIccStopBtn');
+ if(stopButton) stopButton.style.display='';
+ meterIccSyncUi();
+ meterIccRunConfig={
+  profile_type:type,name,quality,signal_mode:mode,steps,
+  code_min:meterCodeFromSignalPercent(0),code_max:meterCodeFromSignalPercent(100),
+  meter_name:meterSelectedMeasurementLabel(null)
+ };
+ try{
+  for(let remaining=startDelay;remaining>0;remaining--){
+   if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
+   if(status) status.textContent='Starting in '+remaining+' seconds. Switch the display input to PGenerator now.';
+   meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
+   await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
+  if(status) status.textContent='Connecting to the meter...';
+  meterIccSetProgress('Starting meter',0,steps.length);
+  const body=meterMeasurementSignalContext({
+   type:'colors',points:990001,custom_series:true,custom_steps:steps,
+   display_type:getEffectiveDisplayType(),ccss_override:getCcssOverride(),
+   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
+   target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
+   patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
+   refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady()
+  });
+  const lowLight=meterLowLightReadState();
+  if(lowLight) body.low_light=lowLight;
+  const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
+  if(!response||response.status!=='started') throw new Error(response&&response.message?response.message:'Could not start the meter series');
+  meterSharedSeriesId=String(response.series_id||'');
+  meterSeriesRunning=true;
+  meterIccSetRunning(true);
+  meterIccStarting=false;
+  meterActionPending=false;
+  meterIccPollTimer=setInterval(meterIccPoll,1000);
+  await meterIccPoll();
+ }catch(error){
+  meterIccStarting=false;
+  meterActionPending=false;
+  meterSeriesRunning=false;
+  meterIccSetRunning(false);
+  if(status) status.textContent=error&&error.message?error.message:'Could not start ICC profiling.';
+  toast(error&&error.message?error.message:'Could not start ICC profiling',true);
+ }
+}
+
+async function meterIccPoll(){
+ if(!meterIccRunning) return;
+ try{
+  const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
+  if(!state) return;
+  meterSeriesAwaitingReady=!!state.awaiting_ready;
+  meterSpectroSetupApplyFromStatus(state);
+  const current=Number(state.current_step)||0;
+  const total=Number(state.total_steps)||((meterIccRunConfig&&meterIccRunConfig.steps.length)||0);
+  meterIccSetProgress(state.current_name||'Measuring',current,total);
+  const status=document.getElementById('meterIccStatus');
+  if(status) status.textContent=state.status==='setup'?'Complete the meter setup prompt to continue.':('Measuring patch '+Math.min(current+1,total)+' of '+total+'.');
+  if(!['complete','cancelled','error','cleared'].includes(String(state.status||'').toLowerCase())) return;
+  clearInterval(meterIccPollTimer);
+  meterIccPollTimer=null;
+  meterSeriesRunning=false;
+  meterSeriesAwaitingReady=false;
+  meterSpectroSetupApply(null);
+  meterIccSetRunning(false);
+  try{ meterClearDisplayPattern(); }catch(_error){}
+  if(state.status==='complete'){
+   await meterIccBuild(state.readings||[]);
+  }else{
+   if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
+  }
+ }catch(error){}
+}
+
+async function meterIccBuild(readings){
+ const status=document.getElementById('meterIccStatus');
+ meterIccBuildPending=true;
+ meterActionPending=true;
+ meterIccSyncUi();
+ if(status) status.textContent='Measurements complete. Building the ICC profile...';
+ const total=(meterIccRunConfig&&meterIccRunConfig.steps.length)||readings.length;
+ meterIccSetProgress('Building ICC profile',total,total);
+ try{
+  const payload=Object.assign({},meterIccRunConfig,{readings});
+  delete payload.steps;
+  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:110000});
+  if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
+  if(status) status.textContent='Profile created: '+response.file+'. Download it below.';
+  toast('ICC profile created');
+  await meterIccLoadProfiles();
+ }catch(error){
+  if(status) status.textContent=error&&error.message?error.message:'ICC profile build failed.';
+  toast(error&&error.message?error.message:'ICC profile build failed',true);
+ }finally{
+  meterIccBuildPending=false;
+  meterActionPending=false;
+  meterIccSyncUi();
+  meterUpdateReadButtons();
+ }
+}
+
+async function meterIccStop(){
+ if(meterIccStarting){
+  meterIccStartToken++;
+  meterIccStarting=false;
+  meterActionPending=false;
+  const status=document.getElementById('meterIccStatus');
+  if(status) status.textContent='ICC profiling stopped before measurements began.';
+  const stop=document.getElementById('meterIccStopBtn');
+  if(stop) stop.style.display='none';
+  meterIccSyncUi();
+  meterUpdateReadButtons();
+  return;
+ }
+ if(!meterIccRunning) return;
+ const stop=document.getElementById('meterIccStopBtn');
+ if(stop) stop.disabled=true;
+ try{
+  await fetchJSON('/api/meter/stop',{method:'POST',_timeoutMs:5000});
+  const status=document.getElementById('meterIccStatus');
+  if(status) status.textContent='Stopping after the current meter operation...';
+ }finally{
+  if(stop) stop.disabled=false;
+ }
 }
 
 let meterCustomSeriesManagerShowAll=false;
