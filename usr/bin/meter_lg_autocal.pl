@@ -16077,17 +16077,11 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	}
 	$exit_reason="cancelled" if(cancelled());
 
-	# Same post-calibration shadow smoothing as the SDR path. The mechanism is
-	# layout-independent -- anchor slack turning into slope error wherever
-	# control points crowd -- and the HDR20 ladder crowds harder at the bottom
-	# than SDR does. UNVERIFIED ON HDR/DV HARDWARE: the numbers quoted in
-	# lg_autocal_26_smooth_dpg_low_end are SDR-only.
-	#
-	# ONLY when this pass is the end of the run, as on the SDR path. A full HDR
-	# workflow rewrites the DPG twice more afterwards (tone-map upload carries
-	# dpg_data; post-cal shadow fix uploads a corrected curve), so smoothing here
-	# was discarded. meter_lg_3d_autocal.pl applies it after both.
-	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
+	# Do not apply the SDR26 low-end smoother to HDR20. Live C1 verification
+	# showed that it can undo a converged 5% anchor and crush its luminance.
+	# Retain the measured HDR20 curve committed by the anchor solver.
+	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}
+		&& lc($config->{"signal_mode"}||"hdr10") eq "sdr") {
 		my $committed=(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY"
 			&& @{$state->{"hdr20_1d_dpg_data"}} == 3072) ? $state->{"hdr20_1d_dpg_data"} : $current_dpg;
 		my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);

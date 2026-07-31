@@ -4946,11 +4946,16 @@ eval {
  # greyscale worker -- was silently overwritten by those two uploads, which is
  # why it moved here.
  #
+ # This low-pass was validated for the SDR26 DPG only. HDR20 uses a denser,
+ # differently shaped low-end curve and already has a measured post-cal
+ # shadow correction pass. Applying the SDR smoother afterward can undo that
+ # convergence and crush 5% luminance.
+ #
  # Uploaded with keep_calibration_mode/calibration_mode_active false so the
  # panel BINDs the curve and exits calibration mode, matching the $bind_dpg
  # shape used by the shadow fix. On any failure the previously committed curve
  # is left alone and the run still completes.
- if(!cancelled()) {
+ if(!cancelled() && lc($config->{"signal_mode"}||"sdr") eq "sdr") {
   my $final_dpg;
   if(ref($config->{"full_workflow_dpg_data"}) eq "ARRAY" && scalar(@{$config->{"full_workflow_dpg_data"}}) == 3072) {
    $final_dpg=$config->{"full_workflow_dpg_data"};
