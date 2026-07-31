@@ -13506,7 +13506,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
       <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
-      <div class="meter-icc-note">Measure patches displayed through the target computer, build the profile on PGenerator, then download the finished profile.</div>
+      <div class="meter-icc-note">Measure patches from the ICC Companion or PGenerator HDMI output, build the profile on PGenerator, then download the finished profile.</div>
      </div>
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
@@ -13565,18 +13565,31 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label for="meterIccStartDelay">Start delay in seconds</label>
        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
       </div>
-      <div class="meter-icc-note">The delay gives you time to move and resize the companion window on the display being profiled.</div>
+      <div class="meter-icc-note" id="meterIccStartDelayNote">The delay gives you time to move and resize the companion window on the display being profiled.</div>
      </div>
     </div>
     <div class="meter-icc-panel" style="margin-top:12px">
-     <h3>3. Connect the patch companion</h3>
-     <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator. Patches fill the companion window, so resize that window to set the patch dimensions.</div>
-     <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
-     <div class="btn-row" style="margin:0 0 10px">
-      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
-      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
+     <h3>3. Choose the patch generator</h3>
+     <div class="meter-icc-field" style="margin-bottom:10px">
+      <label for="meterIccPatternProvider">Patch generator</label>
+      <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
+       <option value="companion" selected>ICC Companion on the target computer</option>
+       <option value="local">PGenerator HDMI output</option>
+      </select>
      </div>
-     <div id="meterIccCompanionStatus" class="meter-icc-note"><span style="color:var(--danger)">&#9679;</span> Companion not connected</div>
+     <div id="meterIccCompanionSetup">
+      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator. Patches fill the companion window, so resize that window to set the patch dimensions.</div>
+      <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
+      <div class="btn-row" style="margin:0 0 10px">
+       <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
+       <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
+      </div>
+      <div id="meterIccCompanionStatus" class="meter-icc-note"><span style="color:var(--danger)">&#9679;</span> Companion not connected</div>
+     </div>
+     <div id="meterIccLocalSetup" style="display:none">
+      <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator.</div>
+      <div class="meter-icc-note" style="color:var(--warning)">The active PGenerator output must match the selected profile type. Measurements made through HDMI characterize that input path and do not include the target computer's GPU or operating-system color pipeline.</div>
+     </div>
     </div>
     <div class="meter-icc-panel" style="margin-top:12px">
      <h3>4. Measure and build</h3>
@@ -33045,11 +33058,40 @@ function meterIccProfileTypeChanged(){
  meterIccSyncUi();
 }
 
+function meterIccPatternProvider(){
+ const select=document.getElementById('meterIccPatternProvider');
+ return select&&select.value==='local'?'local':'companion';
+}
+
+function meterIccLocalOutputModeStatus(profileType){
+ const required=(profileType==='kde-hdr'||profileType==='windows-hdr')?'hdr10':'sdr';
+ const active=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
+ const label=active==='hdr10'?'HDR10':active==='hlg'?'HLG':active==='dv'?'Dolby Vision':'SDR';
+ const dirty=typeof hasUnsavedSettings==='function'&&hasUnsavedSettings();
+ return {
+  required,
+  active,
+  matches:!dirty&&active===required,
+  message:dirty
+   ?'Apply & Restart before profiling so the HDMI measurements use the selected output settings.'
+   :active===required
+   ?('PGenerator HDMI output is '+label+'.')
+   :('Set the PGenerator output to '+(required==='hdr10'?'HDR10':'SDR')+' before profiling. It is currently '+label+'.')
+ };
+}
+
+function meterIccPatternProviderChanged(){
+ meterIccSyncUi();
+}
+
 function meterIccSyncUi(){
  meterIccPrepareMeasurementControls();
  const typeEl=document.getElementById('meterIccProfileType');
  const type=String(typeEl&&typeEl.value||'sdr');
  const info=meterIccProfileInfo(type);
+ const provider=meterIccPatternProvider();
+ const usesCompanion=provider==='companion';
+ const localMode=meterIccLocalOutputModeStatus(type);
  const desc=document.getElementById('meterIccProfileDescription');
  const compatibility=document.getElementById('meterIccCompatibility');
  const summary=document.getElementById('meterIccRunSummary');
@@ -33061,6 +33103,14 @@ function meterIccSyncUi(){
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
  if(transferNote) transferNote.textContent=transfer.note;
+ const companionSetup=document.getElementById('meterIccCompanionSetup');
+ const localSetup=document.getElementById('meterIccLocalSetup');
+ const delayNote=document.getElementById('meterIccStartDelayNote');
+ if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
+ if(localSetup) localSetup.style.display=usesCompanion?'none':'';
+ if(delayNote) delayNote.textContent=usesCompanion
+  ?'The delay gives you time to move and resize the companion window on the display being profiled.'
+  :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const optionCount=meterIccPatchFractions(String(option.value),type).length+(type==='windows-hdr'?1:0);
@@ -33075,11 +33125,13 @@ function meterIccSyncUi(){
  const correction=(document.getElementById('meterIccMeterProfile')||{}).selectedOptions;
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
  const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
- if(summary) summary.textContent='Companion output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'');
+ const generatorLabel=usesCompanion?'ICC Companion':'PGenerator HDMI';
+ if(summary) summary.textContent=generatorLabel+' output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:'');
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
-  start.disabled=!meterDetected||!meterIccCompanionConnected||busy;
-  start.title=!meterDetected?'Connect a meter first':!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':busy?'A meter operation is already running':'Start the ICC profiling measurements';
+  const generatorUnavailable=usesCompanion?!meterIccCompanionConnected:!localMode.matches;
+  start.disabled=!meterDetected||generatorUnavailable||busy;
+  start.title=!meterDetected?'Connect a meter first':usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
  }
 }
 
@@ -33305,10 +33357,16 @@ function meterIccSetRunning(running){
 async function meterIccStart(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
- if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  const info=meterIccProfileInfo(type);
  const mode=info.mode;
+ const patternProvider=meterIccPatternProvider();
+ if(patternProvider==='companion'){
+  if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
+ }else{
+  const localMode=meterIccLocalOutputModeStatus(type);
+  if(!localMode.matches){ toast(localMode.message,true); return; }
+ }
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
  if(!name){ toast('Enter a profile name',true); return; }
  const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
@@ -33323,7 +33381,7 @@ async function meterIccStart(){
  if(stopButton) stopButton.style.display='';
  meterIccSyncUi();
  meterIccRunConfig={
-  profile_type:type,name,quality,signal_mode:mode,steps,
+  profile_type:type,name,quality,signal_mode:mode,steps,pattern_provider:patternProvider,
   target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
   code_min:0,code_max:mode==='sdr'?255:1023,
   meter_name:meterSelectedMeasurementLabel(null)
@@ -33331,7 +33389,9 @@ async function meterIccStart(){
  try{
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
-   if(status) status.textContent='Starting in '+remaining+' seconds. Move and resize the ICC Companion on the target display now.';
+   if(status) status.textContent=patternProvider==='companion'
+    ?('Starting in '+remaining+' seconds. Move and resize the ICC Companion on the target display now.')
+    :('Starting in '+remaining+' seconds. Switch the display to the PGenerator HDMI input now.');
    meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
    await new Promise(resolve=>setTimeout(resolve,1000));
   }
@@ -33346,16 +33406,18 @@ async function meterIccStart(){
    target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
    patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
    refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady(),
-   pattern_provider:'companion',
+   pattern_provider:patternProvider,
    ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
   });
-  // The target-computer companion owns the signal path. Do not inherit the
-  // Pi renderer's current mode, bit depth or quantization range.
-  body.signal_mode=mode;
-  body.signal_range='2';
-  body.pattern_signal_range='2';
-  body.transport_signal_range='2';
-  body.max_luma='1000';
+  if(patternProvider==='companion'){
+   // The target-computer companion owns the signal path. Do not inherit the
+   // Pi renderer's current mode, bit depth or quantization range.
+   body.signal_mode=mode;
+   body.signal_range='2';
+   body.pattern_signal_range='2';
+   body.transport_signal_range='2';
+   body.max_luma='1000';
+  }
   const lowLight=meterLowLightReadState();
   if(lowLight) body.low_light=lowLight;
   const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
