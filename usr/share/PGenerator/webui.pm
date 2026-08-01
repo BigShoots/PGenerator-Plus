@@ -5240,10 +5240,22 @@ sub webui_meter_lg_autocal_ensure_10b (@) {
  return 1;
 }
 
+sub webui_meter_autocal_force_standard_observer (@) {
+ my ($body)=@_;
+ return $body if(!defined($body) || $body!~/^\s*\{/);
+ if($body=~/"observer"\s*:/) {
+  $body=~s/"observer"\s*:\s*"[^"]*"/"observer":"1931_2"/;
+ } else {
+  $body=~s/\}\s*$/,"observer":"1931_2"}/;
+ }
+ return $body;
+}
+
 sub webui_meter_lg_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG Auto Cal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  $body=&webui_meter_lg_autocal_body_with_defaults($body);
+ $body=&webui_meter_autocal_force_standard_observer($body);
  if(&webui_meter_lg_autocal_running()) {
   return '{"status":"started","message":"LG Auto Cal already running"}' if(&webui_meter_lg_autocal_same_run_running($body));
   return '{"status":"error","message":"LG Auto Cal is already running"}';
@@ -5625,6 +5637,7 @@ sub webui_meter_lg_3d_autocal_kill (@) {
 sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ $body=&webui_meter_autocal_force_standard_observer($body);
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
@@ -36474,8 +36487,18 @@ function meterMeasurementSignalContext(payload){
    }
   // Target White / Target Black overrides for read/series/autocal target math.
   try{ Object.assign(body,meterTargetLevelsPayload()); }catch(e){}
-  return body;
- }
+ return body;
+}
+
+const METER_AUTOCAL_STANDARD_OBSERVER='1931_2';
+function meterAutoCalMeasurementSignalContext(payload){
+ const body=meterMeasurementSignalContext(payload);
+ // LG calibration targets and gamut coordinates are standardized in the
+ // CIE 1931 2-degree observer. Keep every AutoCal read in that same observer
+ // even when the analysis workspace is displaying an alternate observer.
+ body.observer=METER_AUTOCAL_STANDARD_OBSERVER;
+ return body;
+}
 
 function meterLgAutoCalRequestedSignalMode(){
  const mode=String((meterChartSignalMode&&meterChartSignalMode())||'sdr').toLowerCase();
@@ -38474,7 +38497,7 @@ function meterAutoCalReadTransient(message){
 async function meterAutoCalReadCodePatch(code,label,range,dtype){
  const numeric=Number(code);
  const ire=meterAutoCalIreForCode(numeric,range);
- const payload=meterMeasurementSignalContext({
+ const payload=meterAutoCalMeasurementSignalContext({
   display_type:dtype,
   refresh_rate:getMeterRefreshRate()||undefined,
   delay_ms:Math.max(meterDelayMs(),1200),
@@ -39213,7 +39236,7 @@ async function meterAutoCalLuminanceSetupLoop(whiteStep){
   // quickly. Full meterDelayMs is for autocal accuracy, not this wizard.
   const settleMs=meterAutoCalLuminanceSetupSettleMs({first:!lastReading,afterPanelLight:afterPanelLight});
   afterPanelLight=false;
-	  const readPayload=meterMeasurementSignalContext({
+  const readPayload=meterAutoCalMeasurementSignalContext({
 	   display_type:getEffectiveDisplayType(),
 	   refresh_rate:getMeterRefreshRate()||undefined,
 	   delay_ms:settleMs,
@@ -41023,7 +41046,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
    // series had begun accumulating readings.
    await meterSelectSeries(item.type,item.points);
    await meterFullAutoCalSleep(100);
-   const started=await meterRunSeries();
+   const started=await meterRunSeries({observer:METER_AUTOCAL_STANDARD_OBSERVER});
    if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
    status=await meterFullAutoCalWaitForSeriesComplete(item.label);
   }finally{
@@ -41847,7 +41870,7 @@ function meterFullAutoCalTouchupTargetY(){
   meterBuildPatchThumbs(sortedSteps,new Set(),null);
   drawAllChartsPreset(sortedSteps);
   await meterStopContinuous();
-  const post3dBody=JSON.stringify(meterMeasurementSignalContext({
+  const post3dBody=JSON.stringify(meterAutoCalMeasurementSignalContext({
     type:'greyscale',
     points:26,
     display_type:dtype,
@@ -42017,7 +42040,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   meterBuildPatchThumbs(sortedSteps,new Set(),null);
   drawAllChartsPreset(sortedSteps);
   await meterStopContinuous();
-  const touchupBody=JSON.stringify(meterMeasurementSignalContext({
+  const touchupBody=JSON.stringify(meterAutoCalMeasurementSignalContext({
     type:'greyscale',
     points:26,
     display_type:dtype,
@@ -42946,7 +42969,7 @@ async function meterAutoCalConfirmAndStart(){
   const r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({
+   body:JSON.stringify(meterAutoCalMeasurementSignalContext({
     type:'greyscale',
     points:26,
     display_type:dtype,
@@ -44246,7 +44269,7 @@ async function meterStartLg3dAutoCal(options){
  const firstStatusResult=(meterFullAutoCalResults&&meterFullAutoCalResults.first)||{};
  const firstStatusPeak=Number(firstStatusResult.hdr20_1d_tonemap_peak_luminance||firstStatusResult.hdr_tone_map_peak_luminance||0);
  const firstStatusDpg=firstStatusResult.hdr20_1d_dpg_data;
- const payload=meterMeasurementSignalContext({
+ const payload=meterAutoCalMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
   display_type:dtype,
@@ -44823,6 +44846,9 @@ async function meterRunSeries(options){
  };
  try{
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,pattern_provider:meterCalibrationReadPatternProvider(),ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_has_saved_white_reference:selectionHasSavedWhite,series_has_saved_black_reference:selectionHasSavedBlack,series_reference_white_code:meterCodeFromSignalPercent(100),series_reference_black_code:meterCodeFromSignalPercent(0),series_reference_input_max:meterPatchInputMax(),series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  if(options.observer===METER_AUTOCAL_STANDARD_OBSERVER){
+	   _seriesBody.observer=METER_AUTOCAL_STANDARD_OBSERVER;
+	  }
 		  // Always stamp input_max: ColorChecker/sat client steps often omit it,
 		  // and the server defaults missing input_max to 255 — clamping 10-bit
 		  // chroma codes and wrecking stimulus on Read Selection custom_steps.
