@@ -214,6 +214,14 @@ sub read_patch {
  my $fixture=fixture_reading_for_patch($patch,$config);
  return ($fixture,undef) if($fixture);
  return (undef,"cancelled") if(cancelled());
+ my $read_delay_ms=int($config->{"delay_ms"}||1800);
+ # The full greyscale workflow gives its 100% anchor a longer stabilization
+ # delay. Match that operating point when this standalone five-patch pass has
+ # to supply Tmax itself instead of inheriting the calibrated peak.
+ if(($patch->{"kind"}||"") eq "white") {
+  my $white_delay_ms=int($config->{"white_read_delay_ms"}||3000);
+  $read_delay_ms=$white_delay_ms if($white_delay_ms > $read_delay_ms);
+ }
  my $payload={
   display_type => $config->{"display_type"}||"lcd",
   ccss_override => $config->{"ccss_override"}||"",
@@ -222,7 +230,7 @@ sub read_patch {
   patch_b => int($patch->{"b"}||0),
   name => $patch->{"name"},
   input_max => $input_max,
-  delay_ms => int($config->{"delay_ms"}||1800),
+  delay_ms => $read_delay_ms,
   signal_range => $config->{"pattern_signal_range"}||$config->{"signal_range"}||"1",
   transport_signal_range => $config->{"transport_signal_range"}||$config->{"signal_range"}||"1",
   signal_mode => "dv",
@@ -291,8 +299,15 @@ for my $patch (@patches) {
  write_state(status=>"running",message=>"Measured ".$patch->{"name"},steps=>\@steps);
 }
 
+my $measured_white_luminance=$by_kind{"white"}{"luminance"}+0;
+my $calibrated_peak_luminance=0+($config->{"calibrated_peak_luminance"}//0);
+my $profile_white_luminance=$calibrated_peak_luminance > 0
+ ? $calibrated_peak_luminance
+ : $measured_white_luminance;
 my %measurements=(
- white_luminance => $by_kind{"white"}{"luminance"},
+ white_luminance => $profile_white_luminance,
+ measured_white_luminance => $measured_white_luminance,
+ white_luminance_source => $calibrated_peak_luminance > 0 ? "calibrated-greyscale-peak" : "profile-white-read",
  black_luminance => $by_kind{"black"}{"luminance"},
  red_x => $by_kind{"red"}{"x"}, red_y => $by_kind{"red"}{"y"},
  green_x => $by_kind{"green"}{"x"}, green_y => $by_kind{"green"}{"y"},

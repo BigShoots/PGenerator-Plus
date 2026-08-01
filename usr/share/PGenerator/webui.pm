@@ -42398,6 +42398,11 @@ async function meterDvAutoCalStartProfile(firstStatus){
   return;
  }
  const cfg=meterFullAutoCalConfig||{};
+ const calibratedPeak=Number(firstStatus&&(
+  firstStatus.hdr20_1d_dpg_white_ref||
+  firstStatus.calibrated_white_luminance||
+  firstStatus.target_luminance
+ ));
  const bitDepth=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():8;
  const range=(cfg.patternSignalRange==='1'||cfg.patternSignalRange==='2')?cfg.patternSignalRange:String(getVal('rgb_quant_range')||'2');
  const payload={
@@ -42409,6 +42414,10 @@ async function meterDvAutoCalStartProfile(firstStatus){
   signal_range:range,
   transport_signal_range:range,
   picture_mode:meterLgPictureModeValue(),
+  // The greyscale stage has already measured and refined the calibrated 100%
+  // peak under its stabilized anchor sequence. Use that same-run value for
+  // Tmax; the profile worker still reads white and archives it for comparison.
+  calibrated_peak_luminance:(Number.isFinite(calibratedPeak)&&calibratedPeak>0)?calibratedPeak:undefined,
   // Measure the profile with the SAME patch geometry the greyscale pass used
   // (10% window + pattern insertion on OLED). Without these the worker read
   // white full-field, ABL pulled it down, and that low value became the
