@@ -33395,7 +33395,10 @@ function meterIccProfileModelInfo(value){
 }
 
 function meterIccPatchSettings(){
- const number=(id,fallback)=>Number((document.getElementById(id)||{}).value)||fallback;
+ const number=(id,fallback)=>{
+  const value=Number((document.getElementById(id)||{}).value);
+  return Number.isFinite(value)?value:fallback;
+ };
  return {
   patch_count:Math.max(34,Math.min(10000,Math.round(number('meterIccPatchCount',95)))),
   white_patches:Math.max(1,Math.min(32,Math.round(number('meterIccWhitePatches',2)))),
@@ -33625,6 +33628,8 @@ function meterIccSyncUi(){
  const patchSettings=meterIccPatchSettings();
  const count=patchSettings.patch_count+(type==='windows-hdr'?1:0);
  const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
+ const patchMinimum=patchSettings.white_patches+patchSettings.black_patches+patchSettings.gray_steps+Math.max(0,patchSettings.single_channel_steps-2)*3;
+ const invalidPatchSet=patchSettings.patch_count<patchMinimum;
  const modelNote=document.getElementById('meterIccProfileModelNote');
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transferNote=document.getElementById('meterIccTargetTransferNote');
@@ -33661,12 +33666,14 @@ function meterIccSyncUi(){
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
  const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
  const generatorLabel=usesCompanion?'ICC Companion':'PGenerator HDMI';
- if(summary) summary.textContent=generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:'');
+ if(summary) summary.textContent=invalidPatchSet
+  ?('Increase total patches to at least '+patchMinimum+' for the selected grayscale, single-channel, white and black coverage.')
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const generatorUnavailable=usesCompanion?!meterIccCompanionConnected:!localMode.matches;
-  start.disabled=!meterDetected||generatorUnavailable||busy;
-  start.title=!meterDetected?'Connect a meter first':usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
+  start.disabled=!meterDetected||generatorUnavailable||busy||invalidPatchSet;
+  start.title=!meterDetected?'Connect a meter first':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
  }
 }
 
