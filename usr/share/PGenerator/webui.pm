@@ -4329,10 +4329,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      ["Magenta","xyYn",0.371346,0.24177,0.187509],
      ["Cyan","xyYn",0.19619,0.266985,0.193415]
     );
-    if($points==29 && $signal_mode eq "sdr") {
+    if($points==29) {
      # HCFR Classic GCD is defined by fixed legal-range video RGB levels,
-     # not by reverse-solving xyY through PGenerator's selected transfer
-     # curve. Keep these percentages byte-for-byte aligned with HCFR.
+     # not by reverse-solving xyY through PGenerator's selected transfer.
+     # HDR uses the same source values and applies HCFR's conversion below.
      @classic=(
       ["Gray 35","hcfr_rgb",62.10,62.10,62.10],["Gray 50","hcfr_rgb",73.06,73.06,73.06],
       ["Gray 65","hcfr_rgb",82.19,82.19,82.19],["Gray 80","hcfr_rgb",89.95,89.95,89.95],
@@ -4347,20 +4347,72 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       ["Magenta","hcfr_rgb",73.06,32.88,57.08],["Cyan","hcfr_rgb",0,52.05,63.93]
      );
     }
-    push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
-    push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":0,\"input_max\":$chroma_input_max}";
+    my $build_hcfr_fixed_rgb=sub {
+     my ($r_pct,$g_pct,$b_pct)=@_;
+     my @source_signal=map { my $v=($_+0)/100; $v=0 if($v<0); $v=1 if($v>1); $v } ($r_pct,$g_pct,$b_pct);
+     if($signal_mode eq "hdr10" || $signal_mode eq "hlg") {
+      my @source_linear=map { $_**2.22 } @source_signal;
+      my @SRC=@{$primaries{bt709}{RGB_TO_XYZ}};
+      my @DST_INV=@{$primaries{bt2020}{M}};
+      my @DST=@{$primaries{bt2020}{RGB_TO_XYZ}};
+      my $X=$SRC[0][0]*$source_linear[0]+$SRC[0][1]*$source_linear[1]+$SRC[0][2]*$source_linear[2];
+      my $Y=$SRC[1][0]*$source_linear[0]+$SRC[1][1]*$source_linear[1]+$SRC[1][2]*$source_linear[2];
+      my $Z=$SRC[2][0]*$source_linear[0]+$SRC[2][1]*$source_linear[1]+$SRC[2][2]*$source_linear[2];
+      my $scale=($signal_mode eq "hdr10") ? (94.37844/10000) : 1;
+      my @container=(
+       ($DST_INV[0][0]*$X+$DST_INV[0][1]*$Y+$DST_INV[0][2]*$Z)*$scale,
+       ($DST_INV[1][0]*$X+$DST_INV[1][1]*$Y+$DST_INV[1][2]*$Z)*$scale,
+       ($DST_INV[2][0]*$X+$DST_INV[2][1]*$Y+$DST_INV[2][2]*$Z)*$scale
+      );
+      @container=map { $_<0?0:($_>1?1:$_) } @container;
+      my @encoded=map {
+       if($signal_mode eq "hdr10") { &webui_pattern_pq_encode_normalized($_*10000) }
+       else { my $x=$_*12; $x<=1 ? .5*sqrt($x) : .17883277*log($x-.28466892)+.55991073 }
+      } @container;
+      my @q=map { int($_*219+.5)/219 } @encoded;
+      my @codes=map { int($min_code+$_*$span_code+.5) } @q;
+      my @decoded=map {
+       if($signal_mode eq "hdr10") { &webui_pattern_pq_decode_normalized($_)/10000 }
+       elsif($_<=.5) { 4*$_*$_/12 }
+       else { (exp(($_-.55991073)/.17883277)+.28466892)/12 }
+      } @q;
+      my $tX=$DST[0][0]*$decoded[0]+$DST[0][1]*$decoded[1]+$DST[0][2]*$decoded[2];
+      my $tY=$DST[1][0]*$decoded[0]+$DST[1][1]*$decoded[1]+$DST[1][2]*$decoded[2];
+      my $tZ=$DST[2][0]*$decoded[0]+$DST[2][1]*$decoded[1]+$DST[2][2]*$decoded[2];
+      my $sum=$tX+$tY+$tZ;
+      my $tx=$sum>0?$tX/$sum:$target_wx; my $ty=$sum>0?$tY/$sum:$target_wy;
+      my $target_Yn=$tY;
+      if($signal_mode eq "hdr10") {
+       my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+       $target_Yn=$white_ref>0 ? $tY*10000/$white_ref : 0;
+      }
+      return (\@codes,$tx,$ty,$target_Yn,$Y);
+     }
+     my @codes=map { int($min_code+$_*$span_code+.5) } @source_signal;
+     my @linear=map { $decode_linear->($span_code>0?(($_-$min_code)/$span_code):0) } @codes;
+     my $X=$RGB_TO_XYZ[0][0]*$linear[0]+$RGB_TO_XYZ[0][1]*$linear[1]+$RGB_TO_XYZ[0][2]*$linear[2];
+     my $Y=$RGB_TO_XYZ[1][0]*$linear[0]+$RGB_TO_XYZ[1][1]*$linear[1]+$RGB_TO_XYZ[1][2]*$linear[2];
+     my $Z=$RGB_TO_XYZ[2][0]*$linear[0]+$RGB_TO_XYZ[2][1]*$linear[1]+$RGB_TO_XYZ[2][2]*$linear[2];
+     my $sum=$X+$Y+$Z;
+     return (\@codes,$sum>0?$X/$sum:$target_wx,$sum>0?$Y/$sum:$target_wy,$Y,$Y);
+    };
+    if($points==29) {
+     foreach my $endpoint (["White",100,100,100],["Black",0,0,0]) {
+      my ($name,$rp,$gp,$bp)=@$endpoint;
+      my ($codes,$tx,$ty,$target_Yn,$nominal_Y)=$build_hcfr_fixed_rgb->($rp,$gp,$bp);
+      my $ire=int($nominal_Y*100+.5);
+      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\"}";
+     }
+    } else {
+     push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
+     push @steps, "{\"ire\":0,\"r\":$min_code,\"g\":$min_code,\"b\":$min_code,\"name\":\"Black\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":0,\"input_max\":$chroma_input_max}";
+    }
     foreach my $src (@classic) {
      my ($name,$kind,@vals)=@$src;
 	     if($kind eq "hcfr_rgb") {
-	      my @codes=map { int($min_code + $_*$span_code/100 + .5) } @vals[0..2];
-	      my @linear=map { $decode_linear->($span_code>0?(($_-$min_code)/$span_code):0) } @codes;
-	      my $X=$RGB_TO_XYZ[0][0]*$linear[0]+$RGB_TO_XYZ[0][1]*$linear[1]+$RGB_TO_XYZ[0][2]*$linear[2];
-	      my $Y=$RGB_TO_XYZ[1][0]*$linear[0]+$RGB_TO_XYZ[1][1]*$linear[1]+$RGB_TO_XYZ[1][2]*$linear[2];
-	      my $Z=$RGB_TO_XYZ[2][0]*$linear[0]+$RGB_TO_XYZ[2][1]*$linear[1]+$RGB_TO_XYZ[2][2]*$linear[2];
-	      my $sum=$X+$Y+$Z;
-	      my $tx=$sum>0?$X/$sum:$target_wx;my $ty=$sum>0?$Y/$sum:$target_wy;
-	      my $ire=int($Y*100+.5);
-	      push @steps, "{\"ire\":$ire,\"r\":$codes[0],\"g\":$codes[1],\"b\":$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$Y,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-sdr\"}";
+	      my ($codes,$tx,$ty,$target_Yn,$nominal_Y)=$build_hcfr_fixed_rgb->(@vals[0..2]);
+	      my $ire=int($nominal_Y*100+.5);
+	      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\"}";
 	      next;
 	     }
 	     if($kind eq "gray") {
@@ -4446,7 +4498,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     $linear=0 if(!defined $linear || $linear < 0);
     $linear=1 if($linear > 1);
     if($signal_mode eq "hdr10") {
-     return int($min_code + &webui_pattern_pq_encode_normalized($linear*10000)*$span_code + .5);
+     my $signal=&webui_pattern_pq_encode_normalized($linear*10000);
+     $signal=int($signal*219+.5)/219 if($points==29);
+     return int($min_code + $signal*$span_code + .5);
     }
 	   if($signal_mode eq "dv") {
 	    # The standard-DV tunnel declares Tgamma=2.2. Encode linear RGB
@@ -4455,7 +4509,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    # time and makes these ColorChecker gamut endpoints far too dim.
 	    return int($min_code + ($linear ** (1/2.2))*$span_code + .5);
 	   }
-    return int($min_code + $target_linear_to_signal->($linear)*$span_code + .5);
+    my $signal=$target_linear_to_signal->($linear);
+    $signal=int($signal*219+.5)/219 if($points==29);
+    return int($min_code + $signal*$span_code + .5);
    };
    my $series_level_request=$series_level_pct/100;
   my $series_level_code=0;
@@ -4468,6 +4524,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    }
    my $series_level_signal=$span_code>0?($series_level_code-$min_code)/$span_code:0;
 	  my $series_level_linear=($signal_mode eq "hdr10") ? (&webui_pattern_pq_decode_normalized($series_level_signal)/10000) : $target_signal_to_linear->($series_level_signal);
+   if($points==29) {
+    $series_level_linear=94.37844/10000 if($signal_mode eq "hdr10");
+    $series_level_linear=1 if($signal_mode eq "sdr" || $signal_mode eq "hlg");
+    $series_level_linear=.5 if($signal_mode eq "dv");
+   }
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -4509,8 +4570,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $target_x=$target_mix_sum>0?$target_mix_X/$target_mix_sum:$target_wx;
 	     my $target_y=$target_mix_sum>0?$target_mix_Y/$target_mix_sum:$target_wy;
 	     my $target_Yn_for_step=$series_level_linear*$target_mix_Y;
+	     if($points==29 && $signal_mode eq "hdr10") {
+	      my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+	      $target_Yn_for_step=$white_ref>0 ? (94.37844/$white_ref)*$target_mix_Y : 0;
+	     }
 	     $target_Yn_for_step=0 if($target_Yn_for_step < 0);
-	     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100,\"target_x\":$target_x,\"target_y\":$target_y,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+	     my $series_mode_json=$points==29?',\"series_mode\":\"hcfr-constant-luminance\"':'';
+	     push @steps, "{\"ire\":100,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"series_color\":\"$series_color\",\"sat_pct\":100,\"target_x\":$target_x,\"target_y\":$target_y,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$series_mode_json}";
 	    }
  } elsif($type eq "saturations") {
   # min/span/max_code are computed bit-depth-aware in the outer scope
@@ -4638,7 +4704,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     $signal=$linear**(1/2.22);
    }
    $signal=0 if($signal<0);$signal=1 if($signal>1);
-   return int($min_code+$signal*$span_code+.5);
+   # HCFR re-quantizes generated HDR patterns to its 8-bit legal-video
+   # lattice before handing them to the generator. Keep those same 219
+   # intervals when PGenerator transports the patch at 8 or 10 bits.
+   my $quantized=int($signal*219+.5)/219;
+   return int($min_code+$quantized*$span_code+.5);
   };
   # The two DV saturation-fraction remaps that used to live here are gone.
   # Absolute applied  f + 0.8*f*(1-f)  and Relative  f - 0.8*f*f*(1-f), so a
@@ -13241,7 +13311,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD, ColorChecker SG and SG Skin Tones preserve their standardized video codes in SDR; in HDR10, HLG and Dolby Vision their SDR signal values are decoded to relative light and re-encoded for the active transfer function. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and are quantized into the active Limited or Full output range. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD preserves its standardized video codes in SDR. In HDR10 and HLG, HCFR GCD uses HCFR's Rec.709-to-BT.2020 conversion, gamma 2.22 source decoding and 8-bit legal-video quantization. Its HDR10 version uses HCFR's 94.37844 cd/m2 reference. ColorChecker SG and SG Skin Tones use PGenerator's normal mode-aware conversion, not the HCFR-specific path. HCFR does not define Dolby Vision versions, so Dolby Vision uses a PGenerator adaptation. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and HCFR legal-video quantization. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -21519,6 +21589,18 @@ function meterEncodeSaturationLinear(linear,colorName){
 }
 
 const METER_HCFR_HDR_DIFFUSE_WHITE_NITS=94.37844;
+function meterHcfrQuantizedSignal(signal){
+ // HCFR authors HDR color patches on the 8-bit legal-video lattice even
+ // when the generator transport is 10-bit. Preserve those 219 intervals.
+ return Math.round(Math.max(0,Math.min(1,Number(signal)||0))*219)/219;
+}
+
+function meterHcfrCodeFromSignal(signal){
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
+ return Math.round(min+meterHcfrQuantizedSignal(signal)*span);
+}
+
 function meterHcfrSaturationLinearLevel(){
  if(meterChartIsPq()&&!meterChartIsDv()) return METER_HCFR_HDR_DIFFUSE_WHITE_NITS/10000;
  // HCFR has no Dolby Vision generator mode. Keep the existing PGenerator DV
@@ -21529,15 +21611,13 @@ function meterHcfrSaturationLinearLevel(){
 }
 
 function meterEncodeHcfrSaturationLinear(linear){
- const min=meterChromaPatchRangeMin();
- const span=meterChromaPatchRangeSpan();
  const clamped=Math.max(0,Math.min(1,Number(linear)||0));
  let signal=0;
  if(meterChartIsPq()&&!meterChartIsDv()) signal=meterChartPqEncodeNormalized(clamped*10000);
  else if(meterChartIsHlg()) signal=hlgOetf(clamped);
  else if(meterChartIsDv()) signal=Math.pow(clamped,1/2.2);
  else signal=Math.pow(clamped,1/2.22);
- return Math.round(min+Math.max(0,Math.min(1,signal))*span);
+ return meterHcfrCodeFromSignal(signal);
 }
 
 function meterGamutStimulusLinearLevel(){
@@ -22656,23 +22736,51 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
  const gamut=meterAnalysisGamut(),wp=meterTargetWhitePoint();
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const signalMode=String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
+ const hcfrSeries=/^hcfr(?:-|$)/.test(String(seriesMode||'').toLowerCase());
  const add=(name,rPct,gPct,bPct,ire)=>{
   const sourceSignal=[rPct,gPct,bPct].map(v=>Math.max(0,Math.min(100,Number(v)||0))/100);
-  // These libraries are defined as SDR legal-range signal values. Preserve
-  // their exact codes in SDR. In HDR/DV, first recover the BT.1886 relative
-  // light values, then encode those values with the active transfer function.
-  // Applying PQ or DV directly to the source percentages changes both
-  // chromaticity and luminance because each RGB channel follows a new EOTF.
-  const linear=(signalMode==='sdr')
-   ?sourceSignal.map(v=>meterDecodeColorCheckerSignal(v))
-   :sourceSignal.map(v=>Math.pow(v,2.4));
-  const codes=(signalMode==='sdr')
-   ?sourceSignal.map(v=>Math.round(min+v*span))
-   :linear.map(v=>meterEncodeColorCheckerLinear(v));
-  const xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
+  let nominalY=null;
+  let codes,xyz;
+  if(hcfrSeries&&(signalMode==='hdr10'||signalMode==='hlg')){
+   // HCFR fixed-code libraries are authored as Rec.709 video RGB. HCFR
+   // linearizes them with 2.22, preserves their Rec.709 XYZ, converts that
+   // XYZ into the BT.2020 HDR container, then applies the HDR transfer. PQ
+   // uses HCFR's 94.37844 cd/m2 reference rather than the panel peak.
+   const sourceLinear=sourceSignal.map(v=>Math.pow(v,2.22));
+   const sourceXyz=linRgbToXyz(sourceLinear[0],sourceLinear[1],sourceLinear[2],GAMUT_PRESETS.bt709.rgbToXyz);
+   nominalY=sourceXyz.Y;
+   const scale=(signalMode==='hdr10')?METER_HCFR_HDR_DIFFUSE_WHITE_NITS/10000:1;
+   const containerLinear=xyzToLinRgb(sourceXyz.X*scale,sourceXyz.Y*scale,sourceXyz.Z*scale,GAMUT_PRESETS.bt2020.xyzToRgb)
+    .map(v=>Math.max(0,Math.min(1,v)));
+   const encoded=containerLinear.map(v=>(signalMode==='hdr10')?meterChartPqEncodeNormalized(v*10000):hlgOetf(v));
+   const quantized=encoded.map(v=>meterHcfrQuantizedSignal(v));
+   codes=quantized.map(v=>Math.round(min+v*span));
+   const decoded=quantized.map(v=>{
+    if(signalMode==='hdr10') return meterChartPqDecodeNormalized(v)/10000;
+    if(v<=0.5) return (4*v*v)/12;
+    return (Math.exp((v-0.55991073)/0.17883277)+0.28466892)/12;
+   });
+   xyz=linRgbToXyz(decoded[0],decoded[1],decoded[2],GAMUT_PRESETS.bt2020.rgbToXyz);
+  } else {
+   // Preserve the source legal-video codes in SDR. Dolby Vision has no HCFR
+   // generator equivalent and retains PGenerator's existing adaptation.
+   const linear=(signalMode==='sdr')
+    ?sourceSignal.map(v=>meterDecodeColorCheckerSignal(v))
+    :sourceSignal.map(v=>Math.pow(v,2.4));
+   codes=(signalMode==='sdr')
+    ?sourceSignal.map(v=>Math.round(min+v*span))
+    :linear.map(v=>meterEncodeColorCheckerLinear(v));
+   xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
+   nominalY=xyz.Y;
+  }
   const sum=xyz.X+xyz.Y+xyz.Z;
-  steps.push({ire:ire!=null?ire:Math.round(xyz.Y*100),r:codes[0],g:codes[1],b:codes[2],name:name,
-   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:Math.max(0,xyz.Y),
+  let targetYn=Math.max(0,xyz.Y);
+  if(hcfrSeries&&signalMode==='hdr10'){
+   const whiteRef=Number(meterColorSeriesReferenceNits());
+   if(whiteRef>0) targetYn=xyz.Y*10000/whiteRef;
+  }
+  steps.push({ire:ire!=null?ire:Math.round(Math.max(0,nominalY||0)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
+   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:targetYn,
    input_max:inputMax,series_mode:(seriesMode||'fixed-video')+'-'+signalMode});
  };
  (Array.isArray(rows)?rows:[]).forEach((row,idx)=>add(row[0]||('Patch '+(idx+1)),row[1],row[2],row[3]));
@@ -22684,8 +22792,8 @@ function meterBuildHcfrColorCheckerStepsJS(includePrimaries){
  const steps=meterBuildFixedVideoCodeColorSteps(rows,'hcfr-gcd');
  if(includePrimaries===false) return steps;
  [['100% Red','Red'],['100% Green','Green'],['100% Blue','Blue'],['100% Cyan','Cyan'],['100% Magenta','Magenta'],['100% Yellow','Yellow']].forEach(([name,colorName])=>{
-  const rgb=meterBuildSaturationStepRgb(colorName,100),target=meterBuildSaturationTargetStepMeta(colorName,100);
-  steps.push({ire:100,r:rgb[0],g:rgb[1],b:rgb[2],name:name,series_color:colorName,sat_pct:100,...target});
+  const step=meterBuildHcfrSaturationStep(colorName,100);
+  steps.push({...step,name:name});
  });
  return steps;
 }
@@ -36059,8 +36167,8 @@ const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,80
 // saturation sweep as its ColorChecker.
 const METER_SERIES_SELECT_IDS=[30,800024,29,800124,800096,800019,24,25,800137,800008,800064];
 function meterHcfrFixedCodesAvailable(){
- // The stored HCFR definitions remain exact in SDR and are adapted from their
- // SDR source light values for HDR10, HLG and Dolby Vision.
+ // The stored definitions remain exact in SDR. HDR10 and HLG follow HCFR's
+ // source-light conversion; Dolby Vision uses PGenerator's documented fallback.
  return true;
 }
 // Sourced from the persisted preference rather than a checkbox: the sat sweeps
