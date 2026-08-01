@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.5"
+#define APP_VERSION "1.0.6"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -61,6 +61,8 @@ typedef struct {
     float hdr_sdr_white_scale;
     bool fullscreen;
     bool alignment;
+    double displayed_r, displayed_g, displayed_b;
+    char displayed_mode[32];
     bool quit;
     uint64_t next_poll_ms;
     SDL_Thread *network_thread;
@@ -374,7 +376,18 @@ static bool render_patch(const char *mode, double r, double g, double b)
         SDL_RenderPresent(app.renderer);
     }
     app.alignment = false;
+    app.displayed_r = r;
+    app.displayed_g = g;
+    app.displayed_b = b;
+    SDL_strlcpy(app.displayed_mode, mode, sizeof(app.displayed_mode));
     return true;
+}
+
+static bool render_current_frame(void)
+{
+    if (app.alignment) return render_alignment();
+    return render_patch(app.displayed_mode[0] ? app.displayed_mode : "sdr",
+                        app.displayed_r, app.displayed_g, app.displayed_b);
 }
 
 static void acknowledge(uint64_t sequence, bool ok, const char *message,
@@ -593,7 +606,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         SDL_LockMutex(state->network_mutex);
         state->ack_hdr_active = state->hdr_active;
         SDL_UnlockMutex(state->network_mutex);
-        if (state->alignment) render_alignment();
+        render_current_frame();
     }
     if (event->type == SDL_EVENT_KEY_DOWN) {
         if (event->key.key == SDLK_ESCAPE) return SDL_APP_SUCCESS;
@@ -602,9 +615,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
             SDL_SetWindowFullscreen(state->window, state->fullscreen);
         }
     }
-    if ((event->type == SDL_EVENT_WINDOW_RESIZED ||
-         event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) && state->alignment) {
-        render_alignment();
+    if (event->type == SDL_EVENT_WINDOW_EXPOSED ||
+        event->type == SDL_EVENT_WINDOW_RESTORED ||
+        event->type == SDL_EVENT_WINDOW_SHOWN ||
+        event->type == SDL_EVENT_WINDOW_RESIZED ||
+        event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        render_current_frame();
     }
     return SDL_APP_CONTINUE;
 }
