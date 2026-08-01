@@ -13089,7 +13089,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. ICC Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
     <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
      <option value="local">PGenerator output</option>
-     <option value="companion">ICC Companion</option>
+     <option value="companion" disabled title="Run the ICC Companion on the target computer to enable this option">ICC Companion</option>
     </select>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
     <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download KDE/Linux</button></div>
@@ -33406,6 +33406,14 @@ function meterCalibrationReflectActualPatternProvider(){
  if(meterCalibrationAutoCalUsesLocalOutput()) meterCalibrationSelectLocalOutput();
 }
 function meterCalibrationApplyCompanionAvailability(connected){
+ const select=document.getElementById('meterPatternProvider');
+ const companionOption=select?Array.from(select.options).find(option=>option.value==='companion'):null;
+ if(companionOption){
+  companionOption.disabled=!connected;
+  companionOption.title=connected
+   ?'Use the connected ICC Companion for patch generation'
+   :'Run the ICC Companion on the target computer to enable this option';
+ }
  if(!connected) meterCalibrationSelectLocalOutput();
 }
 function meterCalibrationShowCompanionStatus(connected,text){
