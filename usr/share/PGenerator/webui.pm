@@ -1539,6 +1539,21 @@ sub webui_handle_request (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/icc/patches" && $method eq "POST") {
+    my $result=&webui_icc_patch_generate($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/precondition-patches" && $method eq "POST") {
+    my $result=&webui_icc_precondition_patch_generate($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/validation") {
+    my $result=&webui_icc_profile_validation($request_query);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/icc/delete" && $method eq "POST") {
     my $result=&webui_icc_profile_delete($body);
     my $len=length($result);
@@ -6335,7 +6350,8 @@ sub webui_icc_profile_list (@) {
   foreach my $file (sort readdir($dh)) {
    next unless($file=~/^[A-Za-z0-9._-]+\.icc$/i);
    my @st=stat("$_icc_profile_dir/$file");
-   push @out,"{\"name\":\"".&_webui_json_escape($file)."\",\"size\":".(($st[7]||0)+0).",\"mtime\":".(($st[9]||0)+0)."}";
+   my $validation=(-f "$_icc_profile_dir/$file.validation.json")?&json_true():&json_false();
+   push @out,"{\"name\":\"".&_webui_json_escape($file)."\",\"size\":".(($st[7]||0)+0).",\"mtime\":".(($st[9]||0)+0).",\"validation\":$validation}";
   }
   closedir($dh);
  }
@@ -6345,7 +6361,7 @@ sub webui_icc_profile_list (@) {
 sub webui_icc_profile_build (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Profile request is empty"}' if(!defined($body) || $body eq "");
- return '{"status":"error","message":"Profile request is too large"}' if(length($body)>4*1024*1024);
+ return '{"status":"error","message":"Profile request is too large"}' if(length($body)>16*1024*1024);
  return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
  if(!-d $_icc_profile_dir) {
   eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
@@ -6366,7 +6382,7 @@ sub webui_icc_profile_build (@) {
  chmod(0600,$input);
  # Every command component is fixed or generated above. The profile name and
  # all measurement data remain inside the JSON file and never enter the shell.
- my $result=`timeout 100 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
+ my $result=`timeout 920 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
  my $exit=$?;
  unlink($input);
  $result=~s/^\s+|\s+$//g;
@@ -6376,6 +6392,65 @@ sub webui_icc_profile_build (@) {
  return $result if($exit==0);
  return $result if($result=~/"status"\s*:\s*"error"/);
  return '{"status":"error","message":"ICC profile creation failed"}';
+}
+
+sub webui_icc_patch_generate (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Patch request is empty"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":"Patch request is too large"}' if(length($body)>1024*1024);
+ return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
+ if(!-d $_icc_profile_dir) {
+  eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
+ }
+ my $token=time()."_".$$ ."_".int(rand(1000000));
+ my $input="/tmp/icc_patch_build_${token}.json";
+ return '{"status":"error","message":"Could not prepare the patch request"}' unless(open(my $fh,">",$input));
+ my $wrote=print {$fh} $body;
+ my $closed=close($fh);
+ if(!$wrote || !$closed) { unlink($input); return '{"status":"error","message":"Could not save the patch request"}'; }
+ chmod(0600,$input);
+ my $result=`timeout 920 /usr/bin/python3 $_icc_profile_builder --patches $input $_icc_profile_dir 2>/dev/null`;
+ my $exit=$?;
+ unlink($input);
+ $result=~s/^\s+|\s+$//g;
+ return $result if($result=~/^\{/ && ($exit==0 || $result=~/"status"\s*:\s*"error"/));
+ return '{"status":"error","message":"ICC patch generation failed"}';
+}
+
+sub webui_icc_precondition_patch_generate (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Preconditioning request is empty"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":"Preconditioning request is too large"}' if(length($body)>4*1024*1024);
+ return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
+ if(!-d $_icc_profile_dir) {
+  eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
+ }
+ my $token=time()."_".$$ ."_".int(rand(1000000));
+ my $input="/tmp/icc_precondition_${token}.json";
+ return '{"status":"error","message":"Could not prepare the preconditioning request"}' unless(open(my $fh,">",$input));
+ my $wrote=print {$fh} $body;
+ my $closed=close($fh);
+ if(!$wrote || !$closed) { unlink($input); return '{"status":"error","message":"Could not save the preconditioning measurements"}'; }
+ chmod(0600,$input);
+ my $result=`timeout 920 /usr/bin/python3 $_icc_profile_builder --precondition-patches $input $_icc_profile_dir 2>/dev/null`;
+ my $exit=$?;
+ unlink($input);
+ $result=~s/^\s+|\s+$//g;
+ return $result if($result=~/^\{/ && ($exit==0 || $result=~/"status"\s*:\s*"error"/));
+ return '{"status":"error","message":"ICC preconditioned patch generation failed"}';
+}
+
+sub webui_icc_profile_validation (@) {
+ my ($query)=@_;
+ my $file="";
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.icc)(?:&|$)/i);
+ return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file.validation.json";
+ my $bytes=-s $path;
+ return '{"status":"error","message":"Validation results are unavailable"}' unless(-f $path && defined($bytes) && $bytes>0 && $bytes<1024*1024);
+ my $data="";
+ if(open(my $fh,"<",$path)) { local $/; $data=<$fh>; close($fh); }
+ return $data=~/^\s*\{/ ? $data : '{"status":"error","message":"Validation results are invalid"}';
 }
 
 sub webui_icc_profile_download (@) {
@@ -6397,7 +6472,13 @@ sub webui_icc_profile_delete (@) {
  return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
  my $path="$_icc_profile_dir/$file";
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
- return unlink($path) ? '{"status":"ok"}' : '{"status":"error","message":"Could not delete the ICC profile"}';
+ if(unlink($path)) {
+  unlink($path.".validation.json");
+  (my $ti3=$path)=~s/\.icc$/.ti3/i;
+  unlink($ti3);
+  return '{"status":"ok"}';
+ }
+ return '{"status":"error","message":"Could not delete the ICC profile"}';
 }
 
 sub webui_icc_companion_write_atomic (@) {
@@ -13636,13 +13717,70 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
       </div>
       <div class="meter-icc-field">
+       <label for="meterIccProfileModel">Profile model</label>
+       <select id="meterIccProfileModel" onchange="meterIccProfileModelChanged()">
+        <option value="clut" selected>XYZ cLUT + matrix fallback (recommended)</option>
+        <option value="xyz_clut">XYZ cLUT only</option>
+        <option value="lab_clut">L*a*b* cLUT only</option>
+        <option value="matrix">Curves + matrix</option>
+        <option value="single_curve_matrix">Single curve + matrix</option>
+        <option value="gamma_matrix">Gamma + matrix</option>
+        <option value="single_gamma_matrix">Single gamma + matrix</option>
+       </select>
+       <div class="meter-icc-note" id="meterIccProfileModelNote" style="margin-top:6px"></div>
+      </div>
+      <div class="meter-icc-field">
        <label for="meterIccQuality">Patch set</label>
-       <select id="meterIccQuality" onchange="meterIccSyncUi()">
-        <option value="quick">Quick</option>
-        <option value="standard" selected>Standard</option>
-        <option value="high">High</option>
+       <select id="meterIccQuality" onchange="meterIccPatchPresetChanged()">
+        <option value="small">Small</option>
+        <option value="medium" selected>Medium</option>
+        <option value="large">Large</option>
+        <option value="custom">Custom</option>
        </select>
       </div>
+      <div class="meter-icc-field">
+       <label for="meterIccProfileQuality">Profile calculation quality</label>
+       <select id="meterIccProfileQuality" onchange="meterIccSyncUi()">
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high" selected>High</option>
+        <option value="ultra">Ultra</option>
+       </select>
+       <div class="meter-icc-note" style="margin-top:6px">Controls ArgyllCMS profile fitting effort, separately from the number of measured patches. High is recommended. Ultra can take substantially longer for large cLUT profiles.</div>
+      </div>
+      <details id="meterIccPatchAdvanced" style="margin-top:8px">
+       <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">Advanced patch-set controls</summary>
+       <div class="meter-icc-note" style="margin:7px 0 10px">Presets fill these controls automatically. Changing a value selects Custom. Optimized full-spread patches follow the same ArgyllCMS test-chart approach used by DisplayCAL.</div>
+       <div class="meter-icc-field">
+        <label for="meterIccPatchCount">Total patches: <span id="meterIccPatchCountLabel">425</span></label>
+        <div style="display:grid;grid-template-columns:minmax(120px,1fr) 84px;gap:8px;align-items:center">
+         <input id="meterIccPatchCountRange" type="range" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-range')">
+         <input id="meterIccPatchCount" type="number" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-number')">
+        </div>
+       </div>
+       <div style="display:grid;grid-template-columns:repeat(2,minmax(110px,1fr));gap:8px">
+        <div class="meter-icc-field"><label for="meterIccWhitePatches">White repeats</label><input id="meterIccWhitePatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
+        <div class="meter-icc-field"><label for="meterIccBlackPatches">Black repeats</label><input id="meterIccBlackPatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
+        <div class="meter-icc-field"><label for="meterIccGraySteps">Grayscale steps</label><input id="meterIccGraySteps" type="number" min="2" max="257" step="1" value="49" onchange="meterIccPatchControlChanged()"></div>
+        <div class="meter-icc-field"><label for="meterIccSingleSteps">Single-channel steps</label><input id="meterIccSingleSteps" type="number" min="0" max="129" step="1" value="17" onchange="meterIccPatchControlChanged()"></div>
+       </div>
+       <div class="meter-icc-field">
+        <label for="meterIccNeutralEmphasis">Neutral-axis emphasis: <span id="meterIccNeutralEmphasisLabel">50%</span></label>
+        <input id="meterIccNeutralEmphasis" type="range" min="0" max="100" step="1" value="50" oninput="meterIccPatchControlChanged()">
+       </div>
+       <div class="meter-icc-field">
+        <label for="meterIccDarkEmphasis">Dark-region emphasis: <span id="meterIccDarkEmphasisLabel">20%</span></label>
+        <input id="meterIccDarkEmphasis" type="range" min="0" max="100" step="1" value="20" oninput="meterIccPatchControlChanged()">
+       </div>
+       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccGoodOptimization" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Higher-quality optimized distribution</label>
+       <div class="meter-icc-field">
+        <label for="meterIccPreconditionProfile">Precondition for a known display (optional)</label>
+        <select id="meterIccPreconditionProfile" onchange="meterIccPatchControlChanged()"><option value="">None</option></select>
+        <div class="meter-icc-note" style="margin-top:6px">An existing profile guides patches toward this display's measured gamut and nonlinear regions. Leave this off when no representative profile exists.</div>
+       </div>
+       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccAutoPrecondition" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Auto-optimize from a 34-patch display pre-read</label>
+       <div class="meter-icc-note">This matches DisplayCAL's display-aware approach: PGenerator first creates a temporary matrix characterization, then ArgyllCMS places the final patches using the measured response. It is skipped when an existing preconditioning profile is selected.</div>
+      </details>
       <div class="meter-icc-field">
        <label for="meterIccDisplayType">Display type</label>
        <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
@@ -13706,6 +13844,30 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <h3>Created profiles</h3>
      <div id="meterIccProfileList" class="meter-icc-note">Loading profiles...</div>
     </div>
+   </div>
+  </div>
+
+  <div id="meterIccValidationModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10020;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(760px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:18px;box-sizing:border-box">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
+     <div>
+      <div style="font-size:1rem;font-weight:700;color:var(--text)">ICC Profile Self-Check</div>
+      <div id="meterIccValidationFile" class="meter-icc-note" style="margin-top:4px"></div>
+     </div>
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccCloseValidation()">Close</button>
+    </div>
+    <div id="meterIccValidationRating" style="font-size:1.05rem;font-weight:700;margin-bottom:12px"></div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(100px,1fr));gap:8px;margin-bottom:12px">
+     <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Average ΔE00</div><strong id="meterIccValidationAverage" style="font-size:1.25rem;color:var(--text)">--</strong></div>
+     <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">RMS ΔE00</div><strong id="meterIccValidationRms" style="font-size:1.25rem;color:var(--text)">--</strong></div>
+     <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Peak ΔE00</div><strong id="meterIccValidationPeak" style="font-size:1.25rem;color:var(--text)">--</strong></div>
+    </div>
+    <div id="meterIccValidationMeta" class="meter-icc-note" style="margin-bottom:12px"></div>
+    <div style="font-size:.76rem;font-weight:700;color:var(--text);margin-bottom:7px">Largest profile-fit errors</div>
+    <div style="overflow-x:auto">
+     <table style="width:100%;border-collapse:collapse;font-size:.72rem;color:var(--text2)"><thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">Patch</th><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">RGB %</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--border)">ΔE00</th></tr></thead><tbody id="meterIccValidationWorst"></tbody></table>
+    </div>
+    <div id="meterIccValidationNote" class="meter-icc-note" style="margin-top:12px;padding:9px;border:1px solid var(--border);border-radius:6px"></div>
    </div>
   </div>
 
@@ -16320,7 +16482,7 @@ let _hdmiIgnored=false;
 const uiBlockingOverlayIds=[
  'meterGreyProfileModal','meterCustomSeriesModal','meterCustomSeriesManagerModal',
  'meterImportWizardModal','meterLutToolsModal','lutSolveProgressModal',
- 'meterIccProfileModal',
+ 'meterIccProfileModal','meterIccValidationModal',
  'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
  'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
  'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',
@@ -33168,7 +33330,7 @@ function meterIccProfileInfo(type){
  const info={
   sdr:{
    mode:'sdr',
-   description:'Creates a measured ICC v2 matrix and per-channel shaper profile with ArgyllCMS. Use it for SDR color-managed applications on Windows, KDE Plasma, macOS and other ICC-aware systems.',
+   description:'Creates a measured ICC v2 display profile with ArgyllCMS. Choose a compact matrix/shaper model or an XYZ cLUT with a fallback matrix.',
    compatibility:'This profile has no video-card calibration curve. On Windows 11 it affects ICC-aware applications, not the unmanaged desktop or raw Companion verification patches. Use an ICC-aware application to verify it.'
   },
   'windows-sdr':{
@@ -33205,9 +33367,101 @@ function meterIccTargetTransferValue(){
  return ['srgb','gamma22','gamma24','bt1886'].includes(String(select&&select.value||''))?String(select.value):'srgb';
 }
 
-function meterIccPatchFractions(quality,profileType){
- const rampCount=quality==='quick'?9:(quality==='high'?33:17);
- const cubeCount=quality==='quick'?3:(quality==='high'?5:3);
+const METER_ICC_PATCH_PRESETS={
+ matrix:{
+  small:{patch_count:55,white_patches:1,black_patches:1,gray_steps:17,single_channel_steps:9,neutral_emphasis:50,dark_emphasis:0,good_optimization:true,auto_precondition:false,profile_quality:'medium'},
+  medium:{patch_count:95,white_patches:2,black_patches:2,gray_steps:25,single_channel_steps:13,neutral_emphasis:50,dark_emphasis:10,good_optimization:true,auto_precondition:false,profile_quality:'high'},
+  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:17,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
+ },
+ clut:{
+  small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:9,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
+  medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:49,single_channel_steps:17,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
+  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:73,single_channel_steps:25,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
+ }
+};
+
+const METER_ICC_PROFILE_MODELS={
+ clut:{label:'XYZ cLUT + matrix',family:'clut',windows:true,note:'Recommended for detailed characterization. It creates an XYZ cLUT and accurate matrix/TRC fallback tags, so software without cLUT support can still use the profile.'},
+ xyz_clut:{label:'XYZ cLUT only',family:'clut',windows:false,note:'Creates only an XYZ lookup-table transform. It can model nonlinear color interactions but has no matrix fallback for software that ignores display cLUT tags.'},
+ lab_clut:{label:'L*a*b* cLUT only',family:'clut',windows:false,note:'Creates a Lab PCS lookup-table profile. It is mainly useful for compatibility testing and specialized color-managed workflows, and has no matrix fallback.'},
+ matrix:{label:'Curves + matrix',family:'matrix',windows:true,note:'Uses independent RGB tone curves and a 3x3 colorant matrix. It is compact, broadly compatible, and a good choice for displays with mostly separable channel behavior.'},
+ single_curve_matrix:{label:'Single curve + matrix',family:'matrix',windows:true,note:'Uses one shared tone curve for all three channels plus a 3x3 matrix. It preserves neutral balance but cannot model different per-channel tone responses.'},
+ gamma_matrix:{label:'Gamma + matrix',family:'matrix',windows:true,note:'Fits a separate simple gamma exponent for each RGB channel plus a 3x3 matrix. It is smaller but less flexible than full tone curves.'},
+ single_gamma_matrix:{label:'Single gamma + matrix',family:'matrix',windows:true,note:'Fits one shared gamma exponent plus a 3x3 matrix. This is highly compatible but only suitable for displays with a simple, common channel response.'}
+};
+
+function meterIccProfileModelInfo(value){
+ return METER_ICC_PROFILE_MODELS[value]||METER_ICC_PROFILE_MODELS.clut;
+}
+
+function meterIccPatchSettings(){
+ const number=(id,fallback)=>Number((document.getElementById(id)||{}).value)||fallback;
+ return {
+  patch_count:Math.max(34,Math.min(10000,Math.round(number('meterIccPatchCount',95)))),
+  white_patches:Math.max(1,Math.min(32,Math.round(number('meterIccWhitePatches',2)))),
+  black_patches:Math.max(1,Math.min(32,Math.round(number('meterIccBlackPatches',2)))),
+  gray_steps:Math.max(2,Math.min(257,Math.round(number('meterIccGraySteps',25)))),
+  single_channel_steps:Math.max(0,Math.min(129,Math.round(number('meterIccSingleSteps',13)))),
+  neutral_emphasis:Math.max(0,Math.min(1,number('meterIccNeutralEmphasis',50)/100)),
+  dark_emphasis:Math.max(0,Math.min(1,number('meterIccDarkEmphasis',10)/100)),
+  good_optimization:!!((document.getElementById('meterIccGoodOptimization')||{}).checked),
+  precondition_profile:String((document.getElementById('meterIccPreconditionProfile')||{}).value||''),
+  auto_precondition:!!((document.getElementById('meterIccAutoPrecondition')||{}).checked)
+ };
+}
+
+function meterIccApplyPatchPreset(presetName){
+ const model=meterIccProfileModelInfo(String((document.getElementById('meterIccProfileModel')||{}).value||'clut'));
+ const preset=(METER_ICC_PATCH_PRESETS[model.family]||METER_ICC_PATCH_PRESETS.clut)[presetName];
+ if(!preset) return;
+ const set=(id,value)=>{ const element=document.getElementById(id); if(element) element.value=String(value); };
+ set('meterIccPatchCount',preset.patch_count);
+ set('meterIccPatchCountRange',preset.patch_count);
+ set('meterIccWhitePatches',preset.white_patches);
+ set('meterIccBlackPatches',preset.black_patches);
+ set('meterIccGraySteps',preset.gray_steps);
+ set('meterIccSingleSteps',preset.single_channel_steps);
+ set('meterIccNeutralEmphasis',preset.neutral_emphasis);
+ set('meterIccDarkEmphasis',preset.dark_emphasis);
+ const good=document.getElementById('meterIccGoodOptimization');
+ if(good) good.checked=!!preset.good_optimization;
+ const auto=document.getElementById('meterIccAutoPrecondition');
+ if(auto) auto.checked=!!preset.auto_precondition;
+ set('meterIccProfileQuality',preset.profile_quality||'high');
+ meterIccSyncUi();
+}
+
+function meterIccPatchPresetChanged(){
+ const preset=String((document.getElementById('meterIccQuality')||{}).value||'medium');
+ if(preset!=='custom') meterIccApplyPatchPreset(preset);
+ else meterIccSyncUi();
+}
+
+function meterIccProfileModelChanged(){
+ const select=document.getElementById('meterIccQuality');
+ let preset=String(select&&select.value||'medium');
+ if(preset==='custom') preset='medium';
+ if(select) select.value=preset;
+ meterIccApplyPatchPreset(preset);
+}
+
+function meterIccPatchControlChanged(source){
+ const range=document.getElementById('meterIccPatchCountRange');
+ const number=document.getElementById('meterIccPatchCount');
+ if(range&&number){
+  if(source==='count-range') number.value=range.value;
+  else if(source==='count-number') range.value=String(Math.max(34,Math.min(10000,Number(number.value)||34)));
+ }
+ const preset=document.getElementById('meterIccQuality');
+ if(preset) preset.value='custom';
+ meterIccSyncUi();
+}
+
+function meterIccPatchFractions(quality,profileType,profileModel){
+ quality=quality==='quick'?'small':quality==='standard'?'medium':quality==='high'?'large':quality;
+ const clut=profileModel==='clut';
+ const rampCount=quality==='small'?(clut?17:9):(quality==='large'?33:17);
+ const cubeCount=clut?(quality==='small'?3:quality==='large'?7:5):(quality==='large'?5:3);
  const patches=[];
  const seen=new Set();
  const add=(r,g,b,name)=>{
@@ -33227,7 +33481,7 @@ function meterIccPatchFractions(quality,profileType){
  // until about 6.25%. That is too sparse to solve the shaper curves which
  // Windows loads from an SDR MHC2 profile. Add exact low-end 8-bit codes while
  // retaining the evenly spaced ramp across the rest of the range.
- if(profileType==='windows-sdr'&&quality!=='quick'){
+ if(profileType==='windows-sdr'){
   [3,5,8,10,13,19,26].forEach(code=>rampValues.push(code/255));
  }
  rampValues.sort((a,b)=>a-b);
@@ -33244,11 +33498,11 @@ function meterIccPatchFractions(quality,profileType){
  return patches;
 }
 
-function meterIccSteps(quality,profileType){
+function meterIccSteps(quality,profileType,profileModel){
  const hdr=profileType==='kde-hdr'||profileType==='windows-hdr';
  const inputMax=hdr?1023:255;
  const code=value=>Math.round(Math.max(0,Math.min(1,value))*inputMax);
- const steps=meterIccPatchFractions(quality,profileType).map((patch,index)=>({
+ const steps=meterIccPatchFractions(quality,profileType,profileModel).map((patch,index)=>({
   ire:index,
   r:code(patch.r),
   g:code(patch.g),
@@ -33270,7 +33524,59 @@ function meterIccSteps(quality,profileType){
  return steps;
 }
 
+function meterIccPatchesToSteps(patches,profileType,includeFullFrame){
+ const hdr=profileType==='kde-hdr'||profileType==='windows-hdr';
+ const inputMax=hdr?1023:255;
+ const code=value=>Math.round(Math.max(0,Math.min(1,Number(value)||0))*inputMax);
+ const steps=patches.map((patch,index)=>({
+  ire:index,r:code(patch.r),g:code(patch.g),b:code(patch.b),input_max:inputMax,name:String(patch.name||('ICC Optimized '+(index+1)))
+ }));
+ if(includeFullFrame!==false&&profileType==='windows-hdr') steps.push({ire:100,r:inputMax,g:inputMax,b:inputMax,input_max:inputMax,patch_size:100,name:'ICC Full Frame White'});
+ return steps;
+}
+
+async function meterIccGenerateSteps(profileType,settings,includeFullFrame){
+ settings=settings||meterIccPatchSettings();
+ const response=await fetchJSON('/api/icc/patches',{
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings),_timeoutMs:920000
+ });
+ if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not generate the optimized patch set');
+ return meterIccPatchesToSteps(response.patches,profileType,includeFullFrame);
+}
+
+async function meterIccGeneratePreconditionedSteps(readings,runConfig){
+ const payload={
+  profile_type:runConfig.profile_type,
+  signal_mode:runConfig.signal_mode,
+  name:runConfig.name+' precondition',
+  meter_name:runConfig.meter_name,
+  code_min:runConfig.code_min,
+  code_max:runConfig.code_max,
+  readings,
+  patch_settings:runConfig.patch_settings
+ };
+ const response=await fetchJSON('/api/icc/precondition-patches',{
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:930000
+ });
+ if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not create the display-aware patch set');
+ return meterIccPatchesToSteps(response.patches,runConfig.profile_type);
+}
+
 function meterIccProfileTypeChanged(){
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const windows=type==='windows-sdr'||type==='windows-hdr';
+ const modelSelect=document.getElementById('meterIccProfileModel');
+ if(modelSelect){
+  Array.from(modelSelect.options).forEach(option=>{
+   const supported=!windows||meterIccProfileModelInfo(option.value).windows;
+   option.disabled=!supported;
+   option.title=supported?'':'Windows requires matrix and tone-curve fallback tags.';
+  });
+  if(windows&&!meterIccProfileModelInfo(modelSelect.value).windows){
+   modelSelect.value='clut';
+   meterIccApplyPatchPreset(String((document.getElementById('meterIccQuality')||{}).value||'medium'));
+  }
+ }
  meterIccSyncUi();
 }
 
@@ -33312,8 +33618,14 @@ function meterIccSyncUi(){
  const compatibility=document.getElementById('meterIccCompatibility');
  const summary=document.getElementById('meterIccRunSummary');
  const start=document.getElementById('meterIccStartBtn');
- const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
- const count=meterIccPatchFractions(quality,type).length+(type==='windows-hdr'?1:0);
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
+ const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
+ const profileModelInfo=meterIccProfileModelInfo(profileModel);
+ const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
+ const patchSettings=meterIccPatchSettings();
+ const count=patchSettings.patch_count+(type==='windows-hdr'?1:0);
+ const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
+ const modelNote=document.getElementById('meterIccProfileModelNote');
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transferNote=document.getElementById('meterIccTargetTransferNote');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
@@ -33329,10 +33641,17 @@ function meterIccSyncUi(){
   :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
-  const optionCount=meterIccPatchFractions(String(option.value),type).length+(type==='windows-hdr'?1:0);
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
-  option.textContent=label+', '+optionCount+' patches';
+  const preset=(METER_ICC_PATCH_PRESETS[profileModelInfo.family]||{})[String(option.value)];
+  option.textContent=preset?(label+', '+(preset.patch_count+(type==='windows-hdr'?1:0))+' patches'):(label+', '+count+' patches');
  });
+ const patchCountLabel=document.getElementById('meterIccPatchCountLabel');
+ const neutralLabel=document.getElementById('meterIccNeutralEmphasisLabel');
+ const darkLabel=document.getElementById('meterIccDarkEmphasisLabel');
+ if(patchCountLabel) patchCountLabel.textContent=String(patchSettings.patch_count);
+ if(neutralLabel) neutralLabel.textContent=Math.round(patchSettings.neutral_emphasis*100)+'%';
+ if(darkLabel) darkLabel.textContent=Math.round(patchSettings.dark_emphasis*100)+'%';
+ if(modelNote) modelNote.textContent=profileModelInfo.note;
  if(desc) desc.textContent=info.description;
  if(compatibility) compatibility.textContent=info.compatibility;
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
@@ -33342,7 +33661,7 @@ function meterIccSyncUi(){
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
  const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
  const generatorLabel=usesCompanion?'ICC Companion':'PGenerator HDMI';
- if(summary) summary.textContent=generatorLabel+' output: '+info.mode.toUpperCase()+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' patches.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:'');
+ if(summary) summary.textContent=generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:'');
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const generatorUnavailable=usesCompanion?!meterIccCompanionConnected:!localMode.matches;
@@ -33360,7 +33679,7 @@ async function meterOpenIccProfileBuilder(){
  }
  modal.style.display='flex';
  meterIccPrepareMeasurementControls();
- meterIccSyncUi();
+ meterIccProfileTypeChanged();
  await meterIccRefreshCompanionStatus();
  await meterIccRefreshRecoveryAvailability();
  if(!meterIccCompanionTimer) meterIccCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
@@ -33500,6 +33819,22 @@ async function meterIccLoadProfiles(){
  try{
   const response=await fetchJSON('/api/icc/profiles',{_quiet:true,_timeoutMs:5000});
   const profiles=response&&Array.isArray(response.profiles)?response.profiles:[];
+  const precondition=document.getElementById('meterIccPreconditionProfile');
+  if(precondition){
+   const previous=precondition.value;
+   precondition.textContent='';
+   const none=document.createElement('option');
+   none.value='';
+   none.textContent='None';
+   precondition.appendChild(none);
+   profiles.forEach(profile=>{
+    const option=document.createElement('option');
+    option.value=profile.name;
+    option.textContent=profile.name;
+    precondition.appendChild(option);
+   });
+   if(profiles.some(profile=>profile.name===previous)) precondition.value=previous;
+  }
   if(!profiles.length){
    list.textContent='No ICC profiles have been created yet.';
    return;
@@ -33516,16 +33851,88 @@ async function meterIccLoadProfiles(){
    download.className='btn btn-sm btn-primary';
    download.textContent='Download';
    download.onclick=()=>{ window.location.href='/api/icc/download?file='+encodeURIComponent(profile.name); };
+   const validate=document.createElement('button');
+   validate.type='button';
+   validate.className='btn btn-sm btn-secondary';
+   validate.textContent='Self-check';
+   validate.disabled=!profile.validation;
+   validate.title=profile.validation?'View the ArgyllCMS profcheck results':'No saved self-check is available for this profile';
+   validate.onclick=()=>meterIccOpenValidation(profile.name);
    const remove=document.createElement('button');
    remove.type='button';
    remove.className='btn btn-sm btn-danger';
    remove.textContent='Delete';
    remove.onclick=()=>meterIccDeleteProfile(profile.name);
-   row.append(name,download,remove);
+   row.append(name,download,validate,remove);
    list.appendChild(row);
   });
  }catch(error){
   list.textContent='Could not load created profiles.';
+ }
+}
+
+function meterIccCloseValidation(){
+ const modal=document.getElementById('meterIccValidationModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+function meterIccRenderValidation(file,result){
+ const set=(id,value)=>{ const element=document.getElementById(id); if(element) element.textContent=value; };
+ const number=value=>Number.isFinite(Number(value))?Number(value).toFixed(3):'--';
+ set('meterIccValidationFile',file||'ICC profile');
+ set('meterIccValidationAverage',number(result.average_de00));
+ set('meterIccValidationRms',number(result.rms_de00));
+ set('meterIccValidationPeak',number(result.peak_de00));
+ set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' calculation quality; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
+ set('meterIccValidationNote',String(result.note||''));
+ const rating=document.getElementById('meterIccValidationRating');
+ if(rating){
+  rating.textContent=String(result.rating||'Profile fit complete');
+  rating.style.color=String(result.rating||'').startsWith('Excellent')?'var(--success)':String(result.rating||'').startsWith('Good')?'var(--warning)':'var(--danger)';
+ }
+ const table=document.getElementById('meterIccValidationWorst');
+ if(table){
+  table.textContent='';
+  const worst=Array.isArray(result.worst_patches)?result.worst_patches:[];
+  worst.forEach(patch=>{
+   const row=document.createElement('tr');
+   const label=document.createElement('td');
+   const rgb=document.createElement('td');
+   const error=document.createElement('td');
+   label.style.padding=rgb.style.padding=error.style.padding='6px';
+   error.style.textAlign='right';
+   label.textContent=String(patch.name||('Patch '+patch.index));
+   rgb.textContent=Array.isArray(patch.rgb)?patch.rgb.map(value=>Number(value).toFixed(1)).join(', '):'';
+   error.textContent=number(patch.de00);
+   row.append(label,rgb,error);
+   table.appendChild(row);
+  });
+  if(!worst.length){
+   const row=document.createElement('tr');
+   const cell=document.createElement('td');
+   cell.colSpan=3;
+   cell.style.padding='8px';
+   cell.textContent='No per-patch error details were returned.';
+   row.appendChild(cell);
+   table.appendChild(row);
+  }
+ }
+ const modal=document.getElementById('meterIccValidationModal');
+ if(modal){
+  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
+  modal.style.display='flex';
+ }
+ uiSyncBodyScrollLock();
+}
+
+async function meterIccOpenValidation(file,result){
+ try{
+  const validation=result||await fetchJSON('/api/icc/validation?file='+encodeURIComponent(file),{_quiet:true,_timeoutMs:10000});
+  if(!validation||validation.status==='error') throw new Error(validation&&validation.message?validation.message:'Validation results are unavailable');
+  meterIccRenderValidation(file,validation);
+ }catch(error){
+  toast(error&&error.message?error.message:'Could not load the profile self-check',true);
  }
 }
 
@@ -33558,13 +33965,15 @@ async function meterIccRetryBuild(){
  if(!name){ toast('Enter the profile name first',true); return; }
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  const info=meterIccProfileInfo(type);
- const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
+ const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
+ const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
  try{
   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
   const readings=state&&Array.isArray(state.readings)?state.readings:[];
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||String((readings[0]||{}).name)!=='ICC White') throw new Error('No completed ICC measurements are available');
   meterIccRunConfig={
-   profile_type:type,name,quality,signal_mode:info.mode,steps:[],
+   profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
    target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
@@ -33597,6 +34006,39 @@ function meterIccSetRunning(running){
  meterUpdateReadButtons();
 }
 
+async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
+ const mode=meterIccProfileInfo(type).mode;
+ const body=meterMeasurementSignalContext({
+  type:'colors',points:990001,custom_series:true,custom_steps:steps,
+  display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
+  ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
+  target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
+  target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
+  patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
+  refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady(),
+  pattern_provider:patternProvider,
+  ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
+ });
+ if(patternProvider==='companion'){
+  body.signal_mode=mode;
+  body.signal_range='2';
+  body.pattern_signal_range='2';
+  body.transport_signal_range='2';
+  body.max_luma='1000';
+ }
+ const lowLight=meterLowLightReadState();
+ if(lowLight) body.low_light=lowLight;
+ const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
+ if(!response||response.status!=='started') throw new Error(response&&response.message?response.message:'Could not start the meter series');
+ meterSharedSeriesId=String(response.series_id||'');
+ meterSeriesRunning=true;
+ meterIccSetRunning(true);
+ meterIccStarting=false;
+ meterActionPending=false;
+ if(meterIccPollTimer) clearInterval(meterIccPollTimer);
+ meterIccPollTimer=setInterval(meterIccPoll,1000);
+}
+
 async function meterIccStart(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
@@ -33612,8 +34054,10 @@ async function meterIccStart(){
  }
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
  if(!name){ toast('Enter a profile name',true); return; }
- const quality=String((document.getElementById('meterIccQuality')||{}).value||'standard');
- const steps=meterIccSteps(quality,type);
+ const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
+ const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
+ const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
+ const patchSettings=meterIccPatchSettings();
  const delayEl=document.getElementById('meterIccStartDelay');
  const startDelay=Math.max(0,Math.min(300,Math.round(Number(delayEl&&delayEl.value)||0)));
  const status=document.getElementById('meterIccStatus');
@@ -33623,13 +34067,21 @@ async function meterIccStart(){
  const stopButton=document.getElementById('meterIccStopBtn');
  if(stopButton) stopButton.style.display='';
  meterIccSyncUi();
- meterIccRunConfig={
-  profile_type:type,name,quality,signal_mode:mode,steps,pattern_provider:patternProvider,
-  target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
-  code_min:0,code_max:mode==='sdr'?255:1023,
-  meter_name:meterSelectedMeasurementLabel(null)
- };
  try{
+  const usePreRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
+  if(status) status.textContent=usePreRead?'Generating the 34-patch display pre-read...':'Generating an optimized '+meterIccProfileModelInfo(profileModel).label+' patch set...';
+  meterIccSetProgress(usePreRead?'Preparing display pre-read':'Optimizing patch set',0,usePreRead?34:patchSettings.patch_count);
+  const steps=usePreRead
+   ?await meterIccGenerateSteps(type,{patch_count:34,white_patches:2,black_patches:2,gray_steps:8,single_channel_steps:5,neutral_emphasis:.5,dark_emphasis:.2,good_optimization:true},false)
+   :await meterIccGenerateSteps(type,patchSettings);
+  if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
+  meterIccRunConfig={
+   profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:mode,steps,pattern_provider:patternProvider,
+   stage:usePreRead?'precondition':'profile',patch_settings:patchSettings,start_token:startToken,
+   target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
+   code_min:0,code_max:mode==='sdr'?255:1023,
+   meter_name:meterSelectedMeasurementLabel(null)
+  };
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
    if(status) status.textContent=patternProvider==='companion'
@@ -33641,37 +34093,8 @@ async function meterIccStart(){
   if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
   if(status) status.textContent='Connecting to the meter...';
   meterIccSetProgress('Starting meter',0,steps.length);
-  const body=meterMeasurementSignalContext({
-   type:'colors',points:990001,custom_series:true,custom_steps:steps,
-   display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
-   ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
-   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-   target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
-   patch_size:getMeterPatchSize(),pattern_signal_range:meterMeasurementPatchSignalRange()||undefined,
-   refresh_rate:getMeterRefreshRate()||undefined,require_device_ready:meterSelectedMeasurementRequiresReady(),
-   pattern_provider:patternProvider,
-   ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
-  });
-  if(patternProvider==='companion'){
-   // The target-computer companion owns the signal path. Do not inherit the
-   // Pi renderer's current mode, bit depth or quantization range.
-   body.signal_mode=mode;
-   body.signal_range='2';
-   body.pattern_signal_range='2';
-   body.transport_signal_range='2';
-   body.max_luma='1000';
-  }
-  const lowLight=meterLowLightReadState();
-  if(lowLight) body.low_light=lowLight;
-  const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
-  if(!response||response.status!=='started') throw new Error(response&&response.message?response.message:'Could not start the meter series');
-  meterSharedSeriesId=String(response.series_id||'');
-  meterSeriesRunning=true;
-  meterIccSetRunning(true);
-  meterIccStarting=false;
-  meterActionPending=false;
-  if(status) status.textContent='Measurement series started. Waiting for the first patch...';
-  meterIccPollTimer=setInterval(meterIccPoll,1000);
+  await meterIccLaunchMeasurementSeries(steps,type,patternProvider);
+  if(status) status.textContent=usePreRead?'Display pre-read started. Waiting for the first patch...':'Measurement series started. Waiting for the first patch...';
   await meterIccPoll();
  }catch(error){
   meterIccStarting=false;
@@ -33714,13 +34137,37 @@ async function meterIccPoll(){
   meterIccSetRunning(false);
   try{ meterClearDisplayPattern(); }catch(_error){}
   if(state.status==='complete'){
-   await meterIccBuild(state.readings||[]);
+   if(meterIccRunConfig&&meterIccRunConfig.stage==='precondition'){
+    meterIccStarting=true;
+    meterActionPending=true;
+    meterIccSyncUi();
+    if(status) status.textContent='Pre-read complete. Building a temporary display model and optimizing the final patch set...';
+    meterIccSetProgress('Optimizing for the measured display',0,meterIccRunConfig.patch_settings.patch_count);
+    const finalSteps=await meterIccGeneratePreconditionedSteps(state.readings||[],meterIccRunConfig);
+    if(Number(meterIccRunConfig.start_token)!==meterIccStartToken) throw new Error('ICC profiling stopped');
+    meterIccRunConfig.steps=finalSteps;
+    meterIccRunConfig.stage='profile';
+    if(status) status.textContent='Display-aware patch set ready. Restarting the meter for the profile measurements...';
+    meterIccSetProgress('Restarting meter',0,finalSteps.length);
+    await meterIccLaunchMeasurementSeries(finalSteps,meterIccRunConfig.profile_type,meterIccRunConfig.pattern_provider);
+    if(status) status.textContent='Profile measurement series started. Waiting for the first patch...';
+    setTimeout(meterIccPoll,0);
+   }else{
+    await meterIccBuild(state.readings||[]);
+   }
   }else{
    if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
   }
  }catch(error){
   const status=document.getElementById('meterIccStatus');
   if(status&&error&&error.message) status.textContent=error.message;
+  if(meterIccStarting){
+   meterIccStarting=false;
+   meterActionPending=false;
+   meterSeriesRunning=false;
+   meterIccSetRunning(false);
+   toast(error&&error.message?error.message:'Could not create the display-aware patch set',true);
+  }
  }finally{
   meterIccPollPending=false;
  }
@@ -33737,7 +34184,7 @@ async function meterIccBuild(readings){
  try{
   const payload=Object.assign({},meterIccRunConfig,{readings});
   delete payload.steps;
-  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:110000});
+  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:930000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
@@ -33753,6 +34200,7 @@ async function meterIccBuild(readings){
   if(retry) retry.style.display='none';
   toast('ICC profile created');
   await meterIccLoadProfiles();
+  if(response.validation) await meterIccOpenValidation(response.file,response.validation);
  }catch(error){
   if(status) status.textContent=error&&error.message?error.message:'ICC profile build failed.';
   const retry=document.getElementById('meterIccRetryBuildBtn');

@@ -27,6 +27,16 @@ PROFILE_TYPES = {
     "kde-hdr": "KDE Plasma HDR",
     "windows-hdr": "Windows HDR",
 }
+PROFILE_MODELS = {
+    "clut": {"label": "XYZ cLUT + matrix", "argyll": "X", "family": "clut", "matrix_fallback": True},
+    "xyz_clut": {"label": "XYZ cLUT only", "argyll": "x", "family": "clut", "matrix_fallback": False},
+    "lab_clut": {"label": "L*a*b* cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
+    "matrix": {"label": "Curves + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
+    "single_curve_matrix": {"label": "Single curve + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
+    "gamma_matrix": {"label": "Gamma + matrix", "argyll": "g", "family": "matrix", "matrix_fallback": True},
+    "single_gamma_matrix": {"label": "Single gamma + matrix", "argyll": "G", "family": "matrix", "matrix_fallback": True},
+}
+PATCH_SET_ALIASES = {"quick": "small", "standard": "medium", "high": "large"}
 WINDOWS_SDR_TRANSFERS = ("srgb", "gamma22", "gamma24", "bt1886")
 WINDOWS_SDR_TRANSFER_LABELS = {
     "srgb": "sRGB",
@@ -494,7 +504,7 @@ def safe_basename(name):
     return cleaned[:80]
 
 
-def run_colprof(payload, ti3, output_path):
+def run_colprof(payload, ti3, output_path, profile_model, patch_set):
     colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
     if not os.path.isfile(colprof) or not os.access(colprof, os.X_OK):
         fail("The bundled ArgyllCMS colprof executable is unavailable")
@@ -504,17 +514,214 @@ def run_colprof(payload, ti3, output_path):
         base = os.path.join(temp_dir, "profile")
         with io.open(base + ".ti3", "w", encoding="ascii", errors="replace") as handle:
             handle.write(ti3)
+        requested_quality = str(payload.get("profile_quality", "")).lower()
+        quality = {"low": "l", "medium": "m", "high": "h", "ultra": "u"}.get(requested_quality)
+        if quality is None:
+            quality = "h" if patch_set == "large" or len(ti3.splitlines()) > 800 else "m"
+        algorithm = PROFILE_MODELS[profile_model]["argyll"]
         command = [
-            colprof, "-qm", "-as", "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
+            colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", output_path, base,
         ]
-        completed = subprocess.Popen(["timeout", "90"] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        timeout_seconds = min(900, max(90, 60 + len(ti3.splitlines()) // 15))
+        completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
         if completed.returncode != 0 or not os.path.isfile(output_path):
             detail = (output or "").strip().splitlines()
             fail("ArgyllCMS profile creation failed" + (": " + detail[-1][:240] if detail else ""))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def write_text_atomic(path, content):
+    temporary = path + ".tmp"
+    with io.open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.rename(temporary, path)
+
+
+def write_json_atomic(path, value):
+    temporary = path + ".tmp"
+    with io.open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, separators=(",", ":"), sort_keys=True)
+    os.rename(temporary, path)
+
+
+def bounded_integer(value, name, minimum, maximum):
+    number = int(round(finite_number(value, name)))
+    if number < minimum or number > maximum:
+        fail("{} must be between {} and {}".format(name, minimum, maximum))
+    return number
+
+
+def parse_ti1_patches(path):
+    with io.open(path, "r", encoding="ascii", errors="replace") as handle:
+        lines = [line.strip() for line in handle]
+    fields = []
+    rows = []
+    in_format = False
+    in_data = False
+    for line in lines:
+        if line == "BEGIN_DATA_FORMAT":
+            in_format = True
+            continue
+        if line == "END_DATA_FORMAT":
+            in_format = False
+            continue
+        if line == "BEGIN_DATA":
+            in_data = True
+            continue
+        if line == "END_DATA":
+            break
+        if in_format and line:
+            fields.extend(line.split())
+        elif in_data and line:
+            values = line.split()
+            if len(values) >= len(fields):
+                rows.append(dict(zip(fields, values)))
+    required = ("RGB_R", "RGB_G", "RGB_B")
+    if not rows or any(field not in fields for field in required):
+        fail("ArgyllCMS targen produced an invalid RGB test chart")
+    patches = []
+    for index, row in enumerate(rows, 1):
+        rgb = [max(0.0, min(1.0, float(row[field]) / 100.0)) for field in required]
+        if max(rgb) - min(rgb) < 1e-7:
+            level = int(round(rgb[0] * 100.0))
+            name = "ICC White" if level == 100 else "ICC Black" if level == 0 else "ICC Grey {}".format(level)
+        elif rgb == [1.0, 0.0, 0.0]:
+            name = "ICC Red 100"
+        elif rgb == [0.0, 1.0, 0.0]:
+            name = "ICC Green 100"
+        elif rgb == [0.0, 0.0, 1.0]:
+            name = "ICC Blue 100"
+        else:
+            name = "ICC Optimized {}".format(index)
+        patches.append({"r": rgb[0], "g": rgb[1], "b": rgb[2], "name": name})
+    return patches
+
+
+def generate_patches(payload, output_dir):
+    targen = os.environ.get("PGEN_TARGEN", "/usr/bin/targen")
+    if not os.path.isfile(targen) or not os.access(targen, os.X_OK):
+        fail("The bundled ArgyllCMS targen executable is unavailable")
+    total = bounded_integer(payload.get("patch_count", 425), "patch count", 34, 10000)
+    white = bounded_integer(payload.get("white_patches", 4), "white patches", 1, 32)
+    black = bounded_integer(payload.get("black_patches", 4), "black patches", 1, 32)
+    single = bounded_integer(payload.get("single_channel_steps", 17), "single-channel steps", 0, 129)
+    gray = bounded_integer(payload.get("gray_steps", 49), "grayscale steps", 2, 257)
+    neutral = max(0.0, min(1.0, finite_number(payload.get("neutral_emphasis", 0.5), "neutral-axis emphasis")))
+    dark = max(0.0, min(1.0, finite_number(payload.get("dark_emphasis", 0.2), "dark-region emphasis")))
+    base_minimum = white + black + gray + max(0, single - 2) * 3
+    if total < base_minimum:
+        fail("Patch count is too small for the selected grayscale and single-channel coverage")
+    temp_dir = tempfile.mkdtemp(prefix="pgen_icc_chart_")
+    try:
+        base = os.path.join(temp_dir, "patches")
+        command = [
+            targen, "-v", "-d3", "-e{}".format(white), "-B{}".format(black),
+            "-s{}".format(single), "-g{}".format(gray), "-m0", "-f{}".format(total),
+            "-A1.0", "-N{:.3f}".format(neutral), "-V{:.3f}".format(1.0 + dark * 3.0), "-p1.0",
+        ]
+        if payload.get("good_optimization", True):
+            command.append("-G")
+        precondition = str(payload.get("precondition_profile", ""))
+        if precondition:
+            if not re.match(r"^[A-Za-z0-9._-]+\.icc$", precondition, re.I):
+                fail("Invalid preconditioning profile")
+            precondition_path = os.path.join(output_dir, precondition)
+            if not os.path.isfile(precondition_path):
+                fail("Preconditioning profile was not found")
+            command.extend(["-c", precondition_path])
+        command.append(base)
+        timeout_seconds = min(900, max(90, 60 + total // 15))
+        completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        output = completed.communicate()[0]
+        ti1_path = base + ".ti1"
+        if completed.returncode != 0 or not os.path.isfile(ti1_path):
+            detail = (output or "").strip().splitlines()
+            fail("ArgyllCMS patch generation failed" + (": " + detail[-1][:240] if detail else ""))
+        patches = parse_ti1_patches(ti1_path)
+        return {"status": "ok", "patches": patches, "count": len(patches)}
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def generate_preconditioned_patches(payload, output_dir):
+    """Build a temporary matrix profile from a short pre-read, then let targen
+    distribute the final chart in the measured display response space."""
+    rows = normalize_measurements(payload)
+    ti3, _, _ = make_ti3(payload, rows)
+    settings = payload.get("patch_settings")
+    if not isinstance(settings, dict):
+        fail("Missing final patch-set settings")
+    temp_dir = tempfile.mkdtemp(prefix="pgen_icc_precondition_")
+    try:
+        profile_path = os.path.join(temp_dir, "precondition.icc")
+        precondition_payload = dict(payload)
+        precondition_payload["profile_quality"] = "medium"
+        run_colprof(precondition_payload, ti3, profile_path, "matrix", "small")
+        settings = dict(settings)
+        settings["precondition_profile"] = "precondition.icc"
+        result = generate_patches(settings, temp_dir)
+        result["precondition_patches"] = len(rows)
+        result["preconditioned"] = True
+        return result
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
+    profcheck = os.environ.get("PGEN_PROFCHECK", "/usr/bin/profcheck")
+    if not os.path.isfile(profcheck) or not os.access(profcheck, os.X_OK):
+        fail("The bundled ArgyllCMS profcheck executable is unavailable")
+    timeout_seconds = min(300, max(45, 30 + len(rows) // 25))
+    command = ["timeout", str(timeout_seconds), profcheck, "-v2", "-k", ti3_path, profile_path]
+    environment = dict(os.environ)
+    environment["LC_ALL"] = "C"
+    completed = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, env=environment)
+    output = completed.communicate()[0] or ""
+    if completed.returncode != 0:
+        detail = output.strip().splitlines()
+        fail("ArgyllCMS profile validation failed" + (": " + detail[-1][:240] if detail else ""))
+    summary = re.search(
+        r"Profile check complete, errors\(CIEDE2000\): max\.\s*=\s*([0-9.eE+-]+),\s*avg\.\s*=\s*([0-9.eE+-]+),\s*RMS\s*=\s*([0-9.eE+-]+)",
+        output,
+    )
+    if not summary:
+        fail("ArgyllCMS profile validation returned no summary")
+    peak, average, rms = [float(value) for value in summary.groups()]
+    patch_errors = []
+    for match in re.finditer(r"^\[([0-9.eE+-]+)\]\s+(\d+):", output, re.MULTILINE):
+        index = int(match.group(2))
+        if index < 1 or index > len(rows):
+            continue
+        row = rows[index - 1]
+        patch_errors.append({
+            "index": index,
+            "name": row.get("name") or "Patch {}".format(index),
+            "rgb": [round(value * 100.0, 2) for value in row["rgb"]],
+            "de00": round(float(match.group(1)), 4),
+        })
+    if average <= 1.0 and rms <= 1.5 and peak <= 4.0:
+        rating = "Excellent fit"
+    elif average <= 2.0 and rms <= 2.5 and peak <= 7.0:
+        rating = "Good fit"
+    else:
+        rating = "Review profile fit"
+    return {
+        "engine": "ArgyllCMS profcheck 3.5.0",
+        "method": "CIEDE2000 forward-profile fit against saved characterization data",
+        "profile_model": profile_model,
+        "profile_model_label": PROFILE_MODELS[profile_model]["label"],
+        "patch_set": patch_set,
+        "patches": len(rows),
+        "rating": rating,
+        "average_de00": round(average, 3),
+        "rms_de00": round(rms, 3),
+        "peak_de00": round(peak, 3),
+        "worst_patches": sorted(patch_errors, key=lambda item: item["de00"], reverse=True)[:10],
+        "note": "This checks how closely the finished ICC reproduces the measurements used to build it. It does not verify the installed profile, operating-system color pipeline, or current display state.",
+    }
 
 
 def build(payload, output_dir):
@@ -531,6 +738,17 @@ def build(payload, output_dir):
         fail("Unsupported Windows SDR target transfer")
     if profile_type != "windows-sdr":
         target_transfer = None
+    profile_model = str(payload.get("profile_model", "clut")).lower()
+    if profile_model not in PROFILE_MODELS:
+        fail("Unsupported ICC profile model")
+    if profile_type in ("windows-sdr", "windows-hdr") and not PROFILE_MODELS[profile_model]["matrix_fallback"]:
+        fail("Windows profiles require a profile model with matrix and tone-curve fallback tags")
+    patch_set = PATCH_SET_ALIASES.get(str(payload.get("quality", "medium")).lower(), str(payload.get("quality", "medium")).lower())
+    if patch_set not in ("small", "medium", "large", "custom"):
+        fail("Unsupported ICC patch set")
+    profile_quality = str(payload.get("profile_quality", "")).lower()
+    if profile_quality and profile_quality not in ("low", "medium", "high", "ultra"):
+        fail("Unsupported ICC profile calculation quality")
     rows = normalize_measurements(payload)
     full_frame_rows = [row for row in rows if row["name"] == "ICC Full Frame White"]
     profile_rows = [row for row in rows if row["name"] != "ICC Full Frame White"]
@@ -547,9 +765,10 @@ def build(payload, output_dir):
         "kde-hdr": "KDE-HDR",
         "windows-hdr": "Windows-HDR",
     }[profile_type]
-    filename = "{}-{}.icc".format(stem, suffix)
+    model_suffix = re.sub(r"-+", "-", SAFE_NAME.sub("-", PROFILE_MODELS[profile_model]["label"]).strip("- ").replace(" ", "-"))
+    filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)
     output_path = os.path.join(output_dir, filename)
-    run_colprof(payload, ti3, output_path)
+    run_colprof(payload, ti3, output_path, profile_model, patch_set)
     matrix = None
     adjustment_luts = None
     calibrated_white = None
@@ -563,12 +782,22 @@ def build(payload, output_dir):
         profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
         with open(output_path, "wb") as handle:
             handle.write(profile)
+    ti3_filename = filename[:-4] + ".ti3"
+    ti3_path = os.path.join(output_dir, ti3_filename)
+    write_text_atomic(ti3_path, ti3)
+    validation = run_profcheck(ti3_path, output_path, profile_rows, profile_model, patch_set)
+    validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
+    write_json_atomic(output_path + ".validation.json", validation)
     size = os.path.getsize(output_path)
     return {
         "status": "ok",
         "file": filename,
         "size": size,
         "profile_type": profile_type,
+        "profile_model": profile_model,
+        "profile_model_label": PROFILE_MODELS[profile_model]["label"],
+        "patch_set": patch_set,
+        "profile_quality": profile_quality or None,
         "target_transfer": target_transfer,
         "patches": len(rows),
         "white_nits": white["xyz"][1],
@@ -577,17 +806,28 @@ def build(payload, output_dir):
         "black_nits": black["xyz"][1],
         "mhc2_matrix": matrix,
         "mhc2_lut_entries": len(adjustment_luts[0]) if adjustment_luts else None,
+        "validation": validation,
     }
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(json.dumps({"status": "error", "message": "Usage: icc_profile_builder.py INPUT.json OUTPUT_DIR"}))
+    patch_mode = len(sys.argv) == 4 and sys.argv[1] == "--patches"
+    precondition_mode = len(sys.argv) == 4 and sys.argv[1] == "--precondition-patches"
+    special_mode = patch_mode or precondition_mode
+    if (not special_mode and len(sys.argv) != 3) or (special_mode and len(sys.argv) != 4):
+        print(json.dumps({"status": "error", "message": "Usage: icc_profile_builder.py [--patches|--precondition-patches] INPUT.json OUTPUT_DIR"}))
         return 2
     try:
-        with io.open(sys.argv[1], "r", encoding="utf-8") as handle:
+        input_path = sys.argv[2] if special_mode else sys.argv[1]
+        output_dir = sys.argv[3] if special_mode else sys.argv[2]
+        with io.open(input_path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        result = build(payload, sys.argv[2])
+        if patch_mode:
+            result = generate_patches(payload, output_dir)
+        elif precondition_mode:
+            result = generate_preconditioned_patches(payload, output_dir)
+        else:
+            result = build(payload, output_dir)
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except (ValueError, OSError, IOError, subprocess.CalledProcessError) as error:

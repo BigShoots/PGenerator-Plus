@@ -24,7 +24,7 @@ case "$1" in
         chown root.root /etc/sudo /etc/sudo/sudoers.d /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d /etc/sudoers.d/PGenerator 2>/dev/null
         chmod 755 /etc/sudo /etc/sudo/sudoers.d /etc/sudoers.d 2>/dev/null
         chmod 440 /etc/sudo/sudoers.d/PGenerator /etc/sudoers.d/PGenerator 2>/dev/null
-        chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh /usr/bin/ccss_create.py /usr/bin/ccss_create_patch.sh /usr/bin/ccxxmake_interactive /usr/bin/icc_profile_builder.py /usr/bin/icc_companion_package.py 2>/dev/null
+        chmod +x /usr/sbin/pgenerator-update /usr/bin/spotread /usr/bin/profcheck /usr/bin/targen /usr/bin/spotread_wrapper.sh /usr/bin/meter_session.sh /usr/bin/meter_series.sh /usr/bin/ccss_create.py /usr/bin/ccss_create_patch.sh /usr/bin/ccxxmake_interactive /usr/bin/icc_profile_builder.py /usr/bin/icc_companion_package.py 2>/dev/null
         # Open up /sys/kernel/debug so the renderer-spawn race fix
         # (wait_for_drm_master_unowned in command.pm) can poll
         # /sys/kernel/debug/dri/1/clients to wait for the kernel to
