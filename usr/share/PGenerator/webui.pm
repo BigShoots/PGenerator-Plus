@@ -13659,7 +13659,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <label for="meterIccStartDelay">Start delay in seconds</label>
        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
       </div>
-      <div class="meter-icc-note" id="meterIccStartDelayNote">The delay gives you time to move and resize the companion window on the display being profiled.</div>
+      <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
      </div>
     </div>
     <div class="meter-icc-panel" style="margin-top:12px">
@@ -33315,7 +33315,7 @@ function meterIccSyncUi(){
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
-  ?'The delay gives you time to move and resize the companion window on the display being profiled.'
+  ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
   :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
