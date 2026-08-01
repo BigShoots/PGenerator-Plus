@@ -12496,9 +12496,15 @@ body.layout-desktop #meterIccWorkspaceCard{border-bottom:0}
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
-.meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-.meter-icc-panel{padding:12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
-.meter-icc-panel h3{font-size:.78rem;color:var(--text);margin:0 0 8px}
+.meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.meter-icc-stack{display:grid;gap:12px;align-content:start;min-width:0}
+.meter-icc-finish-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(280px,.8fr);gap:12px;margin-top:12px;align-items:start}
+.meter-icc-panel{min-width:0;padding:14px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
+.meter-icc-panel h3{font-size:.8rem;color:var(--text);margin:0 0 4px}
+.meter-icc-section-intro{margin:0 0 12px;font-size:.7rem;color:var(--text2);line-height:1.45}
+.meter-icc-step{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:7px;border-radius:50%;background:rgba(91,127,255,.18);color:var(--accent);font-size:.68rem;font-weight:700;vertical-align:middle}
+.meter-icc-advanced{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.meter-icc-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
 .meter-icc-note{font-size:.72rem;color:var(--text2);line-height:1.5}
 .meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
 .meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
@@ -12508,7 +12514,9 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
 .meter-icc-profile-row:last-child{border-bottom:0}
 .meter-icc-profile-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
-@media(max-width:760px){.meter-icc-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.meter-icc-grid,.meter-icc-finish-grid{grid-template-columns:1fr}}
+body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr)}
+@media(max-width:1180px){body.layout-desktop #meterIccWorkspaceCard .meter-icc-grid,body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:1fr}}
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-head,
 body.layout-desktop #meter3dLutWorkspaceCard .meter-lut-tools-import,
 body.layout-desktop #meter3dLutWorkspaceCard #meterCubePreviewPanel,
@@ -13677,7 +13685,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 
   <span id="meterIccProfileHome" hidden></span>
   <div id="meterIccProfileModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
-   <div class="meter-modal-scroll" style="width:min(900px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
+   <div class="meter-modal-scroll" style="width:min(1160px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
       <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
@@ -13686,122 +13694,126 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
     <div class="meter-icc-grid">
-     <div class="meter-icc-panel">
-      <h3>1. Choose the destination</h3>
-      <div class="meter-icc-field">
-       <label for="meterIccProfileType">Profile type</label>
-       <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
-        <option value="sdr">Standard SDR ICC for color-managed applications</option>
-        <option value="windows-sdr">Windows SDR calibration (MHC2)</option>
-        <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
-        <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
-       </select>
+     <div class="meter-icc-stack">
+      <div class="meter-icc-panel">
+       <h3><span class="meter-icc-step">1</span>Profile</h3>
+       <p class="meter-icc-section-intro">Choose where the profile will be used and how it will represent the display.</p>
+       <div class="meter-icc-field">
+        <label for="meterIccProfileName">Profile name</label>
+        <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
+       </div>
+       <div class="meter-icc-field">
+        <label for="meterIccProfileType">Operating system and signal mode</label>
+        <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
+         <option value="sdr">Standard SDR ICC for color-managed applications</option>
+         <option value="windows-sdr">Windows SDR calibration (MHC2)</option>
+         <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
+         <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
+        </select>
+       </div>
+       <div id="meterIccProfileDescription" class="meter-icc-note"></div>
+       <div id="meterIccCompatibility" class="meter-icc-note" style="margin-top:8px;color:var(--warning)"></div>
+       <div class="meter-icc-field" id="meterIccTargetTransferField" style="display:none;margin-top:10px">
+        <label for="meterIccTargetTransfer">Target transfer</label>
+        <select id="meterIccTargetTransfer" onchange="meterIccSyncUi()">
+         <option value="srgb" selected>sRGB (Windows default)</option>
+         <option value="gamma22">Gamma 2.2</option>
+         <option value="gamma24">Gamma 2.4</option>
+         <option value="bt1886">BT.1886</option>
+        </select>
+        <div class="meter-icc-note" id="meterIccTargetTransferNote" style="margin-top:6px"></div>
+       </div>
+       <div class="meter-icc-field" style="margin-top:10px">
+        <label for="meterIccProfileModel">Profile model</label>
+        <select id="meterIccProfileModel" onchange="meterIccProfileModelChanged()">
+         <option value="clut" selected>XYZ cLUT + matrix fallback (recommended)</option>
+         <option value="xyz_clut">XYZ cLUT only</option>
+         <option value="lab_clut">L*a*b* cLUT only</option>
+         <option value="matrix">Curves + matrix</option>
+         <option value="single_curve_matrix">Single curve + matrix</option>
+         <option value="gamma_matrix">Gamma + matrix</option>
+         <option value="single_gamma_matrix">Single gamma + matrix</option>
+        </select>
+        <div class="meter-icc-note" id="meterIccProfileModelNote" style="margin-top:6px"></div>
+       </div>
+       <div class="meter-icc-field">
+        <label for="meterIccProfileQuality">Profile calculation quality</label>
+        <select id="meterIccProfileQuality" onchange="meterIccSyncUi()">
+         <option value="low">Low</option>
+         <option value="medium">Medium</option>
+         <option value="high" selected>High</option>
+         <option value="ultra">Ultra</option>
+        </select>
+        <div class="meter-icc-note" style="margin-top:6px">Controls profile fitting effort, independently of the number of measured patches. High is recommended.</div>
+       </div>
       </div>
-      <div id="meterIccProfileDescription" class="meter-icc-note"></div>
-      <div id="meterIccCompatibility" class="meter-icc-note" style="margin-top:8px;color:var(--warning)"></div>
-      <div class="meter-icc-field" id="meterIccTargetTransferField" style="display:none;margin-top:10px">
-       <label for="meterIccTargetTransfer">Target transfer</label>
-       <select id="meterIccTargetTransfer" onchange="meterIccSyncUi()">
-        <option value="srgb" selected>sRGB (Windows default)</option>
-        <option value="gamma22">Gamma 2.2</option>
-        <option value="gamma24">Gamma 2.4</option>
-        <option value="bt1886">BT.1886</option>
-       </select>
-       <div class="meter-icc-note" id="meterIccTargetTransferNote" style="margin-top:6px"></div>
+      <div class="meter-icc-panel">
+       <h3><span class="meter-icc-step">2</span>Meter</h3>
+       <p class="meter-icc-section-intro">Confirm the display technology and correction used by the connected meter.</p>
+       <div class="meter-icc-field">
+        <label for="meterIccDisplayType">Display type</label>
+        <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
+       </div>
+       <div class="meter-icc-field">
+        <label for="meterIccMeterProfile">Meter profile (CCSS / CCMX)</label>
+        <select id="meterIccMeterProfile" onchange="meterIccLinkedMeterProfileChanged()"></select>
+       </div>
+       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem">
+        <input id="meterIccPatternInsertion" type="checkbox" onchange="meterIccLinkedPatternInsertionChanged()"> Pattern insertion
+       </label>
+       <div class="meter-icc-note">Uses the timing and level settings configured in the Calibration workspace.</div>
       </div>
      </div>
-     <div class="meter-icc-panel">
-      <h3>2. Configure the measurement</h3>
-      <div class="meter-icc-field">
-       <label for="meterIccProfileName">Profile name</label>
-       <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
-      </div>
-      <div class="meter-icc-field">
-       <label for="meterIccProfileModel">Profile model</label>
-       <select id="meterIccProfileModel" onchange="meterIccProfileModelChanged()">
-        <option value="clut" selected>XYZ cLUT + matrix fallback (recommended)</option>
-        <option value="xyz_clut">XYZ cLUT only</option>
-        <option value="lab_clut">L*a*b* cLUT only</option>
-        <option value="matrix">Curves + matrix</option>
-        <option value="single_curve_matrix">Single curve + matrix</option>
-        <option value="gamma_matrix">Gamma + matrix</option>
-        <option value="single_gamma_matrix">Single gamma + matrix</option>
-       </select>
-       <div class="meter-icc-note" id="meterIccProfileModelNote" style="margin-top:6px"></div>
-      </div>
-      <div class="meter-icc-field">
-       <label for="meterIccQuality">Patch set</label>
-       <select id="meterIccQuality" onchange="meterIccPatchPresetChanged()">
-        <option value="small">Small</option>
-        <option value="medium" selected>Medium</option>
-        <option value="large">Large</option>
-        <option value="custom">Custom</option>
-       </select>
-      </div>
-      <div class="meter-icc-field">
-       <label for="meterIccProfileQuality">Profile calculation quality</label>
-       <select id="meterIccProfileQuality" onchange="meterIccSyncUi()">
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high" selected>High</option>
-        <option value="ultra">Ultra</option>
-       </select>
-       <div class="meter-icc-note" style="margin-top:6px">Controls ArgyllCMS profile fitting effort, separately from the number of measured patches. High is recommended. Ultra can take substantially longer for large cLUT profiles.</div>
-      </div>
-      <details id="meterIccPatchAdvanced" style="margin-top:8px">
-       <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">Advanced patch-set controls</summary>
-       <div class="meter-icc-note" style="margin:7px 0 10px">Presets fill these controls automatically. Changing a value selects Custom. Optimized full-spread patches follow the same ArgyllCMS test-chart approach used by DisplayCAL.</div>
+     <div class="meter-icc-stack">
+      <div class="meter-icc-panel">
+       <h3><span class="meter-icc-step">3</span>Patch set</h3>
+       <p class="meter-icc-section-intro">Select measurement time and coverage. Presets are suitable for most displays.</p>
        <div class="meter-icc-field">
-        <label for="meterIccPatchCount">Total patches: <span id="meterIccPatchCountLabel">425</span></label>
-        <div style="display:grid;grid-template-columns:minmax(120px,1fr) 84px;gap:8px;align-items:center">
-         <input id="meterIccPatchCountRange" type="range" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-range')">
-         <input id="meterIccPatchCount" type="number" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-number')">
+        <label for="meterIccQuality">Preset</label>
+        <select id="meterIccQuality" onchange="meterIccPatchPresetChanged()">
+         <option value="small">Small</option>
+         <option value="medium" selected>Medium</option>
+         <option value="large">Large</option>
+         <option value="custom">Custom</option>
+        </select>
+       </div>
+       <details id="meterIccPatchAdvanced" class="meter-icc-advanced">
+        <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">Advanced patch controls</summary>
+        <div class="meter-icc-note" style="margin:7px 0 10px">Presets fill these controls automatically. Changing a value selects Custom. Optimized full-spread patches use ArgyllCMS test-chart generation.</div>
+        <div class="meter-icc-field">
+         <label for="meterIccPatchCount">Total patches: <span id="meterIccPatchCountLabel">425</span></label>
+         <div style="display:grid;grid-template-columns:minmax(120px,1fr) 84px;gap:8px;align-items:center">
+          <input id="meterIccPatchCountRange" type="range" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-range')">
+          <input id="meterIccPatchCount" type="number" min="34" max="10000" step="1" value="425" oninput="meterIccPatchControlChanged('count-number')">
+         </div>
         </div>
-       </div>
-       <div style="display:grid;grid-template-columns:repeat(2,minmax(110px,1fr));gap:8px">
-        <div class="meter-icc-field"><label for="meterIccWhitePatches">White repeats</label><input id="meterIccWhitePatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
-        <div class="meter-icc-field"><label for="meterIccBlackPatches">Black repeats</label><input id="meterIccBlackPatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
-        <div class="meter-icc-field"><label for="meterIccGraySteps">Grayscale steps</label><input id="meterIccGraySteps" type="number" min="2" max="257" step="1" value="49" onchange="meterIccPatchControlChanged()"></div>
-        <div class="meter-icc-field"><label for="meterIccSingleSteps">Single-channel steps</label><input id="meterIccSingleSteps" type="number" min="0" max="129" step="1" value="17" onchange="meterIccPatchControlChanged()"></div>
-       </div>
-       <div class="meter-icc-field">
-        <label for="meterIccNeutralEmphasis">Neutral-axis emphasis: <span id="meterIccNeutralEmphasisLabel">50%</span></label>
-        <input id="meterIccNeutralEmphasis" type="range" min="0" max="100" step="1" value="50" oninput="meterIccPatchControlChanged()">
-       </div>
-       <div class="meter-icc-field">
-        <label for="meterIccDarkEmphasis">Dark-region emphasis: <span id="meterIccDarkEmphasisLabel">20%</span></label>
-        <input id="meterIccDarkEmphasis" type="range" min="0" max="100" step="1" value="20" oninput="meterIccPatchControlChanged()">
-       </div>
-       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccGoodOptimization" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Higher-quality optimized distribution</label>
-       <div class="meter-icc-field">
-        <label for="meterIccPreconditionProfile">Precondition for a known display (optional)</label>
-        <select id="meterIccPreconditionProfile" onchange="meterIccPatchControlChanged()"><option value="">None</option></select>
-        <div class="meter-icc-note" style="margin-top:6px">An existing profile guides patches toward this display's measured gamut and nonlinear regions. Leave this off when no representative profile exists.</div>
-       </div>
-       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccAutoPrecondition" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Auto-optimize from a 34-patch display pre-read</label>
-       <div class="meter-icc-note">This matches DisplayCAL's display-aware approach: PGenerator first creates a temporary matrix characterization, then ArgyllCMS places the final patches using the measured response. It is skipped when an existing preconditioning profile is selected.</div>
-      </details>
-      <div class="meter-icc-field">
-       <label for="meterIccDisplayType">Display type</label>
-       <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(110px,1fr));gap:8px">
+         <div class="meter-icc-field"><label for="meterIccWhitePatches">White repeats</label><input id="meterIccWhitePatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
+         <div class="meter-icc-field"><label for="meterIccBlackPatches">Black repeats</label><input id="meterIccBlackPatches" type="number" min="1" max="32" step="1" value="4" onchange="meterIccPatchControlChanged()"></div>
+         <div class="meter-icc-field"><label for="meterIccGraySteps">Grayscale steps</label><input id="meterIccGraySteps" type="number" min="2" max="257" step="1" value="49" onchange="meterIccPatchControlChanged()"></div>
+         <div class="meter-icc-field"><label for="meterIccSingleSteps">Single-channel steps</label><input id="meterIccSingleSteps" type="number" min="0" max="129" step="1" value="17" onchange="meterIccPatchControlChanged()"></div>
+        </div>
+        <div class="meter-icc-field">
+         <label for="meterIccNeutralEmphasis">Neutral-axis emphasis: <span id="meterIccNeutralEmphasisLabel">50%</span></label>
+         <input id="meterIccNeutralEmphasis" type="range" min="0" max="100" step="1" value="50" oninput="meterIccPatchControlChanged()">
+        </div>
+        <div class="meter-icc-field">
+         <label for="meterIccDarkEmphasis">Dark-region emphasis: <span id="meterIccDarkEmphasisLabel">20%</span></label>
+         <input id="meterIccDarkEmphasis" type="range" min="0" max="100" step="1" value="20" oninput="meterIccPatchControlChanged()">
+        </div>
+        <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccGoodOptimization" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Higher-quality optimized distribution</label>
+        <div class="meter-icc-field">
+         <label for="meterIccPreconditionProfile">Known display profile (optional)</label>
+         <select id="meterIccPreconditionProfile" onchange="meterIccPatchControlChanged()"><option value="">None</option></select>
+         <div class="meter-icc-note" style="margin-top:6px">A representative existing profile can guide patches toward the display's gamut and nonlinear regions.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccAutoPrecondition" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Auto-optimize from a 34-patch display pre-read</label>
+        <div class="meter-icc-note">PGenerator first creates a temporary matrix characterization, then places the final patches using the measured response. This is skipped when a known display profile is selected.</div>
+       </details>
       </div>
-      <div class="meter-icc-field">
-       <label for="meterIccMeterProfile">Meter profile (CCSS / CCMX)</label>
-       <select id="meterIccMeterProfile" onchange="meterIccLinkedMeterProfileChanged()"></select>
-      </div>
-      <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem">
-       <input id="meterIccPatternInsertion" type="checkbox" onchange="meterIccLinkedPatternInsertionChanged()"> Pattern insertion
-      </label>
-      <div class="meter-icc-note" style="margin-bottom:8px">Pattern insertion uses the timing and level settings configured in the Calibration workspace.</div>
-      <div class="meter-icc-field">
-       <label for="meterIccStartDelay">Start delay in seconds</label>
-       <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
-      </div>
-      <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
-     </div>
-    </div>
-    <div class="meter-icc-panel" style="margin-top:12px">
-     <h3>3. Choose the patch generator</h3>
+      <div class="meter-icc-panel">
+       <h3><span class="meter-icc-step">4</span>Patch generator</h3>
+       <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator HDMI.</p>
      <div class="meter-icc-field" style="margin-bottom:10px">
       <label for="meterIccPatternProvider">Patch generator</label>
       <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
@@ -13822,27 +13834,38 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator.</div>
       <div class="meter-icc-note" style="color:var(--warning)">The active PGenerator output must match the selected profile type. Measurements made through HDMI characterize that input path and do not include the target computer's GPU or operating-system color pipeline.</div>
      </div>
-    </div>
-    <div class="meter-icc-panel" style="margin-top:12px">
-     <h3>4. Measure and build</h3>
-     <div id="meterIccRunSummary" class="meter-icc-note" style="margin-bottom:10px"></div>
-     <div id="meterIccProgress" style="display:none">
-      <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:.72rem;color:var(--text2)">
-       <span id="meterIccProgressLabel">Preparing measurement</span>
-       <span id="meterIccProgressCount">0 / 0</span>
+       <div class="meter-icc-field" style="margin-top:12px">
+        <label for="meterIccStartDelay">Input-switch delay in seconds</label>
+        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
+       </div>
+       <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
       </div>
-      <div class="meter-icc-progress-track"><div id="meterIccProgressFill" class="meter-icc-progress-fill"></div></div>
-     </div>
-     <div id="meterIccStatus" class="meter-icc-note" role="status" style="margin-top:10px"></div>
-     <div class="btn-row" style="margin:12px 0 0;justify-content:flex-end">
-      <button type="button" class="btn btn-sm btn-secondary" id="meterIccRetryBuildBtn" onclick="meterIccRetryBuild()" style="display:none">Build Last Measurements</button>
-      <button type="button" class="btn btn-sm btn-danger" id="meterIccStopBtn" onclick="meterIccStop()" style="display:none">Stop</button>
-      <button type="button" class="btn btn-sm btn-primary" id="meterIccStartBtn" onclick="meterIccStart()">Start Profiling</button>
      </div>
     </div>
-    <div class="meter-icc-panel" style="margin-top:12px">
-     <h3>Created profiles</h3>
-     <div id="meterIccProfileList" class="meter-icc-note">Loading profiles...</div>
+    <div class="meter-icc-finish-grid">
+     <div class="meter-icc-panel">
+      <h3><span class="meter-icc-step">5</span>Review and build</h3>
+      <p class="meter-icc-section-intro">Review the active configuration, then begin the measurement run.</p>
+      <div id="meterIccRunSummary" class="meter-icc-note" style="margin-bottom:10px"></div>
+      <div id="meterIccProgress" style="display:none">
+       <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:.72rem;color:var(--text2)">
+        <span id="meterIccProgressLabel">Preparing measurement</span>
+        <span id="meterIccProgressCount">0 / 0</span>
+       </div>
+       <div class="meter-icc-progress-track"><div id="meterIccProgressFill" class="meter-icc-progress-fill"></div></div>
+      </div>
+      <div id="meterIccStatus" class="meter-icc-note" role="status" style="margin-top:10px"></div>
+      <div class="meter-icc-actions">
+       <button type="button" class="btn btn-sm btn-secondary" id="meterIccRetryBuildBtn" onclick="meterIccRetryBuild()" style="display:none">Build Last Measurements</button>
+       <button type="button" class="btn btn-sm btn-danger" id="meterIccStopBtn" onclick="meterIccStop()" style="display:none">Stop</button>
+       <button type="button" class="btn btn-sm btn-primary" id="meterIccStartBtn" onclick="meterIccStart()">Start Profiling</button>
+      </div>
+     </div>
+     <div class="meter-icc-panel">
+      <h3>Created profiles</h3>
+      <p class="meter-icc-section-intro">Download, inspect or delete profiles stored on this PGenerator.</p>
+      <div id="meterIccProfileList" class="meter-icc-note">Loading profiles...</div>
+     </div>
     </div>
    </div>
   </div>
