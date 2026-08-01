@@ -13233,9 +13233,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </label>
    </div>
   <div class="field field-hdr" id="meterHdrDiffuseConfig" style="display:none">
-    <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator's PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator's encoded 50% PQ patch for the active limited/full range. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
+    <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator's PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator's encoded 50% PQ patch at the active bit depth and limited/full range. For example, 10-bit Limited resolves to about 92.25 cd/m² while 8-bit Limited resolves to about 94.38 cd/m² because the midpoint is quantized differently. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
     <div class="meter-inline-value">
-     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="94.3784" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator's encoded 50% PQ target" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="92.2457" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator's encoded 50% PQ target at the active bit depth and range" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
      <span class="meter-inline-unit">cd/m&sup2;</span>
      <input type="checkbox" id="meterHdrDiffuseWhiteAuto" onchange="meterOnHdrDiffuseWhiteAutoChange()" checked>
      <label for="meterHdrDiffuseWhiteAuto" class="meter-toggle-label">Auto</label>
@@ -15644,6 +15644,7 @@ function meterQueueOutputSettingsRefresh(saveMeterPrefs){
    meterGreySyncUi();
    meterUpdateSeriesTabUi();
    updateMeterTargetWhitepointVisibility();
+   meterSyncHdrDiffuseWhiteControl();
    meterRefreshActiveSeriesCharts();
    meterUpdateReadButtons();
    try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
@@ -24123,7 +24124,7 @@ function meterGreyInputFraction(ire,code){
  return nominal;
 }
 
-const METER_HDR_DIFFUSE_WHITE_DEFAULT=94.3784;
+const METER_HDR_DIFFUSE_WHITE_DEFAULT=92.2457;
 
 function meterDisplayTypeIsProjector(value){
  const current=String(value||((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
@@ -24156,14 +24157,39 @@ function meterSyncHdrDiffuseWhiteControl(){
  input.classList.toggle('meter-input-disabled',!!automatic.checked);
 }
 
+function meterHdrDiffuseWhiteSignalFraction(){
+ // Diffuse-white Auto describes the patch that will actually be emitted, so
+ // derive its midpoint at the active transport precision. Do not route this
+ // through the active greyscale-series range: that range can represent a
+ // cached SDR headroom or AutoCal ladder and previously produced stale or
+ // nonsensical HDR diffuse-white values.
+ const bits=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():10;
+ const limited=(typeof meterPatchUsesVideoRange==='function')?meterPatchUsesVideoRange():true;
+ let minCode=0;
+ let maxCode=bits===8?255:1023;
+ if(bits===12){
+  minCode=256;
+  maxCode=3760;
+ }else if(limited){
+  minCode=bits===8?16:64;
+  maxCode=bits===8?235:940;
+ }
+ const span=maxCode-minCode;
+ if(!(span>0)) return 0.5;
+ const midpointCode=Math.round(minCode+(span*0.5));
+ const signal=(midpointCode-minCode)/span;
+ return (Number.isFinite(signal)&&signal>0&&signal<1)?signal:0.5;
+}
+
 function meterHdrNativeDiffuseWhite(){
  if(!(typeof meterChartPqDecodeNormalized==='function')) return METER_HDR_DIFFUSE_WHITE_DEFAULT;
  let signal=0.5;
- try{
-  if(typeof meterGreyStimulusFraction==='function') signal=meterGreyStimulusFraction(50);
- }catch(e){}
+ try{ signal=meterHdrDiffuseWhiteSignalFraction(); }catch(e){}
  const nits=meterChartPqDecodeNormalized(signal);
- return (Number.isFinite(nits)&&nits>0)?nits:METER_HDR_DIFFUSE_WHITE_DEFAULT;
+ // A 50% PQ code at supported transport depths is around 92 to 94 cd/m².
+ // Reject any value outside a deliberately wider safety envelope so a stale
+ // or malformed output state can never populate the Auto field with garbage.
+ return (Number.isFinite(nits)&&nits>=70&&nits<=130)?nits:METER_HDR_DIFFUSE_WHITE_DEFAULT;
 }
 
 function meterHdrDiffuseWhiteResolved(){
@@ -53914,7 +53940,7 @@ initMeterGreyCanvasEditing();
 meterRestoreHcfrFixedCodesPreference();
 meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
 meterRenderGreyTvControls(null);
-['signal_mode','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
+['signal_mode','max_bpc','color_format','rgb_quant_range','colorimetry','primaries','eotf'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',()=>meterQueueOutputSettingsRefresh(false));
 });
