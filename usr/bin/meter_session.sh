@@ -59,20 +59,19 @@ if [[ "${METER_USB_ID,,}" == "085c:0a00" ]]; then
  REFRESH_RATE=""
 fi
 
-# The SpyderX/Spyder5 perform a MANUAL dark calibration (sensor covered) and
-# Argyll persists it in the XDG cache as .spydX_<serial>.cal. -N maps to the driver's
-# set_noinitcalib: it suppresses the AUTOMATIC per-startup calibration so the
-# stored one is reused. Without it every spotread spawn re-calibrates, so a
-# dark cal done for Read Once was demanded again for Read Series (a separate
-# spotread process). Argyll still forces the prompt when the stored cal is
-# missing or stale.
-NOINITCAL_FLAG=""
-case "${METER_USB_ID,,}" in
- 085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
-esac
 SPECTRO_MARKER_ID=$(printf '%s' "${METER_USB_ID:-unknown}" | tr -cd 'A-Za-z0-9')
 [[ -n "$SPECTRO_MARKER_ID" ]] || SPECTRO_MARKER_ID="unknown"
 SPECTRO_STARTUP_MARKER="/tmp/pg_spectro_startup_checked_${SPECTRO_MARKER_ID}"
+# SpyderX/Spyder5 perform a manual dark calibration with the sensor covered.
+# Their first process after boot must run without -N so Argyll can request it.
+# Once that startup succeeds, later spotread processes use -N to reuse the
+# checked calibration instead of prompting before every read operation.
+NOINITCAL_FLAG=""
+case "${METER_USB_ID,,}" in
+ 085c:0a00|085c:0500)
+  [[ -f "$SPECTRO_STARTUP_MARKER" ]] && NOINITCAL_FLAG="-N"
+  ;;
+esac
 
 SPOTREAD_BIN="/usr/bin/spotread"
 TMPDIR="/tmp"
@@ -1022,7 +1021,7 @@ fi
 if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_CAL_DONE" == "1" ]]; then
  await_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
-if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+if [[ "$REQUIRE_DEVICE_READY" == "1" || "${METER_USB_ID,,}" == "085c:0a00" || "${METER_USB_ID,,}" == "085c:0500" ]]; then
  touch "$SPECTRO_STARTUP_MARKER" 2>/dev/null || true
 fi
 

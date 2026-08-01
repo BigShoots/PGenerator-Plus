@@ -3390,6 +3390,10 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  }
  my $observer="1931_2";
  $observer=$1 if($body=~/"observer"\s*:\s*"(1931_2|1964_10|2015_2|2015_10)"/);
+ # ICC characterisation is defined in the standard CIE 1931 observer. Keep
+ # this independent of the chart observer and of transient meter inventory
+ # state so tristimulus meters never receive an unsupported spectral mode.
+ $observer="1931_2" if($points==990001);
  my $pattern_provider=($body=~/"pattern_provider"\s*:\s*"companion"/i)?"companion":"local";
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   $display_type=&webui_spyderx_native_display_type($display_type_key);
@@ -13744,7 +13748,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          <option value="high" selected>High</option>
          <option value="ultra">Ultra</option>
         </select>
-        <div class="meter-icc-note" style="margin-top:6px">Controls profile fitting effort, independently of the number of measured patches. High is recommended.</div>
+        <div class="meter-icc-note" style="margin-top:6px">Controls profile fitting effort, independently of the number of measured patches. High is recommended. After a completed measurement run, you can rebuild the same readings at another quality without measuring again.</div>
        </div>
       </div>
       <div class="meter-icc-panel">
@@ -13856,7 +13860,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </div>
       <div id="meterIccStatus" class="meter-icc-note" role="status" style="margin-top:10px"></div>
       <div class="meter-icc-actions">
-       <button type="button" class="btn btn-sm btn-secondary" id="meterIccRetryBuildBtn" onclick="meterIccRetryBuild()" style="display:none">Build Last Measurements</button>
+       <button type="button" class="btn btn-sm btn-secondary" id="meterIccRetryBuildBtn" onclick="meterIccRetryBuild()" style="display:none">Rebuild Last Measurements</button>
        <button type="button" class="btn btn-sm btn-danger" id="meterIccStopBtn" onclick="meterIccStop()" style="display:none">Stop</button>
        <button type="button" class="btn btn-sm btn-primary" id="meterIccStartBtn" onclick="meterIccStart()">Start Profiling</button>
       </div>
@@ -33694,9 +33698,13 @@ function meterIccSyncUi(){
   :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
+  const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
+  const displayControl=document.getElementById('meterIccDisplayType');
+  const profileControl=document.getElementById('meterIccMeterProfile');
+  const meterReady=!!(meterDetected&&selectedMeter&&displayControl&&displayControl.options.length&&profileControl&&profileControl.options.length);
   const generatorUnavailable=usesCompanion?!meterIccCompanionConnected:!localMode.matches;
-  start.disabled=!meterDetected||generatorUnavailable||busy||invalidPatchSet;
-  start.title=!meterDetected?'Connect a meter first':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
+  start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
+  start.title=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
  }
 }
 
@@ -34049,6 +34057,10 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
   pattern_provider:patternProvider,
   ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
  });
+ // ICC profiling always characterises measurements in CIE 1931. The chart
+ // observer is a viewing/analysis preference and must not change the mode
+ // requested from a tristimulus meter such as SpyderX.
+ body.observer='1931_2';
  if(patternProvider==='companion'){
   body.signal_mode=mode;
   body.signal_range='2';
@@ -34072,6 +34084,15 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
 async function meterIccStart(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
+ meterIccPrepareMeasurementControls();
+ const selectedMeter=meterSelectedMeasurementMeter();
+ const displayControl=document.getElementById('meterIccDisplayType');
+ const profileControl=document.getElementById('meterIccMeterProfile');
+ if(!selectedMeter||!displayControl||!displayControl.options.length||!profileControl||!profileControl.options.length){
+  meterIccSyncUi();
+  toast('Wait for the meter settings to finish loading',true);
+  return;
+ }
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  const info=meterIccProfileInfo(type);
  const mode=info.mode;
@@ -34227,7 +34248,9 @@ async function meterIccBuild(readings){
    status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+whiteText+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
-  if(retry) retry.style.display='none';
+  // Profile quality only changes the fit. Preserve an explicit rebuild path
+  // so the completed measurements can be reused without another meter run.
+  if(retry) retry.style.display='';
   toast('ICC profile created');
   await meterIccLoadProfiles();
   if(response.validation) await meterIccOpenValidation(response.file,response.validation);

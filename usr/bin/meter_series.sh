@@ -1296,11 +1296,14 @@ EOJSON
  touch "$OUTFILE"
  mkfifo "$CMDPIPE"
 
- # SpyderX/Spyder5 keep a stored manual dark cal; -N reuses it instead of
- # re-calibrating on every spawn. See meter_session.sh for the full note.
+ # The first SpyderX/Spyder5 process after boot runs without -N so Argyll can
+ # request its manual dark calibration. Later processes reuse that checked
+ # calibration instead of prompting on every series. See meter_session.sh.
  NOINITCAL_FLAG=""
  case "${METER_USB_ID,,}" in
-  085c:0a00|085c:0500) NOINITCAL_FLAG="-N" ;;
+  085c:0a00|085c:0500)
+   [[ -f "$SPECTRO_STARTUP_MARKER" ]] && NOINITCAL_FLAG="-N"
+   ;;
  esac
  SR_CMD="$SPOTREAD_BIN $NOINITCAL_FLAG -e -y $DISPLAY_TYPE -c $PORT_NUM -Q $OBSERVER -x"
   if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
@@ -1507,7 +1510,7 @@ if [[ ( "$REQUIRE_DEVICE_READY" == "1" && "$WHITE_REF_DONE" == "1" ) || "$DARK_C
  # and surfaces the calibrate_tile wizard only when spotread requests it.
  series_setup_step "position_screen" "Calibration complete. Aim the meter at where the test patches appear on the screen, then click Ready."
 fi
-if [[ "$REQUIRE_DEVICE_READY" == "1" ]]; then
+if [[ "$REQUIRE_DEVICE_READY" == "1" || "${METER_USB_ID,,}" == "085c:0a00" || "${METER_USB_ID,,}" == "085c:0500" ]]; then
  touch "$SPECTRO_STARTUP_MARKER" 2>/dev/null || true
 fi
 INITIAL_READY_PENDING=0
