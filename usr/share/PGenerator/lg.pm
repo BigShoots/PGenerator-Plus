@@ -1861,6 +1861,7 @@ sub webui_lg_3d_lut_probe (@) {
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
   write_probe => $payload->{"write_probe"} ? &lg_json_true() : &lg_json_false(),
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
@@ -1894,6 +1895,7 @@ sub webui_lg_3d_lut_upload (@) {
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
   payload_path => $payload_path,
   upload_command => $payload->{"upload_command"}||"",
   get_command => $payload->{"get_command"}||"",
@@ -1929,6 +1931,7 @@ sub webui_lg_3d_lut_reset (@) {
   ip => $ip,
   client_key => $client_key,
   picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
   upload_command => $payload->{"upload_command"}||"",
   get_command => $payload->{"get_command"}||"",
   keep_calibration_mode => $payload->{"keep_calibration_mode"} ? 1 : 0,
@@ -3321,6 +3324,36 @@ const LG_PICTURE_MODES_BY_SIGNAL={
  ]
 };
 
+// LG's 2021 OLED menu predates the 2022+ Dolby Vision Filmmaker naming.
+// LG's published C1 specifications list six HDR modes and five Dolby Vision
+// modes: HDR adds Filmmaker, while Dolby Vision calls its dark reference mode
+// Cinema. Keep the proven dark-reference wire value and change its UI label.
+const LG_2021_PICTURE_MODES_BY_SIGNAL={
+ hdr10:[
+  ['hdrCinema','HDR Cinema'],
+  ['hdrCinemaBright','HDR Cinema Home'],
+  ['hdrFilmMaker','HDR Filmmaker'],
+  ['hdrGame','HDR Game Optimizer'],
+  ['hdrStandard','HDR Standard'],
+  ['hdrVivid','HDR Vivid']
+ ],
+ hlg:[
+  ['hdrCinema','HLG Cinema'],
+  ['hdrCinemaBright','HLG Cinema Home'],
+  ['hdrFilmMaker','HLG Filmmaker'],
+  ['hdrGame','HLG Game Optimizer'],
+  ['hdrStandard','HLG Standard'],
+  ['hdrVivid','HLG Vivid']
+ ],
+ dv:[
+  ['dolbyVisionFilmMaker','DV Cinema'],
+  ['dolbyVisionCinemaBright','DV Cinema Home'],
+  ['dolbyVisionGame','DV Game Optimizer'],
+  ['dolbyVisionStandard','DV Standard'],
+  ['dolbyVisionVivid','DV Vivid']
+ ]
+};
+
 const LG_DISPLAY_CONTROL_ITEMS=[
  {key:'brightness',label:'Brightness',type:'number',min:0,max:100,step:1},
  {key:'contrast',label:'Contrast',type:'number',min:0,max:100,step:1},
@@ -3373,11 +3406,27 @@ function lgSignalModeKey(){
  return 'sdr';
 }
 
+function lgUses2021PictureModeMap(){
+ const state=window.lgStatusState||{};
+ const model=String(state.modelName||state.model_name||state.displayName||'').toUpperCase();
+ return /OLED\d*(?:A|B|C|G|Z)1(?:[^0-9]|$)/.test(model);
+}
+
+function lgPictureModesForSignal(signalMode){
+ const signal=String(signalMode||'sdr');
+ if(lgUses2021PictureModeMap()&&LG_2021_PICTURE_MODES_BY_SIGNAL[signal]){
+  return LG_2021_PICTURE_MODES_BY_SIGNAL[signal];
+ }
+ return LG_PICTURE_MODES_BY_SIGNAL[signal]||LG_PICTURE_MODES_BY_SIGNAL.sdr;
+}
+
 function lgPictureModeEntries(){
  return [
   ...LG_PICTURE_MODES_BY_SIGNAL.sdr,
   ...LG_PICTURE_MODES_BY_SIGNAL.hdr10,
-  ...LG_PICTURE_MODES_BY_SIGNAL.dv
+  ...LG_PICTURE_MODES_BY_SIGNAL.dv,
+  ...LG_2021_PICTURE_MODES_BY_SIGNAL.hdr10,
+  ...LG_2021_PICTURE_MODES_BY_SIGNAL.dv
  ];
 }
 
@@ -3427,15 +3476,11 @@ function lgPictureModeCanonicalValue(value){
   hdr_vivid:'hdrVivid',
   hdrtechnicolorexpert:'hdrTechnicolorExpert',
   hdr_technicolorexpert:'hdrTechnicolorExpert',
-  dolbyvisioncinema:'dolbyVisionCinema',
-  dolby_hdr_cinema:'dolbyVisionCinema',
-  // The raw webOS read-back for the dark DV cinema mode is bare
-  // "dolbyHdrCinema", which on this generation IS the on-screen "Filmmaker"
-  // preset (there is no separate plain DV Cinema in the menu -- Cinema Home
-  // is dolbyHdrCinemaBright). Canonicalize it to the real dropdown entry
-  // dolbyVisionFilmMaker so a polled/reloaded read-back shows Filmmaker and
-  // drives calibration as Filmmaker, instead of an orphan "dolbyVisionCinema"
-  // that has no dropdown entry and mis-resolves the calibration picMode.
+  dolbyvisioncinema:lgUses2021PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
+  dolby_hdr_cinema:lgUses2021PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
+  // The backend's dark-reference mode is called Cinema on C1 and Filmmaker
+  // on C2+. Both use the proven dolbyVisionFilmMaker calibration value; the
+  // generation-specific options above supply the correct visible label.
   dolbyhdrcinema:'dolbyVisionFilmMaker',
   dolbyvisioncinemahome:'dolbyVisionCinemaBright',
   dolbyvisioncinemabright:'dolbyVisionCinemaBright',
@@ -3492,6 +3537,8 @@ function lgPictureModeStorageKey(signalMode){
 function lgPictureModeSignalForValue(value){
  const mode=lgPictureModeCanonicalValue(value);
  if(!mode) return '';
+ if(/^dolby(?:Vision|Hdr)/i.test(mode)) return 'dv';
+ if(/^hdr/i.test(mode)) return 'hdr10';
  for(const entry of Object.entries(LG_PICTURE_MODES_BY_SIGNAL)){
   const signal=entry[0];
   const modes=entry[1]||[];
@@ -3528,7 +3575,7 @@ function lgStoredPictureMode(signalMode){
 function lgPictureModeLabel(value){
  const mode=lgPictureModeCanonicalValue(value);
  const signal=lgPictureModeEffectiveSignal(mode);
- const all=[...(LG_PICTURE_MODES_BY_SIGNAL[signal]||[]),...lgPictureModeEntries()];
+ const all=[...lgPictureModesForSignal(signal),...lgPictureModeEntries()];
  const found=all.find(item=>item[0]===mode);
  if(found) return found[1];
  return mode.replace(/^hdr_/,'HDR ').replace(/^dolby_hdr_/,'Dolby Vision ').replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\b\w/g,ch=>ch.toUpperCase());
@@ -3536,7 +3583,7 @@ function lgPictureModeLabel(value){
 
 function lgPictureModeOptions(signalMode,current){
  const mode=signalMode||lgPictureModeEffectiveSignal(current);
- const options=(LG_PICTURE_MODES_BY_SIGNAL[mode]||LG_PICTURE_MODES_BY_SIGNAL.sdr).map(item=>item.slice());
+ const options=lgPictureModesForSignal(mode).map(item=>item.slice());
  const stored=lgPictureModeCanonicalValue(lgStoredPictureMode(mode));
  const extras=[];
  if(stored&&lgPictureModeMatchesSignal(stored,mode)) extras.push(stored);

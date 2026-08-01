@@ -71,6 +71,10 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "brightroom" => "expert1",
   "hdrcinema" => "hdrCinema",
   "hdr_cinema" => "hdrCinema",
+  "hdrcinemahome" => "hdrCinemaBright",
+  "hdrcinemabright" => "hdrCinemaBright",
+  "hdr_cinema_home" => "hdrCinemaBright",
+  "hdr_cinema_bright" => "hdrCinemaBright",
   "hdrfilmamker" => "hdrFilmMaker",
   "hdrfilmmaker" => "hdrFilmMaker",
   "hdr_filmmaker" => "hdrFilmMaker",
@@ -2199,7 +2203,7 @@ $DIAG_LOG_MAX_BYTES=131072;
 # below, e.g. dolby_hdr_cinema_dark, which was missing here entirely until
 # this fix) is recognized as writable -- matches how that function itself
 # now falls back to an algorithmic derivation instead of a fixed name list.
-$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolbyVisionVivid|dolbyVisionFilmMaker|dolbyVisionStandard|dolby_hdr_[a-z_]+)$';
+$WRITABLE_PICTURE_MODES_RE='^(expert1|expert2|isfexpert1|isfexpert2|technicolorexpert|filmmaker|filmmakermode|cinema|cinemahome|filmmaker|game|hdrCinema|hdrCinemaBright|hdrFilmMaker|hdrGame|hdrTechnicolorExpert|hdr_cinema|hdr_cinema_bright|hdr_filmMaker|hdr_filmmaker|hdr_filmmakermode|hdr_game|hdr_technicolorexpert|dolbyVisionCinema|dolbyVisionCinemaBright|dolbyVisionGame|dolbyVisionVivid|dolbyVisionFilmMaker|dolbyVisionStandard|dolby_hdr_[a-z_]+)$';
 
 sub diag_log_append (@) {
  my ($label,$data)=@_;
@@ -2386,11 +2390,15 @@ sub lg_picture_mode_for_calibration (@) {
   "filmmaker" => "filmMaker",
   "filmmakermode" => "filmMaker",
   "hdr_cinema" => "hdr_cinema",
+  "hdr_cinema_home" => "hdr_cinema_bright",
+  "hdr_cinema_bright" => "hdr_cinema_bright",
   "hdr_game" => "hdr_game",
   "hdr_technicolorexpert" => "hdr_technicolorExpert",
   "hdr_filmmaker" => "hdr_filmMaker",
   "hdr_filmmakermode" => "hdr_filmMaker",
   "hdrcinema" => "hdr_cinema",
+  "hdrcinemahome" => "hdr_cinema_bright",
+  "hdrcinemabright" => "hdr_cinema_bright",
   "hdrgame" => "hdr_game",
   "hdrtechnicolorexpert" => "hdr_technicolorExpert",
   "hdrfilmmaker" => "hdr_filmMaker",
@@ -3115,22 +3123,30 @@ sub lg_3d_lut_probe_candidate (@) {
 }
 
 sub lg_3d_lut_resolve_mode (@) {
- my ($session,$ip,$picture_mode,$generation,$timeout)=@_;
+ my ($session,$ip,$picture_mode,$generation,$timeout,$signal_mode)=@_;
  my $active_picture_mode=$picture_mode||"";
  $active_picture_mode=&lg_current_picture_mode($session,$timeout) if($active_picture_mode eq "");
- $active_picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode) if($active_picture_mode eq "" && ref($generation) eq "HASH" && $generation->{"ddc_only_white_balance"});
+ $active_picture_mode=&lg_resolve_ddc_picture_mode($ip,$picture_mode,$signal_mode) if($active_picture_mode eq "" && ref($generation) eq "HASH" && $generation->{"ddc_only_white_balance"});
+ # The generic DDC fallback calls the dark reference mode dolbyVisionCinema.
+ # On a C1 its menu label is Cinema, but the hardware-proven calibration wire
+ # mode is Cinema Dark, represented internally by dolbyVisionFilmMaker.
+ if(ref($generation) eq "HASH" && ($generation->{"generation_id"}||"") eq "lg2021_oled" && lc($signal_mode||"") eq "dv") {
+  my $token=lc($active_picture_mode||"");
+  $token =~ s/[\s_-]+//g;
+  $active_picture_mode="dolbyVisionFilmMaker" if($token eq "dolbyvisioncinema" || $token eq "dolbyhdrcinema");
+ }
  return ($active_picture_mode,&lg_picture_mode_for_calibration($active_picture_mode));
 }
 
 sub lg_3d_lut_probe_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$write_probe)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$write_probe,$signal_mode)=@_;
  $write_probe=$write_probe ? 1 : 0;
  return &json_error("Connect / Pair the LG TV before probing 3D LUT upload support",{ ip => $ip }) if($client_key eq "");
  my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,$signal_mode);
  if($cal_mode eq "") {
   &websocket_close($session);
   return &json_error("LG SDR 3D LUT writes are not mapped for picture mode '$active_picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ ip => $ip, active_picture_mode => $active_picture_mode });
@@ -3138,6 +3154,13 @@ sub lg_3d_lut_probe_workflow (@) {
  my $start=&lg_calibration_request($session,"3d_lut_probe_cal_start","CAL_START",undef,1,$cal_mode,$connect_timeout + 4);
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  if($start_failed || ref($start) ne "HASH") {
+  &diag_log_append("3d_lut_probe:failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   stage => "cal_start",
+   message => $start_message||"LG TV rejected calibration mode start for 3D LUT probe.",
+  });
   &websocket_close($session);
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT probe.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
  }
@@ -3202,7 +3225,7 @@ sub lg_3d_lut_probe_workflow (@) {
 }
 
 sub lg_3d_lut_upload_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
  return &json_error("Connect / Pair the LG TV before uploading a 3D LUT",{ ip => $ip }) if($client_key eq "");
@@ -3212,7 +3235,7 @@ sub lg_3d_lut_upload_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,$signal_mode);
  if($cal_mode eq "") {
   &websocket_close($session);
   return &json_error("LG SDR 3D LUT writes are not mapped for picture mode '$active_picture_mode'. Switch to Cinema, Expert, Filmmaker, or Game.",{ ip => $ip, active_picture_mode => $active_picture_mode });
@@ -3238,6 +3261,13 @@ sub lg_3d_lut_upload_workflow (@) {
   ($start_failed,$start_message)=&response_is_app_failure($start);
  }
  if($start_failed || ref($start) ne "HASH") {
+  &diag_log_append("3d_lut_upload:failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   stage => "cal_start",
+   message => $start_message||"LG TV rejected calibration mode start for 3D LUT upload.",
+  });
   &websocket_close($session);
   return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
  }
@@ -3264,6 +3294,13 @@ sub lg_3d_lut_upload_workflow (@) {
   my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
   push(@bt2020_matrix_steps,{ phase => "pre_upload", command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
   if($matrix_failed || ref($matrix_response) ne "HASH") {
+   &diag_log_append("3d_lut_upload:failure",{
+    ip => $ip,
+    picture_mode => $active_picture_mode,
+    calibration_picture_mode => $cal_mode,
+    stage => "bt2020_3by3_pre",
+    message => $matrix_message||"LG TV rejected HDR BT.2020 3x3 setup before 3D LUT upload.",
+   });
    my $end=&lg_calibration_request($session,"3d_lut_upload_cal_end","CAL_END",undef,1,"",$connect_timeout + 4);
    &websocket_close($session);
    return &json_error($matrix_message||"LG TV rejected HDR BT.2020 3x3 setup before 3D LUT upload.",{
@@ -3420,11 +3457,11 @@ sub lg_3d_lut_upload_workflow (@) {
 }
 
 sub lg_3d_lut_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active)=@_;
+ my ($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
  my $tmp="/tmp/pgenerator_lg_unity_3d_lut_$$.bin";
  my $unity=&lg_unity_3d_lut(33);
  &file_write_text($tmp,pack("v*",@{$unity}));
- my $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tmp,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
+ my $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tmp,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
  unlink($tmp);
  $result->{"reset_to_unity"}=&json_true() if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok");
  if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok") {
@@ -3547,7 +3584,7 @@ sub lg_hdr_calman_reset_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"hdr10");
  if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
   &websocket_close($session);
   return &json_error("HDR reset requires an active HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -3655,7 +3692,7 @@ sub lg_dv_calman_reset_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"dv");
  if($cal_mode eq "" || $cal_mode !~ /^dolby_hdr_/) {
   &websocket_close($session);
   return &json_error("Dolby Vision reset requires an active Dolby Vision picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -3797,7 +3834,7 @@ sub lg_sdr_calman_reset_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"sdr");
  if($cal_mode eq "") {
   &websocket_close($session);
   return &json_error("SDR reset requires a writable picture mode (cinema/expert/filmmaker/game/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -3910,7 +3947,7 @@ sub lg_hdr_tone_map_upload_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"hdr10");
  if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
   &websocket_close($session);
   return &json_error("HDR tone-map upload requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -4010,7 +4047,7 @@ sub lg_1d_dpg_read_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"hdr10");
  if($cal_mode eq "" || $cal_mode !~ /^hdr_/) {
   &websocket_close($session);
   return &json_error("HDR20 1D DPG read requires an HDR picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -4132,7 +4169,7 @@ sub lg_1d_dpg_upload_workflow_inner (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,$signal_mode);
  if($cal_mode eq "") {
   &websocket_close($session);
   return &json_error("1D DPG upload requires a writable picture mode (cinema/expert/filmmaker/game/hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -4269,7 +4306,7 @@ sub lg_dv_profile_upload_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
- my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2);
+ my ($active_picture_mode,$cal_mode)=&lg_3d_lut_resolve_mode($session,$ip,$picture_mode,$generation,$connect_timeout + 2,"dv");
  if($cal_mode eq "") {
   &websocket_close($session);
   return &json_error("Dolby Vision profile upload requires a writable picture mode (dolby_hdr_cinema/etc).",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode });
@@ -6519,11 +6556,11 @@ sub main (@) {
  } elsif($action eq "calibration_mode") {
   $result=&lg_calibration_mode_workflow($ip,$client_key,$connect_timeout,$enable,$picture_mode);
  } elsif($action eq "3d_lut_probe") {
-  $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe);
+  $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe,$signal_mode);
  } elsif($action eq "3d_lut_upload") {
-  $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
+  $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
 	 } elsif($action eq "3d_lut_reset") {
-	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active);
+	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
 	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "dv_calman_reset") {

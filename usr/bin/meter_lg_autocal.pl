@@ -14921,6 +14921,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			write_state($state);
 			my $resp=api_json("POST","/api/lg/3d-lut/reset",{
 				picture_mode=>$picture_mode,
+				signal_mode=>$config->{"signal_mode"}||"hdr10",
 				upload_command=>"BT2020_3D_LUT_DATA",
 				keep_calibration_mode=>JSON::PP::true,
 				calibration_mode_active=>JSON::PP::false,

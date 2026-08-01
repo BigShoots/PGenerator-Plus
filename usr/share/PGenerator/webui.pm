@@ -39746,6 +39746,7 @@ async function meterAutoCalReset3dLutBaseline(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
      picture_mode:pictureMode,
+     signal_mode:lutResetSigMode,
      ...meterLg3dLutCommandPayload(hdrWorkflow?'hdr10':'sdr'),
      helper_timeout:220
     }),

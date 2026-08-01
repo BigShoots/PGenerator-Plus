@@ -305,6 +305,10 @@ sub map_picture_mode_label_to_ddc_name(@) {
   # underscore-separated — accept either)
   "hdrcinema" => "hdrCinema",
   "hdr_cinema" => "hdrCinema",
+  "hdrcinemahome" => "hdrCinemaBright",
+  "hdrcinemabright" => "hdrCinemaBright",
+  "hdr_cinema_home" => "hdrCinemaBright",
+  "hdr_cinema_bright" => "hdrCinemaBright",
   "hdrfilmamker" => "hdrFilmMaker",
   "hdrfilmmaker" => "hdrFilmMaker",
   "hdr_filmmaker" => "hdrFilmMaker",

@@ -3132,6 +3132,7 @@ sub reset_3d_lut_to_unity_before_profile {
  write_state($state);
  my $reset=api_json("POST","/api/lg/3d-lut/reset",{
   picture_mode => $config->{"picture_mode"}||"",
+  signal_mode => $config->{"signal_mode"}||"",
   upload_command => $config->{"upload_command"}||"",
   get_command => $config->{"get_command"}||"",
   helper_timeout => 220,
@@ -3778,6 +3779,7 @@ sub run_hdr20_postcal_shadow_correction {
   my $d_msg="";
   my $reset_resp=api_json("POST","/api/lg/3d-lut/reset",{
    picture_mode => $config->{"picture_mode"}||"",
+   signal_mode => $config->{"signal_mode"}||"",
    upload_command => "BT2020_3D_LUT_DATA",
    keep_calibration_mode => json_true(),
    calibration_mode_active => json_false(),
@@ -4667,6 +4669,7 @@ eval {
    write_state($state);
    $probe=api_json("POST","/api/lg/3d-lut/probe",{
     picture_mode => $config->{"picture_mode"}||"",
+    signal_mode => $config->{"signal_mode"}||"",
     write_probe => json_true(),
     helper_timeout => 190,
    },210);
@@ -4681,6 +4684,7 @@ eval {
    my $full_workflow_upload=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
    $state->{"upload_request"}={
     picture_mode => $config->{"picture_mode"}||"",
+    signal_mode => $config->{"signal_mode"}||"",
     payload_path => $export->{"payload_path"},
     upload_command => $probe->{"upload_command"}||"",
     get_command => $probe->{"get_command"}||"",
@@ -4830,6 +4834,7 @@ eval {
    my $_lut_req=sub {
     return {
      picture_mode => $config->{"picture_mode"}||"",
+     signal_mode => $config->{"signal_mode"}||"",
      payload_path => $export->{"payload_path"},
      upload_command => $config->{"upload_command"}||"BT2020_3D_LUT_DATA",
      get_command => $config->{"get_command"}||"GET_3D_LUT_DATA",
