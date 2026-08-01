@@ -2597,11 +2597,16 @@ sub webui_meter_read (@) {
  if(&webui_meter_is_spyderx($measurement_meter_usb_id,$measurement_meter_port)) {
   # SpyderX exposes four built-in display calibrations and device-specific
   # CCMX matrices, but not CCSS spectral corrections. Keep a selected CCMX;
-  # clear CCSS and the unsupported manual refresh override.
+  # clear CCSS and the unsupported manual refresh override. Alternate CIE
+  # observers also require spectra or CCSS, so SpyderX must remain 1931 2 deg.
   $display_type=&webui_spyderx_native_display_type($display_type_key);
   $ccss_file="" if($ccss_file!~/\.ccmx$/i);
   $refresh_rate="";
+  $observer="1931_2";
  }
+ # Alternate observers require spectral samples. Keep every colorimeter on
+ # the standard observer even if a stale client submits another selection.
+ $observer="1931_2" if(!&webui_meter_port_is_spectro($measurement_meter_port));
  # Session identity stickiness: an ABSENT field means "unspecified", not
  # "changed".
  #
@@ -3375,7 +3380,12 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
   $display_type=&webui_spyderx_native_display_type($display_type_key);
   $ccss_file="" if($ccss_file!~/\.ccmx$/i);
   $refresh_rate="";
+  # ArgyllCMS can only apply a non-default observer to spectral data or a
+  # CCSS-capable colorimeter. SpyderX supports neither path.
+  $observer="1931_2";
  }
+ # Series requests use the same capability rule as single/continuous reads.
+ $observer="1931_2" if(!&webui_meter_port_is_spectro($measurement_meter_port));
  my $require_device_ready=0;
  $require_device_ready=1 if($body=~/"require_device_ready"\s*:\s*true/i);
  $require_device_ready=1 if(!$require_device_ready && &webui_meter_port_is_spectro($measurement_meter_port));
@@ -13177,7 +13187,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      </select>
     </div>
    <div class="field field-chromaticity">
-    <label>Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a spectrophotometer, or a CCSS-capable colorimeter with a compatible CCSS selected.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It has the same spectral requirement.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a spectrophotometer, or a CCSS-capable colorimeter with a compatible CCSS selected.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They have the same spectral requirement.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It has the same CIE 170-2 spectral requirement.&#10;&#10;A CCMX contains only a 3x3 XYZ matrix and does not provide the spectral data needed for a non-default observer. SpyderX does not support CCSS, so use the CIE 1931 or CIE 1976 2&deg; views with that meter. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
+    <label>Observer <span class="meter-help-tip" title="Selects the observer ArgyllCMS uses for new measurements and the coordinate view used by the chart. Existing readings made with another observer are not converted.&#10;&#10;CIE 1931 xy (2&deg;): Standard display-calibration view. Works with any supported meter and may use a CCMX.&#10;CIE 1976 u&#8242;v&#8242; (2&deg;): A more uniform coordinate view of the same CIE 1931 measurements. It has the same meter requirements.&#10;CIE 1964 xy (10&deg;): Intended for a larger visual field. Requires a selected spectrophotometer.&#10;CIE 1976 u&#8242;v&#8242; (10&deg;): A more uniform coordinate view of CIE 1964 measurements. It requires a selected spectrophotometer.&#10;CIE 170-2 xF yF (2&deg; and 10&deg;): Modern physiologically based observers for observer-metamerism analysis. Requires a selected spectrophotometer.&#10;MacLeod-Boynton (2&deg; and 10&deg;): Cone-response views derived from CIE 170-2 measurements. They require a selected spectrophotometer.&#10;Cone-Opponent Polar (2&deg;): Polar cone-response view dedicated to the MacLeod-Boynton Hue Circle series. It requires a selected spectrophotometer.&#10;&#10;A colorimeter and CCMX contain only tristimulus or 3x3 matrix data and cannot supply the spectra needed for these alternate observers. ArgyllCMS can derive alternate observers from certain CCSS-capable colorimeters, but PGenerator enables them only with a spectrophotometer selected to prevent unsupported meter modes. Gamut specifications and target-only presets use a stable reference projection when source spectra are unavailable." aria-label="Observer help">?</span></label>
     <select id="meterChromaticityChart" onchange="meterOnChromaticityChartChange()">
      <option value="cie1931_2" selected>CIE 1931 xy (2&deg;)</option>
      <option value="cie1964_10">CIE 1964 xy (10&deg;)</option>
@@ -25933,6 +25943,7 @@ function meterUpdateMeterCapabilityControls(){
  const ccss=document.getElementById('meterCcssProfile');
  const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
  const refresh=document.getElementById('meterRefreshRate');
+ const observerSelect=document.getElementById('meterChromaticityChart');
  const ccssNote=document.getElementById('meterCcssCapabilityNote');
  const profileHelp=document.getElementById('meterCorrectionProfileHelp');
  const refreshNote=document.getElementById('meterRefreshCapabilityNote');
@@ -25978,6 +25989,34 @@ function meterUpdateMeterCapabilityControls(){
    : 'CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter\'s native response.';
  }
  if(refreshNote) refreshNote.style.display=spyderX?'':'none';
+ if(observerSelect){
+  const spectralObserverAvailable=meterIsSpectrophotometer(meterSelectedMeasurementMeter());
+  const tristimulusViews=new Set(['cie1931_2','cie1976_2']);
+  for(const option of Array.from(observerSelect.options||[])){
+   if(!spectralObserverAvailable&&!tristimulusViews.has(option.value)){
+    option.disabled=true;
+    option.dataset.spectralObserverDisabled='1';
+    option.title='Select a spectrophotometer to use this observer.';
+   }else if(option.dataset&&option.dataset.spectralObserverDisabled==='1'){
+    option.disabled=false;
+    delete option.dataset.spectralObserverDisabled;
+    option.title='';
+   }
+  }
+  if(!spectralObserverAvailable&&!tristimulusViews.has(observerSelect.value)){
+   observerSelect.value='cie1931_2';
+   if(typeof meterOnChromaticityChartChange==='function'&&!meterChromaticityReadActive()){
+    meterOnChromaticityChartChange();
+   }
+   toast('The selected observer requires a spectrophotometer. Observer reset to CIE 1931.',true);
+  }
+  if(typeof meterSyncOpponentChartAvailability==='function'){
+   meterSyncOpponentChartAvailability(
+    typeof meterActiveSeriesType==='undefined'?null:meterActiveSeriesType,
+    typeof meterActiveSeriesPoints==='undefined'?null:meterActiveSeriesPoints
+   );
+  }
+ }
  if(Array.isArray(meterCcssLibrary)&&typeof populateMeterCcssProfileSelect==='function'){
   populateMeterCcssProfileSelect('meterAutoCalCcssProfile');
  }
@@ -36226,7 +36265,7 @@ function meterSyncOpponentChartAvailability(type,points){
  if(!chart) return;
  const hue=meterHueCircleSeriesActive(type,points);
  Array.from(chart.options||[]).forEach(option=>{
-  if(option.value==='cieopp_2') option.disabled=!hue;
+  if(option.value==='cieopp_2') option.disabled=!hue||!meterIsSpectrophotometer(meterSelectedMeasurementMeter());
  });
  const opponent=typeof meterCieIsOpponentMode==='function'&&meterCieIsOpponentMode();
  chart.title=opponent
