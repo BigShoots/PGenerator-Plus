@@ -52479,11 +52479,30 @@ async function loadCustomCcssList(){
  el.innerHTML=r.files.map(f=>{
   const format=/\.ccmx$/i.test(f)?'CCMX':'CCSS';
   const label=f.replace(/\.(?:ccss|ccmx)$/i,'');
-  const active=customCcssFile===f;
+  // This list belongs to the editor, so its highlight must follow the
+  // profile shown in the viewer. Fall back to the applied meter profile only
+  // before the editor has an explicit preview selection.
+  const active=ccssPreviewActiveValue
+   ? ccssPreviewActiveValue===('custom\t'+f)
+   : customCcssFile===f;
   return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
-  +'<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="flex:1;font-size:.7rem;padding:2px 6px;text-align:left" onclick="selectCustomCcss(\''+f+'\')">'+(active?'\u2713 ':'')+'['+format+'] '+label+'</button>'
+  +'<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" data-ccss-filename="'+ccssPreviewEscapeHtml(f)+'" style="flex:1;font-size:.7rem;padding:2px 6px;text-align:left" onclick="selectCustomCcss(\''+f+'\')"><span data-ccss-selected-mark>'+(active?'\u2713 ':'')+'</span>['+format+'] '+label+'</button>'
   +'<button class="btn btn-sm" style="font-size:.68rem;padding:2px 6px;color:var(--red)" onclick="deleteCustomCcss(\''+f+'\')">\u2715</button></div>';
  }).join('');
+}
+
+function ccssSyncCustomListHighlight(){
+ const viewed=String(ccssPreviewActiveValue||'');
+ const fallback=String(customCcssFile||'');
+ const buttons=document.querySelectorAll('#customCcssList button[data-ccss-filename]');
+ buttons.forEach(button=>{
+  const filename=String(button.dataset.ccssFilename||'');
+  const active=viewed ? viewed===('custom\t'+filename) : filename===fallback;
+  button.classList.toggle('btn-success',active);
+  button.classList.toggle('btn-secondary',!active);
+  const mark=button.querySelector('[data-ccss-selected-mark]');
+  if(mark) mark.textContent=active?'\u2713 ':'';
+ });
 }
 
 async function selectCustomCcss(filename){
@@ -52786,6 +52805,7 @@ function ccssPreviewPopulateOptions(files){
  select.value=previous;
  if(select.value!==previous) select.value='';
  ccssPreviewActiveValue=select.value||'';
+ ccssSyncCustomListHighlight();
  ccssExportSyncControls();
  if(ccssPreviewActiveValue) ccssPreviewLoadByValue(ccssPreviewActiveValue,true);
  else ccssPreviewClear('Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.');
@@ -52798,11 +52818,13 @@ async function ccssPreviewLoadByValue(value,quiet){
  if(!entry){
   ccssPreviewActiveValue='';
   if(select) select.value='';
+  ccssSyncCustomListHighlight();
   ccssPreviewClear('Select a CCSS to inspect its spectral curves or a CCMX to inspect its matrix.');
   return;
  }
  ccssPreviewActiveValue=ccssPreviewValue(entry);
  if(select) select.value=ccssPreviewActiveValue;
+ ccssSyncCustomListHighlight();
  ccssExportSyncControls();
  const meta=document.getElementById('ccssPreviewMeta');
  if(meta) meta.textContent='Loading '+ccssFormatDropdownLabel(entry)+'...';
@@ -53295,6 +53317,7 @@ document.getElementById('ccssPreviewSelect').addEventListener('change',function(
  const value=String(this.value||'');
  if(!value){
   ccssPreviewActiveValue='';
+  ccssSyncCustomListHighlight();
   ccssPreviewClear('Select any built-in or custom CCSS profile to inspect its spectral curves.');
   return;
  }
