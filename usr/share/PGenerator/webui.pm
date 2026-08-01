@@ -1929,7 +1929,7 @@ sub webui_meter_status_prune_disconnected (@) {
  my ($json)=@_;
  return $json if(!defined($json) || $json!~/"detected"\s*:\s*true/);
  my @entries;
- while($json=~/(\{"port_num":"[^"]*","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"\})/g) {
+ while($json=~/(\{"port_num":"[^"]*","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"(?:,"physical_port":"[^"]*")?\})/g) {
   push @entries,{raw=>$1,usb_id=>(defined($2)?$2:"")};
  }
  return $json if(!@entries);
@@ -2005,7 +2005,7 @@ sub webui_meter_port_is_spectro (@) {
  $port=~s/[^0-9]//g;
  my $json=&webui_meter_status();
  return 0 if(!defined($json) || $json eq "");
- while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"[^"]*"),"name":"[^"]*","meter_type":"([^"]*)"\}/g) {
+ while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"[^"]*"),"name":"[^"]*","meter_type":"([^"]*)"(?:,"physical_port":"[^"]*")?\}/g) {
   my $meter_port=$1;
   my $meter_type=lc($2||"");
   next if($port ne "" && $meter_port ne $port);
@@ -2038,7 +2038,7 @@ sub webui_meter_usb_id_for_port (@) {
  my $json=$_meter_last_good_status;
  $json=&webui_meter_status() if(!defined($json) || $json eq "" || $json!~/"detected"\s*:\s*true/);
  return "" if(!defined($json) || $json eq "");
- while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"\}/g) {
+ while($json=~/\{"port_num":"([^"]*)","port":"[^"]*","usb_id":(?:null|"([^"]*)"),"name":"[^"]*","meter_type":"[^"]*"(?:,"physical_port":"[^"]*")?\}/g) {
   my ($meter_port,$usb_id)=($1,lc($2||""));
   next if($port ne "" && $meter_port ne $port);
   return $usb_id if($usb_id=~/^[0-9a-f]{4}:[0-9a-f]{4}$/);
@@ -7618,20 +7618,21 @@ sub webui_ccss_create_start (@) {
 
  my $status_json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
  my @meters;
- while($status_json=~/\{"port_num":"([^"]*)","port":"([^"]*)","usb_id":(?:null|"([^"]*)"),"name":"([^"]*)","meter_type":"([^"]*)"\}/g) {
-  push @meters,{port_num=>$1,port=>$2,usb_id=>$3||"",name=>$4,meter_type=>lc($5||"")};
+ while($status_json=~/\{"port_num":"([^"]*)","port":"([^"]*)","usb_id":(?:null|"([^"]*)"),"name":"([^"]*)","meter_type":"([^"]*)"(?:,"physical_port":"([^"]*)")?\}/g) {
+  push @meters,{port_num=>$1,port=>$2,usb_id=>$3||"",name=>$4,meter_type=>lc($5||""),physical_port=>$6||""};
  }
  my @spectros=grep { ($_->{meter_type}||"") eq "spectro" } @meters;
  my @colorimeters=grep { ($_->{meter_type}||"") eq "colorimeter" } @meters;
- return '{"status":"error","message":"Connect a reference spectrophotometer before creating the profile"}' if(!@spectros);
- # Other meters (e.g. a colorimeter) may stay connected during a calibration.
- # Pick the requested spectro by port; fall back to the sole spectro if unambiguous.
- my ($chosen)=grep { $_->{port_num} eq $profiling_port } @spectros;
- ($chosen)=@spectros if(!$chosen && scalar(@spectros) == 1);
- return '{"status":"error","message":"Select which reference spectrophotometer to use"}' if(!$chosen);
+ my @references=$format eq "ccmx" ? @meters : @spectros;
+ return '{"status":"error","message":"Connect a reference meter before creating the profile"}' if(!@references);
+ # A CCSS needs spectral data. A CCMX may use either a spectrophotometer or a
+ # colorimeter as its reference, provided the target is a different colorimeter.
+ my ($chosen)=grep { $_->{port_num} eq $profiling_port } @references;
+ ($chosen)=@references if(!$chosen && scalar(@references) == 1);
+ return '{"status":"error","message":"Select which reference meter to use"}' if(!$chosen);
  my $chosen_port=$chosen->{port_num};
  $chosen_port=~s/[^0-9]//g;
- return '{"status":"error","message":"Selected spectrophotometer has no usable port"}' if($chosen_port eq "");
+ return '{"status":"error","message":"Selected reference meter has no usable port"}' if($chosen_port eq "");
  my $target;
  if($format eq "ccmx") {
   ($target)=grep { $_->{port_num} eq $target_port } @colorimeters;
@@ -13916,7 +13917,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div id="meterCcssCreateMethodSection" style="display:none;margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">CCMX Creation Method</label>
      <select id="meterCcssCreateMethod" onchange="meterCcssCreateMethodChanged()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
-      <option value="measure">Measure with a reference spectrophotometer</option>
+      <option value="measure">Measure with a reference meter</option>
       <option value="json">Import an XYZ correction matrix JSON</option>
       <option value="manual">Enter a 3x3 correction matrix</option>
      </select>
@@ -13939,7 +13940,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <div id="meterCcssCreateDisplayHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
       </div>
     <div id="meterCcssCreateReferenceSection" style="margin-bottom:12px">
-     <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Spectrophotometer</label>
+     <label id="meterCcssCreateReferenceLabel" style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Meter</label>
      <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
      <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
     </div>
@@ -25892,8 +25893,10 @@ function meterNormalizePortValue(value){
 function meterOptionLabel(meter){
  if(!meter) return 'Meter';
  const name=String(meter.name||'Meter').trim()||'Meter';
+ const physical=String(meter.physical_port||'').trim();
+ if(physical) return `${name} (USB ${physical})`;
  const port=meterNormalizePortValue(meter.port_num);
- return port ? `${name} (Port ${port})` : name;
+ return port ? `${name} (Meter ${port})` : name;
 }
 
 function meterFindByPort(port){
@@ -26156,6 +26159,14 @@ function meterCcssCreateColorimeters(){
  return (meterInventory||[]).filter(meter=>meterIsColorimeter(meter));
 }
 
+function meterCcssCreateReferenceMeters(){
+ if(meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()==='measure'){
+  const meters=(meterInventory||[]).filter(meter=>meterIsSpectrophotometer(meter)||meterIsColorimeter(meter));
+  return meters.slice().sort((a,b)=>Number(meterIsColorimeter(a))-Number(meterIsColorimeter(b)));
+ }
+ return meterCcssCreateSpectros();
+}
+
 function meterCcssCreateFormatValue(){
  const select=document.getElementById('meterCcssCreateFormat');
  const value=String((select&&select.value)||meterCcssCreateFormat||'ccss').toLowerCase();
@@ -26251,17 +26262,18 @@ function meterCcssCreateImportJson(evt){
 
 function meterCcssCreateSelectedMeter(){
  const selected=meterFindByPort(meterSelectedProfilingPort());
- if(selected&&meterIsSpectrophotometer(selected)) return selected;
- const spectros=meterCcssCreateSpectros();
- return spectros[0]||null;
+ const references=meterCcssCreateReferenceMeters();
+ if(selected&&references.includes(selected)) return selected;
+ return references[0]||null;
 }
 
 function meterCcssCreateSelectedTarget(){
+ const referencePort=meterNormalizePortValue(meterCcssCreateSelectedMeter()&&meterCcssCreateSelectedMeter().port_num);
  const selected=meterFindByPort(meterCcssCreateTargetPort);
- if(selected&&meterIsColorimeter(selected)) return selected;
+ if(selected&&meterIsColorimeter(selected)&&meterNormalizePortValue(selected.port_num)!==referencePort) return selected;
  const current=meterFindByPort(meterSelectedMeasurementPort());
- if(current&&meterIsColorimeter(current)) return current;
- return meterCcssCreateColorimeters()[0]||null;
+ if(current&&meterIsColorimeter(current)&&meterNormalizePortValue(current.port_num)!==referencePort) return current;
+ return meterCcssCreateColorimeters().find(meter=>meterNormalizePortValue(meter.port_num)!==referencePort)||null;
 }
 
 function meterCcssCreateFormatChanged(){
@@ -26286,12 +26298,12 @@ function meterCcssCreateUpdateCopy(){
  const suppliedMatrix=mode==='ccmx'&&method!=='measure';
  if(intro) intro.textContent=mode==='ccmx'
   ? (method==='measure'
-    ? 'Creates a correction matrix by measuring the same display patches with a reference spectrophotometer and the colorimeter being corrected. Follow each setup prompt and keep both meters connected.'
+    ? 'Creates a correction matrix by measuring the same display patches with a reference meter and the colorimeter being corrected. The reference may be a spectrophotometer or another colorimeter. Follow each setup prompt and keep both meters connected.'
     : 'Creates a standard ArgyllCMS CCMX profile from a supplied 3x3 XYZ correction matrix and associates it with the selected target colorimeter.')
   : 'Creates spectral display correction data from a reference spectrophotometer. Follow the setup prompts to calibrate the spectro, aim it at the display, and measure the patch set.';
  if(help) help.textContent=mode==='ccmx'
   ? (method==='measure'
-    ? 'A CCMX is a small matrix made for one colorimeter model or unit on this specific display. It corrects that colorimeter to agree with the selected reference spectro and is not a general display spectral profile.'
+    ? 'A CCMX is a small matrix made for one colorimeter model or unit on this specific display. It corrects that colorimeter to agree with the selected reference meter and is not a general display spectral profile.'
     : 'A CCMX is an ArgyllCMS meter profile containing a 3x3 XYZ correction matrix. The selected colorimeter and display technology are stored with the supplied matrix.')
   : 'A CCSS stores the display spectrum. Compatible colorimeters use that spectral data with their own sensor characteristics, so a CCSS can be shared across supported meter units measuring the same display technology.';
  if(displayHelp) displayHelp.textContent=mode==='ccmx'
@@ -26332,9 +26344,9 @@ function meterCcssCreateCanStart(){
 function meterCcssCreateStartBlockReason(){
  const mode=meterCcssCreateFormatValue();
  const method=meterCcssCreateMethodValue();
- const needsSpectro=mode==='ccss'||method==='measure';
- if(!meterCcssCreateInventoryReady) return needsSpectro?'Checking for a ready spectrophotometer.':'Checking for a ready colorimeter.';
- if(needsSpectro&&!meterCcssCreateSelectedMeter()) return 'Connect and select a reference spectrophotometer.';
+ const needsReference=mode==='ccss'||method==='measure';
+ if(!meterCcssCreateInventoryReady) return needsReference?'Checking for a ready reference meter.':'Checking for a ready colorimeter.';
+ if(needsReference&&!meterCcssCreateSelectedMeter()) return mode==='ccss'?'Connect and select a reference spectrophotometer.':'Connect and select a reference meter.';
  if(mode==='ccmx'&&!meterCcssCreateSelectedTarget()) return 'Connect and select the target colorimeter.';
  if(mode==='ccmx'&&method==='json'&&!meterCcssCreateJsonLoaded) return 'Choose a valid XYZ correction matrix JSON file.';
  if(mode==='ccmx'&&method!=='measure'){
@@ -26343,7 +26355,7 @@ function meterCcssCreateStartBlockReason(){
  const nameInput=document.getElementById('meterCcssCreateName');
  if(!String((nameInput&&nameInput.value)||'').trim()) return 'Enter a profile name.';
  if(!meterCcssCreateDisplayTypeValue()) return 'Choose a display technology.';
- if(needsSpectro&&typeof hasUnsavedSettings==='function'&&hasUnsavedSettings()) return 'Apply & Restart before creating the profile.';
+ if(needsReference&&typeof hasUnsavedSettings==='function'&&hasUnsavedSettings()) return 'Apply & Restart before creating the profile.';
  if(meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning) return 'Wait for the current meter operation to finish.';
  return '';
 }
@@ -26433,21 +26445,23 @@ function meterRenderCcssCreateChoices(){
  if(!wrap||!status) return;
  const mode=meterCcssCreateFormatValue();
  const method=meterCcssCreateMethodValue();
- const needsSpectro=mode==='ccss'||method==='measure';
+ const needsReference=mode==='ccss'||method==='measure';
+ const referenceLabel=document.getElementById('meterCcssCreateReferenceLabel');
+ if(referenceLabel) referenceLabel.textContent=mode==='ccss'?'Reference Spectrophotometer':'Reference Meter';
  if(!meterCcssCreateInventoryReady){
   wrap.innerHTML='';
-  status.textContent=needsSpectro?'Checking connected spectrophotometers...':'No reference spectrophotometer is required for a supplied matrix.';
+  status.textContent=needsReference?'Checking connected reference meters...':'No reference meter is required for a supplied matrix.';
   if(targetWrap) targetWrap.innerHTML='';
   if(targetStatus) targetStatus.textContent=mode==='ccmx'?'Checking connected colorimeters...':'';
   meterCcssCreateUpdateStartState();
   return;
  }
- const spectros=meterCcssCreateSpectros();
+ const references=meterCcssCreateReferenceMeters();
  const colorimeters=meterCcssCreateColorimeters();
  const selected=meterSelectedProfilingPort();
  if(!meterInventory||meterInventory.length===0){
   wrap.innerHTML='';
-  status.textContent=needsSpectro
+  status.textContent=needsReference
    ? 'No supported meter detected. Connect the required meter or meters, then reopen this creator.'
    : 'No supported colorimeter detected. Connect the meter that this matrix will correct.';
   if(targetWrap) targetWrap.innerHTML='';
@@ -26455,28 +26469,31 @@ function meterRenderCcssCreateChoices(){
   meterCcssCreateUpdateStartState();
   return;
  }
- if(needsSpectro&&!spectros.length){
+ if(needsReference&&!references.length){
   wrap.innerHTML='';
-  status.textContent='No spectrophotometer detected. Connect the reference spectro you want to use.';
+  status.textContent=mode==='ccss'
+   ? 'No spectrophotometer detected. Connect the reference spectro you want to use.'
+   : 'No reference meter detected. Connect the meter you want to use as the reference.';
   if(targetWrap) targetWrap.innerHTML='';
-  if(targetStatus&&mode==='ccmx') targetStatus.textContent=colorimeters.length?'Select a reference spectro before starting.':'No target colorimeter detected.';
+  if(targetStatus&&mode==='ccmx') targetStatus.textContent=colorimeters.length?'Select a reference meter before starting.':'No target colorimeter detected.';
   meterCcssCreateUpdateStartState();
   return;
  }
- if(!needsSpectro){
+ if(!needsReference){
   wrap.innerHTML='';
-  status.textContent='No reference spectrophotometer is required for a supplied matrix.';
+  status.textContent='No reference meter is required for a supplied matrix.';
  }
- const chosen=(selected&&meterFindByPort(selected)&&meterIsSpectrophotometer(meterFindByPort(selected)))?meterFindByPort(selected):(spectros[0]||null);
- if(needsSpectro&&chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
- if(needsSpectro&&spectros.length>1){
-  status.textContent=chosen?('Reference: '+meterOptionLabel(chosen)+'. Tap another to switch.'):'Select the reference spectrophotometer.';
- }else if(needsSpectro&&chosen){
+ const selectedMeter=selected&&meterFindByPort(selected);
+ const chosen=(selectedMeter&&references.includes(selectedMeter))?selectedMeter:(references[0]||null);
+ if(needsReference&&chosen) meterProfilingPort=meterNormalizePortValue(chosen.port_num);
+ if(needsReference&&references.length>1){
+  status.textContent=chosen?('Reference: '+meterOptionLabel(chosen)+'. Tap another to switch.'):'Select the reference meter.';
+ }else if(needsReference&&chosen){
   status.textContent='Selected reference: '+meterOptionLabel(chosen)+'.';
- }else if(needsSpectro) {
-  status.textContent='Choose the reference spectrophotometer.';
+ }else if(needsReference) {
+  status.textContent='Choose the reference meter.';
  }
- if(needsSpectro) wrap.innerHTML=spectros.map(meter=>{
+ if(needsReference) wrap.innerHTML=references.map(meter=>{
   const port=meterNormalizePortValue(meter.port_num);
   const active=meterProfilingPort===port;
   return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationMeter(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
@@ -26484,7 +26501,9 @@ function meterRenderCcssCreateChoices(){
  if(mode==='ccmx'&&targetWrap&&targetStatus){
   const chosenTarget=meterCcssCreateSelectedTarget();
   if(chosenTarget) meterCcssCreateTargetPort=meterNormalizePortValue(chosenTarget.port_num);
-  targetWrap.innerHTML=colorimeters.map(meter=>{
+  const referencePort=meterNormalizePortValue(chosen&&chosen.port_num);
+  const targetMeters=colorimeters.filter(meter=>meterNormalizePortValue(meter.port_num)!==referencePort);
+  targetWrap.innerHTML=targetMeters.map(meter=>{
    const port=meterNormalizePortValue(meter.port_num);
    const active=meterCcssCreateTargetPort===port;
    return '<button class="btn btn-sm '+(active?'btn-success':'btn-secondary')+'" style="text-align:left;justify-content:flex-start;padding:8px 10px" onclick="meterChooseCcssCreationTarget(\''+port+'\')">'+(active?'\u2713 ':'')+meterOptionLabel(meter)+'</button>';
@@ -26550,9 +26569,9 @@ function meterOpenCcssCreateModal(){
  Promise.resolve(meterCheckStatus()).finally(()=>{
   if(modal.style.display==='flex'&&!meterCcssCreateInventoryReady){
    const status=document.getElementById('meterCcssCreateStatus');
-   const needsSpectro=meterCcssCreateFormatValue()==='ccss'||meterCcssCreateMethodValue()==='measure';
-   if(status) status.textContent=needsSpectro
-    ? 'Could not confirm that the spectrophotometer is ready. Check the connection and reopen this window.'
+   const needsReference=meterCcssCreateFormatValue()==='ccss'||meterCcssCreateMethodValue()==='measure';
+   if(status) status.textContent=needsReference
+    ? 'Could not confirm that the reference meter is ready. Check the connection and reopen this window.'
     : 'Could not confirm that the target colorimeter is ready. Check the connection and reopen this window.';
    meterCcssCreateUpdateStartState();
   }
@@ -26589,8 +26608,8 @@ function meterChooseCcssCreationMeter(port){
  meterRenderCcssCreateChoices();
  saveMeterSettings();
  const chosen=meterFindByPort(normalized);
- if(chosen) toast('Reference spectrophotometer: '+meterOptionLabel(chosen));
- else toast('Reference spectrophotometer selected');
+ if(chosen) toast('Reference meter: '+meterOptionLabel(chosen));
+ else toast('Reference meter selected');
 }
 
 function meterChooseCcssCreationTarget(port){
@@ -26808,10 +26827,10 @@ async function meterStartCcssCreate(){
   }
   return;
  }
- const spectros=meterCcssCreateSpectros();
- if(!spectros.length){meterCcssCreateSetStartingFeedback(false);toast('Connect a spectrophotometer first',true);return;}
+ const references=meterCcssCreateReferenceMeters();
+ if(!references.length){meterCcssCreateSetStartingFeedback(false);toast(format==='ccss'?'Connect a spectrophotometer first':'Connect a reference meter first',true);return;}
  const meter=meterCcssCreateSelectedMeter();
- if(!meter){meterCcssCreateSetStartingFeedback(false);toast('No spectrophotometer selected',true);return;}
+ if(!meter){meterCcssCreateSetStartingFeedback(false);toast('No reference meter selected',true);return;}
  if(!meterEnsureAppliedGeneratorSettings()){meterCcssCreateSetStartingFeedback(false);return;}
  meterCcssCreateFreshOpen=false;
  meterCcssCreateJobActive=true;

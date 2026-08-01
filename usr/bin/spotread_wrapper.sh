@@ -121,6 +121,23 @@ lsusb_line_for_path() {
  printf '%s\n' "$LSUSB_CACHE" | grep -m1 -E "^Bus[[:space:]]+${bus}[[:space:]]+Device[[:space:]]+${dev}:"
 }
 
+usb_physical_port_for_path() {
+ local device_path="$1"
+ [[ "$device_path" =~ ^/dev/bus/usb/([0-9]+)/([0-9]+)$ ]] || return 0
+ local wanted_bus=$((10#${BASH_REMATCH[1]}))
+ local wanted_dev=$((10#${BASH_REMATCH[2]}))
+ local node busnum devnum
+ for node in /sys/bus/usb/devices/*; do
+  [[ -f "$node/busnum" && -f "$node/devnum" ]] || continue
+  read -r busnum < "$node/busnum" || continue
+  read -r devnum < "$node/devnum" || continue
+  if [[ "$busnum" == "$wanted_bus" && "$devnum" == "$wanted_dev" ]]; then
+   basename "$node"
+   return 0
+  fi
+ done
+}
+
 spotread_usb_ports() {
  local help_out="$1"
  local forced_meter_type="$2"
@@ -132,7 +149,7 @@ spotread_usb_ports() {
    raw_desc="${raw_desc# }"
    raw_desc="${raw_desc#(}"
    raw_desc="${raw_desc%)}"
-  local lsusb_line usb_id name meter_type
+  local lsusb_line usb_id name meter_type physical_port
    lsusb_line=$(lsusb_line_for_path "$device_path")
    usb_id=$(printf '%s\n' "$lsusb_line" | grep -oP 'ID\s+\K[0-9a-f]{4}:[0-9a-f]{4}' | head -1)
    name="${KNOWN_METERS[$usb_id]}"
@@ -150,7 +167,8 @@ spotread_usb_ports() {
   if [[ -n "$forced_meter_type" ]]; then
    meter_type="$forced_meter_type"
   fi
-  printf '%s|%s|%s|%s|%s\n' "$port_num" "$device_path" "$usb_id" "$name" "$meter_type"
+  physical_port=$(usb_physical_port_for_path "$device_path")
+  printf '%s|%s|%s|%s|%s|%s\n' "$port_num" "$device_path" "$usb_id" "$name" "$meter_type" "$physical_port"
   fi
  done <<< "$help_out"
 }
@@ -196,8 +214,8 @@ detect_meter() {
   local first_meter_type="unknown"
   local entry
   for entry in "${meters[@]}"; do
-   local port_num device_path usb_id name meter_type comma
-   IFS='|' read -r port_num device_path usb_id name meter_type <<< "$entry"
+   local port_num device_path usb_id name meter_type physical_port comma
+   IFS='|' read -r port_num device_path usb_id name meter_type physical_port <<< "$entry"
    [[ -z "$first_name" ]] && first_name="$name"
    [[ -z "$first_usb_id" ]] && first_usb_id="$usb_id"
    [[ -z "$first_port" ]] && first_port="$device_path"
@@ -210,7 +228,7 @@ detect_meter() {
    else
     meters_json+="null"
    fi
-   meters_json+=",\"name\":\"$(json_escape "$name")\",\"meter_type\":\"$(json_escape "$meter_type")\"}"
+   meters_json+=",\"name\":\"$(json_escape "$name")\",\"meter_type\":\"$(json_escape "$meter_type")\",\"physical_port\":\"$(json_escape "$physical_port")\"}"
   done
   printf '{"detected":true,"name":"%s","usb_id":%s,"port":"%s","port_num":"%s","meter_type":"%s","meters":[%s],"spotread_available":%s}\n' \
    "$(json_escape "$first_name")" \

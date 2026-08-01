@@ -22,7 +22,12 @@ ERROR_RE = re.compile(r"(no instrument|no device|instrument.*not connected|commu
 # Prompts that require the user to physically position the instrument. These
 # must NOT be auto-dismissed: the i1 Pro is calibrated on its white tile and
 # then aimed at the screen, and the user's button press satisfies the prompt.
-PLACEMENT_RE = re.compile(r"place the instrument|place instrument|white reference|reflective|on (?:the )?(?:test|display|spot|screen)|test window|reposition|spot reading", re.I)
+PLACEMENT_RE = re.compile(
+    r"place the instrument|place instrument|white reference|reflective|light trap|"
+    r"place (?:the )?cap|calibration position|sensor.*calibration|"
+    r"on (?:the )?(?:test|display|spot|screen)|test window|reposition|spot reading",
+    re.I,
+)
 
 
 try:
@@ -138,12 +143,12 @@ class Runner:
         # with an informative message while the slow step runs -- calibration and
         # the patch sweep each take several seconds -- instead of vanishing.
         working = {
-            "calibrate_tile": "Calibrating the spectrophotometer on its tile - please wait a few seconds...",
-            "calibrate_dark": "Calibrating the target colorimeter dark reference - please wait...",
+            "calibrate_tile": "Calibrating the reference meter - please wait a few seconds...",
+            "calibrate_dark": "Calibrating the meter dark reference - please wait...",
             "position_screen": "Measuring the test patches - keep the meter aimed at the screen...",
-            "calibrate_retry": "Re-calibrating the spectrophotometer - please wait...",
+            "calibrate_retry": "Re-calibrating the meter - please wait...",
             "switch_target": "Preparing the target colorimeter pass...",
-        }.get(step, "Working with the spectrophotometer - please wait...")
+        }.get(step, "Working with the meter - please wait...")
         self.write_state("running", working)
 
     def append_log(self, text):
@@ -224,12 +229,11 @@ class Runner:
         self.recent = (self.recent + " " + text)[-800:]
         if text.startswith("3)"):
             self.last_option3 = text
-        if "[Got spectrometer readings]" in text:
-            self.reference_done = True
-        if "[Got colorimeter readings]" in text:
-            self.target_done = True
-        if self.current_role == "target" and text == "'2'":
-            self.target_measure_accepted = True
+        if "[Got spectrometer readings]" in text or "[Got colorimeter readings]" in text:
+            if self.current_role == "target":
+                self.target_done = True
+            else:
+                self.reference_done = True
         low = self.recent.lower()
         # ccxxmake cannot open the instrument (held by another process or a USB
         # wedge). A single failure is usually transient -- ccxxmake retries and
@@ -255,7 +259,7 @@ class Runner:
         # this BEFORE the generic continue handling so a failed cal isn't silently
         # auto-advanced into another bad reading.
         if "reading is too low" in low or "calibration failed" in low:
-            role_name = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
+            role_name = "target colorimeter" if self.current_role == "target" else "reference meter"
             self.await_setup_step(
                 "calibrate_retry",
                 "Calibration failed. Reposition the %s on its calibration reference, then click Retry." % role_name,
@@ -271,18 +275,20 @@ class Runner:
                 # Headless: no keyboard, and the instrument button isn't
                 # delivered to ccxxmake's stdin. Surface a wizard step and let
                 # await_setup_step inject the keypress once the operator acks.
-                if self.current_role == "target" and (
+                if (
                     "black" in low or "cover" in low or "dark" in low
+                    or "light trap" in low or "cap" in low
                 ):
+                    subject = "target colorimeter" if self.current_role == "target" else "reference meter"
                     self.await_setup_step(
                         "calibrate_dark",
-                        "Cover the target colorimeter sensor or place it on its dark reference as required, then click Calibrate.",
+                        "Cover the %s sensor or place it on its dark reference as instructed, then click Calibrate." % subject,
                     )
                     self.recent = ""
                     self.send("\n")
                     return
-                if "white reference" in low or "reflective" in low:
-                    subject = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
+                if "white reference" in low or "reflective" in low or "calibration position" in low:
+                    subject = "target colorimeter" if self.current_role == "target" else "reference meter"
                     self.await_setup_step(
                         "calibrate_tile",
                         "Place the %s on its calibration reference as instructed, then click Calibrate." % subject,
@@ -293,7 +299,7 @@ class Runner:
                 if not self.positioned:
                     # FIRST screen prompt: have the operator aim at the screen once.
                     self.positioned = True
-                    subject = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
+                    subject = "target colorimeter" if self.current_role == "target" else "reference meter"
                     self.await_setup_step(
                         "position_screen",
                         "Position the %s at the center of the screen, then click Ready." % subject,
@@ -321,7 +327,7 @@ class Runner:
         if "button" in lowered or "switch" in lowered:
             self.write_state("running", "Use the current meter as instructed to take the reading", detail=text)
         elif "measure" in lowered or "reading" in lowered:
-            role_name = "target colorimeter" if self.current_role == "target" else "reference spectrophotometer"
+            role_name = "target colorimeter" if self.current_role == "target" else "reference meter"
             self.write_state("running", "Measuring display patches with the %s" % role_name, detail=text)
         elif self.compute_sent and ("comput" in lowered or "save" in lowered):
             self.write_state("running", "Computing and saving the %s profile" % self.profile_type(), detail=text)
@@ -353,7 +359,7 @@ class Runner:
             self.measure_sent = True
             self.write_state(
                 "running",
-                "Starting the reference pass. Follow the prompts to calibrate and position the reference spectrophotometer.",
+                "Starting the reference pass. Follow the prompts to calibrate and position the reference meter.",
             )
             return
         if self.args.format == "ccmx" and self.reference_done and not self.switch_sent:
@@ -371,11 +377,14 @@ class Runner:
             select_at = window.lower().rfind("select device")
             menu_at = window.lower().rfind("press 1")
             exit_at = window.lower().rfind("4) exit")
-            now = time.time()
-            if menu_at > select_at and exit_at > menu_at and now - getattr(self, "last_target_measure_send", 0.0) > 1.5:
+            if menu_at > select_at and exit_at > menu_at:
                 self.send("2\n")
                 self.target_measure_sent = True
-                self.last_target_measure_send = now
+                # The complete menu is on screen, so this key is accepted by
+                # ccxxmake. Do not wait for PTY echo and resend it: Argyll may
+                # already be waiting for the SpyderX dark-calibration prompt,
+                # where an extra "2" skips or corrupts the calibration step.
+                self.target_measure_accepted = True
                 self.write_state(
                     "running",
                     "Starting the target colorimeter pass. Follow its calibration and positioning prompts.",
