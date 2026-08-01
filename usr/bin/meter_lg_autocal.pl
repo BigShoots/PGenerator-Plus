@@ -16077,11 +16077,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	}
 	$exit_reason="cancelled" if(cancelled());
 
-	# Do not apply the SDR26 low-end smoother to HDR20. Live C1 verification
-	# showed that it can undo a converged 5% anchor and crush its luminance.
-	# Retain the measured HDR20 curve committed by the anchor solver.
-	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}
-		&& lc($config->{"signal_mode"}||"hdr10") eq "sdr") {
+	# Apply the same post-calibration low-end smoothing to standalone HDR20.
+	# Full workflows defer it until after the 3D LUT, tone-map and measured
+	# shadow correction uploads so this remains the final committed 1D DPG.
+	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
 		my $committed=(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY"
 			&& @{$state->{"hdr20_1d_dpg_data"}} == 3072) ? $state->{"hdr20_1d_dpg_data"} : $current_dpg;
 		my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
