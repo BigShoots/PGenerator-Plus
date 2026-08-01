@@ -36369,11 +36369,18 @@ function meterSelectBuiltinColorChecker(selected){
  if(!explicit&&meterSelectImportedHcfrGroup('colorChecker')) return true;
  let points=explicit?Math.round(Number(selected)):meterColorCheckerSeriesStoredValue();
  if(!METER_COLORCHECKER_SERIES_IDS.includes(points)) points=30;
- if(points===800137) meterSelectChartForSeries('colors',points);
- try{localStorage.setItem(METER_COLORCHECKER_SERIES_KEY,String(points));}catch(e){}
- if(meterColorCheckerSeriesUsesFullDeltaE(points)) meterEnableFullColorDeltaE();
- meterSyncColorCheckerSeriesUi(points);
- return meterSelectSeries('colors',points);
+ const finishSelection=accepted=>{
+  // A running-series switch is provisional until the operator chooses
+  // Switch. Do not persist the proposed dropdown value (or its analysis
+  // side effects) when they choose Stay.
+  if(accepted===false) return false;
+  try{localStorage.setItem(METER_COLORCHECKER_SERIES_KEY,String(points));}catch(e){}
+  if(meterColorCheckerSeriesUsesFullDeltaE(points)) meterEnableFullColorDeltaE();
+  meterSyncColorCheckerSeriesUi(points);
+  return true;
+ };
+ const pending=meterSelectSeries('colors',points);
+ return pending&&typeof pending.then==='function'?pending.then(finishSelection):finishSelection(pending);
 }
 function meterSelectGreyscaleSeries(value){
  if(String(value)==='custom-manager'){
@@ -36402,16 +36409,46 @@ function meterSelectBuiltinSeries(value){
  }
  const id=Math.round(Number(value));
  if(id===24||id===25){
-  try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,id===25?'1':'0');}catch(e){}
-  if(id===25&&typeof meterEnableFullColorDeltaE==='function') meterEnableFullColorDeltaE();
-  return meterSelectSeries('saturations',id);
+  const finishSelection=accepted=>{
+   if(accepted===false) return false;
+   try{localStorage.setItem(METER_HCFR_FIXED_CODES_KEY,id===25?'1':'0');}catch(e){}
+   if(id===25&&typeof meterEnableFullColorDeltaE==='function') meterEnableFullColorDeltaE();
+   meterSyncColorCheckerSeriesUi(id);
+   return true;
+  };
+  const pending=meterSelectSeries('saturations',id);
+  return pending&&typeof pending.then==='function'?pending.then(finishSelection):finishSelection(pending);
  }
  return meterSelectBuiltinColorChecker(String(value));
 }
 function meterSelectBuiltinSaturationSweep(){if(meterSelectImportedHcfrGroup('saturations'))return true;return meterSelectSeries('saturations',meterHcfrFixedCodesEnabled()?25:24);}
+
+// A tab/dropdown change fires before an async running-series confirmation can
+// resolve. If the operator chooses Stay, restore every series control from the
+// still-active series instead of leaving the proposed tab or selector visible.
+// Assign meterSeriesTab directly here so rollback never auto-selects another
+// series and cannot open a second confirmation dialog.
+function meterRestoreActiveSeriesControls(){
+ if(!meterActiveSeriesType){
+  meterUpdateSeriesTabUi();
+  return;
+ }
+ meterSeriesTab=meterSeriesTabForSeries(meterActiveSeriesType,meterActiveSeriesPoints);
+ meterUpdateSeriesTabUi();
+ meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null);
+ meterSyncColorCheckerSeriesUi(
+  (meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')?meterActiveSeriesPoints:null
+ );
+ meterResetSeriesButtons();
+ const activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
+ if(activeBtn){activeBtn.classList.remove('btn-secondary');activeBtn.classList.add('btn-primary');}
+ meterRenderCustomSeriesButtons();
+ meterUpdateReadButtons();
+}
+
 async function meterSelectSeries(type,points,opts){
  opts=opts||{};
- if(meterActionPending) return;
+ if(meterActionPending){meterRestoreActiveSeriesControls();return false;}
  if(type==='greyscale' && points===256) points=100;
  if(!opts.ignoreHcfrImport&&type==='greyscale'&&meterActiveHcfrSessionId){
   const imported=Object.values(meterSeriesCache||{}).find(snap=>snap&&snap.source_format==='hcfr-chc'&&snap.source_session_id===meterActiveHcfrSessionId&&snap.source_group==='grayscale');
@@ -36421,21 +36458,24 @@ async function meterSelectSeries(type,points,opts){
  }
  if(type==='greyscale' && Number(points)===30 && !meterHdrGreyscaleSeriesAvailable()){
   toast('Greyscale HDR 30pt is unavailable',true);
-  return;
+  meterRestoreActiveSeriesControls();
+  return false;
  }
  const key=type+'-'+points;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
-   return;
+   meterRestoreActiveSeriesControls();
+   return false;
   }
  const ok=await meterShowChoiceModal({title:'Switch series?',body:'Leave the current series and cancel the running series read?',acceptLabel:'Switch',cancelLabel:'Stay'});
- if(!ok) return;
+ if(!ok){meterRestoreActiveSeriesControls();return false;}
  }
- if(!meterHueCircleSeriesActive(type,points)&&meterCieIsOpponentMode()){
-  meterSelectChartForSeries(type,points);
- }
+ // Chart changes are committed only after the running-series prompt accepts.
+ // This also selects the dedicated opponent chart for Hue Circle after, not
+ // before, the operator decides whether to leave the current series.
+ meterSelectChartForSeries(type,points);
  clearActive();
  // Past every early return (unavailable series, running-series switch declined),
  // so this only records a selection the operator actually committed to.
@@ -36478,7 +36518,7 @@ async function meterSelectSeries(type,points,opts){
   meterUpdateReadButtons();
   meterUpdateDeltaEFormControl();
   meterRenderCustomSeriesButtons();
-  return;
+  return true;
   }
  }
  if(meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
@@ -36560,9 +36600,9 @@ async function meterSelectSeries(type,points,opts){
    const hasReal=(Array.isArray(meterReadings)&&meterReadings.some(r=>meterReadingIsRealMeasurement(r)));
    if(!hasReal) showColorReadingDetail(null);
   }catch(e){}
-  toast(meterSeriesLabelFromKey(key)+' loaded');
+ toast(meterSeriesLabelFromKey(key)+' loaded');
  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
-  return;
+  return true;
  }
  // Sort for display
  const sortedSteps=(type==='colors'||type==='saturations')?[...steps]:meterGreyscaleSeriesSteps(steps);
@@ -36595,6 +36635,7 @@ async function meterSelectSeries(type,points,opts){
  }catch(e){}
  toast(meterSeriesLabelFromKey(key)+' loaded');
  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
+ return true;
 }
 function meterMeasurementSignalContext(payload){
  const body=Object.assign({},payload||{});
