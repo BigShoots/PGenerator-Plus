@@ -17795,10 +17795,13 @@ function pgRefreshVisibleWorkspace(options){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
   if(layoutOnly) return;
-  if(typeof pgRedrawChartsForTheme==='function') pgRedrawChartsForTheme();
+  // Active-series charts need an authoritative metadata/cache refresh after a
+  // desktop workspace transition. A raw presentation redraw can briefly grade
+  // HCFR 0% saturation patches against stale targets until the shared-status
+  // poll corrects them a few seconds later.
   if(pgDesktopWorkspace==='calibration'&&typeof meterRefreshActiveSeriesCharts==='function'){
    try{ meterRefreshActiveSeriesCharts(); }catch(e){}
-  }
+  }else if(typeof pgRedrawChartsForTheme==='function') pgRedrawChartsForTheme();
  }));
 }
 function pgSyncCardCollapseForLayout(){
@@ -17933,6 +17936,13 @@ function pgSelectDesktopWorkspace(workspace,options){
   // Pick up series created/imported in another browser whenever the operator
   // returns to a measurement workspace; no page reload should be required.
   try{ meterRefreshCustomSeriesFromServer(); }catch(e){}
+ }
+ // Rebuild the active measurement context synchronously when Calibration is
+ // revealed. This runs before the browser's next paint, so the previously
+ // hidden canvases cannot flash values calculated from stale step metadata.
+ // The deferred workspace refresh below is still needed for final sizing.
+ if(workspaceChanged&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')&&typeof meterRefreshActiveSeriesCharts==='function'){
+  try{ meterRefreshActiveSeriesCharts(); }catch(e){}
  }
  // LG calibration history: only when entering LG Display, not on loadInfo poll.
  try{ if(typeof lgMaybeRefreshCalHistoryForDesktopWorkspace==='function') lgMaybeRefreshCalHistoryForDesktopWorkspace(workspace,workspaceChanged); }catch(e){}
