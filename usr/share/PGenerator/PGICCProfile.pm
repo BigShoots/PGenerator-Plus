@@ -13,7 +13,10 @@ sub webui_icc_profile_list (@) {
    # An interrupted colprof run can leave an empty destination behind. It is
    # not an installable profile and should not appear in profile history.
    next unless(($st[7]||0)>0);
-   my $validation=(-f "$_icc_profile_dir/$file.validation.json")?&json_true():&json_false();
+   # Keep this as a JSON token rather than a Perl truth value. The profile
+   # listing is assembled as JSON text and webui.pm has no json_true/json_false
+   # helpers to call here.
+   my $validation=(-f "$_icc_profile_dir/$file.validation.json")?"true":"false";
    push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation];
   }
   closedir($dh);
