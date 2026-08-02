@@ -34022,6 +34022,14 @@ async function meterIccRefreshRecoveryAvailability(){
  }
 }
 
+function meterIccProfileReadings(readings){
+ return (Array.isArray(readings)?readings:[]).filter(reading=>{
+  if(!reading||reading.error||reading.autocal_reference_only) return false;
+  if(String(reading.series_type||'').toLowerCase()==='reference') return false;
+  return /^ICC(?:\s|$)/i.test(String(reading.name||''));
+ });
+}
+
 async function meterIccRetryBuild(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
@@ -34033,8 +34041,8 @@ async function meterIccRetryBuild(){
  const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
  try{
   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
-  const readings=state&&Array.isArray(state.readings)?state.readings:[];
-  if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||String((readings[0]||{}).name)!=='ICC White') throw new Error('No completed ICC measurements are available');
+  const readings=meterIccProfileReadings(state&&state.readings);
+  if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
    target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
@@ -34219,7 +34227,7 @@ async function meterIccPoll(){
     meterIccSyncUi();
     if(status) status.textContent='Pre-read complete. Building a temporary display model and optimizing the final patch set...';
     meterIccSetProgress('Optimizing for the measured display',0,meterIccRunConfig.patch_settings.patch_count);
-    const finalSteps=await meterIccGeneratePreconditionedSteps(state.readings||[],meterIccRunConfig);
+    const finalSteps=await meterIccGeneratePreconditionedSteps(meterIccProfileReadings(state.readings),meterIccRunConfig);
     if(Number(meterIccRunConfig.start_token)!==meterIccStartToken) throw new Error('ICC profiling stopped');
     meterIccRunConfig.steps=finalSteps;
     meterIccRunConfig.stage='profile';
@@ -34229,7 +34237,7 @@ async function meterIccPoll(){
     if(status) status.textContent='Profile measurement series started. Waiting for the first patch...';
     setTimeout(meterIccPoll,0);
    }else{
-    await meterIccBuild(state.readings||[]);
+    await meterIccBuild(meterIccProfileReadings(state.readings));
    }
   }else{
    if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
@@ -34258,7 +34266,8 @@ async function meterIccBuild(readings){
  const total=(meterIccRunConfig&&meterIccRunConfig.steps.length)||readings.length;
  meterIccSetProgress('Building ICC profile',total,total);
  try{
-  const payload=Object.assign({},meterIccRunConfig,{readings});
+  const profileReadings=meterIccProfileReadings(readings);
+  const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
   delete payload.steps;
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:930000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');

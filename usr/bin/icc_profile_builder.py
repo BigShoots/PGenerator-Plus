@@ -85,6 +85,13 @@ def normalize_measurements(payload):
     for raw in payload.get("readings", []):
         if not isinstance(raw, dict) or raw.get("error"):
             continue
+        # Series measurement endpoints may prepend automatic white/black
+        # reference reads.  They establish chart luminance targets, but are not
+        # patches from the ICC characterization set and may use a different
+        # transport bit depth (for example an 8-bit reference before a 10-bit
+        # HDR chart).  Never feed them to ArgyllCMS or bit-depth validation.
+        if str(raw.get("series_type", "")).lower() == "reference" or raw.get("autocal_reference_only"):
+            continue
         try:
             codes, maximum = reading_codes(raw)
             xyz = tuple(finite_number(raw.get(key), key) for key in ("X", "Y", "Z"))
