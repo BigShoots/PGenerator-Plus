@@ -610,7 +610,14 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
         line_count = len(ti3.splitlines())
         quality_factor = {"l": 0.5, "m": 1.0, "h": 2.0, "u": 4.0}.get(quality, 1.0)
         if PROFILE_MODELS[profile_model]["family"] == "clut":
-            timeout_seconds = min(1800, max(300, int(120 + line_count * quality_factor)))
+            # colprof's current cLUT optimizer runs one fit on one CPU thread, and a
+            # normal High fit can need more than eight minutes on Pi 4. The
+            # old line-count estimate gave a 425-patch High profile only 508
+            # seconds and killed a healthy process at 100% of one CPU core.
+            # Keep the timeout below the WebUI's 45-minute build deadline, but
+            # give each requested fit quality a realistic floor.
+            quality_floor = {"l": 600, "m": 900, "h": 1200, "u": 2400}.get(quality, 900)
+            timeout_seconds = min(2400, max(quality_floor, int(180 + line_count * quality_factor * 1.5)))
         else:
             timeout_seconds = min(900, max(180, int(90 + line_count * quality_factor * 0.5)))
         completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
