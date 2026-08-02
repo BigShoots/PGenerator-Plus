@@ -896,6 +896,35 @@ def build(payload, output_dir):
         validation["mhc2"] = mhc2_validation
         validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check separately verifies the correction tag structure, matrix direction, luminance metadata and HDR identity curves. It does not verify Windows profile association, the live operating-system color pipeline or current display state."
     write_json_atomic(output_path + ".validation.json", validation)
+    # Keep the merged characterization readings with the finished profile.
+    # The WebUI can then offer them for a later, larger patch set even after a
+    # different series has replaced the live meter state or the page reloads.
+    measurement_path = output_path + ".measurements.json"
+    reuse_signature = str(payload.get("reuse_signature", "")).lower()
+    if re.match(r"^[0-9a-f]{16}$", reuse_signature):
+        reusable_rows = []
+        for row in rows:
+            reusable_rows.append({
+                "name": row["name"],
+                "r_code": row["codes"][0],
+                "g_code": row["codes"][1],
+                "b_code": row["codes"][2],
+                "input_max": row["input_max"],
+                "X": row["xyz"][0],
+                "Y": row["xyz"][1],
+                "Z": row["xyz"][2],
+            })
+        write_json_atomic(measurement_path, {
+            "created": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "profile": filename,
+            "profile_type": profile_type,
+            "reuse_signature": reuse_signature,
+            "signal_mode": str(payload.get("signal_mode", "")),
+            "status": "ok",
+            "readings": reusable_rows,
+        })
+    elif os.path.exists(measurement_path):
+        os.unlink(measurement_path)
     size = os.path.getsize(output_path)
     return {
         "status": "ok",

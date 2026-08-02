@@ -1535,6 +1535,11 @@ sub webui_handle_request (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/icc/reusable") {
+    my $result=&webui_icc_reusable_measurements($request_query);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/icc/build" && $method eq "POST") {
     my $result=&webui_icc_profile_build($body);
     my $len=length($result);
@@ -6402,6 +6407,37 @@ sub webui_icc_profile_list (@) {
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
 }
 
+sub webui_icc_reusable_measurements (@) {
+ my ($query)=@_;
+ my $signature="";
+ $signature=lc($1) if(defined($query) && $query=~/(?:^|&)signature=([0-9a-fA-F]{16})(?:&|$)/);
+ return '{"status":"error","message":"Invalid ICC measurement signature"}' if($signature eq "");
+ my @candidates;
+ if(opendir(my $dh,$_icc_profile_dir)) {
+  foreach my $file (readdir($dh)) {
+   next unless($file=~/^[A-Za-z0-9._-]+\.icc\.measurements\.json$/i);
+   my $profile=$file;
+   $profile=~s/\.measurements\.json$//i;
+   next unless(-f "$_icc_profile_dir/$profile");
+   my @st=stat("$_icc_profile_dir/$file");
+   next unless(($st[7]||0)>0 && ($st[7]||0)<=16*1024*1024);
+   push @candidates,[$file,($st[9]||0)];
+  }
+  closedir($dh);
+ }
+ my ($best_data,$best_count)=("",-1);
+ foreach my $candidate (sort { $b->[1] <=> $a->[1] } @candidates) {
+  my $data="";
+  my $measurements_path=$_icc_profile_dir."/".$candidate->[0];
+  if(open(my $fh,"<",$measurements_path)) { local $/; $data=<$fh>||""; close($fh); }
+  next unless($data=~/^\s*\{/ && $data=~/"status"\s*:\s*"ok"/ && $data=~/"reuse_signature"\s*:\s*"\Q$signature\E"/i && $data=~/"readings"\s*:\s*\[/);
+  my $count=()=$data=~/"r_code"\s*:/g;
+  if($count>$best_count) { ($best_data,$best_count)=($data,$count); }
+ }
+ return $best_data if($best_data ne "");
+ return '{"status":"none","readings":[]}';
+}
+
 sub webui_icc_profile_build (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Profile request is empty"}' if(!defined($body) || $body eq "");
@@ -6467,7 +6503,7 @@ sub webui_icc_patch_generate (@) {
 sub webui_icc_precondition_patch_generate (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Preconditioning request is empty"}' if(!defined($body) || $body eq "");
- return '{"status":"error","message":"Preconditioning request is too large"}' if(length($body)>4*1024*1024);
+ return '{"status":"error","message":"Preconditioning request is too large"}' if(length($body)>16*1024*1024);
  return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
  if(!-d $_icc_profile_dir) {
   eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
@@ -6521,6 +6557,7 @@ sub webui_icc_profile_delete (@) {
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
  if(unlink($path)) {
   unlink($path.".validation.json");
+  unlink($path.".measurements.json");
   (my $ti3=$path)=~s/\.icc$/.ti3/i;
   unlink($ti3);
   return '{"status":"ok"}';
@@ -14005,7 +14042,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <div class="btn-row" style="justify-content:flex-end;margin:0;flex-wrap:wrap">
      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccResolveReuseChoice('cancel')">Cancel</button>
      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccResolveReuseChoice('fresh')">Start All New Reads</button>
-     <button type="button" class="btn btn-sm btn-primary" onclick="meterIccResolveReuseChoice('reuse')">Reuse Matching Reads</button>
+     <button id="meterIccReuseConfirmBtn" type="button" class="btn btn-sm btn-primary" onclick="meterIccResolveReuseChoice('reuse')">Reuse Previous Reads</button>
     </div>
    </div>
   </div>
@@ -33462,14 +33499,25 @@ function meterIccResolveReuseChoice(choice){
  if(resolver) resolver(choice==='reuse'?'reuse':choice==='fresh'?'fresh':'cancel');
 }
 
-function meterIccAskReuseChoice(reused,total,legacy){
+function meterIccAskReuseChoice(reused,total,legacy,options){
  const modal=document.getElementById('meterIccReuseModal');
  const message=document.getElementById('meterIccReuseMessage');
+ const confirmButton=document.getElementById('meterIccReuseConfirmBtn');
  if(!modal||!message) return Promise.resolve('fresh');
  if(meterIccReuseChoiceResolver) meterIccResolveReuseChoice('cancel');
+ options=options||{};
  const remaining=Math.max(0,total-reused);
- message.textContent=(legacy?'A completed ICC run from before full compatibility tracking ':'A compatible completed ICC run ')
-  +'contains '+reused+' of the '+total+' requested patches. Reuse them to measure only '+remaining+' new '+(remaining===1?'patch':'patches')+', or start with all new readings. Reuse only if the display, input, meter, correction profile and measurement setup have not changed.';
+ const sourceCount=Math.max(reused,Math.round(Number(options.sourceCount)||0));
+ const savedProfile=String(options.savedProfile||'');
+ const source=(legacy?'A completed ICC run from before full compatibility tracking ':'A compatible completed ICC run ')
+  +(savedProfile?'saved with '+savedProfile+' ':'')
+  +'contains '+sourceCount+' measured '+(sourceCount===1?'patch':'patches')+'. ';
+ const exact=reused
+  ?reused+' also match the new '+total+'-patch set exactly, leaving '+remaining+' new '+(remaining===1?'patch':'patches')+' to measure. '
+  :'None of its patch codes exactly match the new '+total+'-patch set. ';
+ const preRead=options.skipPreRead?'The previous measurements can still characterize this display and skip a separate 34-patch pre-read. ':'';
+ message.textContent=source+exact+preRead+'Reuse them, or start with an entirely new measurement run. Only reuse measurements if the display, input, meter, correction profile and measurement setup have not changed.';
+ if(confirmButton) confirmButton.textContent=reused?'Reuse '+reused+' Matching Reads':'Reuse as Display Pre-read';
  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
  modal.style.display='flex';
  uiSyncBodyScrollLock();
@@ -33487,6 +33535,13 @@ function meterIccReuseSignature(type,patternProvider){
   pattern_provider:String(patternProvider||''),patch_size:Number(getMeterPatchSize())||100,
   companion_mode:String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window'),
   signal_range:String(meterMeasurementPatchSignalRange()||''),refresh_rate:String(getMeterRefreshRate()||''),
+  color_format:String((typeof getVal==='function'&&getVal('color_format'))||((typeof config!=='undefined'&&config&&config.color_format)||'')),
+  colorimetry:String((typeof getVal==='function'&&getVal('colorimetry'))||((typeof config!=='undefined'&&config&&config.colorimetry)||'')),
+  primaries:String((typeof getVal==='function'&&getVal('primaries'))||((typeof config!=='undefined'&&config&&config.primaries)||'')),
+  max_luma:String((typeof getVal==='function'&&getVal('max_luma'))||((typeof config!=='undefined'&&config&&config.max_luma)||'')),
+  min_luma:String((typeof getVal==='function'&&getVal('min_luma'))||((typeof config!=='undefined'&&config&&config.min_luma)||'')),
+  max_cll:String((typeof getVal==='function'&&getVal('max_cll'))||((typeof config!=='undefined'&&config&&config.max_cll)||'')),
+  max_fall:String((typeof getVal==='function'&&getVal('max_fall'))||((typeof config!=='undefined'&&config&&config.max_fall)||'')),
   measurement_delay_ms:Number(meterDelayMs())||0,low_light:meterLowLightReadState()||null,insertion
  };
  const text=JSON.stringify(context);
@@ -33500,17 +33555,41 @@ function meterIccReuseSignature(type,patternProvider){
 }
 
 async function meterIccPreviousReusableReadings(signature,type){
+ let state=null;
+ let profileReadings=[];
+ let liveExact=[];
  try{
-  const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
-  if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001) return {readings:[],legacy:false};
-  const profileReadings=meterIccProfileReadings(state.readings).filter(reading=>
-   ['X','Y','Z'].every(key=>Number.isFinite(Number(reading[key])))
-  );
-  const exact=profileReadings.filter(reading=>
+  state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+  if(state&&state.status==='complete'&&state.type==='colors'&&Number(state.points)===990001){
+   profileReadings=meterIccProfileReadings(state.readings).filter(reading=>
+    ['X','Y','Z'].every(key=>Number.isFinite(Number(reading[key])))
+   );
+  }
+  liveExact=profileReadings.filter(reading=>
    String(reading.icc_reuse_signature||'').toLowerCase()===signature
   );
-  if(exact.length) return {readings:exact,legacy:false};
-  if(profileReadings.some(reading=>String(reading.icc_reuse_signature||'')!=='')) return {readings:[],legacy:false};
+ }catch(error){ state=null; profileReadings=[]; }
+ try{
+  const saved=await fetchJSON('/api/icc/reusable?signature='+encodeURIComponent(signature),{_quiet:true,_timeoutMs:120000});
+  if(saved&&saved.status==='ok'&&Array.isArray(saved.readings)&&saved.readings.length){
+   const savedReadings=saved.readings.map(reading=>Object.assign({},reading,{icc_reuse_signature:signature}));
+   const patchKey=reading=>[Math.round(Number(reading.input_max)||255),Math.round(Number(reading.r_code)||0),Math.round(Number(reading.g_code)||0),Math.round(Number(reading.b_code)||0)].join(':');
+   const combined=[...liveExact];
+   const liveCounts=new Map();
+   combined.forEach(reading=>{ const key=patchKey(reading); liveCounts.set(key,(liveCounts.get(key)||0)+1); });
+   const savedCounts=new Map();
+   savedReadings.forEach(reading=>{
+    const key=patchKey(reading);
+    const count=(savedCounts.get(key)||0)+1;
+    savedCounts.set(key,count);
+    if(count>(liveCounts.get(key)||0)) combined.push(reading);
+   });
+   return {readings:combined,legacy:false,savedProfile:String(saved.profile||'')};
+  }
+ }catch(error){}
+ if(liveExact.length) return {readings:liveExact,legacy:false};
+ try{
+  if(!state||!profileReadings.length||profileReadings.some(reading=>String(reading.icc_reuse_signature||'')!=='')) return {readings:[],legacy:false};
   const expectedMode=meterIccProfileInfo(type).mode;
   const expectedMaximum=expectedMode==='sdr'?255:1023;
   const legacyCompatible=String(state.signal_mode||'').toLowerCase()===expectedMode
@@ -34344,10 +34423,14 @@ async function meterIccRetryBuild(){
  const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
  try{
   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
-  const readings=meterIccProfileReadings(state&&state.readings);
+  const patternProvider=meterIccPatternProvider();
+  const reuseSignature=meterIccReuseSignature(type,patternProvider);
+  const reusable=await meterIccPreviousReusableReadings(reuseSignature,type);
+  const readings=reusable.readings.length?reusable.readings:meterIccProfileReadings(state&&state.readings);
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
+   pattern_provider:patternProvider,reuse_signature:reuseSignature,
    target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
@@ -34480,25 +34563,25 @@ async function meterIccStart(){
   let steps=[];
   let measurementSteps=[];
   let reusedReadings=[];
+  let usedPreviousPreRead=false;
   let stage=usePreRead?'precondition':'profile';
   if(usePreRead&&previousReadings.length){
    if(status) status.textContent='Generating the display-aware patch set to compare with previous measurements...';
    meterIccSetProgress('Checking reusable patches',0,patchSettings.patch_count);
    const candidateSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(previousReadings,baseRunConfig),reuseSignature);
    const matches=meterIccMatchReusableReadings(candidateSteps,previousReadings,reuseSignature);
-   if(matches.reused.length){
-    const choice=await meterIccAskReuseChoice(matches.reused.length,candidateSteps.length,previousReuse.legacy);
-    if(choice==='cancel'){
-     const cancelled=new Error('ICC profiling cancelled');
-     cancelled.icc_cancelled=true;
-     throw cancelled;
-    }
-    if(choice==='reuse'){
-     steps=candidateSteps;
-     measurementSteps=matches.pending;
-     reusedReadings=matches.reused;
-     stage='profile';
-    }
+   const choice=await meterIccAskReuseChoice(matches.reused.length,candidateSteps.length,previousReuse.legacy,{skipPreRead:true,sourceCount:previousReadings.length,savedProfile:previousReuse.savedProfile});
+   if(choice==='cancel'){
+    const cancelled=new Error('ICC profiling cancelled');
+    cancelled.icc_cancelled=true;
+    throw cancelled;
+   }
+   if(choice==='reuse'){
+    steps=candidateSteps;
+    measurementSteps=matches.pending;
+    reusedReadings=matches.reused;
+    usedPreviousPreRead=true;
+    stage='profile';
    }
   }
   if(!steps.length){
@@ -34511,7 +34594,7 @@ async function meterIccStart(){
    if(!usePreRead&&previousReadings.length){
     const matches=meterIccMatchReusableReadings(steps,previousReadings,reuseSignature);
     if(matches.reused.length){
-     const choice=await meterIccAskReuseChoice(matches.reused.length,steps.length,previousReuse.legacy);
+     const choice=await meterIccAskReuseChoice(matches.reused.length,steps.length,previousReuse.legacy,{sourceCount:previousReadings.length,savedProfile:previousReuse.savedProfile});
      if(choice==='cancel'){
       const cancelled=new Error('ICC profiling cancelled');
       cancelled.icc_cancelled=true;
@@ -34525,7 +34608,7 @@ async function meterIccStart(){
    }
   }
   if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
-  meterIccRunConfig=Object.assign({},baseRunConfig,{steps,stage,reused_readings:reusedReadings});
+  meterIccRunConfig=Object.assign({},baseRunConfig,{steps,stage,reused_readings:reusedReadings,used_previous_pre_read:usedPreviousPreRead});
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
    if(status) status.textContent=patternProvider==='companion'
@@ -34544,9 +34627,9 @@ async function meterIccStart(){
    return;
   }
   if(status) status.textContent='Connecting to the meter...';
-  meterIccSetProgress(reusedReadings.length?('Reusing '+reusedReadings.length+' patches; starting meter'):'Starting meter',0,measurementSteps.length);
+  meterIccSetProgress(reusedReadings.length?('Reusing '+reusedReadings.length+' patches; starting meter'):(usedPreviousPreRead?'Previous display pre-read reused; starting meter':'Starting meter'),0,measurementSteps.length);
   await meterIccLaunchMeasurementSeries(measurementSteps,type,patternProvider);
-  if(status) status.textContent=stage==='precondition'?'Display pre-read started. Waiting for the first patch...':(reusedReadings.length?('Reused '+reusedReadings.length+' patches. Measuring '+measurementSteps.length+' remaining patches...'):'Measurement series started. Waiting for the first patch...');
+  if(status) status.textContent=stage==='precondition'?'Display pre-read started. Waiting for the first patch...':(reusedReadings.length?('Reused '+reusedReadings.length+' patches. Measuring '+measurementSteps.length+' remaining patches...'):(usedPreviousPreRead?('Previous measurements supplied the display pre-read. Measuring '+measurementSteps.length+' new patches...'):'Measurement series started. Waiting for the first patch...'));
   await meterIccPoll();
  }catch(error){
   meterIccStarting=false;
@@ -34638,7 +34721,6 @@ async function meterIccBuild(readings){
   const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
   delete payload.steps;
   delete payload.reused_readings;
-  delete payload.reuse_signature;
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:2710000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   if(status){
