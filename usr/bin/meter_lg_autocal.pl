@@ -15522,7 +15522,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						last;
 					}
 				} elsif(!$is_white
-					&& ((($_anchor_ire < $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
+					&& ((($_anchor_ire <= $low_ire_threshold) || ($_anchor_ire+0 >= $high_ire_threshold))
 					&& defined($prev_de) && $de+0 > $prev_de+0
 					&& ($de+0) > ($prev_de+0) + 0.12)) {
 					# Descent-style revert for non-white low/high IRE anchors.
@@ -15549,7 +15549,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					# move on rather than spending the rest of the budget on moves
 					# that cannot beat it. This is most of the speed-up: the 1% anchor
 					# spent 14 iterations of pass 1 oscillating well inside this band.
-					if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de)
+					if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de)
 					   && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor
 					   && $consecutive_reverts >= 2) {
 						log_line("HDR20 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
@@ -15560,7 +15560,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						# once or twice instead of quitting at a bad best. Halving alone
 						# converges the STEP to zero, not the anchor to its target, so
 						# without this a stuck anchor just freezes wherever it was.
-						if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de)
+						if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de)
 						   && $best_de+0 > ($_effective_target_de+0)*$low_ire_reescalate_factor
 						   && $low_ire_escalations < $low_ire_max_escalations) {
 							$low_ire_escalations++;
@@ -15804,7 +15804,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			 ($rg,$gg,$bg)=lg_autocal_26_hdr20_dpg_gain($reading,$tl,$target_x,$target_y,(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef)));
 			}
 			my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 < $low_ire_threshold ? $damp_floor_low : 0.8));
+			$floor=($is_white ? 0.6 : (defined($step_ire) && $step_ire+0 <= $low_ire_threshold ? $damp_floor_low : 0.8));
 			# Coarse white: mult=2. Fine/micro: mult=1, apply gains more directly
 			# so a 0.98 micro cut is not squashed by damp^(1/3).
 			my $white_move_mult=defined($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_white_move_multiplier"}+0) : 2.0;
@@ -16063,7 +16063,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# (the Akima spline is correct, mid/high errors are 99-100% of
 		# target on the deployed state).
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 <= $very_low_ire_threshold) ? $max_inner_very_low : ((defined($step_ire_loop) && $step_ire_loop+0 < $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner)));
+		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 <= $very_low_ire_threshold) ? $max_inner_very_low : ((defined($step_ire_loop) && $step_ire_loop+0 <= $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner)));
 		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
 		push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 		# On the 100% recal, refine the peak reference from the re-measured peak.
