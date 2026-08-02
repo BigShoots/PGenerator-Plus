@@ -6,16 +6,18 @@
 # 1D DPG (via the existing HDR20 path) plus this one profile upload.
 use strict;
 use warnings;
+use Errno qw(EINTR);
+use IO::Select ();
+use IO::Socket::INET ();
 use JSON::PP;
-use LWP::UserAgent;
-use HTTP::Request;
 use Time::HiRes ();
 
 my ($config_file,$state_file,$stop_file)=@ARGV;
 die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_file) || !defined($state_file) || !defined($stop_file));
 
 my $json=JSON::PP->new->canonical->allow_nonref;
-my $ua=LWP::UserAgent->new(timeout=>30);
+my $api_host="127.0.0.1";
+my $api_port=80;
 
 sub read_file {
  my ($path)=@_;
@@ -36,15 +38,56 @@ sub cancelled { return -e $stop_file; }
 
 sub api_json {
  my ($method,$path,$payload,$timeout)=@_;
- my $req=HTTP::Request->new($method=>"http://127.0.0.1$path");
- if(defined($payload)) {
-  $req->header('Content-Type'=>'application/json');
-  $req->content($json->encode($payload));
+ $method||="GET";
+ $timeout||=30;
+ $timeout=1 if($timeout < 1);
+ my $body=defined($payload) ? $json->encode($payload) : "";
+ my $deadline=time()+$timeout;
+ my $socket=IO::Socket::INET->new(
+  PeerHost=>$api_host,
+  PeerPort=>$api_port,
+  Proto=>"tcp",
+  Timeout=>$timeout,
+ );
+ return {status=>"error",message=>"Web UI API is unavailable"} if(!$socket);
+ $socket->autoflush(1);
+ my $request="$method $path HTTP/1.1\r\nHost: $api_host\r\nConnection: close\r\nAccept: application/json\r\n";
+ if($method ne "GET") {
+  $request.="Content-Type: application/json\r\nContent-Length: ".length($body)."\r\n\r\n".$body;
+ } else {
+  $request.="\r\n";
  }
- $ua->timeout($timeout||30);
- my $resp=$ua->request($req);
- my $body=eval { $json->decode($resp->decoded_content||"{}") } || {};
- return $body;
+ print $socket $request;
+ my $raw="";
+ my $buf="";
+ my $selector=IO::Select->new($socket);
+ while(1) {
+  if(cancelled()) {
+   close($socket);
+   return {status=>"error",message=>"cancelled"};
+  }
+  my $remaining=$deadline-time();
+  if($remaining <= 0) {
+   close($socket);
+   return {status=>"error",message=>"Web UI API timed out during $path"};
+  }
+  my @ready=$selector->can_read($remaining > 1 ? 1 : $remaining);
+  next if(!@ready);
+  my $len=sysread($socket,$buf,8192);
+  if(!defined($len)) {
+   next if($! == EINTR);
+   close($socket);
+   return {status=>"error",message=>"Web UI API read failed during $path"};
+  }
+  last if($len == 0);
+  $raw.=$buf;
+ }
+ close($socket);
+ my (undef,$content)=split(/\r?\n\r?\n/,$raw,2);
+ $content="" if(!defined($content));
+ my $result=eval { $json->decode($content) } || {};
+ return $result if(ref($result) eq "HASH" && %{$result});
+ return {status=>"error",message=>"Invalid Web UI API response"};
 }
 
 my $config=eval { $json->decode(read_file($config_file)) } || {};
