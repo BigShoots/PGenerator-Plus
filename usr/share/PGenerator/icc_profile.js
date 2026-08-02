@@ -685,6 +685,36 @@ function meterIccLocalOutputModeStatus(profileType){
  };
 }
 
+async function meterIccEnsureLocalOutputMode(profileType){
+ const status=meterIccLocalOutputModeStatus(profileType);
+ if(status.matches) return true;
+ const requiredLabel=status.required==='hdr10'?'HDR10':'SDR';
+ const activeLabel=status.active==='hdr10'?'HDR10':status.active==='hlg'?'HLG':status.active==='dv'?'Dolby Vision':'SDR';
+ const dirty=typeof hasUnsavedSettings==='function'&&hasUnsavedSettings();
+ const accepted=await meterShowChoiceModal({
+  title:dirty?'Apply output settings?':'Switch output mode?',
+  body:dirty
+   ?('This ICC profile requires '+requiredLabel+' output. The selected display settings must be applied before profiling can start. Apply them and restart the pattern generator now?')
+   :('This ICC profile requires '+requiredLabel+' output, but the PGenerator is currently in '+activeLabel+' mode. Switch to '+requiredLabel+' and restart the pattern generator now?'),
+  acceptLabel:dirty?'Apply & Restart':('Switch to '+requiredLabel),
+  cancelLabel:'Cancel'
+ });
+ if(!accepted) return false;
+ const signalMode=document.getElementById('signal_mode');
+ if(!signalMode){ toast('The output mode control is unavailable',true); return false; }
+ if(signalMode.value!==status.required){
+  signalMode.value=status.required;
+  signalMode.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ if(typeof applySettings!=='function'||!await applySettings()) return false;
+ const applied=meterIccLocalOutputModeStatus(profileType);
+ if(!applied.matches){
+  toast('The PGenerator output did not switch to '+requiredLabel+'. Check the display connection and try again.',true);
+  return false;
+ }
+ return true;
+}
+
 function meterIccPatternProviderChanged(){
  meterIccSyncUi();
 }
@@ -773,9 +803,9 @@ function meterIccSyncUi(){
   const displayControl=document.getElementById('meterIccDisplayType');
   const profileControl=document.getElementById('meterIccMeterProfile');
   const meterReady=!!(meterDetected&&selectedMeter&&displayControl&&displayControl.options.length&&profileControl&&profileControl.options.length);
-  const generatorUnavailable=usesCompanion?!meterIccCompanionConnected:!localMode.matches;
+  const generatorUnavailable=usesCompanion&&!meterIccCompanionConnected;
   start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
-  start.title=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
+  start.title=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
  }
  const retry=document.getElementById('meterIccRetryBuildBtn');
  const retryCount=Number(retry&&retry.dataset?retry.dataset.measurementCount:0);
@@ -1266,8 +1296,7 @@ async function meterIccStart(){
   if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
   if(!await meterIccPushCompanionDisplaySettings(true)) return;
  }else{
-  const localMode=meterIccLocalOutputModeStatus(type);
-  if(!localMode.matches){ toast(localMode.message,true); return; }
+  if(!await meterIccEnsureLocalOutputMode(type)) return;
  }
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
  if(!name){ toast('Enter a profile name',true); return; }
