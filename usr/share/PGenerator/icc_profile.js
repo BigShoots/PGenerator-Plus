@@ -732,6 +732,7 @@ function meterIccSyncUi(){
  const windowsInstallGuide=document.getElementById('meterIccWindowsInstallGuide');
  const summary=document.getElementById('meterIccRunSummary');
  const start=document.getElementById('meterIccStartBtn');
+ const startHint=document.getElementById('meterIccStartBtnHint');
  const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
  const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
  const profileModelInfo=meterIccProfileModelInfo(profileModel);
@@ -805,7 +806,12 @@ function meterIccSyncUi(){
   const meterReady=!!(meterDetected&&selectedMeter&&displayControl&&displayControl.options.length&&profileControl&&profileControl.options.length);
   const generatorUnavailable=usesCompanion&&!meterIccCompanionConnected;
   start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
-  start.title=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
+  const startReason=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Start the ICC Companion on the target computer before profiling':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
+  start.title=start.disabled?'':startReason;
+  if(startHint){
+   startHint.title=startReason;
+   startHint.setAttribute('aria-label',startReason);
+  }
  }
  const retry=document.getElementById('meterIccRetryBuildBtn');
  const retryCount=Number(retry&&retry.dataset?retry.dataset.measurementCount:0);
