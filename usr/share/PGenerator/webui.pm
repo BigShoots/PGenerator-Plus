@@ -15860,6 +15860,7 @@ function meterQueueOutputSettingsRefresh(saveMeterPrefs){
    meterUpdateSeriesTabUi();
    updateMeterTargetWhitepointVisibility();
    meterSyncHdrDiffuseWhiteControl();
+   meterSyncActiveSeriesSignalMode();
    meterRefreshActiveSeriesCharts();
    meterUpdateReadButtons();
    try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
@@ -18009,12 +18010,12 @@ function pgRefreshVisibleWorkspace(options){
  requestAnimationFrame(()=>requestAnimationFrame(()=>{
   try{ window.dispatchEvent(new Event('resize')); }catch(e){}
   if(layoutOnly) return;
-  // Active-series charts need an authoritative metadata/cache refresh after a
-  // desktop workspace transition. A raw presentation redraw can briefly grade
-  // HCFR 0% saturation patches against stale targets until the shared-status
-  // poll corrects them a few seconds later.
-  if(pgDesktopWorkspace==='calibration'&&typeof meterRefreshActiveSeriesCharts==='function'){
-   try{ meterRefreshActiveSeriesCharts(); }catch(e){}
+  // Workspace and viewport changes are presentation-only. Repaint the current
+  // in-memory snapshot without rebuilding steps or consulting measurement
+  // caches, otherwise a resize can replace freshly graded results with an
+  // older series context.
+  if(pgDesktopWorkspace==='calibration'&&typeof meterRedrawActiveSeriesCharts==='function'){
+   try{ meterRedrawActiveSeriesCharts(); }catch(e){}
   }else if(typeof pgRedrawChartsForTheme==='function') pgRedrawChartsForTheme();
  }));
 }
@@ -18151,12 +18152,10 @@ function pgSelectDesktopWorkspace(workspace,options){
   // returns to a measurement workspace; no page reload should be required.
   try{ meterRefreshCustomSeriesFromServer(); }catch(e){}
  }
- // Rebuild the active measurement context synchronously when Calibration is
- // revealed. This runs before the browser's next paint, so the previously
- // hidden canvases cannot flash values calculated from stale step metadata.
- // The deferred workspace refresh below is still needed for final sizing.
- if(workspaceChanged&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')&&typeof meterRefreshActiveSeriesCharts==='function'){
-  try{ meterRefreshActiveSeriesCharts(); }catch(e){}
+ // Revealing Calibration changes only layout. Keep the exact in-memory
+ // measurement revision and repaint it before the browser exposes the canvas.
+ if(workspaceChanged&&workspace==='calibration'&&document.body.classList.contains('layout-desktop')&&typeof meterRedrawActiveSeriesCharts==='function'){
+  try{ meterRedrawActiveSeriesCharts(); }catch(e){}
  }
  // LG calibration history: only when entering LG Display, not on loadInfo poll.
  try{ if(typeof lgMaybeRefreshCalHistoryForDesktopWorkspace==='function') lgMaybeRefreshCalHistoryForDesktopWorkspace(workspace,workspaceChanged); }catch(e){}
@@ -18790,6 +18789,7 @@ let meterReadings=[];
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterLastChartSignature='';
+let meterSeriesChartRevision=0;
 let meterSeriesCache={};
 let meterSeriesCacheBootId='';
 let meterChromaticityLockedMode='';
@@ -18854,7 +18854,10 @@ function meterSeriesSnapshotHasReadings(snap){
 }
 
 function meterSeriesSnapshotCanRestore(snap){
- return !!(snap&&!meterSeriesSnapshotIsCleared(snap)&&meterSeriesSnapshotHasReadings(snap));
+ if(!snap||typeof snap!=='object') return false;
+ if(!meterSeriesSnapshotIsCleared(snap)&&meterSeriesSnapshotHasReadings(snap)) return true;
+ const variants=(snap.mode_snapshots&&typeof snap.mode_snapshots==='object')?snap.mode_snapshots:{};
+ return Object.values(variants).some(variant=>variant&&!meterSeriesSnapshotIsCleared(variant)&&meterSeriesSnapshotHasReadings(variant));
 }
 
 function meterSetSeriesCacheBootId(bootId){
@@ -18883,10 +18886,15 @@ function meterSetSeriesCacheBootId(bootId){
    if(!cache||typeof cache!=='object') return;
    Object.entries(cache).forEach(([key,snap])=>{
     if(!snap||typeof snap!=='object') return;
-    const existing=meterSeriesCache[key];
-    if(!existing || Number(snap.updated_at||0)>=Number(existing.updated_at||0)){
-     meterSeriesCache[key]=snap;
-    }
+    const incoming=[];
+    const bare=meterSeriesSnapshotWithoutModeVariants(snap);
+    if(bare) incoming.push(bare);
+    if(snap.mode_snapshots&&typeof snap.mode_snapshots==='object') Object.values(snap.mode_snapshots).forEach(variant=>{if(variant&&typeof variant==='object') incoming.push(variant);});
+    incoming.forEach(variant=>{
+     const mode=meterSeriesSnapshotSignalMode(variant,'sdr');
+     const existing=meterSeriesSnapshotForMode(meterSeriesCache[key],mode);
+     if(!existing||Number(variant.updated_at||0)>=Number(existing.updated_at||0)) meterStoreSeriesSnapshot(key,variant);
+    });
    });
   };
   mergeCache(readCache(scopedKey(bootId,'seriesCache')));
@@ -18971,6 +18979,38 @@ function meterSeriesKeyIsNativePreset(key){
 function meterSeriesSnapshotSignalMode(snapshot,fallbackMode){
  const mode=String((snapshot&&snapshot.signal_mode)||fallbackMode||'sdr').toLowerCase();
  return mode||'sdr';
+}
+
+function meterSeriesSnapshotWithoutModeVariants(snapshot){
+ if(!snapshot||typeof snapshot!=='object') return null;
+ const bare={...snapshot};
+ delete bare.mode_snapshots;
+ return bare;
+}
+
+function meterSeriesSnapshotForMode(snapshot,signalMode){
+ if(!snapshot||typeof snapshot!=='object') return null;
+ const mode=String(signalMode||'sdr').toLowerCase()||'sdr';
+ const variants=(snapshot.mode_snapshots&&typeof snapshot.mode_snapshots==='object')?snapshot.mode_snapshots:null;
+ if(variants&&variants[mode]&&typeof variants[mode]==='object') return variants[mode];
+ return meterSeriesSnapshotSignalMode(snapshot,mode)===mode?meterSeriesSnapshotWithoutModeVariants(snapshot):null;
+}
+
+function meterStoreSeriesSnapshot(key,snapshot){
+ if(!key||!snapshot||typeof snapshot!=='object') return;
+ const bare=meterSeriesSnapshotWithoutModeVariants(snapshot);
+ const mode=meterSeriesSnapshotSignalMode(bare,'sdr');
+ const current=meterSeriesCache&&meterSeriesCache[key];
+ const variants=(current&&current.mode_snapshots&&typeof current.mode_snapshots==='object')
+  ? JSON.parse(JSON.stringify(current.mode_snapshots))
+  : {};
+ if(current){
+  const prior=meterSeriesSnapshotWithoutModeVariants(current);
+  const priorMode=meterSeriesSnapshotSignalMode(prior,'sdr');
+  if(!variants[priorMode]||Number(prior.updated_at||0)>=Number(variants[priorMode].updated_at||0)) variants[priorMode]=prior;
+ }
+ variants[mode]=bare;
+ meterSeriesCache[key]={...bare,mode_snapshots:variants};
 }
 
 function meterGreyscaleReadingMatchesStep(reading,step){
@@ -19436,7 +19476,9 @@ function meterResolveSeriesSnapshotFromCache(key,options){
   return out;
  };
  const opts=options||{};
- let exact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ const rawExact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ const requestedMode=String((opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()||'sdr';
+ let exact=meterSeriesSnapshotForMode(rawExact,requestedMode);
  // CHC imports are measurement-only workspaces. Older builds allowed their
  // readings to be merged into a native preset with the same IRE labels, then
  // persisted that mixture under e.g. greyscale-21 during boot recovery. Strip
@@ -19448,15 +19490,14 @@ function meterResolveSeriesSnapshotFromCache(key,options){
   if(exact.white_reading&&meterSeriesReadingIsImported(exact.white_reading)) exact.white_reading=null;
  }
  const parsed=meterParseSeriesKey(key)||null;
- const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||'greyscale';
- const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||21;
+ const type=opts.type||((parsed&&parsed.type)?parsed.type:'')||(exact&&exact.type)||(rawExact&&rawExact.type)||'greyscale';
+ const points=opts.points||((parsed&&parsed.points)?parsed.points:0)||(exact&&exact.points)||(rawExact&&rawExact.points)||21;
  // The eligibility gate must compare the snapshot's mode against the LIVE
  // (requested) chart mode — resolving signalMode from the snapshot first and
  // then comparing the snapshot against it was a tautology (always true), so
  // e.g. an SDR-cached cube snapshot restored into an HDR10 session and
  // stamped signal_mode 'sdr' onto the active series, silently collapsing the
  // whole PQ pipeline (BT.2390 control, PQ target decode, chart law).
- const requestedMode=String((opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()||'sdr';
  const signalMode=meterSeriesSnapshotSignalMode(exact,requestedMode);
  if(exact&&meterSeriesSnapshotIsCleared(exact)&&meterSeriesSnapshotSignalMode(exact,requestedMode)===requestedMode) return null;
  let steps=clone((Array.isArray(opts.steps)&&opts.steps.length)?opts.steps:((exact&&Array.isArray(exact.steps)&&exact.steps.length)?exact.steps:meterBuildStepsJS(type,points)));
@@ -19483,10 +19524,11 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  const candidates=[];
  if(exactEligible) candidates.push({snap:exactEligible,exact:true});
  if(meterSeriesCache&&typeof meterSeriesCache==='object'){
-  Object.entries(meterSeriesCache).forEach(([cacheKey,snap])=>{
+  Object.entries(meterSeriesCache).forEach(([cacheKey,rootSnap])=>{
    if(cacheKey===key) return;
    const meta=meterParseSeriesKey(cacheKey);
    if(!meta||meta.type!=='greyscale') return;
+   const snap=meterSeriesSnapshotForMode(rootSnap,signalMode);
    if(!snap||!Array.isArray(snap.readings)||snap.readings.length===0) return;
    // Imported CHC workspaces must remain selectable as their own snapshot, but
    // must never act as fallback measurements for native point-count presets.
@@ -23584,7 +23626,8 @@ function meterCacheActiveChromaticityReadings(){
  const observer=meterObserverForReadings(meterReadings);
  if(!observer) return;
  meterCacheSeriesState('complete',{deferPersist:true});
- const snap=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const snap=meterSeriesSnapshotForMode(meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey],mode);
  if(!snap) return;
  const map=(snap.observer_readings&&typeof snap.observer_readings==='object')?snap.observer_readings:{};
  map[observer]={
@@ -23594,11 +23637,13 @@ function meterCacheActiveChromaticityReadings(){
  };
  snap.observer_readings=map;
  snap.updated_at=Date.now();
+ meterStoreSeriesSnapshot(meterActiveSeriesKey,snap);
  meterScheduleSeriesCachePersist();
 }
 function meterRestoreActiveChromaticityReadings(observer){
  if(!(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')) return false;
- const snap=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const snap=meterSeriesSnapshotForMode(meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey],mode);
  const entry=snap&&snap.observer_readings&&snap.observer_readings[observer];
  let readings=null,white=null;
  if(entry&&Array.isArray(entry.readings)){
@@ -27293,6 +27338,7 @@ async function meterCheckStatus(){
  }
 
 function meterRecoverSeries(s){
+ const recoveredChartRevision=++meterSeriesChartRevision;
  const previousSeriesKey=String(meterActiveSeriesKey||'');
  const previousScrollRatio=Number(meterGreyscaleScrollRatio)||0;
  // Determine series type and points from series_id or the recovered steps.
@@ -27425,7 +27471,7 @@ function meterRecoverSeries(s){
  document.getElementById('meterLiveReading').style.display='none';
  // Highlight correct series button
  meterResetSeriesButtons();
- const importedSnap=meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey];
+ const importedSnap=meterSeriesSnapshotForMode(meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey],meterActiveSeriesSignalMode);
  let activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="'+meterActiveSeriesKey+'"]');
  if(!activeBtn&&meterSeriesSnapshotIsImported(importedSnap)){
   if(type==='greyscale') activeBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-'+points+'"]');
@@ -27446,7 +27492,7 @@ function meterRecoverSeries(s){
  const recoveredChartKey=meterActiveSeriesKey;
  const recoveredReadings=Array.isArray(meterReadings)?[...meterReadings]:[];
  const drawRecoveredCharts=()=>{
-  if(meterActiveSeriesKey!==recoveredChartKey) return;
+  if(meterActiveSeriesKey!==recoveredChartKey||meterSeriesChartRevision!==recoveredChartRevision) return;
   if(recoveredReadings.length>0){
    const sorted=(type==='colors'||type==='saturations')?[...recoveredReadings]:[...recoveredReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
    drawAllCharts(sorted);
@@ -27457,7 +27503,7 @@ function meterRecoverSeries(s){
    // visually blank until another colour series supplies a second paint.
    if((type==='colors'||type==='saturations')&&typeof window.requestAnimationFrame==='function'){
     window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{
-     if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
+     if(meterActiveSeriesKey===recoveredChartKey&&meterSeriesChartRevision===recoveredChartRevision&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
     }));
     // The Color tab's automatic default selection also completes a broader
     // tab/layout pass after the animation frames above. That pass can resize
@@ -27465,7 +27511,7 @@ function meterRecoverSeries(s){
     // Repaint once after it settles; the key guard prevents stale work when
     // the operator has already moved to Sat Sweep or another series.
     [150,500,1000,1500].forEach(delay=>setTimeout(()=>{
-     if(meterActiveSeriesKey===recoveredChartKey&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
+     if(meterActiveSeriesKey===recoveredChartKey&&meterSeriesChartRevision===recoveredChartRevision&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
     },delay));
    }
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
@@ -27691,7 +27737,8 @@ function meterIsWhiteReferenceReading(rd){
 
 function meterCacheSeriesState(status,options){
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
- const prev=meterSeriesCache[meterActiveSeriesKey]||null;
+ const activeSignalMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const prev=meterSeriesSnapshotForMode(meterSeriesCache[meterActiveSeriesKey],activeSignalMode);
  const readings=JSON.parse(JSON.stringify(meterReadings||[]));
  const observerReadings=JSON.parse(JSON.stringify((prev&&prev.observer_readings)||{}));
  const readingObserver=(typeof meterObserverForReadings==='function')?meterObserverForReadings(readings):null;
@@ -27719,12 +27766,12 @@ function meterCacheSeriesState(status,options){
   return;
  }
  if(readings.length===0&&prev&&meterSeriesSnapshotIsCleared(prev)&&String(status||'').toLowerCase()!=='running'){
-  meterSeriesCache[meterActiveSeriesKey]={...prev,updated_at:Date.now()};
+  meterStoreSeriesSnapshot(meterActiveSeriesKey,{...prev,updated_at:Date.now()});
   if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
   else meterPersistSeriesCache();
   return;
  }
-	 meterSeriesCache[meterActiveSeriesKey]={
+	 const snapshot={
 	  type:meterActiveSeriesType,
 	  points:meterActiveSeriesPoints,
 	  source_format:(prev&&prev.source_format)||((readings.length&&readings.every(meterSeriesReadingIsImported))?'hcfr-chc':null),
@@ -27733,7 +27780,7 @@ function meterCacheSeriesState(status,options){
 	  source_session_id:(prev&&prev.source_session_id)||null,
 	  source_group:(prev&&prev.source_group)||null,
 	  hcfr_preferences:(prev&&prev.hcfr_preferences)?JSON.parse(JSON.stringify(prev.hcfr_preferences)):null,
-	  signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
+	  signal_mode:activeSignalMode,
 	  target_gamma:meterActiveSeriesTargetGamma||null,
 	  max_luma:meterActiveSeriesMaxLuma||null,
 	  dv_map_mode:meterActiveSeriesDvMapMode||null,
@@ -27746,6 +27793,7 @@ function meterCacheSeriesState(status,options){
   series_id:meterSharedSeriesId||((prev&&prev.series_id)?prev.series_id:null),
   updated_at:Date.now()
  };
+ meterStoreSeriesSnapshot(meterActiveSeriesKey,snapshot);
  if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
  else meterPersistSeriesCache();
 }
@@ -51925,7 +51973,8 @@ function meterGetSeriesSnapshotByKey(key){
  if(key===meterActiveSeriesKey&&meterSeriesSteps&&meterSeriesSteps.length>0){
   meterCacheSeriesState(meterSeriesRunning?'running':'complete');
  }
- const snap=meterSeriesCache[key];
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const snap=meterSeriesSnapshotForMode(meterSeriesCache[key],mode);
  if(!snap||!snap.steps||snap.steps.length===0) return null;
  const readings=(snap.readings||[]).filter(rd=>meterReadingHasLuminance(rd));
  return {...snap,readings:readings};
@@ -52785,7 +52834,7 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
    : meterBuildStepsJS(meta.type,meta.points);
   const resolved=meterResolveSeriesSnapshotFromCache(key,{type:meta.type,points:meta.points,signalMode:signalMode,steps:steps});
   if(!resolved||!Array.isArray(resolved.readings)||resolved.readings.length===0) return;
-	  meterSeriesCache[key]={
+	  meterStoreSeriesSnapshot(key,{
 	   type:meta.type,
 	   points:meta.points,
 	   signal_mode:signalMode,
@@ -52799,7 +52848,7 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
    status:(resolved.status||((current&&current.status)||'complete')),
    series_id:(current&&current.series_id)?current.series_id:null,
    updated_at:Date.now()
-  };
+  });
  });
 }
 
@@ -52809,7 +52858,7 @@ function meterApplyClearedState(showToastMsg){
   const clearedAt=Date.now();
   const clearedSteps=Array.isArray(meterSeriesSteps)?JSON.parse(JSON.stringify(meterSeriesSteps)):[];
   meterPreserveOtherSeriesCacheOnClear(meterActiveSeriesKey);
-	  meterSeriesCache[clearedKey]={
+	  meterStoreSeriesSnapshot(clearedKey,{
 	   type:meterActiveSeriesType,
 	   points:meterActiveSeriesPoints,
 	   signal_mode:String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase(),
@@ -52824,9 +52873,10 @@ function meterApplyClearedState(showToastMsg){
    series_id:null,
    cleared_at:clearedAt,
    updated_at:clearedAt
-  };
+  });
  }
  meterPersistSeriesCache();
+ meterSeriesChartRevision++;
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesAwaitingReady=false;
@@ -54658,12 +54708,64 @@ meterRenderGreyTvControls(null);
  if(el) el.addEventListener('change',()=>meterQueueOutputSettingsRefresh(false));
 });
 
+function meterSyncActiveSeriesSignalMode(){
+ if(!meterActiveSeriesKey||!meterActiveSeriesType||!meterActiveSeriesPoints||meterPatchDisplayLockedForRead()) return false;
+ const liveMode=String(meterChartSignalMode()||'sdr').toLowerCase();
+ const activeMode=String(meterActiveSeriesSignalMode||liveMode).toLowerCase();
+ if(activeMode===liveMode) return false;
+
+ // Save the departing mode before changing the active context. Each base UI
+ // series key owns an independent snapshot per signal mode.
+ if(meterSeriesSteps&&meterSeriesSteps.length) meterCacheSeriesState('complete',{deferPersist:true});
+ meterActiveSeriesSignalMode=liveMode;
+ meterActiveSeriesTargetGamma=null;
+ meterActiveSeriesMaxLuma=null;
+ meterActiveSeriesDvMapMode=null;
+ meterActiveSeriesDvInterface=null;
+ const steps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+ if(meterRestoreSeriesFromCache(meterActiveSeriesKey,{
+  type:meterActiveSeriesType,
+  points:meterActiveSeriesPoints,
+  signalMode:liveMode,
+  steps:steps
+ })) return true;
+
+ meterSeriesChartRevision++;
+ meterSeriesSteps=steps;
+ meterReadings=[];
+ meterWhiteReading=null;
+ meterSharedSeriesId=null;
+ meterCurrentPatchStep=null;
+ meterSelectedThumbIre=null;
+ meterLastChartCount=0;
+ meterLastChartSignature='';
+ meterSetActiveSeriesChartContext();
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ const sortedSteps=isColor?[...steps]:meterGreyscaleSeriesSteps(steps);
+ meterBuildPatchThumbs(sortedSteps,new Set(),null);
+ drawAllChartsPreset(sortedSteps);
+ return true;
+}
+
+function meterRedrawActiveSeriesCharts(){
+ if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterPatchDisplayLockedForRead()) return;
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ if(Array.isArray(meterReadings)&&meterReadings.length){
+  const readings=isColor?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+  drawAllCharts(readings);
+ }else if(Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length){
+  const steps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
+  drawAllChartsPreset(steps);
+ }
+}
+
 function meterRefreshActiveSeriesCharts(){
 	 // A viewport/layout refresh is presentation-only. Never rebuild the
 	 // active steps while a read owns the displayed patch: the next continuous
 	 // iteration consumes meterCurrentPatchStep and could otherwise send a
 	 // different canonical step after an Alt-Tab, resize, or drawer transition.
 	 if(!meterActiveSeriesType||!meterActiveSeriesPoints||meterPatchDisplayLockedForRead()) return;
+	 meterSeriesChartRevision++;
 	 if(typeof meterCancelQueuedGreyAnalysisRefresh==='function') meterCancelQueuedGreyAnalysisRefresh();
 	 if(typeof meter3dLutChartsBlocked==='function'&&meter3dLutChartsBlocked()){
 	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
@@ -54715,7 +54817,10 @@ let meterGreyscaleResizeTimer=null;
 window.addEventListener('resize',()=>{
  if(meterActiveSeriesType!=='greyscale') return;
  if(meterGreyscaleResizeTimer) clearTimeout(meterGreyscaleResizeTimer);
+ const resizeRevision=meterSeriesChartRevision;
+ const resizeSeriesKey=meterActiveSeriesKey;
  meterGreyscaleResizeTimer=setTimeout(()=>{
+  if(resizeRevision!==meterSeriesChartRevision||resizeSeriesKey!==meterActiveSeriesKey) return;
   if(meterAutoCalStatusActive()&&!meterAutoCalLatestStatus) return;
   if(meterReadings&&meterReadings.length){
    const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
