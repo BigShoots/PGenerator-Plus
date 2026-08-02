@@ -39224,7 +39224,7 @@ function meterFullAutoCalDefaultConfig(){
    wp:null,
    preCalSkipped:false,
    postCommitPolishEnabled:false,
-   shadowFixEnabled:true,
+   shadowFixEnabled:false,
    darkDetailEnabled:false
   };
  }
@@ -39244,7 +39244,7 @@ function meterFullAutoCalDefaultConfig(){
   wp:null,
 	  preCalSkipped:false,
 	  postCommitPolishEnabled:false,
-	  shadowFixEnabled:true,
+	  shadowFixEnabled:false,
 	  darkDetailEnabled:false
  };
 	}
@@ -39301,12 +39301,12 @@ function meterFullAutoCalPostCommitPolishChoiceValue(){
 
 	function meterFullAutoCalShadowFixChoiceValue(){
 	 const el=document.getElementById('meterFullAutoCalShadowFixEnabled');
-	 return el?el.checked===true:true;
+	 return el?el.checked===true:false;
 	}
 
 	function meterFullAutoCalShadowFixEnabled(){
 	 if(meterFullAutoCalConfig&&Object.prototype.hasOwnProperty.call(meterFullAutoCalConfig,'shadowFixEnabled')) return meterFullAutoCalConfig.shadowFixEnabled!==false;
-	 return true;
+	 return false;
 	}
 
 	function meterFullAutoCalDarkDetailChoiceValue(){
@@ -40270,7 +40270,7 @@ function meterFullAutoCalConfirmDialog(options){
 	  // sits on its own line). An inline flex here would collapse it back onto
 	  // one line and undo the row rework.
 	  shadowFixRow.style.display=opts.showShadowFixChoice?'':'none';
-	  if(shadowFixChoice&&opts.showShadowFixChoice) shadowFixChoice.checked=opts.shadowFixDefault!==false;
+	  if(shadowFixChoice&&opts.showShadowFixChoice) shadowFixChoice.checked=opts.shadowFixDefault===true;
 	 }
 	 // Dark Detail applies to every greyscale-bearing mode (SDR, HDR10, DV),
 	 // unlike the HDR-only shadow fix. Default OFF: it lengthens the run.
@@ -40720,16 +40720,16 @@ async function meterStartFullAutoCal(){
  const dvSignal=(String(getVal('signal_mode')||'').toLowerCase()==='dv');
  // HDR: Calman only supports matrix 3D LUT — restore old wizard (no type picker).
  const hdrMatrixOnly=(signalMode==='hdr10');
-	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:true,showDarkDetailChoice:true,darkDetailDefault:false,showProfilingChoice:!hdrMatrixOnly&&!dvSignal});
+	 const accepted=await meterFullAutoCalConfirmDialog({showPostCalTouchupChoice:true,showShadowFixChoice:hdrMatrixOnly,shadowFixDefault:false,showDarkDetailChoice:true,darkDetailDefault:false,showProfilingChoice:!hdrMatrixOnly&&!dvSignal});
 	 if(!accepted) return;
 		 const postCommitPolishEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'postCommitPolishEnabled'))
 		  ? accepted.postCommitPolishEnabled===true
 		  : false;
 		 const shadowFixEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'shadowFixEnabled'))
-		  ? accepted.shadowFixEnabled!==false
-		  : true;
-		 // Dark Detail defaults to FALSE when absent -- the opposite of shadowFix --
-		 // so any path that does not surface the option leaves the ladder untouched.
+		  ? accepted.shadowFixEnabled===true
+		  : false;
+		 // Both optional extended passes default to false when absent, so any path
+		 // that does not surface an option leaves the standard workflow untouched.
 		 const darkDetailEnabled=(accepted&&typeof accepted==='object'&&Object.prototype.hasOwnProperty.call(accepted,'darkDetailEnabled'))
 		  ? accepted.darkDetailEnabled===true
 		  : false;
