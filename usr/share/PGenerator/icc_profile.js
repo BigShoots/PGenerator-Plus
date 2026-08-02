@@ -6,6 +6,7 @@ let meterIccRunConfig=null;
 let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
 let meterIccCompanionLastSeenAt=0;
+let meterIccCompanionDetail='ICC Companion connected';
 let meterIccCompanionTimer=null;
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
@@ -892,9 +893,10 @@ function meterCalibrationShowCompanionStatus(connected,text){
  const target=document.getElementById('meterCalibrationCompanionStatus');
  if(!target) return;
  target.textContent='';
+ target.style.color=connected?'var(--green)':'var(--red)';
  if(!meterCalibrationUsesCompanion()) return;
  const dot=document.createElement('span');
- dot.style.color=connected?'var(--success)':'var(--danger)';
+ dot.style.color=connected?'var(--green)':'var(--red)';
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
 }
@@ -936,10 +938,26 @@ function meterIccShowCompanionStatus(connected,text){
  const target=document.getElementById('meterIccCompanionStatus');
  if(!target) return;
  target.textContent='';
+ target.style.color=connected?'var(--green)':'var(--red)';
  const dot=document.createElement('span');
- dot.style.color=connected?'var(--success)':'var(--danger)';
+ dot.style.color=connected?'var(--green)':'var(--red)';
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
+}
+
+function meterIccUpdateTopCompanionStatus(connected,detail){
+ const wrap=document.getElementById('iccCompanionTopStatusWrap');
+ if(!wrap) return;
+ wrap.style.display=connected?'':'none';
+ wrap.title=connected?String(detail||'ICC Companion connected'):'ICC Companion not connected';
+ const dot=document.getElementById('iccCompanionTopDot');
+ const text=document.getElementById('iccCompanionTopStatusText');
+ if(dot) dot.style.background='var(--green)';
+ if(text){
+  text.textContent='ICC Companion';
+  text.style.color='var(--green)';
+ }
+ if(typeof syncTopStatusStack==='function') syncTopStatusStack();
 }
 
 async function meterIccRefreshCompanionStatus(){
@@ -956,6 +974,7 @@ async function meterIccRefreshCompanionStatus(){
    const version=String(state.version||'');
    const hdr=state.hdr_active?' with native HDR active':'';
    const detail='Connected: '+client+' using '+renderer+hdr+(version?' (v'+version+')':'');
+   meterIccCompanionDetail=detail;
    meterIccShowCompanionStatus(true,detail);
    meterCalibrationShowCompanionStatus(true,detail);
   }else if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
@@ -963,6 +982,7 @@ async function meterIccRefreshCompanionStatus(){
   meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
   if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }
+ meterIccUpdateTopCompanionStatus(meterIccCompanionConnected,meterIccCompanionDetail);
  meterCalibrationApplyCompanionAvailability(meterIccCompanionConnected);
  meterIccSyncUi();
  return meterIccCompanionConnected;
