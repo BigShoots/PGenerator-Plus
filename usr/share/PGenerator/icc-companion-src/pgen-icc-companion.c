@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.0.6"
+#define APP_VERSION "1.1.0"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -54,6 +54,7 @@ typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
     SDL_Texture *texture;
+    SDL_Texture *background_texture;
     CompanionConfig config;
     uint64_t sequence;
     bool hdr;
@@ -62,6 +63,7 @@ typedef struct {
     bool fullscreen;
     bool alignment;
     double displayed_r, displayed_g, displayed_b;
+    int displayed_size;
     char displayed_mode[32];
     bool quit;
     uint64_t next_poll_ms;
@@ -72,7 +74,13 @@ typedef struct {
     uint64_t command_sequence;
     bool command_alignment;
     double command_r, command_g, command_b;
+    int command_size;
     char command_mode[32];
+    bool settings_pending;
+    bool settings_fullscreen;
+    int settings_size;
+    uint64_t settings_revision;
+    uint64_t applied_settings_revision;
     bool ack_pending;
     uint64_t ack_sequence;
     bool ack_ok;
@@ -305,6 +313,7 @@ static bool create_renderer(bool hdr)
     SDL_PropertiesID props;
     int index;
     if (app.texture) { SDL_DestroyTexture(app.texture); app.texture = NULL; }
+    if (app.background_texture) { SDL_DestroyTexture(app.background_texture); app.background_texture = NULL; }
     if (app.renderer) { SDL_DestroyRenderer(app.renderer); app.renderer = NULL; }
     for (index = 0; ; index++) {
         props = SDL_CreateProperties();
@@ -327,7 +336,10 @@ static bool create_renderer(bool hdr)
     if (!update_renderer_hdr_state()) return false;
     app.texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
     if (!app.texture) return false;
+    app.background_texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
+    if (!app.background_texture) return false;
     SDL_SetTextureScaleMode(app.texture, SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureScaleMode(app.background_texture, SDL_SCALEMODE_NEAREST);
     SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
     SDL_RenderClear(app.renderer);
     SDL_RenderPresent(app.renderer);
@@ -362,17 +374,42 @@ static bool render_alignment(void)
 
 static bool render_patch(const char *mode, double r, double g, double b)
 {
-    float pixel[4];
+    float pixel[4], background[4];
+    SDL_FRect destination;
+    int width, height, patch_size, window_percent;
+    double background_signal = 0.0;
     bool hdr = !strcmp(mode, "hdr10");
     if (!app.renderer || hdr != app.hdr) {
         if (!create_renderer(hdr)) return false;
     }
     patch_to_linear(mode, r, g, b, pixel);
+    patch_size = app.displayed_size > 0 ? app.displayed_size : 100;
+    window_percent = patch_size;
+    if (patch_size > 100 && patch_size < 199) {
+        double foreground_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        double target_apl = (patch_size - 100) / 100.0;
+        window_percent = 10;
+        background_signal = (target_apl - foreground_luma * 0.10) / 0.90;
+        background_signal = fmax(0.0, fmin(1.0, background_signal));
+    }
+    patch_to_linear(mode, background_signal, background_signal, background_signal, background);
     if (!SDL_UpdateTexture(app.texture, NULL, pixel, (int)sizeof(pixel))) return false;
+    if (!SDL_UpdateTexture(app.background_texture, NULL, background, (int)sizeof(background))) return false;
+    if (!SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
+    destination.x = 0.0f;
+    destination.y = 0.0f;
+    destination.w = (float)width;
+    destination.h = (float)height;
+    if (app.fullscreen && window_percent < 100) {
+        float scale = sqrtf(fmaxf(0.0f, (float)window_percent / 100.0f));
+        destination.w = width * scale;
+        destination.h = height * scale;
+        destination.x = (width - destination.w) * 0.5f;
+        destination.y = (height - destination.h) * 0.5f;
+    }
     for (int frame = 0; frame < 3; frame++) {
-        SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
-        SDL_RenderClear(app.renderer);
-        SDL_RenderTexture(app.renderer, app.texture, NULL, NULL);
+        if (!SDL_RenderTexture(app.renderer, app.background_texture, NULL, NULL)) return false;
+        if (!SDL_RenderTexture(app.renderer, app.texture, NULL, &destination)) return false;
         SDL_RenderPresent(app.renderer);
     }
     app.alignment = false;
@@ -388,6 +425,17 @@ static bool render_current_frame(void)
     if (app.alignment) return render_alignment();
     return render_patch(app.displayed_mode[0] ? app.displayed_mode : "sdr",
                         app.displayed_r, app.displayed_g, app.displayed_b);
+}
+
+static bool apply_display_settings(bool fullscreen, int patch_size)
+{
+    if (patch_size < 1 || patch_size > 198) patch_size = 100;
+    if (app.fullscreen != fullscreen) {
+        if (!SDL_SetWindowFullscreen(app.window, fullscreen)) return false;
+        app.fullscreen = fullscreen;
+    }
+    app.displayed_size = patch_size;
+    return render_current_frame();
 }
 
 static void acknowledge(uint64_t sequence, bool ok, const char *message,
@@ -431,8 +479,10 @@ static void send_pending_ack(void)
 static void poll_server(void)
 {
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
+    char window_mode[32] = "window";
     char reported_renderer[64] = "starting";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
+    double settings_revision_value, display_size_value, patch_size_value;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
     int status;
@@ -456,6 +506,20 @@ static void poll_server(void)
         char title[256];
         SDL_snprintf(title, sizeof(title), "Connected to %s", app.config.server);
         queue_status(title);
+    }
+    if (json_number(response, "settings_revision", &settings_revision_value) &&
+        json_number(response, "display_size", &display_size_value) &&
+        json_string(response, "window_mode", window_mode, sizeof(window_mode))) {
+        uint64_t settings_revision = (uint64_t)settings_revision_value;
+        SDL_LockMutex(app.network_mutex);
+        if (settings_revision != app.applied_settings_revision &&
+            (!app.settings_pending || settings_revision != app.settings_revision)) {
+            app.settings_revision = settings_revision;
+            app.settings_fullscreen = !strcmp(window_mode, "fullscreen");
+            app.settings_size = (int)display_size_value;
+            app.settings_pending = true;
+        }
+        SDL_UnlockMutex(app.network_mutex);
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
@@ -508,6 +572,8 @@ static void poll_server(void)
     app.command_r = r;
     app.command_g = g;
     app.command_b = b;
+    app.command_size = 100;
+    if (json_number(response, "size", &patch_size_value)) app.command_size = (int)patch_size_value;
     SDL_strlcpy(app.command_mode, mode, sizeof(app.command_mode));
     app.command_pending = true;
     SDL_UnlockMutex(app.network_mutex);
@@ -529,6 +595,9 @@ static int SDLCALL network_thread_main(void *unused)
 static void process_network_updates(void)
 {
     bool have_command = false, alignment = false, status_dirty = false;
+    bool have_settings = false, settings_fullscreen = false;
+    int command_size = 100, settings_size = 100;
+    uint64_t settings_revision = 0;
     uint64_t sequence = 0;
     double r = 0.0, g = 0.0, b = 0.0;
     char mode[32] = "sdr", title[256] = "";
@@ -538,18 +607,35 @@ static void process_network_updates(void)
         SDL_strlcpy(title, app.status, sizeof(title));
         app.status_dirty = false;
     }
+    if (app.settings_pending) {
+        have_settings = true;
+        settings_fullscreen = app.settings_fullscreen;
+        settings_size = app.settings_size;
+        settings_revision = app.settings_revision;
+        app.settings_pending = false;
+    }
     if (app.command_pending) {
         have_command = true;
         sequence = app.command_sequence;
         alignment = app.command_alignment;
         r = app.command_r; g = app.command_g; b = app.command_b;
+        command_size = app.command_size;
         SDL_strlcpy(mode, app.command_mode, sizeof(mode));
         app.command_pending = false;
     }
     SDL_UnlockMutex(app.network_mutex);
     if (status_dirty) SDL_SetWindowTitle(app.window, title);
+    if (have_settings) {
+        if (apply_display_settings(settings_fullscreen, settings_size)) {
+            SDL_LockMutex(app.network_mutex);
+            app.applied_settings_revision = settings_revision;
+            SDL_UnlockMutex(app.network_mutex);
+        }
+    }
     if (have_command) {
-        bool ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+        bool ok;
+        if (!alignment) app.displayed_size = command_size;
+        ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
         const char *message = ok ? "" : (alignment ? "The renderer could not display the alignment target" :
                               (!strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" : "The renderer could not display the patch"));
         SDL_LockMutex(app.network_mutex);
@@ -586,6 +672,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
     app.fullscreen = false;
+    app.displayed_size = 100;
     if (!create_renderer(false)) return SDL_APP_FAILURE;
     if (!render_alignment()) return SDL_APP_FAILURE;
     SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
@@ -613,6 +700,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         if (event->key.key == SDLK_F11) {
             state->fullscreen = !state->fullscreen;
             SDL_SetWindowFullscreen(state->window, state->fullscreen);
+            render_current_frame();
         }
     }
     if (event->type == SDL_EVENT_WINDOW_EXPOSED ||
@@ -641,6 +729,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         SDL_SetAtomicInt(&state->quit_requested, 1);
         if (state->network_thread) SDL_WaitThread(state->network_thread, NULL);
         if (state->texture) SDL_DestroyTexture(state->texture);
+        if (state->background_texture) SDL_DestroyTexture(state->background_texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
         if (state->window) SDL_DestroyWindow(state->window);
         if (state->network_mutex) SDL_DestroyMutex(state->network_mutex);

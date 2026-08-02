@@ -410,6 +410,7 @@ my $_icc_companion_packager="/usr/bin/icc_companion_package.py";
 my $_icc_companion_dir="$var_dir/icc-companion";
 my $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
 my $_icc_companion_command_file="$_icc_companion_dir/command.json";
+my $_icc_companion_settings_file="$_icc_companion_dir/display.json";
 my $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 my $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 # :shared - 0.25s debounce guarding a PHYSICAL meter read (see the check in
@@ -700,7 +701,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings");
  return 0;
 }
 
@@ -1572,6 +1573,10 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/icc/companion/status") {
     my $result=&webui_icc_companion_status();
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/settings" && $method eq "POST") {
+    my $result=&webui_icc_companion_settings($body);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/icc/companion/pattern" && $method eq "POST") {
@@ -6547,6 +6552,44 @@ sub webui_icc_companion_query_value (@) {
  return $1;
 }
 
+sub webui_icc_companion_settings_values () {
+ my ($window_mode,$patch_size,$revision)=("window",100,0);
+ if(open(my $fh,"<",$_icc_companion_settings_file)) {
+  local $/; my $content=<$fh>||""; close($fh);
+  $window_mode=$1 if($content=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
+  $patch_size=int($1) if($content=~/"patch_size"\s*:\s*(\d+)/);
+  $revision=int($1) if($content=~/"revision"\s*:\s*(\d+)/);
+ }
+ my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
+ $patch_size=100 unless($allowed{$patch_size});
+ return ($window_mode,$patch_size,$revision);
+}
+
+sub webui_icc_companion_settings_fragment () {
+ my ($window_mode,$patch_size,$revision)=&webui_icc_companion_settings_values();
+ return '"window_mode":"'.$window_mode.'","display_size":'.$patch_size.',"settings_revision":'.$revision;
+}
+
+sub webui_icc_companion_settings (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Invalid ICC Companion display settings"}' unless(defined($body) && length($body)<2048);
+ my $window_mode="";
+ my $patch_size=0;
+ $window_mode=$1 if($body=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
+ $patch_size=int($1) if($body=~/"patch_size"\s*:\s*(\d+)/);
+ my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
+ return '{"status":"error","message":"Invalid ICC Companion window mode"}' if($window_mode eq "");
+ return '{"status":"error","message":"Invalid ICC Companion patch size"}' unless($allowed{$patch_size});
+ eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
+ my (undef,undef,$previous_revision)=&webui_icc_companion_settings_values();
+ my $revision=int(Time::HiRes::time()*1000);
+ $revision=$previous_revision+1 if($revision<=$previous_revision);
+ my $content='{"window_mode":"'.$window_mode.'","patch_size":'.$patch_size.',"revision":'.$revision.'}';
+ return '{"status":"error","message":"Could not save ICC Companion display settings"}'
+  unless(&webui_icc_companion_write_atomic($_icc_companion_settings_file,$content,0600));
+ return '{"status":"ok",'.&webui_icc_companion_settings_fragment().'}';
+}
+
 sub webui_icc_companion_poll (@) {
  my ($query)=@_;
  my $token=&webui_icc_companion_query_value($query,"token");
@@ -6566,7 +6609,11 @@ sub webui_icc_companion_poll (@) {
   $sequence=$1 if($command=~/"sequence"\s*:\s*(\d+)/);
   my $acked=0;
   if(open(my $af,"<",$_icc_companion_ack_file)) { local $/; my $ack=<$af>||""; close($af); $acked=$1 if($ack=~/"sequence"\s*:\s*(\d+)/); }
-  return $command if($sequence>0 && $sequence!=$acked);
+  if($sequence>0 && $sequence!=$acked) {
+   my $settings=&webui_icc_companion_settings_fragment();
+   $command=~s/\}\s*$/,$settings}/;
+   return $command;
+  }
  }
  my $poll_ms=500;
  foreach my $state_file ($_meter_series_file,$_meter_read_file) {
@@ -6577,7 +6624,7 @@ sub webui_icc_companion_poll (@) {
   if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>||""; close($sf); }
   if($state=~/"status"\s*:\s*"(?:running|measuring|setup)"/i) { $poll_ms=50; last; }
  }
- return '{"status":"idle","poll_ms":'.$poll_ms.'}';
+ return '{"status":"idle","poll_ms":'.$poll_ms.','.&webui_icc_companion_settings_fragment().'}';
 }
 
 sub webui_icc_companion_ack (@) {
@@ -6607,14 +6654,14 @@ sub webui_icc_companion_status (@) {
  # The companion's synchronous HTTP poll can take about three seconds on a
  # busy or remote link. Allow several missed polls before declaring it gone.
  if(@st && time()-($st[9]||0)<=12 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
- return '{"status":"ok","connected":false}' unless($content=~/^\s*\{/);
+ return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().'}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
- return '{"status":"ok","connected":true,'.$content;
+ return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().','.$content;
 }
 
 # Publish a calibration-card patch to the paired target-computer companion.
-# The companion ignores patch size and fills its resizable window, but retain
-# the field in the wire format for compatibility with profiling sessions.
+# Patch size is ignored in resizable-window mode and controls centered window
+# or APL geometry when the Companion is in borderless fullscreen mode.
 sub webui_icc_companion_pattern (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Invalid companion pattern request"}' unless(defined($body) && length($body)<8192);
@@ -13851,11 +13898,24 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
        <option value="companion" selected>ICC Companion on the target computer</option>
        <option value="local">PGenerator HDMI output</option>
-      </select>
+     </select>
      </div>
      <div id="meterIccCompanionSetup">
-      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator. Patches fill the companion window, so resize that window to set the patch dimensions.</div>
+      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator.</div>
       <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
+      <div class="meter-icc-field">
+       <label for="meterIccCompanionWindowMode">Companion display mode</label>
+       <select id="meterIccCompanionWindowMode" onchange="meterIccCompanionDisplaySettingsChanged()">
+        <option value="window" selected>Resizable window, patch fills window</option>
+        <option value="fullscreen">Borderless fullscreen, controlled patch size</option>
+       </select>
+      </div>
+      <div class="meter-icc-field" id="meterIccCompanionPatchSizeField" style="display:none">
+       <label for="meterIccCompanionPatchSize">Patch size</label>
+       <select id="meterIccCompanionPatchSize" onchange="meterIccLinkedPatchSizeChanged()"></select>
+       <div class="meter-icc-note">Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.</div>
+      </div>
+      <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
       <div class="btn-row" style="margin:0 0 10px">
        <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
        <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
@@ -33392,8 +33452,46 @@ function meterIccCopySelectOptions(sourceId,targetId,excludeValues){
 function meterIccPrepareMeasurementControls(){
  meterIccCopySelectOptions('meterDisplayType','meterIccDisplayType',[]);
  meterIccCopySelectOptions('meterCcssProfile','meterIccMeterProfile',['custom_editor']);
+ meterIccCopySelectOptions('meterPatchSize','meterIccCompanionPatchSize',[]);
  const insertion=document.getElementById('meterIccPatternInsertion');
  if(insertion) insertion.checked=!!((document.getElementById('meterPatchInsert')||{}).checked);
+}
+
+function meterIccCompanionPatchSizeValue(){
+ const value=(typeof getMeterPatchSize==='function')?Number(getMeterPatchSize()):100;
+ return [2,5,10,18,25,50,75,100,105,110,118,125,150].includes(value)?value:100;
+}
+
+async function meterIccPushCompanionDisplaySettings(showError){
+ const mode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+ try{
+  const response=await fetchJSON('/api/icc/companion/settings',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({window_mode:mode,patch_size:meterIccCompanionPatchSizeValue()}),
+   _quiet:true,_timeoutMs:5000
+  });
+  if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Could not update the ICC Companion');
+  return true;
+ }catch(error){
+  if(showError!==false) toast(error&&error.message?error.message:'Could not update the ICC Companion',true);
+  return false;
+ }
+}
+
+function meterIccCompanionDisplaySettingsChanged(){
+ meterIccSyncUi();
+ meterIccPushCompanionDisplaySettings(true);
+}
+
+function meterIccLinkedPatchSizeChanged(){
+ const linked=document.getElementById('meterIccCompanionPatchSize');
+ const source=document.getElementById('meterPatchSize');
+ if(linked&&source&&source.value!==linked.value){
+  source.value=linked.value;
+  source.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ meterIccSyncUi();
+ meterIccPushCompanionDisplaySettings(true);
 }
 
 function meterIccLinkedDisplayTypeChanged(){
@@ -33742,11 +33840,18 @@ function meterIccSyncUi(){
  const companionSetup=document.getElementById('meterIccCompanionSetup');
  const localSetup=document.getElementById('meterIccLocalSetup');
  const delayNote=document.getElementById('meterIccStartDelayNote');
+ const companionWindowMode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+ const companionPatchSizeField=document.getElementById('meterIccCompanionPatchSizeField');
+ const companionDisplayModeNote=document.getElementById('meterIccCompanionDisplayModeNote');
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
   ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
   :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
+ if(companionPatchSizeField) companionPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
+ if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
+  ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered across the full display.'+(type==='windows-hdr'?' The Windows HDR full-frame luminance patch automatically uses the entire display.':''))
+  :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' Choose borderless fullscreen to measure accurate full-display luminance for Windows HDR metadata.':''));
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -33768,7 +33873,11 @@ function meterIccSyncUi(){
  const correction=(document.getElementById('meterIccMeterProfile')||{}).selectedOptions;
  const correctionLabel=correction&&correction[0]?String(correction[0].textContent||'').trim():'Auto';
  const insertion=!!((document.getElementById('meterIccPatternInsertion')||{}).checked);
- const generatorLabel=usesCompanion?'ICC Companion':'PGenerator HDMI';
+ const companionPatchSizeSelect=document.getElementById('meterIccCompanionPatchSize');
+ const companionPatchSizeOption=companionPatchSizeSelect&&companionPatchSizeSelect.selectedOptions?companionPatchSizeSelect.selectedOptions[0]:null;
+ const generatorLabel=usesCompanion
+  ?('ICC Companion '+(companionWindowMode==='fullscreen'?('fullscreen, '+String(companionPatchSizeOption?companionPatchSizeOption.textContent:'controlled patch')):'resizable window'))
+  :'PGenerator HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected grayscale, single-channel, white and black coverage.')
   :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
@@ -33794,7 +33903,7 @@ async function meterOpenIccProfileBuilder(){
  modal.style.display='flex';
  meterIccPrepareMeasurementControls();
  meterIccProfileTypeChanged();
- await meterIccRefreshCompanionStatus();
+ if(await meterIccRefreshCompanionStatus()) await meterIccPushCompanionDisplaySettings(false);
  await meterIccRefreshRecoveryAvailability();
  if(!meterIccCompanionTimer) meterIccCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
  await meterIccLoadProfiles();
@@ -33906,6 +34015,8 @@ function meterIccShowCompanionStatus(connected,text){
 async function meterIccRefreshCompanionStatus(){
  try{
   const state=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:3500});
+  const windowMode=document.getElementById('meterIccCompanionWindowMode');
+  if(windowMode&&state&&['window','fullscreen'].includes(String(state.window_mode||''))) windowMode.value=String(state.window_mode);
   const reportedConnected=!!(state&&state.connected);
   if(reportedConnected) meterIccCompanionLastSeenAt=Date.now();
   meterIccCompanionConnected=reportedConnected||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
@@ -34191,6 +34302,7 @@ async function meterIccStart(){
  const patternProvider=meterIccPatternProvider();
  if(patternProvider==='companion'){
   if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
+  if(!await meterIccPushCompanionDisplaySettings(true)) return;
  }else{
   const localMode=meterIccLocalOutputModeStatus(type);
   if(!localMode.matches){ toast(localMode.message,true); return; }
