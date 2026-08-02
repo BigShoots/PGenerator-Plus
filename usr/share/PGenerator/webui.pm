@@ -42927,6 +42927,30 @@ async function meterFullAutoCalStartTouchup(lutStatus){
  }
 }
 
+function meterFullAutoCalRestoreCompletedGreyscaleChart(status){
+ if(!status||!Array.isArray(status.steps)||!status.steps.length||!Array.isArray(status.readings)||!status.readings.length) return false;
+ meterActiveSeriesType='greyscale';
+ meterActiveSeriesPoints=26;
+ meterActiveSeriesKey='greyscale-26';
+ meterSetActiveSeriesChartContext(status);
+ // Use the worker's exact completed ladder. Rebuilding it here consults the
+ // transient Full AutoCal config, which has just been cleared at completion;
+ // a Dark Detail run would therefore collapse back to the standard ladder
+ // and meterFilterReadingsForCurrentSteps would hide every filler reading.
+ meterSeriesSteps=meterFullAutoCalCloneValue(status.steps);
+ const chartReadings=meterAutoCalStatusChartReadings(status,null);
+ if(!chartReadings.length) return false;
+ meterReadings=chartReadings;
+ const white=meterFindSeriesWhiteReading(meterReadings);
+ if(white) meterWhiteReading=white;
+ const completed=new Set(meterReadings.filter(r=>r&&meterReadingHasLuminance(r)).map(r=>meterStepNameKey(r)));
+ const sorted=[...meterReadings].sort((a,b)=>(meterReadingPlotIre(a)||a.ire||0)-(meterReadingPlotIre(b)||b.ire||0));
+ drawAllCharts(sorted);
+ meterBuildPatchThumbs(meterGreyscaleSeriesSteps(meterSeriesSteps),completed,null);
+ meterCacheSeriesState('complete');
+ return true;
+}
+
 function meterFullAutoCalComplete(touchupStatus,options){
  const skipTouchup=!!(options&&options.skipTouchup);
  const post3dPolish=String(touchupStatus&&touchupStatus.full_autocal_phase||'')==='post-3d-polish';
@@ -42941,6 +42965,11 @@ function meterFullAutoCalComplete(touchupStatus,options){
  const startedAt=Number(meterFullAutoCalStartedAt)||Number((meterFullAutoCalResults.first||{}).started_at)||Number(touchupStatus&&touchupStatus.started_at)||null;
  const runId=(touchupStatus&&(touchupStatus.full_autocal_run_id||touchupStatus.run_id))||meterFullAutoCalRunId||meterFullAutoCalNewRunId();
  meterFullAutoCalRunId=runId;
+ const completedGreyscaleStatus=[
+  touchupStatus,
+  meterFullAutoCalResults.touchup,
+  meterFullAutoCalResults.first
+ ].find(item=>item&&item.autocal&&Array.isArray(item.steps)&&item.steps.length&&Array.isArray(item.readings)&&item.readings.length)||null;
  // Guard against reusing a stale/foreign report object (resume/adopt path that
  // never ran beginReportData) before we stamp+archive the completion.
  meterFullAutoCalEnsureReportRun(runId,startedAt);
@@ -42971,6 +43000,11 @@ function meterFullAutoCalComplete(touchupStatus,options){
  meterFullAutoCalArchiveReportData('complete',{completed_at:completedAt,elapsed_ms:status.elapsed_ms||null});
  meterFullAutoCalMarkCompletionHandled(status);
  meterFullAutoCalResetState(true);
+ // Resetting the workflow deliberately drops darkDetailEnabled. Restore the
+ // chart from the completed worker snapshot after that reset so its measured
+ // filler nodes remain visible and cached until the operator selects another
+ // series.
+ try{ meterFullAutoCalRestoreCompletedGreyscaleChart(completedGreyscaleStatus); }catch(e){}
  meterAutoCalPhase='complete';
  meterAutoCalRunning=true;
  meterAutoCalSetOverlay(true,status);
