@@ -13718,7 +13718,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
       <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateSetupAck()" style="display:none">Continue</button>
-      <button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()" disabled title="Checking for a ready spectrophotometer.">Start Creation</button>
+      <span id="meterCcssCreateStartBtnHint" style="display:inline-flex" title="Checking for a ready reference meter."><button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()" disabled>Start Creation</button></span>
     </div>
    </div>
   </div>
@@ -26176,15 +26176,22 @@ function meterCcssCreateStartBlockReason(){
 function meterCcssCreateUpdateStartState(){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
  if(!startBtn) return;
+ const startHint=document.getElementById('meterCcssCreateStartBtnHint');
  const reason=meterCcssCreateStartBlockReason();
  const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
  if(!startBtn.dataset.starting) startBtn.textContent=supplied?'Create CCMX':'Start Creation';
  startBtn.disabled=reason!=='';
- startBtn.title=reason;
+ startBtn.title=reason?'':(supplied?'Create the CCMX profile':'Start meter profile creation');
+ if(startHint){
+  const explanation=reason||(supplied?'Create the CCMX profile':'Start meter profile creation');
+  startHint.title=explanation;
+  startHint.setAttribute('aria-label',explanation);
+ }
 }
 
 function meterCcssCreateSetStartingFeedback(starting,format){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
+ const startHint=document.getElementById('meterCcssCreateStartBtnHint');
  const progress=document.getElementById('meterCcssCreateProgress');
  if(startBtn){
   const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
@@ -26192,7 +26199,11 @@ function meterCcssCreateSetStartingFeedback(starting,format){
   if(starting){
    startBtn.dataset.starting='1';
    startBtn.disabled=true;
-   startBtn.title='Starting meter profile creation';
+   startBtn.title='';
+   if(startHint){
+    startHint.title='Starting meter profile creation';
+    startHint.setAttribute('aria-label','Starting meter profile creation');
+   }
   }else{
    delete startBtn.dataset.starting;
    meterCcssCreateUpdateStartState();
