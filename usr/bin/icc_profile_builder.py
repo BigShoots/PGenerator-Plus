@@ -832,15 +832,29 @@ def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
         bugfix = version[1] & 0x0F
         size_bytes = struct.unpack(">I", profile_header[0:4])[0]
         profile_classes = {"mntr": "Display device profile", "link": "Device link profile"}
+        rendering_intents = {0: "Perceptual intent", 1: "Relative colorimetric intent", 2: "Saturation intent", 3: "Absolute colorimetric intent"}
+        rendering_intent = struct.unpack(">I", profile_header[64:68])[0]
         profile_info = {
             "icc_version": "{}.{}.{}".format(major, minor, bugfix),
             "profile_class": profile_classes.get(profile_header[12:16].decode("ascii", "replace").strip(), profile_header[12:16].decode("ascii", "replace").strip()),
             "color_space": profile_header[16:20].decode("ascii", "replace").strip(),
             "pcs": profile_header[20:24].decode("ascii", "replace").strip(),
+            "rendering_intent": rendering_intents.get(rendering_intent, "Intent {}".format(rendering_intent)),
             "tag_count": struct.unpack(">I", profile_header[128:132])[0],
             "size_bytes": size_bytes,
             "size_label": "{:.1f} KiB".format(size_bytes / 1024.0),
         }
+    black_row = closest_row(rows, (0, 0, 0))
+    white_row = closest_row(rows, (1, 1, 1))
+    white_total = sum(white_row["xyz"])
+    black_y = black_row["xyz"][1]
+    characterization = {
+        "white_x": round(white_row["xyz"][0] / white_total, 6) if white_total > 0 else None,
+        "white_y": round(white_row["xyz"][1] / white_total, 6) if white_total > 0 else None,
+        "white_nits": round(white_row["xyz"][1], 4),
+        "black_nits": round(black_y, 6),
+        "contrast_ratio": round(white_row["xyz"][1] / black_y, 1) if black_y > 0 else None,
+    }
     return {
         "engine": "ArgyllCMS profcheck 3.5.0",
         "method": "CIEDE2000 forward-profile fit against saved characterization data",
@@ -856,6 +870,7 @@ def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
         "p95_de00": round(p95, 3) if errors else None,
         "distribution": distribution,
         "profile_info": profile_info,
+        "characterization": characterization,
         "worst_patches": sorted(patch_errors, key=lambda item: item["de00"], reverse=True)[:10],
         "note": "This mathematical self-check compares the finished ICC transform with the saved characterization data used to build it. Lower values indicate a closer profile fit.",
     }

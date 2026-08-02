@@ -917,7 +917,11 @@ function meterIccRenderValidation(file,result){
  set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' calculation quality; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
  const info=result&&result.profile_info&&typeof result.profile_info==='object'?result.profile_info:null;
  set('meterIccValidationStructure',info
-  ?('Profile structure: ICC '+String(info.icc_version||'unknown')+'; '+String(info.profile_class||'display')+'; '+String(info.color_space||'RGB')+' to '+String(info.pcs||'XYZ')+'; '+Number(info.tag_count||0)+' tags; '+String(info.size_label||'unknown size')+'.')
+  ?('Profile structure: ICC '+String(info.icc_version||'unknown')+'; '+String(info.profile_class||'display')+'; '+String(info.color_space||'RGB')+' to '+String(info.pcs||'XYZ')+'; '+String(info.rendering_intent||'unknown intent')+'; '+Number(info.tag_count||0)+' tags; '+String(info.size_label||'unknown size')+'.')
+  :'');
+ const characterization=result&&result.characterization&&typeof result.characterization==='object'?result.characterization:null;
+ set('meterIccValidationCharacterization',characterization
+  ?('Saved characterization: white xy '+Number(characterization.white_x||0).toFixed(4)+', '+Number(characterization.white_y||0).toFixed(4)+' at '+Number(characterization.white_nits||0).toFixed(2)+' cd/m²; black '+Number(characterization.black_nits||0).toFixed(4)+' cd/m²; contrast '+(Number.isFinite(Number(characterization.contrast_ratio))?Number(characterization.contrast_ratio).toFixed(0)+':1':'infinite')+'.')
   :'');
  const distribution=result&&result.distribution&&typeof result.distribution==='object'?result.distribution:null;
  set('meterIccValidationDistribution',distribution
