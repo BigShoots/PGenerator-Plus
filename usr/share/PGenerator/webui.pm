@@ -5373,6 +5373,9 @@ sub webui_meter_lg_autocal_start (@) {
    if($power eq "standby" || $power eq "off" || $power eq "powering-off") {
     return '{"status":"error","message":"LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."}';
    }
+   if($power eq "powering-on") {
+    return '{"status":"error","message":"LG TV is still starting. Wait until it is fully on before Auto Cal."}';
+   }
   }
  }
  &webui_meter_stop();
