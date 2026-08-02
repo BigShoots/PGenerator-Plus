@@ -34094,6 +34094,14 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
  // observer is a viewing/analysis preference and must not change the mode
  // requested from a tristimulus meter such as SpyderX.
  body.observer='1931_2';
+ // The characterization chart already contains its own black and white
+ // patches. Do not prepend the calibration workspace's reference reads: they
+ // are redundant and can use a different transport bit depth from HDR ICC
+ // patches.
+ body.target_white_use_measured=false;
+ body.target_black_use_measured=false;
+ body.series_has_saved_white_reference=true;
+ body.series_has_saved_black_reference=true;
  if(patternProvider==='companion'){
   body.signal_mode=mode;
   body.signal_range='2';
