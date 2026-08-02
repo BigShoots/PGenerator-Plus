@@ -912,8 +912,24 @@ function meterIccRenderValidation(file,result){
  set('meterIccValidationAverage',number(result.average_de00));
  set('meterIccValidationRms',number(result.rms_de00));
  set('meterIccValidationPeak',number(result.peak_de00));
+ set('meterIccValidationMedian',number(result.median_de00));
+ set('meterIccValidationP95',number(result.p95_de00));
  set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' calculation quality; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
+ const info=result&&result.profile_info&&typeof result.profile_info==='object'?result.profile_info:null;
+ set('meterIccValidationStructure',info
+  ?('Profile structure: ICC '+String(info.icc_version||'unknown')+'; '+String(info.profile_class||'display')+'; '+String(info.color_space||'RGB')+' to '+String(info.pcs||'XYZ')+'; '+Number(info.tag_count||0)+' tags; '+String(info.size_label||'unknown size')+'.')
+  :'');
+ const distribution=result&&result.distribution&&typeof result.distribution==='object'?result.distribution:null;
+ set('meterIccValidationDistribution',distribution
+  ?('Fit distribution: '+Number(distribution.within_1_percent||0).toFixed(1)+'% at or below ΔE00 1; '+Number(distribution.within_2_percent||0).toFixed(1)+'% at or below 2; '+Number(distribution.within_3_percent||0).toFixed(1)+'% at or below 3.')
+  :'');
+ set('meterIccValidationScale','Rating scale: Excellent ≤ 1.0 average, 1.5 RMS, 4.0 peak; Good ≤ 2.0 average, 2.5 RMS, 7.0 peak; Fair ≤ 3.0 average, 4.0 RMS, 10.0 peak; Poor exceeds one or more Fair limits.');
  set('meterIccValidationNote',String(result.note||''));
+ const download=document.getElementById('meterIccValidationDownloadBtn');
+ if(download){
+  download.disabled=!file;
+  download.onclick=()=>{ if(file) window.location.href='/api/icc/download?file='+encodeURIComponent(file); };
+ }
  const mhc2Panel=document.getElementById('meterIccValidationMhc2');
  const mhc2=result&&result.mhc2&&result.mhc2.status==='passed'?result.mhc2:null;
  if(mhc2Panel){
@@ -924,8 +940,16 @@ function meterIccRenderValidation(file,result){
  }
  const rating=document.getElementById('meterIccValidationRating');
  if(rating){
-  rating.textContent=String(result.rating||'Profile fit complete');
-  rating.style.color=String(result.rating||'').startsWith('Excellent')?'var(--success)':String(result.rating||'').startsWith('Good')?'var(--warning)':'var(--danger)';
+  const average=Number(result.average_de00);
+  const rms=Number(result.rms_de00);
+  const peak=Number(result.peak_de00);
+  let grade=String(result.rating||'Profile fit complete').replace(/\s+fit$/i,'');
+  if(Number.isFinite(average)&&Number.isFinite(rms)&&Number.isFinite(peak)){
+   grade=average<=1&&rms<=1.5&&peak<=4?'Excellent':average<=2&&rms<=2.5&&peak<=7?'Good':average<=3&&rms<=4&&peak<=10?'Fair':'Poor';
+  }
+  rating.textContent=grade+(grade==='Profile fit complete'?'':' profile fit');
+  const key=grade.toLowerCase();
+  rating.style.color=key==='excellent'||key==='good'?'var(--success)':key==='fair'?'var(--warning)':'var(--danger)';
  }
  const table=document.getElementById('meterIccValidationWorst');
  if(table){

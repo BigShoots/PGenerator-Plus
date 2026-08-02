@@ -801,12 +801,46 @@ def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
             "rgb": [round(value * 100.0, 2) for value in row["rgb"]],
             "de00": round(float(match.group(1)), 4),
         })
+    errors = sorted(item["de00"] for item in patch_errors)
+    median = 0.0
+    p95 = 0.0
+    distribution = None
+    if errors:
+        midpoint = len(errors) // 2
+        median = errors[midpoint] if len(errors) % 2 else (errors[midpoint - 1] + errors[midpoint]) / 2.0
+        p95 = errors[min(len(errors) - 1, int(math.ceil(len(errors) * 0.95)) - 1)]
+        distribution = {
+            "within_1_percent": round(100.0 * sum(value <= 1.0 for value in errors) / len(errors), 1),
+            "within_2_percent": round(100.0 * sum(value <= 2.0 for value in errors) / len(errors), 1),
+            "within_3_percent": round(100.0 * sum(value <= 3.0 for value in errors) / len(errors), 1),
+        }
     if average <= 1.0 and rms <= 1.5 and peak <= 4.0:
-        rating = "Excellent fit"
+        rating = "Excellent"
     elif average <= 2.0 and rms <= 2.5 and peak <= 7.0:
-        rating = "Good fit"
+        rating = "Good"
+    elif average <= 3.0 and rms <= 4.0 and peak <= 10.0:
+        rating = "Fair"
     else:
-        rating = "Review profile fit"
+        rating = "Poor"
+    with open(profile_path, "rb") as profile_handle:
+        profile_header = profile_handle.read(132)
+    profile_info = {}
+    if len(profile_header) >= 132:
+        version = profile_header[8:12]
+        major = version[0]
+        minor = (version[1] >> 4) & 0x0F
+        bugfix = version[1] & 0x0F
+        size_bytes = struct.unpack(">I", profile_header[0:4])[0]
+        profile_classes = {"mntr": "Display device profile", "link": "Device link profile"}
+        profile_info = {
+            "icc_version": "{}.{}.{}".format(major, minor, bugfix),
+            "profile_class": profile_classes.get(profile_header[12:16].decode("ascii", "replace").strip(), profile_header[12:16].decode("ascii", "replace").strip()),
+            "color_space": profile_header[16:20].decode("ascii", "replace").strip(),
+            "pcs": profile_header[20:24].decode("ascii", "replace").strip(),
+            "tag_count": struct.unpack(">I", profile_header[128:132])[0],
+            "size_bytes": size_bytes,
+            "size_label": "{:.1f} KiB".format(size_bytes / 1024.0),
+        }
     return {
         "engine": "ArgyllCMS profcheck 3.5.0",
         "method": "CIEDE2000 forward-profile fit against saved characterization data",
@@ -818,8 +852,12 @@ def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
         "average_de00": round(average, 3),
         "rms_de00": round(rms, 3),
         "peak_de00": round(peak, 3),
+        "median_de00": round(median, 3) if errors else None,
+        "p95_de00": round(p95, 3) if errors else None,
+        "distribution": distribution,
+        "profile_info": profile_info,
         "worst_patches": sorted(patch_errors, key=lambda item: item["de00"], reverse=True)[:10],
-        "note": "This checks how closely the finished ICC reproduces the measurements used to build it. It does not verify the installed profile, operating-system color pipeline, or current display state.",
+        "note": "This mathematical self-check compares the finished ICC transform with the saved characterization data used to build it. Lower values indicate a closer profile fit.",
     }
 
 
@@ -894,7 +932,7 @@ def build(payload, output_dir):
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
     if mhc2_validation:
         validation["mhc2"] = mhc2_validation
-        validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check separately verifies the correction tag structure, matrix direction, luminance metadata and HDR identity curves. It does not verify Windows profile association, the live operating-system color pipeline or current display state."
+        validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check also verifies the correction tag structure, matrix direction, luminance metadata and HDR identity curves."
     write_json_atomic(output_path + ".validation.json", validation)
     # Keep the merged characterization readings with the finished profile.
     # The WebUI can then offer them for a later, larger patch set even after a

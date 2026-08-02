@@ -21,6 +21,8 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
 .meter-icc-profile-row:last-child{border-bottom:0}
 .meter-icc-profile-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.meter-icc-validation-stats{display:grid;grid-template-columns:repeat(5,minmax(100px,1fr));gap:8px;margin-bottom:12px}
 @media(max-width:900px){.meter-icc-grid,.meter-icc-finish-grid{grid-template-columns:1fr}}
+@media(max-width:700px){.meter-icc-validation-stats{grid-template-columns:repeat(2,minmax(100px,1fr))}}
 body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr)}
 @media(max-width:1180px){body.layout-desktop #meterIccWorkspaceCard .meter-icc-grid,body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:1fr}}

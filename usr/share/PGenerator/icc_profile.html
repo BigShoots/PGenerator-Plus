@@ -206,15 +206,23 @@
       <div style="font-size:1rem;font-weight:700;color:var(--text)">ICC Profile Self-Check</div>
       <div id="meterIccValidationFile" class="meter-icc-note" style="margin-top:4px"></div>
      </div>
-     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccCloseValidation()">Close</button>
+     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <button type="button" class="btn btn-sm btn-primary" id="meterIccValidationDownloadBtn">Download Profile</button>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccCloseValidation()">Close</button>
+     </div>
     </div>
     <div id="meterIccValidationRating" style="font-size:1.05rem;font-weight:700;margin-bottom:12px"></div>
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(100px,1fr));gap:8px;margin-bottom:12px">
+    <div class="meter-icc-validation-stats">
      <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Average ΔE00</div><strong id="meterIccValidationAverage" style="font-size:1.25rem;color:var(--text)">--</strong></div>
      <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">RMS ΔE00</div><strong id="meterIccValidationRms" style="font-size:1.25rem;color:var(--text)">--</strong></div>
      <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Peak ΔE00</div><strong id="meterIccValidationPeak" style="font-size:1.25rem;color:var(--text)">--</strong></div>
+     <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Median ΔE00</div><strong id="meterIccValidationMedian" style="font-size:1.25rem;color:var(--text)">--</strong></div>
+     <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">95th percentile</div><strong id="meterIccValidationP95" style="font-size:1.25rem;color:var(--text)">--</strong></div>
     </div>
     <div id="meterIccValidationMeta" class="meter-icc-note" style="margin-bottom:12px"></div>
+    <div id="meterIccValidationStructure" class="meter-icc-note" style="margin-bottom:12px"></div>
+    <div id="meterIccValidationDistribution" class="meter-icc-note" style="margin-bottom:12px"></div>
+    <div id="meterIccValidationScale" class="meter-icc-note" style="margin-bottom:12px;padding:9px;border:1px solid var(--border);border-radius:6px"></div>
     <div id="meterIccValidationMhc2" class="meter-icc-note" style="display:none;margin-bottom:12px;padding:9px;border:1px solid var(--success);border-radius:6px;color:var(--success)"></div>
     <div style="font-size:.76rem;font-weight:700;color:var(--text);margin-bottom:7px">Largest profile-fit errors</div>
     <div style="overflow-x:auto">
