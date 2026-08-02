@@ -301,13 +301,14 @@ for my $patch (@patches) {
 
 my $measured_white_luminance=$by_kind{"white"}{"luminance"}+0;
 my $calibrated_peak_luminance=0+($config->{"calibrated_peak_luminance"}//0);
-my $profile_white_luminance=$calibrated_peak_luminance > 0
- ? $calibrated_peak_luminance
- : $measured_white_luminance;
 my %measurements=(
- white_luminance => $profile_white_luminance,
+ # Use the fresh white measured with the profile primaries. The calibrated
+ # greyscale peak is retained only for diagnostics so Tmax and the panel
+ # primaries always describe the same short measurement pass.
+ white_luminance => $measured_white_luminance,
  measured_white_luminance => $measured_white_luminance,
- white_luminance_source => $calibrated_peak_luminance > 0 ? "calibrated-greyscale-peak" : "profile-white-read",
+ calibrated_peak_luminance => $calibrated_peak_luminance,
+ white_luminance_source => "profile-white-read",
  black_luminance => $by_kind{"black"}{"luminance"},
  red_x => $by_kind{"red"}{"x"}, red_y => $by_kind{"red"}{"y"},
  green_x => $by_kind{"green"}{"x"}, green_y => $by_kind{"green"}{"y"},

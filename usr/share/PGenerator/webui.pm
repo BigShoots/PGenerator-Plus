@@ -42455,9 +42455,8 @@ async function meterDvAutoCalStartProfile(firstStatus){
   signal_range:range,
   transport_signal_range:range,
   picture_mode:meterLgPictureModeValue(),
-  // The greyscale stage has already measured and refined the calibrated 100%
-  // peak under its stabilized anchor sequence. Use that same-run value for
-  // Tmax; the profile worker still reads white and archives it for comparison.
+  // Keep the greyscale peak as diagnostic context. The profile worker uses its
+  // fresh white read for Tmax so it comes from the same pass as the primaries.
   calibrated_peak_luminance:(Number.isFinite(calibratedPeak)&&calibratedPeak>0)?calibratedPeak:undefined,
   // Measure the profile with the SAME patch geometry the greyscale pass used
   // (10% window + pattern insertion on OLED). Without these the worker read
