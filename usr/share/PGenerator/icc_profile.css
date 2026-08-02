@@ -1,0 +1,26 @@
+body.layout-tablet #meterIccWorkspaceCard{display:none!important}
+body.layout-desktop #meterIccWorkspaceCard{border-bottom:0}
+body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
+body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
+body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
+.meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.meter-icc-stack{display:grid;gap:12px;align-content:start;min-width:0}
+.meter-icc-finish-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(280px,.8fr);gap:12px;margin-top:12px;align-items:start}
+.meter-icc-panel{min-width:0;padding:14px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
+.meter-icc-panel h3{font-size:.8rem;color:var(--text);margin:0 0 4px}
+.meter-icc-section-intro{margin:0 0 12px;font-size:.7rem;color:var(--text2);line-height:1.45}
+.meter-icc-step{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:7px;border-radius:50%;background:rgba(91,127,255,.18);color:var(--accent);font-size:.68rem;font-weight:700;vertical-align:middle}
+.meter-icc-advanced{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.meter-icc-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
+.meter-icc-note{font-size:.72rem;color:var(--text2);line-height:1.5}
+.meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+.meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
+.meter-icc-field input,.meter-icc-field select{width:100%;box-sizing:border-box}
+.meter-icc-progress-track{height:10px;border:1px solid var(--border);border-radius:5px;overflow:hidden;background:var(--surface-inset)}
+.meter-icc-progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+.meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
+.meter-icc-profile-row:last-child{border-bottom:0}
+.meter-icc-profile-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+@media(max-width:900px){.meter-icc-grid,.meter-icc-finish-grid{grid-template-columns:1fr}}
+body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr)}
+@media(max-width:1180px){body.layout-desktop #meterIccWorkspaceCard .meter-icc-grid,body.layout-desktop #meterIccWorkspaceCard .meter-icc-finish-grid{grid-template-columns:1fr}}
