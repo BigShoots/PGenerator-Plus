@@ -33490,6 +33490,77 @@ let meterIccCompanionTimer=null;
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
 
+const METER_ICC_BUILD_TIMING_KEY='pgen.iccBuildTiming.v1';
+
+function meterIccFormatDuration(seconds){
+ seconds=Math.max(0,Math.round(Number(seconds)||0));
+ const hours=Math.floor(seconds/3600);
+ const minutes=Math.floor((seconds%3600)/60);
+ const remainder=seconds%60;
+ return hours?(hours+':'+String(minutes).padStart(2,'0')+':'+String(remainder).padStart(2,'0')):(minutes+':'+String(remainder).padStart(2,'0'));
+}
+
+function meterIccBuildTimingKey(config,patchCount){
+ const model=String((config&&config.profile_model)||'clut');
+ const family=meterIccProfileModelInfo(model).family;
+ const quality=String((config&&config.profile_quality)||'medium').toLowerCase();
+ return family+':'+model+':'+quality+':'+Math.max(1,Math.round(Number(patchCount)||1));
+}
+
+function meterIccRememberBuildDuration(config,patchCount,seconds){
+ try{
+  const key=meterIccBuildTimingKey(config,patchCount);
+  const timings=JSON.parse(localStorage.getItem(METER_ICC_BUILD_TIMING_KEY)||'{}');
+  const previous=Number(timings[key]);
+  timings[key]=previous>0?Math.round(previous*.35+seconds*.65):Math.round(seconds);
+  const keys=Object.keys(timings);
+  while(keys.length>40) delete timings[keys.shift()];
+  localStorage.setItem(METER_ICC_BUILD_TIMING_KEY,JSON.stringify(timings));
+ }catch(error){}
+}
+
+function meterIccEstimatedBuildSeconds(config,patchCount){
+ const count=Math.max(16,Math.round(Number(patchCount)||16));
+ try{
+  const timings=JSON.parse(localStorage.getItem(METER_ICC_BUILD_TIMING_KEY)||'{}');
+  const measured=Number(timings[meterIccBuildTimingKey(config,count)]);
+  if(Number.isFinite(measured)&&measured>=5) return measured;
+ }catch(error){}
+ const model=String((config&&config.profile_model)||'clut');
+ const family=meterIccProfileModelInfo(model).family;
+ const quality=String((config&&config.profile_quality)||'medium').toLowerCase();
+ if(family==='matrix'){
+  const base={low:12,medium:22,high:40,ultra:75,l:12,m:22,h:40,u:75}[quality]||22;
+  return Math.max(10,Math.round(base*(.75+.25*Math.sqrt(count/95))));
+ }
+ const base={low:180,medium:360,high:600,ultra:1100,l:180,m:360,h:600,u:1100}[quality]||360;
+ return Math.max(60,Math.round(base*(.7+.3*Math.sqrt(count/425))));
+}
+
+function meterIccStartBuildClock(status,config,patchCount){
+ const clock={startedAt:Date.now(),estimated:meterIccEstimatedBuildSeconds(config,patchCount),timer:null,config,patchCount};
+ const update=()=>{
+  if(!status) return;
+  const elapsed=Math.max(0,(Date.now()-clock.startedAt)/1000);
+  const estimate=clock.estimated;
+  const remaining=Math.max(0,estimate-elapsed);
+  status.textContent='Measurements complete. Building the ICC profile. Elapsed '+meterIccFormatDuration(elapsed)+'. '
+   +(remaining>0?('Estimated total '+meterIccFormatDuration(estimate)+', about '+meterIccFormatDuration(remaining)+' remaining.'):'The initial time estimate has been exceeded; the build is still working.');
+ };
+ update();
+ clock.timer=setInterval(update,1000);
+ return clock;
+}
+
+function meterIccStopBuildClock(clock,remember){
+ if(!clock) return 0;
+ if(clock.timer) clearInterval(clock.timer);
+ clock.timer=null;
+ const elapsed=Math.max(0,(Date.now()-clock.startedAt)/1000);
+ if(remember&&elapsed>=1) meterIccRememberBuildDuration(clock.config,clock.patchCount,elapsed);
+ return elapsed;
+}
+
 function meterIccResolveReuseChoice(choice){
  const modal=document.getElementById('meterIccReuseModal');
  if(modal) modal.style.display='none';
@@ -34713,16 +34784,18 @@ async function meterIccBuild(readings){
  meterIccBuildPending=true;
  meterActionPending=true;
  meterIccSyncUi();
- if(status) status.textContent='Measurements complete. Building the ICC profile...';
  const total=(meterIccRunConfig&&meterIccRunConfig.steps.length)||readings.length;
  meterIccSetProgress('Building ICC profile',total,total);
+ const profileReadings=meterIccProfileReadings(readings);
+ const buildClock=meterIccStartBuildClock(status,meterIccRunConfig,profileReadings.length);
+ let buildElapsed=0;
  try{
-  const profileReadings=meterIccProfileReadings(readings);
   const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
   delete payload.steps;
   delete payload.reused_readings;
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:2710000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
+  buildElapsed=meterIccStopBuildClock(buildClock,true);
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
    const transferText=response.target_transfer?(' Target transfer: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
@@ -34734,7 +34807,7 @@ async function meterIccBuild(readings){
    const installText=meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-hdr'
     ?' In Windows, associate it with this display as the default Advanced Color profile while HDR is enabled before verification.'
     :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' In Windows, associate it with this display as the default SDR color profile before verification.':'');
-   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+whiteText+installText;
+   status.textContent='Profile created in '+meterIccFormatDuration(buildElapsed)+': '+response.file+'. Download it below.'+transferText+whiteText+installText;
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
   // Profile quality only changes the fit. Preserve an explicit rebuild path
@@ -34746,11 +34819,13 @@ async function meterIccBuild(readings){
   // result as a fallback if an older builder response omitted the inline copy.
   await meterIccOpenValidation(response.file,response.validation||null);
  }catch(error){
+  meterIccStopBuildClock(buildClock,false);
   if(status) status.textContent=error&&error.message?error.message:'ICC profile build failed.';
   const retry=document.getElementById('meterIccRetryBuildBtn');
   if(retry) retry.style.display='';
   toast(error&&error.message?error.message:'ICC profile build failed',true);
  }finally{
+  meterIccStopBuildClock(buildClock,false);
   meterIccBuildPending=false;
   meterActionPending=false;
   meterIccSyncUi();
