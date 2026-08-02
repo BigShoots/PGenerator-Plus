@@ -37,6 +37,10 @@ PROFILE_MODELS = {
     "single_gamma_matrix": {"label": "Single gamma + matrix", "argyll": "G", "family": "matrix", "matrix_fallback": True},
 }
 PATCH_SET_ALIASES = {"quick": "small", "standard": "medium", "high": "large"}
+PATCH_SET_COUNTS = {
+    "matrix": {"small": 55, "medium": 95, "large": 225},
+    "clut": {"small": 175, "medium": 425, "large": 1000},
+}
 WINDOWS_SDR_TRANSFERS = ("srgb", "gamma22", "gamma24", "bt1886")
 WINDOWS_SDR_TRANSFER_LABELS = {
     "srgb": "sRGB",
@@ -59,6 +63,27 @@ def finite_number(value, name):
     if not math.isfinite(number):
         fail("Missing or invalid " + name)
     return number
+
+
+def effective_patch_set(requested, profile_model, payload, measured_count):
+    """Label a preset build from the settings that were actually measured."""
+    if requested == "custom":
+        return requested
+    family = PROFILE_MODELS[profile_model]["family"]
+    settings = payload.get("patch_settings")
+    configured_count = settings.get("patch_count") if isinstance(settings, dict) else None
+    try:
+        configured_count = int(round(float(configured_count)))
+    except (TypeError, ValueError):
+        configured_count = None
+    for label, count in PATCH_SET_COUNTS[family].items():
+        if configured_count == count:
+            return label
+    # Generated sets can contain one fewer unique row after duplicate removal.
+    for label, count in PATCH_SET_COUNTS[family].items():
+        if abs(int(measured_count) - count) <= 1:
+            return label
+    return requested
 
 
 def reading_codes(reading):
@@ -905,6 +930,7 @@ def build(payload, output_dir):
     metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
     metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
     profile_rows = [row for row in rows if row["name"] not in metadata_white_names]
+    patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("Windows HDR profiling requires an HDR metadata white measurement")
     ti3, black, white = make_ti3(payload, profile_rows)

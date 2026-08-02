@@ -153,7 +153,26 @@ sub webui_icc_profile_validation (@) {
  return '{"status":"error","message":"Validation results are unavailable"}' unless(-f $path && defined($bytes) && $bytes>0 && $bytes<1024*1024);
  my $data="";
  if(open(my $fh,"<",$path)) { local $/; $data=<$fh>; close($fh); }
- return $data=~/^\s*\{/ ? $data : '{"status":"error","message":"Validation results are invalid"}';
+ return '{"status":"error","message":"Validation results are invalid"}' unless($data=~/^\s*\{/);
+ # Older builds could retain a stale UI preset label even though the saved
+ # validation was generated from a different number of measured patches.
+ # Normalize those records on read so profile history reflects the data that
+ # actually built the profile.
+ eval {
+  require JSON::PP;
+  my $decoded=JSON::PP::decode_json($data);
+  if(ref($decoded) eq "HASH" && ($decoded->{patch_set}||"") ne "custom") {
+   my $model=$decoded->{profile_model}||"";
+   my $family=($model=~/matrix/ && $model!~/clut/) ? "matrix" : "clut";
+   my %counts=(matrix=>{small=>55,medium=>95,large=>225},clut=>{small=>175,medium=>425,large=>1000});
+   my $patches=int($decoded->{patches}||0);
+   foreach my $label (qw(small medium large)) {
+    if(abs($patches-$counts{$family}{$label})<=1) { $decoded->{patch_set}=$label; last; }
+   }
+   $data=JSON::PP->new->canonical(1)->encode($decoded);
+  }
+ };
+ return $data;
 }
 
 sub webui_icc_profile_download (@) {
