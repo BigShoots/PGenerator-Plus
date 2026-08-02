@@ -13792,6 +13792,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </div>
        <div id="meterIccProfileDescription" class="meter-icc-note"></div>
        <div id="meterIccCompatibility" class="meter-icc-note" style="margin-top:8px;color:var(--warning)"></div>
+       <div id="meterIccWindowsInstallGuide" class="meter-icc-note" style="display:none;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:6px"></div>
        <div class="meter-icc-field" id="meterIccTargetTransferField" style="display:none;margin-top:10px">
         <label for="meterIccTargetTransfer">Target transfer</label>
         <select id="meterIccTargetTransfer" onchange="meterIccSyncUi()">
@@ -13978,6 +13979,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div class="meter-icc-panel" style="margin:0;text-align:center"><div class="meter-icc-note">Peak ΔE00</div><strong id="meterIccValidationPeak" style="font-size:1.25rem;color:var(--text)">--</strong></div>
     </div>
     <div id="meterIccValidationMeta" class="meter-icc-note" style="margin-bottom:12px"></div>
+    <div id="meterIccValidationMhc2" class="meter-icc-note" style="display:none;margin-bottom:12px;padding:9px;border:1px solid var(--success);border-radius:6px;color:var(--success)"></div>
     <div style="font-size:.76rem;font-weight:700;color:var(--text);margin-bottom:7px">Largest profile-fit errors</div>
     <div style="overflow-x:auto">
      <table style="width:100%;border-collapse:collapse;font-size:.72rem;color:var(--text2)"><thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">Patch</th><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">RGB %</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--border)">ΔE00</th></tr></thead><tbody id="meterIccValidationWorst"></tbody></table>
@@ -33537,17 +33539,17 @@ function meterIccProfileInfo(type){
   'windows-sdr':{
    mode:'sdr',
    description:'Creates a Windows MHC2 hardware-calibration profile for SDR. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
-   compatibility:'Requires Windows 10 version 2004 or newer, Windows 11 recommended, a supported WDDM driver and GPU. Install the profile and set it as the default for this display. Windows then loads the correction automatically, including for raw Companion verification patches.'
+   compatibility:'Requires Windows 10 version 2004 or newer, Windows 11 recommended, a supported WDDM driver and GPU. Associate it with the measured display as its default SDR color profile. Windows then loads the correction automatically, including for raw Companion verification patches.'
   },
   'kde-hdr':{
    mode:'hdr10',
    description:'Creates a measured ICC profile for the separate HDR profile slot added in KDE Plasma 6.7. Measure with the output in HDR10 (PQ), then select the downloaded file as the display HDR ICC profile in Plasma.',
-   compatibility:'Requires KDE Plasma 6.7 or newer. This file is not a Windows Advanced Color MHC2 profile.'
+   compatibility:'Requires KDE Plasma 6.7 or newer, a Wayland session, HDR enabled for the display and an HDR-capable SDL renderer. During HDR patches the Companion status must report native HDR active. This file is not a Windows Advanced Color MHC2 profile.'
   },
   'windows-hdr':{
    mode:'hdr10',
-   description:'Creates an ICC v2 display profile with Microsoft MHC2 data for Windows Advanced Color. It records measured peak, black, full-frame luminance, primaries and white, and applies a measured XYZ primary/white correction matrix.',
-   compatibility:'MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. This builder leaves the MHC2 1D curves at identity so Windows supplies PQ once and does not apply it twice.'
+   description:'Creates an ICC v2 display profile with Microsoft MHC2 data for Windows Advanced Color. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
+   compatibility:'MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. This builder leaves the MHC2 1D curves at identity so Windows supplies PQ once and does not apply it twice. The HDR metadata white honors the user-selected Companion window and patch-size settings.'
   }
  };
  return info[type]||info.sdr;
@@ -33721,31 +33723,30 @@ function meterIccSteps(quality,profileType,profileModel){
    g:inputMax,
    b:inputMax,
    input_max:inputMax,
-   patch_size:100,
-   name:'ICC Full Frame White'
+   name:'ICC HDR Metadata White'
   });
  }
  return steps;
 }
 
-function meterIccPatchesToSteps(patches,profileType,includeFullFrame){
+function meterIccPatchesToSteps(patches,profileType,includeMetadataWhite){
  const hdr=profileType==='kde-hdr'||profileType==='windows-hdr';
  const inputMax=hdr?1023:255;
  const code=value=>Math.round(Math.max(0,Math.min(1,Number(value)||0))*inputMax);
  const steps=patches.map((patch,index)=>({
   ire:index,r:code(patch.r),g:code(patch.g),b:code(patch.b),input_max:inputMax,name:String(patch.name||('ICC Optimized '+(index+1)))
  }));
- if(includeFullFrame!==false&&profileType==='windows-hdr') steps.push({ire:100,r:inputMax,g:inputMax,b:inputMax,input_max:inputMax,patch_size:100,name:'ICC Full Frame White'});
+ if(includeMetadataWhite!==false&&profileType==='windows-hdr') steps.push({ire:100,r:inputMax,g:inputMax,b:inputMax,input_max:inputMax,name:'ICC HDR Metadata White'});
  return steps;
 }
 
-async function meterIccGenerateSteps(profileType,settings,includeFullFrame){
+async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite){
  settings=settings||meterIccPatchSettings();
  const response=await fetchJSON('/api/icc/patches',{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings),_timeoutMs:920000
  });
  if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not generate the optimized patch set');
- return meterIccPatchesToSteps(response.patches,profileType,includeFullFrame);
+ return meterIccPatchesToSteps(response.patches,profileType,includeMetadataWhite);
 }
 
 async function meterIccGeneratePreconditionedSteps(readings,runConfig){
@@ -33820,6 +33821,7 @@ function meterIccSyncUi(){
  const localMode=meterIccLocalOutputModeStatus(type);
  const desc=document.getElementById('meterIccProfileDescription');
  const compatibility=document.getElementById('meterIccCompatibility');
+ const windowsInstallGuide=document.getElementById('meterIccWindowsInstallGuide');
  const summary=document.getElementById('meterIccRunSummary');
  const start=document.getElementById('meterIccStartBtn');
  const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
@@ -33850,8 +33852,8 @@ function meterIccSyncUi(){
   :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
  if(companionPatchSizeField) companionPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
-  ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered across the full display.'+(type==='windows-hdr'?' The Windows HDR full-frame luminance patch automatically uses the entire display.':''))
-  :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' Choose borderless fullscreen to measure accurate full-display luminance for Windows HDR metadata.':''));
+  ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
+  :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -33867,6 +33869,12 @@ function meterIccSyncUi(){
  if(modelNote) modelNote.textContent=profileModelInfo.note;
  if(desc) desc.textContent=info.description;
  if(compatibility) compatibility.textContent=info.compatibility;
+ if(windowsInstallGuide){
+  windowsInstallGuide.style.display=(type==='windows-sdr'||type==='windows-hdr')?'':'none';
+  windowsInstallGuide.textContent=type==='windows-hdr'
+   ?'After downloading, enable HDR for the measured display, open Windows Settings > System > Display > Color profile, add the ICC as an Advanced Color profile for that display, and set it as default. Adding it only to the legacy SDR profile list will not activate its HDR calibration.'
+   :'After downloading, open Windows Settings > System > Display > Color profile, select the measured display, add the ICC to its SDR profiles, and set it as default.';
+ }
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
  const displayOptions=(document.getElementById('meterIccDisplayType')||{}).selectedOptions;
  const displayLabel=displayOptions&&displayOptions[0]?String(displayOptions[0].textContent||'').trim():'Auto';
@@ -34111,6 +34119,14 @@ function meterIccRenderValidation(file,result){
  set('meterIccValidationPeak',number(result.peak_de00));
  set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' calculation quality; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
  set('meterIccValidationNote',String(result.note||''));
+ const mhc2Panel=document.getElementById('meterIccValidationMhc2');
+ const mhc2=result&&result.mhc2&&result.mhc2.status==='passed'?result.mhc2:null;
+ if(mhc2Panel){
+  mhc2Panel.style.display=mhc2?'':'none';
+  mhc2Panel.textContent=mhc2
+   ?('Windows MHC2 check passed. Matrix round-trip maximum error: '+Number(mhc2.matrix_round_trip_max_error||0).toFixed(7)+'. Curves: '+Number(mhc2.curve_entries||0)+' points, '+String(mhc2.curves||'verified')+'. Metadata white: '+Number(mhc2.metadata_white_luminance_nits||0).toFixed(1)+' cd/m²; measured peak: '+Number(mhc2.peak_luminance_nits||0).toFixed(1)+' cd/m².')
+   :'';
+ }
  const rating=document.getElementById('meterIccValidationRating');
  if(rating){
   rating.textContent=String(result.rating||'Profile fit complete');
@@ -34450,7 +34466,10 @@ async function meterIccBuild(readings){
    const whiteText=(windowsMhc&&calibratedWhite>0&&measuredWhite>calibratedWhite+0.1)
     ?(' Calibrated white was reduced from '+measuredWhite.toFixed(1)+' to '+calibratedWhite.toFixed(1)+' cd/m² to preserve the target white point without channel clipping.')
     :'';
-   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+whiteText+(windowsMhc?' In Windows, install it and set it as the default color profile for this display before verification.':'');
+   const installText=meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-hdr'
+    ?' In Windows, associate it with this display as the default Advanced Color profile while HDR is enabled before verification.'
+    :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' In Windows, associate it with this display as the default SDR color profile before verification.':'');
+   status.textContent='Profile created: '+response.file+'. Download it below.'+transferText+whiteText+installText;
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
   // Profile quality only changes the fit. Preserve an explicit rebuild path

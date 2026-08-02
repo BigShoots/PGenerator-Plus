@@ -398,12 +398,15 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
     return luts
 
 
+def mhc2_wire_matrix(profile_type):
+    if profile_type == "windows-hdr":
+        return xy_matrix(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046)), (0.3127, 0.3290))
+    return xy_matrix(((0.640, 0.330), (0.300, 0.600), (0.150, 0.060)), (0.3127, 0.3290))
+
+
 def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb"):
     physical = measured_primary_matrix(black, white, primaries)
-    if profile_type == "windows-hdr":
-        wire = xy_matrix(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046)), (0.3127, 0.3290))
-    else:
-        wire = xy_matrix(((0.640, 0.330), (0.300, 0.600), (0.150, 0.060)), (0.3127, 0.3290))
+    wire = mhc2_wire_matrix(profile_type)
     adjustment = mat_mul(wire, mat_inv(physical))
     calibrated_peak = max(white["xyz"][1], black["xyz"][1] + 0.0001)
     if profile_type == "windows-sdr":
@@ -502,6 +505,75 @@ def rebuild_icc(profile, replacements):
     result.extend(blocks)
     struct.pack_into(">I", result, 0, len(result))
     return bytes(result)
+
+
+def read_s15fixed16(data, offset):
+    if offset < 0 or offset + 4 > len(data):
+        fail("MHC2 fixed-point value is outside the tag")
+    return struct.unpack(">i", data[offset:offset + 4])[0] / 65536.0
+
+
+def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_metadata_white, profile_type):
+    tags = {}
+    for signature, payload in read_icc_tags(profile):
+        if signature in tags:
+            fail("ICC profile contains a duplicate {} tag".format(signature.decode("ascii", "replace")))
+        tags[signature] = payload
+    required = (b"MHC2", b"lumi", b"wtpt", b"rXYZ", b"gXYZ", b"bXYZ")
+    missing = [signature.decode("ascii") for signature in required if signature not in tags]
+    if missing:
+        fail("Windows profile is missing required tags: {}".format(", ".join(missing)))
+    if profile[12:16] != b"mntr" or profile[16:20] != b"RGB " or profile[20:24] != b"XYZ ":
+        fail("Windows profile is not an RGB display profile with XYZ PCS")
+    mhc2 = tags[b"MHC2"]
+    if mhc2 != expected_payload:
+        fail("Saved MHC2 data does not match the generated correction")
+    if len(mhc2) < 84 or mhc2[:4] != b"MHC2":
+        fail("MHC2 tag header is invalid")
+    entries = struct.unpack(">I", mhc2[8:12])[0]
+    matrix_offset, red_offset, green_offset, blue_offset = struct.unpack(">IIII", mhc2[20:36])
+    if entries < 2 or entries > 4096 or matrix_offset + 48 > len(mhc2):
+        fail("MHC2 matrix or curve count is invalid")
+    matrix = []
+    for row_index in range(3):
+        row_offset = matrix_offset + row_index * 16
+        row = [read_s15fixed16(mhc2, row_offset + column * 4) for column in range(3)]
+        if abs(read_s15fixed16(mhc2, row_offset + 12)) > 1.0 / 65536.0:
+            fail("MHC2 matrix affine column must be zero")
+        matrix.append(row)
+    curves = []
+    for offset in (red_offset, green_offset, blue_offset):
+        if offset < 36 or offset + 8 + entries * 4 > len(mhc2) or mhc2[offset:offset + 4] != b"sf32":
+            fail("MHC2 curve offset or signature is invalid")
+        curves.append([read_s15fixed16(mhc2, offset + 8 + index * 4) for index in range(entries)])
+    residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
+    maximum_residual = max(abs(residual[row][column] - (1.0 if row == column else 0.0)) for row in range(3) for column in range(3))
+    if maximum_residual > 0.002:
+        fail("MHC2 correction matrix failed its round-trip identity check")
+    minimum_luminance = read_s15fixed16(mhc2, 12)
+    peak_luminance = read_s15fixed16(mhc2, 16)
+    lumi = tags[b"lumi"]
+    if len(lumi) < 20 or lumi[:4] != b"XYZ ":
+        fail("ICC metadata white luminance tag is invalid")
+    metadata_white_luminance = read_s15fixed16(lumi, 12)
+    if abs(metadata_white_luminance - expected_metadata_white) > max(0.02, expected_metadata_white / 10000.0):
+        fail("ICC metadata white luminance does not match its measurement")
+    curves_identity = all(
+        abs(value - index / float(entries - 1)) <= 1.5 / 65536.0
+        for curve in curves for index, value in enumerate(curve)
+    )
+    if profile_type == "windows-hdr" and not curves_identity:
+        fail("Windows HDR MHC2 curves must remain identity so PQ is applied once")
+    return {
+        "status": "passed",
+        "tag_version": "MHC2",
+        "matrix_round_trip_max_error": round(maximum_residual, 7),
+        "curve_entries": entries,
+        "curves": "identity" if curves_identity else "measured correction",
+        "minimum_luminance_nits": round(minimum_luminance, 5),
+        "peak_luminance_nits": round(peak_luminance, 3),
+        "metadata_white_luminance_nits": round(metadata_white_luminance, 3),
+    }
 
 
 def safe_basename(name):
@@ -770,10 +842,11 @@ def build(payload, output_dir):
     if profile_quality and profile_quality not in ("low", "medium", "high", "ultra"):
         fail("Unsupported ICC profile calculation quality")
     rows = normalize_measurements(payload)
-    full_frame_rows = [row for row in rows if row["name"] == "ICC Full Frame White"]
-    profile_rows = [row for row in rows if row["name"] != "ICC Full Frame White"]
-    if profile_type == "windows-hdr" and not full_frame_rows:
-        fail("Windows HDR profiling requires a full-frame white measurement")
+    metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
+    metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
+    profile_rows = [row for row in rows if row["name"] not in metadata_white_names]
+    if profile_type == "windows-hdr" and not metadata_white_rows:
+        fail("Windows HDR profiling requires an HDR metadata white measurement")
     ti3, black, white = make_ti3(payload, profile_rows)
     _, _, primaries = profile_measurement_summary(profile_rows)
     if not os.path.isdir(output_dir):
@@ -792,14 +865,19 @@ def build(payload, output_dir):
     matrix = None
     adjustment_luts = None
     calibrated_white = None
+    mhc2_validation = None
     if profile_type in ("windows-sdr", "windows-hdr"):
         with open(output_path, "rb") as handle:
             profile = handle.read()
         mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
-        # lumi is max full-frame luminance. SDR profiles use the measured
-        # profiling white; HDR has a dedicated full-frame measurement.
-        luminance = full_frame_rows[0]["xyz"][1] if full_frame_rows else calibrated_white
+        # SDR uses the measured profiling white. HDR uses a dedicated metadata
+        # white measured with the user's selected window or APL patch geometry.
+        luminance = metadata_white_rows[0]["xyz"][1] if metadata_white_rows else calibrated_white
         profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
+        mhc2_validation = validate_mhc2_profile(
+            profile, mhc2, measured_primary_matrix(black, white, primaries),
+            mhc2_wire_matrix(profile_type), luminance, profile_type,
+        )
         with open(output_path, "wb") as handle:
             handle.write(profile)
     ti3_filename = filename[:-4] + ".ti3"
@@ -807,6 +885,9 @@ def build(payload, output_dir):
     write_text_atomic(ti3_path, ti3)
     validation = run_profcheck(ti3_path, output_path, profile_rows, profile_model, patch_set)
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
+    if mhc2_validation:
+        validation["mhc2"] = mhc2_validation
+        validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check separately verifies the correction tag structure, matrix direction, luminance metadata and HDR identity curves. It does not verify Windows profile association, the live operating-system color pipeline or current display state."
     write_json_atomic(output_path + ".validation.json", validation)
     size = os.path.getsize(output_path)
     return {
@@ -822,7 +903,7 @@ def build(payload, output_dir):
         "patches": len(rows),
         "white_nits": white["xyz"][1],
         "calibrated_white_nits": calibrated_white,
-        "full_frame_white_nits": full_frame_rows[0]["xyz"][1] if full_frame_rows else None,
+        "metadata_white_nits": metadata_white_rows[0]["xyz"][1] if metadata_white_rows else None,
         "black_nits": black["xyz"][1],
         "mhc2_matrix": matrix,
         "mhc2_lut_entries": len(adjustment_luts[0]) if adjustment_luts else None,
