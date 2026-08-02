@@ -808,10 +808,11 @@ function meterIccSyncUi(){
   const generatorUnavailable=usesCompanion&&!meterIccCompanionConnected;
   start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
   const startReason=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Start the ICC Companion on the target computer before profiling':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
-  start.title=start.disabled?'':startReason;
+  start.title='';
   if(startHint){
-   startHint.title=startReason;
-   startHint.dataset.tooltip=start.disabled?startReason:'';
+   const companionTip=start.disabled&&generatorUnavailable?'Start the ICC Companion on the target computer before profiling':'';
+   startHint.title='';
+   startHint.dataset.tooltip=companionTip;
    startHint.setAttribute('aria-label',startReason);
   }
  }
