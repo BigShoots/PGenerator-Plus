@@ -42026,6 +42026,7 @@ async function meterFullAutoCalGeneratePostReport(){
   // delay_user_set-style flag pattern).
   const _sm=(getVal('signal_mode')||'sdr');
   const _cur=String(getVal('meterTargetGamma')||'');
+  let reportPreparationError='';
   if(_sm==='hdr10'){
    // The HDR greyscale autocal PINS Target Gamma to 2.2 for the cal-mode 2.2
    // space (meterAutoCalConfirmAndStart). Once cal mode is turned off (below)
@@ -42055,7 +42056,8 @@ async function meterFullAutoCalGeneratePostReport(){
    // already restores Absolute unconditionally as soon as the run finishes
    // (so skipping this optional report still leaves the panel correct) --
    // this call is now a harmless, idempotent restatement before the read.
-   await meterDvAutoCalSetMapMode('1');
+   const dvAbsoluteReady=await meterDvAutoCalSetMapMode('1');
+   if(!dvAbsoluteReady) reportPreparationError='Unable to switch Dolby Vision to Absolute mode for the post-cal report';
    // The post-cal (Absolute) read always grades against PQ -- unlike SDR/
    // HDR10, DV never lets the operator pick a different curve here (there is
    // no meaningful "power-gamma chart view" of an Absolute-mode DV signal).
@@ -42066,6 +42068,7 @@ async function meterFullAutoCalGeneratePostReport(){
   }
  let reportCompleted=false;
  try{
+  if(reportPreparationError) throw new Error(reportPreparationError);
   meterSetWorkflowProgress({status:'running',current_step:0,total_steps:series.length,current_name:'Ending LG calibration mode'},{workflow:'full',label:'Ending LG calibration mode'});
   const calibrationOff=await meterFullAutoCalEnsureCalibrationModeOff('post-cal report');
   if(!calibrationOff) throw new Error('LG calibration mode must be off before post-cal report measurements');
@@ -42365,6 +42368,16 @@ async function meterDvAutoCalSetMapMode(mode){
    if(ping&&ping.ok&&(Date.now()-t0)>=8000) break;
   }
  }
+ if(ok){
+  // /api/config updates the renderer and persisted conf, but it does not
+  // mutate this page's controls or active-series metadata. Leaving the prior
+  // Relative series context here made the following Absolute pre/post report
+  // build Relative/2.2 patches even though the renderer was already Absolute.
+  setVal('dv_map_mode',value);
+  if(typeof config==='object'&&config) config.dv_map_mode=value;
+  meterActiveSeriesDvMapMode=value;
+  if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+ }
  return ok;
 }
 
@@ -42377,8 +42390,10 @@ async function meterDvAutoCalSetMapMode(mode){
 // Force unconditionally; a no-op when already correct.
 function meterDvAutoCalForceTargetGamma(value){
  const cur=String(getVal('meterTargetGamma')||'');
- if(cur===value) return;
- setVal('meterTargetGamma',value);
+ if(cur!==value) setVal('meterTargetGamma',value);
+ // The select can already show the requested value while the active series
+ // still carries the calibration phase's target. Always refresh the active
+ // context; an early return here left post-cal DV on Relative gamma 2.2.
  meterActiveSeriesTargetGamma=value;
  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
  if(typeof saveMeterSettings==='function') saveMeterSettings();
