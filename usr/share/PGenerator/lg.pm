@@ -2063,6 +2063,7 @@ sub webui_lg_1d_dpg_upload (@) {
     de => $payload->{"archive_de"},
     run_id => $payload->{"archive_run_id"}||"",
     variant => $payload->{"archive_variant"}||"",
+    display_model => $payload->{"display_model"}||"",
    });
    1;
   };
@@ -2111,6 +2112,7 @@ sub webui_lg_dv_profile_upload (@) {
   eval {
    &_lg_cal_hist_archive_dv($measurements,{
     picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+    display_model => $payload->{"display_model"}||"",
    });
   };
  }
@@ -2172,6 +2174,11 @@ sub webui_meter_lg_dv_profile_start (@) {
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
  return '{"status":"error","message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
+ my $_dv_display_model=&webui_lg_display_model_name({});
+ if($_dv_display_model ne "" && $body!~/"display_model"\s*:/) {
+  $_dv_display_model=~s/\\/\\\\/g; $_dv_display_model=~s/"/\\"/g;
+  $body=~s/\}\s*\z/,"display_model":"$_dv_display_model"}/;
+ }
  # Clean up any stale session/meter state before the worker starts its own
  # /api/meter/read calls -- same reasoning as webui_meter_lg_3d_autocal_start
  # calling this at the greyscale-to-3D handoff.
@@ -2363,6 +2370,36 @@ my $_lg_cal_hist_runs="/var/lib/PGenerator/lg/autocal-runs";
 my $_lg_cal_hist_luts="/var/lib/PGenerator/lg/luts";
 my $_lg_cal_hist_dir="/var/lib/PGenerator/lg/calibration-history";
 
+# Stable human-readable model used in newly archived AutoCal artifact names.
+# Prefer a model explicitly carried by the workflow, then the connected/saved
+# WebOS client. Keeping this lookup server-side means 1D and DV uploads are
+# named correctly even when an older browser did not include display metadata.
+sub webui_lg_display_model_name (@) {
+ my ($meta)=@_;
+ $meta={} if(ref($meta) ne "HASH");
+ my $model=$meta->{"display_model"} || $meta->{"model_name"} || "";
+ foreach my $key (qw(lg_generation preflight_lg_generation)) {
+  my $generation=$meta->{$key};
+  next unless($model eq "" && ref($generation) eq "HASH");
+  $model=$generation->{"model_name"} || $generation->{"platform_model"} || $generation->{"product_name"} || "";
+ }
+ if($model eq "") {
+  my $clients=eval { &lg_load_clients() } || {};
+  my $client=eval { &lg_primary_client($clients) } || {};
+  $model=$client->{"model_name"} || $client->{"name"} || $clients->{"model_name"} || $clients->{"name"} || "";
+ }
+ $model=~s/^\s+|\s+$//g;
+ return $model;
+}
+
+sub _lg_cal_hist_model_token {
+ my ($meta)=@_;
+ my $model=&webui_lg_display_model_name($meta);
+ $model=~s/[^A-Za-z0-9._-]+/_/g;
+ $model=~s/^[._-]+|[._-]+$//g;
+ return $model;
+}
+
 sub _lg_cal_hist_json_escape {
  my ($s)=@_;
  $s="" if(!defined $s);
@@ -2444,15 +2481,18 @@ sub _lg_cal_hist_archive_1d {
  my $stamp=sprintf("%04d%02d%02d_%02d%02d%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec);
  my $pm=$meta->{"picture_mode"}||"mode"; $pm=~s/[^A-Za-z0-9._-]+/_/g;
  my $sm=$meta->{"signal_mode"}||"sig"; $sm=~s/[^A-Za-z0-9._-]+/_/g;
+ my $display_model=&webui_lg_display_model_name($meta);
+ my $model_token=&_lg_cal_hist_model_token($meta);
  # variant distinguishes curves archived for the SAME run -- notably the raw
  # solve versus the post-cal shadow-smoothed curve, so either can be restored.
  my $variant=$meta->{"variant"}||""; $variant=~s/[^A-Za-z0-9._-]+/_/g;
- my $id="${stamp}_${sm}_${pm}".($variant ne "" ? "_${variant}" : "");
+ my $id="${stamp}".($model_token ne "" ? "_${model_token}" : "")."_${sm}_${pm}".($variant ne "" ? "_${variant}" : "");
  return _lg_cal_hist_write_json("$_lg_cal_hist_dir/1d/${id}.json",{
   id => "1dfile:$id",
   type => "1d",
   picture_mode => $meta->{"picture_mode"}||"",
   signal_mode => $meta->{"signal_mode"}||"",
+  display_model => $display_model,
   variant => $meta->{"variant"}||"",
   de => $meta->{"de"},
   archived_at => time()+0,
@@ -2470,7 +2510,9 @@ sub _lg_cal_hist_archive_dv {
  my $stamp=sprintf("%04d%02d%02d_%02d%02d%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec);
  my $pm=$meta->{"picture_mode"}||"dolbyVision";
  my $pm_safe=$pm; $pm_safe=~s/[^A-Za-z0-9._-]+/_/g;
- my $id="${stamp}_${pm_safe}";
+ my $display_model=&webui_lg_display_model_name($meta);
+ my $model_token=&_lg_cal_hist_model_token($meta);
+ my $id="${stamp}".($model_token ne "" ? "_${model_token}" : "")."_${pm_safe}";
  my $current="";
  if(open(my $fh,"<","$_lg_cal_hist_runs/current")) { local $/; $current=<$fh>; close($fh); chomp($current); $current=~s/[^A-Za-z0-9._-]//g; }
  if($current ne "" && -d "$_lg_cal_hist_runs/$current") {
@@ -2478,6 +2520,7 @@ sub _lg_cal_hist_archive_dv {
    measurements => $measurements,
    picture_mode => $pm,
    signal_mode => "dv",
+   display_model => $display_model,
    archived_at => time()+0,
   });
  }
@@ -2486,6 +2529,7 @@ sub _lg_cal_hist_archive_dv {
   type => "dv",
   picture_mode => $pm,
   signal_mode => "dv",
+  display_model => $display_model,
   archived_at => time()+0,
   measurements => $measurements,
   source_run => $current||($meta->{"run_id"}||""),
@@ -2505,6 +2549,7 @@ sub webui_lg_calibration_history_list (@) {
    my $pm=$meta->{"picture_mode"}||"";
    my $sm=$meta->{"signal_mode"}||"";
    my $variant=$meta->{"variant"}||"";
+   my $display_model=$meta->{"display_model"}||"";
    my $label="$1 1D ".($sm||"?")." ".($pm||"");
    $label.=" (".$variant.")" if($variant ne "" && $1!~/\Q$variant\E/);
    $label=~s/\s+$//;
@@ -2515,6 +2560,7 @@ sub webui_lg_calibration_history_list (@) {
     picture_mode => $pm,
     signal_mode => $sm,
     variant => $variant,
+    display_model => $display_model,
     mtime => $mtime+0,
     de => defined($meta->{"de"}) ? ($meta->{"de"}+0) : undef,
     source => "archive",
@@ -2530,12 +2576,14 @@ sub webui_lg_calibration_history_list (@) {
    my $id=$meta->{"id"} || "dvfile:$1";
    my $mtime=(stat("$_lg_cal_hist_dir/dv/$f"))[9] || ($meta->{"archived_at"}||0);
    my $pm=$meta->{"picture_mode"}||"dolbyVision";
+   my $display_model=$meta->{"display_model"}||"";
    push @items,{
     id => $id,
     type => "dv",
     label => "$1 DV config $pm",
     picture_mode => $pm,
     signal_mode => "dv",
+    display_model => $display_model,
     mtime => $mtime+0,
     reuploadable => 1,
     source => "archive",
@@ -2561,9 +2609,10 @@ sub webui_lg_calibration_history_list (@) {
    # config is frequently absent on these runs.
    my $pm=$cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "";
    my $sm=$cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $sm_from_data || "";
+   my $display_model=$cfg->{"display_model"} || "";
    my $mtime=(stat("$dir/grey-state.json"))[9] || 0;
    my $smoothed=_lg_cal_hist_run_smoothed($state);
-   my $label=$run." 1D ".($sm||"?")." ".($pm||"").($smoothed ? " (smoothed)" : "");
+   my $label=($display_model ne "" ? $display_model." " : "").$run." 1D ".($sm||"?")." ".($pm||"").($smoothed ? " (smoothed)" : "");
    $label=~s/\s+$//;
    push @items,{
     id => "1d:$run",
@@ -2572,6 +2621,7 @@ sub webui_lg_calibration_history_list (@) {
     run_id => $run,
     picture_mode => $pm,
     signal_mode => $sm,
+    display_model => $display_model,
     variant => ($smoothed ? "smoothed" : ""),
     mtime => $mtime+0,
     de => defined($de_from_data) ? ($de_from_data+0) : undef,
@@ -2591,6 +2641,7 @@ sub webui_lg_calibration_history_list (@) {
    my $pm=$meta->{"picture_mode"} || "";
    my $sm=$meta->{"signal_mode"} || "";
    my $method=$meta->{"method"} || "";
+   my $display_model=$meta->{"display_model"} || "";
    my $label=$base;
    $label=$meta->{"title"} if(defined($meta->{"title"}) && $meta->{"title"} ne "");
    push @items,{
@@ -2601,6 +2652,7 @@ sub webui_lg_calibration_history_list (@) {
     picture_mode => $pm,
     signal_mode => $sm,
     method => $method,
+    display_model => $display_model,
     mtime => $mtime+0,
     has_cube => (-f "$_lg_cal_hist_luts/$base.cube") ? 1 : 0,
     download => (-f "$_lg_cal_hist_luts/$base.cube") ? "/api/3d-lut/cube?file=${base}.cube" : "",
@@ -2631,6 +2683,7 @@ sub webui_lg_calibration_history_list (@) {
    my $manifest=_lg_cal_hist_read_json_file("$dir/manifest.json") || {};
    my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
    my $pm=$cfg->{"picture_mode"} || "";
+   my $display_model=$cfg->{"display_model"} || "";
    # Prefer DV picture modes when labeling
    my $stages_path="$dir/stages.ndjson";
    if(-f $stages_path && open(my $fh,"<",$stages_path)) {
@@ -2645,10 +2698,11 @@ sub webui_lg_calibration_history_list (@) {
    push @items,{
     id => "dv:$run",
     type => "dv",
-    label => "$run DV config $pm",
+    label => ($display_model ne "" ? $display_model." " : "")."$run DV config $pm",
     run_id => $run,
     picture_mode => $pm,
     signal_mode => "dv",
+    display_model => $display_model,
     mtime => $mtime+0,
     reuploadable => 1,
     source => "run",
@@ -2660,7 +2714,7 @@ sub webui_lg_calibration_history_list (@) {
  my @json;
  foreach my $it (@items) {
   my @pairs;
-  for my $k (qw(id type label run_id base picture_mode signal_mode method download note source)) {
+  for my $k (qw(id type label run_id base picture_mode signal_mode display_model method download note source)) {
    next unless(defined($it->{$k}) && $it->{$k} ne "");
    push @pairs,"\"$k\":\""._lg_cal_hist_json_escape($it->{$k})."\"";
   }
@@ -2685,9 +2739,17 @@ sub webui_lg_calibration_history_download (@) {
  if($id =~ /^1d:([A-Za-z0-9._-]+)$/) {
   my $run=$1;
   my $state=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/grey-state.json");
+  my ($run_dpg,$run_sm,$run_de)=_lg_cal_hist_run_1d($state);
   return &lg_encode_json({ status => "error", message => "1D data not found" })
-   unless(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY");
-  return &lg_encode_json({ status => "ok", type => "1d", run_id => $run, dpg_data => $state->{"hdr20_1d_dpg_data"} });
+   unless(ref($run_dpg) eq "ARRAY" && @{$run_dpg}==3072);
+  my $manifest=_lg_cal_hist_read_json_file("$_lg_cal_hist_runs/$run/manifest.json") || {};
+  my $cfg=(ref($manifest->{"config"}) eq "HASH") ? $manifest->{"config"} : {};
+  return &lg_encode_json({
+   status => "ok", type => "1d", run_id => $run, dpg_data => $run_dpg,
+   signal_mode => $cfg->{"signal_mode"} || $state->{"signal_mode"} || $state->{"requested_signal_mode"} || $run_sm || "",
+   picture_mode => $cfg->{"picture_mode"} || $state->{"picture_mode"} || $state->{"calibration_picture_mode"} || "",
+   display_model => $cfg->{"display_model"} || "",
+  });
  }
  if($id =~ /^3d:([A-Za-z0-9._-]+)$/) {
   my $base=$1;
@@ -2697,7 +2759,7 @@ sub webui_lg_calibration_history_download (@) {
   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/1d/$1.json");
   return &lg_encode_json({ status => "error", message => "1D archive not found" })
    unless(ref($meta) eq "HASH" && ref($meta->{"dpg_data"}) eq "ARRAY");
-  return &lg_encode_json({ status => "ok", type => "1d", dpg_data => $meta->{"dpg_data"}, picture_mode => $meta->{"picture_mode"}||"", signal_mode => $meta->{"signal_mode"}||"" });
+  return &lg_encode_json({ status => "ok", type => "1d", dpg_data => $meta->{"dpg_data"}, picture_mode => $meta->{"picture_mode"}||"", signal_mode => $meta->{"signal_mode"}||"", display_model => $meta->{"display_model"}||"" });
  }
  if($id =~ /^dvfile:([A-Za-z0-9._-]+)$/) {
   my $meta=_lg_cal_hist_read_json_file("$_lg_cal_hist_dir/dv/$1.json");
@@ -5018,7 +5080,8 @@ async function lgCalHistoryDownload(id){
    const blob=new Blob([JSON.stringify(r,null,2)],{type:'application/json'});
    const a=document.createElement('a');
    a.href=URL.createObjectURL(blob);
-   a.download=(item.run_id||'1d')+'_dpg.json';
+   const model=String(item.display_model||r.display_model||'').replace(/[^A-Za-z0-9._-]+/g,'_').replace(/^[._-]+|[._-]+$/g,'');
+   a.download=(model?(model+'_'):'')+(item.run_id||'1d')+'_dpg.json';
    document.body.appendChild(a); a.click(); a.remove();
    setTimeout(()=>URL.revokeObjectURL(a.href),2000);
    return;

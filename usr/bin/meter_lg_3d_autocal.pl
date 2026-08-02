@@ -2494,15 +2494,17 @@ sub export_lut {
  my $stamp=strftime("%Y%m%d_%H%M%S",localtime());
  my $method=sanitize_name($model->{"method"}||"ramp");
  my $picture=sanitize_name($config->{"picture_mode"}||"active");
+ my $display_model_raw=$config->{"display_model"}||"";
+ my $display_model=($display_model_raw ne "") ? sanitize_name($display_model_raw) : "";
  my ($signal_mode)=sanitize_signal_mode($model->{"signal_mode"}||$config->{"signal_mode"}||"sdr");
  my $gamut=sanitize_target_gamut($model->{"target_gamut"}||$config->{"target_gamut"},$signal_mode);
  my $gamma=sanitize_target_gamma($model->{"signal_gamma"}||$config->{"target_gamma"},$signal_mode);
- my $base="$dir/${stamp}_".sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
+ my $base="$dir/${stamp}_".($display_model ne "" ? "${display_model}_" : "").sanitize_name($signal_mode)."_${method}_${picture}_".sanitize_name($gamut)."_".sanitize_name($gamma);
  my $solve_only=!!(ref($config) eq "HASH" && $config->{"solve_only"});
  # Offline export is display-agnostic host-app LUT; AutoCal upload keeps the LG title.
  my $title=$solve_only
   ? ("PGenerator ".signal_mode_label($signal_mode)." $method ".target_gamut_label($gamut)." ".target_gamma_label($gamma))
-  : ("PGenerator LG ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma));
+  : ("PGenerator LG".($display_model ne "" ? " $display_model" : "")." ".signal_mode_label($signal_mode)." $method $picture ".target_gamut_label($gamut)." ".target_gamma_label($gamma));
  my $have_payload=(ref($payload_u16) eq "ARRAY" && scalar(@{$payload_u16})>0) ? 1 : 0;
  my $binary="";
  my $payload_size=0;
@@ -2516,6 +2518,7 @@ sub export_lut {
   status => "ok",
   method => $method,
   picture_mode => $picture,
+  display_model => $display_model,
   signal_mode => $signal_mode,
   target_gamut => $gamut,
   target_gamma => $gamma,

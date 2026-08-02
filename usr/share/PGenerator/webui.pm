@@ -5382,11 +5382,23 @@ sub webui_meter_autocal_force_standard_observer (@) {
  return $body;
 }
 
+sub webui_meter_lg_body_with_display_model (@) {
+ my ($body)=@_;
+ return $body if(!defined($body) || $body!~/^\s*\{/ || $body=~/"display_model"\s*:/);
+ return $body unless(defined(&webui_lg_display_model_name));
+ my $model=eval { &webui_lg_display_model_name({}) } || "";
+ return $body if($model eq "");
+ $model=~s/\\/\\\\/g; $model=~s/"/\\"/g;
+ $body=~s/\}\s*\z/,"display_model":"$model"}/;
+ return $body;
+}
+
 sub webui_meter_lg_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG Auto Cal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  $body=&webui_meter_lg_autocal_body_with_defaults($body);
  $body=&webui_meter_autocal_force_standard_observer($body);
+ $body=&webui_meter_lg_body_with_display_model($body);
  if(&webui_meter_lg_autocal_running()) {
   return '{"status":"started","message":"LG Auto Cal already running"}' if(&webui_meter_lg_autocal_same_run_running($body));
   return '{"status":"error","message":"LG Auto Cal is already running"}';
@@ -5794,6 +5806,7 @@ sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  $body=&webui_meter_autocal_force_standard_observer($body);
+ $body=&webui_meter_lg_body_with_display_model($body);
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
