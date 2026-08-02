@@ -6411,7 +6411,10 @@ sub webui_icc_profile_build (@) {
  chmod(0600,$input);
  # Every command component is fixed or generated above. The profile name and
  # all measurement data remain inside the JSON file and never enter the shell.
- my $result=`timeout 920 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
+ # Large/high-quality cLUT fits can legitimately take many minutes on a Pi4.
+ # Keep this outer guard longer than colprof plus profcheck so the API does not
+ # terminate a healthy build before its validation result is returned.
+ my $result=`timeout 2700 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
  my $exit=$?;
  unlink($input);
  $result=~s/^\s+|\s+$//g;
@@ -34325,7 +34328,7 @@ async function meterIccBuild(readings){
   const profileReadings=meterIccProfileReadings(readings);
   const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
   delete payload.steps;
-  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:930000});
+  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:2710000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');

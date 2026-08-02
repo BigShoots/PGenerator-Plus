@@ -526,16 +526,29 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
         if quality is None:
             quality = "h" if patch_set == "large" or len(ti3.splitlines()) > 800 else "m"
         algorithm = PROFILE_MODELS[profile_model]["argyll"]
+        temporary_output = base + ".icc"
         command = [
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
-            "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", output_path, base,
+            "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
-        timeout_seconds = min(900, max(90, 60 + len(ti3.splitlines()) // 15))
+        # cLUT fitting on the Pi is substantially slower than matrix fitting,
+        # and scales with both characterization size and requested quality.
+        # The former 90-second floor killed a normal 175-patch Medium XYZ cLUT
+        # while colprof was still working and left a zero-byte destination.
+        line_count = len(ti3.splitlines())
+        quality_factor = {"l": 0.5, "m": 1.0, "h": 2.0, "u": 4.0}.get(quality, 1.0)
+        if PROFILE_MODELS[profile_model]["family"] == "clut":
+            timeout_seconds = min(1800, max(300, int(120 + line_count * quality_factor)))
+        else:
+            timeout_seconds = min(900, max(180, int(90 + line_count * quality_factor * 0.5)))
         completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
-        if completed.returncode != 0 or not os.path.isfile(output_path):
+        if completed.returncode != 0 or not os.path.isfile(temporary_output) or os.path.getsize(temporary_output) <= 0:
             detail = (output or "").strip().splitlines()
+            if completed.returncode == 124:
+                fail("ArgyllCMS profile creation timed out after {} seconds".format(timeout_seconds))
             fail("ArgyllCMS profile creation failed" + (": " + detail[-1][:240] if detail else ""))
+        os.rename(temporary_output, output_path)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
