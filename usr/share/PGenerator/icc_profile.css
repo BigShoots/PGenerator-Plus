@@ -13,6 +13,9 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-advanced{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .meter-icc-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
 .meter-icc-note{font-size:.72rem;color:var(--text2);line-height:1.5}
+.meter-disabled-action-hint{position:relative}
+.meter-disabled-action-hint>button:disabled{pointer-events:none}
+.meter-disabled-action-hint[data-tooltip]:not([data-tooltip=""]):hover::after{content:attr(data-tooltip);position:absolute;right:0;bottom:calc(100% + 8px);z-index:10020;width:max-content;max-width:min(360px,80vw);box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:.7rem;font-weight:400;line-height:1.35;white-space:normal;box-shadow:0 5px 18px rgba(0,0,0,.35);pointer-events:none}
 .meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
 .meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
 .meter-icc-field input,.meter-icc-field select{width:100%;box-sizing:border-box}

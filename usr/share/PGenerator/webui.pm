@@ -13719,7 +13719,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <button class="btn btn-sm btn-secondary" id="meterCcssCreateCloseBtn" onclick="meterCloseCcssCreateModal(true)">Close</button>
       <button class="btn btn-sm btn-danger" id="meterCcssCreateStopBtn" onclick="meterStopCcssCreate()" style="display:none">Stop</button>
       <button class="btn btn-sm btn-success" id="meterCcssCreateContinueBtn" onclick="meterCcssCreateSetupAck()" style="display:none">Continue</button>
-      <span id="meterCcssCreateStartBtnHint" style="display:inline-flex" title="Checking for a ready reference meter."><button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()" disabled>Start Creation</button></span>
+      <span id="meterCcssCreateStartBtnHint" class="meter-disabled-action-hint" style="display:inline-flex" title="Checking for a ready reference meter." data-tooltip="Checking for a ready reference meter."><button class="btn btn-sm btn-primary" id="meterCcssCreateStartBtn" onclick="meterStartCcssCreate()" disabled>Start Creation</button></span>
     </div>
    </div>
   </div>
@@ -26186,6 +26186,7 @@ function meterCcssCreateUpdateStartState(){
  if(startHint){
   const explanation=reason||(supplied?'Create the CCMX profile':'Start meter profile creation');
   startHint.title=explanation;
+  startHint.dataset.tooltip=startBtn.disabled?explanation:'';
   startHint.setAttribute('aria-label',explanation);
  }
 }
@@ -26203,6 +26204,7 @@ function meterCcssCreateSetStartingFeedback(starting,format){
    startBtn.title='';
    if(startHint){
     startHint.title='Starting meter profile creation';
+    startHint.dataset.tooltip='Starting meter profile creation';
     startHint.setAttribute('aria-label','Starting meter profile creation');
    }
   }else{

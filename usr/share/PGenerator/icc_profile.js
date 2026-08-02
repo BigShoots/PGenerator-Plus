@@ -811,6 +811,7 @@ function meterIccSyncUi(){
   start.title=start.disabled?'':startReason;
   if(startHint){
    startHint.title=startReason;
+   startHint.dataset.tooltip=start.disabled?startReason:'';
    startHint.setAttribute('aria-label',startReason);
   }
  }
