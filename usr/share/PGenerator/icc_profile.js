@@ -11,6 +11,90 @@ let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
 
 const METER_ICC_BUILD_TIMING_KEY='pgen.iccBuildTiming.v1';
+const METER_ICC_UI_SETTINGS_KEY='pgen.iccUiSettings.v1';
+const METER_ICC_LAST_RUN_KEY='pgen.iccLastRun.v1';
+let meterIccUiSettingsRestored=false;
+let meterIccUiSettingsJson='';
+let meterIccHadStoredUiSettings=false;
+
+function meterIccStoredRunConfig(config,patchCount){
+ if(!config) return null;
+ return {
+  profile_type:String(config.profile_type||''),profile_model:String(config.profile_model||''),
+  profile_quality:String(config.profile_quality||''),quality:String(config.quality||''),
+  signal_mode:String(config.signal_mode||''),pattern_provider:String(config.pattern_provider||''),
+  reuse_signature:String(config.reuse_signature||''),target_transfer:config.target_transfer,
+  code_min:Number(config.code_min),code_max:Number(config.code_max),meter_name:String(config.meter_name||''),
+  patch_settings:config.patch_settings||null,patch_count:Math.max(0,Math.round(Number(patchCount)||0))
+ };
+}
+
+function meterIccRememberLastRunConfig(config,patchCount){
+ try{ localStorage.setItem(METER_ICC_LAST_RUN_KEY,JSON.stringify(meterIccStoredRunConfig(config,patchCount))); }catch(error){}
+}
+
+function meterIccLoadLastRunConfig(readings){
+ try{
+  const saved=JSON.parse(localStorage.getItem(METER_ICC_LAST_RUN_KEY)||'null');
+  const count=Array.isArray(readings)?readings.length:null;
+  if(!saved||(count!=null&&Number(saved.patch_count)!==count)||!saved.profile_type||!saved.profile_model||!saved.profile_quality) return null;
+  return saved;
+ }catch(error){ return null; }
+}
+
+function meterIccUiSettings(){
+ const value=id=>String((document.getElementById(id)||{}).value||'');
+ return {
+  name:value('meterIccProfileName'),profile_type:value('meterIccProfileType'),target_transfer:value('meterIccTargetTransfer'),
+  profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
+  pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
+  patch_settings:meterIccPatchSettings()
+ };
+}
+
+function meterIccRememberUiSettings(){
+ if(!meterIccUiSettingsRestored) return;
+ try{
+  const json=JSON.stringify(meterIccUiSettings());
+  if(json!==meterIccUiSettingsJson){ localStorage.setItem(METER_ICC_UI_SETTINGS_KEY,json); meterIccUiSettingsJson=json; }
+ }catch(error){}
+}
+
+function meterIccRestoreUiSettings(){
+ if(meterIccUiSettingsRestored) return;
+ let saved=null;
+ try{ saved=JSON.parse(localStorage.getItem(METER_ICC_UI_SETTINGS_KEY)||'null'); }catch(error){}
+ const set=(id,value,allowed)=>{
+  const element=document.getElementById(id);
+  if(!element||value==null) return;
+  const text=String(value);
+  if(!allowed||allowed.includes(text)) element.value=text;
+ };
+ if(saved){
+  meterIccHadStoredUiSettings=true;
+  set('meterIccProfileName',saved.name);
+  set('meterIccProfileType',saved.profile_type,['sdr','windows-sdr','kde-hdr','windows-hdr']);
+  set('meterIccTargetTransfer',saved.target_transfer,['srgb','gamma22','gamma24','bt1886']);
+  set('meterIccProfileModel',saved.profile_model,Object.keys(METER_ICC_PROFILE_MODELS));
+  set('meterIccProfileQuality',saved.profile_quality,['low','medium','high','ultra']);
+  set('meterIccQuality',saved.quality,['small','medium','large','custom']);
+  set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
+  set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
+  set('meterIccStartDelay',saved.start_delay);
+  const patch=saved.patch_settings;
+  if(patch&&typeof patch==='object'){
+   set('meterIccPatchCount',patch.patch_count); set('meterIccPatchCountRange',patch.patch_count);
+   set('meterIccWhitePatches',patch.white_patches); set('meterIccBlackPatches',patch.black_patches);
+   set('meterIccGraySteps',patch.gray_steps); set('meterIccSingleSteps',patch.single_channel_steps);
+   set('meterIccNeutralEmphasis',Math.round(Number(patch.neutral_emphasis||0)*100));
+   set('meterIccDarkEmphasis',Math.round(Number(patch.dark_emphasis||0)*100));
+   const good=document.getElementById('meterIccGoodOptimization'); if(good) good.checked=!!patch.good_optimization;
+   const auto=document.getElementById('meterIccAutoPrecondition'); if(auto) auto.checked=!!patch.auto_precondition;
+  }
+ }
+ meterIccUiSettingsRestored=true;
+ meterIccUiSettingsJson=saved?JSON.stringify(saved):'';
+}
 
 function meterIccFormatDuration(seconds){
  seconds=Math.max(0,Math.round(Number(seconds)||0));
@@ -175,7 +259,7 @@ async function meterIccPreviousReusableReadings(signature,type){
     savedCounts.set(key,count);
     if(count>(liveCounts.get(key)||0)) combined.push(reading);
    });
-   return {readings:combined,legacy:false,savedProfile:String(saved.profile||'')};
+   return {readings:combined,legacy:false,savedProfile:String(saved.profile||''),build_config:saved.build_config&&typeof saved.build_config==='object'?saved.build_config:null};
   }
  }catch(error){}
  if(liveExact.length) return {readings:liveExact,legacy:false};
@@ -693,6 +777,12 @@ function meterIccSyncUi(){
   start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
   start.title=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Run the downloaded ICC Companion on the target computer':!usesCompanion&&!localMode.matches?localMode.message:busy?'A meter operation is already running':'Start the ICC profiling measurements';
  }
+ const retry=document.getElementById('meterIccRetryBuildBtn');
+ const retryCount=Number(retry&&retry.dataset?retry.dataset.measurementCount:0);
+ if(retry&&retryCount>0){
+  retry.textContent='Rebuild '+retryCount+' Measurements ('+profileQuality.replace(/^./,letter=>letter.toUpperCase())+' Quality)';
+ }
+ meterIccRememberUiSettings();
 }
 
 async function meterOpenIccProfileBuilder(){
@@ -704,6 +794,7 @@ async function meterOpenIccProfileBuilder(){
  }
  modal.style.display='flex';
  meterIccPrepareMeasurementControls();
+ meterIccRestoreUiSettings();
  meterIccProfileTypeChanged();
  if(await meterIccRefreshCompanionStatus()) await meterIccPushCompanionDisplaySettings(false);
  await meterIccRefreshRecoveryAvailability();
@@ -1016,6 +1107,21 @@ async function meterIccRefreshRecoveryAvailability(){
   const state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:5000});
   const available=!!(state&&state.status==='complete'&&state.type==='colors'&&Number(state.points)===990001&&Number(state.total_steps)>=16);
   retry.style.display=available?'':'none';
+  if(available){
+  const saved=meterIccLoadLastRunConfig(null);
+  const profileCount=Math.max(0,Number(saved&&saved.patch_count)||Number(state.total_steps)||0);
+  retry.dataset.measurementCount=String(profileCount);
+  if(!meterIccHadStoredUiSettings&&!saved){
+   const family=meterIccProfileModelInfo(String((document.getElementById('meterIccProfileModel')||{}).value||'clut')).family;
+   const inferred=profileCount<=(family==='matrix'?70:250)?'small':profileCount<=(family==='matrix'?130:650)?'medium':'large';
+   const qualitySelect=document.getElementById('meterIccQuality');
+   if(qualitySelect) qualitySelect.value=inferred;
+   meterIccApplyPatchPreset(inferred);
+  }
+  const calculationQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||(saved&&saved.profile_quality)||'medium');
+  retry.textContent='Rebuild '+profileCount+' Measurements ('+calculationQuality.replace(/^./,letter=>letter.toUpperCase())+' Quality)';
+  retry.title='Rebuild exactly these saved measurements using the selected profile model and calculation quality. No larger patch set will be generated or measured.';
+  }
   return available;
  }catch(error){
   retry.style.display='none';
@@ -1035,25 +1141,38 @@ async function meterIccRetryBuild(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
  if(!name){ toast('Enter the profile name first',true); return; }
- const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
- const info=meterIccProfileInfo(type);
- const quality=String((document.getElementById('meterIccQuality')||{}).value||'medium');
- const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
- const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
+ const selectedType=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  try{
   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
-  const patternProvider=meterIccPatternProvider();
-  const reuseSignature=meterIccReuseSignature(type,patternProvider);
-  const reusable=await meterIccPreviousReusableReadings(reuseSignature,type);
+  const selectedProvider=meterIccPatternProvider();
+  const selectedSignature=meterIccReuseSignature(selectedType,selectedProvider);
+  const reusable=await meterIccPreviousReusableReadings(selectedSignature,selectedType);
   const readings=reusable.readings.length?reusable.readings:meterIccProfileReadings(state&&state.readings);
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
+  const saved=meterIccLoadLastRunConfig(readings)||(reusable.build_config&&typeof reusable.build_config==='object'?reusable.build_config:null);
+  const inputMaximum=Math.max(...readings.map(reading=>Number(reading.input_max)||255));
+  const inferredType=inputMaximum>255?(selectedType==='windows-hdr'?'windows-hdr':'kde-hdr'):(selectedType==='windows-sdr'?'windows-sdr':'sdr');
+  const type=String((saved&&saved.profile_type)||inferredType);
+  const info=meterIccProfileInfo(type);
+  const patternProvider=String((saved&&saved.pattern_provider)||selectedProvider);
+  const reuseSignature=String((saved&&saved.reuse_signature)||selectedSignature);
+  const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||(saved&&saved.profile_model)||'clut');
+  const family=meterIccProfileModelInfo(profileModel).family;
+  const inferredQuality=readings.length<=(family==='matrix'?70:250)?'small':readings.length<=(family==='matrix'?130:650)?'medium':'large';
+  const quality=String((saved&&saved.quality)||inferredQuality);
+  const preset=(METER_ICC_PATCH_PRESETS[family]||METER_ICC_PATCH_PRESETS.clut)[quality]||{};
+  const selectedProfileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'');
+  const profileQuality=['low','medium','high','ultra'].includes(selectedProfileQuality)?selectedProfileQuality:String((saved&&saved.profile_quality)||preset.profile_quality||'medium');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
    pattern_provider:patternProvider,reuse_signature:reuseSignature,
-   target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
+   patch_settings:(saved&&saved.patch_settings)||null,
+   target_transfer:type==='windows-sdr'?String((saved&&saved.target_transfer)||meterIccTargetTransferValue()):undefined,
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
+  const status=document.getElementById('meterIccStatus');
+  if(status) status.textContent='Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' calculation quality. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.';
   await meterIccBuild(readings);
  }catch(error){
   const status=document.getElementById('meterIccStatus');
@@ -1335,6 +1454,7 @@ async function meterIccBuild(readings){
  const total=(meterIccRunConfig&&meterIccRunConfig.steps.length)||readings.length;
  meterIccSetProgress('Building ICC profile',total,total);
  const profileReadings=meterIccProfileReadings(readings);
+ meterIccRememberLastRunConfig(meterIccRunConfig,profileReadings.length);
  const buildClock=meterIccStartBuildClock(status,meterIccRunConfig,profileReadings.length);
  let buildElapsed=0;
  try{
