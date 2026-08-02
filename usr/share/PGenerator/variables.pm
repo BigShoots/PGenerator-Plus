@@ -45,7 +45,7 @@ $wifi_conf="/etc/wpa_supplicant/wpa_supplicant.conf";
 $hostapd_conf="/etc/hostapd/hostapd.conf";
 $hostapd_init="/etc/init.d/hostapd";
 $uptime_file="/proc/uptime";
-$load_avg_file="/proc/loadavg ";
+$load_avg_file="/proc/loadavg";
 $dir_wpa="/var/run/wpa_supplicant";
 $hostname_file="/etc/hostname";
 

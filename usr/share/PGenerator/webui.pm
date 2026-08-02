@@ -700,9 +700,11 @@ sub webui_route_is_concurrent_safe (@) {
  # Static assets: read a fixed file from disk and stream it.
  return 1 if($path eq "/favicon.ico" || $path eq "/pgen-logo-light.png" || $path eq "/assets/hcfr_chc.js"
   || $path eq "/assets/icc_profile.js" || $path eq "/assets/icc_profile.css");
- # Reads /proc plus a 2s response cache. Its cross-call CPU delta baseline is
- # :shared, so the pool does not corrupt the percentage.
- return 1 if($path eq "/api/stats");
+ # Live device health and identity are read-only. Keep both on the fast lane so
+ # a long profile build or calibration worker cannot freeze Device Info.
+ # /api/stats reads /proc/sysfs plus a 2s response cache; its cross-call CPU
+ # delta baseline is :shared, so the pool does not corrupt the percentage.
+ return 1 if($path eq "/api/stats" || $path eq "/api/info");
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
@@ -9247,11 +9249,11 @@ sub webui_stats_json (@) {
   ($cpu_total,$cpu_idle)=&webui_cpu_snapshot();
  }
 
- my $cpu_percent=int($_stats_cpu_last||0);
+ my $cpu_percent=0+($_stats_cpu_last||0);
  my $delta_total=$cpu_total-$_stats_cpu_total;
  my $delta_idle=$cpu_idle-$_stats_cpu_idle;
  if($delta_total > 0) {
-  $cpu_percent=int((100*(($delta_total-$delta_idle)/$delta_total))+0.5);
+  $cpu_percent=0+sprintf("%.1f",100*(($delta_total-$delta_idle)/$delta_total));
   $cpu_percent=0 if($cpu_percent < 0);
   $cpu_percent=100 if($cpu_percent > 100);
   $_stats_cpu_last=$cpu_percent;
@@ -9268,7 +9270,7 @@ sub webui_stats_json (@) {
  $mem_avail_kb=$mem_free_kb if($mem_avail_kb <= 0);
  my $mem_used_kb=$mem_total_kb-$mem_avail_kb;
  $mem_used_kb=0 if($mem_used_kb < 0);
- my $mem_percent=($mem_total_kb > 0) ? int((100*$mem_used_kb/$mem_total_kb)+0.5) : 0;
+ my $mem_percent=($mem_total_kb > 0) ? 0+sprintf("%.1f",100*$mem_used_kb/$mem_total_kb) : 0;
  my $mem_used_mb=int($mem_used_kb/1024);
  my $mem_total_mb=int($mem_total_kb/1024);
  my $mem_avail_mb=int($mem_avail_kb/1024);
@@ -9283,7 +9285,18 @@ sub webui_stats_json (@) {
  $load_5="" if(!defined $load_5);
  $load_15="" if(!defined $load_15);
 
- return "{\"cpu_percent\":$cpu_percent,\"cpu_freq_mhz\":$cpu_freq_mhz,\"memory_percent\":$mem_percent,\"memory_used_mb\":$mem_used_mb,\"memory_total_mb\":$mem_total_mb,\"memory_available_mb\":$mem_avail_mb,\"load_1\":\"$load_1\",\"load_5\":\"$load_5\",\"load_15\":\"$load_15\"}";
+ my $temperature_raw=&read_from_file($temperature_file);
+ $temperature_raw=~s/\s+//g;
+ my $temperature=($temperature_raw=~/^\d+$/)
+  ? 0+sprintf("%.1f",$temperature_raw/1000)
+  : &get_temperature();
+ $temperature=~s/[^\d.]//g;
+ my $temperature_json=($temperature=~/^\d+(?:\.\d+)?$/)?$temperature:"null";
+ my $uptime=&read_from_file($uptime_file);
+ ($uptime)=$uptime=~/^([\d.]+)/;
+ $uptime=0 if(!defined($uptime) || $uptime!~/^\d+(?:\.\d+)?$/);
+
+ return "{\"cpu_percent\":$cpu_percent,\"cpu_freq_mhz\":$cpu_freq_mhz,\"memory_percent\":$mem_percent,\"memory_used_mb\":$mem_used_mb,\"memory_total_mb\":$mem_total_mb,\"memory_available_mb\":$mem_avail_mb,\"temperature_c\":$temperature_json,\"uptime_seconds\":$uptime,\"load_1\":\"$load_1\",\"load_5\":\"$load_5\",\"load_15\":\"$load_15\"}";
 }
 
 sub webui_modes_json (@) {
@@ -15940,7 +15953,6 @@ async function checkPing(){
 }
 
 async function loadInfo(quiet){
- if(quiet&&shouldPauseAutoRefresh()) return;
  const info=await fetchJSON('/api/info',{_quiet:!!quiet,_timeoutMs:10000});
  if(!info) return;
  window._lastInfo=info;
@@ -15961,8 +15973,8 @@ async function loadInfo(quiet){
  g.innerHTML='';
  addInfo(g,'Hostname',info.hostname);
  addInfo(g,'Resolution',info.resolution);
- addInfo(g,'Uptime',formatUptime(info.uptime));
- addInfo(g,'Temp',info.temperature+'\u00B0C');
+ addInfo(g,'Uptime',formatUptime(info.uptime),'deviceInfoUptime');
+ addInfo(g,'Temp',info.temperature+'\u00B0C','deviceInfoTemperature');
  if(info.total_ram) addInfo(g,'RAM',info.total_ram+'MB');
  if(info.gpu_mem) addInfo(g,'GPU Mem',info.gpu_mem);
  // Update GPU Memory card readout
@@ -16180,13 +16192,33 @@ async function loadStats(quiet){
   if(stats.memory_available_mb)memText+=' • Avail '+stats.memory_available_mb+' MB';
  }
  document.getElementById('memUsageSub').textContent=memText;
+ const temperatureRaw=stats.temperature_c;
+ const temperature=Number(temperatureRaw);
+ if(temperatureRaw!==null&&temperatureRaw!==''&&Number.isFinite(temperature)){
+  const temperatureText=(Math.round(temperature*10)/10).toFixed(1).replace(/\.0$/,'')+'\u00B0C';
+  const headerTemperature=document.getElementById('tempDisplay');
+  const deviceTemperature=document.getElementById('deviceInfoTemperature');
+  if(headerTemperature) headerTemperature.textContent=temperatureText;
+  if(deviceTemperature){
+   deviceTemperature.textContent=temperatureText;
+   deviceTemperature.title=temperatureText;
+  }
+ }
+ const uptime=Number(stats.uptime_seconds);
+ const deviceUptime=document.getElementById('deviceInfoUptime');
+ if(deviceUptime&&Number.isFinite(uptime)){
+  const uptimeText=formatUptime(uptime);
+  deviceUptime.textContent=uptimeText;
+  deviceUptime.title=uptimeText;
+ }
 }
 function setSwitch(id,on){const e=document.getElementById(id);if(e)e.checked=!!on;}
 function switchBusy(id,busy){const e=document.getElementById(id);if(e)e.disabled=!!busy;}
-function addInfo(g,label,value){
+function addInfo(g,label,value,valueId){
  const d=document.createElement('div');d.className='info-item';
  const l=document.createElement('div');l.className='label';l.textContent=label;
  const v=document.createElement('div');v.className='value';v.textContent=value==null?'':String(value);v.title=v.textContent;
+ if(valueId)v.id=valueId;
  d.appendChild(l);d.appendChild(v);
  g.appendChild(d);
 }
