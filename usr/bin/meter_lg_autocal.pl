@@ -276,8 +276,8 @@ sub api_json {
 
 # Worker-side launch boundary check. The WebUI performs the same check before
 # opening the wizard, but the TV can power off later or a caller can start the
-# endpoint directly. A definite CEC standby/off result is sufficient to stop
-# before resets, calibration mode, pattern output, or meter reads begin.
+# endpoint directly. Require a definite CEC `on` result before resets,
+# calibration mode, pattern output, or meter reads begin.
 sub verify_lg_tv_power_for_autocal {
  my ($state)=@_;
  if(ref($state) eq "HASH") {
@@ -293,6 +293,8 @@ sub verify_lg_tv_power_for_autocal {
   if($power eq "standby" || $power eq "off" || $power eq "powering-off");
  return "LG TV is still starting. Wait until it is fully on before Auto Cal."
   if($power eq "powering-on");
+ return "Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."
+  if($power ne "on");
  return undef;
 }
 

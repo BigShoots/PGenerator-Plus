@@ -5364,7 +5364,7 @@ sub webui_meter_lg_autocal_start (@) {
  # or worker launch. The browser's LG status is only a pairing snapshot and
  # can still say "connected" after the panel has entered standby. Use the
  # fresh CEC-backed LG status here so direct API callers and stale browser
- # tabs cannot launch AutoCal against a powered-off display.
+ # tabs cannot launch AutoCal unless the display is definitely on.
  if(defined(&lg_cec_status)) {
   my $tv_status=eval { &lg_cec_status() };
   if(ref($tv_status) eq "HASH") {
@@ -5376,7 +5376,14 @@ sub webui_meter_lg_autocal_start (@) {
    if($power eq "powering-on") {
     return '{"status":"error","message":"LG TV is still starting. Wait until it is fully on before Auto Cal."}';
    }
+   if($power ne "on") {
+    return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
+   }
+  } else {
+   return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
   }
+ } else {
+  return '{"status":"error","message":"Unable to verify LG TV power before Auto Cal."}';
  }
  &webui_meter_stop();
  # Drop any stale stop file before launch. A root-owned leftover in sticky
@@ -43200,21 +43207,30 @@ async function meterAutoCalBackendRecoveryWatchdog(){
 // Confirm the display is actually awake before entering the AutoCal wizard or
 // launching its worker. LG's `connected` flag means a saved WebOS pairing is
 // available; it is not a live power check and remains true while the TV is in
-// standby. CEC is authoritative when it returns a definite power state. An
-// unknown state fails open because some installations do not expose CEC; the
-// server and worker repeat the gate at the launch boundary.
+// standby. AutoCal requires a definite CEC `on` state. Retry transient unknown
+// readings briefly, then fail closed; the server and worker repeat the gate at
+// the launch boundary.
 async function meterEnsureLgTvReadyForAutoCal(label){
  let status=null;
- try{
-  status=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:5000});
- }catch(e){ status=null; }
- const power=String((status&&status.tv_power)||'').trim().toLowerCase();
+ let power='';
+ for(let attempt=0;attempt<3;attempt++){
+  try{
+   status=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:5000});
+  }catch(e){ status=null; }
+  power=String((status&&status.tv_power)||'').trim().toLowerCase();
+  if(power==='on'||power==='standby'||power==='off'||power==='powering-off'||power==='powering-on') break;
+  if(attempt<2) await new Promise(resolve=>setTimeout(resolve,1000));
+ }
  if(power==='standby'||power==='off'||power==='powering-off'){
   toast('LG TV is powered off. Turn it on and wait for it to finish starting before '+(label||'Auto Cal')+'.',true);
   return false;
  }
  if(power==='powering-on'){
   toast('LG TV is still starting. Wait until it is fully on before '+(label||'Auto Cal')+'.',true);
+  return false;
+ }
+ if(power!=='on'){
+  toast('Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try '+(label||'Auto Cal')+' again.',true);
   return false;
  }
  return true;
