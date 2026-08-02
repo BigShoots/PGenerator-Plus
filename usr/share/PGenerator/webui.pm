@@ -5360,6 +5360,21 @@ sub webui_meter_lg_autocal_start (@) {
   return '{"status":"error","message":"LG Auto Cal is already running"}';
  }
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
+ # Final server-side power gate immediately before any meter/session teardown
+ # or worker launch. The browser's LG status is only a pairing snapshot and
+ # can still say "connected" after the panel has entered standby. Use the
+ # fresh CEC-backed LG status here so direct API callers and stale browser
+ # tabs cannot launch AutoCal against a powered-off display.
+ if(defined(&lg_cec_status)) {
+  my $tv_status=eval { &lg_cec_status() };
+  if(ref($tv_status) eq "HASH") {
+   my $power=lc($tv_status->{"tv_power"}||"");
+   $power=~s/^\s+|\s+$//g;
+   if($power eq "standby" || $power eq "off" || $power eq "powering-off") {
+    return '{"status":"error","message":"LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."}';
+   }
+  }
+ }
  &webui_meter_stop();
  # Drop any stale stop file before launch. A root-owned leftover in sticky
  # /tmp cannot be unlinked by the pgenerator webui user, and the worker
@@ -42094,6 +42109,7 @@ async function meterStartFullAutoCal(){
  if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterFullAutoCalAvailable()){toast('Connect an LG TV before starting Full Auto Cal',true);return;}
+ if(!(await meterEnsureLgTvReadyForAutoCal('Full Auto Cal'))) return;
  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal'))) return;
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
@@ -43178,6 +43194,29 @@ async function meterAutoCalBackendRecoveryWatchdog(){
  }
 }
 
+// Confirm the display is actually awake before entering the AutoCal wizard or
+// launching its worker. LG's `connected` flag means a saved WebOS pairing is
+// available; it is not a live power check and remains true while the TV is in
+// standby. CEC is authoritative when it returns a definite power state. An
+// unknown state fails open because some installations do not expose CEC; the
+// server and worker repeat the gate at the launch boundary.
+async function meterEnsureLgTvReadyForAutoCal(label){
+ let status=null;
+ try{
+  status=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:5000});
+ }catch(e){ status=null; }
+ const power=String((status&&status.tv_power)||'').trim().toLowerCase();
+ if(power==='standby'||power==='off'||power==='powering-off'){
+  toast('LG TV is powered off. Turn it on and wait for it to finish starting before '+(label||'Auto Cal')+'.',true);
+  return false;
+ }
+ if(power==='powering-on'){
+  toast('LG TV is still starting. Wait until it is fully on before '+(label||'Auto Cal')+'.',true);
+  return false;
+ }
+ return true;
+}
+
 async function meterAutoCalInitialRecoveryPoll(){
  if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
@@ -43212,6 +43251,7 @@ async function meterStartAutoCal(options){
   meterSetActiveSeriesChartContext();
  }
 	 if(!meterAutoCalAvailable()) return fail(fullWorkflow?'Connect an LG TV before starting Full Auto Cal':'Connect an LG TV and select Greyscale LG 26pt AutoCal first');
+	 if(!(await meterEnsureLgTvReadyForAutoCal(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
 	 meterAutoCalWizardContextActive=true;
 	 if(!(await meterEnsureLgAutoCalTransport(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
 	 if(!meterEnsureLgAutoCalExtendedVideoTransport()) return fail('');

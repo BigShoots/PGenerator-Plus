@@ -274,6 +274,28 @@ sub api_json {
  return { status=>"error", message=>"Invalid Web UI API response" };
 }
 
+# Worker-side launch boundary check. The WebUI performs the same check before
+# opening the wizard, but the TV can power off later or a caller can start the
+# endpoint directly. A definite CEC standby/off result is sufficient to stop
+# before resets, calibration mode, pattern output, or meter reads begin.
+sub verify_lg_tv_power_for_autocal {
+ my ($state)=@_;
+ if(ref($state) eq "HASH") {
+  $state->{"phase"}="preparing";
+  $state->{"current_name"}="Verifying LG TV power";
+  $state->{"message"}="Checking that the LG TV is powered on";
+  write_state($state);
+ }
+ my $status=api_json("GET","/api/lg/status",undef,10);
+ my $power=(ref($status) eq "HASH") ? lc($status->{"tv_power"}||"") : "";
+ $power=~s/^\s+|\s+$//g;
+ return "LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."
+  if($power eq "standby" || $power eq "off" || $power eq "powering-off");
+ return "LG TV is still starting. Wait until it is fully on before Auto Cal."
+  if($power eq "powering-on");
+ return undef;
+}
+
 sub shell_quote {
  my ($text)=@_;
  $text="" if(!defined($text));
@@ -22049,6 +22071,8 @@ my $active_picture_mode_for_cleanup="";
 
 eval {
  die "No greyscale steps were supplied" if(!@{$steps});
+ my $tv_power_error=verify_lg_tv_power_for_autocal($state);
+ die $tv_power_error if(defined($tv_power_error) && $tv_power_error ne "");
  my $level_restore_error=restore_factory_levels_for_autocal($config,$state);
  die $level_restore_error if($level_restore_error);
  my $reset_error=reset_ddc_baseline_for_autocal($config,$state);
