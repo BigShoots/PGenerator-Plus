@@ -626,9 +626,11 @@ sub resolve_ccss_override (@) {
  return "";
 }
 
-# Worker pool size. The Pi4 has 4 cores; the workers are pre-spawned ONCE so
-# the cost is paid at startup, not per request.
-$WEBUI_WORKER_POOL_SIZE=4;
+# Unsafe routes must retain the serialization that the original single HTTP
+# loop provided. One general worker does that directly; multiple workers plus
+# a global flock only created blocked threads and allowed an inherited or
+# leaked descriptor to deadlock the entire lane.
+$WEBUI_WORKER_POOL_SIZE=1;
 # Longest the accept thread waits in one can_read() pass. Only bounds how
 # quickly the idle sweep runs; readable sockets wake it immediately.
 $WEBUI_ACCEPT_POLL_INTERVAL=0.5;
@@ -656,7 +658,7 @@ $WEBUI_BODY_READ_TIMEOUT=60;
 # fds of accepted client sockets, handed from the accept thread to the workers.
 $_webui_worker_queue=undef;
 # Dedicated fast lane. Keeping idle sockets off the workers is not enough on
-# its own: when all general workers are legitimately busy (a live CEC power
+# its own: when the serialized general lane is legitimately busy (a live CEC power
 # query can take ~2.4s with the TV off, /api/meter/status ~1.1s), an
 # allowlisted request still had to queue behind them and the liveness probe
 # blew its budget. The accept thread already has the request header in hand
@@ -665,23 +667,18 @@ $_webui_worker_queue=undef;
 # what the rest of the UI is doing.
 $_webui_fast_queue=undef;
 $WEBUI_FAST_WORKER_COUNT=2;
-# Replaces the accidental global mutex the single accept loop used to provide.
-# A file lock rather than a thread mutex: it costs the same here, and it is the
-# idiom already used for the apply worker (webui-apply.lock), which has to
-# exclude a separate PROCESS.
-$_webui_serial_lock_file="";
-
-sub webui_acquire_serial_lock (@) {
- # Returns an open, flock'd filehandle. The caller keeps it in a lexical; the
- # lock drops when that goes out of scope. Fails OPEN: if the lock file cannot
- # be created we return undef and the request proceeds unserialized rather
- # than hanging, which is how this behaved before the pool existed anyway.
- return undef if($_webui_serial_lock_file eq "");
- my $fh;
- return undef if(!open($fh,'>',$_webui_serial_lock_file));
- return undef if(!flock($fh,2));
- return $fh;
-}
+# Profile fitting and display-aware patch generation can run for many minutes.
+# Keep that computation off both the serialized device lane and the liveness
+# lane. One worker also prevents two expensive colprof jobs from competing for
+# the Pi at the same time.
+$_webui_compute_queue=undef;
+$WEBUI_COMPUTE_WORKER_COUNT=1;
+# Bound completed-request queues. This is separate from the accepted-but-unread
+# socket cap below. When a client retries aggressively during a slow operation,
+# shed excess work instead of retaining an unbounded list of stale requests.
+$WEBUI_GENERAL_QUEUE_MAX=128;
+$WEBUI_FAST_QUEUE_MAX=256;
+$WEBUI_COMPUTE_QUEUE_MAX=1;
 
 sub webui_route_is_concurrent_safe (@) {
  # Allowlist, deliberately conservative: a route qualifies only if its handler
@@ -695,7 +692,7 @@ sub webui_route_is_concurrent_safe (@) {
  return 1 if($method eq "OPTIONS");
  # Liveness probe: returns a literal. This is the one that matters most --
  # it is what the browser uses to decide the WebUI is up, so it must answer
- # even while a slow handler holds the serial lock.
+ # even while the serialized device lane or compute lane is busy.
  return 1 if($path eq "/api/ping");
  # Static assets: read a fixed file from disk and stream it.
  return 1 if($path eq "/favicon.ico" || $path eq "/pgen-logo-light.png" || $path eq "/assets/hcfr_chc.js"
@@ -712,10 +709,17 @@ sub webui_route_is_concurrent_safe (@) {
  return 0;
 }
 
+sub webui_route_is_compute (@) {
+ my ($method,$path)=@_;
+ return 0 if(!defined($method) || $method ne "POST");
+ $path="" if(!defined($path));
+ return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches");
+ return 0;
+}
+
 sub webui_http (@) {
  $SIG{PIPE}='IGNORE';
  my $http_port=80;
- $_webui_serial_lock_file="$var_dir/running/webui-serial.lock";
 
  my $http_server = IO::Socket::INET->new(
   LocalHost => "0.0.0.0",
@@ -750,13 +754,17 @@ sub webui_http (@) {
  # accept loop free to drain the backlog while a slow handler runs.
  $_webui_worker_queue=Thread::Queue->new();
  $_webui_fast_queue=Thread::Queue->new();
+ $_webui_compute_queue=Thread::Queue->new();
  for my $i (1..$WEBUI_WORKER_POOL_SIZE) {
-  threads->create(\&webui_http_worker,$i,0)->detach();
+  threads->create(\&webui_http_worker,$i,"general")->detach();
  }
  for my $i (1..$WEBUI_FAST_WORKER_COUNT) {
-  threads->create(\&webui_http_worker,"F$i",1)->detach();
+  threads->create(\&webui_http_worker,"F$i","fast")->detach();
  }
- &log("WebUI: request worker pool started ($WEBUI_WORKER_POOL_SIZE workers + $WEBUI_FAST_WORKER_COUNT fast-lane)");
+ for my $i (1..$WEBUI_COMPUTE_WORKER_COUNT) {
+  threads->create(\&webui_http_worker,"C$i","compute")->detach();
+ }
+ &log("WebUI: request lanes started ($WEBUI_WORKER_POOL_SIZE serialized + $WEBUI_FAST_WORKER_COUNT fast + $WEBUI_COMPUTE_WORKER_COUNT compute)");
 
  # A worker is committed only once a COMPLETE request header has arrived.
  #
@@ -820,6 +828,33 @@ sub webui_http (@) {
     $saw_partial=1;
     next;
    }
+   # Route from the header we already peeked. The worker re-parses the
+   # request itself -- this only decides which lane it waits in, so a
+   # mis-parse here can never change how the request is handled.
+   my ($peek_method,$peek_path)=$peek=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
+   $peek_path="" if(!defined($peek_path));
+   $peek_path=~s/\?.*$//;
+   my ($queue,$lane,$queue_max);
+   if(&webui_route_is_compute($peek_method,$peek_path)) {
+    ($queue,$lane,$queue_max)=($_webui_compute_queue,"compute",$WEBUI_COMPUTE_QUEUE_MAX);
+   } elsif(&webui_route_is_concurrent_safe($peek_method,$peek_path)) {
+    ($queue,$lane,$queue_max)=($_webui_fast_queue,"fast",$WEBUI_FAST_QUEUE_MAX);
+   } else {
+    ($queue,$lane,$queue_max)=($_webui_worker_queue,"general",$WEBUI_GENERAL_QUEUE_MAX);
+   }
+   # A queued request is already complete and owns memory plus a descriptor.
+   # If a client retries faster than its lane can work, reject the excess now
+   # instead of turning stale requests into an unbounded backlog.
+   if($queue->pending() >= $queue_max) {
+    $sel->remove($h);
+    delete($pending{$fno});
+    $h->blocking(1);
+    my $msg='{"status":"error","message":"WebUI is busy; retry shortly"}';
+    print $h "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: ".length($msg)."\r\nConnection: close\r\nRetry-After: 2\r\n\r\n$msg";
+    eval { close($h); };
+    &log("WebUI: shed $lane-lane request for $peek_path (queue limit $queue_max)");
+    next;
+   }
    # Complete (or oversized) header: now it is worth a worker.
    $sel->remove($h);
    delete($pending{$fno});
@@ -829,17 +864,7 @@ sub webui_http (@) {
     &log("WebUI: could not duplicate client fd: $!");
     next;
    }
-   # Route from the header we already peeked. The worker re-parses the
-   # request itself -- this only decides which lane it waits in, so a
-   # mis-parse here can never change how the request is handled.
-   my ($peek_method,$peek_path)=$peek=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
-   $peek_path="" if(!defined($peek_path));
-   $peek_path=~s/\?.*$//;
-   if(&webui_route_is_concurrent_safe($peek_method,$peek_path)) {
-    $_webui_fast_queue->enqueue($fd);
-   } else {
-    $_webui_worker_queue->enqueue($fd);
-   }
+   $queue->enqueue($fd);
   }
   # Reclaim sockets that connected but never produced a usable request.
   if(scalar(keys %pending)) {
@@ -861,16 +886,16 @@ sub webui_http (@) {
 ###############################################
 #            WebUI Request Worker             #
 ###############################################
-# One of $WEBUI_WORKER_POOL_SIZE pre-spawned threads. Created ONCE at startup:
+# One of the pre-spawned lane workers. Created ONCE at startup:
 # Perl ithreads clone the whole interpreter, so a thread-per-request would be
 # ruinous on a Pi with this codebase. Each worker owns the fd it dequeues and
 # is responsible for closing it on every path, including errors -- the daemon
 # is long-lived and a leaked fd is eventually fatal.
 sub webui_http_worker (@) {
  my $worker_id=shift;
- my $fast_lane=shift;
+ my $lane=shift;
  $SIG{PIPE}='IGNORE';
- my $queue=$fast_lane ? $_webui_fast_queue : $_webui_worker_queue;
+ my $queue=($lane eq "fast") ? $_webui_fast_queue : (($lane eq "compute") ? $_webui_compute_queue : $_webui_worker_queue);
  while(defined(my $fd=$queue->dequeue())) {
   my $client;
   eval {
@@ -984,23 +1009,6 @@ sub webui_handle_request (@) {
     my $request_host="";
     $request_host=$1 if($req=~/^Host:\s*([A-Za-z0-9._\-\[\]:]+)\s*$/mi);
     &log("WebUI: $method $path");
-
-   # Preserve the serialization the single accept loop used to provide.
-   #
-   # That loop was an ACCIDENTAL GLOBAL MUTEX over every WebUI operation, and
-   # a great deal of request-reachable code quietly depends on it: the
-   # renderer restart ladder, %pgenerator_conf read-modify-write, the LG
-   # clients.json load/save pairs, the meter state machine, and the fixed-name
-   # "$command_file.tmp" that /api/pattern renames into place. Rather than
-   # audit-and-lock all of that in one change, only routes that provably touch
-   # no shared state run concurrently; everything else takes this lock and is
-   # therefore exactly as serialized as it was before the pool existed.
-   #
-   # Held for the whole handler body and released by scope exit.
-   my $serial_lock;
-   if(!&webui_route_is_concurrent_safe($method,$path)) {
-    $serial_lock=&webui_acquire_serial_lock();
-   }
 
    # CORS headers for API
    my $cors="Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n";
@@ -1771,10 +1779,6 @@ sub webui_handle_request (@) {
     my $msg="404 Not Found";
     print $client "HTTP/1.1 404 Not Found\r\nContent-Length: ".length($msg)."\r\n\r\n$msg";
    }
-   # $serial_lock (if held) is released here by scope exit: closing the
-   # filehandle drops its flock. Doing it implicitly rather than with an
-   # explicit call means an exception anywhere in the body above still
-   # releases it.
   }
 }
 
