@@ -24,8 +24,7 @@ import tempfile
 PROFILE_TYPES = {
     "sdr": "SDR display",
     "windows-sdr": "SDR ICC with MHC2 system calibration",
-    # Retained so measurements saved by older WebUI versions can be rebuilt.
-    "kde-hdr": "Legacy KDE Plasma HDR",
+    "kde-hdr": "HDR ICC for KDE system-wide color management",
     "windows-hdr": "HDR ICC with MHC2 system calibration",
 }
 PROFILE_MODELS = {

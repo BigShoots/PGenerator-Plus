@@ -74,8 +74,7 @@ function meterIccRestoreUiSettings(){
  if(saved){
   meterIccHadStoredUiSettings=true;
   set('meterIccProfileName',saved.name);
-  const savedProfileType=String(saved.profile_type||'sdr')==='kde-hdr'?'windows-hdr':saved.profile_type;
-  set('meterIccProfileType',savedProfileType,['sdr','windows-sdr','windows-hdr']);
+  set('meterIccProfileType',saved.profile_type,['sdr','windows-sdr','kde-hdr','windows-hdr']);
   set('meterIccTargetTransfer',saved.target_transfer,['srgb','gamma22','gamma24','bt1886']);
   set('meterIccProfileModel',saved.profile_model,Object.keys(METER_ICC_PROFILE_MODELS));
   set('meterIccProfileQuality',saved.profile_quality,['low','medium','high','ultra']);
@@ -421,6 +420,11 @@ function meterIccProfileInfo(type){
    description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
    compatibility:'Use with Windows 10 version 2004 or newer Advanced Color, or KDE Plasma 6.5.3 or newer on Wayland. Software that ignores the private MHC2 tag can still read the standard ICC matrix or cLUT fallback.'
   },
+  'kde-hdr':{
+   mode:'hdr10',
+   description:'Creates a measured HDR ICC v2 display profile without MHC2. KDE Plasma can use the full BToA cLUT through KWin for system-wide HDR color management.',
+   compatibility:'Requires KDE Plasma 6.7 or newer on Wayland with HDR enabled. This is the higher-accuracy KDE path for cLUT profiles. Windows Advanced Color requires the HDR ICC + MHC2 option instead.'
+  },
   'windows-hdr':{
    mode:'hdr10',
    description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data for HDR. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
@@ -666,7 +670,7 @@ function meterIccPatternProvider(){
 }
 
 function meterIccLocalOutputModeStatus(profileType){
- const required=profileType==='windows-hdr'?'hdr10':'sdr';
+ const required=(profileType==='kde-hdr'||profileType==='windows-hdr')?'hdr10':'sdr';
  const active=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
  const label=active==='hdr10'?'HDR10':active==='hlg'?'HLG':active==='dv'?'Dolby Vision':'SDR';
  const dirty=typeof hasUnsavedSettings==='function'&&hasUnsavedSettings();
@@ -776,8 +780,10 @@ function meterIccSyncUi(){
  if(desc) desc.textContent=info.description;
  if(compatibility) compatibility.textContent=info.compatibility;
  if(windowsInstallGuide){
-  windowsInstallGuide.style.display=(type==='windows-sdr'||type==='windows-hdr')?'':'none';
-  windowsInstallGuide.textContent=type==='windows-hdr'
+  windowsInstallGuide.style.display=(type==='windows-sdr'||type==='kde-hdr'||type==='windows-hdr')?'':'none';
+  windowsInstallGuide.textContent=type==='kde-hdr'
+   ?'Plasma 6.7+: enable HDR and select this file as the display HDR ICC profile in System Settings. KWin applies its cLUT through the compositor.'
+   :type==='windows-hdr'
    ?'Windows: enable HDR, add the file under Settings > System > Display > Color profile as the display Advanced Color profile, and set it as default. Plasma 6.7+: enable HDR and select the same file as the display ICC profile in System Settings.'
    :'Windows: add the file under Settings > System > Display > Color profile and set it as the display default. Plasma 6.5.3+: select the same file as the display ICC profile in System Settings.';
  }
@@ -1205,7 +1211,7 @@ async function meterIccRetryBuild(){
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
   const saved=meterIccLoadLastRunConfig(readings)||(reusable.build_config&&typeof reusable.build_config==='object'?reusable.build_config:null);
   const inputMaximum=Math.max(...readings.map(reading=>Number(reading.input_max)||255));
-  const inferredType=inputMaximum>255?'windows-hdr':(selectedType==='windows-sdr'?'windows-sdr':'sdr');
+  const inferredType=inputMaximum>255?(selectedType==='windows-hdr'?'windows-hdr':'kde-hdr'):(selectedType==='windows-sdr'?'windows-sdr':'sdr');
   const type=String((saved&&saved.profile_type)||inferredType);
   const info=meterIccProfileInfo(type);
   const patternProvider=String((saved&&saved.pattern_provider)||selectedProvider);
@@ -1527,7 +1533,9 @@ async function meterIccBuild(readings){
     :'';
    const installText=meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-hdr'
     ?' Install it as the HDR display profile in Windows Advanced Color or Plasma 6.7+ before verification.'
-    :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' Install it as the display profile in Windows Advanced Color or Plasma 6.5.3+ before verification.':'');
+    :(meterIccRunConfig&&meterIccRunConfig.profile_type==='kde-hdr'
+     ?' Install it as the HDR display ICC profile in Plasma 6.7+ before verification.'
+     :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' Install it as the display profile in Windows Advanced Color or Plasma 6.5.3+ before verification.':''));
    status.textContent='Profile created in '+meterIccFormatDuration(buildElapsed)+': '+response.file+'. Download it below.'+transferText+whiteText+installText;
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');
