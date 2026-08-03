@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.0"
+#define APP_VERSION "1.1.1"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -429,10 +429,31 @@ static bool render_current_frame(void)
 
 static bool apply_display_settings(bool fullscreen, int patch_size)
 {
+    SDL_WindowFlags flags;
     if (patch_size < 1 || patch_size > 198) patch_size = 100;
+    flags = SDL_GetWindowFlags(app.window);
+    app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
     if (app.fullscreen != fullscreen) {
+        /* Fullscreen changes are asynchronous on Windows. Synchronize before
+         * repainting so the renderer uses the new client area, and verify the
+         * window manager actually accepted the requested state. */
+        if (fullscreen) {
+            if (!SDL_RestoreWindow(app.window)) return false;
+            if (!SDL_SyncWindow(app.window)) return false;
+            if (!SDL_SetWindowFullscreenMode(app.window, NULL)) return false;
+        }
         if (!SDL_SetWindowFullscreen(app.window, fullscreen)) return false;
-        app.fullscreen = fullscreen;
+        if (!SDL_SyncWindow(app.window)) return false;
+        if (!fullscreen) {
+            if (!SDL_RestoreWindow(app.window)) return false;
+            if (!SDL_SyncWindow(app.window)) return false;
+        }
+        flags = SDL_GetWindowFlags(app.window);
+        app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+        if (app.fullscreen != fullscreen) {
+            SDL_SetError("The window manager did not apply the requested display mode");
+            return false;
+        }
     }
     app.displayed_size = patch_size;
     return render_current_frame();
@@ -698,9 +719,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     if (event->type == SDL_EVENT_KEY_DOWN) {
         if (event->key.key == SDLK_ESCAPE) return SDL_APP_SUCCESS;
         if (event->key.key == SDLK_F11) {
-            state->fullscreen = !state->fullscreen;
-            SDL_SetWindowFullscreen(state->window, state->fullscreen);
-            render_current_frame();
+            SDL_WindowFlags flags = SDL_GetWindowFlags(state->window);
+            bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) == 0;
+            apply_display_settings(fullscreen, state->displayed_size);
         }
     }
     if (event->type == SDL_EVENT_WINDOW_EXPOSED ||
