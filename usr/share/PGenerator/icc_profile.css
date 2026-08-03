@@ -4,8 +4,9 @@ body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!im
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
 .meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:stretch}
-.meter-icc-profile-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-content:start}
+.meter-icc-profile-panel{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(180px,.75fr);column-gap:18px;align-content:start}
 .meter-icc-profile-panel>h3,.meter-icc-profile-panel>.meter-icc-section-intro,.meter-icc-profile-panel>#meterIccProfileDescription,.meter-icc-profile-panel>#meterIccCompatibility,.meter-icc-profile-panel>#meterIccWindowsInstallGuide,.meter-icc-profile-panel>#meterIccTargetTransferField{grid-column:1/-1}
+.meter-icc-profile-name-field,.meter-icc-profile-type-field{grid-column:1/-1}
 .meter-icc-profile-quality-field{margin-top:10px}
 .meter-icc-review-panel{grid-column:1/-1}
 .meter-icc-finish-grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
@@ -22,6 +23,14 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
 .meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
 .meter-icc-field input,.meter-icc-field select{width:100%;box-sizing:border-box}
+#meterIccProfileName{max-width:360px}
+#meterIccProfileType{max-width:520px}
+#meterIccTargetTransfer{max-width:320px}
+#meterIccDisplayType,#meterIccMeterProfile{max-width:420px}
+#meterIccQuality{max-width:300px}
+#meterIccPatternProvider,#meterIccCompanionWindowMode{max-width:440px}
+#meterIccCompanionPatchSize{max-width:320px}
+#meterIccStartDelay{max-width:120px}
 .meter-icc-progress-track{height:10px;border:1px solid var(--border);border-radius:5px;overflow:hidden;background:var(--surface-inset)}
 .meter-icc-progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
 .meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
