@@ -225,6 +225,53 @@ sub lg_picture_mode_signal_examples (@) {
  return ();
 }
 
+# Picture-mode selection is a public WebOS settings write. Keep this payload
+# deliberately minimal. Earlier builds routed mode-only writes through an
+# alert-backed Luna call scoped with current_app and the CEC-derived input
+# dimension; on a G3 (OLED55G36LA, SDR, PR #1) that route acknowledged the
+# write without moving the foreground HDMI picture-mode bank. Verification
+# now lives in lg_picture_set_workflow's readback poll, not in payload
+# scoping.
+sub lg_picture_mode_ssap_payload (@) {
+ my $picture_mode=shift;
+ $picture_mode="" if(!defined($picture_mode));
+ return {
+  category => "picture",
+  settings => { pictureMode => $picture_mode },
+ };
+}
+
+# Readback verification must NOT reuse map_picture_mode_label_to_ddc_name:
+# that table is an input-alias map which deliberately collapses distinct
+# WebOS modes onto convenient write values (aps/eco => standard, sports =>
+# vivid, cinemaHome => cinema). Folding the TV's reply through it would
+# verify a "standard" request while the TV sits in Energy Saving -- exactly
+# the false success the readback exists to catch. Compare case- and
+# separator-normalized enum names instead, plus the few labels WebOS reports
+# for a mode it only accepts under a different write value.
+sub lg_picture_mode_readback_canonical (@) {
+ my $name=shift;
+ $name="" if(!defined($name));
+ $name=lc($name);
+ $name=~s/[\s_\-]+//g;
+ my %readback_synonym=(
+  # C2 webOS 4.1.0: writing "dolbyHdrCinema" reads back "dolbyHdrCinemaDark"
+  # (see the dolbyHdrCinema notes in map_picture_mode_label_to_ddc_name).
+  "dolbyhdrcinemadark" => "dolbyhdrcinema",
+  # Newer generations report the game enum under its Game Optimizer name.
+  "gameoptimizer" => "game",
+ );
+ return $readback_synonym{$name}||$name;
+}
+
+sub lg_picture_mode_readback_matches (@) {
+ my ($requested,$observed)=@_;
+ my $requested_mode=&lg_picture_mode_readback_canonical($requested);
+ my $observed_mode=&lg_picture_mode_readback_canonical($observed);
+ return 0 if($requested_mode eq "" || $observed_mode eq "");
+ return ($requested_mode eq $observed_mode) ? 1 : 0;
+}
+
 
 $WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 $REQUEST_ENV="PGEN_LG_REQUEST_B64";
@@ -5375,6 +5422,12 @@ sub lg_picture_set_workflow (@) {
  $settings->{"pictureMode"}=$mapped_caller_picture_mode if($mapped_caller_picture_mode ne "");
  $caller_picture_mode=$mapped_caller_picture_mode;
  my $picture_mode_only=($caller_picture_mode ne "" && scalar(keys(%{$settings}))==1) ? 1 : 0;
+ if($picture_mode_only && !grep { $_ eq "pictureMode" } @{$readback_keys}) {
+  # Verification is mandatory for mode-only writes: the readback poll below
+  # is the success criterion, so a caller's skip_readback (which arrives here
+  # as an empty readback_keys list) is deliberately overridden.
+  push(@{$readback_keys},"pictureMode");
+ }
  my $active_picture_mode=$caller_picture_mode || $fallback_picture_mode;
  if($picture_mode_only && $generation->{"ddc_only_white_balance"}) {
   my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
@@ -5451,22 +5504,12 @@ sub lg_picture_set_workflow (@) {
   };
  }
 
- my $set_payload={
+ my $set_payload=$picture_mode_only
+  ? &lg_picture_mode_ssap_payload($active_picture_mode)
+  : {
 	  category => "picture",
 	  settings => $settings_to_apply,
 	 };
- if($picture_mode_only) {
-  # Bind the Luna write to the foreground HDMI application. A bare
-  # pictureMode database write changes the reported preset but can leave the
-  # active Dolby Vision video pipeline detached on the C2. current_app alone
-  # is insufficient there; the input dimension identifies the live pipeline
-  # that must perform the mode transition.
-  $set_payload->{"current_app"}=&json_true();
-  $set_payload->{"dimension"}={
-   input => $tv_input,
-   "_3dStatus" => "2d",
-  } if($tv_input ne "");
- }
  my $panel_light_category=($panel_light_only && $tv_input ne "" && $active_picture_mode ne "") ? "picture\$".$tv_input.".".$active_picture_mode.".2d.x" : "";
  $set_payload->{"dimension"}={ pictureMode => $active_picture_mode } if($active_picture_mode ne "" && !$picture_mode_only && !$panel_light_only);
 
@@ -5582,13 +5625,15 @@ sub lg_picture_set_workflow (@) {
   return &json_error($ddc_message,$extra);
  }
 
- # Picture-mode transitions must use the internal Luna settings service.
- # The public SSAP route can update/read back pictureMode without making the
- # corresponding active HDMI pipeline transition on some Dolby Vision modes.
- # Other picture controls continue to use the normal SSAP route.
- my $response=$picture_mode_only
-  ? &lg_luna_request($session,"set_picture_mode_active_app","com.webos.settingsservice/setSystemSettings",$set_payload,$connect_timeout + 2)
-  : &lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
+ # Write the mode alone over public SSAP setSystemSettings, then verify with
+ # the separate getSystemSettings poll below (see that block's caveats).
+ my $response=&lg_request(
+  $session,
+  $picture_mode_only ? "set_picture_mode" : "set_picture_settings",
+  "settings/setSystemSettings",
+  $set_payload,
+  $connect_timeout + 2
+ );
  if(ref($response) ne "HASH") {
   &websocket_close($session);
   &diag_log_append("picture_set:no-response",{ ip => $ip, picture_mode => $active_picture_mode });
@@ -5744,9 +5789,14 @@ sub lg_picture_set_workflow (@) {
 	    &diag_log_append($fallback->{"fail_label"},{ ip => $ip, picture_mode => $active_picture_mode, tv_input => $tv_input, category => $category, response => $fallback_response, message => $fallback_message });
 	   }
 	  }
-  if($failed && !$picture_mode_only && !$panel_light_only && ($failure_message =~ /401\s+insufficient permissions/i || $failure_message =~ /insufficient permissions/i)) {
+  # Mode-only writes may also land here on client keys without SSAP settings
+  # write permission. The Luna fallback is safe for them because the readback
+  # poll below still decides success independently of the write
+  # acknowledgement -- and they keep the minimal payload, since scoping the
+  # write to the target mode's own settings bank cannot switch modes.
+  if($failed && !$panel_light_only && ($failure_message =~ /401\s+insufficient permissions/i || $failure_message =~ /insufficient permissions/i)) {
    my $luna_payload=$set_payload;
-   if($tv_input ne "" && $active_picture_mode ne "") {
+   if(!$picture_mode_only && $tv_input ne "" && $active_picture_mode ne "") {
     $luna_payload={
      category => "picture\$".$tv_input.".".$active_picture_mode.".2d.x",
      settings => $settings_to_apply,
@@ -5783,6 +5833,9 @@ sub lg_picture_set_workflow (@) {
   }
  }
 	 my $settings_after={};
+	 my $picture_mode_readback_verified=0;
+	 my $picture_mode_readback_attempts=0;
+	 my $observed_picture_mode="";
 	  if(@{$readback_keys}) {
 	  if($panel_light_only) {
 	   my @readback_payloads=();
@@ -5825,6 +5878,43 @@ sub lg_picture_set_workflow (@) {
 	    last if(%{$settings_after} && $verified);
 	    select(undef,undef,undef,0.4) if($read_attempt<13);
 	   }
+	  } elsif($picture_mode_only) {
+	   # An accepted setSystemSettings response is not proof: WebOS may accept
+	   # the write while leaving the selected input on its previous bank, so
+	   # poll getSystemSettings until it reports the requested mode. Two known
+	   # limits, both unresolved by this readback: it reads the same settings
+	   # plane the write updated, so it guards against ignored writes but not
+	   # against the settings database moving without a pipeline transition
+	   # (previously observed on C2 Dolby Vision modes and unrefuted -- this
+	   # route is live-validated SDR-only on a G3, PR #1); and like the write
+	   # it carries no input dimension, so if the TV is not actually on
+	   # $tv_input both sides act on whatever bank the TV considers
+	   # foreground. The wall-clock deadline keeps the whole poll well inside
+	   # lg.pm's 45s helper kill and the browser's 15s fetch timeout, so a
+	   # mismatch surfaces as this branch's crafted error rather than an
+	   # opaque timeout.
+	   my $poll_deadline=time() + 5;
+	   my $poll_timeout=($connect_timeout < 2) ? $connect_timeout : 2;
+	   for(my $read_attempt=0;$read_attempt<10;$read_attempt++) {
+	    $picture_mode_readback_attempts=$read_attempt + 1;
+	    my $followup=&lg_request($session,"get_picture_mode_after_${read_attempt}","settings/getSystemSettings",{
+	     category => "picture",
+	     keys => ["pictureMode"],
+	    },$poll_timeout);
+	    my ($followup_failed,$followup_failure_message)=&response_is_app_failure($followup);
+	    if(!$followup_failed && ref($followup) eq "HASH"
+	       && ref($followup->{"payload"}) eq "HASH"
+	       && ref($followup->{"payload"}{"settings"}) eq "HASH") {
+	     $observed_picture_mode=$followup->{"payload"}{"settings"}{"pictureMode"}||"";
+	     $settings_after=$followup->{"payload"}{"settings"};
+	     if(&lg_picture_mode_readback_matches($active_picture_mode,$observed_picture_mode)) {
+	      $picture_mode_readback_verified=1;
+	      last;
+	     }
+	    }
+	    last if(time() >= $poll_deadline);
+	    select(undef,undef,undef,0.35) if($read_attempt<9);
+	   }
 	  } else {
 	   my $readback_category="picture";
 		   if(!$native_white_balance && !$picture_mode_only && $tv_input ne "" && $active_picture_mode ne "") {
@@ -5841,7 +5931,32 @@ sub lg_picture_set_workflow (@) {
 	   }
 	  }
 		 }
-	 if($panel_light_only && !%{$settings_after}) {
+	 if($picture_mode_only && !$picture_mode_readback_verified) {
+	  &websocket_close($session);
+	  &diag_log_append("picture_set:mode-readback-mismatch",{
+	   ip => $ip,
+	   requested_picture_mode => $active_picture_mode,
+	   observed_picture_mode => $observed_picture_mode,
+	   readback_attempts => $picture_mode_readback_attempts,
+	   response => $response,
+	  });
+	  # The front-end toasts this message and does not refresh the Display
+	  # card on error, so the resync instruction must travel in the message.
+	  my $message=$observed_picture_mode ne ""
+	   ? "LG TV acknowledged the picture-mode request for '$active_picture_mode' but remained on '$observed_picture_mode'. Click Refresh on the Display card to resync the picture controls with the TV."
+	   : "LG TV acknowledged the picture-mode request for '$active_picture_mode' but did not return a verified picture-mode readback. Click Refresh on the Display card to resync the picture controls with the TV.";
+	  return &json_error($message,{
+	   ip => $ip,
+	   active_picture_mode => $active_picture_mode,
+	   requested_picture_mode => $active_picture_mode,
+	   observed_picture_mode => $observed_picture_mode,
+	   picture_mode_readback_attempts => $picture_mode_readback_attempts,
+	   picture_mode_write_path => "ssap://settings/setSystemSettings",
+	   error_code => "picture-mode-readback-mismatch",
+	   repair_hint => "Click Refresh on the Display card to resync the picture controls.",
+	   raw_response => $response,
+	  });
+	 } elsif($panel_light_only && !%{$settings_after}) {
 	  &websocket_close($session);
 	  return &json_error("LG TV acknowledged the panel-light write but did not return a verified readback.",{
 	   ip => $ip,
@@ -5854,13 +5969,30 @@ sub lg_picture_set_workflow (@) {
   $settings_after->{"pictureMode"}=$active_picture_mode if($active_picture_mode ne "");
  }
  &websocket_close($session);
- &diag_log_append("picture_set:ok",{ ip => $ip, picture_mode => $active_picture_mode, applied => $settings_to_apply, settings_after => $settings_after });
+ # The readback-verification keys only mean something for mode-only writes;
+ # emitting picture_mode_readback_verified=false on every white-balance or
+ # panel-light success would read as a failed verification.
+ &diag_log_append("picture_set:ok",{
+  ip => $ip,
+  picture_mode => $active_picture_mode,
+  applied => $settings_to_apply,
+  settings_after => $settings_after,
+  ($picture_mode_only ? (
+   picture_mode_readback_verified => &json_bool($picture_mode_readback_verified),
+   picture_mode_readback_attempts => $picture_mode_readback_attempts,
+  ) : ()),
+ });
  return &json_ok({
   ip => $ip,
   client_key => $auth->{"client_key"},
   picture_settings => $settings_after,
   applied => $settings_to_apply,
   active_picture_mode => $active_picture_mode,
+	  ($picture_mode_only ? (
+	   picture_mode_readback_verified => &json_bool($picture_mode_readback_verified),
+	   picture_mode_readback_attempts => $picture_mode_readback_attempts,
+	   picture_mode_write_path => "ssap://settings/setSystemSettings",
+	  ) : ()),
 	  calibration_mode => &json_bool($keep_calibration_mode && $ddc_white_balance_only),
   hello_info => $auth->{"hello_info"},
   system_info => $auth->{"system_info"},
