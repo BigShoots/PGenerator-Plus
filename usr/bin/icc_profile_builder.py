@@ -728,7 +728,7 @@ def generate_patches(payload, output_dir):
     targen = os.environ.get("PGEN_TARGEN", "/usr/bin/targen")
     if not os.path.isfile(targen) or not os.access(targen, os.X_OK):
         fail("The bundled ArgyllCMS targen executable is unavailable")
-    total = bounded_integer(payload.get("patch_count", 425), "patch count", 34, 10000)
+    total = bounded_integer(payload.get("patch_count", 425), "patch count", 34, 11106)
     white = bounded_integer(payload.get("white_patches", 4), "white patches", 1, 32)
     black = bounded_integer(payload.get("black_patches", 4), "black patches", 1, 32)
     single = bounded_integer(payload.get("single_channel_steps", 17), "single-channel steps", 0, 129)

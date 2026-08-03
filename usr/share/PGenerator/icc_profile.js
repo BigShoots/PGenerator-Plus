@@ -482,7 +482,7 @@ function meterIccPatchSettings(){
   return Number.isFinite(value)?value:fallback;
  };
  return {
-  patch_count:Math.max(34,Math.min(10000,Math.round(number('meterIccPatchCount',95)))),
+  patch_count:Math.max(34,Math.min(11106,Math.round(number('meterIccPatchCount',95)))),
   white_patches:Math.max(1,Math.min(32,Math.round(number('meterIccWhitePatches',2)))),
   black_patches:Math.max(1,Math.min(32,Math.round(number('meterIccBlackPatches',2)))),
   gray_steps:Math.max(2,Math.min(257,Math.round(number('meterIccGraySteps',25)))),
@@ -535,7 +535,7 @@ function meterIccPatchControlChanged(source){
  const number=document.getElementById('meterIccPatchCount');
  if(range&&number){
   if(source==='count-range') number.value=range.value;
-  else if(source==='count-number') range.value=String(Math.max(34,Math.min(10000,Number(number.value)||34)));
+  else if(source==='count-number') range.value=String(Math.max(34,Math.min(11106,Number(number.value)||34)));
  }
  const preset=document.getElementById('meterIccQuality');
  if(preset) preset.value='custom';
