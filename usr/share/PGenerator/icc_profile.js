@@ -74,7 +74,8 @@ function meterIccRestoreUiSettings(){
  if(saved){
   meterIccHadStoredUiSettings=true;
   set('meterIccProfileName',saved.name);
-  set('meterIccProfileType',saved.profile_type,['sdr','windows-sdr','kde-hdr','windows-hdr']);
+  const savedProfileType=String(saved.profile_type||'sdr')==='kde-hdr'?'windows-hdr':saved.profile_type;
+  set('meterIccProfileType',savedProfileType,['sdr','windows-sdr','windows-hdr']);
   set('meterIccTargetTransfer',saved.target_transfer,['srgb','gamma22','gamma24','bt1886']);
   set('meterIccProfileModel',saved.profile_model,Object.keys(METER_ICC_PROFILE_MODELS));
   set('meterIccProfileQuality',saved.profile_quality,['low','medium','high','ultra']);
@@ -413,22 +414,17 @@ function meterIccProfileInfo(type){
   sdr:{
    mode:'sdr',
    description:'Creates a measured ICC v2 display profile with ArgyllCMS. Choose a compact matrix/shaper model or an XYZ cLUT with a fallback matrix.',
-   compatibility:'This profile has no video-card calibration curve. On Windows 11 it affects ICC-aware applications, not the unmanaged desktop or raw Companion verification patches. Use an ICC-aware application to verify it.'
+   compatibility:'Portable conventional ICC profile for Linux, Windows and other ICC-aware software. It has no MHC2 system-calibration data, so unmanaged desktop output and raw Companion patches are not corrected.'
   },
   'windows-sdr':{
    mode:'sdr',
-   description:'Creates a Windows MHC2 hardware-calibration profile for SDR. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
-   compatibility:'Requires Windows 10 version 2004 or newer, Windows 11 recommended, a supported WDDM driver and GPU. Associate it with the measured display as its default SDR color profile. Windows then loads the correction automatically, including for raw Companion verification patches.'
-  },
-  'kde-hdr':{
-   mode:'hdr10',
-   description:'Creates a measured ICC profile for the separate HDR profile slot added in KDE Plasma 6.7. Measure with the output in HDR10 (PQ), then select the downloaded file as the display HDR ICC profile in Plasma.',
-   compatibility:'Requires KDE Plasma 6.7 or newer, a Wayland session, HDR enabled for the display and an HDR-capable SDL renderer. During HDR patches the Companion status must report native HDR active. This file is not a Windows Advanced Color MHC2 profile.'
+   description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
+   compatibility:'Use with Windows 10 version 2004 or newer Advanced Color, or KDE Plasma 6.5.3 or newer on Wayland. Software that ignores the private MHC2 tag can still read the standard ICC matrix or cLUT fallback.'
   },
   'windows-hdr':{
    mode:'hdr10',
-   description:'Creates an ICC v2 display profile with Microsoft MHC2 data for Windows Advanced Color. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
-   compatibility:'MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. This builder leaves the MHC2 1D curves at identity so Windows supplies PQ once and does not apply it twice. The HDR metadata white honors the user-selected Companion window and patch-size settings.'
+   description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data for HDR. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
+   compatibility:'Use with Windows Advanced Color or KDE Plasma 6.7 or newer on Wayland with HDR enabled. MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. The HDR curves remain at identity so the operating system applies PQ only once. Software that ignores MHC2 can still read the standard ICC fallback.'
   }
  };
  return info[type]||info.sdr;
@@ -436,9 +432,9 @@ function meterIccProfileInfo(type){
 
 function meterIccTargetTransferInfo(value){
  const info={
-  srgb:{label:'sRGB',note:'Recommended for the Windows SDR desktop and normal PC content. Validate it with sRGB selected as Target Gamma.'},
-  gamma22:{label:'Gamma 2.2',note:'Calibrates the raw Windows SDR output to a pure 2.2 power response. Validate it with Gamma 2.2.'},
-  gamma24:{label:'Gamma 2.4',note:'Calibrates the raw Windows SDR output to a pure 2.4 power response. This is mainly useful in a controlled dark-room workflow.'},
+  srgb:{label:'sRGB',note:'Recommended for a normal SDR desktop and standard PC content. Validate it with sRGB selected as Target Gamma.'},
+  gamma22:{label:'Gamma 2.2',note:'Calibrates the raw SDR output to a pure 2.2 power response. Validate it with Gamma 2.2.'},
+  gamma24:{label:'Gamma 2.4',note:'Calibrates the raw SDR output to a pure 2.4 power response. This is mainly useful in a controlled dark-room workflow.'},
   bt1886:{label:'BT.1886',note:'Uses the measured black and white levels to build a display-relative BT.1886 response. Validate it with BT.1886 and the same black reference.'}
  };
  return info[value]||info.srgb;
@@ -648,15 +644,15 @@ async function meterIccGeneratePreconditionedSteps(readings,runConfig){
 
 function meterIccProfileTypeChanged(){
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
- const windows=type==='windows-sdr'||type==='windows-hdr';
+ const mhc2=type==='windows-sdr'||type==='windows-hdr';
  const modelSelect=document.getElementById('meterIccProfileModel');
  if(modelSelect){
   Array.from(modelSelect.options).forEach(option=>{
-   const supported=!windows||meterIccProfileModelInfo(option.value).windows;
+   const supported=!mhc2||meterIccProfileModelInfo(option.value).windows;
    option.disabled=!supported;
-   option.title=supported?'':'Windows requires matrix and tone-curve fallback tags.';
+   option.title=supported?'':'MHC2 profiles require matrix and tone-curve fallback tags.';
   });
-  if(windows&&!meterIccProfileModelInfo(modelSelect.value).windows){
+  if(mhc2&&!meterIccProfileModelInfo(modelSelect.value).windows){
    modelSelect.value='clut';
    meterIccApplyPatchPreset(String((document.getElementById('meterIccQuality')||{}).value||'medium'));
   }
@@ -670,7 +666,7 @@ function meterIccPatternProvider(){
 }
 
 function meterIccLocalOutputModeStatus(profileType){
- const required=(profileType==='kde-hdr'||profileType==='windows-hdr')?'hdr10':'sdr';
+ const required=profileType==='windows-hdr'?'hdr10':'sdr';
  const active=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
  const label=active==='hdr10'?'HDR10':active==='hlg'?'HLG':active==='dv'?'Dolby Vision':'SDR';
  const dirty=typeof hasUnsavedSettings==='function'&&hasUnsavedSettings();
@@ -782,8 +778,8 @@ function meterIccSyncUi(){
  if(windowsInstallGuide){
   windowsInstallGuide.style.display=(type==='windows-sdr'||type==='windows-hdr')?'':'none';
   windowsInstallGuide.textContent=type==='windows-hdr'
-   ?'After downloading, enable HDR for the measured display, open Windows Settings > System > Display > Color profile, add the ICC as an Advanced Color profile for that display, and set it as default. Adding it only to the legacy SDR profile list will not activate its HDR calibration.'
-   :'After downloading, open Windows Settings > System > Display > Color profile, select the measured display, add the ICC to its SDR profiles, and set it as default.';
+   ?'Windows: enable HDR, add the file under Settings > System > Display > Color profile as the display Advanced Color profile, and set it as default. Plasma 6.7+: enable HDR and select the same file as the display ICC profile in System Settings.'
+   :'Windows: add the file under Settings > System > Display > Color profile and set it as the display default. Plasma 6.5.3+: select the same file as the display ICC profile in System Settings.';
  }
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
  const displayOptions=(document.getElementById('meterIccDisplayType')||{}).selectedOptions;
@@ -1088,7 +1084,7 @@ function meterIccRenderValidation(file,result){
  if(mhc2Panel){
   mhc2Panel.style.display=mhc2?'':'none';
   mhc2Panel.textContent=mhc2
-   ?('Windows MHC2 check passed. Matrix round-trip maximum error: '+Number(mhc2.matrix_round_trip_max_error||0).toFixed(7)+'. Curves: '+Number(mhc2.curve_entries||0)+' points, '+String(mhc2.curves||'verified')+'. Metadata white: '+Number(mhc2.metadata_white_luminance_nits||0).toFixed(1)+' cd/m²; measured peak: '+Number(mhc2.peak_luminance_nits||0).toFixed(1)+' cd/m².')
+   ?('MHC2 check passed. Matrix round-trip maximum error: '+Number(mhc2.matrix_round_trip_max_error||0).toFixed(7)+'. Curves: '+Number(mhc2.curve_entries||0)+' points, '+String(mhc2.curves||'verified')+'. Metadata white: '+Number(mhc2.metadata_white_luminance_nits||0).toFixed(1)+' cd/m²; measured peak: '+Number(mhc2.peak_luminance_nits||0).toFixed(1)+' cd/m².')
    :'';
  }
  const rating=document.getElementById('meterIccValidationRating');
@@ -1209,7 +1205,7 @@ async function meterIccRetryBuild(){
   if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
   const saved=meterIccLoadLastRunConfig(readings)||(reusable.build_config&&typeof reusable.build_config==='object'?reusable.build_config:null);
   const inputMaximum=Math.max(...readings.map(reading=>Number(reading.input_max)||255));
-  const inferredType=inputMaximum>255?(selectedType==='windows-hdr'?'windows-hdr':'kde-hdr'):(selectedType==='windows-sdr'?'windows-sdr':'sdr');
+  const inferredType=inputMaximum>255?'windows-hdr':(selectedType==='windows-sdr'?'windows-sdr':'sdr');
   const type=String((saved&&saved.profile_type)||inferredType);
   const info=meterIccProfileInfo(type);
   const patternProvider=String((saved&&saved.pattern_provider)||selectedProvider);
@@ -1530,8 +1526,8 @@ async function meterIccBuild(readings){
     ?(' Calibrated white was reduced from '+measuredWhite.toFixed(1)+' to '+calibratedWhite.toFixed(1)+' cd/m² to preserve the target white point without channel clipping.')
     :'';
    const installText=meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-hdr'
-    ?' In Windows, associate it with this display as the default Advanced Color profile while HDR is enabled before verification.'
-    :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' In Windows, associate it with this display as the default SDR color profile before verification.':'');
+    ?' Install it as the HDR display profile in Windows Advanced Color or Plasma 6.7+ before verification.'
+    :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' Install it as the display profile in Windows Advanced Color or Plasma 6.5.3+ before verification.':'');
    status.textContent='Profile created in '+meterIccFormatDuration(buildElapsed)+': '+response.file+'. Download it below.'+transferText+whiteText+installText;
   }
   const retry=document.getElementById('meterIccRetryBuildBtn');

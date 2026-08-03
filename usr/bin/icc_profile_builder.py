@@ -23,9 +23,10 @@ import tempfile
 
 PROFILE_TYPES = {
     "sdr": "SDR display",
-    "windows-sdr": "Windows SDR hardware calibration",
-    "kde-hdr": "KDE Plasma HDR",
-    "windows-hdr": "Windows HDR",
+    "windows-sdr": "SDR ICC with MHC2 system calibration",
+    # Retained so measurements saved by older WebUI versions can be rebuilt.
+    "kde-hdr": "Legacy KDE Plasma HDR",
+    "windows-hdr": "HDR ICC with MHC2 system calibration",
 }
 PROFILE_MODELS = {
     "clut": {"label": "XYZ cLUT + matrix", "argyll": "X", "family": "clut", "matrix_fallback": True},
@@ -169,7 +170,7 @@ def profile_description(payload):
     description = str(payload.get("name", "PGenerator display profile"))
     if payload.get("profile_type") == "windows-sdr":
         transfer = str(payload.get("target_transfer", "srgb")).lower()
-        description += " (Windows SDR MHC2, {})".format(WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB"))
+        description += " (SDR MHC2, {})".format(WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB"))
     return description[:120]
 
 
@@ -291,7 +292,7 @@ def target_transfer_to_linear(value, transfer, black_ratio=0.0):
         span = max(1e-9, 1.0 - black_root)
         absolute = (span ** gamma) * ((value + black_root / span) ** gamma)
     else:
-        fail("Unsupported Windows SDR target transfer")
+        fail("Unsupported SDR MHC2 target transfer")
     # Channel measurements are normalized after subtracting the physical
     # black level. Convert the requested absolute target into that same range.
     # Without this conversion, sRGB and power-gamma profiles add black to the
@@ -320,7 +321,7 @@ def monotonic_channel_samples(rows, black, primary, channel):
         else:
             merged.append((code, response))
     if len(merged) < 5 or merged[0][0] > 0.002 or merged[-1][0] < 0.998:
-        fail("Windows SDR calibration requires black-to-primary channel ramps")
+        fail("SDR MHC2 calibration requires black-to-primary channel ramps")
     return isotonic_channel_samples(merged)
 
 
@@ -371,7 +372,7 @@ def neutral_channel_samples(rows, black, primaries):
     for channel_samples in samples:
         channel_samples.sort(key=lambda item: item[0])
         if len(channel_samples) < 5 or channel_samples[0][0] > 0.002 or channel_samples[-1][0] < 0.998:
-            fail("Windows SDR calibration requires black-to-white neutral ramps")
+            fail("SDR MHC2 calibration requires black-to-white neutral ramps")
         result.append(isotonic_channel_samples(channel_samples))
     return result
 
@@ -400,7 +401,7 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
         samples = channel_samples[channel]
         gain = neutral_gains[channel]
         if gain <= 1e-6:
-            fail("Windows SDR calibration matrix has an invalid neutral response")
+            fail("SDR MHC2 calibration matrix has an invalid neutral response")
         values = []
         previous = 0.0
         for index in range(entries):
@@ -588,7 +589,7 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         for curve in curves for index, value in enumerate(curve)
     )
     if profile_type == "windows-hdr" and not curves_identity:
-        fail("Windows HDR MHC2 curves must remain identity so PQ is applied once")
+        fail("HDR MHC2 curves must remain identity so PQ is applied once")
     return {
         "status": "passed",
         "tag_version": "MHC2",
@@ -912,14 +913,14 @@ def build(payload, output_dir):
         fail("HDR ICC profiles require HDR10 (PQ) output")
     target_transfer = str(payload.get("target_transfer", "srgb")).lower()
     if profile_type == "windows-sdr" and target_transfer not in WINDOWS_SDR_TRANSFERS:
-        fail("Unsupported Windows SDR target transfer")
+        fail("Unsupported SDR MHC2 target transfer")
     if profile_type != "windows-sdr":
         target_transfer = None
     profile_model = str(payload.get("profile_model", "clut")).lower()
     if profile_model not in PROFILE_MODELS:
         fail("Unsupported ICC profile model")
     if profile_type in ("windows-sdr", "windows-hdr") and not PROFILE_MODELS[profile_model]["matrix_fallback"]:
-        fail("Windows profiles require a profile model with matrix and tone-curve fallback tags")
+        fail("MHC2 profiles require a profile model with matrix and tone-curve fallback tags")
     patch_set = PATCH_SET_ALIASES.get(str(payload.get("quality", "medium")).lower(), str(payload.get("quality", "medium")).lower())
     if patch_set not in ("small", "medium", "large", "custom"):
         fail("Unsupported ICC patch set")
@@ -932,7 +933,7 @@ def build(payload, output_dir):
     profile_rows = [row for row in rows if row["name"] not in metadata_white_names]
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
-        fail("Windows HDR profiling requires an HDR metadata white measurement")
+        fail("HDR MHC2 profiling requires an HDR metadata white measurement")
     ti3, black, white = make_ti3(payload, profile_rows)
     _, _, primaries = profile_measurement_summary(profile_rows)
     if not os.path.isdir(output_dir):
@@ -940,9 +941,9 @@ def build(payload, output_dir):
     stem = safe_basename(payload.get("name", "PGenerator display profile"))
     suffix = {
         "sdr": "SDR",
-        "windows-sdr": "Windows-SDR-MHC2",
+        "windows-sdr": "SDR-MHC2",
         "kde-hdr": "KDE-HDR",
-        "windows-hdr": "Windows-HDR",
+        "windows-hdr": "HDR-MHC2",
     }[profile_type]
     model_suffix = re.sub(r"-+", "-", SAFE_NAME.sub("-", PROFILE_MODELS[profile_model]["label"]).strip("- ").replace(" ", "-"))
     filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)

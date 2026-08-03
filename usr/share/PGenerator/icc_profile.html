@@ -18,12 +18,11 @@
         <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
        </div>
        <div class="meter-icc-field">
-        <label for="meterIccProfileType">Operating system and signal mode</label>
+        <label for="meterIccProfileType">Signal mode and calibration method</label>
         <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
-         <option value="sdr">Standard SDR ICC for color-managed applications</option>
-         <option value="windows-sdr">Windows SDR calibration (MHC2)</option>
-         <option value="kde-hdr">KDE Plasma 6.7+ HDR ICC</option>
-         <option value="windows-hdr">Windows Advanced Color HDR (MHC2)</option>
+         <option value="sdr">SDR ICC (standard color management)</option>
+         <option value="windows-sdr">SDR ICC + MHC2 (system calibration)</option>
+         <option value="windows-hdr">HDR ICC + MHC2 (system calibration)</option>
         </select>
        </div>
        <div id="meterIccProfileDescription" class="meter-icc-note"></div>
