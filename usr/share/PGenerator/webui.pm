@@ -11915,7 +11915,7 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 #meterCard.meter-config-collapsed .meter-config-toggle{transform:rotate(-90deg)}
 #meterCard.meter-config-collapsed > .meter-card-header-row,#meterCard.meter-config-collapsed > #meterResetRow,#meterCard.meter-config-collapsed > #meterSettingsGrid{display:none!important}
 #meterCard.meter-patterns-only .meter-config-toggle{display:none}
-.meter-card-header-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin:0 0 10px;width:100%;max-width:100%}
+.meter-card-header-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px 14px;margin:0 0 10px;width:100%;max-width:100%}
 .meter-card-header-col{display:flex;flex-direction:column;gap:2px;min-width:0}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
@@ -11923,7 +11923,7 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col-generator{flex:1 1 210px;max-width:310px}
 .meter-card-header-col-profile.is-spectro-disabled{cursor:help}
 .meter-card-header-col-profile.is-spectro-disabled select{opacity:.58;cursor:not-allowed}
-body.layout-desktop .meter-card-header-row{display:grid;grid-template-columns:minmax(250px,1.25fr) minmax(150px,.68fr) minmax(280px,1.4fr) minmax(175px,.78fr);align-items:start;column-gap:14px;row-gap:10px}
+body.layout-desktop .meter-card-header-row{display:grid;grid-template-columns:minmax(250px,360px) minmax(150px,220px) minmax(240px,340px) minmax(175px,260px);align-items:start;column-gap:14px;row-gap:10px}
 body.layout-desktop .meter-card-header-col{width:100%;max-width:none}
 body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:100%;min-width:0;flex:1 1 auto}
 @media(max-width:1250px){body.layout-desktop .meter-card-header-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
@@ -26037,6 +26037,7 @@ function meterUpdateMeterCapabilityControls(){
    : spyderX
    ? 'SpyderX supports matching CCMX matrices but not CCSS spectral profiles.'
    : '';
+  meterSyncCcssProfileHoverTitle(sel);
  }
  if(refresh){
   setCapabilityOptionText(refresh,'Automatic (SpyderX native)');
@@ -52053,10 +52054,22 @@ document.getElementById('ccssUploadBtn').addEventListener('click',async function
 });
 
 async function loadCustomCcssList(){
- const r=await fetchJSON('/api/ccss/list',{_quiet:true,_timeoutMs:5000});
+ const r=await fetchJSON('/api/ccss/list',{cache:'no-store',_quiet:true,_timeoutMs:5000});
  meterUpdateCustomCcssPanel(document.getElementById('meterDisplayType').value);
  const el=document.getElementById('customCcssList');
  if(!r||!r.files||r.files.length===0){el.innerHTML='<div style="font-size:.7rem;color:var(--text2)">No custom profiles</div>';return;}
+ // The compact custom list and the viewer use different API payloads. If a
+ // freshly created/uploaded file reaches this list before the full catalog,
+ // refresh the catalog now so the viewer option and click target agree.
+ const listedNames=r.files.map(f=>String(f||'')).filter(Boolean).sort();
+ const catalogNames=(Array.isArray(meterCcssLibrary)?meterCcssLibrary:[])
+  .filter(entry=>entry&&entry.source==='custom')
+  .map(entry=>String(entry.name||''))
+  .filter(Boolean)
+  .sort();
+ if(JSON.stringify(listedNames)!==JSON.stringify(catalogNames)){
+  try{ await refreshMeterCcssCatalog(); }catch(e){}
+ }
  el.innerHTML=r.files.map(f=>{
   const format=/\.ccmx$/i.test(f)?'CCMX':'CCSS';
   const label=f.replace(/\.(?:ccss|ccmx)$/i,'');
@@ -52100,12 +52113,17 @@ async function selectCustomCcss(filename){
   if(v && v.ok===false){ toast('Profile invalid: '+(v.error||'parse failed'), true); }
   else if(v && v.ok && v.description){ toast(String(v.format||'CCSS').toUpperCase()+': '+v.description); }
  }catch(e){}
+ // A new file can appear in the compact list before the viewer's richer
+ // catalog has refreshed. Reconcile it before resolving the preview entry.
+ if(!ccssPreviewFindEntry('custom\t'+filename)){
+  try{ await refreshMeterCcssCatalog(); }catch(e){}
+ }
  customCcssFile=filename;
    // Post-split: select the custom profile on the new meter-profile
    // dropdown, not the legacy combined display_type.
    meterSetCcssProfileSelection('custom_'+filename);
- ccssPreviewLoadByValue('custom\t'+filename,true);
- loadCustomCcssList();
+ await ccssPreviewLoadByValue('custom\t'+filename,false);
+ await loadCustomCcssList();
  saveMeterSettings();
 }
 
@@ -52658,7 +52676,24 @@ function meterRefreshCcssAutoLabel(wizardId){
   if(!sel) continue;
   const autoOpt=sel.querySelector('option[value=""]');
   if(autoOpt) autoOpt.textContent=label;
+  meterSyncCcssProfileHoverTitle(sel);
  }
+}
+
+function meterSyncCcssProfileHoverTitle(select){
+ const sel=select||document.getElementById('meterCcssProfile');
+ if(!sel) return;
+ const meter=meterSelectedMeasurementMeter();
+ if(meter&&meterIsSpectrophotometer(meter)){
+  sel.title='Spectrophotometers measure spectral data directly and do not use CCSS or CCMX correction profiles.';
+  return;
+ }
+ const option=sel.options&&sel.selectedIndex>=0?sel.options[sel.selectedIndex]:null;
+ const fullName=String((option&&option.textContent)||'').trim();
+ const capability=meterIsSpyderX(meter)
+  ? 'SpyderX supports matching CCMX matrices but not CCSS spectral profiles.'
+  : '';
+ sel.title=[fullName,capability].filter(Boolean).join('\n');
 }
 
 function meterCorrectionProfileFormat(entry){
@@ -52770,6 +52805,7 @@ function populateMeterCcssProfileSelect(wizardId){
    delete sel.dataset.pendingValue;
   }
   if(sel.value!=='custom_editor') sel.dataset.lastStableValue=String(sel.value||'');
+  meterSyncCcssProfileHoverTitle(sel);
   if(!sel.dataset.boundCcssEditor){
    sel.addEventListener('change',meterOnCcssProfileChange);
    sel.dataset.boundCcssEditor='1';
@@ -52792,6 +52828,7 @@ function meterOnCcssProfileChange(ev){
   return;
  }
  sel.dataset.lastStableValue=v;
+ meterSyncCcssProfileHoverTitle(sel);
  try{
   // Keep wizard/main in sync when either changes.
   const otherId=(sel.id==='meterCcssProfile')?'meterAutoCalCcssProfile':'meterCcssProfile';
@@ -52869,7 +52906,7 @@ function meterSetCcssProfileSelection(token){
 // "custom_FILENAME" (for user-uploaded). The backend's resolve_display_type()
 // handles both prefixes identically.
 async function loadMeterCcssOptions(){
- const r=await fetchJSON('/api/ccss/all',{_quiet:true,_timeoutMs:5000});
+ const r=await fetchJSON('/api/ccss/all',{cache:'no-store',_quiet:true,_timeoutMs:5000});
  // CCSS lives on #meterCcssProfile (+ wizard clone), not on the technology
  // dropdown. The old #meterDtCcss optgroup was removed with the panel/CCSS
  // split — do not append into it (null append used to abort this loader and
