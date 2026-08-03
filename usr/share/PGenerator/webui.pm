@@ -52699,7 +52699,15 @@ function meterCorrectionProfileCompatible(entry){
 // resolve_ccss_override() resolves it without further translation.
 function populateMeterCcssProfileSelect(wizardId){
  const ids=wizardId?['meterCcssProfile',wizardId]:['meterCcssProfile'];
- const library=Array.isArray(meterCcssLibrary)?meterCcssLibrary:[];
+ // Sort by the human profile name, not the visible [CCSS] / [CCMX] prefix,
+ // so mixed-format libraries remain naturally alphabetical.
+ const library=(Array.isArray(meterCcssLibrary)?meterCcssLibrary:[]).slice().sort(function(a,b){
+  const aLabel=ccssFormatDropdownLabel(a||{});
+  const bLabel=ccssFormatDropdownLabel(b||{});
+  const byLabel=String(aLabel||'').localeCompare(String(bLabel||''),undefined,{sensitivity:'base',numeric:true});
+  if(byLabel) return byLabel;
+  return String((a&&a.name)||'').localeCompare(String((b&&b.name)||''),undefined,{sensitivity:'base',numeric:true});
+ });
  const selectedMeter=meterSelectedMeasurementMeter();
  const spyderX=meterIsSpyderX(selectedMeter);
  const seen=new Set();
