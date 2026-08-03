@@ -4,10 +4,10 @@ body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!im
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
 .meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:stretch}
-.meter-icc-profile-panel{grid-column:1/-1}
 .meter-icc-profile-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-content:start}
 .meter-icc-profile-panel>h3,.meter-icc-profile-panel>.meter-icc-section-intro,.meter-icc-profile-panel>#meterIccProfileDescription,.meter-icc-profile-panel>#meterIccCompatibility,.meter-icc-profile-panel>#meterIccWindowsInstallGuide,.meter-icc-profile-panel>#meterIccTargetTransferField{grid-column:1/-1}
 .meter-icc-profile-quality-field{margin-top:10px}
+.meter-icc-review-panel{grid-column:1/-1}
 .meter-icc-finish-grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
 .meter-icc-panel{min-width:0;padding:14px;background:var(--surface-inset);border:1px solid var(--border);border-radius:8px}
 .meter-icc-panel h3{font-size:.8rem;color:var(--text);margin:0 0 4px}
