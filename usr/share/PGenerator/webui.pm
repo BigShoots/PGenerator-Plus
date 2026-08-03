@@ -9222,6 +9222,15 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- LG 3D LUT AutoCal Log (/tmp/meter_lg_3d_autocal.log, last 1000 lines) ---";
  my $ac3_log=`tail -n 1000 /tmp/meter_lg_3d_autocal.log 2>/dev/null`; chomp($ac3_log);
  push @out, ($ac3_log ne "") ? $ac3_log : "(none found)";
+ push @out, "", "--- Standalone 3D LUT Solve State (/tmp/lut_solve_state.json) ---";
+ my $lut_solve_state=`cat /tmp/lut_solve_state.json 2>/dev/null`; chomp($lut_solve_state);
+ push @out, ($lut_solve_state ne "") ? $lut_solve_state : "(none found)";
+ push @out, "", "--- Standalone 3D LUT Solve Log (/tmp/lut_solve.log, last 1000 lines) ---";
+ my $lut_solve_log=`tail -n 1000 /tmp/lut_solve.log 2>/dev/null`; chomp($lut_solve_log);
+ push @out, ($lut_solve_log ne "") ? $lut_solve_log : "(none found)";
+ push @out, "", "--- Recent Solved 3D LUT Files ---";
+ my $lut_solve_files=`ls -lt /var/lib/PGenerator/lg/luts/*.cube /var/lib/PGenerator/lg/luts/*.3dl /var/lib/PGenerator/lg/luts/*.json 2>/dev/null | head -n 30`; chomp($lut_solve_files);
+ push @out, ($lut_solve_files ne "") ? $lut_solve_files : "(none found)";
  # Inline the last few autocal runs (newest first), each with its full per-
  # session grey/3D logs (run_snapshot saves the whole log, not a tail). Bounded
  # by the KEEP retention; cap at 3 so the bundle stays a manageable size.
@@ -33960,7 +33969,7 @@ function meterGenerateLutFromLattice(opts){
   toast('Series read is missing corner patches: '+missingTol.join(', '),true);
   return;
  }
- meterLutSolveStart(series,readings,o);
+ return meterLutSolveStart(series,readings,o);
 }
 
 async function meterLutSolveStart(series,readings,opts){
@@ -34007,7 +34016,7 @@ async function meterLutSolveStart(series,readings,opts){
    radios:[meterSolveCubeSizeRadios(cubeSize)],
    checkboxes:[{id:'include_greyscale',label:'Include greyscale / white in 3D LUT',checked:true}]
   });
-  if(!ok) return;
+  if(!ok) return false;
   if(ok&&typeof ok==='object'&&Object.prototype.hasOwnProperty.call(ok,'include_greyscale')){
    body.include_greyscale=ok.include_greyscale?1:0;
   }
@@ -34027,7 +34036,7 @@ async function meterLutSolveStart(series,readings,opts){
   meterLutSolvePendingDownload='';
   meterLutSolveProgressHide();
   toast((r&&r.message)||'LUT solve failed to start',true);
-  return;
+  return false;
  }
  toast('Solving 3D LUT…');
  try{
@@ -34050,6 +34059,7 @@ async function meterLutSolveStart(series,readings,opts){
  meterLutSolvePolling=setInterval(meterLutSolvePoll,1000);
  // Immediate first poll so short solves do not wait a full interval.
  try{ meterLutSolvePoll(); }catch(e){}
+ return true;
 }
 
 function meterLutSolveProgressShow(msg,detail){
@@ -44254,6 +44264,55 @@ function meterBuild3dLutMeasureHide(){
 // format is chosen only after the solve on the completion modal).
 let meterBuild3dLutPending=null;
 
+// Capture and schedule the standalone solve as soon as the worker reports a
+// complete measurement set. This deliberately runs before final chart/UI
+// redraws: those are useful presentation work, but must never be able to
+// strand a completed profile before the solver is launched.
+function meterSchedulePending3dLutSolve(){
+ const pending=meterBuild3dLutPending;
+ if(!pending||pending.solveScheduled||typeof meterGenerateLutFromLattice!=='function') return false;
+ const seriesSnap=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
+  ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
+  ||pending.series
+  ||null;
+ const readingSnap=(typeof meterNormalizeLutSolveReadings==='function')
+  ?meterNormalizeLutSolveReadings(meterReadings)
+  :(Array.isArray(meterReadings)?meterReadings:[]).filter(function(rd){
+    return rd&&meterReadingHasLuminance(rd);
+   });
+ const readingKeep=readingSnap.length?readingSnap:(Array.isArray(meterReadings)?meterReadings.slice():[]);
+ pending.series=seriesSnap;
+ pending.readings=readingKeep.length?readingKeep:(pending.readings||null);
+ if(!pending.series||!Array.isArray(pending.readings)||!pending.readings.length) return false;
+ pending.solveScheduled=true;
+ meterBuild3dLutPending=pending;
+ let solveStart=null;
+ try{
+  // Calling the async entry point starts its POST immediately, before this
+  // poll continues into chart rendering. Promise handling below observes the
+  // eventual response without blocking the UI.
+  solveStart=meterGenerateLutFromLattice({
+   auto:true,
+   includeGreyscale:!!pending.includeGreyscale,
+   solveCubeSize:meterNormalizeSolveCubeSize(pending.solveCubeSize,meterSolveCubeSizePref(33)),
+   fromBuildFlow:true,
+   series:pending.series,
+   readings:pending.readings
+  });
+ }catch(error){
+  pending.solveScheduled=false;
+  toast('Could not start 3D LUT solve after measurement: '+String((error&&error.message)||error||'unknown error'),true);
+  return false;
+ }
+ Promise.resolve(solveStart).then(function(started){
+   if(started===false&&meterBuild3dLutPending===pending) pending.solveScheduled=false;
+ }).catch(function(error){
+   if(meterBuild3dLutPending===pending) pending.solveScheduled=false;
+   toast('Could not start 3D LUT solve after measurement: '+String((error&&error.message)||error||'unknown error'),true);
+ });
+ return true;
+}
+
 function meterSolveCubeSizePref(fallback){
  try{
   const n=Number(localStorage.getItem('pgen.meter.solveCubeSize')||0);
@@ -44734,6 +44793,12 @@ async function meterPollSeries(){
     meterWhiteReading=meterSyntheticGreyWhiteReading(meterColorReferenceNits());
    }
   }
+  // Launch the post-measure solve before chart rendering and completion UI.
+  // A chart exception or expensive redraw must not leave a valid read set
+  // sitting complete without ever handing it to the LUT worker.
+  if(r.status==='complete'&&meterBuild3dLutPending){
+   meterSchedulePending3dLutSolve();
+  }
   meterReadings.forEach(rd=>{if(rd.luminance!=null) completedIres.add(meterStepNameKey(rd));});
   // Only redraw charts when reading count changes (avoids flicker)
   const validCount=meterReadings.filter(rd=>rd.luminance!=null).length;
@@ -44836,43 +44901,9 @@ async function meterPollSeries(){
    meterCurrentPatchStep=null;
    _selectedColorReadingName=null;
    _colorDetailPinned=false;
-   // Build 3D LUT flow: after measurement, solve with the pre-selected format
-   // and greyscale policy, then open the save/download UI. Snapshot series +
-   // readings now — later cleanup must not empty the solve input.
-   try{
-    if(meterBuild3dLutPending&&typeof meterGenerateLutFromLattice==='function'){
-     const pending=meterBuild3dLutPending;
-     const seriesSnap=(typeof meterActiveVolumeProfileSeries==='function'&&meterActiveVolumeProfileSeries())
-      ||(typeof meterActiveLatticeSeries==='function'&&meterActiveLatticeSeries())
-      ||null;
-     // Keep full readings (incl. codes); name recovery runs at solve time so
-     // slash-stripped labels like "100100100" still become 100/100/100.
-     const readingSnap=(typeof meterNormalizeLutSolveReadings==='function')
-      ? meterNormalizeLutSolveReadings(meterReadings)
-      : (Array.isArray(meterReadings)?meterReadings:[]).filter(function(rd){
-         return rd&&meterReadingHasLuminance(rd);
-        });
-     // If normalize emptied (legacy path), fall back to raw measured rows.
-     const readingKeep=readingSnap.length?readingSnap:(Array.isArray(meterReadings)?meterReadings.slice():[]);
-     pending.series=seriesSnap||pending.series||null;
-     pending.readings=readingKeep.length?readingKeep:(pending.readings||null);
-     meterBuild3dLutPending=pending;
-     setTimeout(function(){
-      try{
-       meterGenerateLutFromLattice({
-        auto:true,
-        includeGreyscale:!!pending.includeGreyscale,
-        solveCubeSize:meterNormalizeSolveCubeSize(pending.solveCubeSize,meterSolveCubeSizePref(33)),
-        fromBuildFlow:true,
-        series:pending.series,
-        readings:pending.readings
-       });
-      }catch(e){
-       toast('Could not start 3D LUT solve after measurement',true);
-      }
-     },400);
-    }
-   }catch(e){}
+   // Fallback for old/recovered completion snapshots. Normal runs schedule
+   // this earlier, before chart work; solveScheduled makes the call one-shot.
+   meterSchedulePending3dLutSolve();
   }
   // Clear the "currently reading" pulse (selection was cleared above on complete).
   if(meterSeriesSteps){
