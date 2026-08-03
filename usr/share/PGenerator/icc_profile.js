@@ -372,7 +372,7 @@ function meterIccLinkedPatchSizeChanged(){
   source.dispatchEvent(new Event('change',{bubbles:true}));
  }
  meterIccSyncUi();
- meterIccPushCompanionDisplaySettings(true);
+ if(meterIccPatternProvider()==='companion') meterIccPushCompanionDisplaySettings(true);
 }
 
 function meterIccLinkedDisplayTypeChanged(){
@@ -754,13 +754,17 @@ function meterIccSyncUi(){
  const delayNote=document.getElementById('meterIccStartDelayNote');
  const companionWindowMode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
  const companionPatchSizeField=document.getElementById('meterIccCompanionPatchSizeField');
+ const patchSizeNote=document.getElementById('meterIccPatchSizeNote');
  const companionDisplayModeNote=document.getElementById('meterIccCompanionDisplayModeNote');
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
   ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
   :'The delay gives you time to switch the display to the PGenerator+ HDMI input before measurements begin.';
- if(companionPatchSizeField) companionPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
+ if(companionPatchSizeField) companionPatchSizeField.style.display=(!usesCompanion||companionWindowMode==='fullscreen')?'':'none';
+ if(patchSizeNote) patchSizeNote.textContent=usesCompanion
+  ?'Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.'
+  :'Linked to Patch Size in the Calibration workspace and used by the PGenerator+ HDMI output.';
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
   ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
   :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));

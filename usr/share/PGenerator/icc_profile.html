@@ -82,11 +82,6 @@
           <option value="fullscreen">Borderless fullscreen, controlled patch size</option>
          </select>
         </div>
-        <div class="meter-icc-field" id="meterIccCompanionPatchSizeField" style="display:none">
-         <label for="meterIccCompanionPatchSize">Patch size</label>
-         <select id="meterIccCompanionPatchSize" onchange="meterIccLinkedPatchSizeChanged()"></select>
-         <div class="meter-icc-note">Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.</div>
-        </div>
         <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
         <div class="btn-row" style="margin:0 0 10px">
          <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
@@ -96,6 +91,11 @@
        </div>
        <div id="meterIccLocalSetup" style="display:none">
         <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator+ HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator+.</div>
+       </div>
+       <div class="meter-icc-field" id="meterIccCompanionPatchSizeField" style="display:none">
+        <label for="meterIccCompanionPatchSize">Patch size</label>
+        <select id="meterIccCompanionPatchSize" onchange="meterIccLinkedPatchSizeChanged()"></select>
+        <div class="meter-icc-note" id="meterIccPatchSizeNote">Linked to Patch Size in the Calibration workspace.</div>
        </div>
        <div class="meter-icc-field" style="margin-top:12px">
         <label for="meterIccStartDelay">Input-switch delay in seconds</label>
