@@ -126,16 +126,16 @@
       </div>
 	      <div class="meter-icc-panel meter-icc-generator-panel">
        <h3><span class="meter-icc-step">4</span>Patch generator</h3>
-       <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator HDMI.</p>
+       <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator+ HDMI.</p>
      <div class="meter-icc-field" style="margin-bottom:10px">
       <label for="meterIccPatternProvider">Patch generator</label>
       <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
        <option value="companion" selected>ICC Companion on the target computer</option>
-       <option value="local">PGenerator HDMI output</option>
+       <option value="local">PGenerator+ HDMI output</option>
      </select>
      </div>
      <div id="meterIccCompanionSetup">
-      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator.</div>
+      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator+.</div>
       <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
       <div class="meter-icc-field">
        <label for="meterIccCompanionWindowMode">Companion display mode</label>
@@ -157,7 +157,7 @@
       <div id="meterIccCompanionStatus" class="meter-icc-note" style="color:var(--red)"><span style="color:var(--red)">&#9679;</span> Companion not connected</div>
      </div>
      <div id="meterIccLocalSetup" style="display:none">
-      <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator.</div>
+      <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator+ HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator+.</div>
      </div>
        <div class="meter-icc-field" style="margin-top:12px">
         <label for="meterIccStartDelay">Input-switch delay in seconds</label>
