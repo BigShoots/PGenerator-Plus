@@ -9,15 +9,14 @@
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
     <div class="meter-icc-grid">
-     <div class="meter-icc-stack">
-      <div class="meter-icc-panel">
+      <div class="meter-icc-panel meter-icc-profile-panel">
        <h3><span class="meter-icc-step">1</span>Profile</h3>
        <p class="meter-icc-section-intro">Choose where the profile will be used and how it will represent the display.</p>
-       <div class="meter-icc-field">
+       <div class="meter-icc-field meter-icc-profile-name-field">
         <label for="meterIccProfileName">Profile name</label>
         <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
        </div>
-       <div class="meter-icc-field">
+       <div class="meter-icc-field meter-icc-profile-type-field">
         <label for="meterIccProfileType">Signal mode and calibration method</label>
         <select id="meterIccProfileType" onchange="meterIccProfileTypeChanged()">
          <option value="sdr">SDR (application color management)</option>
@@ -39,7 +38,7 @@
         </select>
         <div class="meter-icc-note" id="meterIccTargetTransferNote" style="margin-top:6px"></div>
        </div>
-       <div class="meter-icc-field" style="margin-top:10px">
+       <div class="meter-icc-field meter-icc-profile-model-field" style="margin-top:10px">
         <label for="meterIccProfileModel">Profile model</label>
         <select id="meterIccProfileModel" onchange="meterIccProfileModelChanged()">
          <option value="clut" selected>XYZ cLUT + matrix fallback (recommended)</option>
@@ -52,7 +51,7 @@
         </select>
         <div class="meter-icc-note" id="meterIccProfileModelNote" style="margin-top:6px"></div>
        </div>
-       <div class="meter-icc-field">
+       <div class="meter-icc-field meter-icc-profile-quality-field">
         <label for="meterIccProfileQuality">Profile calculation quality</label>
         <select id="meterIccProfileQuality" onchange="meterIccSyncUi()">
          <option value="low">Low</option>
@@ -79,9 +78,7 @@
        </label>
        <div class="meter-icc-note">Uses the timing and level settings configured in the Calibration workspace.</div>
       </div>
-     </div>
-     <div class="meter-icc-stack">
-      <div class="meter-icc-panel">
+	      <div class="meter-icc-panel">
        <h3><span class="meter-icc-step">3</span>Patch set</h3>
        <p class="meter-icc-section-intro">Select measurement time and coverage. Presets are suitable for most displays.</p>
        <div class="meter-icc-field">
@@ -127,7 +124,7 @@
         <div class="meter-icc-note">PGenerator first creates a temporary matrix characterization, then places the final patches using the measured response. This is skipped when a known display profile is selected.</div>
        </details>
       </div>
-      <div class="meter-icc-panel">
+	      <div class="meter-icc-panel meter-icc-generator-panel">
        <h3><span class="meter-icc-step">4</span>Patch generator</h3>
        <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator HDMI.</p>
      <div class="meter-icc-field" style="margin-bottom:10px">
@@ -168,8 +165,7 @@
         <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
        </div>
        <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
-      </div>
-     </div>
+	    </div>
     </div>
     <div class="meter-icc-finish-grid">
      <div class="meter-icc-panel">
