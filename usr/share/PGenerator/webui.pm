@@ -10852,7 +10852,12 @@ body.meter-autocal-active .meter-autocal-mask{display:flex}
 .meter-workflow-progress-fill{height:100%;width:0;min-width:0;background:linear-gradient(90deg,#5d6dff 0%,#4d8df7 45%,#39d06f 100%);box-shadow:0 0 12px rgba(76,175,80,.35),inset 0 1px 0 rgba(255,255,255,.24);transition:width .28s ease,min-width .18s ease;position:relative;overflow:hidden;border-radius:3px}
 .meter-workflow-progress-fill.active{min-width:10px}
 .meter-workflow-progress-fill.active::after{content:"";position:absolute;inset:-40% -25%;background:linear-gradient(105deg,transparent 0%,rgba(255,255,255,.06) 34%,rgba(255,255,255,.46) 50%,rgba(255,255,255,.06) 66%,transparent 100%);transform:translateX(-115%);animation:meterProgressShimmer 1.65s ease-in-out infinite}
-@media(max-width:720px){.meter-workflow-progress-wrap{grid-template-columns:minmax(0,1fr) auto}.meter-workflow-progress{grid-column:1 / -1;grid-row:2}}
+.meter-lut-calculation-progress{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(180px,2fr) auto;align-items:center;gap:10px;margin:0 0 8px;color:var(--text2);font-size:.68rem}
+.meter-lut-calculation-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meter-lut-calculation-count{font-variant-numeric:tabular-nums;white-space:nowrap}
+.meter-lut-calculation-bar{height:6px;border-radius:999px;background:#0d0f18;border:1px solid rgba(255,255,255,.12);overflow:hidden}
+.meter-lut-calculation-fill{height:100%;width:0;background:linear-gradient(90deg,#5d6dff,#4d8df7);transition:width .2s ease}
+@media(max-width:720px){.meter-workflow-progress-wrap{grid-template-columns:minmax(0,1fr) auto}.meter-workflow-progress{grid-column:1 / -1;grid-row:2}.meter-lut-calculation-progress{grid-template-columns:minmax(0,1fr) auto}.meter-lut-calculation-bar{grid-column:1 / -1;grid-row:2}}
 .offline-mask-title{font-size:1rem;font-weight:700;margin-bottom:6px}
 .offline-mask-text{font-size:.85rem;line-height:1.45;color:var(--text2)}
 .status-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;font-size:.8rem;color:var(--text2)}
@@ -12359,6 +12364,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div id="meterWorkflowProgressBar" class="meter-workflow-progress"><div id="meterWorkflowProgressFill" class="meter-workflow-progress-fill"></div></div>
    <span id="meterProgressPercent" class="meter-workflow-progress-percent"></span>
+  </div>
+  <div id="meterLutCalculationProgress" class="meter-lut-calculation-progress" style="display:none">
+   <span id="meterLutCalculationLabel" class="meter-lut-calculation-label">3D LUT calculation</span>
+   <div id="meterLutCalculationBar" class="meter-lut-calculation-bar" role="progressbar" aria-valuemin="0"><div id="meterLutCalculationFill" class="meter-lut-calculation-fill"></div></div>
+   <span id="meterLutCalculationCount" class="meter-lut-calculation-count">0 / 0 nodes</span>
   </div>
 
   <div id="meterGreyProfileModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
@@ -26595,6 +26605,45 @@ function meterSetWorkflowProgress(status,options){
  }
 }
 
+function meterFormatNodeCount(value){
+ return Math.round(value).toLocaleString('en-GB');
+}
+
+function meterUpdateLutCalculationProgress(status){
+ const wrap=document.getElementById('meterLutCalculationProgress');
+ const label=document.getElementById('meterLutCalculationLabel');
+ const count=document.getElementById('meterLutCalculationCount');
+ const bar=document.getElementById('meterLutCalculationBar');
+ const fill=document.getElementById('meterLutCalculationFill');
+ const current=Math.max(0,Number(status&&status.lut_calculation_current_nodes)||0);
+ const total=Math.max(0,Number(status&&status.lut_calculation_total_nodes)||0);
+ const active=!!(status&&status.lut_calculation_active&&String(status.status||'').toLowerCase()==='running'&&total>0);
+ if(!active){
+  meterHideLutCalculationProgress();
+  return;
+ }
+ const safeCurrent=Math.min(current,total);
+ const pct=total>0?Math.max(0,Math.min(100,100*safeCurrent/total)):0;
+ if(wrap) wrap.style.display='grid';
+ if(label) label.textContent=String(status.lut_calculation_stage||'3D LUT calculation');
+ if(count) count.textContent=meterFormatNodeCount(safeCurrent)+' / '+meterFormatNodeCount(total)+' nodes';
+ if(fill) fill.style.width=pct+'%';
+ if(bar){
+  bar.setAttribute('aria-valuemax',String(Math.round(total)));
+  bar.setAttribute('aria-valuenow',String(Math.round(safeCurrent)));
+  bar.setAttribute('aria-valuetext',meterFormatNodeCount(safeCurrent)+' of '+meterFormatNodeCount(total)+' nodes');
+ }
+}
+
+function meterHideLutCalculationProgress(){
+ const wrap=document.getElementById('meterLutCalculationProgress');
+ const fill=document.getElementById('meterLutCalculationFill');
+ const bar=document.getElementById('meterLutCalculationBar');
+ if(wrap) wrap.style.display='none';
+ if(fill) fill.style.width='0%';
+ if(bar){ bar.removeAttribute('aria-valuenow'); bar.removeAttribute('aria-valuetext'); }
+}
+
 function meterClearWorkflowProgress(){
  const pctText=document.getElementById('meterProgressPercent');
  const bar=document.getElementById('meterWorkflowProgressBar');
@@ -26611,6 +26660,7 @@ function meterHideWorkflowProgress(){
  const progress=document.getElementById('meterProgress');
  if(progress) progress.style.display='none';
  meterClearWorkflowProgress();
+ meterHideLutCalculationProgress();
 }
 
 function meterHideProgressIfIdle(){
@@ -27489,6 +27539,7 @@ function meterClearInteractiveSelection(keepLiveReading){
  if(!keepLiveReading){
   document.getElementById('meterLiveReading').style.display='none';
   document.getElementById('meterProgress').style.display='none';
+  meterHideLutCalculationProgress();
  }
  meterUpdateReadButtons();
 }
@@ -30964,6 +31015,11 @@ function meterLutSolveProgressUpdate(status){
  const sz=Number(s.cube_lut_size||s.solve_cube_size||0);
  if(sz===17||sz===33||sz===65) bits.push(sz+'³ export');
  if(s.lattice_nodes!=null) bits.push(s.lattice_nodes+' profile nodes');
+ const nodeCurrent=Math.max(0,Number(s.lut_calculation_current_nodes)||0);
+ const nodeTotal=Math.max(0,Number(s.lut_calculation_total_nodes)||0);
+ const nodeProgress=!!(s.lut_calculation_active&&nodeTotal>0);
+ // Bar tracks the monotonic stage bands; per-stage node counts restart at
+ // zero for each stage, so they feed the detail line only.
  const pct=Number(s.solve_progress_pct);
  if(Number.isFinite(pct)&&pct>=0){
   if(fill){
@@ -30971,6 +31027,7 @@ function meterLutSolveProgressUpdate(status){
    fill.style.width=Math.max(8,Math.min(100,pct))+'%';
   }
   bits.push(Math.round(Math.min(100,pct))+'%');
+  if(nodeProgress) bits.push(meterFormatNodeCount(Math.min(nodeCurrent,nodeTotal))+' / '+meterFormatNodeCount(nodeTotal)+' nodes');
  } else if(fill){
   // Indeterminate shimmer while the worker has no percent yet.
   const cur=parseFloat(fill.style.width)||12;
@@ -31026,12 +31083,12 @@ async function meterLutSolvePoll(){
   }
   return;
  }
- if(s.status==='error'){
+ if(s.status==='error'||s.status==='cancelled'){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   meterLutSolvePendingDownload='';
   meterBuild3dLutPending=null;
   meterLutSolveProgressHide();
-  toast(s.message||'LUT solve failed',true);
+  toast(s.message||'LUT solve failed',s.status==='error');
  }
 }
 
@@ -40135,6 +40192,7 @@ function meterLg3dApplyStatus(status){
  const labelText=(status.current_name||status.message||'LG 3D LUT AutoCal')+(summary?' | '+summary:'');
  if(status.status==='running') meterSetWorkflowProgress(status,{workflow:meterFullAutoCalRunning?'full':'3d-lut',label:labelText});
  else meterHideWorkflowProgress();
+ meterUpdateLutCalculationProgress(status);
  if(status.status==='running'){
   meterLg3dAutoCalRunning=true;
   meterActionPending=false;
@@ -47077,6 +47135,7 @@ function meterApplyClearedState(showToastMsg){
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  document.getElementById('meterProgress').style.display='none';
+ meterHideLutCalculationProgress();
  document.getElementById('meterLiveReading').style.display='none';
  document.getElementById('meterExportRow').style.display='none';
  meterResetLiveReadingDisplay();
