@@ -413,6 +413,9 @@ our $_icc_companion_command_file="$_icc_companion_dir/command.json";
 our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
+my $_system_backup_helper="/usr/bin/pgenerator_system_backup.py";
+my $_system_backup_upload_dir="/tmp/pgenerator-system-backup-import";
+my $_system_backup_max_bytes=512*1024*1024;
 my $_icc_module_path=__FILE__;
 $_icc_module_path=~s{webui\.pm\z}{PGICCProfile.pm};
 $_icc_module_path="/usr/share/PGenerator/PGICCProfile.pm" unless(-f $_icc_module_path);
@@ -1213,6 +1216,30 @@ sub webui_handle_request (@) {
      }
      unlink $tmp;
     }
+   }
+   elsif($path eq "/api/system-backup/export" && $method eq "POST") {
+    my ($fname,$tmp,$message)=&webui_system_backup_export();
+    if($tmp ne "" && -f $tmp) {
+     if(open(my $fh,"<:raw",$tmp)) {
+      my $size=-s $tmp;
+      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: $size\r\n$cors\r\n";
+      while(read($fh,my $buf,65536)){ print $client $buf; }
+      close($fh);
+     } else {
+      my $r='{"status":"error","message":"Failed to read system backup"}';
+      print $client "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ".length($r)."\r\n$cors\r\n$r";
+     }
+     unlink($tmp);
+    } else {
+     $message="Could not create system backup" if($message eq "");
+     my $r='{"status":"error","message":"'.&_webui_json_escape($message).'"}';
+     print $client "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ".length($r)."\r\n$cors\r\n$r";
+    }
+   }
+   elsif($path eq "/api/system-backup/import" && $method eq "POST") {
+    my $result=&webui_system_backup_import_chunk($body);
+    my $code=($result=~/"status":"ok"/) ? 200 : 400;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/reboot") {
     my $r='{"status":"ok","message":"Rebooting..."}';
@@ -6589,6 +6616,91 @@ sub _webui_json_escape (@) {
  $s=~s/\t/\\t/g;
  $s=~s/([\x00-\x08\x0b\x0c\x0e-\x1f\x7f])/sprintf("\\u%04x",ord($1))/ge;
  return $s;
+}
+
+sub _webui_system_backup_busy (@) {
+ my $running=`pgrep -f '([s]potread|[m]eter_(session|series|lg_)|[i]cc_profile_builder|[c]olprof|[t]argen|[c]cxxmake_interactive|[c]css_create)' 2>/dev/null`;
+ $running=~s/\s+//g;
+ return $running ne "" ? 1 : 0;
+}
+
+sub _webui_system_backup_run (@) {
+ my @args=@_;
+ return ('{"status":"error","message":"System backup helper is unavailable"}',0) if(!-f $_system_backup_helper);
+ my $output="";
+ my $ok=0;
+ if(open(my $pipe,"-|","sudo","/usr/bin/python3",$_system_backup_helper,@args)) {
+  local $/;
+  $output=<$pipe>;
+  close($pipe);
+  $ok=($? == 0) ? 1 : 0;
+ }
+ $output="" if(!defined($output));
+ $output=~s/^\s+|\s+$//g;
+ $output='{"status":"error","message":"System backup helper failed"}' if($output!~/^\{.*\}$/s);
+ return ($output,$ok);
+}
+
+sub webui_system_backup_export (@) {
+ return ("","","A calibration, meter read, or profile build is active") if(&_webui_system_backup_busy());
+ my $stamp=`date -u +%Y%m%d-%H%M%S 2>/dev/null`;
+ chomp($stamp);
+ $stamp=time() if($stamp!~/^\d{8}-\d{6}$/);
+ my $safe_version=$version||"unknown";
+ $safe_version=~s/[^A-Za-z0-9._-]+/_/g;
+ my $tmp="/tmp/pgenerator-system-backup-$$-$stamp.pgbackup";
+ my ($result,$ok)=&_webui_system_backup_run("export","--output",$tmp,"--version",$safe_version);
+ if(!$ok || !-f $tmp || (-s $tmp) <= 0) {
+  unlink($tmp) if(-f $tmp);
+  my $message="Could not create system backup";
+  $message=$1 if($result=~/"message"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+  return ("","",$message);
+ }
+ return ("PGenerator_plus_system_backup_v${safe_version}_${stamp}.pgbackup",$tmp,"");
+}
+
+sub webui_system_backup_import_chunk (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Stop the active calibration, meter read, or profile build before importing"}' if(&_webui_system_backup_busy());
+ my $upload_id="";
+ $upload_id=$1 if($body=~/"upload_id"\s*:\s*"([A-Za-z0-9_-]{1,80})"/);
+ my $filename="";
+ $filename=$1 if($body=~/"filename"\s*:\s*"([^"\\]{1,240})"/);
+ my $offset=-1;
+ $offset=int($1) if($body=~/"offset"\s*:\s*(\d+)/);
+ my $total_size=0;
+ $total_size=int($1) if($body=~/"total_size"\s*:\s*(\d+)/);
+ my $is_final=($body=~/"is_final"\s*:\s*true/i) ? 1 : 0;
+ my $content_b64="";
+ $content_b64=$1 if($body=~/"content"\s*:\s*"([A-Za-z0-9+\/=]+)"/);
+ return '{"status":"error","message":"Backup upload metadata is incomplete"}' if($upload_id eq "" || $filename eq "" || $offset < 0 || $total_size <= 0 || $content_b64 eq "");
+ return '{"status":"error","message":"Select a PGenerator+ .pgbackup file"}' if($filename!~/\.pgbackup$/i);
+ return '{"status":"error","message":"System backup exceeds the 512 MB size limit"}' if($total_size > $_system_backup_max_bytes);
+ mkdir($_system_backup_upload_dir,0700) if(!-d $_system_backup_upload_dir);
+ return '{"status":"error","message":"Backup upload storage is unavailable"}' if(!-d $_system_backup_upload_dir);
+ my $tmp="$_system_backup_upload_dir/$upload_id.pgbackup.part";
+ unlink($tmp) if($offset == 0 && -f $tmp);
+ my $current=(-f $tmp) ? (-s $tmp) : 0;
+ return '{"status":"error","message":"Backup upload offset mismatch"}' if($current != $offset);
+ my $raw=decode_base64($content_b64);
+ return '{"status":"error","message":"Backup upload chunk is empty"}' if(length($raw) <= 0);
+ if(open(my $fh,">>:raw",$tmp)) { print $fh $raw; close($fh); }
+ else { return '{"status":"error","message":"Could not write backup upload"}'; }
+ my $received=-s $tmp;
+ if($received > $total_size || $received > $_system_backup_max_bytes) {
+  unlink($tmp);
+  return '{"status":"error","message":"Backup upload exceeds its declared size"}';
+ }
+ return '{"status":"ok","received":'.$received.',"total_size":'.$total_size.'}' if(!$is_final);
+ if($received != $total_size) {
+  unlink($tmp);
+  return '{"status":"error","message":"Backup upload is incomplete"}';
+ }
+ my ($result,$ok)=&_webui_system_backup_run("import","--input",$tmp,"--version",$version||"unknown");
+ unlink($tmp);
+ return $result if($ok && $result=~/"status":"ok"/);
+ return $result if($result=~/^\{/);
+ return '{"status":"error","message":"System backup import failed"}';
 }
 
 my $_diag_video_sequence_root="$video_dir/.diagseq";
@@ -14315,8 +14427,13 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     <button class="btn btn-sm btn-secondary" onclick="checkUpdate()">Check for Updates</button>
     <button class="btn btn-sm btn-success" id="applyUpdateBtn" style="display:none" onclick="applyUpdate()">Install Update</button>
     <button class="btn btn-sm btn-secondary" id="submitLogsBtn" onclick="submitLogs()" title="Download a diagnostic log bundle">&#128230; Submit Logs</button>
+    <button class="btn btn-sm btn-secondary" id="exportSystemSettingsBtn" onclick="exportSystemSettings()" title="Download PGenerator+ settings, profiles, calibration history and custom diagnostic media">Export System Settings</button>
+    <button class="btn btn-sm btn-secondary" id="importSystemSettingsBtn" onclick="selectSystemSettingsImport()" title="Restore PGenerator+ settings, profiles, calibration history and custom diagnostic media">Import System Settings</button>
+    <input type="file" id="systemSettingsImportFile" accept=".pgbackup,application/gzip" style="display:none" onchange="importSystemSettingsFile(this.files&&this.files[0])">
    </div>
    <div id="updateStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>
+   <div id="systemBackupStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>
+   <div style="margin-top:6px;font-size:.7rem;color:var(--text2)">System backups include PGenerator+ configuration, custom series, custom meter and ICC profiles, calibration history, LUTs, Dolby Vision configurations, reports, and user-added diagnostic images and videos. Built-in media, caches, logs, hardware identity, and Companion pairing data are excluded.</div>
   </div>
  </div>
 
@@ -18206,6 +18323,89 @@ async function submitLogs(){
   }
  }catch(e){toast('Error: '+e.message,'error');}
  btn.disabled=false;btn.innerHTML='&#128230; Submit Logs';
+}
+
+function systemBackupSetStatus(message,isError){
+ const status=document.getElementById('systemBackupStatus');
+ if(!status)return;
+ status.textContent=String(message||'');
+ status.style.color=isError?'var(--red)':'var(--text2)';
+}
+async function exportSystemSettings(){
+ const btn=document.getElementById('exportSystemSettingsBtn');
+ if(btn){btn.disabled=true;btn.textContent='Creating Backup...';}
+ systemBackupSetStatus('Collecting settings, profiles, calibration history and custom diagnostic media...',false);
+ try{
+  const response=await fetch('/api/system-backup/export',{method:'POST'});
+  if(!response.ok){
+   const error=await response.json().catch(()=>null);
+   throw new Error(error&&error.message?error.message:'Could not create system backup');
+  }
+  const blob=await response.blob();
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const match=disposition.match(/filename="([^"]+)"/);
+  const filename=match?match[1]:'PGenerator_plus_system_backup.pgbackup';
+  const link=document.createElement('a');
+  link.href=URL.createObjectURL(blob);
+  link.download=filename;
+  document.body.appendChild(link);link.click();link.remove();
+  URL.revokeObjectURL(link.href);
+  systemBackupSetStatus('System backup downloaded ('+(blob.size/1048576).toFixed(1)+' MB).',false);
+  toast('System backup downloaded');
+ }catch(error){
+  systemBackupSetStatus(error&&error.message?error.message:'System backup failed',true);
+  toast(error&&error.message?error.message:'System backup failed',true);
+ }
+ if(btn){btn.disabled=false;btn.textContent='Export System Settings';}
+}
+function selectSystemSettingsImport(){
+ const input=document.getElementById('systemSettingsImportFile');
+ if(input)input.click();
+}
+async function importSystemSettingsFile(file){
+ const input=document.getElementById('systemSettingsImportFile');
+ if(!file)return;
+ if(!/\.pgbackup$/i.test(String(file.name||''))){
+  systemBackupSetStatus('Select a PGenerator+ .pgbackup file.',true);
+  if(input)input.value='';
+  return;
+ }
+ const accepted=confirm('Import this PGenerator+ system backup?\n\nMatching system settings, profiles and custom diagnostic media will be replaced. Existing history and media with different names will be preserved. A local rollback backup will be created first. Stop all measurements and calibration work before continuing.');
+ if(!accepted){if(input)input.value='';return;}
+ const btn=document.getElementById('importSystemSettingsBtn');
+ if(btn){btn.disabled=true;btn.textContent='Importing...';}
+ const chunkSize=512*1024;
+ const uploadId='system_backup_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
+ let offset=0;
+ try{
+  while(offset<file.size){
+   const end=Math.min(file.size,offset+chunkSize);
+   const content=await diagBlobToBase64(file.slice(offset,end));
+   const isFinal=end===file.size;
+   systemBackupSetStatus('Uploading backup... '+Math.round(100*end/file.size)+'%',false);
+   const response=await fetch('/api/system-backup/import',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({upload_id:uploadId,filename:file.name,offset:offset,total_size:file.size,is_final:isFinal,content:content})
+   });
+   const result=await response.json().catch(()=>null);
+   if(!response.ok||!result||result.status!=='ok')throw new Error(result&&result.message?result.message:'System backup import failed');
+   offset=end;
+   if(isFinal){
+    const count=Number(result.restored_files)||0;
+    systemBackupSetStatus('Import complete. Restored '+count+' files. Reboot to apply all settings.',false);
+    toast('System backup imported');
+    if(confirm('System backup imported successfully. Reboot PGenerator+ now to apply all restored settings?')){
+     await fetchJSON('/api/reboot',{method:'POST'});
+     systemBackupSetStatus('Rebooting PGenerator+...',false);
+    }
+   }
+  }
+ }catch(error){
+  systemBackupSetStatus(error&&error.message?error.message:'System backup import failed',true);
+  toast(error&&error.message?error.message:'System backup import failed',true);
+ }
+ if(input)input.value='';
+ if(btn){btn.disabled=false;btn.textContent='Import System Settings';}
 }
 
 ///////////////////////////////////////////////
