@@ -39,7 +39,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.1"
+#define APP_VERSION "1.1.2"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -93,6 +93,8 @@ typedef struct {
 } AppState;
 
 static AppState app;
+
+static bool render_alignment(void);
 
 static void trim(char *text)
 {
@@ -307,25 +309,26 @@ static bool update_renderer_hdr_state(void)
     return SDL_SetRenderColorScale(app.renderer, app.hdr ? (1.0f / sdr_white_scale) : 1.0f);
 }
 
-static bool create_renderer(bool hdr)
+static void destroy_renderer(void)
 {
-    const char *drivers[] = { "gpu", "direct3d12", "direct3d11", "vulkan", NULL };
-    SDL_PropertiesID props;
-    int index;
     if (app.texture) { SDL_DestroyTexture(app.texture); app.texture = NULL; }
     if (app.background_texture) { SDL_DestroyTexture(app.background_texture); app.background_texture = NULL; }
     if (app.renderer) { SDL_DestroyRenderer(app.renderer); app.renderer = NULL; }
-    for (index = 0; ; index++) {
-        props = SDL_CreateProperties();
-        SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, app.window);
-        SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
-        SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER,
-                              hdr ? SDL_COLORSPACE_SRGB_LINEAR : SDL_COLORSPACE_SRGB);
-        if (hdr && drivers[index]) SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, drivers[index]);
-        app.renderer = SDL_CreateRendererWithProperties(props);
-        SDL_DestroyProperties(props);
-        if (app.renderer || !hdr || !drivers[index]) break;
-    }
+}
+
+static bool try_create_renderer(bool hdr, const char *driver)
+{
+    SDL_PropertiesID props;
+    destroy_renderer();
+    props = SDL_CreateProperties();
+    if (!props) return false;
+    SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, app.window);
+    SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
+    SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER,
+                          hdr ? SDL_COLORSPACE_SRGB_LINEAR : SDL_COLORSPACE_SRGB);
+    if (driver) SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, driver);
+    app.renderer = SDL_CreateRendererWithProperties(props);
+    SDL_DestroyProperties(props);
     if (!app.renderer) return false;
     app.hdr = hdr;
     {
@@ -333,17 +336,57 @@ static bool create_renderer(bool hdr)
         const char *name = SDL_GetStringProperty(renderer_props, SDL_PROP_RENDERER_NAME_STRING, "unknown");
         SDL_strlcpy(app.renderer_name, name, sizeof(app.renderer_name));
     }
-    if (!update_renderer_hdr_state()) return false;
+    if (!update_renderer_hdr_state() || (hdr && !app.hdr_active)) {
+        destroy_renderer();
+        return false;
+    }
     app.texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
-    if (!app.texture) return false;
+    if (!app.texture) {
+        destroy_renderer();
+        return false;
+    }
     app.background_texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
-    if (!app.background_texture) return false;
+    if (!app.background_texture) {
+        destroy_renderer();
+        return false;
+    }
     SDL_SetTextureScaleMode(app.texture, SDL_SCALEMODE_NEAREST);
     SDL_SetTextureScaleMode(app.background_texture, SDL_SCALEMODE_NEAREST);
     SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
-    SDL_RenderClear(app.renderer);
-    SDL_RenderPresent(app.renderer);
-    return !hdr || app.hdr_active;
+    if (!SDL_RenderClear(app.renderer) || !SDL_RenderPresent(app.renderer)) {
+        destroy_renderer();
+        return false;
+    }
+    return true;
+}
+
+static bool create_renderer(bool hdr)
+{
+#ifdef _WIN32
+    /* D3D11 has the broadest reliable scRGB support on Windows. A renderer
+     * being constructible does not mean it activated HDR, so validate each
+     * complete candidate before moving on to the next backend. */
+    const char *hdr_drivers[] = { "direct3d11", "direct3d12", "gpu", "vulkan", NULL };
+#else
+    const char *hdr_drivers[] = { "vulkan", "gpu", NULL };
+#endif
+    size_t index;
+    char last_error[256] = "No HDR renderer was available";
+
+    if (!hdr) return try_create_renderer(false, NULL);
+    for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
+        if (try_create_renderer(true, hdr_drivers[index])) return true;
+        if (SDL_GetError() && SDL_GetError()[0]) {
+            SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
+        }
+    }
+
+    /* Keep the alignment target usable after an HDR failure, while preserving
+     * the failure result so the server does not measure an SDR fallback. */
+    try_create_renderer(false, NULL);
+    if (app.renderer) render_alignment();
+    SDL_SetError("HDR renderer unavailable: %s", last_error);
+    return false;
 }
 
 static bool render_alignment(void)
@@ -434,26 +477,13 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
     flags = SDL_GetWindowFlags(app.window);
     app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
     if (app.fullscreen != fullscreen) {
-        /* Fullscreen changes are asynchronous on Windows. Synchronize before
-         * repainting so the renderer uses the new client area, and verify the
-         * window manager actually accepted the requested state. */
+        /* Fullscreen changes are asynchronous on Windows. Accept a successful
+         * request here and let the enter/leave event confirm the final state. */
         if (fullscreen) {
-            if (!SDL_RestoreWindow(app.window)) return false;
-            if (!SDL_SyncWindow(app.window)) return false;
             if (!SDL_SetWindowFullscreenMode(app.window, NULL)) return false;
         }
         if (!SDL_SetWindowFullscreen(app.window, fullscreen)) return false;
-        if (!SDL_SyncWindow(app.window)) return false;
-        if (!fullscreen) {
-            if (!SDL_RestoreWindow(app.window)) return false;
-            if (!SDL_SyncWindow(app.window)) return false;
-        }
-        flags = SDL_GetWindowFlags(app.window);
-        app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
-        if (app.fullscreen != fullscreen) {
-            SDL_SetError("The window manager did not apply the requested display mode");
-            return false;
-        }
+        app.fullscreen = fullscreen;
     }
     app.displayed_size = patch_size;
     return render_current_frame();
@@ -714,6 +744,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         SDL_LockMutex(state->network_mutex);
         state->ack_hdr_active = state->hdr_active;
         SDL_UnlockMutex(state->network_mutex);
+        render_current_frame();
+    }
+    if (event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
+        state->fullscreen = true;
+        render_current_frame();
+    }
+    if (event->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+        state->fullscreen = false;
         render_current_frame();
     }
     if (event->type == SDL_EVENT_KEY_DOWN) {
