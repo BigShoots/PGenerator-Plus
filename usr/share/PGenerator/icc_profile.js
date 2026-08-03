@@ -681,8 +681,8 @@ function meterIccLocalOutputModeStatus(profileType){
   message:dirty
    ?'Apply & Restart before profiling so the HDMI measurements use the selected output settings.'
    :active===required
-   ?('PGenerator HDMI output is '+label+'.')
-   :('Set the PGenerator output to '+(required==='hdr10'?'HDR10':'SDR')+' before profiling. It is currently '+label+'.')
+   ?('PGenerator+ HDMI output is '+label+'.')
+   :('Set the PGenerator+ output to '+(required==='hdr10'?'HDR10':'SDR')+' before profiling. It is currently '+label+'.')
  };
 }
 
@@ -696,7 +696,7 @@ async function meterIccEnsureLocalOutputMode(profileType){
   title:dirty?'Apply output settings?':'Switch output mode?',
   body:dirty
    ?('This ICC profile requires '+requiredLabel+' output. The selected display settings must be applied before profiling can start. Apply them and restart the pattern generator now?')
-   :('This ICC profile requires '+requiredLabel+' output, but the PGenerator is currently in '+activeLabel+' mode. Switch to '+requiredLabel+' and restart the pattern generator now?'),
+   :('This ICC profile requires '+requiredLabel+' output, but PGenerator+ is currently in '+activeLabel+' mode. Switch to '+requiredLabel+' and restart the pattern generator now?'),
   acceptLabel:dirty?'Apply & Restart':('Switch to '+requiredLabel),
   cancelLabel:'Cancel'
  });
@@ -710,7 +710,7 @@ async function meterIccEnsureLocalOutputMode(profileType){
  if(typeof applySettings!=='function'||!await applySettings()) return false;
  const applied=meterIccLocalOutputModeStatus(profileType);
  if(!applied.matches){
-  toast('The PGenerator output did not switch to '+requiredLabel+'. Check the display connection and try again.',true);
+  toast('The PGenerator+ output did not switch to '+requiredLabel+'. Check the display connection and try again.',true);
   return false;
  }
  return true;
@@ -759,7 +759,7 @@ function meterIccSyncUi(){
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
   ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
-  :'The delay gives you time to switch the display to the PGenerator HDMI input before measurements begin.';
+  :'The delay gives you time to switch the display to the PGenerator+ HDMI input before measurements begin.';
  if(companionPatchSizeField) companionPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
   ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
@@ -797,7 +797,7 @@ function meterIccSyncUi(){
  const companionPatchSizeOption=companionPatchSizeSelect&&companionPatchSizeSelect.selectedOptions?companionPatchSizeSelect.selectedOptions[0]:null;
  const generatorLabel=usesCompanion
   ?('ICC Companion '+(companionWindowMode==='fullscreen'?('fullscreen, '+String(companionPatchSizeOption?companionPatchSizeOption.textContent:'controlled patch')):'resizable window'))
-  :'PGenerator HDMI';
+  :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected grayscale, single-channel, white and black coverage.')
   :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
@@ -1410,7 +1410,7 @@ async function meterIccStart(){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
    if(status) status.textContent=patternProvider==='companion'
     ?('Starting in '+remaining+' seconds. Move and resize the ICC Companion on the target display now.')
-    :('Starting in '+remaining+' seconds. Switch the display to the PGenerator HDMI input now.');
+    :('Starting in '+remaining+' seconds. Switch the display to the PGenerator+ HDMI input now.');
    meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
    await new Promise(resolve=>setTimeout(resolve,1000));
   }

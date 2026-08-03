@@ -4,7 +4,7 @@
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
       <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
-      <div class="meter-icc-note">Measure patches from the ICC Companion or PGenerator HDMI output, build the profile on PGenerator, then download the finished profile.</div>
+      <div class="meter-icc-note">Measure patches from the ICC Companion or PGenerator+ HDMI output, build the profile on PGenerator+, then download the finished profile.</div>
      </div>
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
@@ -146,7 +146,7 @@
          <div class="meter-icc-note" style="margin-top:6px">A representative existing profile can guide patches toward the display's gamut and nonlinear regions.</div>
         </div>
         <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem"><input id="meterIccAutoPrecondition" type="checkbox" checked onchange="meterIccPatchControlChanged()"> Auto-optimize from a 34-patch display pre-read</label>
-        <div class="meter-icc-note">PGenerator first creates a temporary matrix characterization, then places the final patches using the measured response. This is skipped when a known display profile is selected.</div>
+        <div class="meter-icc-note">PGenerator+ first creates a temporary matrix characterization, then places the final patches using the measured response. This is skipped when a known display profile is selected.</div>
        </details>
       </div>
       <div class="meter-icc-panel">
@@ -187,7 +187,7 @@
     <div class="meter-icc-finish-grid">
      <div class="meter-icc-panel">
       <h3>Profile History</h3>
-      <p class="meter-icc-section-intro">Download, inspect or delete profiles stored on this PGenerator.</p>
+      <p class="meter-icc-section-intro">Download, inspect or delete profiles stored on this PGenerator+.</p>
       <div id="meterIccProfileList" class="meter-icc-note">Loading profiles...</div>
      </div>
     </div>

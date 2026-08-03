@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build display ICC profiles from PGenerator RGB/XYZ measurements.
+"""Build display ICC profiles from PGenerator+ RGB/XYZ measurements.
 
 The normal and KDE profiles are created by the bundled ArgyllCMS colprof.
 Windows Advanced Color profiles add Microsoft's documented MHC2 tag to that
@@ -166,7 +166,7 @@ def cgats_quote(value):
 
 
 def profile_description(payload):
-    description = str(payload.get("name", "PGenerator display profile"))
+    description = str(payload.get("name", "PGenerator+ display profile"))
     if payload.get("profile_type") == "windows-sdr":
         transfer = str(payload.get("target_transfer", "srgb")).lower()
         description += " (SDR MHC2, {})".format(WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB"))
@@ -177,13 +177,13 @@ def make_ti3(payload, rows):
     black, white, _ = profile_measurement_summary(rows)
     white_xyz = white["xyz"]
     white_y = white_xyz[1]
-    instrument = cgats_quote(payload.get("meter_name", "PGenerator meter"))
+    instrument = cgats_quote(payload.get("meter_name", "PGenerator+ meter"))
     description = cgats_quote(profile_description(payload))
     created = datetime.datetime.now().strftime("%a %b %d %H:%M:%S %Y")
     lines = [
         "CTI3",
         "",
-        'DESCRIPTOR "PGenerator measured display profile"',
+        'DESCRIPTOR "PGenerator+ measured display profile"',
         'ORIGINATOR "PGenerator+"',
         'CREATED "{}"'.format(created),
         'DEVICE_CLASS "DISPLAY"',
@@ -604,7 +604,7 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
 def safe_basename(name):
     cleaned = SAFE_NAME.sub("_", str(name)).strip(" ._-").replace(" ", "_")
     if not cleaned:
-        cleaned = "PGenerator display profile"
+        cleaned = "PGenerator+ display profile"
     return cleaned[:80]
 
 
@@ -937,7 +937,7 @@ def build(payload, output_dir):
     _, _, primaries = profile_measurement_summary(profile_rows)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, 0o755)
-    stem = safe_basename(payload.get("name", "PGenerator display profile"))
+    stem = safe_basename(payload.get("name", "PGenerator+ display profile"))
     suffix = {
         "sdr": "SDR",
         "windows-sdr": "SDR-MHC2",
