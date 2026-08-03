@@ -963,7 +963,7 @@ function meterIccUpdateTopCompanionStatus(connected,detail){
  if(dot) dot.style.background='var(--green)';
  if(text){
   text.textContent='ICC Companion';
-  text.style.color='var(--green)';
+  text.style.color='var(--text)';
  }
  if(typeof syncTopStatusStack==='function') syncTopStatusStack();
 }

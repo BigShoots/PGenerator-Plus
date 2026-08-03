@@ -12637,7 +12637,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <span id="meterDisplayStatusStack" class="status-stack" title="Meter, display and ICC Companion">
     <span id="meterStatusWrap" class="status-line" style="display:none" title="Colorimeter"><span class="status-dot" id="meterDot" style="background:var(--text2)"></span><span class="status-label" id="meterStatusText" style="color:var(--text2)">Meter</span></span>
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
-    <span id="iccCompanionTopStatusWrap" class="status-line status-line-sub" style="display:none" title="ICC Companion connected"><span class="status-dot" id="iccCompanionTopDot" style="background:var(--green)"></span><span class="status-label" id="iccCompanionTopStatusText" style="color:var(--green)">ICC Companion</span></span>
+    <span id="iccCompanionTopStatusWrap" class="status-line status-line-sub" style="display:none" title="ICC Companion connected"><span class="status-dot" id="iccCompanionTopDot" style="background:var(--green)"></span><span class="status-label" id="iccCompanionTopStatusText" style="color:var(--text)">ICC Companion</span></span>
    </span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
    <span id="meterUsbWarnBadge" title="USB link unstable">&#9888; USB Unstable</span>
