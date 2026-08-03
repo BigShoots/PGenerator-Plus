@@ -62,21 +62,46 @@
         <div class="meter-icc-note" style="margin-top:6px">Controls profile fitting effort, independently of the number of measured patches. High is recommended. After a completed measurement run, you can rebuild the same readings at another quality without measuring again.</div>
        </div>
       </div>
-      <div class="meter-icc-panel">
-       <h3><span class="meter-icc-step">2</span>Meter</h3>
-       <p class="meter-icc-section-intro">Confirm the display technology and correction used by the connected meter.</p>
-       <div class="meter-icc-field">
-        <label for="meterIccDisplayType">Display type</label>
-        <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
+      <div class="meter-icc-panel meter-icc-generator-panel">
+       <h3><span class="meter-icc-step">2</span>Patch generator</h3>
+       <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator+ HDMI.</p>
+       <div class="meter-icc-field" style="margin-bottom:10px">
+        <label for="meterIccPatternProvider">Patch generator</label>
+        <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
+         <option value="companion" selected>ICC Companion on the target computer</option>
+         <option value="local">PGenerator+ HDMI output</option>
+        </select>
        </div>
-       <div class="meter-icc-field">
-        <label for="meterIccMeterProfile">Meter profile (CCSS / CCMX)</label>
-        <select id="meterIccMeterProfile" onchange="meterIccLinkedMeterProfileChanged()"></select>
+       <div id="meterIccCompanionSetup">
+        <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator+.</div>
+        <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
+        <div class="meter-icc-field">
+         <label for="meterIccCompanionWindowMode">Companion display mode</label>
+         <select id="meterIccCompanionWindowMode" onchange="meterIccCompanionDisplaySettingsChanged()">
+          <option value="window" selected>Resizable window, patch fills window</option>
+          <option value="fullscreen">Borderless fullscreen, controlled patch size</option>
+         </select>
+        </div>
+        <div class="meter-icc-field" id="meterIccCompanionPatchSizeField" style="display:none">
+         <label for="meterIccCompanionPatchSize">Patch size</label>
+         <select id="meterIccCompanionPatchSize" onchange="meterIccLinkedPatchSizeChanged()"></select>
+         <div class="meter-icc-note">Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.</div>
+        </div>
+        <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
+        <div class="btn-row" style="margin:0 0 10px">
+         <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
+         <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
+        </div>
+        <div id="meterIccCompanionStatus" class="meter-icc-note" style="color:var(--red)"><span style="color:var(--red)">&#9679;</span> Companion not connected</div>
        </div>
-       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem">
-        <input id="meterIccPatternInsertion" type="checkbox" onchange="meterIccLinkedPatternInsertionChanged()"> Pattern insertion
-       </label>
-       <div class="meter-icc-note">Uses the timing and level settings configured in the Calibration workspace.</div>
+       <div id="meterIccLocalSetup" style="display:none">
+        <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator+ HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator+.</div>
+       </div>
+       <div class="meter-icc-field" style="margin-top:12px">
+        <label for="meterIccStartDelay">Input-switch delay in seconds</label>
+        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
+       </div>
+       <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
       </div>
 	      <div class="meter-icc-panel">
        <h3><span class="meter-icc-step">3</span>Patch set</h3>
@@ -124,47 +149,22 @@
         <div class="meter-icc-note">PGenerator first creates a temporary matrix characterization, then places the final patches using the measured response. This is skipped when a known display profile is selected.</div>
        </details>
       </div>
-	      <div class="meter-icc-panel meter-icc-generator-panel">
-       <h3><span class="meter-icc-step">4</span>Patch generator</h3>
-       <p class="meter-icc-section-intro">Choose whether patches come from the profiled computer or PGenerator+ HDMI.</p>
-     <div class="meter-icc-field" style="margin-bottom:10px">
-      <label for="meterIccPatternProvider">Patch generator</label>
-      <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
-       <option value="companion" selected>ICC Companion on the target computer</option>
-       <option value="local">PGenerator+ HDMI output</option>
-     </select>
-     </div>
-     <div id="meterIccCompanionSetup">
-      <div class="meter-icc-note" style="margin-bottom:10px">Download and run the companion on the computer whose output will use this ICC profile. The downloaded configuration is paired automatically with this PGenerator+.</div>
-      <div class="meter-icc-note" style="margin-bottom:10px;color:var(--warning)">Disable any existing display ICC calibration before measuring. For HDR profiles, enable the operating system's HDR mode first.</div>
-      <div class="meter-icc-field">
-       <label for="meterIccCompanionWindowMode">Companion display mode</label>
-       <select id="meterIccCompanionWindowMode" onchange="meterIccCompanionDisplaySettingsChanged()">
-        <option value="window" selected>Resizable window, patch fills window</option>
-        <option value="fullscreen">Borderless fullscreen, controlled patch size</option>
-       </select>
-      </div>
-      <div class="meter-icc-field" id="meterIccCompanionPatchSizeField" style="display:none">
-       <label for="meterIccCompanionPatchSize">Patch size</label>
-       <select id="meterIccCompanionPatchSize" onchange="meterIccLinkedPatchSizeChanged()"></select>
-       <div class="meter-icc-note">Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.</div>
-      </div>
-      <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
-      <div class="btn-row" style="margin:0 0 10px">
-       <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
-       <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
-      </div>
-      <div id="meterIccCompanionStatus" class="meter-icc-note" style="color:var(--red)"><span style="color:var(--red)">&#9679;</span> Companion not connected</div>
-     </div>
-     <div id="meterIccLocalSetup" style="display:none">
-      <div class="meter-icc-note" style="margin-bottom:8px">Connect the PGenerator+ HDMI output to the display being profiled and switch the display to that HDMI input. Patches use the output mode, range and patch size configured on this PGenerator+.</div>
-     </div>
-       <div class="meter-icc-field" style="margin-top:12px">
-        <label for="meterIccStartDelay">Input-switch delay in seconds</label>
-        <input id="meterIccStartDelay" type="number" min="0" max="300" step="1" value="0" inputmode="numeric">
+      <div class="meter-icc-panel">
+       <h3><span class="meter-icc-step">4</span>Meter</h3>
+       <p class="meter-icc-section-intro">Confirm the display technology and correction used by the connected meter.</p>
+       <div class="meter-icc-field">
+        <label for="meterIccDisplayType">Display type</label>
+        <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>
        </div>
-       <div class="meter-icc-note" id="meterIccStartDelayNote">For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.</div>
-	    </div>
+       <div class="meter-icc-field">
+        <label for="meterIccMeterProfile">Meter profile (CCSS / CCMX)</label>
+        <select id="meterIccMeterProfile" onchange="meterIccLinkedMeterProfileChanged()"></select>
+       </div>
+       <label style="display:flex;align-items:center;gap:7px;margin:8px 0;color:var(--text);font-size:.75rem">
+        <input id="meterIccPatternInsertion" type="checkbox" onchange="meterIccLinkedPatternInsertionChanged()"> Pattern insertion
+       </label>
+       <div class="meter-icc-note">Uses the timing and level settings configured in the Calibration workspace.</div>
+      </div>
      <div class="meter-icc-panel meter-icc-review-panel">
       <h3><span class="meter-icc-step">5</span>Review and build</h3>
       <p class="meter-icc-section-intro">Review the active configuration, then begin the measurement run.</p>
