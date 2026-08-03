@@ -11921,6 +11921,12 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
 .meter-card-header-col-profile{flex:2 1 440px;max-width:820px}
 .meter-card-header-col-generator{flex:1 1 210px;max-width:310px}
+.meter-card-header-col-profile.is-spectro-disabled{cursor:help}
+.meter-card-header-col-profile.is-spectro-disabled select{opacity:.58;cursor:not-allowed}
+body.layout-desktop .meter-card-header-row{display:grid;grid-template-columns:minmax(250px,1.25fr) minmax(150px,.68fr) minmax(280px,1.4fr) minmax(175px,.78fr);align-items:start;column-gap:14px;row-gap:10px}
+body.layout-desktop .meter-card-header-col{width:100%;max-width:none}
+body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:100%;min-width:0;flex:1 1 auto}
+@media(max-width:1250px){body.layout-desktop .meter-card-header-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
 .meter-companion-downloads{display:none;gap:5px;flex-wrap:wrap;margin-top:3px}
 .meter-card-header-col-generator.companion-selected .meter-companion-downloads{display:flex}
@@ -25996,6 +26002,8 @@ function meterSpyderXNativeModeHelp(){
 
 function meterUpdateMeterCapabilityControls(){
  const spyderX=meterSelectedMeasurementIsSpyderX();
+ const selectedMeter=meterSelectedMeasurementMeter();
+ const spectro=!!(selectedMeter&&meterIsSpectrophotometer(selectedMeter));
  const ccss=document.getElementById('meterCcssProfile');
  const wizardCcss=document.getElementById('meterAutoCalCcssProfile');
  const refresh=document.getElementById('meterRefreshRate');
@@ -26023,8 +26031,10 @@ function meterUpdateMeterCapabilityControls(){
  };
  for(const sel of [ccss,wizardCcss]){
   if(!sel) continue;
-  sel.disabled=false;
-  sel.title=spyderX
+  sel.disabled=spectro;
+  sel.title=spectro
+   ? 'Spectrophotometers measure spectral data directly and do not use CCSS or CCMX correction profiles.'
+   : spyderX
    ? 'SpyderX supports matching CCMX matrices but not CCSS spectral profiles.'
    : '';
  }
@@ -26040,7 +26050,9 @@ function meterUpdateMeterCapabilityControls(){
   if(spyderX) ccssNote.textContent='SpyderX native mode: '+nativeLabel+'. CCMX supported; CCSS unavailable.';
  }
  if(profileHelp){
-  profileHelp.title=spyderX
+  profileHelp.title=spectro
+   ? 'Spectrophotometers measure spectral data directly and do not use CCSS or CCMX correction profiles.'
+   : spyderX
    ? meterSpyderXNativeModeHelp()
    : 'CCSS profiles are reusable spectral display corrections for compatible colorimeters. CCMX profiles are meter-specific correction matrices. Choose No Correction for the meter\'s native response.';
  }
@@ -28471,8 +28483,9 @@ function meterRelocateProfileControls(){
  meterUpdateProfileFieldVisibility();
 }
 
-// CCSS profile controls are colorimeter-only. Display Type stays visible for
-// all meters (calibration path mapping). Only hide the profile header column.
+// Keep the profile column in the header grid for every meter so the controls
+// remain aligned. Spectrophotometers measure spectra directly, so disable the
+// correction selector and explain why on the hoverable wrapper.
 function meterUpdateProfileFieldVisibility(){
  const field=document.getElementById('meterProfileHeaderCol');
  if(!field) return;
@@ -28481,7 +28494,16 @@ function meterUpdateProfileFieldVisibility(){
   const meter=meterFindByPort(meterSelectedMeasurementPort());
   isSpectro=!!(meter&&meterIsSpectrophotometer(meter));
  }catch(e){ isSpectro=false; }
- field.style.display=isSpectro?'none':'';
+ const explanation='Spectrophotometers measure spectral data directly and do not use CCSS or CCMX correction profiles.';
+ field.style.display='';
+ field.classList.toggle('is-spectro-disabled',isSpectro);
+ field.title=isSpectro?explanation:'';
+ const select=document.getElementById('meterCcssProfile');
+ if(select){
+  select.disabled=isSpectro;
+  select.title=isSpectro?explanation:'';
+ }
+ try{ meterRefreshCcssAutoLabel(); }catch(e){}
 }
 
 // Read the current state of the calibration-card Low Light Handler
@@ -52580,6 +52602,8 @@ function getDisplayTechnology(){
 function getCcssOverride(){
  const sel=document.getElementById('meterCcssProfile');
  if(!sel) return '';
+ const selectedMeter=meterSelectedMeasurementMeter();
+ if(selectedMeter&&meterIsSpectrophotometer(selectedMeter)) return '';
  const v=String(sel.value||'');
  if(v==='custom_editor') return '';
  if(typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX()){
@@ -52620,7 +52644,11 @@ function meterTechnologyDefaultCcssLabel(){
 // dropdown id; pass it in to update that one too.
 function meterRefreshCcssAutoLabel(wizardId){
  const spyderX=typeof meterSelectedMeasurementIsSpyderX==='function'&&meterSelectedMeasurementIsSpyderX();
- const label=spyderX
+ const selectedMeter=meterSelectedMeasurementMeter();
+ const spectro=!!(selectedMeter&&meterIsSpectrophotometer(selectedMeter));
+ const label=spectro
+  ? 'Spectrophotometer native (no correction)'
+  : spyderX
   ? ('SpyderX native: '+meterSpyderXNativeModeLabel())
   : ('Auto ('+meterTechnologyDefaultCcssLabel()+')');
  const ids=['meterCcssProfile'];
