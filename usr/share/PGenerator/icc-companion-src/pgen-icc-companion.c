@@ -47,7 +47,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.3"
+#define APP_VERSION "1.3.4"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -127,6 +127,8 @@ static bool render_alignment(void);
 static double pq_to_nits(double value);
 
 #ifdef _WIN32
+#define PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)7)
+#define PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)8)
 typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayDefault)(
     WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, COLORPROFILETYPE,
     COLORPROFILESUBTYPE, LPWSTR *);
@@ -147,6 +149,8 @@ static void set_windows_window_icon(void)
     if (large) SendMessageW(window, WM_SETICON, ICON_BIG, (LPARAM)large);
     if (small) SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)small);
 }
+
+static bool windows_window_hdr_enabled(SDL_Window *window);
 
 /* 1 means selected, 0 means cancelled, and -1 requests the SDL fallback. */
 static int select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
@@ -228,6 +232,7 @@ static bool windows_installed_profile_path(const wchar_t *name, wchar_t *path,
 }
 
 static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
+                                            bool hdr_mode,
                                             char *output, size_t output_size,
                                             wchar_t *profile_path,
                                             size_t profile_path_count)
@@ -236,6 +241,7 @@ static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
     wchar_t ini_path[MAX_PATH] = L"";
     wchar_t saved_monitor[256] = L"";
     wchar_t profile_name[MAX_PATH] = L"";
+    BOOL saved_advanced;
     DWORD length;
     int converted;
     if (!monitor_path || !monitor_path[0]) return false;
@@ -247,7 +253,10 @@ static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
                              (DWORD)(sizeof(saved_monitor) / sizeof(saved_monitor[0])), ini_path);
     GetPrivateProfileStringW(L"ProfileLoader", L"ProfileName", L"", profile_name,
                              MAX_PATH, ini_path);
+    saved_advanced = GetPrivateProfileIntW(L"ProfileLoader", L"AdvancedAssociation",
+                                           0, ini_path) != 0;
     if (!saved_monitor[0] || !profile_name[0] ||
+        saved_advanced != (hdr_mode ? TRUE : FALSE) ||
         _wcsicmp(saved_monitor, monitor_path) != 0 ||
         !windows_installed_profile_path(profile_name, profile_path, profile_path_count))
         return false;
@@ -257,7 +266,8 @@ static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
 }
 
 static bool windows_active_profile(SDL_Window *window, char *output, size_t output_size,
-                                   wchar_t *profile_path, size_t profile_path_count)
+                                   wchar_t *profile_path, size_t profile_path_count,
+                                   bool hdr_mode)
 {
     HWND hwnd;
     HMONITOR monitor;
@@ -305,6 +315,9 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
         DISPLAYCONFIG_TARGET_DEVICE_NAME target;
         WCS_PROFILE_MANAGEMENT_SCOPE scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
         WCS_PROFILE_MANAGEMENT_SCOPE alternate;
+        COLORPROFILESUBTYPE subtype = hdr_mode
+                                    ? PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE
+                                    : PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE;
         HRESULT hr;
         if (!(paths[index].flags & DISPLAYCONFIG_PATH_ACTIVE)) continue;
         ZeroMemory(&source, sizeof(source));
@@ -324,13 +337,13 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
                                           paths[index].sourceInfo.id, &scope)))
             scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
         hr = get_default(scope, paths[index].sourceInfo.adapterId,
-                         paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
+                         paths[index].sourceInfo.id, CPT_ICC, subtype, &profile);
         if (FAILED(hr)) {
             alternate = scope == WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
                       ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
                       : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
             hr = get_default(alternate, paths[index].sourceInfo.adapterId,
-                             paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
+                             paths[index].sourceInfo.id, CPT_ICC, subtype, &profile);
         }
         if (SUCCEEDED(hr) && profile) {
             const wchar_t *name = windows_profile_basename(profile);
@@ -341,7 +354,7 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
                                                        profile_path_count);
             }
         }
-        if (!found) {
+        if (!found && !hdr_mode) {
             HDC dc = CreateDCW(L"DISPLAY", source.viewGdiDeviceName, NULL, NULL);
             wchar_t dc_profile[MAX_PATH] = L"";
             DWORD dc_profile_count = MAX_PATH;
@@ -354,7 +367,7 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
             if (dc) DeleteDC(dc);
         }
         if (!found && target.monitorDevicePath[0])
-            found = windows_profile_loader_fallback(target.monitorDevicePath,
+            found = windows_profile_loader_fallback(target.monitorDevicePath, hdr_mode,
                                                     output, output_size,
                                                     profile_path, profile_path_count);
     }
@@ -1270,8 +1283,10 @@ static void poll_server(void)
     reported_hdr_active = app.ack_hdr_active;
     SDL_UnlockMutex(app.network_mutex);
 #ifdef _WIN32
+    reported_hdr_active = windows_window_hdr_enabled(app.window);
     windows_active_profile(app.window, active_profile, sizeof(active_profile),
-                           active_profile_path, SDL_arraysize(active_profile_path));
+                           active_profile_path, SDL_arraysize(active_profile_path),
+                           reported_hdr_active);
 #endif
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     SDL_snprintf(path, sizeof(path),

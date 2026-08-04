@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.8"
+#define APP_VERSION L"1.1.9"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -35,6 +35,8 @@
 #define ID_TRAY_SETTINGS 204
 #define ID_TRAY_EXIT 205
 #define IDI_PGEN_APP 101
+#define PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)7)
+#define PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)8)
 
 typedef HRESULT (WINAPI *PFN_ColorProfileAddDisplayAssociation)(
     WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL, BOOL);
@@ -352,6 +354,9 @@ static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
                                   WCS_PROFILE_MANAGEMENT_SCOPE *scope) {
     HRESULT hr;
     WCS_PROFILE_MANAGEMENT_SCOPE alternate;
+    COLORPROFILESUBTYPE subtype = g_associate_advanced
+                                ? PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE
+                                : PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE;
     *name = NULL;
     *scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
     if (!p_get_default) return E_NOTIMPL;
@@ -360,14 +365,14 @@ static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
         if (FAILED(hr)) *scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
     }
     hr = p_get_default(*scope, display->adapter, display->source_id,
-                       CPT_ICC, CPST_NONE, name);
+                       CPT_ICC, subtype, name);
     if (FAILED(hr)) {
         alternate = *scope == WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
                   ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
                   : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
         *scope = alternate;
         hr = p_get_default(alternate, display->adapter, display->source_id,
-                           CPT_ICC, CPST_NONE, name);
+                           CPT_ICC, subtype, name);
     }
     return hr;
 }
@@ -386,7 +391,8 @@ static BOOL profile_is_active(DISPLAY_ENTRY *display, WCHAR *actual, size_t actu
     if (!display || !g_profile_name[0]) return FALSE;
     hr = get_active_default(display, &current, &scope);
     if (FAILED(hr) || !current) {
-        HDC dc = CreateDCW(L"DISPLAY", display->source_name, NULL, NULL);
+        HDC dc = g_associate_advanced ? NULL
+                                      : CreateDCW(L"DISPLAY", display->source_name, NULL, NULL);
         WCHAR path[MAX_PATH] = L"";
         DWORD path_count = MAX_PATH;
         if (dc && GetICMProfileW(dc, &path_count, path) && path[0]) {
@@ -511,7 +517,9 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
        promoting it over the previous default. Explicitly select it for both
        the standard and Advanced Color association lists. */
     hr = p_set_default(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
-                       g_profile_name, CPT_ICC, CPST_NONE,
+                       g_profile_name, CPT_ICC,
+                       g_associate_advanced ? PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE
+                                            : PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE,
                        display->adapter, display->source_id);
     if (FAILED(hr)) {
         if (interactive)
