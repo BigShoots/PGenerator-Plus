@@ -192,11 +192,16 @@ function meterIccAskReuseChoice(reused,total,legacy,options){
  const exact=reused
   ?reused+' also match the new '+total+'-patch set exactly, leaving '+remaining+' new '+(remaining===1?'patch':'patches')+' to measure. '
   :'None of its patch codes exactly match the new '+total+'-patch set. ';
+ const prerequisite=options.prerequisite
+  ?(reused+' match the required '+total+'-patch display pre-read. The remaining '+remaining+' '+(remaining===1?'patch will':'patches will')+' be measured before the optimized profile set is generated. ')
+  :'';
  const preRead=options.skipPreRead
   ?('All '+sourceCount+' completed pre-read measurements will be used to optimize the final patch set. '+reused+' of those pre-read patches also match the final set exactly and can count as final profile measurements. ')
   :'';
- message.textContent=source+(options.skipPreRead?preRead:exact)+'Reuse the compatible data, or start with an entirely new measurement run. Only reuse measurements if the display, input, meter, correction profile and measurement setup have not changed.';
- if(confirmButton) confirmButton.textContent=options.skipPreRead
+ message.textContent=source+(options.prerequisite?prerequisite:(options.skipPreRead?preRead:exact))+'Reuse the compatible data, or start with an entirely new measurement run. Only reuse measurements if the display, input, meter, correction profile and measurement setup have not changed.';
+ if(confirmButton) confirmButton.textContent=options.prerequisite
+  ?('Reuse '+reused+' + Measure '+remaining)
+  :options.skipPreRead
   ?('Use Pre-read'+(reused?' + Reuse '+reused:'') )
   :(reused?'Reuse '+reused+' Matching Reads':'Reuse as Display Pre-read');
  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
@@ -649,6 +654,14 @@ async function meterIccGeneratePreconditionedSteps(readings,runConfig){
  });
  if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not create the display-aware patch set');
  return meterIccPatchesToSteps(response.patches,runConfig.profile_type);
+}
+
+function meterIccMissingPreconditionAnchors(error){
+ return /required black, white and primary measurements are missing/i.test(String(error&&error.message||''));
+}
+
+function meterIccPreReadSettings(){
+ return {patch_count:34,white_patches:2,black_patches:2,gray_steps:8,single_channel_steps:5,neutral_emphasis:.5,dark_emphasis:.2,good_optimization:true};
 }
 
 function meterIccProfileTypeChanged(){
@@ -1372,32 +1385,62 @@ async function meterIccStart(){
   let steps=[];
   let measurementSteps=[];
   let reusedReadings=[];
+  let preconditionReusedReadings=[];
+  let reuseSourceReadings=[];
   let usedPreviousPreRead=false;
   let stage=usePreRead?'precondition':'profile';
   if(usePreRead&&previousReadings.length){
    if(status) status.textContent='Generating the display-aware patch set to compare with previous measurements...';
    meterIccSetProgress('Checking reusable patches',0,patchSettings.patch_count);
-   const candidateSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(previousReadings,baseRunConfig),reuseSignature);
-   const matches=meterIccMatchReusableReadings(candidateSteps,previousReadings,reuseSignature);
-   const choice=await meterIccAskReuseChoice(matches.reused.length,candidateSteps.length,previousReuse.legacy,{skipPreRead:true,sourceCount:previousReadings.length,savedProfile:previousReuse.savedProfile});
-   if(choice==='cancel'){
-    const cancelled=new Error('ICC profiling cancelled');
-    cancelled.icc_cancelled=true;
-    throw cancelled;
-   }
-   if(choice==='reuse'){
-    steps=candidateSteps;
-    measurementSteps=matches.pending;
-    reusedReadings=matches.reused;
-    usedPreviousPreRead=true;
-    stage='profile';
+   try{
+    const candidateSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(previousReadings,baseRunConfig),reuseSignature);
+    const matches=meterIccMatchReusableReadings(candidateSteps,previousReadings,reuseSignature);
+    const choice=await meterIccAskReuseChoice(matches.reused.length,candidateSteps.length,previousReuse.legacy,{skipPreRead:true,sourceCount:previousReadings.length,savedProfile:previousReuse.savedProfile});
+    if(choice==='cancel'){
+     const cancelled=new Error('ICC profiling cancelled');
+     cancelled.icc_cancelled=true;
+     throw cancelled;
+    }
+    if(choice==='reuse'){
+     steps=candidateSteps;
+     measurementSteps=matches.pending;
+     reusedReadings=matches.reused;
+     usedPreviousPreRead=true;
+     stage='profile';
+    }
+   }catch(error){
+    if(error&&error.icc_cancelled) throw error;
+    if(!meterIccMissingPreconditionAnchors(error)) throw error;
+    if(status) status.textContent='The saved run is incomplete. Checking which required display pre-read patches can be reused...';
+    meterIccSetProgress('Checking required pre-read patches',0,34);
+    const preReadSteps=meterIccStampReuseSignature(await meterIccGenerateSteps(type,meterIccPreReadSettings(),false),reuseSignature);
+    const preReadMatches=meterIccMatchReusableReadings(preReadSteps,previousReadings,reuseSignature);
+    let choice='fresh';
+    if(preReadMatches.reused.length){
+     choice=await meterIccAskReuseChoice(preReadMatches.reused.length,preReadSteps.length,previousReuse.legacy,{prerequisite:true,sourceCount:previousReadings.length,savedProfile:previousReuse.savedProfile});
+    }
+    if(choice==='cancel'){
+     const cancelled=new Error('ICC profiling cancelled');
+     cancelled.icc_cancelled=true;
+     throw cancelled;
+    }
+    steps=preReadSteps;
+    stage='precondition';
+    if(choice==='reuse'){
+     measurementSteps=preReadMatches.pending;
+     preconditionReusedReadings=preReadMatches.reused;
+     reuseSourceReadings=previousReadings;
+     usedPreviousPreRead=true;
+    }else{
+     measurementSteps=preReadSteps;
+    }
    }
   }
   if(!steps.length){
    if(status) status.textContent=usePreRead?'Generating the 34-patch display pre-read...':'Generating an optimized '+meterIccProfileModelInfo(profileModel).label+' patch set...';
    meterIccSetProgress(usePreRead?'Preparing display pre-read':'Optimizing patch set',0,usePreRead?34:patchSettings.patch_count);
    steps=meterIccStampReuseSignature(usePreRead
-    ?await meterIccGenerateSteps(type,{patch_count:34,white_patches:2,black_patches:2,gray_steps:8,single_channel_steps:5,neutral_emphasis:.5,dark_emphasis:.2,good_optimization:true},false)
+    ?await meterIccGenerateSteps(type,meterIccPreReadSettings(),false)
     :await meterIccGenerateSteps(type,patchSettings),reuseSignature);
    measurementSteps=steps;
    if(!usePreRead&&previousReadings.length){
@@ -1417,7 +1460,7 @@ async function meterIccStart(){
    }
   }
   if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
-  meterIccRunConfig=Object.assign({},baseRunConfig,{steps,stage,reused_readings:reusedReadings,used_previous_pre_read:usedPreviousPreRead});
+  meterIccRunConfig=Object.assign({},baseRunConfig,{steps,stage,reused_readings:reusedReadings,precondition_reused_readings:preconditionReusedReadings,reuse_source_readings:reuseSourceReadings,used_previous_pre_read:usedPreviousPreRead});
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
    if(status) status.textContent=patternProvider==='companion'
@@ -1427,6 +1470,11 @@ async function meterIccStart(){
    await new Promise(resolve=>setTimeout(resolve,1000));
   }
   if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
+  if(stage==='precondition'&&!measurementSteps.length&&preconditionReusedReadings.length){
+   if(status) status.textContent='All required display pre-read patches were reused. Generating the optimized profile set...';
+   await meterIccContinueAfterPreRead([],status);
+   return;
+  }
   if(!measurementSteps.length&&reusedReadings.length){
    meterIccStarting=false;
    meterActionPending=false;
@@ -1448,6 +1496,46 @@ async function meterIccStart(){
   if(status) status.textContent=error&&error.message?error.message:'Could not start ICC profiling.';
   if(!(error&&error.icc_cancelled)) toast(error&&error.message?error.message:'Could not start ICC profiling',true);
  }
+}
+
+async function meterIccContinueAfterPreRead(newReadings,status){
+ const config=meterIccRunConfig;
+ if(!config) throw new Error('ICC profiling state was lost');
+ const measuredPreRead=meterIccProfileReadings(newReadings);
+ const reusedPreRead=Array.isArray(config.precondition_reused_readings)?config.precondition_reused_readings:[];
+ const completePreRead=[...reusedPreRead,...measuredPreRead];
+ if(status) status.textContent='Pre-read complete. Building a temporary display model and optimizing the final patch set...';
+ meterIccSetProgress('Optimizing for the measured display',completePreRead.length,config.patch_settings.patch_count);
+ const finalSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(completePreRead,config),config.reuse_signature);
+ if(Number(config.start_token)!==meterIccStartToken) throw new Error('ICC profiling stopped');
+ const reuseSource=Array.isArray(config.reuse_source_readings)?config.reuse_source_readings:[];
+ const reusablePool=reuseSource.length?[...reuseSource,...measuredPreRead]:[];
+ const matches=reusablePool.length
+  ?meterIccMatchReusableReadings(finalSteps,reusablePool,config.reuse_signature)
+  :{reused:[],pending:finalSteps};
+ config.steps=finalSteps;
+ config.stage='profile';
+ config.reused_readings=matches.reused;
+ config.precondition_reused_readings=[];
+ config.reuse_source_readings=[];
+ if(!matches.pending.length&&matches.reused.length){
+  meterIccStarting=false;
+  meterActionPending=false;
+  const stopButton=document.getElementById('meterIccStopBtn');
+  if(stopButton) stopButton.style.display='none';
+  if(status) status.textContent='All '+matches.reused.length+' optimized profile patches were reused. Building the ICC profile...';
+  await meterIccBuild(matches.reused);
+  return;
+ }
+ if(status) status.textContent=matches.reused.length
+  ?('Reused '+matches.reused.length+' optimized profile patches. Restarting the meter for '+matches.pending.length+' missing patches...')
+  :'Display-aware patch set ready. Restarting the meter for the profile measurements...';
+ meterIccSetProgress(matches.reused.length?('Reusing '+matches.reused.length+' profile patches; restarting meter'):'Restarting meter',0,matches.pending.length);
+ await meterIccLaunchMeasurementSeries(matches.pending,config.profile_type,config.pattern_provider);
+ if(status) status.textContent=matches.reused.length
+  ?('Reused '+matches.reused.length+' patches. Measuring '+matches.pending.length+' remaining patches...')
+  :'Profile measurement series started. Waiting for the first patch...';
+ setTimeout(meterIccPoll,0);
 }
 
 async function meterIccPoll(){
@@ -1488,17 +1576,7 @@ async function meterIccPoll(){
     meterIccStarting=true;
     meterActionPending=true;
     meterIccSyncUi();
-    if(status) status.textContent='Pre-read complete. Building a temporary display model and optimizing the final patch set...';
-    meterIccSetProgress('Optimizing for the measured display',0,meterIccRunConfig.patch_settings.patch_count);
-    const finalSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(meterIccProfileReadings(state.readings),meterIccRunConfig),meterIccRunConfig.reuse_signature);
-    if(Number(meterIccRunConfig.start_token)!==meterIccStartToken) throw new Error('ICC profiling stopped');
-    meterIccRunConfig.steps=finalSteps;
-    meterIccRunConfig.stage='profile';
-    if(status) status.textContent='Display-aware patch set ready. Restarting the meter for the profile measurements...';
-    meterIccSetProgress('Restarting meter',0,finalSteps.length);
-    await meterIccLaunchMeasurementSeries(finalSteps,meterIccRunConfig.profile_type,meterIccRunConfig.pattern_provider);
-    if(status) status.textContent='Profile measurement series started. Waiting for the first patch...';
-    setTimeout(meterIccPoll,0);
+    await meterIccContinueAfterPreRead(state.readings,status);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
    }
@@ -1545,6 +1623,8 @@ async function meterIccBuild(readings){
   const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
   delete payload.steps;
   delete payload.reused_readings;
+  delete payload.precondition_reused_readings;
+  delete payload.reuse_source_readings;
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:2710000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   buildElapsed=meterIccStopBuildClock(buildClock,true);
