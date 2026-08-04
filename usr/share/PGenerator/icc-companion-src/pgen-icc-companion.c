@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.14"
+#define APP_VERSION "1.3.15"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -111,7 +111,6 @@ typedef struct {
     ID3D11DeviceContext1 *hdr_context1;
     IDXGISwapChain *hdr_swapchain;
     ID3D11RenderTargetView *hdr_render_target;
-    bool hdr_exclusive;
     int hdr_width;
     int hdr_height;
 #endif
@@ -1078,15 +1077,12 @@ static void windows_destroy_hdr_output(void)
     if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
     if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
     if (app.hdr_swapchain) {
-        if (app.hdr_exclusive)
-            IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
         IDXGISwapChain_Release(app.hdr_swapchain);
         app.hdr_swapchain = NULL;
     }
     if (app.hdr_context1) { ID3D11DeviceContext1_Release(app.hdr_context1); app.hdr_context1 = NULL; }
     if (app.hdr_context) { ID3D11DeviceContext_Release(app.hdr_context); app.hdr_context = NULL; }
     if (app.hdr_device) { ID3D11Device_Release(app.hdr_device); app.hdr_device = NULL; }
-    app.hdr_exclusive = false;
     app.hdr_width = 0;
     app.hdr_height = 0;
 }
@@ -1240,16 +1236,6 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
-    if (app.fullscreen) {
-        IDXGIOutput *fullscreen_output = NULL;
-        result = IDXGISwapChain_GetContainingOutput(app.hdr_swapchain,
-                                                     &fullscreen_output);
-        if (SUCCEEDED(result))
-            result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, TRUE,
-                                                        fullscreen_output);
-        if (fullscreen_output) IDXGIOutput_Release(fullscreen_output);
-        if (SUCCEEDED(result)) app.hdr_exclusive = true;
-    }
     result = ID3D11DeviceContext_QueryInterface(app.hdr_context,
                                                 &IID_ID3D11DeviceContext1,
                                                 (void **)&app.hdr_context1);
@@ -1281,9 +1267,7 @@ static bool windows_create_hdr_output(void)
     }
     app.hdr = true;
     app.hdr_active = windows_window_hdr_enabled(app.window);
-    SDL_strlcpy(app.renderer_name,
-                app.hdr_exclusive ? "direct3d11-hdr10-exclusive"
-                                  : "direct3d11-hdr10-composed",
+    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-composed",
                 sizeof(app.renderer_name));
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
