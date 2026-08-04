@@ -401,7 +401,7 @@ post_patch_timeout() {
 
 post_companion_patch() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
- local code_min=0 code_max scale sequence payload tmp deadline ack ack_sequence ack_status
+ local code_min=0 code_max scale sequence payload tmp deadline ack ack_sequence ack_status ack_message
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
  code_max="$input_max"
  if [[ "$signal_range" == "1" ]]; then
@@ -427,7 +427,8 @@ post_companion_patch() {
    if [[ "$ack_sequence" == "$sequence" ]]; then
     ack_status=$(printf '%s' "$ack" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     [[ "$ack_status" == "ok" ]] && return 0
-    write_state '{"status":"error","message":"The ICC Companion could not render the requested patch"}'
+    ack_message=$(printf '%s' "$ack" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    write_state "{\"status\":\"error\",\"message\":\"${ack_message:-The ICC Companion could not render the requested patch}\"}"
     return 1
    fi
   fi

@@ -40,7 +40,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.3"
+#define APP_VERSION "1.1.4"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -102,6 +102,72 @@ typedef struct {
 static AppState app;
 
 static bool render_alignment(void);
+
+static bool select_target_display(void)
+{
+    SDL_DisplayID *displays;
+    SDL_MessageBoxButtonData *buttons = NULL;
+    char (*labels)[192] = NULL;
+    SDL_MessageBoxData dialog;
+    SDL_Rect bounds;
+    int count = 0, selected = 1;
+    bool ok = true;
+
+    displays = SDL_GetDisplays(&count);
+    if (!displays || count < 1) return false;
+    if (count == 1) {
+        SDL_free(displays);
+        return true;
+    }
+    buttons = SDL_calloc((size_t)count, sizeof(*buttons));
+    labels = SDL_calloc((size_t)count, sizeof(*labels));
+    if (!buttons || !labels) {
+        ok = false;
+        goto done;
+    }
+    for (int index = 0; index < count; index++) {
+        const char *name = SDL_GetDisplayName(displays[index]);
+        SDL_snprintf(labels[index], sizeof(labels[index]), "Display %d: %s",
+                     index + 1, (name && name[0]) ? name : "Unnamed display");
+        buttons[index].buttonID = index + 1;
+        buttons[index].text = labels[index];
+        if (index == 0) buttons[index].flags = SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
+    }
+    SDL_zero(dialog);
+    dialog.flags = SDL_MESSAGEBOX_INFORMATION;
+    dialog.window = app.window;
+    dialog.title = "Select profiling display";
+    dialog.message = "Choose the display that will show measurement patches. You can move and resize the companion window after selecting it.";
+    dialog.numbuttons = count;
+    dialog.buttons = buttons;
+    if (!SDL_ShowMessageBox(&dialog, &selected)) {
+        ok = false;
+        goto done;
+    }
+    if (selected < 1 || selected > count) selected = 1;
+    if (!SDL_GetDisplayUsableBounds(displays[selected - 1], &bounds)) {
+        ok = false;
+        goto done;
+    }
+    {
+        int width = 1280, height = 720;
+        int x, y;
+        SDL_GetWindowSize(app.window, &width, &height);
+        x = bounds.x + (bounds.w - width) / 2;
+        y = bounds.y + (bounds.h - height) / 2;
+        if (!SDL_SetWindowPosition(app.window, x, y)) {
+            ok = false;
+            goto done;
+        }
+        SDL_SyncWindow(app.window);
+        SDL_RaiseWindow(app.window);
+    }
+done:
+    SDL_free(labels);
+    SDL_free(buttons);
+    SDL_free(displays);
+    return ok;
+}
 
 static void trim(char *text)
 {
@@ -397,6 +463,7 @@ static void destroy_renderer(void)
 static bool try_create_renderer(bool hdr, const char *driver)
 {
     SDL_PropertiesID props;
+    uint64_t hdr_deadline;
     destroy_renderer();
     props = SDL_CreateProperties();
     if (!props) return false;
@@ -414,7 +481,7 @@ static bool try_create_renderer(bool hdr, const char *driver)
         const char *name = SDL_GetStringProperty(renderer_props, SDL_PROP_RENDERER_NAME_STRING, "unknown");
         SDL_strlcpy(app.renderer_name, name, sizeof(app.renderer_name));
     }
-    if (!update_renderer_hdr_state() || (hdr && !app.hdr_active)) {
+    if (!update_renderer_hdr_state()) {
         destroy_renderer();
         return false;
     }
@@ -434,6 +501,27 @@ static bool try_create_renderer(bool hdr, const char *driver)
     if (!SDL_RenderClear(app.renderer) || !SDL_RenderPresent(app.renderer)) {
         destroy_renderer();
         return false;
+    }
+    if (hdr) {
+        /* On Windows the swapchain's Advanced Color state may not be exposed
+         * until its first scRGB frame has been presented. Checking the HDR
+         * property before that frame falsely rejects an HDR-enabled desktop.
+         * Give DWM and the renderer time to publish the dynamic state. */
+        hdr_deadline = SDL_GetTicks() + 1000;
+        do {
+            SDL_PumpEvents();
+            if (!update_renderer_hdr_state()) {
+                destroy_renderer();
+                return false;
+            }
+            if (app.hdr_active) break;
+            SDL_Delay(20);
+        } while (SDL_GetTicks() < hdr_deadline);
+        if (!app.hdr_active) {
+            SDL_SetError("The scRGB renderer did not enter HDR after its first presented frame");
+            destroy_renderer();
+            return false;
+        }
     }
     return true;
 }
@@ -800,6 +888,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     app.window = SDL_CreateWindow("PGenerator ICC Companion", 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
+    if (!select_target_display()) return SDL_APP_FAILURE;
     app.fullscreen = false;
     app.displayed_size = 100;
     if (!create_renderer(false)) return SDL_APP_FAILURE;

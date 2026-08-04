@@ -320,7 +320,7 @@ EOJSON
 
 post_companion_patch() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
- local code_min=0 code_max shift sequence payload tmp deadline ack ack_sequence ack_status
+ local code_min=0 code_max shift sequence payload tmp deadline ack ack_sequence ack_status ack_message
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
  code_max="$input_max"
  if [[ "$signal_range" == "1" ]]; then
@@ -355,7 +355,8 @@ post_companion_patch() {
    if [[ "$ack_sequence" == "$sequence" ]]; then
     ack_status=$(printf '%s' "$ack" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     [[ "$ack_status" == "ok" ]] && return 0
-    companion_pattern_failure "The ICC Companion could not render the requested patch"
+    ack_message=$(printf '%s' "$ack" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    companion_pattern_failure "${ack_message:-The ICC Companion could not render the requested patch}"
    fi
   fi
   sleep 0.05
