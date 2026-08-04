@@ -39,9 +39,11 @@ waits for each patch to be presented before it asks the meter to read. The
 alignment target returns whenever profiling finishes, is stopped, or fails.
 
 For post-profile verification, the WebUI can leave patches unmodified for the
-operating-system profile pipeline, apply a selected profile's BToA cLUT inside
-the Companion, or apply its matrix and tone-curve fallback. Do not leave the
-same system correction active while using either application-managed mode,
+operating-system profile pipeline, apply the active display profile's BToA cLUT
+inside the Companion, or apply its matrix and tone-curve fallback. The active
+profile is read from the selected display and transferred securely to the
+paired PGenerator+ when an application-managed transform is requested. Do not
+leave the same MHC2 system correction active while using either of those modes,
 because that would apply two corrections to the measurement patches.
 
 Windows may show a SmartScreen warning because this build is not code-signed.

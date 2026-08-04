@@ -412,6 +412,7 @@ our $_icc_companion_dir="$var_dir/icc-companion";
 our $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
 our $_icc_companion_command_file="$_icc_companion_dir/command.json";
 our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
+our $_icc_companion_active_profile_dir="$_icc_companion_dir/active-profiles";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 my $_system_backup_helper="/usr/bin/pgenerator_system_backup.py";
@@ -1668,6 +1669,11 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_ack($body);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/profile" && $method eq "POST") {
+    my $result=&webui_icc_companion_profile_upload($request_query,$body);
+    my $code=($result=~/\"status\":\"unauthorized\"/)?403:($result=~/\"status\":\"ok\"/ ? 200 : 400);
+    print $client "HTTP/1.1 $code ".($code==200?"OK":$code==403?"Forbidden":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/icc/companion/lut") {
     my ($content,$message)=&webui_icc_companion_lut($request_query);
@@ -13129,15 +13135,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use operating-system correction or a selected profile transform">
-        <option value="system">Operating-system profile correction</option>
-        <option value="clut">Application-managed ICC cLUT</option>
-        <option value="matrix">Application-managed matrix/TRC fallback</option>
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use operating-system correction, the cLUT, or the matrix/TRC fallback from the profile active on the selected display">
+        <option value="system">Operating-system native correction</option>
+        <option value="clut">Active profile cLUT</option>
+        <option value="matrix">Active profile matrix/TRC fallback</option>
        </select>
-      </div>
-      <div class="field" id="meterCalibrationCompanionCorrectionProfileField" style="display:none">
-       <label for="meterCalibrationCompanionCorrectionProfile">Correction profile</label>
-       <select id="meterCalibrationCompanionCorrectionProfile" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="ICC profile used by the Companion"><option value="">Select a created profile</option></select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion sends patches through the active operating-system profile pipeline.</div>
       <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">KDE/Linux</button></div>

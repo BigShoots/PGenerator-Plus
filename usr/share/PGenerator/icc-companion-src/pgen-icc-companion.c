@@ -31,6 +31,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <dxgi1_6.h>
+#include <icm.h>
 #define close_socket closesocket
 typedef SOCKET socket_handle_t;
 #define INVALID_SOCKET_HANDLE INVALID_SOCKET
@@ -46,9 +47,10 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.2.1"
+#define APP_VERSION "1.3.0"
 #define RESPONSE_CAPACITY 32768
 #define CORRECTION_RESPONSE_LIMIT (4 * 1024 * 1024)
+#define PROFILE_UPLOAD_LIMIT (16 * 1024 * 1024)
 
 typedef struct {
     char server[256];
@@ -118,6 +120,12 @@ static AppState app;
 static bool render_alignment(void);
 
 #ifdef _WIN32
+typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayDefault)(
+    WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, COLORPROFILETYPE,
+    COLORPROFILESUBTYPE, LPWSTR *);
+typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayUserScope)(
+    LUID, UINT32, WCS_PROFILE_MANAGEMENT_SCOPE *);
+
 static void set_windows_window_icon(void)
 {
     HWND window = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
@@ -181,7 +189,125 @@ static int select_windows_target_display(SDL_DisplayID *displays, int count, int
     *selected = chosen;
     return 1;
 }
+
+static const wchar_t *windows_profile_basename(const wchar_t *path)
+{
+    const wchar_t *slash = wcsrchr(path, L'\\');
+    const wchar_t *forward = wcsrchr(path, L'/');
+    if (forward && (!slash || forward > slash)) slash = forward;
+    return slash ? slash + 1 : path;
+}
+
+static bool windows_active_profile(SDL_Window *window, char *output, size_t output_size,
+                                   wchar_t *profile_path, size_t profile_path_count)
+{
+    HWND hwnd;
+    HMONITOR monitor;
+    MONITORINFOEXW monitor_info;
+    UINT32 path_count = 0, mode_count = 0;
+    DISPLAYCONFIG_PATH_INFO *paths = NULL;
+    DISPLAYCONFIG_MODE_INFO *modes = NULL;
+    HMODULE mscms = NULL;
+    PFN_ColorProfileGetDisplayDefault get_default = NULL;
+    PFN_ColorProfileGetDisplayUserScope get_scope = NULL;
+    LPWSTR profile = NULL;
+    bool found = false;
+    LONG result;
+
+    if (!output || output_size < 2 || !profile_path || profile_path_count < 2) return false;
+    output[0] = '\0';
+    profile_path[0] = L'\0';
+    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
+    ZeroMemory(&monitor_info, sizeof(monitor_info));
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (!monitor || !GetMonitorInfoW(monitor, (MONITORINFO *)&monitor_info)) return false;
+    do {
+        SDL_free(paths); SDL_free(modes); paths = NULL; modes = NULL;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS) goto done;
+        paths = SDL_calloc(path_count, sizeof(*paths));
+        modes = SDL_calloc(mode_count, sizeof(*modes));
+        if (!paths || !modes) goto done;
+        result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths,
+                                    &mode_count, modes, NULL);
+    } while (result == ERROR_INSUFFICIENT_BUFFER);
+    if (result != ERROR_SUCCESS) goto done;
+    mscms = LoadLibraryW(L"mscms.dll");
+    if (!mscms) goto done;
+    {
+        FARPROC proc = GetProcAddress(mscms, "ColorProfileGetDisplayDefault");
+        memcpy(&get_default, &proc, sizeof(get_default));
+        proc = GetProcAddress(mscms, "ColorProfileGetDisplayUserScope");
+        memcpy(&get_scope, &proc, sizeof(get_scope));
+    }
+    if (!get_default) goto done;
+    for (UINT32 index = 0; index < path_count && !found; index++) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source;
+        WCS_PROFILE_MANAGEMENT_SCOPE scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+        HRESULT hr;
+        if (!(paths[index].flags & DISPLAYCONFIG_PATH_ACTIVE)) continue;
+        ZeroMemory(&source, sizeof(source));
+        source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source.header.size = sizeof(source);
+        source.header.adapterId = paths[index].sourceInfo.adapterId;
+        source.header.id = paths[index].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+            _wcsicmp(source.viewGdiDeviceName, monitor_info.szDevice) != 0) continue;
+        if (get_scope && FAILED(get_scope(paths[index].sourceInfo.adapterId,
+                                          paths[index].sourceInfo.id, &scope)))
+            scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+        hr = get_default(scope, paths[index].sourceInfo.adapterId,
+                         paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
+        if (FAILED(hr) && scope != WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER) {
+            scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+            hr = get_default(scope, paths[index].sourceInfo.adapterId,
+                             paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
+        }
+        if (SUCCEEDED(hr) && profile) {
+            const wchar_t *name = windows_profile_basename(profile);
+            int converted = WideCharToMultiByte(CP_UTF8, 0, name, -1, output,
+                                                (int)output_size, NULL, NULL);
+            if (converted > 1) {
+                if (wcschr(profile, L'\\') || wcschr(profile, L'/')) {
+                    wcsncpy(profile_path, profile, profile_path_count - 1);
+                    profile_path[profile_path_count - 1] = L'\0';
+                } else {
+                    DWORD color_dir_size = (DWORD)profile_path_count;
+                    if (GetColorDirectoryW(NULL, profile_path, &color_dir_size) &&
+                        wcslen(profile_path) + 1 + wcslen(profile) + 1 <= profile_path_count) {
+                        wcscat(profile_path, L"\\");
+                        wcscat(profile_path, profile);
+                    } else {
+                        profile_path[0] = L'\0';
+                    }
+                }
+                found = profile_path[0] != L'\0' && GetFileAttributesW(profile_path) != INVALID_FILE_ATTRIBUTES;
+            }
+        }
+    }
+done:
+    if (profile) LocalFree(profile);
+    if (mscms) FreeLibrary(mscms);
+    SDL_free(paths); SDL_free(modes);
+    if (!found) { output[0] = '\0'; profile_path[0] = L'\0'; }
+    return found;
+}
 #endif
+
+static void profile_name_hex(const char *profile, char *hex, size_t hex_size)
+{
+    static const char digits[] = "0123456789abcdef";
+    size_t used = 0;
+    if (!hex || hex_size < 1) return;
+    if (!profile) profile = "";
+    while (*profile && used + 2 < hex_size) {
+        unsigned char value = (unsigned char)*profile++;
+        hex[used++] = digits[value >> 4];
+        hex[used++] = digits[value & 15];
+    }
+    hex[used] = '\0';
+}
 
 static bool select_target_display(void)
 {
@@ -465,6 +591,77 @@ static int http_request(CompanionConfig *config, const char *method, const char 
     return status;
 }
 
+#ifdef _WIN32
+static int http_post_binary(CompanionConfig *config, const char *path,
+                            const unsigned char *body, size_t body_size)
+{
+    char header[2048], response[2048];
+    size_t sent = 0, used = 0;
+    socket_handle_t sock = open_server_socket(config);
+    int status = 0;
+    if (sock == INVALID_SOCKET_HANDLE || !body || body_size < 1) return 0;
+    {
+        DWORD timeout = 15000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+    }
+    SDL_snprintf(header, sizeof(header),
+                 "POST %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: application/vnd.iccprofile\r\nContent-Length: %llu\r\n\r\n",
+                 path, config->host, (unsigned long long)body_size);
+    while (sent < strlen(header)) {
+        int count = (int)send(sock, header + sent, (int)(strlen(header) - sent), 0);
+        if (count <= 0) { close_socket(sock); return 0; }
+        sent += (size_t)count;
+    }
+    sent = 0;
+    while (sent < body_size) {
+        size_t remaining = body_size - sent;
+        int amount = remaining > 65536 ? 65536 : (int)remaining;
+        int count = (int)send(sock, (const char *)body + sent, amount, 0);
+        if (count <= 0) { close_socket(sock); return 0; }
+        sent += (size_t)count;
+    }
+    while (used + 1 < sizeof(response)) {
+        int count = (int)recv(sock, response + used, (int)(sizeof(response) - used - 1), 0);
+        if (count <= 0) break;
+        used += (size_t)count;
+    }
+    close_socket(sock);
+    response[used] = '\0';
+    if (sscanf(response, "HTTP/%*s %d", &status) != 1) return 0;
+    return status;
+}
+
+static bool upload_active_profile(const wchar_t *profile_path, const char *profile_name)
+{
+    FILE *file;
+    long length;
+    unsigned char *content;
+    char profile_hex[385], path[1024];
+    int status;
+    if (!profile_path || !profile_path[0] || !profile_name || !profile_name[0]) return false;
+    file = _wfopen(profile_path, L"rb");
+    if (!file) return false;
+    if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) < 128 || length > PROFILE_UPLOAD_LIMIT ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+    content = SDL_malloc((size_t)length);
+    if (!content) { fclose(file); return false; }
+    if (fread(content, 1, (size_t)length, file) != (size_t)length) {
+        SDL_free(content); fclose(file); return false;
+    }
+    fclose(file);
+    profile_name_hex(profile_name, profile_hex, sizeof(profile_hex));
+    SDL_snprintf(path, sizeof(path), "/api/icc/companion/profile?token=%s&profile_hex=%s",
+                 app.config.token, profile_hex);
+    status = http_post_binary(&app.config, path, content, (size_t)length);
+    SDL_free(content);
+    return status == 200;
+}
+#endif
+
 static unsigned char *http_get_binary(CompanionConfig *config, const char *path, size_t *payload_size)
 {
     char request[2048];
@@ -557,7 +754,7 @@ static uint32_t read_be32(const unsigned char *value)
 
 static bool load_correction_lut(uint64_t revision)
 {
-    char path[512];
+    char path[1024], profile_hex[sizeof(app.correction_profile) * 2 + 1];
     unsigned char *payload;
     size_t payload_size = 0;
     uint32_t count;
@@ -577,29 +774,34 @@ static bool load_correction_lut(uint64_t revision)
     SDL_free(app.correction_lut);
     app.correction_lut = NULL;
     app.correction_lut_grid = 0;
-    SDL_snprintf(path, sizeof(path), "/api/icc/companion/lut?token=%s&revision=%llu",
-                 app.config.token, (unsigned long long)revision);
+    if (!app.correction_profile[0]) {
+        SDL_strlcpy(app.correction_error, "The operating system did not report an active ICC profile for the selected display", sizeof(app.correction_error));
+        return false;
+    }
+    profile_name_hex(app.correction_profile, profile_hex, sizeof(profile_hex));
+    SDL_snprintf(path, sizeof(path), "/api/icc/companion/lut?token=%s&revision=%llu&profile_hex=%s",
+                 app.config.token, (unsigned long long)revision, profile_hex);
     payload = http_get_binary(&app.config, path, &payload_size);
     if (!payload) {
-        SDL_strlcpy(app.correction_error, "Could not download the selected ICC correction from PGenerator+", sizeof(app.correction_error));
+        SDL_strlcpy(app.correction_error, "Could not load the active display profile correction from PGenerator+", sizeof(app.correction_error));
         return false;
     }
     if (payload_size < 16 || memcmp(payload, "PGLT", 4) || payload[4] != 1 || payload[6] != 3) {
         SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "The selected ICC correction LUT is invalid", sizeof(app.correction_error));
+        SDL_strlcpy(app.correction_error, "The active profile correction LUT is invalid", sizeof(app.correction_error));
         return false;
     }
     grid = payload[5];
     count = read_be32(payload + 8);
     if (grid < 2 || grid > 65 || count != (uint32_t)(grid * grid * grid) || payload_size != 16 + (size_t)count * 6) {
         SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "The selected ICC correction LUT dimensions are invalid", sizeof(app.correction_error));
+        SDL_strlcpy(app.correction_error, "The active profile correction LUT dimensions are invalid", sizeof(app.correction_error));
         return false;
     }
     values = SDL_malloc((size_t)count * 3 * sizeof(*values));
     if (!values) {
         SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "Not enough memory to load the selected ICC correction", sizeof(app.correction_error));
+        SDL_strlcpy(app.correction_error, "Not enough memory to load the active profile correction", sizeof(app.correction_error));
         return false;
     }
     for (uint32_t index = 0; index < count * 3; index++)
@@ -1021,23 +1223,31 @@ static void send_pending_ack(void)
 
 static void poll_server(void)
 {
-    char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
+    char path[1200], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     char window_mode[32] = "window";
-    char correction_mode[16] = "system", correction_profile[192] = "", correction_signal_mode[16] = "sdr";
+    char correction_mode[16] = "system", active_profile[192] = "", profile_hex[385] = "", correction_signal_mode[16] = "sdr";
     char reported_renderer[64] = "starting";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     double settings_revision_value, display_size_value, patch_size_value;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
     int status;
+#ifdef _WIN32
+    wchar_t active_profile_path[32768] = L"";
+#endif
     SDL_LockMutex(app.network_mutex);
     if (app.ack_renderer[0]) SDL_strlcpy(reported_renderer, app.ack_renderer, sizeof(reported_renderer));
     reported_hdr_active = app.ack_hdr_active;
     SDL_UnlockMutex(app.network_mutex);
+#ifdef _WIN32
+    windows_active_profile(app.window, active_profile, sizeof(active_profile),
+                           active_profile_path, SDL_arraysize(active_profile_path));
+#endif
+    profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s",
                  app.config.token, app.config.client, APP_VERSION,
-                 reported_renderer, reported_hdr_active ? 1 : 0);
+                 reported_renderer, reported_hdr_active ? 1 : 0, profile_hex);
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
         char title[256];
@@ -1051,12 +1261,18 @@ static void poll_server(void)
         json_string(response, "window_mode", window_mode, sizeof(window_mode))) {
         uint64_t settings_revision = (uint64_t)settings_revision_value;
         json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
-        json_string(response, "correction_profile", correction_profile, sizeof(correction_profile));
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
-        if (settings_revision != app.correction_lut_revision) {
+        if (settings_revision != app.correction_lut_revision ||
+            strcmp(active_profile, app.correction_profile)) {
             SDL_strlcpy(app.correction_mode, correction_mode, sizeof(app.correction_mode));
-            SDL_strlcpy(app.correction_profile, correction_profile, sizeof(app.correction_profile));
+            SDL_strlcpy(app.correction_profile, active_profile, sizeof(app.correction_profile));
             SDL_strlcpy(app.correction_signal_mode, correction_signal_mode, sizeof(app.correction_signal_mode));
+#ifdef _WIN32
+            if (strcmp(correction_mode, "system") &&
+                !upload_active_profile(active_profile_path, active_profile)) {
+                SDL_strlcpy(app.correction_error, "Could not transfer the active display profile to PGenerator+", sizeof(app.correction_error));
+            } else
+#endif
             load_correction_lut(settings_revision);
         }
         SDL_LockMutex(app.network_mutex);
@@ -1072,12 +1288,12 @@ static void poll_server(void)
     {
         char title[512];
         if (!strcmp(app.correction_mode, "clut"))
-            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | ICC cLUT: %s%s",
-                         app.correction_profile[0] ? app.correction_profile : "not selected",
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Active profile cLUT: %s%s",
+                         app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else if (!strcmp(app.correction_mode, "matrix"))
-            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Matrix/TRC: %s%s",
-                         app.correction_profile[0] ? app.correction_profile : "not selected",
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Active profile matrix/TRC: %s%s",
+                         app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else
             SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Operating-system correction");
