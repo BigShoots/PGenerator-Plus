@@ -1030,6 +1030,11 @@ async function meterIccLoadProfiles(){
  try{
   const response=await fetchJSON('/api/icc/profiles',{_quiet:true,_timeoutMs:5000});
   const profiles=response&&Array.isArray(response.profiles)?response.profiles:[];
+  const historyProfiles=[...profiles].sort((a,b)=>{
+   const timestampDifference=Number(b&&b.mtime||0)-Number(a&&a.mtime||0);
+   if(timestampDifference) return timestampDifference;
+   return String(a&&a.name||'').localeCompare(String(b&&b.name||''));
+  });
   const precondition=document.getElementById('meterIccPreconditionProfile');
   if(precondition){
    const previous=precondition.value;
@@ -1051,7 +1056,7 @@ async function meterIccLoadProfiles(){
    return;
   }
   list.innerHTML='';
-  profiles.forEach(profile=>{
+  historyProfiles.forEach(profile=>{
    const row=document.createElement('div');
    row.className='meter-icc-profile-row';
    const name=document.createElement('span');
