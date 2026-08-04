@@ -193,7 +193,7 @@ function meterIccAskReuseChoice(reused,total,legacy,options){
   ?reused+' also match the new '+total+'-patch set exactly, leaving '+remaining+' new '+(remaining===1?'patch':'patches')+' to measure. '
   :'None of its patch codes exactly match the new '+total+'-patch set. ';
  const prerequisite=options.prerequisite
-  ?(reused+' match the required '+total+'-patch display pre-read. The remaining '+remaining+' '+(remaining===1?'patch will':'patches will')+' be measured before the optimized profile set is generated. ')
+  ?(reused+' match the required '+total+'-patch display pre-read. The remaining '+remaining+' '+(remaining===1?'patch will':'patches will')+' be measured before the optimized profile set is generated. The final profile patch set does not exist yet, so its reusable count will be calculated and shown after this pre-read finishes. ')
   :'';
  const preRead=options.skipPreRead
   ?('All '+sourceCount+' completed pre-read measurements will be used to optimize the final patch set. '+reused+' of those pre-read patches also match the final set exactly and can count as final profile measurements. ')
@@ -1576,7 +1576,12 @@ async function meterIccPoll(){
   const status=document.getElementById('meterIccStatus');
   if(status){
    if(state.status==='setup') status.textContent='Complete the meter setup prompt to continue.';
-   else if(current>0) status.textContent='Measuring patch '+Math.min(current,total)+' of '+total+'.';
+   else if(current>0){
+    const reused=(meterIccRunConfig&&meterIccRunConfig.stage==='profile'&&Array.isArray(meterIccRunConfig.reused_readings))?meterIccRunConfig.reused_readings.length:0;
+    status.textContent=reused
+     ?('Measuring new patch '+Math.min(current,total)+' of '+total+'. Reused '+reused+' of '+(reused+total)+' final profile patches.')
+     :('Measuring patch '+Math.min(current,total)+' of '+total+'.');
+   }
    else status.textContent=state.current_name||'Initializing the meter. The first patch will appear when it is ready.';
   }
   if(!['complete','cancelled','error','cleared'].includes(String(state.status||'').toLowerCase())) return;
