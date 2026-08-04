@@ -35,6 +35,9 @@ VIAddVersionKey "LegalCopyright" "GNU GPL"
 
 Section "ICC Companion and Profile Loader" SEC_CORE
   SectionIn RO
+  ; Close an older installed build before replacing its executable files.
+  ExecWait '"$SYSDIR\taskkill.exe" /IM PGenICCCompanion.exe /F'
+  ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   SetOutPath "$INSTDIR"
   File "..\icc-companion\windows-x64\PGenICCCompanion.exe"
   File "..\icc-companion\windows-x64\PGenProfileLoader.exe"
