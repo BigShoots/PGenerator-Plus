@@ -272,6 +272,18 @@ sub webui_icc_companion_settings (@) {
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
  return '{"status":"error","message":"Invalid ICC Companion window mode"}' if($window_mode eq "");
  return '{"status":"error","message":"Invalid ICC Companion patch size"}' unless($allowed{$patch_size});
+ if($correction_mode ne "system") {
+  my @status_stat=stat($_icc_companion_status_file);
+  my $status="";
+  if(@status_stat && time()-($status_stat[9]||0)<=12 && open(my $status_fh,"<",$_icc_companion_status_file)) {
+   local $/; $status=<$status_fh>||""; close($status_fh);
+  }
+  if($status=~/"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/) {
+   my $version=$1*1000000+$2*1000+$3;
+   return '{"status":"error","message":"Install ICC Companion 1.3.0 or newer before using active-profile correction"}'
+    if($version<1003000);
+  }
+ }
  eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
  my (undef,undef,$previous_revision)=&webui_icc_companion_settings_values();
  my $revision=int(Time::HiRes::time()*1000);

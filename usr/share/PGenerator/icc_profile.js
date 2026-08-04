@@ -9,6 +9,7 @@ let meterIccCompanionLastSeenAt=0;
 let meterIccCompanionDetail='ICC Companion connected';
 let meterIccCompanionClient='';
 let meterIccCompanionTimer=null;
+let meterIccCompanionSettingsPending=0;
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
 
@@ -360,6 +361,7 @@ async function meterIccPushCompanionDisplaySettings(showError){
  const mode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
  const correctionMode=String((document.getElementById('meterIccCompanionCorrectionMode')||{}).value||'system');
  const activeSignal=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase()==='hdr10'?'hdr10':'sdr';
+ meterIccCompanionSettingsPending++;
  try{
   const response=await fetchJSON('/api/icc/companion/settings',{
    method:'POST',headers:{'Content-Type':'application/json'},
@@ -371,6 +373,8 @@ async function meterIccPushCompanionDisplaySettings(showError){
  }catch(error){
   if(showError!==false) toast(error&&error.message?error.message:'Could not update the ICC Companion',true);
   return false;
+ }finally{
+  meterIccCompanionSettingsPending=Math.max(0,meterIccCompanionSettingsPending-1);
  }
 }
 
@@ -1072,6 +1076,12 @@ async function meterIccRefreshCompanionStatus(){
    const version=String(state.version||'');
    const hdr=state.hdr_active?' with native HDR active':'';
    const correctionMode=String(state.correction_mode||'system');
+   if(!meterIccCompanionSettingsPending&&['system','clut','matrix'].includes(correctionMode)){
+    const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
+    const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
+    if(workspaceMode) workspaceMode.value=correctionMode;
+    if(calibrationMode) calibrationMode.value=correctionMode;
+   }
    const activeProfile=String(state.active_profile||'');
    const correction=correctionMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):correctionMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using operating-system correction';
    const detail='Connected: '+client+' using '+renderer+hdr+correction+(version?' (v'+version+')':'');
