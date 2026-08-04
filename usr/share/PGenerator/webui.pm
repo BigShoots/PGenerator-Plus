@@ -22557,15 +22557,12 @@ function meterGreyDeltaResult(reading,modeOrIncl,form,gwWeight){
  // dE against {0,0,0} measured so the luminance gap is reported even when the
  // meter read 0 on OLED true black.
  if(!(xyz.Y>0) && !(target&&target.Y>0)) return {value:0,de2000:0};
- // Chromaticity has no meaningful definition at black. A meter still returns
- // noisy XYZ ratios at a raised LCD black floor, which previously turned the
- // 0% bar into a large apparent chroma error. Preserve the measured and target
- // luminance, but place both on the target white axis so this patch scores only
- // the black-level error.
- if(meterReadingTargetsBlack(reading)){
-  const wp=meterTargetWhitePoint();
-  xyz={X:wp.X*Math.max(0,xyz.Y||0),Y:Math.max(0,xyz.Y||0),Z:wp.Z*Math.max(0,xyz.Y||0)};
- }
+ // "Use measured" Target Black supplies only the luminance floor. Do not
+ // replace a raised-black measurement's chromaticity with the target white:
+ // an LCD black that still has measurable light can have a real colour cast,
+ // and greyscale dE must compare that measured XYZ against the selected target
+ // white at the measured/manual black Y. A true zero-luminance black remains
+ // covered by the black-on-black guard above because it has no chromaticity.
  if(mode==='absolute'){
   const stepY=Math.max(xyz.Y||0,target.Y||0,0);
   if(stepY>0 && wR.Y>0){
