@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.4"
+#define APP_VERSION L"1.1.5"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -473,17 +473,6 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
     if (!display || !g_profile_name[0] || !p_add_association) return FALSE;
-    if (interactive) {
-        /* This corresponds to "Use my settings for this device" and only
-           needs to be selected during an explicit apply, not every poll. */
-        BOOL per_user = FALSE;
-        if ((!WcsGetUsePerUserProfiles(display->source_name, CLASS_MONITOR, &per_user) ||
-             !per_user) &&
-            !WcsSetUsePerUserProfiles(display->source_name, CLASS_MONITOR, TRUE)) {
-            message_error(g_window, L"Enabling per-user display profiles", GetLastError());
-            return FALSE;
-        }
-    }
     associated = display_profile_is_associated(display, g_profile_name);
     if (!associated || g_associate_advanced) {
         /* For a normal profile, add it without changing the active transform;
