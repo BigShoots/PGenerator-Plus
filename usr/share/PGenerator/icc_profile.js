@@ -1677,6 +1677,13 @@ async function meterIccBuild(readings){
   if(retry) retry.style.display='';
   toast('ICC profile created');
   await meterIccLoadProfiles();
+  // The profile and profcheck are complete before the self-check modal opens.
+  // Clear every ICC-owned busy flag now so the workspace cannot remain stuck
+  // on "Building" behind the modal if another browser starts a meter read.
+  meterIccBuildPending=false;
+  meterIccStarting=false;
+  meterActionPending=false;
+  meterIccSetRunning(false);
   // Successful builds always have a saved profcheck result. Fetch the saved
   // result as a fallback if an older builder response omitted the inline copy.
   await meterIccOpenValidation(response.file,response.validation||null);
@@ -1689,7 +1696,11 @@ async function meterIccBuild(readings){
  }finally{
   meterIccStopBuildClock(buildClock,false);
   meterIccBuildPending=false;
+  meterIccStarting=false;
   meterActionPending=false;
+  meterIccSetRunning(false);
+  const stopButton=document.getElementById('meterIccStopBtn');
+  if(stopButton) stopButton.style.display='none';
   meterIccSyncUi();
   meterUpdateReadButtons();
  }
