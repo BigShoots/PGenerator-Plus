@@ -84,9 +84,11 @@
         </div>
         <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
         <div class="btn-row" style="margin:0 0 10px">
-         <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download for Windows x64</button>
+         <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows Installer x64</button>
          <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download for KDE/Linux x64</button>
+         <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-loader-x64')">Download Windows Profile Loader</button>
         </div>
+        <div class="meter-icc-note" style="margin-bottom:10px">The Windows Profile Loader runs in the notification area, verifies the selected per-display default, and can automatically restore it after display or HDR mode changes. The Windows Companion package also includes the loader.</div>
         <div id="meterIccCompanionStatus" class="meter-icc-note" style="color:var(--red)"><span style="color:var(--red)">&#9679;</span> Companion not connected</div>
        </div>
        <div id="meterIccLocalSetup" style="display:none">

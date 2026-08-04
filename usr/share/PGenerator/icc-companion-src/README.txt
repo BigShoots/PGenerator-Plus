@@ -1,7 +1,14 @@
-PGenerator ICC Companion
-========================
+PGenerator+ ICC Tools for Windows
+=================================
 
-This package is paired with the PGenerator from which it was downloaded.
+Windows: keep PGenICCCompanion.conf beside PGeneratorPlusICCSetup.exe, then
+run the installer. It installs both the paired patch companion and the tray
+profile loader. Start Menu shortcuts and an uninstaller are included.
+
+PGenerator+ ICC Companion
+=========================
+
+This package is paired with the PGenerator+ from which it was downloaded.
 
 1. Keep PGenICCCompanion.conf beside the executable.
 2. Enable HDR in the operating system before starting an HDR profile.
@@ -10,7 +17,7 @@ This package is paired with the PGenerator from which it was downloaded.
    and borderless fullscreen output. In fullscreen mode, the WebUI Patch Size
    setting controls centered window and APL patterns.
    Use the white crosshair on the black alignment screen to center the meter.
-4. Return to the PGenerator WebUI from another screen or device and start the
+4. Return to the PGenerator+ WebUI from another screen or device and start the
    ICC profile measurements.
 5. Press F11 if you need to override fullscreen locally. Press Escape to exit.
 
@@ -23,10 +30,16 @@ HDR patch is displayed, the WebUI connection status must report native HDR as
 active. The measurement stops instead of silently profiling an SDR conversion
 if the companion cannot create a native HDR output surface.
 
-The companion must remain connected for the entire measurement run. PGenerator
+The companion must remain connected for the entire measurement run. PGenerator+
 waits for each patch to be presented before it asks the meter to read. The
 alignment target returns whenever profiling finishes, is stopped, or fails.
 
 Windows may show a SmartScreen warning because this build is not code-signed.
-The application communicates only with the PGenerator address embedded in the
+The application communicates only with the PGenerator+ address embedded in the
 configuration file.
+
+The Windows package also contains PGenProfileLoader.exe. It is a separate tray
+application for installing, applying, and continuously verifying a display
+profile. See PROFILE-LOADER-README.txt for setup and status details. The
+profile loader does not need PGenICCCompanion.conf and can remain running when
+the patch generator is closed.

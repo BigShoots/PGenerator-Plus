@@ -387,7 +387,7 @@ sub webui_icc_companion_pattern (@) {
 sub webui_icc_companion_download (@) {
  my ($query,$host)=@_;
  my $platform=&webui_icc_companion_query_value($query,"platform");
- return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "linux-x64");
+ return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "linux-x64" || $platform eq "windows-loader-x64");
  return ("","","Could not determine this PGenerator address") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/);
  return ("","","ICC Companion packager is not installed") unless(-f $_icc_companion_packager);
  my $token=&webui_icc_companion_token();

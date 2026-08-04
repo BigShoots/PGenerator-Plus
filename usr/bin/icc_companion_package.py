@@ -10,8 +10,24 @@ import zipfile
 
 ROOT = "/usr/share/PGenerator"
 PLATFORMS = {
-    "windows-x64": ("PGenerator-ICC-Companion-Windows-x64.zip", ("PGenICCCompanion.exe", "SDL3.dll")),
-    "linux-x64": ("PGenerator-ICC-Companion-Linux-x64.zip", ("PGenICCCompanion", "libSDL3.so.0")),
+    "windows-x64": {
+        "filename": "PGenerator-ICC-Companion-Windows-x64.zip",
+        "directory": "windows-x64",
+        "files": ("PGeneratorPlusICCSetup.exe",),
+        "paired": True,
+    },
+    "linux-x64": {
+        "filename": "PGenerator-ICC-Companion-Linux-x64.zip",
+        "directory": "linux-x64",
+        "files": ("PGenICCCompanion", "libSDL3.so.0"),
+        "paired": True,
+    },
+    "windows-loader-x64": {
+        "filename": "PGenerator-Profile-Loader-Windows-x64.zip",
+        "directory": "windows-x64",
+        "files": ("PGenProfileLoader.exe",),
+        "paired": False,
+    },
 }
 SAFE_SERVER = re.compile(r"^http://[A-Za-z0-9._\-\[\]:]+$")
 SAFE_TOKEN = re.compile(r"^[0-9a-f]{64}$")
@@ -40,22 +56,28 @@ def build(platform, server, token, output_path):
         fail("Invalid PGenerator address")
     if not SAFE_TOKEN.match(token):
         fail("Invalid pairing token")
-    filename, files = PLATFORMS[platform]
-    binary_dir = os.path.join(ROOT, "icc-companion", platform)
+    package = PLATFORMS[platform]
+    filename = package["filename"]
+    files = package["files"]
+    binary_dir = os.path.join(ROOT, "icc-companion", package["directory"])
     source_dir = os.path.join(ROOT, "icc-companion-src")
     config = "# Paired automatically by PGenerator\nSERVER={}\nTOKEN={}\n".format(server, token)
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
-        config_info.create_system = 3
-        config_info.external_attr = 0o600 << 16
-        archive.writestr(config_info, config)
-        add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
-        add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
+        if package["paired"]:
+            config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
+            config_info.create_system = 3
+            config_info.external_attr = 0o600 << 16
+            archive.writestr(config_info, config)
+            add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
+            add_file(archive, os.path.join(source_dir, "PROFILE-LOADER-README.txt"), "PROFILE-LOADER-README.txt")
+            add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
+        else:
+            add_file(archive, os.path.join(source_dir, "PROFILE-LOADER-README.txt"), "README.txt")
         for name in files:
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
-            mode = 0o755 if platform == "linux-x64" and name == "PGenICCCompanion" else 0o644
+            mode = 0o755 if package["directory"] == "linux-x64" and name == "PGenICCCompanion" else 0o644
             add_file(archive, path, name, mode)
     return filename
 
