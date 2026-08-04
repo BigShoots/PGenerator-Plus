@@ -412,6 +412,8 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
 {
     static const GUID pgen_iid_idxgi_output6 =
         { 0x068346e8, 0xaaec, 0x4b84, { 0xad, 0xd7, 0x13, 0x7f, 0x51, 0x3f, 0x77, 0xa1 } };
+    static const GUID pgen_iid_idxgi_factory1 =
+        { 0x770aae78, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 } };
     SDL_PropertiesID window_props;
     HWND hwnd;
     HMONITOR monitor;
@@ -423,7 +425,7 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
     hwnd = (HWND)SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
     if (!hwnd) return false;
     monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    if (!monitor || FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&factory))) return false;
+    if (!monitor || FAILED(CreateDXGIFactory1(&pgen_iid_idxgi_factory1, (void **)&factory))) return false;
     for (UINT adapter_index = 0; !enabled; adapter_index++) {
         IDXGIAdapter1 *adapter = NULL;
         HRESULT adapter_result = IDXGIFactory1_EnumAdapters1(factory, adapter_index, &adapter);
