@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.10"
+#define APP_VERSION "1.3.11"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -934,7 +934,10 @@ static float srgb_to_linear(float value)
 }
 
 #ifdef _WIN32
-static bool windows_window_hdr_enabled(SDL_Window *window)
+static bool windows_window_hdr_info(SDL_Window *window, double *minimum_luminance,
+                                    double *maximum_luminance,
+                                    double *maximum_full_frame_luminance,
+                                    UINT *bits_per_color)
 {
     static const GUID pgen_iid_idxgi_output6 =
         { 0x068346e8, 0xaaec, 0x4b84, { 0xad, 0xd7, 0x13, 0x7f, 0x51, 0x3f, 0x77, 0xa1 } };
@@ -945,6 +948,12 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
     HMONITOR monitor;
     IDXGIFactory1 *factory = NULL;
     bool enabled = false;
+    bool found = false;
+
+    if (minimum_luminance) *minimum_luminance = 0.0;
+    if (maximum_luminance) *maximum_luminance = 0.0;
+    if (maximum_full_frame_luminance) *maximum_full_frame_luminance = 0.0;
+    if (bits_per_color) *bits_per_color = 0;
 
     if (!window) return false;
     window_props = SDL_GetWindowProperties(window);
@@ -952,12 +961,12 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
     if (!hwnd) return false;
     monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     if (!monitor || FAILED(CreateDXGIFactory1(&pgen_iid_idxgi_factory1, (void **)&factory))) return false;
-    for (UINT adapter_index = 0; !enabled; adapter_index++) {
+    for (UINT adapter_index = 0; !found; adapter_index++) {
         IDXGIAdapter1 *adapter = NULL;
         HRESULT adapter_result = IDXGIFactory1_EnumAdapters1(factory, adapter_index, &adapter);
         if (adapter_result == DXGI_ERROR_NOT_FOUND) break;
         if (FAILED(adapter_result) || !adapter) continue;
-        for (UINT output_index = 0; !enabled; output_index++) {
+        for (UINT output_index = 0; !found; output_index++) {
             IDXGIOutput *output = NULL;
             IDXGIOutput6 *output6 = NULL;
             DXGI_OUTPUT_DESC output_desc;
@@ -968,7 +977,13 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
             if (SUCCEEDED(IDXGIOutput_GetDesc(output, &output_desc)) && output_desc.Monitor == monitor &&
                 SUCCEEDED(IDXGIOutput_QueryInterface(output, &pgen_iid_idxgi_output6, (void **)&output6)) && output6 &&
                 SUCCEEDED(IDXGIOutput6_GetDesc1(output6, &output_desc1))) {
+                found = true;
                 enabled = output_desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                if (minimum_luminance) *minimum_luminance = output_desc1.MinLuminance;
+                if (maximum_luminance) *maximum_luminance = output_desc1.MaxLuminance;
+                if (maximum_full_frame_luminance)
+                    *maximum_full_frame_luminance = output_desc1.MaxFullFrameLuminance;
+                if (bits_per_color) *bits_per_color = output_desc1.BitsPerColor;
             }
             if (output6) IDXGIOutput6_Release(output6);
             IDXGIOutput_Release(output);
@@ -977,6 +992,58 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
     }
     IDXGIFactory1_Release(factory);
     return enabled;
+}
+
+static bool windows_window_hdr_enabled(SDL_Window *window)
+{
+    return windows_window_hdr_info(window, NULL, NULL, NULL, NULL);
+}
+
+static void windows_hdr_diagnostics(char *swapchain_color_space,
+                                    size_t swapchain_color_space_size,
+                                    char *presentation_mode,
+                                    size_t presentation_mode_size,
+                                    double *output_maximum_luminance,
+                                    double *output_full_frame_luminance,
+                                    UINT *output_bits_per_color)
+{
+    static const GUID pgen_iid_idxgi_swapchain_media =
+        { 0xdd95b90b, 0xf05f, 0x4f6a, { 0xbd, 0x65, 0x25, 0xbf, 0xb2, 0x64, 0xbd, 0x84 } };
+    IDXGISwapChainMedia *swapchain_media = NULL;
+    DXGI_FRAME_STATISTICS_MEDIA statistics;
+
+    SDL_strlcpy(swapchain_color_space, "none", swapchain_color_space_size);
+    SDL_strlcpy(presentation_mode, "unknown", presentation_mode_size);
+    *output_maximum_luminance = 0.0;
+    *output_full_frame_luminance = 0.0;
+    *output_bits_per_color = 0;
+    windows_window_hdr_info(app.window, NULL, output_maximum_luminance,
+                            output_full_frame_luminance, output_bits_per_color);
+    if (!app.hdr_swapchain) return;
+    /* The swapchain is retained only after CheckColorSpaceSupport and
+     * SetColorSpace1 both accept the HDR10/PQ colorspace. */
+    if (app.hdr)
+        SDL_strlcpy(swapchain_color_space, "hdr10-pq", swapchain_color_space_size);
+    if (SUCCEEDED(IDXGISwapChain_QueryInterface(app.hdr_swapchain,
+                                                &pgen_iid_idxgi_swapchain_media,
+                                                (void **)&swapchain_media)) &&
+        swapchain_media) {
+        SDL_zero(statistics);
+        if (SUCCEEDED(IDXGISwapChainMedia_GetFrameStatisticsMedia(swapchain_media,
+                                                                  &statistics))) {
+            const char *mode = "unknown";
+            if (statistics.CompositionMode == DXGI_FRAME_PRESENTATION_MODE_COMPOSED)
+                mode = "composed";
+            else if (statistics.CompositionMode == DXGI_FRAME_PRESENTATION_MODE_OVERLAY)
+                mode = "hardware-overlay";
+            else if (statistics.CompositionMode == DXGI_FRAME_PRESENTATION_MODE_NONE)
+                mode = "direct";
+            else if (statistics.CompositionMode == DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE)
+                mode = "composition-failure";
+            SDL_strlcpy(presentation_mode, mode, presentation_mode_size);
+        }
+        IDXGISwapChainMedia_Release(swapchain_media);
+    }
 }
 
 static void windows_destroy_hdr_output(void)
@@ -1071,8 +1138,17 @@ static bool windows_create_hdr_output(void)
 {
     HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
                                               SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    DXGI_SWAP_CHAIN_DESC desc;
+    static const GUID pgen_iid_idxgi_device =
+        { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
+    static const GUID pgen_iid_idxgi_factory2 =
+        { 0x50c83a1c, 0xe072, 0x4c48, { 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0 } };
+    D3D_FEATURE_LEVEL requested_feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    DXGI_SWAP_CHAIN_DESC1 desc;
     D3D_FEATURE_LEVEL feature_level;
+    IDXGIDevice *dxgi_device = NULL;
+    IDXGIAdapter *adapter = NULL;
+    IDXGIFactory2 *factory = NULL;
+    IDXGISwapChain1 *swapchain1 = NULL;
     IDXGISwapChain3 *swapchain3 = NULL;
     UINT color_support = 0;
     RECT client;
@@ -1082,23 +1158,50 @@ static bool windows_create_hdr_output(void)
         return false;
     }
     SDL_zero(desc);
-    desc.BufferDesc.Width = (UINT)(client.right - client.left);
-    desc.BufferDesc.Height = (UINT)(client.bottom - client.top);
-    desc.BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    desc.Width = 0;
+    desc.Height = 0;
+    desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = 2;
-    desc.OutputWindow = hwnd;
-    desc.Windowed = TRUE;
-    /* Match the proven dogegen HDR presentation path. Flip-discard avoids
-     * preserving old back-buffer contents, while the main loop redraws the
-     * currently selected patch for every presented frame. */
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    result = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
-                                           D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                           NULL, 0, D3D11_SDK_VERSION, &desc,
-                                           &app.hdr_swapchain, &app.hdr_device,
-                                           &feature_level, &app.hdr_context);
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+    /* Create the device separately, then obtain its current DXGI factory and
+     * use the modern HWND flip-model path. This is the same native HDR10
+     * presentation path used by dogegen. The legacy combined creation API is
+     * not updated for current swap-chain features and can leave a window in
+     * the desktop SDR composition policy on some Windows/driver stacks. */
+    result = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
+                               D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                               requested_feature_levels,
+                               (UINT)SDL_arraysize(requested_feature_levels),
+                               D3D11_SDK_VERSION, &app.hdr_device,
+                               &feature_level, &app.hdr_context);
+    if (SUCCEEDED(result))
+        result = ID3D11Device_QueryInterface(app.hdr_device, &pgen_iid_idxgi_device,
+                                             (void **)&dxgi_device);
+    if (SUCCEEDED(result)) result = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+    if (SUCCEEDED(result))
+        result = IDXGIAdapter_GetParent(adapter, &pgen_iid_idxgi_factory2,
+                                        (void **)&factory);
+    if (SUCCEEDED(result))
+        result = IDXGIFactory2_CreateSwapChainForHwnd(factory,
+                                                       (IUnknown *)app.hdr_device,
+                                                       hwnd, &desc, NULL, NULL,
+                                                       &swapchain1);
+    if (SUCCEEDED(result))
+        result = IDXGIFactory2_MakeWindowAssociation(factory, hwnd,
+                                                      DXGI_MWA_NO_WINDOW_CHANGES);
+    if (SUCCEEDED(result)) {
+        app.hdr_swapchain = (IDXGISwapChain *)swapchain1;
+        swapchain1 = NULL;
+    }
+    if (swapchain1) IDXGISwapChain1_Release(swapchain1);
+    if (factory) IDXGIFactory2_Release(factory);
+    if (adapter) IDXGIAdapter_Release(adapter);
+    if (dxgi_device) IDXGIDevice_Release(dxgi_device);
     if (FAILED(result)) {
         SDL_SetError("Could not create the native Windows HDR10 renderer (0x%08lx)", (unsigned long)result);
         windows_destroy_hdr_output();
@@ -1128,7 +1231,8 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
-    if (!windows_hdr_render_target((int)desc.BufferDesc.Width, (int)desc.BufferDesc.Height)) {
+    if (!windows_hdr_render_target((int)(client.right - client.left),
+                                   (int)(client.bottom - client.top))) {
         windows_destroy_hdr_output();
         return false;
     }
@@ -1584,11 +1688,14 @@ static void poll_server(void)
     char window_mode[32] = "window";
     char correction_mode[16] = "system", active_profile[192] = "", profile_hex[385] = "", correction_signal_mode[16] = "sdr";
     char reported_renderer[64] = "starting";
+    char swapchain_color_space[32] = "none", presentation_mode[32] = "unknown";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     double max_luma = 1000.0, min_luma = 0.005, max_cll = 1000.0, max_fall = 400.0;
     double settings_revision_value, display_size_value, patch_size_value;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
+    double output_maximum_luminance = 0.0, output_full_frame_luminance = 0.0;
+    unsigned int output_bits_per_color = 0;
     int status;
 #ifdef _WIN32
     wchar_t active_profile_path[32768] = L"";
@@ -1599,15 +1706,23 @@ static void poll_server(void)
     SDL_UnlockMutex(app.network_mutex);
 #ifdef _WIN32
     reported_hdr_active = windows_window_hdr_enabled(app.window);
+    windows_hdr_diagnostics(swapchain_color_space, sizeof(swapchain_color_space),
+                            presentation_mode, sizeof(presentation_mode),
+                            &output_maximum_luminance,
+                            &output_full_frame_luminance,
+                            &output_bits_per_color);
     windows_active_profile(app.window, active_profile, sizeof(active_profile),
                            active_profile_path, SDL_arraysize(active_profile_path),
                            reported_hdr_active);
 #endif
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u",
                  app.config.token, app.config.client, APP_VERSION,
-                 reported_renderer, reported_hdr_active ? 1 : 0, profile_hex);
+                 reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
+                 swapchain_color_space, presentation_mode,
+                 output_maximum_luminance, output_full_frame_luminance,
+                 output_bits_per_color);
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
         char title[256];

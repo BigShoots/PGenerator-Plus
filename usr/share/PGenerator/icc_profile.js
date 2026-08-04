@@ -1075,6 +1075,11 @@ async function meterIccRefreshCompanionStatus(){
    const renderer=String(state.renderer||'renderer');
    const version=String(state.version||'');
    const hdr=state.hdr_active?' with native HDR active':'';
+   const swapchain=String(state.swapchain_color_space||'');
+   const presentation=String(state.presentation_mode||'');
+   const outputMax=Number(state.output_max_luminance)||0;
+   const outputFull=Number(state.output_full_frame_luminance)||0;
+   const outputBits=Number(state.output_bits_per_color)||0;
    const correctionMode=String(state.correction_mode||'system');
    if(!meterIccCompanionSettingsPending&&['system','clut','matrix'].includes(correctionMode)){
     const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
@@ -1084,7 +1089,10 @@ async function meterIccRefreshCompanionStatus(){
    }
    const activeProfile=String(state.active_profile||'');
    const correction=correctionMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):correctionMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using no application profile correction';
-   const detail='Connected: '+client+' using '+renderer+hdr+correction+(version?' (v'+version+')':'');
+   const nativeDetail=swapchain&&swapchain!=='unknown'
+    ?(' ['+swapchain+(presentation&&presentation!=='unknown'?', '+presentation:'')+(outputBits?', '+outputBits+'-bit':'')+(outputMax?', peak '+outputMax.toFixed(1)+' cd/m²':'')+(outputFull?', full-frame '+outputFull.toFixed(1)+' cd/m²':'')+']')
+    :'';
+   const detail='Connected: '+client+' using '+renderer+hdr+nativeDetail+correction+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;
    meterIccShowCompanionStatus(true,detail);
    meterCalibrationShowCompanionStatus(true,detail);
