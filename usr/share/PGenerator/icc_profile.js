@@ -1081,6 +1081,9 @@ async function meterIccRefreshCompanionStatus(){
    const outputFull=Number(state.output_full_frame_luminance)||0;
    const outputBits=Number(state.output_bits_per_color)||0;
    const correctionMode=String(state.correction_mode||'system');
+   const transformMode=String(state.transform_mode||correctionMode);
+   const transformReady=state.transform_ready!==false;
+   const selectedDisplay=String(state.selected_display||'');
    if(!meterIccCompanionSettingsPending&&['system','clut','matrix'].includes(correctionMode)){
     const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
     const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
@@ -1088,11 +1091,12 @@ async function meterIccRefreshCompanionStatus(){
     if(calibrationMode) calibrationMode.value=correctionMode;
    }
    const activeProfile=String(state.active_profile||'');
-   const correction=correctionMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):correctionMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using no application profile correction';
+   const correction=transformMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):transformMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using no application profile correction';
+   const transformState=transformMode!==correctionMode?' [requested transform not yet applied]':(!transformReady?' [transform not ready]':'');
    const nativeDetail=swapchain&&swapchain!=='unknown'
     ?(' ['+swapchain+(presentation&&presentation!=='unknown'?', '+presentation:'')+(outputBits?', '+outputBits+'-bit':'')+(outputMax?', peak '+outputMax.toFixed(1)+' cd/m²':'')+(outputFull?', full-frame '+outputFull.toFixed(1)+' cd/m²':'')+']')
     :'';
-   const detail='Connected: '+client+' using '+renderer+hdr+nativeDetail+correction+(version?' (v'+version+')':'');
+   const detail='Connected: '+client+(selectedDisplay?' on '+selectedDisplay:'')+' using '+renderer+hdr+nativeDetail+correction+transformState+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;
    meterIccShowCompanionStatus(true,detail);
    meterCalibrationShowCompanionStatus(true,detail);

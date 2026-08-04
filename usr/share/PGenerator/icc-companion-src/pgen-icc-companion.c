@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.12"
+#define APP_VERSION "1.3.13"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -57,6 +57,7 @@ typedef struct {
     char host[192];
     char token[96];
     char client[96];
+    char display[192];
     int port;
     struct sockaddr_storage resolved_address;
     int resolved_address_length;
@@ -131,6 +132,10 @@ typedef struct {
     bool ack_hdr_active;
     bool status_dirty;
     char renderer_name[64];
+    char selected_display[192];
+    double source_r, source_g, source_b;
+    double submitted_r, submitted_g, submitted_b;
+    bool correction_ready;
     char status[256];
 } AppState;
 
@@ -420,8 +425,21 @@ static bool select_target_display(void)
     displays = SDL_GetDisplays(&count);
     if (!displays || count < 1) return false;
     if (count == 1) {
+        const char *name = SDL_GetDisplayName(displays[0]);
+        SDL_strlcpy(app.selected_display, name ? name : "Unnamed display",
+                    sizeof(app.selected_display));
         SDL_free(displays);
         return true;
+    }
+    if (app.config.display[0]) {
+        for (int index = 0; index < count; index++) {
+            const char *name = SDL_GetDisplayName(displays[index]);
+            if (name && (SDL_strcasecmp(name, app.config.display) == 0 ||
+                         SDL_strcasestr(name, app.config.display))) {
+                selected = index + 1;
+                goto display_selected;
+            }
+        }
     }
 #ifdef _WIN32
     {
@@ -458,10 +476,13 @@ static bool select_target_display(void)
         ok = false;
         goto done;
     }
-#ifdef _WIN32
 display_selected:
-#endif
     if (selected < 1 || selected > count) selected = 1;
+    {
+        const char *name = SDL_GetDisplayName(displays[selected - 1]);
+        SDL_strlcpy(app.selected_display, name ? name : "Unnamed display",
+                    sizeof(app.selected_display));
+    }
     if (!SDL_GetDisplayUsableBounds(displays[selected - 1], &bounds)) {
         ok = false;
         goto done;
@@ -519,6 +540,7 @@ static bool load_config(CompanionConfig *config)
         trim(equals);
         if (!strcmp(line, "SERVER")) SDL_strlcpy(config->server, equals, sizeof(config->server));
         else if (!strcmp(line, "TOKEN")) SDL_strlcpy(config->token, equals, sizeof(config->token));
+        else if (!strcmp(line, "DISPLAY")) SDL_strlcpy(config->display, equals, sizeof(config->display));
     }
     fclose(file);
     if (!config->server[0] || !config->token[0]) return false;
@@ -850,6 +872,7 @@ static bool load_correction_lut(uint64_t revision)
         app.correction_lut_grid = 0;
         app.correction_lut_revision = revision;
         app.correction_error[0] = '\0';
+        app.correction_ready = true;
 #ifdef _WIN32
         SDL_free(app.correction_profile_data); app.correction_profile_data=NULL; app.correction_profile_size=0;
 #endif
@@ -861,7 +884,9 @@ static bool load_correction_lut(uint64_t revision)
     SDL_free(app.correction_lut);
     app.correction_lut = NULL;
     app.correction_lut_grid = 0;
+    app.correction_ready = false;
     if (!app.correction_profile[0]) {
+        app.correction_ready = false;
         SDL_strlcpy(app.correction_error, "The operating system did not report an active ICC profile for the selected display", sizeof(app.correction_error));
         return false;
     }
@@ -878,6 +903,7 @@ static bool load_correction_lut(uint64_t revision)
 #endif
     app.correction_lut_revision = revision;
     app.correction_error[0] = '\0';
+    app.correction_ready = true;
     return true;
 }
 
@@ -1710,9 +1736,10 @@ static void send_pending_ack(void)
 
 static void poll_server(void)
 {
-    char path[1200], response[RESPONSE_CAPACITY], mode[32] = "sdr";
+    char path[2048], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     char window_mode[32] = "window";
     char correction_mode[16] = "system", active_profile[192] = "", profile_hex[385] = "", correction_signal_mode[16] = "sdr";
+    char display_hex[385] = "";
     char reported_renderer[64] = "starting";
     char swapchain_color_space[32] = "none", presentation_mode[32] = "unknown";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
@@ -1742,13 +1769,18 @@ static void poll_server(void)
                            reported_hdr_active);
 #endif
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
+    profile_name_hex(app.selected_display, display_hex, sizeof(display_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f",
                  app.config.token, app.config.client, APP_VERSION,
                  reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
+                 display_hex,
                  swapchain_color_space, presentation_mode,
                  output_maximum_luminance, output_full_frame_luminance,
-                 output_bits_per_color);
+                 output_bits_per_color, app.correction_mode,
+                 app.correction_ready ? 1 : 0,
+                 app.source_r, app.source_g, app.source_b,
+                 app.submitted_r, app.submitted_g, app.submitted_b);
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
         char title[256];
@@ -1851,6 +1883,9 @@ static void poll_server(void)
     r = fmax(0.0, fmin(1.0, r / input_max));
     g = fmax(0.0, fmin(1.0, g / input_max));
     b = fmax(0.0, fmin(1.0, b / input_max));
+    app.source_r = r;
+    app.source_g = g;
+    app.source_b = b;
     if (strcmp(app.correction_mode, "system") && strcmp(mode, app.correction_signal_mode)) {
         acknowledge(sequence, false, "The selected ICC correction does not match the patch signal mode", "profile", false);
         app.next_poll_ms = SDL_GetTicks() + 250;
@@ -1861,6 +1896,9 @@ static void poll_server(void)
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }
+    app.submitted_r = r;
+    app.submitted_g = g;
+    app.submitted_b = b;
     SDL_LockMutex(app.network_mutex);
     app.command_sequence = sequence;
     app.command_alignment = false;
@@ -1975,6 +2013,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     app.displayed_max_cll = app.command_max_cll = 1000.0;
     app.displayed_max_fall = app.command_max_fall = 400.0;
     SDL_strlcpy(app.correction_mode, "system", sizeof(app.correction_mode));
+    app.correction_ready = true;
     SDL_strlcpy(app.correction_signal_mode, "sdr", sizeof(app.correction_signal_mode));
 #ifdef _WIN32
     {

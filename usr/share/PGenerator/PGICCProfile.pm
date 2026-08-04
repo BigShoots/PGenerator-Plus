@@ -303,6 +303,15 @@ sub webui_icc_companion_profile_from_query (@) {
  return $profile;
 }
 
+sub webui_icc_companion_text_from_hex_query (@) {
+ my ($query,$name)=@_;
+ return "" unless(defined($query) && $name=~/\A[A-Za-z0-9_]+\z/ &&
+  $query=~/(?:^|&)\Q$name\E=([0-9A-Fa-f]{2,640})(?:&|$)/ && length($1)%2==0);
+ my $text=pack("H*",$1);
+ return "" unless($text=~/\A[\x20-\x7e]{1,160}\z/);
+ return $text;
+}
+
 sub webui_icc_companion_poll (@) {
  my ($query)=@_;
  my $token=&webui_icc_companion_query_value($query,"token");
@@ -314,15 +323,25 @@ sub webui_icc_companion_poll (@) {
  my $swapchain_cs=&webui_icc_companion_query_value($query,"swapchain_cs")||"unknown";
  my $presentation=&webui_icc_companion_query_value($query,"presentation")||"unknown";
  my $active_profile=&webui_icc_companion_profile_from_query($query);
+ my $selected_display=&webui_icc_companion_text_from_hex_query($query,"display_hex");
+ my $transform=&webui_icc_companion_query_value($query,"transform")||"system";
+ $transform="system" unless($transform=~/\A(?:system|clut|matrix)\z/);
+ my $transform_ready=($query=~/(?:^|&)transform_ready=1(?:&|$)/)?1:0;
  my $hdr=($query=~/(?:^|&)hdr=1(?:&|$)/)?1:0;
  my $output_max=0;
  my $output_full=0;
  my $output_bits=0;
+ my @patch_values=(0,0,0,0,0,0);
  $output_max=$1+0 if($query=~/(?:^|&)output_max=(\d+(?:\.\d+)?)(?:&|$)/);
  $output_full=$1+0 if($query=~/(?:^|&)output_full=(\d+(?:\.\d+)?)(?:&|$)/);
  $output_bits=int($1) if($query=~/(?:^|&)output_bits=(\d+)(?:&|$)/);
+ my @patch_keys=("source_r","source_g","source_b","submitted_r","submitted_g","submitted_b");
+ for(my $index=0;$index<@patch_keys;$index++) {
+  my $key=$patch_keys[$index];
+  $patch_values[$index]=$1+0 if($query=~/(?:^|&)\Q$key\E=(\d+(?:\.\d+)?)(?:&|$)/);
+ }
  my $seen=time();
- my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"swapchain_color_space\":\"".&_webui_json_escape($swapchain_cs)."\",\"presentation_mode\":\"".&_webui_json_escape($presentation)."\",\"output_max_luminance\":".($output_max+0).",\"output_full_frame_luminance\":".($output_full+0).",\"output_bits_per_color\":".($output_bits+0).",\"active_profile\":\"".&_webui_json_escape($active_profile)."\",\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
+ my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"selected_display\":\"".&_webui_json_escape($selected_display)."\",\"swapchain_color_space\":\"".&_webui_json_escape($swapchain_cs)."\",\"presentation_mode\":\"".&_webui_json_escape($presentation)."\",\"output_max_luminance\":".($output_max+0).",\"output_full_frame_luminance\":".($output_full+0).",\"output_bits_per_color\":".($output_bits+0).",\"active_profile\":\"".&_webui_json_escape($active_profile)."\",\"transform_mode\":\"$transform\",\"transform_ready\":".($transform_ready?"true":"false").",\"source_rgb\":[".join(",",@patch_values[0..2])."],\"submitted_rgb\":[".join(",",@patch_values[3..5])."],\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
  &webui_icc_companion_write_atomic($_icc_companion_status_file,$status,0600);
  my $command="";
  if(open(my $fh,"<",$_icc_companion_command_file)) { local $/; $command=<$fh>||""; close($fh); }
