@@ -1046,11 +1046,6 @@ static void poll_server(void)
         app.next_poll_ms = SDL_GetTicks() + 1000;
         return;
     }
-    {
-        char title[256];
-        SDL_snprintf(title, sizeof(title), "Connected to %s", app.config.server);
-        queue_status(title);
-    }
     if (json_number(response, "settings_revision", &settings_revision_value) &&
         json_number(response, "display_size", &display_size_value) &&
         json_string(response, "window_mode", window_mode, sizeof(window_mode))) {
@@ -1073,6 +1068,20 @@ static void poll_server(void)
             app.settings_pending = true;
         }
         SDL_UnlockMutex(app.network_mutex);
+    }
+    {
+        char title[512];
+        if (!strcmp(app.correction_mode, "clut"))
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | ICC cLUT: %s%s",
+                         app.correction_profile[0] ? app.correction_profile : "not selected",
+                         app.correction_error[0] ? " (not ready)" : "");
+        else if (!strcmp(app.correction_mode, "matrix"))
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Matrix/TRC: %s%s",
+                         app.correction_profile[0] ? app.correction_profile : "not selected",
+                         app.correction_error[0] ? " (not ready)" : "");
+        else
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Operating-system correction");
+        queue_status(title);
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
