@@ -133,7 +133,8 @@ static void set_windows_window_icon(void)
     if (small) SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)small);
 }
 
-static bool select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
+/* 1 means selected, 0 means cancelled, and -1 requests the SDL fallback. */
+static int select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
 {
     TASKDIALOGCONFIG dialog;
     TASKDIALOG_BUTTON *buttons = SDL_calloc((size_t)count, sizeof(*buttons));
@@ -143,7 +144,7 @@ static bool select_windows_target_display(SDL_DisplayID *displays, int count, in
     if (!buttons || !labels) {
         SDL_free(labels);
         SDL_free(buttons);
-        return false;
+        return -1;
     }
     for (int index = 0; index < count; index++) {
         const char *name = SDL_GetDisplayName(displays[index]);
@@ -175,20 +176,19 @@ static bool select_windows_target_display(SDL_DisplayID *displays, int count, in
     result = TaskDialogIndirect(&dialog, &chosen, NULL, NULL);
     SDL_free(labels);
     SDL_free(buttons);
-    if (FAILED(result) || chosen < 1 || chosen > count) return false;
+    if (FAILED(result)) return -1;
+    if (chosen < 1 || chosen > count) return 0;
     *selected = chosen;
-    return true;
+    return 1;
 }
 #endif
 
 static bool select_target_display(void)
 {
     SDL_DisplayID *displays;
-#ifndef _WIN32
     SDL_MessageBoxButtonData *buttons = NULL;
     char (*labels)[192] = NULL;
     SDL_MessageBoxData dialog;
-#endif
     SDL_Rect bounds;
     int count = 0, selected = 1;
     bool ok = true;
@@ -200,11 +200,15 @@ static bool select_target_display(void)
         return true;
     }
 #ifdef _WIN32
-    if (!select_windows_target_display(displays, count, &selected)) {
+    {
+     int modern_result = select_windows_target_display(displays, count, &selected);
+     if (modern_result == 0) {
         ok = false;
         goto done;
+     }
+     if (modern_result > 0) goto display_selected;
     }
-#else
+#endif
     buttons = SDL_calloc((size_t)count, sizeof(*buttons));
     labels = SDL_calloc((size_t)count, sizeof(*labels));
     if (!buttons || !labels) {
@@ -230,6 +234,8 @@ static bool select_target_display(void)
         ok = false;
         goto done;
     }
+#ifdef _WIN32
+display_selected:
 #endif
     if (selected < 1 || selected > count) selected = 1;
     if (!SDL_GetDisplayUsableBounds(displays[selected - 1], &bounds)) {
@@ -250,10 +256,8 @@ static bool select_target_display(void)
         SDL_RaiseWindow(app.window);
     }
 done:
-#ifndef _WIN32
     SDL_free(labels);
     SDL_free(buttons);
-#endif
     SDL_free(displays);
     return ok;
 }
