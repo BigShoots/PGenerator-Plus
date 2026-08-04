@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.15"
+#define APP_VERSION "1.3.16"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1655,6 +1655,27 @@ static bool render_current_frame(void)
                         app.displayed_r, app.displayed_g, app.displayed_b);
 }
 
+static void raise_pattern_window(void)
+{
+    SDL_SetWindowAlwaysOnTop(app.window, app.fullscreen);
+    SDL_ShowWindow(app.window);
+    SDL_RaiseWindow(app.window);
+#ifdef _WIN32
+    if (app.fullscreen) {
+        HWND window = (HWND)SDL_GetPointerProperty(
+            SDL_GetWindowProperties(app.window),
+            SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+        if (window) {
+            ShowWindow(window, SW_SHOW);
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            BringWindowToTop(window);
+            SetForegroundWindow(window);
+        }
+    }
+#endif
+}
+
 static bool apply_display_settings(bool fullscreen, int patch_size)
 {
     SDL_WindowFlags flags;
@@ -1671,6 +1692,7 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
         app.fullscreen = fullscreen;
     }
     app.displayed_size = patch_size;
+    raise_pattern_window();
     return render_current_frame();
 }
 
@@ -1953,6 +1975,7 @@ static void process_network_updates(void)
     if (have_command) {
         bool ok;
         char message[256] = "";
+        raise_pattern_window();
         if (!alignment) {
             app.displayed_size = command_size;
             app.displayed_max_luma = max_luma;
@@ -2045,10 +2068,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     }
     if (event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
         state->fullscreen = true;
+        raise_pattern_window();
         render_current_frame();
     }
     if (event->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
         state->fullscreen = false;
+        SDL_SetWindowAlwaysOnTop(state->window, false);
         render_current_frame();
     }
     if (event->type == SDL_EVENT_KEY_DOWN) {
