@@ -14,8 +14,9 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.1.1"
 #define WM_TRAYICON (WM_APP + 1)
+#define WM_APPLY_DONE (WM_APP + 2)
 #define TIMER_VERIFY 1
 #define MAX_DISPLAYS 24
 #define ID_DISPLAY 101
@@ -57,6 +58,7 @@ static HFONT g_font_normal, g_font_label, g_font_title, g_font_subtitle, g_font_
 static HBRUSH g_brush_background, g_brush_card;
 static UINT g_dpi = 96;
 static BOOL g_status_ok;
+static BOOL g_status_pending;
 static DISPLAY_ENTRY g_displays[MAX_DISPLAYS];
 static UINT g_display_count;
 static WCHAR g_ini[MAX_PATH];
@@ -70,6 +72,8 @@ static BOOL g_exiting;
 static DWORD g_last_reapply_tick;
 static UINT g_mismatch_count;
 static BOOL g_reapply_attempted_for_mismatch;
+static volatile LONG g_apply_in_progress;
+static BOOL g_profile_pending_selection;
 static HMODULE g_mscms;
 static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
@@ -269,7 +273,15 @@ static void enumerate_displays(void) {
         wcsncpy_s(entry->monitor_path, 256, target.monitorDevicePath, _TRUNCATE);
         {
             WCHAR label[320];
-            swprintf(label, 320, L"%ls  (%ls)", entry->friendly, entry->source_name);
+            UINT duplicate_number = 1;
+            for (j = 0; j < g_display_count; j++) {
+                if (_wcsicmp(g_displays[j].friendly, entry->friendly) == 0)
+                    duplicate_number++;
+            }
+            if (duplicate_number > 1)
+                swprintf(label, 320, L"%ls %u", entry->friendly, duplicate_number);
+            else
+                wcsncpy_s(label, 320, entry->friendly, _TRUNCATE);
             SendMessageW(g_display, CB_ADDSTRING, 0, (LPARAM)label);
         }
         if (g_saved_monitor_path[0] && _wcsicmp(g_saved_monitor_path, entry->monitor_path) == 0)
@@ -371,6 +383,7 @@ static BOOL profile_is_active(DISPLAY_ENTRY *display, WCHAR *actual, size_t actu
 
 static void set_status(BOOL ok, const WCHAR *text) {
     g_status_ok = ok;
+    g_status_pending = FALSE;
     SetWindowTextW(g_status, text);
     SetWindowTextW(g_status_heading, ok ? L"PROFILE ACTIVE" : L"ATTENTION REQUIRED");
     InvalidateRect(g_window, NULL, FALSE);
@@ -378,6 +391,22 @@ static void set_status(BOOL ok, const WCHAR *text) {
     InvalidateRect(g_status_heading, NULL, TRUE);
     update_tray(ok, ok ? L"PGenerator+ Profile Loader: profile active"
                        : L"PGenerator+ Profile Loader: attention required");
+}
+
+static void set_pending_status(const WCHAR *heading, const WCHAR *text) {
+    g_status_ok = FALSE;
+    g_status_pending = TRUE;
+    SetWindowTextW(g_status, text);
+    SetWindowTextW(g_status_heading, heading);
+    InvalidateRect(g_window, NULL, FALSE);
+    InvalidateRect(g_status, NULL, TRUE);
+    InvalidateRect(g_status_heading, NULL, TRUE);
+}
+
+static void show_ready_status(void) {
+    WCHAR text[MAX_PATH + 96];
+    swprintf(text, MAX_PATH + 96, L"Ready to install and apply: %ls", g_profile_name);
+    set_pending_status(L"READY TO APPLY", text);
 }
 
 static void verify_profile(BOOL allow_reapply);
@@ -470,15 +499,41 @@ static BOOL apply_profile(BOOL interactive) {
         if (profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]))) {
             wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
             save_settings();
-            verify_profile(FALSE);
             return TRUE;
         }
     }
     if (!associate_profile(display, interactive)) return FALSE;
     wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
     save_settings();
-    verify_profile(FALSE);
     return TRUE;
+}
+
+static DWORD WINAPI apply_profile_thread(LPVOID unused) {
+    BOOL ok;
+    (void)unused;
+    ok = apply_profile(TRUE);
+    PostMessageW(g_window, WM_APPLY_DONE, ok ? 1 : 0, 0);
+    return 0;
+}
+
+static void start_apply_profile(void) {
+    HANDLE thread;
+    if (InterlockedCompareExchange(&g_apply_in_progress, 1, 0) != 0) return;
+    EnableWindow(g_apply, FALSE);
+    SetWindowTextW(g_apply, L"Applying...");
+    set_pending_status(L"APPLYING PROFILE",
+                       L"Windows is installing and activating the selected profile. You can continue using this window while it finishes.");
+    InvalidateRect(g_apply, NULL, TRUE);
+    thread = CreateThread(NULL, 0, apply_profile_thread, NULL, 0, NULL);
+    if (!thread) {
+        InterlockedExchange(&g_apply_in_progress, 0);
+        EnableWindow(g_apply, TRUE);
+        SetWindowTextW(g_apply, L"Install and apply");
+        message_error(g_window, L"Starting profile application", GetLastError());
+        show_ready_status();
+        return;
+    }
+    CloseHandle(thread);
 }
 
 static void verify_profile(BOOL allow_reapply) {
@@ -488,6 +543,10 @@ static void verify_profile(BOOL allow_reapply) {
     BOOL active;
     if (!display) {
         set_status(FALSE, L"No active display is available.");
+        return;
+    }
+    if (g_profile_pending_selection && g_profile_name[0]) {
+        show_ready_status();
         return;
     }
     if (!g_profile_name[0]) {
@@ -548,8 +607,9 @@ static void choose_profile(void) {
         SetWindowTextW(g_profile, g_profile_path);
         g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
         g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
-        g_profile_name[0] = L'\0';
-        verify_profile(FALSE);
+        wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
+        g_profile_pending_selection = TRUE;
+        show_ready_status();
     }
 }
 
@@ -696,7 +756,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RECT rc, card;
         HDC dc = BeginPaint(hwnd, &ps);
         HBRUSH accent = CreateSolidBrush(RGB(55, 96, 220));
-        HBRUSH dot = CreateSolidBrush(g_status_ok ? RGB(31, 157, 85) : RGB(218, 74, 65));
+        HBRUSH dot = CreateSolidBrush(g_status_ok ? RGB(31, 157, 85) :
+                                     (g_status_pending ? RGB(55, 96, 220) : RGB(218, 74, 65)));
         HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(221, 226, 235));
         HGDIOBJ old_pen, old_brush;
         GetClientRect(hwnd, &rc);
@@ -728,7 +789,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetBkMode(dc, TRANSPARENT);
         if (control == g_status || control == g_status_heading) {
             SetTextColor(dc, control == g_status_heading
-                             ? (g_status_ok ? RGB(24, 132, 70) : RGB(190, 55, 48))
+                             ? (g_status_ok ? RGB(24, 132, 70) :
+                                (g_status_pending ? RGB(55, 96, 220) : RGB(190, 55, 48)))
                              : RGB(45, 52, 66));
             SetBkColor(dc, RGB(255, 255, 255));
             return (LRESULT)g_brush_card;
@@ -742,7 +804,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
         if (item && item->CtlID == ID_APPLY) {
-            COLORREF color = (item->itemState & ODS_SELECTED) ? RGB(39, 74, 177) : RGB(55, 96, 220);
+            COLORREF color = (item->itemState & ODS_DISABLED) ? RGB(166, 174, 190) :
+                             ((item->itemState & ODS_SELECTED) ? RGB(39, 74, 177) : RGB(55, 96, 220));
             HBRUSH brush = CreateSolidBrush(color);
             HGDIOBJ old_brush = SelectObject(item->hDC, brush);
             HGDIOBJ old_pen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
@@ -774,7 +837,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_BROWSE: choose_profile(); break;
-        case ID_APPLY: apply_profile(TRUE); break;
+        case ID_APPLY: start_apply_profile(); break;
         case ID_SETTINGS: case ID_TRAY_SETTINGS: open_color_settings(); break;
         case ID_HIDE: ShowWindow(hwnd, SW_HIDE); break;
         case ID_DISPLAY:
@@ -792,7 +855,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 message_error(hwnd, L"Updating Windows startup", GetLastError());
             break;
         case ID_TRAY_SHOW: show_window(); break;
-        case ID_TRAY_APPLY: apply_profile(TRUE); break;
+        case ID_TRAY_APPLY: start_apply_profile(); break;
         case ID_TRAY_AUTOREAPPLY:
             g_auto_reapply = !g_auto_reapply;
             SendMessageW(GetDlgItem(hwnd, ID_AUTOREAPPLY), BM_SETCHECK,
@@ -802,7 +865,16 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_TIMER:
-        if (wp == TIMER_VERIFY) verify_profile(TRUE);
+        if (wp == TIMER_VERIFY && InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0)
+            verify_profile(TRUE);
+        return 0;
+    case WM_APPLY_DONE:
+        InterlockedExchange(&g_apply_in_progress, 0);
+        EnableWindow(g_apply, TRUE);
+        SetWindowTextW(g_apply, L"Install and apply");
+        InvalidateRect(g_apply, NULL, TRUE);
+        if (wp) g_profile_pending_selection = FALSE;
+        verify_profile(FALSE);
         return 0;
     case WM_DISPLAYCHANGE: case WM_DEVICECHANGE:
         g_reapply_attempted_for_mismatch = FALSE;
