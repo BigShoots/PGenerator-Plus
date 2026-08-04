@@ -843,10 +843,10 @@ function meterIccSyncUi(){
   ?'Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.'
   :'Linked to Patch Size in the Calibration workspace and used by the PGenerator+ HDMI output.';
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
-  ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
+  ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':'')+' Press F11 on the Companion computer to exit fullscreen.')
   :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));
  if(calibrationDisplayModeNote) calibrationDisplayModeNote.textContent=companionWindowMode==='fullscreen'
-  ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size.'
+  ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size. Press F11 on the Companion computer to exit fullscreen.'
   :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
  if(companionCorrectionProfileField) companionCorrectionProfileField.style.display=companionCorrectionMode==='system'?'none':'';
  if(calibrationCorrectionProfileField) calibrationCorrectionProfileField.style.display=companionCorrectionMode==='system'?'none':'';
