@@ -347,6 +347,7 @@ function meterIccPrepareMeasurementControls(){
  meterIccCopySelectOptions('meterDisplayType','meterIccDisplayType',[]);
  meterIccCopySelectOptions('meterCcssProfile','meterIccMeterProfile',['custom_editor']);
  meterIccCopySelectOptions('meterPatchSize','meterIccCompanionPatchSize',[]);
+ meterIccCopySelectOptions('meterPatchSize','meterCalibrationCompanionPatchSize',[]);
  const insertion=document.getElementById('meterIccPatternInsertion');
  if(insertion) insertion.checked=!!((document.getElementById('meterPatchInsert')||{}).checked);
 }
@@ -388,6 +389,21 @@ function meterIccCompanionCorrectionChanged(source){
 }
 
 function meterIccCompanionDisplaySettingsChanged(){
+ meterIccSyncUi();
+ meterIccPushCompanionDisplaySettings(true);
+ meterIccRefreshRecoveryAvailability();
+}
+
+function meterCalibrationCompanionDisplaySettingsChanged(){
+ const calibrationMode=document.getElementById('meterCalibrationCompanionWindowMode');
+ const iccMode=document.getElementById('meterIccCompanionWindowMode');
+ if(calibrationMode&&iccMode) iccMode.value=calibrationMode.value;
+ const calibrationPatch=document.getElementById('meterCalibrationCompanionPatchSize');
+ const mainPatch=document.getElementById('meterPatchSize');
+ if(calibrationPatch&&mainPatch&&mainPatch.value!==calibrationPatch.value){
+  mainPatch.value=calibrationPatch.value;
+  mainPatch.dispatchEvent(new Event('change',{bubbles:true}));
+ }
  meterIccSyncUi();
  meterIccPushCompanionDisplaySettings(true);
  meterIccRefreshRecoveryAvailability();
@@ -805,29 +821,46 @@ function meterIccSyncUi(){
  const companionCorrectionNote=document.getElementById('meterIccCompanionCorrectionNote');
  const calibrationCorrectionMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
  const calibrationCorrectionProfile=document.getElementById('meterCalibrationCompanionCorrectionProfile');
+ const calibrationCorrectionProfileField=document.getElementById('meterCalibrationCompanionCorrectionProfileField');
+ const calibrationCorrectionNote=document.getElementById('meterCalibrationCompanionCorrectionNote');
+ const calibrationWindowMode=document.getElementById('meterCalibrationCompanionWindowMode');
+ const calibrationPatchSize=document.getElementById('meterCalibrationCompanionPatchSize');
+ const calibrationPatchSizeField=document.getElementById('meterCalibrationCompanionPatchSizeField');
+ const calibrationDisplayModeNote=document.getElementById('meterCalibrationCompanionDisplayModeNote');
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
   ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
   :'The delay gives you time to switch the display to the PGenerator+ HDMI input before measurements begin.';
  if(companionPatchSizeField) companionPatchSizeField.style.display=(!usesCompanion||companionWindowMode==='fullscreen')?'':'none';
+ if(calibrationWindowMode&&calibrationWindowMode.value!==companionWindowMode) calibrationWindowMode.value=companionWindowMode;
+ if(calibrationPatchSize){
+  const patchSize=String(meterIccCompanionPatchSizeValue());
+  if(Array.from(calibrationPatchSize.options).some(option=>option.value===patchSize)) calibrationPatchSize.value=patchSize;
+ }
+ if(calibrationPatchSizeField) calibrationPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
  if(patchSizeNote) patchSizeNote.textContent=usesCompanion
   ?'Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.'
   :'Linked to Patch Size in the Calibration workspace and used by the PGenerator+ HDMI output.';
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
   ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
   :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));
+ if(calibrationDisplayModeNote) calibrationDisplayModeNote.textContent=companionWindowMode==='fullscreen'
+  ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size.'
+  :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
  if(companionCorrectionProfileField) companionCorrectionProfileField.style.display=companionCorrectionMode==='system'?'none':'';
+ if(calibrationCorrectionProfileField) calibrationCorrectionProfileField.style.display=companionCorrectionMode==='system'?'none':'';
  if(calibrationCorrectionMode&&calibrationCorrectionMode.value!==companionCorrectionMode) calibrationCorrectionMode.value=companionCorrectionMode;
  if(calibrationCorrectionProfile){
   if(Array.from(calibrationCorrectionProfile.options).some(option=>option.value===companionCorrectionProfile)) calibrationCorrectionProfile.value=companionCorrectionProfile;
-  calibrationCorrectionProfile.style.display=companionCorrectionMode==='system'?'none':'';
  }
- if(companionCorrectionNote) companionCorrectionNote.textContent=companionCorrectionMode==='system'
+ const correctionNote=companionCorrectionMode==='system'
   ?'The Companion sends uncorrected patches through the active Windows Advanced Color or Linux compositor profile pipeline.'
   :(companionCorrectionMode==='clut'
    ?'The Companion applies the selected profile cLUT before rendering each patch. Disable the profile\'s Windows MHC2 system correction while using this mode to avoid applying the correction twice.'
    :'The Companion applies the selected profile matrix and tone-curve fallback before rendering each patch. Disable the profile\'s Windows MHC2 system correction while using this mode to avoid applying the correction twice.');
+ if(companionCorrectionNote) companionCorrectionNote.textContent=correctionNote;
+ if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=correctionNote;
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -972,9 +1005,15 @@ function meterCalibrationShowCompanionStatus(connected,text){
 }
 function meterCalibrationSyncPatternProviderUi(){
  const col=document.getElementById('meterPatternProviderCol');
- const correction=document.getElementById('meterCalibrationCompanionCorrection');
+ const gearWrap=document.getElementById('meterCompanionGearWrap');
  if(col) col.classList.toggle('companion-selected',meterCalibrationUsesCompanion());
- if(correction) correction.style.display=meterCalibrationUsesCompanion()?'':'none';
+ if(gearWrap) gearWrap.classList.toggle('is-hidden',!meterCalibrationUsesCompanion());
+ if(!meterCalibrationUsesCompanion()){
+  const popover=document.getElementById('meterCompanionGearPopover');
+  const gear=document.getElementById('meterCompanionGear');
+  if(popover) popover.classList.remove('open');
+  if(gear){gear.classList.remove('active');gear.setAttribute('aria-expanded','false');}
+ }
  if(meterCalibrationUsesCompanion()){
   if(!meterCalibrationCompanionTimer) meterCalibrationCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
  }else{

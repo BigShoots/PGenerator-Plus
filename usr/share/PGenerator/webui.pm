@@ -11950,6 +11950,8 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .meter-card-header-col-display{flex:1 1 180px;max-width:280px}
 .meter-card-header-col-profile{flex:2 1 440px;max-width:820px}
 .meter-card-header-col-generator{flex:1 1 210px;max-width:310px}
+.meter-generator-control-row{display:flex;align-items:center;gap:6px;width:100%;min-width:0}
+.meter-generator-control-row > .meter-card-header-select{flex:1 1 auto;min-width:0;width:auto}
 .meter-card-header-col-profile.is-spectro-disabled{cursor:help}
 .meter-card-header-col-profile.is-spectro-disabled select{opacity:.58;cursor:not-allowed}
 body.layout-desktop .meter-card-header-row{display:grid;grid-template-columns:minmax(250px,360px) minmax(150px,220px) minmax(240px,340px) minmax(175px,260px);align-items:start;column-gap:14px;row-gap:10px}
@@ -11957,8 +11959,7 @@ body.layout-desktop .meter-card-header-col{width:100%;max-width:none}
 body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:100%;min-width:0;flex:1 1 auto}
 @media(max-width:1250px){body.layout-desktop .meter-card-header-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
-.meter-companion-downloads{display:none;gap:5px;flex-wrap:wrap;margin-top:3px}
-.meter-card-header-col-generator.companion-selected .meter-companion-downloads{display:flex}
+.meter-companion-downloads{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
 .meter-companion-downloads .btn{font-size:.6rem;padding:2px 6px}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
 /* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
@@ -12067,6 +12068,11 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	.meter-xyz-gear-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);min-width:260px}
 	.meter-xyz-gear-popover.open{display:block}
 	#meterProfileGearPopover{width:280px;max-height:72vh;overflow-y:auto;left:0;right:auto}
+	#meterCompanionGearPopover{width:320px;max-width:min(320px,calc(100vw - 32px));max-height:72vh;overflow-y:auto;left:auto;right:0}
+	#meterCompanionGearPopover .field{margin-bottom:9px;display:flex;flex-direction:column;align-items:stretch;gap:4px}
+	#meterCompanionGearPopover .field label{font-size:.62rem;color:var(--text2);text-transform:uppercase;letter-spacing:.45px}
+	#meterCompanionGearPopover .meter-card-header-select{width:100%}
+	.meter-companion-settings-note{font-size:.64rem;color:var(--text2);line-height:1.4;margin:0 0 9px}
 	.meter-profile-title{font-size:.78rem;font-weight:600;color:#dfe6f6;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
 	#meterProfileGearPopover .field{margin-bottom:10px;display:flex;flex-direction:column;align-items:stretch;gap:4px}
 	.meter-profile-section{border-top:1px solid var(--border);margin-top:10px;padding-top:10px;display:flex;flex-direction:column;gap:8px}
@@ -13102,20 +13108,42 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
     <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. ICC Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
-    <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
-     <option value="local">PGenerator output</option>
-     <option value="companion" disabled title="Run the ICC Companion on the target computer to enable this option">ICC Companion</option>
-    </select>
-    <div id="meterCalibrationCompanionCorrection" style="display:none;margin-top:6px">
-     <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use Windows MHC2 or a selected profile transform">
-      <option value="system">Operating-system profile correction</option>
-      <option value="clut">Application-managed ICC cLUT</option>
-      <option value="matrix">Application-managed matrix/TRC fallback</option>
+    <div class="meter-generator-control-row">
+     <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
+      <option value="local">PGenerator output</option>
+      <option value="companion" disabled title="Run the ICC Companion on the target computer to enable this option">ICC Companion</option>
      </select>
-     <select id="meterCalibrationCompanionCorrectionProfile" class="meter-card-header-select" style="display:none;margin-top:4px" onchange="meterIccCompanionCorrectionChanged('calibration')" title="ICC profile used by the Companion"><option value="">Select a created profile</option></select>
+     <span id="meterCompanionGearWrap" class="meter-xyz-gear-wrap is-hidden"><button type="button" id="meterCompanionGear" class="meter-xyz-gear" aria-label="ICC Companion settings" aria-expanded="false" title="ICC Companion settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterCompanionGearPopover" role="dialog" aria-label="ICC Companion settings">
+      <div class="meter-profile-title">ICC Companion Settings</div>
+      <div class="field">
+       <label for="meterCalibrationCompanionWindowMode">Display mode</label>
+       <select id="meterCalibrationCompanionWindowMode" class="meter-card-header-select" onchange="meterCalibrationCompanionDisplaySettingsChanged()">
+        <option value="window">Resizable window, patch fills window</option>
+        <option value="fullscreen">Borderless fullscreen, controlled patch size</option>
+       </select>
+      </div>
+      <div class="field" id="meterCalibrationCompanionPatchSizeField" style="display:none">
+       <label for="meterCalibrationCompanionPatchSize">Patch size</label>
+       <select id="meterCalibrationCompanionPatchSize" class="meter-card-header-select" onchange="meterCalibrationCompanionDisplaySettingsChanged()"></select>
+      </div>
+      <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
+      <div class="field">
+       <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use operating-system correction or a selected profile transform">
+        <option value="system">Operating-system profile correction</option>
+        <option value="clut">Application-managed ICC cLUT</option>
+        <option value="matrix">Application-managed matrix/TRC fallback</option>
+       </select>
+      </div>
+      <div class="field" id="meterCalibrationCompanionCorrectionProfileField" style="display:none">
+       <label for="meterCalibrationCompanionCorrectionProfile">Correction profile</label>
+       <select id="meterCalibrationCompanionCorrectionProfile" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="ICC profile used by the Companion"><option value="">Select a created profile</option></select>
+      </div>
+      <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion sends patches through the active operating-system profile pipeline.</div>
+      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">KDE/Linux</button></div>
+     </div></span>
     </div>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
-    <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download KDE/Linux</button></div>
    </div>
   </div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
@@ -53723,7 +53751,7 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
   const pop=document.getElementById(popId);
   if(!gear||!pop) return;
   const close=()=>{pop.classList.remove('open');gear.classList.remove('active');gear.setAttribute('aria-expanded','false');};
-  const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');if(gearId==='meterProfileGear'){try{meterUpdateProfileFieldVisibility();}catch(e){}}};
+  const open=()=>{pop.classList.add('open');gear.classList.add('active');gear.setAttribute('aria-expanded','true');if(gearId==='meterProfileGear'){try{meterUpdateProfileFieldVisibility();}catch(e){}}if(gearId==='meterCompanionGear'){try{meterIccPrepareMeasurementControls();meterIccSyncUi();meterIccLoadProfiles();meterIccRefreshCompanionStatus();}catch(e){}}};
   gear.addEventListener('click',e=>{e.stopPropagation();pop.classList.contains('open')?close():open();});
   document.addEventListener('click',e=>{if(!pop.contains(e.target)&&e.target!==gear) close();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape') close();});
@@ -53732,7 +53760,8 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  const gears={
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
   customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
-  meterProfile:setupGear('meterProfileGear','meterProfileGearPopover')
+  meterProfile:setupGear('meterProfileGear','meterProfileGearPopover'),
+  iccCompanion:setupGear('meterCompanionGear','meterCompanionGearPopover')
  };
  const gearWrap=id=>{const g=document.getElementById(id);return g&&g.parentElement;};
  window.meterUpdateGearVisibility=function(){
