@@ -34,6 +34,8 @@ PLATFORMS = {
 }
 SAFE_SERVER = re.compile(r"^http://[A-Za-z0-9._\-\[\]:]+$")
 SAFE_TOKEN = re.compile(r"^[0-9a-f]{64}$")
+SERVER_SLOT = (b"__PGEN_SERVER_SLOT__" + b"S" * 256)[:256]
+TOKEN_SLOT = (b"__PGEN_TOKEN_SLOT__" + b"T" * 64)[:64]
 
 
 def fail(message):
@@ -69,13 +71,18 @@ def build(platform, server, token, output_path):
         installer = os.path.join(binary_dir, "PGeneratorPlusICCSetup.exe")
         if not os.path.isfile(installer):
             fail("ICC tools installer is not installed")
-        trailer = "PGEN_PAIRING_V1\nSERVER={}\nTOKEN={}\n".format(server, token).encode("ascii")
-        if len(trailer) > 512:
+        server_value = server.encode("ascii")
+        token_value = token.encode("ascii")
+        if len(server_value) > len(SERVER_SLOT):
             fail("Pairing information is too large")
-        with open(installer, "rb") as source, open(output_path, "wb") as target:
-            target.write(source.read())
-            target.write(trailer)
-            target.write(b" " * (512 - len(trailer)))
+        with open(installer, "rb") as source:
+            payload = source.read()
+        if payload.count(SERVER_SLOT) != 1 or payload.count(TOKEN_SLOT) != 1:
+            fail("ICC tools installer pairing slots are invalid")
+        payload = payload.replace(SERVER_SLOT, server_value.ljust(len(SERVER_SLOT), b" "), 1)
+        payload = payload.replace(TOKEN_SLOT, token_value.ljust(len(TOKEN_SLOT), b" "), 1)
+        with open(output_path, "wb") as target:
+            target.write(payload)
         return filename
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if package["paired"]:
