@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.2"
+#define APP_VERSION L"1.1.3"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -43,6 +43,8 @@ typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayDefault)(
     COLORPROFILESUBTYPE, LPWSTR *);
 typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayUserScope)(
     LUID, UINT32, WCS_PROFILE_MANAGEMENT_SCOPE *);
+typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayList)(
+    WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, LPWSTR **, PDWORD);
 
 typedef struct {
     LUID adapter;
@@ -82,6 +84,7 @@ static HMODULE g_mscms;
 static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
 static PFN_ColorProfileGetDisplayUserScope p_get_scope;
+static PFN_ColorProfileGetDisplayList p_get_list;
 
 static int px(int value) {
     return MulDiv(value, (int)g_dpi, 96);
@@ -445,21 +448,52 @@ static BOOL installed_profile_exists(const WCHAR *name) {
     return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+static BOOL display_profile_is_associated(DISPLAY_ENTRY *display, const WCHAR *name) {
+    LPWSTR *profiles = NULL;
+    DWORD count = 0, i;
+    HRESULT hr;
+    BOOL found = FALSE;
+    if (!display || !name || !p_get_list) return FALSE;
+    hr = p_get_list(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                    display->adapter, display->source_id, &profiles, &count);
+    if (FAILED(hr) || !profiles) return FALSE;
+    for (i = 0; i < count; i++) {
+        if (profiles[i] && _wcsicmp(profile_basename(profiles[i]), name) == 0) {
+            found = TRUE;
+            break;
+        }
+    }
+    LocalFree(profiles);
+    return found;
+}
+
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
+    BOOL associated;
     if (!display || !g_profile_name[0] || !p_add_association) return FALSE;
     if (interactive) {
         /* This corresponds to "Use my settings for this device" and only
            needs to be selected during an explicit apply, not every poll. */
-        WcsSetUsePerUserProfiles(display->source_name, CLASS_MONITOR, TRUE);
+        BOOL per_user = FALSE;
+        if ((!WcsGetUsePerUserProfiles(display->source_name, CLASS_MONITOR, &per_user) ||
+             !per_user) &&
+            !WcsSetUsePerUserProfiles(display->source_name, CLASS_MONITOR, TRUE)) {
+            message_error(g_window, L"Enabling per-user display profiles", GetLastError());
+            return FALSE;
+        }
     }
-    hr = p_add_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
-                           g_profile_name, display->adapter, display->source_id,
-                           TRUE, g_associate_advanced);
-    if (FAILED(hr)) {
-        if (interactive)
-            message_error(g_window, L"Associating the profile with the display", (DWORD)hr);
-        return FALSE;
+    associated = display_profile_is_associated(display, g_profile_name);
+    if (!associated || g_associate_advanced) {
+        /* For a normal profile, add it without changing the active transform;
+           the explicit default setter below performs the only pipeline switch. */
+        hr = p_add_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                               g_profile_name, display->adapter, display->source_id,
+                               g_associate_advanced, g_associate_advanced);
+        if (FAILED(hr)) {
+            if (interactive)
+                message_error(g_window, L"Associating the profile with the display", (DWORD)hr);
+            return FALSE;
+        }
     }
     /* Adding a profile that is already associated can return success without
        promoting it over the previous default. The legacy WCS setter performs
@@ -989,6 +1023,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         p_add_association = (PFN_ColorProfileAddDisplayAssociation)GetProcAddress(g_mscms, "ColorProfileAddDisplayAssociation");
         p_get_default = (PFN_ColorProfileGetDisplayDefault)GetProcAddress(g_mscms, "ColorProfileGetDisplayDefault");
         p_get_scope = (PFN_ColorProfileGetDisplayUserScope)GetProcAddress(g_mscms, "ColorProfileGetDisplayUserScope");
+        p_get_list = (PFN_ColorProfileGetDisplayList)GetProcAddress(g_mscms, "ColorProfileGetDisplayList");
     }
     g_icon_ok = make_status_icon(RGB(35, 166, 78));
     g_icon_bad = make_status_icon(RGB(210, 48, 48));
