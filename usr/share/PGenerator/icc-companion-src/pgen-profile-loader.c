@@ -4,6 +4,8 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <icm.h>
+#include <uxtheme.h>
+#include <dwmapi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.0.0"
+#define APP_VERSION L"1.1.0"
 #define WM_TRAYICON (WM_APP + 1)
 #define TIMER_VERIFY 1
 #define MAX_DISPLAYS 24
@@ -48,9 +50,13 @@ typedef struct {
 } DISPLAY_ENTRY;
 
 static HINSTANCE g_instance;
-static HWND g_window, g_display, g_profile, g_status, g_apply;
+static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply;
 static NOTIFYICONDATAW g_tray;
 static HICON g_icon_ok, g_icon_bad;
+static HFONT g_font_normal, g_font_label, g_font_title, g_font_subtitle, g_font_button;
+static HBRUSH g_brush_background, g_brush_card;
+static UINT g_dpi = 96;
+static BOOL g_status_ok;
 static DISPLAY_ENTRY g_displays[MAX_DISPLAYS];
 static UINT g_display_count;
 static WCHAR g_ini[MAX_PATH];
@@ -61,10 +67,28 @@ static BOOL g_profile_has_mhc2;
 static BOOL g_associate_advanced;
 static BOOL g_auto_reapply = TRUE;
 static BOOL g_exiting;
+static DWORD g_last_reapply_tick;
+static UINT g_mismatch_count;
+static BOOL g_reapply_attempted_for_mismatch;
 static HMODULE g_mscms;
 static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
 static PFN_ColorProfileGetDisplayUserScope p_get_scope;
+
+static int px(int value) {
+    return MulDiv(value, (int)g_dpi, 96);
+}
+
+static HFONT make_ui_font(int points, int weight) {
+    return CreateFontW(-MulDiv(points, (int)g_dpi, 72), 0, 0, 0, weight,
+                       FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+}
+
+static void apply_font(HWND control, HFONT font) {
+    SendMessageW(control, WM_SETFONT, (WPARAM)font, TRUE);
+}
 
 static void message_error(HWND owner, const WCHAR *action, DWORD code) {
     WCHAR system[512] = L"";
@@ -319,6 +343,13 @@ static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
     return hr;
 }
 
+static const WCHAR *profile_basename(const WCHAR *path) {
+    const WCHAR *slash = wcsrchr(path, L'\\');
+    const WCHAR *forward = wcsrchr(path, L'/');
+    if (forward && (!slash || forward > slash)) slash = forward;
+    return slash ? slash + 1 : path;
+}
+
 static BOOL profile_is_active(DISPLAY_ENTRY *display, WCHAR *actual, size_t actual_count) {
     LPWSTR current = NULL;
     WCS_PROFILE_MANAGEMENT_SCOPE scope;
@@ -332,14 +363,19 @@ static BOOL profile_is_active(DISPLAY_ENTRY *display, WCHAR *actual, size_t actu
     }
     wcsncpy_s(actual, actual_count, current, _TRUNCATE);
     {
-        BOOL match = _wcsicmp(current, g_profile_name) == 0;
+        BOOL match = _wcsicmp(profile_basename(current), g_profile_name) == 0;
         LocalFree(current);
         return match;
     }
 }
 
 static void set_status(BOOL ok, const WCHAR *text) {
+    g_status_ok = ok;
     SetWindowTextW(g_status, text);
+    SetWindowTextW(g_status_heading, ok ? L"PROFILE ACTIVE" : L"ATTENTION REQUIRED");
+    InvalidateRect(g_window, NULL, FALSE);
+    InvalidateRect(g_status, NULL, TRUE);
+    InvalidateRect(g_status_heading, NULL, TRUE);
     update_tray(ok, ok ? L"PGenerator+ Profile Loader: profile active"
                        : L"PGenerator+ Profile Loader: attention required");
 }
@@ -368,9 +404,37 @@ static BOOL install_elevated(const WCHAR *path) {
     }
 }
 
+static BOOL installed_profile_exists(const WCHAR *name) {
+    WCHAR directory[MAX_PATH], path[MAX_PATH];
+    DWORD count = MAX_PATH;
+    if (!GetColorDirectoryW(NULL, directory, &count)) return FALSE;
+    swprintf(path, MAX_PATH, L"%ls\\%ls", directory, name);
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
+    HRESULT hr;
+    if (!display || !g_profile_name[0] || !p_add_association) return FALSE;
+    if (interactive) {
+        /* This corresponds to "Use my settings for this device" and only
+           needs to be selected during an explicit apply, not every poll. */
+        WcsSetUsePerUserProfiles(display->source_name, CLASS_MONITOR, TRUE);
+    }
+    hr = p_add_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                           g_profile_name, display->adapter, display->source_id,
+                           TRUE, g_associate_advanced);
+    if (FAILED(hr)) {
+        if (interactive)
+            message_error(g_window, L"Associating the profile with the display", (DWORD)hr);
+        return FALSE;
+    }
+    g_last_reapply_tick = GetTickCount();
+    g_mismatch_count = 0;
+    return TRUE;
+}
+
 static BOOL apply_profile(BOOL interactive) {
     DISPLAY_ENTRY *display = selected_display();
-    HRESULT hr;
     DWORD error;
     if (!display) {
         if (interactive) MessageBoxW(g_window, L"Select an active display first.", APP_NAME,
@@ -388,7 +452,8 @@ static BOOL apply_profile(BOOL interactive) {
             APP_NAME, MB_OK | MB_ICONERROR);
         return FALSE;
     }
-    if (!InstallColorProfileW(NULL, g_profile_path)) {
+    wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
+    if (!installed_profile_exists(g_profile_name) && !InstallColorProfileW(NULL, g_profile_path)) {
         error = GetLastError();
         if (interactive && (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD) &&
             install_elevated(g_profile_path)) {
@@ -398,24 +463,18 @@ static BOOL apply_profile(BOOL interactive) {
             return FALSE;
         }
     }
-    {
-        const WCHAR *base = wcsrchr(g_profile_path, L'\\');
-        base = base ? base + 1 : g_profile_path;
-        wcsncpy_s(g_profile_name, MAX_PATH, base, _TRUNCATE);
-    }
     g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
     g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
-    /* Select the per-user association list, matching "Use my settings for
-       this device" in the legacy control panel. This API is available to a
-       least-privileged user. */
-    WcsSetUsePerUserProfiles(display->source_name, CLASS_MONITOR, TRUE);
-    hr = p_add_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
-                           g_profile_name, display->adapter, display->source_id,
-                           TRUE, g_associate_advanced);
-    if (FAILED(hr)) {
-        if (interactive) message_error(g_window, L"Associating the profile with the display", (DWORD)hr);
-        return FALSE;
+    {
+        WCHAR actual[MAX_PATH + 128] = L"";
+        if (profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]))) {
+            wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
+            save_settings();
+            verify_profile(FALSE);
+            return TRUE;
+        }
     }
+    if (!associate_profile(display, interactive)) return FALSE;
     wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
     save_settings();
     verify_profile(FALSE);
@@ -436,8 +495,26 @@ static void verify_profile(BOOL allow_reapply) {
         return;
     }
     active = profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]));
-    if (!active && allow_reapply && g_auto_reapply && g_profile_path[0]) {
-        if (apply_profile(FALSE)) return;
+    if (!active) {
+        DWORD now = GetTickCount();
+        g_mismatch_count++;
+        /* Wait for two failed checks and permit at most one automatic
+           association attempt per minute. Never reinstall from the timer. */
+        if (allow_reapply && g_auto_reapply && g_profile_name[0] &&
+            g_mismatch_count >= 2 && !g_reapply_attempted_for_mismatch &&
+            (g_last_reapply_tick == 0 || now - g_last_reapply_tick >= 60000)) {
+            g_reapply_attempted_for_mismatch = TRUE;
+            if (associate_profile(display, FALSE)) {
+                active = profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]));
+                if (active) {
+                    verify_profile(FALSE);
+                    return;
+                }
+            }
+        }
+    } else {
+        g_mismatch_count = 0;
+        g_reapply_attempted_for_mismatch = FALSE;
     }
     if (active) {
         if (g_profile_has_mhc2)
@@ -478,17 +555,20 @@ static void choose_profile(void) {
 
 static void layout_controls(HWND hwnd) {
     RECT rc;
-    int w, field_w;
+    int w, content_w;
     GetClientRect(hwnd, &rc);
     w = rc.right - rc.left;
-    field_w = w - 40;
-    MoveWindow(GetDlgItem(hwnd, ID_DISPLAY), 20, 48, field_w, 300, TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_PROFILE), 20, 113, field_w - 105, 25, TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_BROWSE), field_w - 75, 111, 95, 29, TRUE);
-    MoveWindow(g_status, 20, 168, field_w, 92, TRUE);
-    MoveWindow(g_apply, w - 170, 278, 150, 32, TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_SETTINGS), 20, 278, 185, 32, TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_HIDE), w - 285, 278, 105, 32, TRUE);
+    content_w = w - px(56);
+    MoveWindow(g_display, px(28), px(140), content_w, px(280), TRUE);
+    MoveWindow(g_profile, px(28), px(220), content_w - px(124), px(34), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_BROWSE), w - px(140), px(218), px(112), px(38), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_AUTOREAPPLY), px(28), px(276), px(390), px(24), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_STARTUP), w - px(190), px(276), px(162), px(24), TRUE);
+    MoveWindow(g_status_heading, px(58), px(333), content_w - px(56), px(20), TRUE);
+    MoveWindow(g_status, px(58), px(360), content_w - px(60), px(62), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_SETTINGS), px(28), px(450), px(190), px(40), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_HIDE), w - px(292), px(450), px(126), px(40), TRUE);
+    MoveWindow(g_apply, w - px(156), px(450), px(128), px(40), TRUE);
 }
 
 static void show_window(void) {
@@ -523,53 +603,168 @@ static void open_color_settings(void) {
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
-        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         HWND ctl;
-        ctl = CreateWindowW(L"STATIC", L"Display", WS_CHILD | WS_VISIBLE,
-                            20, 25, 100, 20, hwnd, NULL, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        g_dpi = GetDpiForWindow(hwnd);
+        if (!g_dpi) g_dpi = 96;
+        g_font_normal = make_ui_font(10, FW_NORMAL);
+        g_font_label = make_ui_font(9, FW_SEMIBOLD);
+        g_font_title = make_ui_font(20, FW_SEMIBOLD);
+        g_font_subtitle = make_ui_font(10, FW_NORMAL);
+        g_font_button = make_ui_font(10, FW_SEMIBOLD);
+        g_brush_background = CreateSolidBrush(RGB(246, 248, 252));
+        g_brush_card = CreateSolidBrush(RGB(255, 255, 255));
+
+        ctl = CreateWindowW(L"STATIC", L"PGenerator+ Profile Loader",
+                            WS_CHILD | WS_VISIBLE, px(28), px(22), px(520), px(38),
+                            hwnd, NULL, g_instance, NULL);
+        apply_font(ctl, g_font_title);
+        ctl = CreateWindowW(L"STATIC",
+                            L"Keep the correct display profile active across Windows and HDR mode changes.",
+                            WS_CHILD | WS_VISIBLE, px(30), px(66), px(620), px(24),
+                            hwnd, NULL, g_instance, NULL);
+        apply_font(ctl, g_font_subtitle);
+        ctl = CreateWindowW(L"STATIC", L"DISPLAY", WS_CHILD | WS_VISIBLE,
+                            px(28), px(112), px(120), px(20), hwnd, NULL, g_instance, NULL);
+        apply_font(ctl, g_font_label);
         g_display = CreateWindowW(WC_COMBOBOXW, L"", WS_CHILD | WS_VISIBLE |
-                                  CBS_DROPDOWNLIST | WS_VSCROLL, 20, 48, 520, 300,
+                                  CBS_DROPDOWNLIST | WS_VSCROLL, px(28), px(140), px(644), px(280),
                                   hwnd, (HMENU)ID_DISPLAY, g_instance, NULL);
-        SendMessageW(g_display, WM_SETFONT, (WPARAM)font, TRUE);
-        ctl = CreateWindowW(L"STATIC", L"Profile", WS_CHILD | WS_VISIBLE,
-                            20, 90, 100, 20, hwnd, NULL, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        apply_font(g_display, g_font_normal);
+        SetWindowTheme(g_display, L"Explorer", NULL);
+        ctl = CreateWindowW(L"STATIC", L"ICC PROFILE", WS_CHILD | WS_VISIBLE,
+                            px(28), px(192), px(140), px(20), hwnd, NULL, g_instance, NULL);
+        apply_font(ctl, g_font_label);
         g_profile = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                     WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
-                                    20, 113, 415, 25, hwnd, (HMENU)ID_PROFILE, g_instance, NULL);
-        SendMessageW(g_profile, WM_SETFONT, (WPARAM)font, TRUE);
-        ctl = CreateWindowW(L"BUTTON", L"Browse...", WS_CHILD | WS_VISIBLE,
-                            445, 111, 95, 29, hwnd, (HMENU)ID_BROWSE, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
-        ctl = CreateWindowW(L"BUTTON", L"Automatically reapply if Windows changes the default",
-                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 145, 360, 20,
+                                    px(28), px(220), px(520), px(34), hwnd,
+                                    (HMENU)ID_PROFILE, g_instance, NULL);
+        apply_font(g_profile, g_font_normal);
+        SetWindowTheme(g_profile, L"Explorer", NULL);
+        ctl = CreateWindowW(L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE,
+                            px(560), px(218), px(112), px(38), hwnd,
+                            (HMENU)ID_BROWSE, g_instance, NULL);
+        apply_font(ctl, g_font_button);
+        SetWindowTheme(ctl, L"Explorer", NULL);
+        ctl = CreateWindowW(L"BUTTON", L"Automatically restore the selected profile",
+                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, px(28), px(276), px(390), px(24),
                             hwnd, (HMENU)ID_AUTOREAPPLY, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        apply_font(ctl, g_font_normal);
+        SetWindowTheme(ctl, L"Explorer", NULL);
         SendMessageW(ctl, BM_SETCHECK, g_auto_reapply ? BST_CHECKED : BST_UNCHECKED, 0);
         ctl = CreateWindowW(L"BUTTON", L"Start with Windows", WS_CHILD | WS_VISIBLE |
-                            BS_AUTOCHECKBOX, 390, 145, 150, 20, hwnd,
+                            BS_AUTOCHECKBOX, px(510), px(276), px(162), px(24), hwnd,
                             (HMENU)ID_STARTUP, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        apply_font(ctl, g_font_normal);
+        SetWindowTheme(ctl, L"Explorer", NULL);
         SendMessageW(ctl, BM_SETCHECK, startup_enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-        g_status = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
-                                   WS_CHILD | WS_VISIBLE | SS_LEFT, 20, 168, 520, 92,
+        g_status_heading = CreateWindowW(L"STATIC", L"ATTENTION REQUIRED",
+                                         WS_CHILD | WS_VISIBLE, px(58), px(333), px(520), px(20),
+                                         hwnd, NULL, g_instance, NULL);
+        apply_font(g_status_heading, g_font_label);
+        g_status = CreateWindowW(L"STATIC", L"",
+                                   WS_CHILD | WS_VISIBLE | SS_LEFT, px(58), px(360), px(570), px(62),
                                    hwnd, (HMENU)ID_STATUS, g_instance, NULL);
-        SendMessageW(g_status, WM_SETFONT, (WPARAM)font, TRUE);
-        ctl = CreateWindowW(L"BUTTON", L"Color Profile settings", WS_CHILD | WS_VISIBLE,
-                            20, 278, 185, 32, hwnd, (HMENU)ID_SETTINGS, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+        apply_font(g_status, g_font_normal);
+        ctl = CreateWindowW(L"BUTTON", L"Windows color settings", WS_CHILD | WS_VISIBLE,
+                            px(28), px(450), px(190), px(40), hwnd,
+                            (HMENU)ID_SETTINGS, g_instance, NULL);
+        apply_font(ctl, g_font_button);
+        SetWindowTheme(ctl, L"Explorer", NULL);
         ctl = CreateWindowW(L"BUTTON", L"Hide to tray", WS_CHILD | WS_VISIBLE,
-                            275, 278, 105, 32, hwnd, (HMENU)ID_HIDE, g_instance, NULL);
-        SendMessageW(ctl, WM_SETFONT, (WPARAM)font, TRUE);
+                            px(408), px(450), px(126), px(40), hwnd,
+                            (HMENU)ID_HIDE, g_instance, NULL);
+        apply_font(ctl, g_font_button);
+        SetWindowTheme(ctl, L"Explorer", NULL);
         g_apply = CreateWindowW(L"BUTTON", L"Install and apply", WS_CHILD | WS_VISIBLE |
-                                BS_DEFPUSHBUTTON, 390, 278, 150, 32, hwnd,
+                                BS_OWNERDRAW, px(544), px(450), px(128), px(40), hwnd,
                                 (HMENU)ID_APPLY, g_instance, NULL);
-        SendMessageW(g_apply, WM_SETFONT, (WPARAM)font, TRUE);
+        apply_font(g_apply, g_font_button);
         SetWindowTextW(g_profile, g_profile_path);
         enumerate_displays();
         SetTimer(hwnd, TIMER_VERIFY, 5000, NULL);
         verify_profile(FALSE);
+        break;
+    }
+    case WM_ERASEBKGND: {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect((HDC)wp, &rc, g_brush_background ? g_brush_background : (HBRUSH)(COLOR_WINDOW + 1));
+        return 1;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        RECT rc, card;
+        HDC dc = BeginPaint(hwnd, &ps);
+        HBRUSH accent = CreateSolidBrush(RGB(55, 96, 220));
+        HBRUSH dot = CreateSolidBrush(g_status_ok ? RGB(31, 157, 85) : RGB(218, 74, 65));
+        HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(221, 226, 235));
+        HGDIOBJ old_pen, old_brush;
+        GetClientRect(hwnd, &rc);
+        FillRect(dc, &rc, g_brush_background);
+        rc.bottom = px(5);
+        FillRect(dc, &rc, accent);
+        card.left = px(28); card.top = px(316);
+        card.right = rc.right - px(28);
+        card.bottom = px(430);
+        old_pen = SelectObject(dc, border_pen);
+        old_brush = SelectObject(dc, g_brush_card);
+        RoundRect(dc, card.left, card.top, card.right, card.bottom, px(14), px(14));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+        old_brush = SelectObject(dc, dot);
+        Ellipse(dc, px(42), px(335), px(52), px(345));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(accent);
+        DeleteObject(dot);
+        DeleteObject(border_pen);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = (HDC)wp;
+        HWND control = (HWND)lp;
+        SetBkMode(dc, TRANSPARENT);
+        if (control == g_status || control == g_status_heading) {
+            SetTextColor(dc, control == g_status_heading
+                             ? (g_status_ok ? RGB(24, 132, 70) : RGB(190, 55, 48))
+                             : RGB(45, 52, 66));
+            SetBkColor(dc, RGB(255, 255, 255));
+            return (LRESULT)g_brush_card;
+        }
+        SetTextColor(dc, RGB(48, 56, 72));
+        return (LRESULT)g_brush_background;
+    }
+    case WM_CTLCOLORBTN:
+        SetBkMode((HDC)wp, TRANSPARENT);
+        return (LRESULT)g_brush_background;
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
+        if (item && item->CtlID == ID_APPLY) {
+            COLORREF color = (item->itemState & ODS_SELECTED) ? RGB(39, 74, 177) : RGB(55, 96, 220);
+            HBRUSH brush = CreateSolidBrush(color);
+            HGDIOBJ old_brush = SelectObject(item->hDC, brush);
+            HGDIOBJ old_pen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
+            WCHAR text[64];
+            RoundRect(item->hDC, item->rcItem.left, item->rcItem.top,
+                      item->rcItem.right, item->rcItem.bottom, px(10), px(10));
+            SelectObject(item->hDC, old_brush);
+            SelectObject(item->hDC, old_pen);
+            DeleteObject(brush);
+            GetWindowTextW(item->hwndItem, text, 64);
+            SetBkMode(item->hDC, TRANSPARENT);
+            SetTextColor(item->hDC, RGB(255, 255, 255));
+            SelectObject(item->hDC, g_font_button);
+            DrawTextW(item->hDC, text, -1, &item->rcItem,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (item->itemState & ODS_FOCUS) {
+                RECT focus = item->rcItem;
+                InflateRect(&focus, -px(4), -px(4));
+                DrawFocusRect(item->hDC, &focus);
+            }
+            return TRUE;
+        }
         break;
     }
     case WM_SIZE:
@@ -610,6 +805,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == TIMER_VERIFY) verify_profile(TRUE);
         return 0;
     case WM_DISPLAYCHANGE: case WM_DEVICECHANGE:
+        g_reapply_attempted_for_mismatch = FALSE;
         enumerate_displays(); verify_profile(TRUE); return 0;
     case WM_SETTINGCHANGE:
         verify_profile(TRUE); return 0;
@@ -623,6 +819,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_VERIFY);
         Shell_NotifyIconW(NIM_DELETE, &g_tray);
+        DeleteObject(g_font_normal);
+        DeleteObject(g_font_label);
+        DeleteObject(g_font_title);
+        DeleteObject(g_font_subtitle);
+        DeleteObject(g_font_button);
+        DeleteObject(g_brush_background);
+        DeleteObject(g_brush_card);
         PostQuitMessage(0);
         return 0;
     }
@@ -643,6 +846,7 @@ static BOOL already_running(void) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show) {
     WNDCLASSEXW wc;
     MSG msg;
+    INITCOMMONCONTROLSEX controls;
     BOOL tray_only = wcsstr(command_line, L"--tray") != NULL;
     WCHAR *install_arg = wcsstr(command_line, L"--install-only ");
     (void)previous;
@@ -655,6 +859,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         return InstallColorProfileW(NULL, path) ? 0 : (int)GetLastError();
     }
     if (already_running()) return 0;
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    g_dpi = GetDpiForSystem();
+    if (!g_dpi) g_dpi = 96;
+    ZeroMemory(&controls, sizeof(controls));
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&controls);
     g_instance = instance;
     make_ini_path();
     load_settings();
@@ -676,10 +887,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     wc.lpszClassName = L"PGeneratorPlusProfileLoaderWindow";
     if (!RegisterClassExW(&wc)) return 1;
     g_window = CreateWindowExW(0, wc.lpszClassName, APP_NAME L" " APP_VERSION,
-                                WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
-                                CW_USEDEFAULT, CW_USEDEFAULT, 590, 370,
+                                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                                CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(550),
                                 NULL, NULL, instance, NULL);
     if (!g_window) return 1;
+    {
+        DWORD corner = 2; /* DWMWCP_ROUND on Windows 11. */
+        DwmSetWindowAttribute(g_window, 33, &corner, sizeof(corner));
+    }
     ZeroMemory(&g_tray, sizeof(g_tray));
     g_tray.cbSize = sizeof(g_tray);
     g_tray.hWnd = g_window;
