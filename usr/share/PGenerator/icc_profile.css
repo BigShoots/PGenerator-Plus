@@ -23,6 +23,13 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
 .meter-icc-field>label{font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
 .meter-icc-field input,.meter-icc-field select{width:100%;box-sizing:border-box}
+.meter-icc-field input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),.meter-icc-field select{min-height:34px;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border-color .2s,box-shadow .2s}
+.meter-icc-field select{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;padding-right:24px}
+.meter-icc-field input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,.meter-icc-field select:focus{border-color:var(--accent);box-shadow:0 0 0 1px rgba(91,127,255,.25)}
+.meter-icc-field input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):disabled,.meter-icc-field select:disabled{opacity:.55;cursor:not-allowed}
+.meter-icc-field select option,.meter-icc-field select optgroup{background:#0d0d15;color:var(--text)}
+[data-theme="light"] .meter-icc-field input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),[data-theme="light"] .meter-icc-field select{background-color:var(--surface-field)!important;color:var(--text-primary)!important}
+[data-theme="light"] .meter-icc-field select option,[data-theme="light"] .meter-icc-field select optgroup{background:var(--surface-field);color:var(--text-primary)}
 #meterIccProfileName{max-width:360px}
 #meterIccProfileType{max-width:520px}
 #meterIccTargetTransfer{max-width:320px}
