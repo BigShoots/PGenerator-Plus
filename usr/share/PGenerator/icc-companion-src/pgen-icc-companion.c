@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.13"
+#define APP_VERSION "1.3.14"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1248,13 +1248,7 @@ static bool windows_create_hdr_output(void)
             result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, TRUE,
                                                         fullscreen_output);
         if (fullscreen_output) IDXGIOutput_Release(fullscreen_output);
-        if (FAILED(result)) {
-            SDL_SetError("Windows would not grant exclusive HDR presentation (0x%08lx)",
-                         (unsigned long)result);
-            windows_destroy_hdr_output();
-            return false;
-        }
-        app.hdr_exclusive = true;
+        if (SUCCEEDED(result)) app.hdr_exclusive = true;
     }
     result = ID3D11DeviceContext_QueryInterface(app.hdr_context,
                                                 &IID_ID3D11DeviceContext1,
@@ -1289,7 +1283,7 @@ static bool windows_create_hdr_output(void)
     app.hdr_active = windows_window_hdr_enabled(app.window);
     SDL_strlcpy(app.renderer_name,
                 app.hdr_exclusive ? "direct3d11-hdr10-exclusive"
-                                  : "direct3d11-hdr10-windowed",
+                                  : "direct3d11-hdr10-composed",
                 sizeof(app.renderer_name));
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
