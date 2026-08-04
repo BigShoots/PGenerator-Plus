@@ -35944,6 +35944,7 @@ async function meterSelectSeries(type,points,opts){
   // synchronous and can otherwise stall on large profiling/session caches.
   meterCacheSeriesState(meterSeriesRunning?'running':'complete',{deferPersist:true});
  }
+ meterChartBoxZoomResetAll(false);
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  meterCurrentPatchStep=null;
@@ -46367,6 +46368,7 @@ function drawRGBChartPreset(gsSteps){
  const rotateX=meterGreyscaleRotateXLabels(gsSteps.length);
  const chart=drawChartGrid(ctx,{
   pad:meterGreyscaleChartPad(null,gsSteps.length),
+  xInset:15,
   xSteps:gsSteps.length-1||1,ySteps:4,
   xLabel:(i,n)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
   yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(0),
@@ -46380,9 +46382,12 @@ function drawDeltaEPreset(gsSteps){
  if(!ctx) return;
  let yMax=5;
  yMax=meterApplyTopYZoom('chartDeltaE',yMax,0).max;
+ const rawW=ctx.w-55-15;
+ const estBarW=Math.max(8,Math.min(30,rawW/(gsSteps.length*1.5)));
  const rotateX=meterGreyscaleRotateXLabels(gsSteps.length);
  const chart=drawChartGrid(ctx,{
   pad:meterGreyscaleChartPad({t:20,r:15,b:30,l:55},gsSteps.length),
+  xInset:estBarW/2+4,
   xSteps:gsSteps.length-1||1,ySteps:5,
   xLabel:(i)=>i<gsSteps.length?meterGreyscaleChartLabel(gsSteps[i],gsSteps,i):'',
   yLabel:(i,n)=>(yMax*i/n).toFixed(1),
@@ -46803,6 +46808,7 @@ function getChartCtx(id){
  const c=document.getElementById(id);
  if(!c) return null;
  meterEnsureChartYZoomInput(c);
+ meterEnsureChartBoxZoomInput(c);
  const dpr=pgCanvasPixelRatio();
  const rect=c.getBoundingClientRect();
  // Guard: if canvas not visible (VS Code webview, hidden panel), skip
@@ -46828,10 +46834,142 @@ let meterChartYZoom={};
 let meterChartYZoomActive={};
 let meterChartYZoomTouch=null;
 let _chartYZoomHelpZones=[];
-const METER_CHART_Y_ZOOM_HELP_TEXT='Scroll on the Y axis to zoom. Drag the Y axis on touch screens. Double-click the Y axis to reset.';
+const METER_CHART_BOX_ZOOM_HELP_TEXT='Drag a box inside the plot to show only that section. Double-click the plot to reset.';
+const METER_CHART_Y_ZOOM_HELP_TEXT='Drag a box inside the plot to show only that section. Scroll on the Y axis to zoom vertically. Double-click the plot or Y axis to reset.';
+
+const METER_GREYSCALE_BOX_ZOOM_IDS=new Set(['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma']);
+let meterChartBoxZoom={};
+
+function meterChartCanBoxZoom(id){
+ return METER_GREYSCALE_BOX_ZOOM_IDS.has(String(id||''));
+}
+
+function meterChartBoxViewport(id){
+ const view=meterChartBoxZoom[id];
+ if(!view) return {x0:0,x1:1,y0:0,y1:1};
+ const x0=Math.max(0,Math.min(1,Number(view.x0)||0));
+ const x1=Math.max(x0+0.001,Math.min(1,Number(view.x1)||1));
+ const y0=Math.max(0,Math.min(1,Number(view.y0)||0));
+ const y1=Math.max(y0+0.001,Math.min(1,Number(view.y1)||1));
+ return {x0,x1,y0,y1};
+}
+
+function meterChartBoxZoomReset(id,redraw){
+ if(id) delete meterChartBoxZoom[id];
+ if(redraw!==false) meterRedrawForChartYZoom(id);
+}
+
+function meterChartBoxZoomResetAll(redraw){
+ const ids=Object.keys(meterChartBoxZoom);
+ meterChartBoxZoom={};
+ if(redraw!==false) ids.forEach(meterRedrawForChartYZoom);
+}
+
+function meterChartBoxZoomPlotRect(canvas){
+ if(!canvas) return null;
+ const rect=canvas.getBoundingClientRect();
+ const pad=meterChartYZoomAxisPad(canvas.id);
+ const stepCount=Math.max(1,(meterSeriesSteps&&meterSeriesSteps.length)||1);
+ const innerWidth=Math.max(1,rect.width-(Number(pad.l)||55)-(Number(pad.r)||15));
+ let xInset=0;
+ if(canvas.id==='chartRGB') xInset=15;
+ else if(canvas.id==='chartDeltaE'){
+  const barWidth=Math.max(8,Math.min(30,innerWidth/(stepCount*1.5)));
+  xInset=barWidth/2+4;
+ }
+ const left=(Number(pad.l)||55)+xInset,top=Number(pad.t)||20;
+ const right=rect.width-(Number(pad.r)||15)-xInset,bottom=rect.height-(Number(pad.b)||30);
+ if(!(right>left&&bottom>top)) return null;
+ return {rect,pad,left,top,right,bottom,width:right-left,height:bottom-top,xInset};
+}
+
+function meterChartBoxZoomOverlay(canvas){
+ if(!canvas||!canvas.parentElement) return null;
+ const parent=canvas.parentElement;
+ if(getComputedStyle(parent).position==='static') parent.style.position='relative';
+ let overlay=parent.querySelector('.meter-chart-box-zoom[data-canvas-id="'+canvas.id+'"]');
+ if(!overlay){
+  overlay=document.createElement('div');
+  overlay.className='meter-chart-box-zoom';
+  overlay.dataset.canvasId=canvas.id;
+  overlay.style.cssText='display:none;position:absolute;z-index:6;pointer-events:none;border:1px solid #66a3ff;background:rgba(66,133,244,.18);box-sizing:border-box';
+  parent.appendChild(overlay);
+ }
+ return overlay;
+}
+
+function meterEnsureChartBoxZoomInput(canvas){
+ if(!canvas||!meterChartCanBoxZoom(canvas.id)||canvas._meterBoxZoomBound) return;
+ canvas._meterBoxZoomBound=1;
+ canvas.addEventListener('mousemove',e=>{
+  if(!meterChartYZoomHelpHit(e,canvas.id)) return;
+  e.stopImmediatePropagation();
+  meterShowChartYZoomHelpTooltip(e,canvas.id);
+ },true);
+ const finish=(e,cancelled)=>{
+  const drag=canvas._meterBoxZoomDrag;
+  if(!drag||drag.pointerId!==e.pointerId) return;
+  canvas._meterBoxZoomDrag=null;
+  try{ canvas.releasePointerCapture(e.pointerId); }catch(_e){}
+  if(drag.overlay) drag.overlay.style.display='none';
+  if(cancelled) return;
+  const xA=Math.max(drag.plot.left,Math.min(drag.plot.right,drag.x));
+  const yA=Math.max(drag.plot.top,Math.min(drag.plot.bottom,drag.y));
+  const xB=Math.max(drag.plot.left,Math.min(drag.plot.right,e.clientX-drag.plot.rect.left));
+  const yB=Math.max(drag.plot.top,Math.min(drag.plot.bottom,e.clientY-drag.plot.rect.top));
+  if(Math.abs(xB-xA)<8||Math.abs(yB-yA)<8) return;
+  const localX0=(Math.min(xA,xB)-drag.plot.left)/drag.plot.width;
+  const localX1=(Math.max(xA,xB)-drag.plot.left)/drag.plot.width;
+  const localY0=1-(Math.max(yA,yB)-drag.plot.top)/drag.plot.height;
+  const localY1=1-(Math.min(yA,yB)-drag.plot.top)/drag.plot.height;
+  const old=meterChartBoxViewport(canvas.id);
+  meterChartBoxZoom[canvas.id]={
+   x0:old.x0+localX0*(old.x1-old.x0),x1:old.x0+localX1*(old.x1-old.x0),
+   y0:old.y0+localY0*(old.y1-old.y0),y1:old.y0+localY1*(old.y1-old.y0)
+  };
+  canvas._meterBoxZoomSuppressClickUntil=Date.now()+300;
+  meterRedrawForChartYZoom(canvas.id);
+ };
+ canvas.addEventListener('pointerdown',e=>{
+  if(e.button!==0) return;
+  const plot=meterChartBoxZoomPlotRect(canvas);
+  if(!plot) return;
+  const x=e.clientX-plot.rect.left,y=e.clientY-plot.rect.top;
+  if(x<plot.left||x>plot.right||y<plot.top||y>plot.bottom) return;
+  const overlay=meterChartBoxZoomOverlay(canvas);
+  canvas._meterBoxZoomDrag={pointerId:e.pointerId,x,y,plot,overlay};
+  try{ canvas.setPointerCapture(e.pointerId); }catch(_e){}
+  if(overlay){
+   overlay.style.left=(canvas.offsetLeft+x)+'px';overlay.style.top=(canvas.offsetTop+y)+'px';
+   overlay.style.width='0px';overlay.style.height='0px';overlay.style.display='block';
+  }
+  const tip=document.getElementById('chartTooltip');if(tip) tip.style.display='none';
+ },true);
+ canvas.addEventListener('pointermove',e=>{
+  const drag=canvas._meterBoxZoomDrag;
+  if(!drag||drag.pointerId!==e.pointerId||!drag.overlay) return;
+  const x=Math.max(drag.plot.left,Math.min(drag.plot.right,e.clientX-drag.plot.rect.left));
+  const y=Math.max(drag.plot.top,Math.min(drag.plot.bottom,e.clientY-drag.plot.rect.top));
+  drag.overlay.style.left=(canvas.offsetLeft+Math.min(drag.x,x))+'px';
+  drag.overlay.style.top=(canvas.offsetTop+Math.min(drag.y,y))+'px';
+  drag.overlay.style.width=Math.abs(x-drag.x)+'px';drag.overlay.style.height=Math.abs(y-drag.y)+'px';
+ },true);
+ canvas.addEventListener('pointerup',e=>finish(e,false),true);
+ canvas.addEventListener('pointercancel',e=>finish(e,true),true);
+ canvas.addEventListener('dblclick',e=>{
+  const plot=meterChartBoxZoomPlotRect(canvas);
+  if(!plot) return;
+  const x=e.clientX-plot.rect.left,y=e.clientY-plot.rect.top;
+  if(x<plot.left||x>plot.right||y<plot.top||y>plot.bottom) return;
+  e.preventDefault();e.stopImmediatePropagation();
+  meterChartBoxZoomReset(canvas.id,false);
+  meterChartYZoomReset(canvas.id);
+ },true);
+}
 
 function meterChartCanYZoom(id){
- return /^chart/.test(String(id||'')) && id!=='chartCIE';
+ id=String(id||'');
+ return /^chart/.test(id) && id!=='chartCIE' && id!=='chartEOTF' && id!=='chartGamma';
 }
 
 function meterChartYZoomAxisPad(id){
@@ -46864,7 +47002,7 @@ function meterChartYZoomTouchWidth(canvas){
 }
 
 function meterChartYZoomHelpRect(id,pad){
- if(!meterChartCanYZoom(id)) return null;
+ if(!meterChartCanYZoom(id)&&!meterChartCanBoxZoom(id)) return null;
  const radius=7;
  const inset=10;
  return {cx:inset,cy:inset,radius:radius};
@@ -46889,10 +47027,10 @@ function meterChartYZoomHelpHit(e,canvasId){
  return Math.sqrt(dx*dx+dy*dy)<=zone.radius+4 ? zone : null;
 }
 
-function meterShowChartYZoomHelpTooltip(e){
+function meterShowChartYZoomHelpTooltip(e,canvasId){
  const tip=document.getElementById('chartTooltip');
  if(!tip) return;
- tip.innerHTML=METER_CHART_Y_ZOOM_HELP_TEXT;
+ tip.innerHTML=meterChartCanYZoom(canvasId)?METER_CHART_Y_ZOOM_HELP_TEXT:METER_CHART_BOX_ZOOM_HELP_TEXT;
  tip.style.display='block';
  const tx=e.clientX+14,ty=e.clientY-10;
  tip.style.left=Math.min(tx,window.innerWidth-tip.offsetWidth-10)+'px';
@@ -46905,7 +47043,7 @@ function meterChartYZoomValue(id){
 }
 
 function meterChartYZoomIsActive(id){
- return !!(meterChartYZoomActive&&meterChartYZoomActive[id]);
+ return meterChartCanYZoom(id)&&!!(meterChartYZoomActive&&meterChartYZoomActive[id]);
 }
 
 function meterSetChartYZoom(id,value){
@@ -46950,6 +47088,7 @@ function meterRedrawForChartYZoom(id){
   const ids=[...meterChartYZoomRedrawIds];
   meterChartYZoomRedrawIds.clear();
   ids.forEach(meterRedrawSingleChartForYZoom);
+  if(ids.some(id=>meterChartCanBoxZoom(id))) chartRegisterInteraction();
  });
 }
 
@@ -47060,7 +47199,7 @@ function meterEnsureChartYZoomInput(canvas){
  canvas.addEventListener('mousemove',e=>{
   if(!meterChartYZoomHelpHit(e,canvas.id)) return;
   e.stopImmediatePropagation();
-  meterShowChartYZoomHelpTooltip(e);
+  meterShowChartYZoomHelpTooltip(e,canvas.id);
  },true);
  canvas.addEventListener('mouseleave',()=>{ const tip=document.getElementById('chartTooltip'); if(tip) tip.style.display='none'; });
  canvas.addEventListener('wheel',e=>{
@@ -47071,13 +47210,14 @@ function meterEnsureChartYZoomInput(canvas){
  canvas.addEventListener('dblclick',e=>{
   if(!meterChartPointerIsOnYAxis(canvas,e)) return;
   e.preventDefault();
+  meterChartBoxZoomReset(canvas.id,false);
   meterChartYZoomReset(canvas.id);
  });
  meterSyncChartYZoomTouchZone(canvas);
 }
 
 function meterDrawChartYZoomHelp(ctx,pad){
- if(!ctx||!ctx.canvasId||!meterChartCanYZoom(ctx.canvasId)) return;
+ if(!ctx||!ctx.canvasId||(!meterChartCanYZoom(ctx.canvasId)&&!meterChartCanBoxZoom(ctx.canvasId))) return;
  const rect=meterChartYZoomHelpRect(ctx.canvasId,pad);
  meterChartRegisterYZoomHelp(ctx.canvasId,rect);
  if(!rect) return;
@@ -47189,9 +47329,11 @@ function meterDrawStickyYAxis(ctx,opts,pad,h){
  ac.textAlign='right';
  ac.textBaseline='alphabetic';
  const ySteps=opts.ySteps||5;
+ const view=meterChartCanBoxZoom(ctx.canvasId)?meterChartBoxViewport(ctx.canvasId):{y0:0,y1:1};
  for(let i=0;i<=ySteps;i++){
   const lbl=opts.yLabel?opts.yLabel(i,ySteps):'';
-  ac.fillText(lbl,(pad.l||45)-4,pad.t+h-h*(i/ySteps)+3);
+  const p=((i/ySteps)-view.y0)/(view.y1-view.y0);
+  if(p>=0&&p<=1) ac.fillText(lbl,(pad.l||45)-4,pad.t+h-h*p+3);
  }
  ac.canvasId=ctx.canvasId;
  meterDrawChartYZoomHelp(ac,pad);
@@ -47201,6 +47343,9 @@ function drawChartGrid(ctx,opts){
  const pad=opts.pad||{t:20,r:15,b:30,l:45};
  const w=ctx.w-pad.l-pad.r, h=ctx.h-pad.t-pad.b;
  const xIn=opts.xInset||0, dw=w-2*xIn;
+ const view=meterChartCanBoxZoom(ctx.canvasId)?meterChartBoxViewport(ctx.canvasId):{x0:0,x1:1,y0:0,y1:1};
+ const viewX=v=>(v-view.x0)/(view.x1-view.x0);
+ const viewY=v=>(v-view.y0)/(view.y1-view.y0);
  // Background
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
  ctx.fillRect(0,0,ctx.w,ctx.h);
@@ -47223,22 +47368,31 @@ function drawChartGrid(ctx,opts){
   ctx.globalAlpha=0.28;
   ctx.beginPath();
   for(let i=0;i<=xSteps;i++){
-   const x=pad.l+xIn+dw*(i/xSteps);
+   const p=viewX(i/xSteps);
+   if(p<0||p>1) continue;
+   const x=pad.l+xIn+dw*p;
    ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);
   }
   ctx.stroke();
   ctx.restore();
  }
  for(let i=0;i<=xSteps;i+=xStride){
-  const x=pad.l+xIn+dw*(i/xSteps);
+  const p=viewX(i/xSteps);
+  if(p<0||p>1) continue;
+  const x=pad.l+xIn+dw*p;
   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
  }
  if(xSteps%xStride){
-  const x=pad.l+xIn+dw;
+  const p=viewX(1);
+  const x=pad.l+xIn+dw*p;
+  if(p>=0&&p<=1){
   ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+h);ctx.stroke();
+  }
  }
  for(let i=0;i<=ySteps;i++){
-  const y=pad.t+h*(i/ySteps);
+  const p=viewY(1-i/ySteps);
+  if(p<0||p>1) continue;
+  const y=pad.t+h*(1-p);
   ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+w,y);ctx.stroke();
  }
  // Axes
@@ -47253,7 +47407,9 @@ function drawChartGrid(ctx,opts){
    for(let i=0;i<=xSteps;i++){
     const lbl=String(opts.xLabel(i,xSteps)||'').replace(/^Patch\s+/i,'');
     if(!lbl) continue;
-    const x=pad.l+xIn+dw*(i/xSteps);
+    const p=viewX(i/xSteps);
+    if(p<0||p>1) continue;
+    const x=pad.l+xIn+dw*p;
     ctx.save();
     ctx.translate(x,pad.t+h+5);
     ctx.rotate(-Math.PI/4);
@@ -47265,7 +47421,9 @@ function drawChartGrid(ctx,opts){
    for(let i=0;i<=xSteps;i+=xStride){
     const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
     if(!lbl) continue;
-    const x=pad.l+xIn+dw*(i/xSteps);
+    const p=viewX(i/xSteps);
+    if(p<0||p>1) continue;
+    const x=pad.l+xIn+dw*p;
     ctx.save();
     ctx.translate(x,pad.t+h+6);
     ctx.rotate(-Math.PI/4);
@@ -47275,40 +47433,48 @@ function drawChartGrid(ctx,opts){
    }
    if(xSteps%xStride){
     const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
-    if(lbl){
+   if(lbl){
+    const p=viewX(1);
+    if(p>=0&&p<=1){
      ctx.save();
-     ctx.translate(pad.l+xIn+dw,pad.t+h+6);
+     ctx.translate(pad.l+xIn+dw*p,pad.t+h+6);
      ctx.rotate(-Math.PI/4);
      ctx.textAlign='right';
      ctx.fillText(lbl,0,4);
      ctx.restore();
     }
    }
+   }
   }
  } else {
   ctx.textAlign='center';
   for(let i=0;i<=xSteps;i+=xStride){
    const lbl=opts.xLabel?opts.xLabel(i,xSteps):(i*100/xSteps).toFixed(0);
-   ctx.fillText(lbl,pad.l+xIn+dw*(i/xSteps),pad.t+h+14);
+   const p=viewX(i/xSteps);
+   if(p>=0&&p<=1) ctx.fillText(lbl,pad.l+xIn+dw*p,pad.t+h+14);
   }
   if(xSteps%xStride){
    const lbl=opts.xLabel?opts.xLabel(xSteps,xSteps):'100';
-   ctx.fillText(lbl,pad.l+xIn+dw,pad.t+h+14);
+   const p=viewX(1);
+   if(p>=0&&p<=1) ctx.fillText(lbl,pad.l+xIn+dw*p,pad.t+h+14);
   }
  }
  // Y labels
  ctx.textAlign='right';
  for(let i=0;i<=ySteps;i++){
   const lbl=opts.yLabel?opts.yLabel(i,ySteps):'';
-  ctx.fillText(lbl,pad.l-4,pad.t+h-h*(i/ySteps)+3);
+  const p=viewY(i/ySteps);
+  if(p>=0&&p<=1) ctx.fillText(lbl,pad.l-4,pad.t+h-p*h+3);
  }
  meterDrawChartYZoomHelp(ctx,pad);
  meterDrawStickyYAxis(ctx,opts,pad,h);
- return {pad,w,h,dw,toX:v=>pad.l+xIn+v*dw, toY:v=>pad.t+h-v*h};
+ return {pad,w,h,dw,view,toX:v=>pad.l+xIn+viewX(v)*dw, toY:v=>pad.t+h-viewY(v)*h};
 }
 
 function drawLine(ctx,chart,points,color,width){
  if(points.length<2) return;
+ ctx.save();
+ ctx.beginPath();ctx.rect(chart.pad.l,chart.pad.t,chart.w,chart.h);ctx.clip();
  ctx.strokeStyle=color;ctx.lineWidth=width||1.5;
  ctx.beginPath();
  points.forEach((p,i)=>{
@@ -47316,15 +47482,19 @@ function drawLine(ctx,chart,points,color,width){
   if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
  });
  ctx.stroke();
+ ctx.restore();
 }
 
 function drawDots(ctx,chart,points,color,radius){
+ ctx.save();
+ ctx.beginPath();ctx.rect(chart.pad.l,chart.pad.t,chart.w,chart.h);ctx.clip();
  ctx.fillStyle=color;
  points.forEach(p=>{
   ctx.beginPath();
   ctx.arc(chart.toX(p[0]),chart.toY(p[1]),radius||2.5,0,Math.PI*2);
   ctx.fill();
  });
+ ctx.restore();
 }
 
 function drawDashedLine(ctx,chart,points,color,width){
@@ -47441,11 +47611,14 @@ function drawRGBChart(gs,allSteps,readingMap){
  // R/G/B label at right
  if(rPts.length>0){
   const last=rPts.length-1;
-  ctx.font='11px sans-serif';ctx.textAlign='left';
-  const xOff=chart.toX(rPts[last][0])+6;
-  ctx.fillStyle='#f44';ctx.fillText('R',xOff,chart.toY(rPts[last][1])+3);
-  ctx.fillStyle='#4caf50';ctx.fillText('G',xOff,chart.toY(gPts[last][1])+3);
-  ctx.fillStyle='#42a5f5';ctx.fillText('B',xOff,chart.toY(bPts[last][1])+3);
+  const lastX=rPts[last][0];
+  if(lastX>=chart.view.x0&&lastX<=chart.view.x1){
+   ctx.font='11px sans-serif';ctx.textAlign='left';
+   const xOff=chart.toX(lastX)+6;
+   ctx.fillStyle='#f44';ctx.fillText('R',xOff,chart.toY(rPts[last][1])+3);
+   ctx.fillStyle='#4caf50';ctx.fillText('G',xOff,chart.toY(gPts[last][1])+3);
+   ctx.fillStyle='#42a5f5';ctx.fillText('B',xOff,chart.toY(bPts[last][1])+3);
+  }
  }
 }
 
@@ -47726,14 +47899,17 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
  if(3/yMax<=1) drawDashedLine(ctx,chart,[[0,3/yMax],[1,3/yMax]],'#ff980080');
  // Draw bars for each x-axis step
  const barW=Math.max(8,Math.min(30,(chart.dw||chart.w)/(n*1.5)));
+ ctx.save();
+ ctx.beginPath();ctx.rect(chart.pad.l,chart.pad.t,chart.w,chart.h);ctx.clip();
  xSteps.forEach((step,i)=>{
   const cx=chart.toX(meterGreyCategoryChartX(xSteps,i));
   const dE=deMap[step.ire];
   if(dE!=null){
    const barH=Math.max(0.005,Math.min(dE/yMax,1));
-   const y=chart.pad.t+chart.h-barH*chart.h;
+   const y=chart.toY(barH);
+   const baseY=chart.toY(0);
    const px=cx-barW/2;
-   const fullH=Math.max(2,barH*chart.h);
+   const fullH=Math.max(2,baseY-y);
    // Threshold color judged on the drawn total (long hex so the faded
    // luminance cap can reuse it with an alpha suffix).
    const color=dE<1?'#4caf50':dE<3?'#ff9800':'#ff4444';
@@ -47746,12 +47922,12 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
     // paints the lower half green while a total 1.8 paints the luminance cap
     // amber. The top cap keeps its soft self-colored glow.
     const chromaColor=chromaDE<1?'#4caf50':chromaDE<3?'#ff9800':'#ff4444';
-    const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH)*chart.h;
-    const yChroma=chart.pad.t+chart.h-chromaH;
+    const chromaH=Math.min(Math.max(chromaDE,0)/yMax,barH);
+    const yChroma=chart.toY(chromaH);
     const capH=Math.max(0,yChroma-y);
     // Chroma (bottom) segment first so the cap glow sits cleanly on top.
     ctx.fillStyle=chromaColor;
-    ctx.fillRect(px,yChroma,barW,Math.max(0,chart.pad.t+chart.h-yChroma));
+    ctx.fillRect(px,yChroma,barW,Math.max(0,baseY-yChroma));
     if(capH>0.5){
      ctx.save();
      ctx.shadowColor=color;
@@ -47772,9 +47948,10 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
   } else {
    // Placeholder: thin grey line
    ctx.fillStyle='#33333380';
-   ctx.fillRect(cx-1,chart.pad.t+chart.h-2,2,2);
+   ctx.fillRect(cx-1,chart.toY(0)-2,2,2);
   }
  });
+ ctx.restore();
  // Average dE line
  meterDrawDeltaSummary(ctx,chart,deValues);
  // White point info (CCT, Δxy from D65)
@@ -50679,7 +50856,10 @@ function chartRegisterInteraction(){
    const rd=readingByIre[step.ire];
    if(!rd) return;
    const xNorm=meterGreyscaleInteractionXForChart(cid,step,chartSteps,idx);
-   const cx=pad.l+xInset+xNorm*dw;
+   const view=meterChartBoxViewport(cid);
+   const visibleX=(xNorm-view.x0)/(view.x1-view.x0);
+   if(visibleX<0||visibleX>1) return;
+   const cx=pad.l+xInset+visibleX*dw;
    const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode,rgbBlackLevel):{R:100,G:100,B:100};
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
     rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deChroma:sepLum?deChroma[rd.ire]:null, deLabel:deLabel});
@@ -50709,6 +50889,12 @@ function chartFindHit(e,canvasId){
 }
 
 function chartHandleHover(e,canvasId){
+ const canvas=document.getElementById(canvasId);
+ if(canvas&&canvas._meterBoxZoomDrag){
+  const dragTip=document.getElementById('chartTooltip');
+  if(dragTip) dragTip.style.display='none';
+  return;
+ }
  const hit=chartFindHit(e,canvasId);
  const tip=document.getElementById('chartTooltip');
  if(!hit){tip.style.display='none';return;}
@@ -50750,6 +50936,8 @@ function chartHandleHover(e,canvasId){
 }
 
 function chartHandleClick(e,canvasId){
+ const canvas=document.getElementById(canvasId);
+ if(canvas&&Number(canvas._meterBoxZoomSuppressClickUntil)>Date.now()) return;
  const hit=chartFindHit(e,canvasId);
  if(!hit||meterSeriesRunning) return;
  const rd=hit.reading;
@@ -51663,6 +51851,7 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
 }
 
 function meterApplyClearedState(showToastMsg){
+ meterChartBoxZoomResetAll(false);
  if(meterActiveSeriesKey){
   const clearedKey=meterActiveSeriesKey;
   const clearedAt=Date.now();
