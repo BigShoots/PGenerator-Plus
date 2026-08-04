@@ -47,7 +47,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.5"
+#define APP_VERSION "1.3.6"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1030,6 +1030,34 @@ static void destroy_renderer(void)
     if (app.renderer) { SDL_DestroyRenderer(app.renderer); app.renderer = NULL; }
 }
 
+static SDL_Texture *create_patch_texture(bool hdr)
+{
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_Texture *texture;
+    if (!props) return NULL;
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER,
+                          hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STREAMING);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, 1);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, 1);
+    if (hdr) {
+        SDL_PropertiesID renderer_props = SDL_GetRendererProperties(app.renderer);
+        float output_headroom = SDL_GetFloatProperty(
+            renderer_props, SDL_PROP_RENDERER_HDR_HEADROOM_FLOAT, 1.0f);
+        if (!isfinite(output_headroom) || output_headroom <= 0.0f) output_headroom = 1.0f;
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, SDL_COLORSPACE_HDR10);
+        /* Match the source metadata to the active output headroom. This keeps
+         * SDL's required HDR10-to-scRGB transport conversion but disables its
+         * optional source-to-display tone-mapping pass. */
+        SDL_SetFloatProperty(props, SDL_PROP_TEXTURE_CREATE_HDR_HEADROOM_FLOAT, output_headroom);
+    } else {
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, SDL_COLORSPACE_SRGB_LINEAR);
+    }
+    texture = SDL_CreateTextureWithProperties(app.renderer, props);
+    SDL_DestroyProperties(props);
+    return texture;
+}
+
 static bool try_create_renderer(bool hdr, const char *driver)
 {
     SDL_PropertiesID props;
@@ -1040,7 +1068,7 @@ static bool try_create_renderer(bool hdr, const char *driver)
     SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, app.window);
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER,
-                          hdr ? SDL_COLORSPACE_HDR10 : SDL_COLORSPACE_SRGB);
+                          hdr ? SDL_COLORSPACE_SRGB_LINEAR : SDL_COLORSPACE_SRGB);
     if (driver) SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, driver);
     app.renderer = SDL_CreateRendererWithProperties(props);
     SDL_DestroyProperties(props);
@@ -1055,22 +1083,6 @@ static bool try_create_renderer(bool hdr, const char *driver)
         destroy_renderer();
         return false;
     }
-    app.texture = SDL_CreateTexture(app.renderer,
-                                    hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT,
-                                    SDL_TEXTUREACCESS_STREAMING, 1, 1);
-    if (!app.texture) {
-        destroy_renderer();
-        return false;
-    }
-    app.background_texture = SDL_CreateTexture(app.renderer,
-                                               hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT,
-                                               SDL_TEXTUREACCESS_STREAMING, 1, 1);
-    if (!app.background_texture) {
-        destroy_renderer();
-        return false;
-    }
-    SDL_SetTextureScaleMode(app.texture, SDL_SCALEMODE_NEAREST);
-    SDL_SetTextureScaleMode(app.background_texture, SDL_SCALEMODE_NEAREST);
     SDL_SetRenderDrawColorFloat(app.renderer, 0, 0, 0, 1);
     if (!SDL_RenderClear(app.renderer) || !SDL_RenderPresent(app.renderer)) {
         destroy_renderer();
@@ -1097,6 +1109,18 @@ static bool try_create_renderer(bool hdr, const char *driver)
             return false;
         }
     }
+    app.texture = create_patch_texture(hdr);
+    if (!app.texture) {
+        destroy_renderer();
+        return false;
+    }
+    app.background_texture = create_patch_texture(hdr);
+    if (!app.background_texture) {
+        destroy_renderer();
+        return false;
+    }
+    SDL_SetTextureScaleMode(app.texture, SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureScaleMode(app.background_texture, SDL_SCALEMODE_NEAREST);
     return true;
 }
 
