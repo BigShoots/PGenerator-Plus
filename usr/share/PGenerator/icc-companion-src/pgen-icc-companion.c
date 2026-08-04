@@ -47,7 +47,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.1"
+#define APP_VERSION "1.3.3"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -205,6 +205,57 @@ static const wchar_t *windows_profile_basename(const wchar_t *path)
     return slash ? slash + 1 : path;
 }
 
+static bool windows_installed_profile_path(const wchar_t *name, wchar_t *path,
+                                           size_t path_count)
+{
+    DWORD color_dir_size;
+    if (!name || !name[0] || !path || path_count < 2) return false;
+    path[0] = L'\0';
+    if (wcschr(name, L'\\') || wcschr(name, L'/')) {
+        wcsncpy(path, name, path_count - 1);
+        path[path_count - 1] = L'\0';
+    } else {
+        color_dir_size = (DWORD)path_count;
+        if (!GetColorDirectoryW(NULL, path, &color_dir_size) ||
+            wcslen(path) + 1 + wcslen(name) + 1 > path_count) {
+            path[0] = L'\0';
+            return false;
+        }
+        wcscat(path, L"\\");
+        wcscat(path, name);
+    }
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
+                                            char *output, size_t output_size,
+                                            wchar_t *profile_path,
+                                            size_t profile_path_count)
+{
+    wchar_t local_app_data[MAX_PATH] = L"";
+    wchar_t ini_path[MAX_PATH] = L"";
+    wchar_t saved_monitor[256] = L"";
+    wchar_t profile_name[MAX_PATH] = L"";
+    DWORD length;
+    int converted;
+    if (!monitor_path || !monitor_path[0]) return false;
+    length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, MAX_PATH);
+    if (!length || length >= MAX_PATH) return false;
+    if (swprintf(ini_path, MAX_PATH, L"%ls\\PGenerator+\\ProfileLoader.ini",
+                 local_app_data) < 0) return false;
+    GetPrivateProfileStringW(L"ProfileLoader", L"MonitorPath", L"", saved_monitor,
+                             (DWORD)(sizeof(saved_monitor) / sizeof(saved_monitor[0])), ini_path);
+    GetPrivateProfileStringW(L"ProfileLoader", L"ProfileName", L"", profile_name,
+                             MAX_PATH, ini_path);
+    if (!saved_monitor[0] || !profile_name[0] ||
+        _wcsicmp(saved_monitor, monitor_path) != 0 ||
+        !windows_installed_profile_path(profile_name, profile_path, profile_path_count))
+        return false;
+    converted = WideCharToMultiByte(CP_UTF8, 0, profile_name, -1, output,
+                                    (int)output_size, NULL, NULL);
+    return converted > 1;
+}
+
 static bool windows_active_profile(SDL_Window *window, char *output, size_t output_size,
                                    wchar_t *profile_path, size_t profile_path_count)
 {
@@ -251,7 +302,9 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
     if (!get_default) goto done;
     for (UINT32 index = 0; index < path_count && !found; index++) {
         DISPLAYCONFIG_SOURCE_DEVICE_NAME source;
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target;
         WCS_PROFILE_MANAGEMENT_SCOPE scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+        WCS_PROFILE_MANAGEMENT_SCOPE alternate;
         HRESULT hr;
         if (!(paths[index].flags & DISPLAYCONFIG_PATH_ACTIVE)) continue;
         ZeroMemory(&source, sizeof(source));
@@ -261,14 +314,22 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
         source.header.id = paths[index].sourceInfo.id;
         if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
             _wcsicmp(source.viewGdiDeviceName, monitor_info.szDevice) != 0) continue;
+        ZeroMemory(&target, sizeof(target));
+        target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        target.header.size = sizeof(target);
+        target.header.adapterId = paths[index].targetInfo.adapterId;
+        target.header.id = paths[index].targetInfo.id;
+        DisplayConfigGetDeviceInfo(&target.header);
         if (get_scope && FAILED(get_scope(paths[index].sourceInfo.adapterId,
                                           paths[index].sourceInfo.id, &scope)))
             scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
         hr = get_default(scope, paths[index].sourceInfo.adapterId,
                          paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
-        if (FAILED(hr) && scope != WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER) {
-            scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
-            hr = get_default(scope, paths[index].sourceInfo.adapterId,
+        if (FAILED(hr)) {
+            alternate = scope == WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
+                      ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
+                      : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+            hr = get_default(alternate, paths[index].sourceInfo.adapterId,
                              paths[index].sourceInfo.id, CPT_ICC, CPST_NONE, &profile);
         }
         if (SUCCEEDED(hr) && profile) {
@@ -276,22 +337,26 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
             int converted = WideCharToMultiByte(CP_UTF8, 0, name, -1, output,
                                                 (int)output_size, NULL, NULL);
             if (converted > 1) {
-                if (wcschr(profile, L'\\') || wcschr(profile, L'/')) {
-                    wcsncpy(profile_path, profile, profile_path_count - 1);
-                    profile_path[profile_path_count - 1] = L'\0';
-                } else {
-                    DWORD color_dir_size = (DWORD)profile_path_count;
-                    if (GetColorDirectoryW(NULL, profile_path, &color_dir_size) &&
-                        wcslen(profile_path) + 1 + wcslen(profile) + 1 <= profile_path_count) {
-                        wcscat(profile_path, L"\\");
-                        wcscat(profile_path, profile);
-                    } else {
-                        profile_path[0] = L'\0';
-                    }
-                }
-                found = profile_path[0] != L'\0' && GetFileAttributesW(profile_path) != INVALID_FILE_ATTRIBUTES;
+                found = windows_installed_profile_path(profile, profile_path,
+                                                       profile_path_count);
             }
         }
+        if (!found) {
+            HDC dc = CreateDCW(L"DISPLAY", source.viewGdiDeviceName, NULL, NULL);
+            wchar_t dc_profile[MAX_PATH] = L"";
+            DWORD dc_profile_count = MAX_PATH;
+            if (dc && GetICMProfileW(dc, &dc_profile_count, dc_profile) && dc_profile[0] &&
+                windows_installed_profile_path(dc_profile, profile_path, profile_path_count)) {
+                const wchar_t *name = windows_profile_basename(dc_profile);
+                found = WideCharToMultiByte(CP_UTF8, 0, name, -1, output,
+                                            (int)output_size, NULL, NULL) > 1;
+            }
+            if (dc) DeleteDC(dc);
+        }
+        if (!found && target.monitorDevicePath[0])
+            found = windows_profile_loader_fallback(target.monitorDevicePath,
+                                                    output, output_size,
+                                                    profile_path, profile_path_count);
     }
 done:
     if (profile) LocalFree(profile);
