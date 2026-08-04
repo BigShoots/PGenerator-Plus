@@ -343,7 +343,10 @@ post_companion_patch() {
  # measurement data, so make it readable after the atomic rename.
  chmod 644 "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$COMPANION_COMMAND_FILE" || companion_pattern_failure "Could not send a patch to the ICC Companion"
- deadline=$((SECONDS + 10))
+ # Windows can briefly pause the Companion while changing HDR or fullscreen
+ # swapchains. Keep the patch pending long enough for polling to resume rather
+ # than aborting an otherwise valid measurement run after ten seconds.
+ deadline=$((SECONDS + 30))
  while (( SECONDS < deadline )); do
   series_stop_requested && series_cancel_exit
   if [[ -f "$COMPANION_ACK_FILE" ]]; then

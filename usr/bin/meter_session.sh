@@ -416,7 +416,10 @@ post_companion_patch() {
  printf '%s' "$payload" > "$tmp" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
  chmod 644 "$tmp" 2>/dev/null || true
  mv -f "$tmp" "$COMPANION_COMMAND_FILE" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
- deadline=$((SECONDS + 10))
+ # Windows can briefly pause the Companion while changing HDR or fullscreen
+ # swapchains. Keep the patch pending long enough for polling to resume rather
+ # than aborting an otherwise valid measurement run after ten seconds.
+ deadline=$((SECONDS + 30))
  while (( SECONDS < deadline )); do
   if [[ -f "$COMPANION_ACK_FILE" ]]; then
    ack=$(cat "$COMPANION_ACK_FILE" 2>/dev/null || true)
