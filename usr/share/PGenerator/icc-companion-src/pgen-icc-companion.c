@@ -1,8 +1,8 @@
 /* PGenerator ICC Companion
  *
  * Displays measurement patches through the target computer's native output
- * pipeline. SDL3 supplies native HDR10 output on Windows and supported Linux
- * compositors, so HDR patch codes remain in their original PQ/BT.2020 form.
+ * pipeline. Windows uses a native DXGI HDR10 swapchain so PQ/BT.2020 patch
+ * codes reach the operating-system HDR pipeline without scRGB remapping.
  */
 
 #ifndef _WIN32
@@ -30,6 +30,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <commctrl.h>
+#include <d3d11_1.h>
 #include <dxgi1_6.h>
 #include <icm.h>
 #define close_socket closesocket
@@ -47,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.7"
+#define APP_VERSION "1.3.8"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -100,6 +101,13 @@ typedef struct {
     char correction_profile[192];
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
+    ID3D11Device *hdr_device;
+    ID3D11DeviceContext *hdr_context;
+    ID3D11DeviceContext1 *hdr_context1;
+    IDXGISwapChain *hdr_swapchain;
+    ID3D11RenderTargetView *hdr_render_target;
+    int hdr_width;
+    int hdr_height;
 #endif
     char correction_signal_mode[16];
     float *correction_lut;
@@ -966,6 +974,161 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
     IDXGIFactory1_Release(factory);
     return enabled;
 }
+
+static void windows_destroy_hdr_output(void)
+{
+    if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
+    if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
+    if (app.hdr_swapchain) { IDXGISwapChain_Release(app.hdr_swapchain); app.hdr_swapchain = NULL; }
+    if (app.hdr_context1) { ID3D11DeviceContext1_Release(app.hdr_context1); app.hdr_context1 = NULL; }
+    if (app.hdr_context) { ID3D11DeviceContext_Release(app.hdr_context); app.hdr_context = NULL; }
+    if (app.hdr_device) { ID3D11Device_Release(app.hdr_device); app.hdr_device = NULL; }
+    app.hdr_width = 0;
+    app.hdr_height = 0;
+}
+
+static bool windows_hdr_render_target(int width, int height)
+{
+    ID3D11Texture2D *back_buffer = NULL;
+    IDXGISwapChain3 *swapchain3 = NULL;
+    HRESULT result;
+    if (!app.hdr_swapchain || !app.hdr_device || width < 1 || height < 1) return false;
+    if (app.hdr_render_target && width == app.hdr_width && height == app.hdr_height) return true;
+    if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
+    if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
+    result = IDXGISwapChain_ResizeBuffers(app.hdr_swapchain, 0, (UINT)width, (UINT)height,
+                                         DXGI_FORMAT_R10G10B10A2_UNORM, 0);
+    if (FAILED(result)) {
+        SDL_SetError("Could not resize the native HDR10 swapchain (0x%08lx)", (unsigned long)result);
+        return false;
+    }
+    result = IDXGISwapChain_GetBuffer(app.hdr_swapchain, 0, &IID_ID3D11Texture2D,
+                                      (void **)&back_buffer);
+    if (SUCCEEDED(result))
+        result = ID3D11Device_CreateRenderTargetView(app.hdr_device,
+                                                     (ID3D11Resource *)back_buffer,
+                                                     NULL, &app.hdr_render_target);
+    if (back_buffer) ID3D11Texture2D_Release(back_buffer);
+    if (FAILED(result) || !app.hdr_render_target) {
+        SDL_SetError("Could not create the native HDR10 render target (0x%08lx)", (unsigned long)result);
+        return false;
+    }
+    result = IDXGISwapChain_QueryInterface(app.hdr_swapchain, &IID_IDXGISwapChain3,
+                                           (void **)&swapchain3);
+    if (SUCCEEDED(result))
+        result = IDXGISwapChain3_SetColorSpace1(
+            swapchain3, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+    if (swapchain3) IDXGISwapChain3_Release(swapchain3);
+    if (FAILED(result)) {
+        SDL_SetError("Could not restore the HDR10 swapchain color space (0x%08lx)", (unsigned long)result);
+        ID3D11RenderTargetView_Release(app.hdr_render_target);
+        app.hdr_render_target = NULL;
+        return false;
+    }
+    app.hdr_width = width;
+    app.hdr_height = height;
+    return true;
+}
+
+static bool windows_create_hdr_output(void)
+{
+    HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
+                                              SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    DXGI_SWAP_CHAIN_DESC desc;
+    D3D_FEATURE_LEVEL feature_level;
+    IDXGISwapChain3 *swapchain3 = NULL;
+    UINT color_support = 0;
+    RECT client;
+    HRESULT result;
+    if (!hwnd || !GetClientRect(hwnd, &client)) {
+        SDL_SetError("Could not get the Windows patch-window handle");
+        return false;
+    }
+    SDL_zero(desc);
+    desc.BufferDesc.Width = (UINT)(client.right - client.left);
+    desc.BufferDesc.Height = (UINT)(client.bottom - client.top);
+    desc.BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    desc.OutputWindow = hwnd;
+    desc.Windowed = TRUE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    result = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
+                                           D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                           NULL, 0, D3D11_SDK_VERSION, &desc,
+                                           &app.hdr_swapchain, &app.hdr_device,
+                                           &feature_level, &app.hdr_context);
+    if (FAILED(result)) {
+        SDL_SetError("Could not create the native Windows HDR10 renderer (0x%08lx)", (unsigned long)result);
+        windows_destroy_hdr_output();
+        return false;
+    }
+    result = ID3D11DeviceContext_QueryInterface(app.hdr_context,
+                                                &IID_ID3D11DeviceContext1,
+                                                (void **)&app.hdr_context1);
+    if (FAILED(result) || !app.hdr_context1) {
+        SDL_SetError("Windows HDR10 rectangle rendering is unavailable (0x%08lx)", (unsigned long)result);
+        windows_destroy_hdr_output();
+        return false;
+    }
+    result = IDXGISwapChain_QueryInterface(app.hdr_swapchain, &IID_IDXGISwapChain3,
+                                           (void **)&swapchain3);
+    if (SUCCEEDED(result))
+        result = IDXGISwapChain3_CheckColorSpaceSupport(
+            swapchain3, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, &color_support);
+    if (SUCCEEDED(result) && (color_support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+        result = IDXGISwapChain3_SetColorSpace1(
+            swapchain3, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+    else if (SUCCEEDED(result))
+        result = E_NOTIMPL;
+    if (swapchain3) IDXGISwapChain3_Release(swapchain3);
+    if (FAILED(result)) {
+        SDL_SetError("The selected display cannot present a native HDR10 swapchain (0x%08lx)", (unsigned long)result);
+        windows_destroy_hdr_output();
+        return false;
+    }
+    if (!windows_hdr_render_target((int)desc.BufferDesc.Width, (int)desc.BufferDesc.Height)) {
+        windows_destroy_hdr_output();
+        return false;
+    }
+    app.hdr = true;
+    app.hdr_active = windows_window_hdr_enabled(app.window);
+    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10", sizeof(app.renderer_name));
+    if (!app.hdr_active) {
+        SDL_SetError("Windows HDR is not active on the selected display");
+        windows_destroy_hdr_output();
+        return false;
+    }
+    return true;
+}
+
+static bool windows_render_hdr(double r, double g, double b, double background,
+                               const SDL_FRect *destination)
+{
+    int width, height;
+    float background_color[4] = {(float)background, (float)background, (float)background, 1.0f};
+    float patch_color[4] = {(float)r, (float)g, (float)b, 1.0f};
+    D3D11_RECT rect;
+    if (!SDL_GetWindowSizeInPixels(app.window, &width, &height) ||
+        !windows_hdr_render_target(width, height)) return false;
+    rect.left = (LONG)fmaxf(0.0f, destination->x);
+    rect.top = (LONG)fmaxf(0.0f, destination->y);
+    rect.right = (LONG)fminf((float)width, destination->x + destination->w);
+    rect.bottom = (LONG)fminf((float)height, destination->y + destination->h);
+    for (int frame = 0; frame < 3; frame++) {
+        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context, app.hdr_render_target,
+                                                  background_color);
+        ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                      (ID3D11View *)app.hdr_render_target,
+                                      patch_color, &rect, 1);
+        if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) {
+            SDL_SetError("The native HDR10 frame could not be presented");
+            return false;
+        }
+    }
+    return true;
+}
 #endif
 
 static PGEN_UNUSED double pq_to_nits(double value)
@@ -1003,6 +1166,13 @@ static bool update_renderer_hdr_state(void)
     SDL_PropertiesID renderer_props;
     float sdr_white_scale = 1.0f;
 
+#ifdef _WIN32
+    if (app.hdr_swapchain) {
+        app.hdr_active = windows_window_hdr_enabled(app.window);
+        app.hdr_sdr_white_scale = 1.0f;
+        return true;
+    }
+#endif
     if (!app.renderer) return false;
     renderer_props = SDL_GetRendererProperties(app.renderer);
     if (!renderer_props) return false;
@@ -1028,6 +1198,9 @@ static bool update_renderer_hdr_state(void)
 
 static void destroy_renderer(void)
 {
+#ifdef _WIN32
+    windows_destroy_hdr_output();
+#endif
     if (app.texture) { SDL_DestroyTexture(app.texture); app.texture = NULL; }
     if (app.background_texture) { SDL_DestroyTexture(app.background_texture); app.background_texture = NULL; }
     if (app.renderer) { SDL_DestroyRenderer(app.renderer); app.renderer = NULL; }
@@ -1129,24 +1302,25 @@ static bool try_create_renderer(bool hdr, const char *driver)
 
 static bool create_renderer(bool hdr)
 {
-#ifdef _WIN32
-    /* D3D11 has the broadest reliable scRGB support on Windows. A renderer
-     * being constructible does not mean it activated HDR, so validate each
-     * complete candidate before moving on to the next backend. */
-    const char *hdr_drivers[] = { "direct3d11", "direct3d12", "gpu", "vulkan", NULL };
-#else
+#ifndef _WIN32
     const char *hdr_drivers[] = { "vulkan", "gpu", NULL };
-#endif
     size_t index;
+#endif
     char last_error[256] = "No HDR renderer was available";
 
     if (!hdr) return try_create_renderer(false, NULL);
+#ifdef _WIN32
+    destroy_renderer();
+    if (windows_create_hdr_output()) return true;
+    SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
+#else
     for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
         if (try_create_renderer(true, hdr_drivers[index])) return true;
         if (SDL_GetError() && SDL_GetError()[0]) {
             SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
         }
     }
+#endif
 
     /* Keep the alignment target usable after an HDR failure, while preserving
      * the failure result so the server does not measure an SDR fallback. */
@@ -1160,6 +1334,42 @@ static bool render_alignment(void)
 {
     int width, height;
     float center_x, center_y, extent, arm;
+#ifdef _WIN32
+    if (app.hdr_swapchain) {
+        SDL_FRect horizontal, vertical;
+        const double alignment_white_pq = 0.5080784215; /* 100 cd/m2 */
+        float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        float white[4] = {(float)alignment_white_pq, (float)alignment_white_pq,
+                          (float)alignment_white_pq, 1.0f};
+        D3D11_RECT rects[2];
+        if (!SDL_GetWindowSizeInPixels(app.window, &width, &height)) return false;
+        center_x = (float)width * 0.5f;
+        center_y = (float)height * 0.5f;
+        extent = (float)(width < height ? width : height);
+        arm = fmaxf(48.0f, extent * 0.12f);
+        horizontal.x = center_x - arm; horizontal.y = center_y - 1.0f;
+        horizontal.w = arm * 2.0f; horizontal.h = 3.0f;
+        vertical.x = center_x - 1.0f; vertical.y = center_y - arm;
+        vertical.w = 3.0f; vertical.h = arm * 2.0f;
+        rects[0].left = (LONG)horizontal.x; rects[0].top = (LONG)horizontal.y;
+        rects[0].right = (LONG)(horizontal.x + horizontal.w);
+        rects[0].bottom = (LONG)(horizontal.y + horizontal.h);
+        rects[1].left = (LONG)vertical.x; rects[1].top = (LONG)vertical.y;
+        rects[1].right = (LONG)(vertical.x + vertical.w);
+        rects[1].bottom = (LONG)(vertical.y + vertical.h);
+        if (!windows_hdr_render_target(width, height)) return false;
+        for (int frame = 0; frame < 3; frame++) {
+            ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
+                                                      app.hdr_render_target, black);
+            ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                          (ID3D11View *)app.hdr_render_target,
+                                          white, rects, 2);
+            if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) return false;
+        }
+        app.alignment = true;
+        return true;
+    }
+#endif
     if (!app.renderer || !SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
     center_x = (float)width * 0.5f;
     center_y = (float)height * 0.5f;
@@ -1190,7 +1400,11 @@ static bool render_patch(const char *mode, double r, double g, double b)
     int width, height, patch_size, window_percent;
     double background_signal = 0.0;
     bool hdr = !strcmp(mode, "hdr10");
-    if (!app.renderer || hdr != app.hdr) {
+    bool renderer_ready = app.renderer != NULL;
+#ifdef _WIN32
+    renderer_ready = renderer_ready || app.hdr_swapchain != NULL;
+#endif
+    if (!renderer_ready || hdr != app.hdr) {
         if (!create_renderer(hdr)) return false;
     }
     patch_size = app.displayed_size > 0 ? app.displayed_size : 100;
@@ -1203,6 +1417,29 @@ static bool render_patch(const char *mode, double r, double g, double b)
         background_signal = fmax(0.0, fmin(1.0, background_signal));
     }
     if (hdr) {
+#ifdef _WIN32
+        if (app.hdr_swapchain) {
+            if (!SDL_GetWindowSizeInPixels(app.window, &width, &height)) return false;
+            destination.x = 0.0f;
+            destination.y = 0.0f;
+            destination.w = (float)width;
+            destination.h = (float)height;
+            if (app.fullscreen && window_percent < 100) {
+                float scale = sqrtf(fmaxf(0.0f, (float)window_percent / 100.0f));
+                destination.w = width * scale;
+                destination.h = height * scale;
+                destination.x = (width - destination.w) * 0.5f;
+                destination.y = (height - destination.h) * 0.5f;
+            }
+            if (!windows_render_hdr(r, g, b, background_signal, &destination)) return false;
+            app.alignment = false;
+            app.displayed_r = r;
+            app.displayed_g = g;
+            app.displayed_b = b;
+            SDL_strlcpy(app.displayed_mode, mode, sizeof(app.displayed_mode));
+            return true;
+        }
+#endif
         /* PGenerator+ sends normalized HDR10 code values. Preserve them as
          * native 10-bit PQ/BT.2020 pixels without local PQ or roll-off math. */
         hdr_pixel = patch_to_hdr10(r, g, b);
@@ -1505,10 +1742,18 @@ static void process_network_updates(void)
     }
     if (have_command) {
         bool ok;
+        char message[256] = "";
         if (!alignment) app.displayed_size = command_size;
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
-        const char *message = ok ? "" : (alignment ? "The renderer could not display the alignment target" :
-                              (!strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" : "The renderer could not display the patch"));
+        if (!ok) {
+            const char *detail = SDL_GetError();
+            if (detail && detail[0]) SDL_strlcpy(message, detail, sizeof(message));
+            else SDL_strlcpy(message,
+                alignment ? "The renderer could not display the alignment target" :
+                (!strcmp(mode, "hdr10") ? "HDR output is not active or supported on this display" :
+                                          "The renderer could not display the patch"),
+                sizeof(message));
+        }
         SDL_LockMutex(app.network_mutex);
         if (ok) app.sequence = sequence;
         app.ack_sequence = sequence;
@@ -1565,7 +1810,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     AppState *state = (AppState *)appstate;
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
-    if (event->type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED && state->renderer) {
+    if (event->type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED &&
+        (state->renderer
+#ifdef _WIN32
+         || state->hdr_swapchain
+#endif
+        )) {
         update_renderer_hdr_state();
         SDL_LockMutex(state->network_mutex);
         state->ack_hdr_active = state->hdr_active;
@@ -1616,6 +1866,9 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         if (state->texture) SDL_DestroyTexture(state->texture);
         if (state->background_texture) SDL_DestroyTexture(state->background_texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
+#ifdef _WIN32
+        windows_destroy_hdr_output();
+#endif
         SDL_free(state->correction_lut);
 #ifdef _WIN32
         SDL_free(state->correction_profile_data);
