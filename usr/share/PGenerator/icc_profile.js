@@ -443,7 +443,7 @@ function meterIccProfileInfo(type){
   'windows-hdr':{
    mode:'hdr10',
    description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data for HDR. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
-   compatibility:'Use with Windows Advanced Color or KDE Plasma 6.7 or newer on Wayland with HDR enabled. MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. The HDR curves remain at identity so the operating system applies PQ only once. Software that ignores MHC2 can still read the standard ICC fallback.'
+   compatibility:'Use with Windows Advanced Color or KDE Plasma 6.7 or newer on Wayland with HDR enabled. In Windows, install it through Settings > System > Display > Color profile while HDR is enabled. The legacy Color Management dialog associates it as an ordinary ICC profile instead of an HDR Advanced Color profile. MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. The HDR curves remain at identity so the operating system applies PQ only once. Software that ignores MHC2 can still read the standard ICC fallback.'
   }
  };
  return info[type]||info.sdr;
@@ -813,7 +813,7 @@ function meterIccSyncUi(){
   windowsInstallGuide.textContent=type==='kde-hdr'
    ?'Plasma 6.7+: enable HDR and select this file as the display HDR ICC profile in System Settings. KWin applies its cLUT through the compositor.'
    :type==='windows-hdr'
-   ?'Windows: enable HDR, add the file under Settings > System > Display > Color profile as the display Advanced Color profile, and set it as default. Plasma 6.7+: enable HDR and select the same file as the display ICC profile in System Settings.'
+   ?'Windows: enable HDR, then add the file under Settings > System > Display > Color profile and set it as the HDR display default. Do not use the legacy Color Management dialog, because it creates a standard ICC association instead of an HDR Advanced Color association. Plasma 6.7+: enable HDR and select the same file as the display ICC profile in System Settings.'
    :'Windows: add the file under Settings > System > Display > Color profile and set it as the display default. Plasma 6.5.3+: select the same file as the display ICC profile in System Settings.';
  }
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
@@ -1670,7 +1670,7 @@ async function meterIccBuild(readings){
     ?(' Calibrated white was reduced from '+measuredWhite.toFixed(1)+' to '+calibratedWhite.toFixed(1)+' cd/m² to preserve the target white point without channel clipping.')
     :'';
    const installText=meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-hdr'
-    ?' Install it as the HDR display profile in Windows Advanced Color or Plasma 6.7+ before verification.'
+    ?' In Windows, enable HDR and install it through Settings > System > Display > Color profile, not the legacy Color Management dialog. For Plasma 6.7+, install it as the HDR display profile before verification.'
     :(meterIccRunConfig&&meterIccRunConfig.profile_type==='kde-hdr'
      ?' Install it as the HDR display ICC profile in Plasma 6.7+ before verification.'
      :(meterIccRunConfig&&meterIccRunConfig.profile_type==='windows-sdr'?' Install it as the display profile in Windows Advanced Color or Plasma 6.5.3+ before verification.':''));
