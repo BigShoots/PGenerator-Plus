@@ -372,6 +372,7 @@ async function meterIccPushCompanionDisplaySettings(showError){
 function meterIccCompanionDisplaySettingsChanged(){
  meterIccSyncUi();
  meterIccPushCompanionDisplaySettings(true);
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccLinkedPatchSizeChanged(){
@@ -383,6 +384,7 @@ function meterIccLinkedPatchSizeChanged(){
  }
  meterIccSyncUi();
  if(meterIccPatternProvider()==='companion') meterIccPushCompanionDisplaySettings(true);
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccLinkedDisplayTypeChanged(){
@@ -394,6 +396,7 @@ function meterIccLinkedDisplayTypeChanged(){
  }
  meterIccPrepareMeasurementControls();
  meterIccSyncUi();
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccLinkedMeterProfileChanged(){
@@ -405,6 +408,7 @@ function meterIccLinkedMeterProfileChanged(){
  }
  meterIccPrepareMeasurementControls();
  meterIccSyncUi();
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccLinkedPatternInsertionChanged(){
@@ -416,6 +420,7 @@ function meterIccLinkedPatternInsertionChanged(){
  }
  try{ if(typeof saveMeterSettings==='function') saveMeterSettings(); }catch(error){}
  meterIccSyncUi();
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccProfileInfo(type){
@@ -680,6 +685,7 @@ function meterIccProfileTypeChanged(){
   }
  }
  meterIccSyncUi();
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccPatternProvider(){
@@ -736,6 +742,7 @@ async function meterIccEnsureLocalOutputMode(profileType){
 
 function meterIccPatternProviderChanged(){
  meterIccSyncUi();
+ meterIccRefreshRecoveryAvailability();
 }
 
 function meterIccSyncUi(){
@@ -1189,12 +1196,16 @@ async function meterIccRefreshRecoveryAvailability(){
  const retry=document.getElementById('meterIccRetryBuildBtn');
  if(!retry) return false;
  try{
-  const state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:5000});
-  const available=!!(state&&state.status==='complete'&&state.type==='colors'&&Number(state.points)===990001&&Number(state.total_steps)>=16);
+  const selectedType=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+  const selectedProvider=meterIccPatternProvider();
+  const selectedSignature=meterIccReuseSignature(selectedType,selectedProvider);
+  const reusable=await meterIccPreviousReusableReadings(selectedSignature,selectedType);
+  const readings=reusable.readings;
+  const available=readings.length>=16&&meterIccReadingsHaveRequiredAnchors(readings);
   retry.style.display=available?'':'none';
   if(available){
-  const saved=meterIccLoadLastRunConfig(null);
-  const profileCount=Math.max(0,Number(saved&&saved.patch_count)||Number(state.total_steps)||0);
+  const saved=meterIccLoadLastRunConfig(readings)||(reusable.build_config&&typeof reusable.build_config==='object'?reusable.build_config:null);
+  const profileCount=Math.max(0,Number(saved&&saved.patch_count)||readings.length);
   retry.dataset.measurementCount=String(profileCount);
   if(!meterIccHadStoredUiSettings&&!saved){
    const family=meterIccProfileModelInfo(String((document.getElementById('meterIccProfileModel')||{}).value||'clut')).family;
@@ -1222,6 +1233,16 @@ function meterIccProfileReadings(readings){
  });
 }
 
+function meterIccReadingsHaveRequiredAnchors(readings){
+ const values=meterIccProfileReadings(readings);
+ const targets=[[0,0,0],[1,1,1],[1,0,0],[0,1,0],[0,0,1]];
+ return targets.every(target=>values.some(reading=>{
+  const maximum=Math.max(1,Math.round(Number(reading.input_max)||255));
+  const rgb=[reading.r_code,reading.g_code,reading.b_code].map(value=>Math.round(Number(value)||0)/maximum);
+  return rgb.reduce((sum,value,index)=>sum+Math.abs(value-target[index]),0)<=.02;
+ }));
+}
+
 async function meterIccRetryBuild(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
  const name=String((document.getElementById('meterIccProfileName')||{}).value||'').trim();
@@ -1232,8 +1253,8 @@ async function meterIccRetryBuild(){
   const selectedProvider=meterIccPatternProvider();
   const selectedSignature=meterIccReuseSignature(selectedType,selectedProvider);
   const reusable=await meterIccPreviousReusableReadings(selectedSignature,selectedType);
-  const readings=reusable.readings.length?reusable.readings:meterIccProfileReadings(state&&state.readings);
-  if(!state||state.status!=='complete'||state.type!=='colors'||Number(state.points)!==990001||readings.length<16||!readings.some(reading=>String(reading.name||'')==='ICC White')) throw new Error('No completed ICC measurements are available');
+  const readings=reusable.readings;
+  if(!state||readings.length<16||!meterIccReadingsHaveRequiredAnchors(readings)) throw new Error('No compatible completed ICC measurements are available for the selected signal mode and settings');
   const saved=meterIccLoadLastRunConfig(readings)||(reusable.build_config&&typeof reusable.build_config==='object'?reusable.build_config:null);
   const inputMaximum=Math.max(...readings.map(reading=>Number(reading.input_max)||255));
   const inferredType=inputMaximum>255?(selectedType==='windows-hdr'?'windows-hdr':'kde-hdr'):(selectedType==='windows-sdr'?'windows-sdr':'sdr');
@@ -1333,6 +1354,8 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
 
 async function meterIccStart(){
  if(meterIccStarting||meterIccRunning||meterIccBuildPending) return;
+ const retryButton=document.getElementById('meterIccRetryBuildBtn');
+ if(retryButton) retryButton.style.display='none';
  if(!await meterEnsureDetected()){ toast('Connect a meter first',true); return; }
  meterIccPrepareMeasurementControls();
  const selectedMeter=meterSelectedMeasurementMeter();
