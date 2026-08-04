@@ -1447,6 +1447,7 @@ async function meterIccStart(){
 async function meterIccPoll(){
  if(!meterIccRunning||meterIccPollPending) return;
  meterIccPollPending=true;
+ let terminalTransition=false;
  try{
   let state=await fetchJSON('/api/meter/series/status?summary=1',{_quiet:true,_timeoutMs:10000});
   if(!state) return;
@@ -1462,6 +1463,8 @@ async function meterIccPoll(){
    else status.textContent=state.current_name||'Initializing the meter. The first patch will appear when it is ready.';
   }
   if(!['complete','cancelled','error','cleared'].includes(String(state.status||'').toLowerCase())) return;
+  terminalTransition=true;
+  if(status) status.textContent=state.status==='complete'?'Measurement stage complete. Retrieving the readings...':'ICC profiling is stopping...';
   if(state.status==='complete'){
    const completeState=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
    if(!completeState||completeState.status!=='complete') throw new Error('Could not retrieve completed ICC measurements');
@@ -1499,7 +1502,9 @@ async function meterIccPoll(){
  }catch(error){
   const status=document.getElementById('meterIccStatus');
   if(status&&error&&error.message) status.textContent=error.message;
-  if(meterIccStarting){
+  if(meterIccStarting||terminalTransition){
+   if(meterIccPollTimer) clearInterval(meterIccPollTimer);
+   meterIccPollTimer=null;
    meterIccStarting=false;
    meterActionPending=false;
    meterSeriesRunning=false;
@@ -1510,6 +1515,14 @@ async function meterIccPoll(){
   meterIccPollPending=false;
  }
 }
+
+function meterIccResumeVisiblePolling(){
+ if(document.hidden||!meterIccRunning||meterIccPollPending) return;
+ meterIccPoll();
+}
+
+document.addEventListener('visibilitychange',meterIccResumeVisiblePolling);
+window.addEventListener('focus',meterIccResumeVisiblePolling);
 
 async function meterIccBuild(readings){
  const status=document.getElementById('meterIccStatus');
