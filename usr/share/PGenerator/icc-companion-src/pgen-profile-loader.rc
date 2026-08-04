@@ -1,1 +1,4 @@
+#define IDI_PGEN_APP 101
+
 1 24 "pgen-profile-loader.manifest"
+IDI_PGEN_APP ICON "../favicon.ico"

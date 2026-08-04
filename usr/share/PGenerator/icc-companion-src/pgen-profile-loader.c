@@ -33,6 +33,7 @@
 #define ID_TRAY_AUTOREAPPLY 203
 #define ID_TRAY_SETTINGS 204
 #define ID_TRAY_EXIT 205
+#define IDI_PGEN_APP 101
 
 typedef HRESULT (WINAPI *PFN_ColorProfileAddDisplayAssociation)(
     WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL, BOOL);
@@ -455,6 +456,17 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     if (FAILED(hr)) {
         if (interactive)
             message_error(g_window, L"Associating the profile with the display", (DWORD)hr);
+        return FALSE;
+    }
+    /* Adding a profile that is already associated can return success without
+       promoting it over the previous default. The legacy WCS setter performs
+       that explicit promotion for the standard (non-Advanced Color) list. */
+    if (!g_associate_advanced &&
+        !WcsSetDefaultColorProfile(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                                   display->source_name, CPT_ICC, CPST_NONE, 0,
+                                   g_profile_name)) {
+        if (interactive)
+            message_error(g_window, L"Setting the profile as the display default", GetLastError());
         return FALSE;
     }
     g_last_reapply_tick = GetTickCount();
@@ -954,7 +966,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     wc.lpfnWndProc = window_proc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = g_icon_ok;
+    wc.hIcon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(IDI_PGEN_APP), IMAGE_ICON,
+                                0, 0, LR_DEFAULTSIZE | LR_SHARED);
+    wc.hIconSm = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(IDI_PGEN_APP), IMAGE_ICON,
+                                  16, 16, LR_SHARED);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"PGeneratorPlusProfileLoaderWindow";
     if (!RegisterClassExW(&wc)) return 1;

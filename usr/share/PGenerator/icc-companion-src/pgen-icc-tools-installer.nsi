@@ -13,6 +13,8 @@ OutFile "..\icc-companion\windows-x64\PGeneratorPlusICCSetup.exe"
 InstallDir "$LOCALAPPDATA\PGenerator+\ICC Tools"
 InstallDirRegKey HKCU "Software\PGenerator+\ICC Tools" "InstallDir"
 BrandingText "PGenerator+"
+Icon "..\favicon.ico"
+UninstallIcon "..\favicon.ico"
 
 VIProductVersion "1.1.1.0"
 VIAddVersionKey "ProductName" "PGenerator+ ICC Tools"
