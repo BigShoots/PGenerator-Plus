@@ -22,9 +22,11 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define COBJMACROS
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <dxgi1_6.h>
 #define close_socket closesocket
 typedef SOCKET socket_handle_t;
 #define INVALID_SOCKET_HANDLE INVALID_SOCKET
@@ -40,7 +42,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.4"
+#define APP_VERSION "1.1.5"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -405,6 +407,51 @@ static float srgb_to_linear(float value)
     return powf((value + 0.055f) / 1.055f, 2.4f);
 }
 
+#ifdef _WIN32
+static bool windows_window_hdr_enabled(SDL_Window *window)
+{
+    static const GUID pgen_iid_idxgi_output6 =
+        { 0x068346e8, 0xaaec, 0x4b84, { 0xad, 0xd7, 0x13, 0x7f, 0x51, 0x3f, 0x77, 0xa1 } };
+    SDL_PropertiesID window_props;
+    HWND hwnd;
+    HMONITOR monitor;
+    IDXGIFactory1 *factory = NULL;
+    bool enabled = false;
+
+    if (!window) return false;
+    window_props = SDL_GetWindowProperties(window);
+    hwnd = (HWND)SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!hwnd) return false;
+    monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor || FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&factory))) return false;
+    for (UINT adapter_index = 0; !enabled; adapter_index++) {
+        IDXGIAdapter1 *adapter = NULL;
+        HRESULT adapter_result = IDXGIFactory1_EnumAdapters1(factory, adapter_index, &adapter);
+        if (adapter_result == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(adapter_result) || !adapter) continue;
+        for (UINT output_index = 0; !enabled; output_index++) {
+            IDXGIOutput *output = NULL;
+            IDXGIOutput6 *output6 = NULL;
+            DXGI_OUTPUT_DESC output_desc;
+            DXGI_OUTPUT_DESC1 output_desc1;
+            HRESULT output_result = IDXGIAdapter1_EnumOutputs(adapter, output_index, &output);
+            if (output_result == DXGI_ERROR_NOT_FOUND) break;
+            if (FAILED(output_result) || !output) continue;
+            if (SUCCEEDED(IDXGIOutput_GetDesc(output, &output_desc)) && output_desc.Monitor == monitor &&
+                SUCCEEDED(IDXGIOutput_QueryInterface(output, &pgen_iid_idxgi_output6, (void **)&output6)) && output6 &&
+                SUCCEEDED(IDXGIOutput6_GetDesc1(output6, &output_desc1))) {
+                enabled = output_desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            }
+            if (output6) IDXGIOutput6_Release(output6);
+            IDXGIOutput_Release(output);
+        }
+        IDXGIAdapter1_Release(adapter);
+    }
+    IDXGIFactory1_Release(factory);
+    return enabled;
+}
+#endif
+
 static double pq_to_nits(double value)
 {
     const double m1 = 2610.0 / 16384.0;
@@ -441,6 +488,14 @@ static bool update_renderer_hdr_state(void)
     renderer_props = SDL_GetRendererProperties(app.renderer);
     if (!renderer_props) return false;
     app.hdr_active = SDL_GetBooleanProperty(renderer_props, SDL_PROP_RENDERER_HDR_ENABLED_BOOLEAN, false);
+#ifdef _WIN32
+    /* SDL derives this flag from its dynamic HDR-headroom property. Some
+     * Windows drivers leave that property at 1.0 even while DWM is actively
+     * presenting the selected monitor in the HDR10 output colorspace. DXGI's
+     * output description reflects the actual monitor pipeline in that case. */
+    if (app.hdr && !app.hdr_active && windows_window_hdr_enabled(app.window))
+        app.hdr_active = true;
+#endif
     if (app.hdr) {
         sdr_white_scale = SDL_GetFloatProperty(renderer_props, SDL_PROP_RENDERER_SDR_WHITE_POINT_FLOAT, 1.0f);
         if (!isfinite(sdr_white_scale) || sdr_white_scale <= 0.0f) sdr_white_scale = 1.0f;
