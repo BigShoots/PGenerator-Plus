@@ -47,7 +47,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.6"
+#define APP_VERSION "1.3.7"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -992,7 +992,10 @@ static uint32_t patch_to_hdr10(double r, double g, double b)
     uint32_t red = (uint32_t)lround(fmax(0.0, fmin(1.0, r)) * 1023.0);
     uint32_t green = (uint32_t)lround(fmax(0.0, fmin(1.0, g)) * 1023.0);
     uint32_t blue = (uint32_t)lround(fmax(0.0, fmin(1.0, b)) * 1023.0);
-    return 0xc0000000u | (red << 20) | (green << 10) | blue;
+    /* SDL's D3D11 backend exposes DXGI_FORMAT_R10G10B10A2_UNORM as
+     * ABGR2101010. Use that native layout so SDL does not silently create an
+     * 8-bit conversion texture for the unsupported ARGB2101010 format. */
+    return 0xc0000000u | (blue << 20) | (green << 10) | red;
 }
 
 static bool update_renderer_hdr_state(void)
@@ -1036,7 +1039,7 @@ static SDL_Texture *create_patch_texture(bool hdr)
     SDL_Texture *texture;
     if (!props) return NULL;
     SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER,
-                          hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT);
+                          hdr ? SDL_PIXELFORMAT_ABGR2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT);
     SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STREAMING);
     SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, 1);
     SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, 1);
