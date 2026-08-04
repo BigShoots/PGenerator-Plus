@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.7"
+#define APP_VERSION L"1.1.8"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -45,6 +45,9 @@ typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayUserScope)(
     LUID, UINT32, WCS_PROFILE_MANAGEMENT_SCOPE *);
 typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayList)(
     WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, LPWSTR **, PDWORD);
+typedef HRESULT (WINAPI *PFN_ColorProfileSetDisplayDefaultAssociation)(
+    WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, COLORPROFILETYPE,
+    COLORPROFILESUBTYPE, LUID, UINT32);
 
 typedef struct {
     LUID adapter;
@@ -87,6 +90,7 @@ static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
 static PFN_ColorProfileGetDisplayUserScope p_get_scope;
 static PFN_ColorProfileGetDisplayList p_get_list;
+static PFN_ColorProfileSetDisplayDefaultAssociation p_set_default;
 
 static int px(int value) {
     return MulDiv(value, (int)g_dpi, 96);
@@ -347,6 +351,7 @@ static void update_tray(BOOL ok, const WCHAR *detail) {
 static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
                                   WCS_PROFILE_MANAGEMENT_SCOPE *scope) {
     HRESULT hr;
+    WCS_PROFILE_MANAGEMENT_SCOPE alternate;
     *name = NULL;
     *scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
     if (!p_get_default) return E_NOTIMPL;
@@ -356,9 +361,12 @@ static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
     }
     hr = p_get_default(*scope, display->adapter, display->source_id,
                        CPT_ICC, CPST_NONE, name);
-    if (FAILED(hr) && *scope != WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER) {
-        *scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
-        hr = p_get_default(*scope, display->adapter, display->source_id,
+    if (FAILED(hr)) {
+        alternate = *scope == WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
+                  ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
+                  : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+        *scope = alternate;
+        hr = p_get_default(alternate, display->adapter, display->source_id,
                            CPT_ICC, CPST_NONE, name);
     }
     return hr;
@@ -378,7 +386,20 @@ static BOOL profile_is_active(DISPLAY_ENTRY *display, WCHAR *actual, size_t actu
     if (!display || !g_profile_name[0]) return FALSE;
     hr = get_active_default(display, &current, &scope);
     if (FAILED(hr) || !current) {
-        swprintf(actual, actual_count, L"Default profile could not be queried (0x%08lX).", (DWORD)hr);
+        HDC dc = CreateDCW(L"DISPLAY", display->source_name, NULL, NULL);
+        WCHAR path[MAX_PATH] = L"";
+        DWORD path_count = MAX_PATH;
+        if (dc && GetICMProfileW(dc, &path_count, path) && path[0]) {
+            BOOL match = _wcsicmp(profile_basename(path), g_profile_name) == 0;
+            wcsncpy_s(actual, actual_count, profile_basename(path), _TRUNCATE);
+            DeleteDC(dc);
+            if (current) LocalFree(current);
+            return match;
+        }
+        if (dc) DeleteDC(dc);
+        swprintf(actual, actual_count,
+                 L"Default profile could not be queried through either Windows display-profile API (0x%08lX).",
+                 (DWORD)hr);
         if (current) LocalFree(current);
         return FALSE;
     }
@@ -472,7 +493,7 @@ static BOOL display_profile_is_associated(DISPLAY_ENTRY *display, const WCHAR *n
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
-    if (!display || !g_profile_name[0] || !p_add_association) return FALSE;
+    if (!display || !g_profile_name[0] || !p_add_association || !p_set_default) return FALSE;
     associated = display_profile_is_associated(display, g_profile_name);
     if (!associated || g_associate_advanced) {
         /* For a normal profile, add it without changing the active transform;
@@ -487,14 +508,24 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
         }
     }
     /* Adding a profile that is already associated can return success without
-       promoting it over the previous default. The legacy WCS setter performs
-       that explicit promotion for the standard (non-Advanced Color) list. */
+       promoting it over the previous default. Explicitly select it for both
+       the standard and Advanced Color association lists. */
+    hr = p_set_default(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                       g_profile_name, CPT_ICC, CPST_NONE,
+                       display->adapter, display->source_id);
+    if (FAILED(hr)) {
+        if (interactive)
+            message_error(g_window, L"Setting the profile as the display default", (DWORD)hr);
+        return FALSE;
+    }
+    /* Keep the legacy association in sync for ordinary profiles so older
+       color-managed applications see the same default. */
     if (!g_associate_advanced &&
         !WcsSetDefaultColorProfile(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
                                    display->source_name, CPT_ICC, CPST_NONE, 0,
                                    g_profile_name)) {
         if (interactive)
-            message_error(g_window, L"Setting the profile as the display default", GetLastError());
+            message_error(g_window, L"Updating the legacy display profile default", GetLastError());
         return FALSE;
     }
     g_last_reapply_tick = GetTickCount();
@@ -1025,10 +1056,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     load_settings();
     g_mscms = LoadLibraryW(L"Mscms.dll");
     if (g_mscms) {
-        p_add_association = (PFN_ColorProfileAddDisplayAssociation)GetProcAddress(g_mscms, "ColorProfileAddDisplayAssociation");
-        p_get_default = (PFN_ColorProfileGetDisplayDefault)GetProcAddress(g_mscms, "ColorProfileGetDisplayDefault");
-        p_get_scope = (PFN_ColorProfileGetDisplayUserScope)GetProcAddress(g_mscms, "ColorProfileGetDisplayUserScope");
-        p_get_list = (PFN_ColorProfileGetDisplayList)GetProcAddress(g_mscms, "ColorProfileGetDisplayList");
+        FARPROC proc = GetProcAddress(g_mscms, "ColorProfileAddDisplayAssociation");
+        memcpy(&p_add_association, &proc, sizeof(p_add_association));
+        proc = GetProcAddress(g_mscms, "ColorProfileGetDisplayDefault");
+        memcpy(&p_get_default, &proc, sizeof(p_get_default));
+        proc = GetProcAddress(g_mscms, "ColorProfileGetDisplayUserScope");
+        memcpy(&p_get_scope, &proc, sizeof(p_get_scope));
+        proc = GetProcAddress(g_mscms, "ColorProfileGetDisplayList");
+        memcpy(&p_get_list, &proc, sizeof(p_get_list));
+        proc = GetProcAddress(g_mscms, "ColorProfileSetDisplayDefaultAssociation");
+        memcpy(&p_set_default, &proc, sizeof(p_set_default));
     }
     g_icon_ok = make_status_icon(RGB(35, 166, 78));
     g_icon_bad = make_status_icon(RGB(210, 48, 48));
