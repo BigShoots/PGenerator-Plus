@@ -239,21 +239,24 @@ sub webui_icc_companion_query_value (@) {
 }
 
 sub webui_icc_companion_settings_values () {
- my ($window_mode,$patch_size,$revision)=("window",100,0);
+ my ($window_mode,$patch_size,$revision,$correction_mode,$profile,$signal_mode)=("window",100,0,"system","","sdr");
  if(open(my $fh,"<",$_icc_companion_settings_file)) {
   local $/; my $content=<$fh>||""; close($fh);
   $window_mode=$1 if($content=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
   $patch_size=int($1) if($content=~/"patch_size"\s*:\s*(\d+)/);
   $revision=int($1) if($content=~/"revision"\s*:\s*(\d+)/);
+  $correction_mode=$1 if($content=~/"correction_mode"\s*:\s*"(system|clut|matrix)"/);
+  $profile=$1 if($content=~/"correction_profile"\s*:\s*"([A-Za-z0-9._-]{1,160}\.icc)"/i);
+  $signal_mode=$1 if($content=~/"correction_signal_mode"\s*:\s*"(sdr|hdr10)"/);
  }
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
  $patch_size=100 unless($allowed{$patch_size});
- return ($window_mode,$patch_size,$revision);
+ return ($window_mode,$patch_size,$revision,$correction_mode,$profile,$signal_mode);
 }
 
 sub webui_icc_companion_settings_fragment () {
- my ($window_mode,$patch_size,$revision)=&webui_icc_companion_settings_values();
- return '"window_mode":"'.$window_mode.'","display_size":'.$patch_size.',"settings_revision":'.$revision;
+ my ($window_mode,$patch_size,$revision,$correction_mode,$profile,$signal_mode)=&webui_icc_companion_settings_values();
+ return '"window_mode":"'.$window_mode.'","display_size":'.$patch_size.',"settings_revision":'.$revision.',"correction_mode":"'.$correction_mode.'","correction_profile":"'.&_webui_json_escape($profile).'","correction_signal_mode":"'.$signal_mode.'"';
 }
 
 sub webui_icc_companion_settings (@) {
@@ -261,19 +264,52 @@ sub webui_icc_companion_settings (@) {
  return '{"status":"error","message":"Invalid ICC Companion display settings"}' unless(defined($body) && length($body)<2048);
  my $window_mode="";
  my $patch_size=0;
+ my $correction_mode="system";
+ my $profile="";
+ my $signal_mode="sdr";
  $window_mode=$1 if($body=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
  $patch_size=int($1) if($body=~/"patch_size"\s*:\s*(\d+)/);
+ $correction_mode=$1 if($body=~/"correction_mode"\s*:\s*"(system|clut|matrix)"/);
+ $profile=$1 if($body=~/"correction_profile"\s*:\s*"([A-Za-z0-9._-]{1,160}\.icc)"/i);
+ $signal_mode=$1 if($body=~/"correction_signal_mode"\s*:\s*"(sdr|hdr10)"/);
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
  return '{"status":"error","message":"Invalid ICC Companion window mode"}' if($window_mode eq "");
  return '{"status":"error","message":"Invalid ICC Companion patch size"}' unless($allowed{$patch_size});
+ return '{"status":"error","message":"Select an ICC profile for native Companion correction"}' if($correction_mode ne "system" && $profile eq "");
+ return '{"status":"error","message":"Selected ICC profile was not found"}' if($profile ne "" && !-f "$_icc_profile_dir/$profile");
  eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
  my (undef,undef,$previous_revision)=&webui_icc_companion_settings_values();
  my $revision=int(Time::HiRes::time()*1000);
  $revision=$previous_revision+1 if($revision<=$previous_revision);
- my $content='{"window_mode":"'.$window_mode.'","patch_size":'.$patch_size.',"revision":'.$revision.'}';
+ my $content='{"window_mode":"'.$window_mode.'","patch_size":'.$patch_size.',"revision":'.$revision.',"correction_mode":"'.$correction_mode.'","correction_profile":"'.&_webui_json_escape($profile).'","correction_signal_mode":"'.$signal_mode.'"}';
  return '{"status":"error","message":"Could not save ICC Companion display settings"}'
   unless(&webui_icc_companion_write_atomic($_icc_companion_settings_file,$content,0600));
  return '{"status":"ok",'.&webui_icc_companion_settings_fragment().'}';
+}
+
+sub webui_icc_companion_lut (@) {
+ my ($query)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return ("","Unauthorized Companion correction request") if($expected eq "" || $token ne $expected);
+ my (undef,undef,$revision,$method,$profile,$signal_mode)=&webui_icc_companion_settings_values();
+ return ("","Operating-system correction does not require an application LUT") if($method eq "system");
+ return ("","Selected ICC profile was not found") if($profile eq "" || !-f "$_icc_profile_dir/$profile");
+ return ("","Companion LUT builder is unavailable") unless(-f $_icc_companion_lut_builder);
+ my $cache="/tmp/pgen_icc_companion_lut_".$revision."_".$method."_".$signal_mode.".bin";
+ if(!-s $cache) {
+  my $profile_path="$_icc_profile_dir/$profile";
+  my $output=`/usr/bin/python3 '$_icc_companion_lut_builder' '$profile_path' '$method' '$signal_mode' '$cache' 2>&1`;
+  if($?!=0 || !-s $cache) {
+   unlink($cache);
+   $output=~s/[\r\n]+/ /g;
+   $output=~s/[^A-Za-z0-9 ._:()\[\]-]+/?/g;
+   return ("",substr($output||"Could not build the Companion correction LUT",0,240));
+  }
+ }
+ my $content="";
+ if(open(my $fh,"<:raw",$cache)) { local $/; $content=<$fh>||""; close($fh); }
+ return ($content,$content ne "" ? "" : "Could not read the Companion correction LUT");
 }
 
 sub webui_icc_companion_poll (@) {

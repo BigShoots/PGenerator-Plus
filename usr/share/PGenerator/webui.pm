@@ -407,6 +407,7 @@ my $_ccss_create_ccxxmake_bin="/usr/bin/ccxxmake_interactive";
 our $_icc_profile_builder="/usr/bin/icc_profile_builder.py";
 our $_icc_profile_dir="$var_dir/icc";
 our $_icc_companion_packager="/usr/bin/icc_companion_package.py";
+our $_icc_companion_lut_builder="/usr/bin/icc_companion_lut.py";
 our $_icc_companion_dir="$var_dir/icc-companion";
 our $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
 our $_icc_companion_command_file="$_icc_companion_dir/command.json";
@@ -708,7 +709,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/lut");
  return 0;
 }
 
@@ -1667,6 +1668,17 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_ack($body);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/lut") {
+    my ($content,$message)=&webui_icc_companion_lut($request_query);
+    if($content ne "") {
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
+     print $client $content;
+    } else {
+     $message="Companion correction LUT is unavailable" if(!defined($message) || $message eq "");
+     my $err='{"status":"error","message":"'.&_webui_json_escape($message).'"}';
+     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
+    }
    }
    elsif($path eq "/api/icc/companion/download") {
     my ($fname,$content,$message)=&webui_icc_companion_download($request_query,$request_host);
@@ -13094,6 +13106,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <option value="local">PGenerator output</option>
      <option value="companion" disabled title="Run the ICC Companion on the target computer to enable this option">ICC Companion</option>
     </select>
+    <div id="meterCalibrationCompanionCorrection" style="display:none;margin-top:6px">
+     <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use Windows MHC2 or a selected profile transform">
+      <option value="system">Operating-system profile correction</option>
+      <option value="clut">Application-managed ICC cLUT</option>
+      <option value="matrix">Application-managed matrix/TRC fallback</option>
+     </select>
+     <select id="meterCalibrationCompanionCorrectionProfile" class="meter-card-header-select" style="display:none;margin-top:4px" onchange="meterIccCompanionCorrectionChanged('calibration')" title="ICC profile used by the Companion"><option value="">Select a created profile</option></select>
+    </div>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
     <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">Download KDE/Linux</button></div>
    </div>

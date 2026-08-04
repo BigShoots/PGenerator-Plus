@@ -50,6 +50,7 @@ function meterIccUiSettings(){
   name:value('meterIccProfileName'),profile_type:value('meterIccProfileType'),target_transfer:value('meterIccTargetTransfer'),
   profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
+  companion_correction:value('meterIccCompanionCorrectionMode'),companion_profile:value('meterIccCompanionCorrectionProfile'),
   patch_settings:meterIccPatchSettings()
  };
 }
@@ -82,6 +83,8 @@ function meterIccRestoreUiSettings(){
   set('meterIccQuality',saved.quality,['small','medium','large','custom']);
   set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
+  set('meterIccCompanionCorrectionMode',saved.companion_correction,['system','clut','matrix']);
+  set('meterIccCompanionCorrectionProfile',saved.companion_profile);
   set('meterIccStartDelay',saved.start_delay);
   const patch=saved.patch_settings;
   if(patch&&typeof patch==='object'){
@@ -355,10 +358,13 @@ function meterIccCompanionPatchSizeValue(){
 
 async function meterIccPushCompanionDisplaySettings(showError){
  const mode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+ const correctionMode=String((document.getElementById('meterIccCompanionCorrectionMode')||{}).value||'system');
+ const correctionProfile=String((document.getElementById('meterIccCompanionCorrectionProfile')||{}).value||'');
+ const activeSignal=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase()==='hdr10'?'hdr10':'sdr';
  try{
   const response=await fetchJSON('/api/icc/companion/settings',{
    method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({window_mode:mode,patch_size:meterIccCompanionPatchSizeValue()}),
+   body:JSON.stringify({window_mode:mode,patch_size:meterIccCompanionPatchSizeValue(),correction_mode:correctionMode,correction_profile:correctionProfile,correction_signal_mode:activeSignal}),
    _quiet:true,_timeoutMs:5000
   });
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Could not update the ICC Companion');
@@ -367,6 +373,18 @@ async function meterIccPushCompanionDisplaySettings(showError){
   if(showError!==false) toast(error&&error.message?error.message:'Could not update the ICC Companion',true);
   return false;
  }
+}
+
+function meterIccCompanionCorrectionChanged(source){
+ const fromCalibration=source==='calibration';
+ const sourceMode=document.getElementById(fromCalibration?'meterCalibrationCompanionCorrectionMode':'meterIccCompanionCorrectionMode');
+ const sourceProfile=document.getElementById(fromCalibration?'meterCalibrationCompanionCorrectionProfile':'meterIccCompanionCorrectionProfile');
+ const targetMode=document.getElementById(fromCalibration?'meterIccCompanionCorrectionMode':'meterCalibrationCompanionCorrectionMode');
+ const targetProfile=document.getElementById(fromCalibration?'meterIccCompanionCorrectionProfile':'meterCalibrationCompanionCorrectionProfile');
+ if(sourceMode&&targetMode) targetMode.value=sourceMode.value;
+ if(sourceProfile&&targetProfile) targetProfile.value=sourceProfile.value;
+ meterIccSyncUi();
+ meterIccPushCompanionDisplaySettings(true);
 }
 
 function meterIccCompanionDisplaySettingsChanged(){
@@ -781,6 +799,12 @@ function meterIccSyncUi(){
  const companionPatchSizeField=document.getElementById('meterIccCompanionPatchSizeField');
  const patchSizeNote=document.getElementById('meterIccPatchSizeNote');
  const companionDisplayModeNote=document.getElementById('meterIccCompanionDisplayModeNote');
+ const companionCorrectionMode=String((document.getElementById('meterIccCompanionCorrectionMode')||{}).value||'system');
+ const companionCorrectionProfile=String((document.getElementById('meterIccCompanionCorrectionProfile')||{}).value||'');
+ const companionCorrectionProfileField=document.getElementById('meterIccCompanionCorrectionProfileField');
+ const companionCorrectionNote=document.getElementById('meterIccCompanionCorrectionNote');
+ const calibrationCorrectionMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
+ const calibrationCorrectionProfile=document.getElementById('meterCalibrationCompanionCorrectionProfile');
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
  if(delayNote) delayNote.textContent=usesCompanion
@@ -793,6 +817,17 @@ function meterIccSyncUi(){
  if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
   ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':''))
   :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));
+ if(companionCorrectionProfileField) companionCorrectionProfileField.style.display=companionCorrectionMode==='system'?'none':'';
+ if(calibrationCorrectionMode&&calibrationCorrectionMode.value!==companionCorrectionMode) calibrationCorrectionMode.value=companionCorrectionMode;
+ if(calibrationCorrectionProfile){
+  if(Array.from(calibrationCorrectionProfile.options).some(option=>option.value===companionCorrectionProfile)) calibrationCorrectionProfile.value=companionCorrectionProfile;
+  calibrationCorrectionProfile.style.display=companionCorrectionMode==='system'?'none':'';
+ }
+ if(companionCorrectionNote) companionCorrectionNote.textContent=companionCorrectionMode==='system'
+  ?'The Companion sends uncorrected patches through the active Windows Advanced Color or Linux compositor profile pipeline.'
+  :(companionCorrectionMode==='clut'
+   ?'The Companion applies the selected profile cLUT before rendering each patch. Disable the profile\'s Windows MHC2 system correction while using this mode to avoid applying the correction twice.'
+   :'The Companion applies the selected profile matrix and tone-curve fallback before rendering each patch. Disable the profile\'s Windows MHC2 system correction while using this mode to avoid applying the correction twice.');
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -937,7 +972,9 @@ function meterCalibrationShowCompanionStatus(connected,text){
 }
 function meterCalibrationSyncPatternProviderUi(){
  const col=document.getElementById('meterPatternProviderCol');
+ const correction=document.getElementById('meterCalibrationCompanionCorrection');
  if(col) col.classList.toggle('companion-selected',meterCalibrationUsesCompanion());
+ if(correction) correction.style.display=meterCalibrationUsesCompanion()?'':'none';
  if(meterCalibrationUsesCompanion()){
   if(!meterCalibrationCompanionTimer) meterCalibrationCompanionTimer=setInterval(meterIccRefreshCompanionStatus,2000);
  }else{
@@ -1009,7 +1046,9 @@ async function meterIccRefreshCompanionStatus(){
    const renderer=String(state.renderer||'renderer');
    const version=String(state.version||'');
    const hdr=state.hdr_active?' with native HDR active':'';
-   const detail='Connected: '+client+' using '+renderer+hdr+(version?' (v'+version+')':'');
+   const correctionMode=String(state.correction_mode||'system');
+   const correction=correctionMode==='clut'?' using ICC cLUT':correctionMode==='matrix'?' using matrix/TRC fallback':' using operating-system correction';
+   const detail='Connected: '+client+' using '+renderer+hdr+correction+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;
    meterIccShowCompanionStatus(true,detail);
    meterCalibrationShowCompanionStatus(true,detail);
@@ -1036,6 +1075,8 @@ async function meterIccLoadProfiles(){
    return String(a&&a.name||'').localeCompare(String(b&&b.name||''));
   });
   const precondition=document.getElementById('meterIccPreconditionProfile');
+  const companionCorrection=document.getElementById('meterIccCompanionCorrectionProfile');
+  const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionProfile');
   if(precondition){
    const previous=precondition.value;
    precondition.textContent='';
@@ -1050,6 +1091,38 @@ async function meterIccLoadProfiles(){
     precondition.appendChild(option);
    });
    if(profiles.some(profile=>profile.name===previous)) precondition.value=previous;
+  }
+  if(companionCorrection){
+   const previous=companionCorrection.value;
+   companionCorrection.textContent='';
+   const none=document.createElement('option');
+   none.value='';
+   none.textContent='Select a created profile';
+   companionCorrection.appendChild(none);
+   historyProfiles.forEach(profile=>{
+    const option=document.createElement('option');
+    option.value=profile.name;
+    option.textContent=profile.name;
+    option.title=profile.name;
+    companionCorrection.appendChild(option);
+   });
+   if(historyProfiles.some(profile=>profile.name===previous)) companionCorrection.value=previous;
+  }
+  if(calibrationCorrection){
+   const previous=calibrationCorrection.value;
+   calibrationCorrection.textContent='';
+   const none=document.createElement('option');
+   none.value='';
+   none.textContent='Select a created profile';
+   calibrationCorrection.appendChild(none);
+   historyProfiles.forEach(profile=>{
+    const option=document.createElement('option');
+    option.value=profile.name;
+    option.textContent=profile.name;
+    option.title=profile.name;
+    calibrationCorrection.appendChild(option);
+   });
+   if(historyProfiles.some(profile=>profile.name===previous)) calibrationCorrection.value=previous;
   }
   if(!profiles.length){
    list.textContent='No ICC profiles have been created yet.';
@@ -1377,6 +1450,14 @@ async function meterIccStart(){
  const patternProvider=meterIccPatternProvider();
  if(patternProvider==='companion'){
   if(!await meterIccRefreshCompanionStatus()){ toast('Run the ICC Companion on the target computer first',true); return; }
+  const nativeCorrection=document.getElementById('meterIccCompanionCorrectionMode');
+  if(nativeCorrection&&nativeCorrection.value!=='system'){
+   nativeCorrection.value='system';
+   const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionMode');
+   if(calibrationCorrection) calibrationCorrection.value='system';
+   meterIccSyncUi();
+   toast('Companion profile correction was disabled so the new profile measures the uncorrected display path');
+  }
   if(!await meterIccPushCompanionDisplaySettings(true)) return;
  }else{
   if(!await meterIccEnsureLocalOutputMode(type)) return;

@@ -38,6 +38,12 @@ The companion must remain connected for the entire measurement run. PGenerator+
 waits for each patch to be presented before it asks the meter to read. The
 alignment target returns whenever profiling finishes, is stopped, or fails.
 
+For post-profile verification, the WebUI can leave patches unmodified for the
+operating-system profile pipeline, apply a selected profile's BToA cLUT inside
+the Companion, or apply its matrix and tone-curve fallback. Do not leave the
+same system correction active while using either application-managed mode,
+because that would apply two corrections to the measurement patches.
+
 Windows may show a SmartScreen warning because this build is not code-signed.
 The application communicates only with the PGenerator+ address embedded in the
 configuration file.

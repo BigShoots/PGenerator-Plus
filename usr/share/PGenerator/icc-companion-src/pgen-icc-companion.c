@@ -42,8 +42,9 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.5"
+#define APP_VERSION "1.2.0"
 #define RESPONSE_CAPACITY 32768
+#define CORRECTION_RESPONSE_LIMIT (4 * 1024 * 1024)
 
 typedef struct {
     char server[256];
@@ -90,6 +91,13 @@ typedef struct {
     int settings_size;
     uint64_t settings_revision;
     uint64_t applied_settings_revision;
+    char correction_mode[16];
+    char correction_profile[192];
+    char correction_signal_mode[16];
+    float *correction_lut;
+    int correction_lut_grid;
+    uint64_t correction_lut_revision;
+    char correction_error[256];
     bool ack_pending;
     uint64_t ack_sequence;
     bool ack_ok;
@@ -372,6 +380,184 @@ static int http_request(CompanionConfig *config, const char *method, const char 
         SDL_strlcpy(response, payload, response_size);
     }
     return status;
+}
+
+static unsigned char *http_get_binary(CompanionConfig *config, const char *path, size_t *payload_size)
+{
+    char request[2048];
+    unsigned char *raw = NULL;
+    size_t used = 0, capacity = 65536;
+    socket_handle_t sock = open_server_socket(config);
+    int status = 0;
+    if (payload_size) *payload_size = 0;
+    if (sock == INVALID_SOCKET_HANDLE) return NULL;
+#ifdef _WIN32
+    {
+        DWORD timeout = 15000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+    }
+#else
+    {
+        struct timeval timeout = {15, 0};
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    }
+#endif
+    SDL_snprintf(request, sizeof(request),
+                 "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                 path, config->host);
+    {
+        size_t sent = 0, length = strlen(request);
+        while (sent < length) {
+            int count = (int)send(sock, request + sent, (int)(length - sent), 0);
+            if (count <= 0) { close_socket(sock); return NULL; }
+            sent += (size_t)count;
+        }
+    }
+    raw = SDL_malloc(capacity);
+    if (!raw) { close_socket(sock); return NULL; }
+    while (used < CORRECTION_RESPONSE_LIMIT) {
+        int count;
+        if (capacity - used < 16384) {
+            size_t next_capacity = capacity * 2;
+            unsigned char *next;
+            if (next_capacity > CORRECTION_RESPONSE_LIMIT) next_capacity = CORRECTION_RESPONSE_LIMIT;
+            if (next_capacity <= capacity) break;
+            next = SDL_realloc(raw, next_capacity);
+            if (!next) { SDL_free(raw); close_socket(sock); return NULL; }
+            raw = next;
+            capacity = next_capacity;
+        }
+        count = (int)recv(sock, (char *)raw + used, (int)(capacity - used), 0);
+        if (count <= 0) break;
+        used += (size_t)count;
+    }
+    close_socket(sock);
+    {
+        char status_line[64];
+        size_t status_length = used < sizeof(status_line) - 1 ? used : sizeof(status_line) - 1;
+        memcpy(status_line, raw, status_length);
+        status_line[status_length] = '\0';
+        if (used < 16 || sscanf(status_line, "HTTP/%*s %d", &status) != 1 || status != 200) {
+            SDL_free(raw);
+            return NULL;
+        }
+    }
+    {
+        unsigned char *separator = NULL;
+        for (size_t index = 0; index + 3 < used; index++) {
+            if (raw[index] == '\r' && raw[index + 1] == '\n' && raw[index + 2] == '\r' && raw[index + 3] == '\n') {
+                separator = raw + index + 4;
+                break;
+            }
+        }
+        if (!separator) { SDL_free(raw); return NULL; }
+        size_t header_size = (size_t)(separator - raw);
+        size_t body_size = used - header_size;
+        memmove(raw, separator, body_size);
+        if (payload_size) *payload_size = body_size;
+    }
+    return raw;
+}
+
+static uint16_t read_be16(const unsigned char *value)
+{
+    return (uint16_t)(((uint16_t)value[0] << 8) | value[1]);
+}
+
+static uint32_t read_be32(const unsigned char *value)
+{
+    return ((uint32_t)value[0] << 24) | ((uint32_t)value[1] << 16) |
+           ((uint32_t)value[2] << 8) | value[3];
+}
+
+static bool load_correction_lut(uint64_t revision)
+{
+    char path[512];
+    unsigned char *payload;
+    size_t payload_size = 0;
+    uint32_t count;
+    int grid;
+    float *values;
+    if (!strcmp(app.correction_mode, "system")) {
+        SDL_free(app.correction_lut);
+        app.correction_lut = NULL;
+        app.correction_lut_grid = 0;
+        app.correction_lut_revision = revision;
+        app.correction_error[0] = '\0';
+        return true;
+    }
+    /* Never retain a transform from a previously selected profile if the new
+     * LUT cannot be downloaded or decoded. A stale correction would produce a
+     * valid patch acknowledgement while applying the wrong profile. */
+    SDL_free(app.correction_lut);
+    app.correction_lut = NULL;
+    app.correction_lut_grid = 0;
+    SDL_snprintf(path, sizeof(path), "/api/icc/companion/lut?token=%s&revision=%llu",
+                 app.config.token, (unsigned long long)revision);
+    payload = http_get_binary(&app.config, path, &payload_size);
+    if (!payload) {
+        SDL_strlcpy(app.correction_error, "Could not download the selected ICC correction from PGenerator+", sizeof(app.correction_error));
+        return false;
+    }
+    if (payload_size < 16 || memcmp(payload, "PGLT", 4) || payload[4] != 1 || payload[6] != 3) {
+        SDL_free(payload);
+        SDL_strlcpy(app.correction_error, "The selected ICC correction LUT is invalid", sizeof(app.correction_error));
+        return false;
+    }
+    grid = payload[5];
+    count = read_be32(payload + 8);
+    if (grid < 2 || grid > 65 || count != (uint32_t)(grid * grid * grid) || payload_size != 16 + (size_t)count * 6) {
+        SDL_free(payload);
+        SDL_strlcpy(app.correction_error, "The selected ICC correction LUT dimensions are invalid", sizeof(app.correction_error));
+        return false;
+    }
+    values = SDL_malloc((size_t)count * 3 * sizeof(*values));
+    if (!values) {
+        SDL_free(payload);
+        SDL_strlcpy(app.correction_error, "Not enough memory to load the selected ICC correction", sizeof(app.correction_error));
+        return false;
+    }
+    for (uint32_t index = 0; index < count * 3; index++)
+        values[index] = read_be16(payload + 16 + (size_t)index * 2) / 65535.0f;
+    SDL_free(payload);
+    SDL_free(app.correction_lut);
+    app.correction_lut = values;
+    app.correction_lut_grid = grid;
+    app.correction_lut_revision = revision;
+    app.correction_error[0] = '\0';
+    return true;
+}
+
+static bool apply_correction_lut(double *red, double *green, double *blue)
+{
+    double input[3] = {*red, *green, *blue};
+    double output[3] = {0.0, 0.0, 0.0};
+    int base[3];
+    double fraction[3];
+    int grid = app.correction_lut_grid;
+    if (!strcmp(app.correction_mode, "system")) return true;
+    if (!app.correction_lut || grid < 2) return false;
+    for (int axis = 0; axis < 3; axis++) {
+        double position = fmax(0.0, fmin(1.0, input[axis])) * (grid - 1);
+        base[axis] = (int)position;
+        if (base[axis] >= grid - 1) base[axis] = grid - 2;
+        fraction[axis] = position - base[axis];
+    }
+    for (int corner = 0; corner < 8; corner++) {
+        double weight = 1.0;
+        int coordinate[3];
+        for (int axis = 0; axis < 3; axis++) {
+            bool upper = (corner & (1 << axis)) != 0;
+            coordinate[axis] = base[axis] + (upper ? 1 : 0);
+            weight *= upper ? fraction[axis] : (1.0 - fraction[axis]);
+        }
+        size_t offset = (size_t)(((coordinate[0] * grid + coordinate[1]) * grid + coordinate[2]) * 3);
+        for (int channel = 0; channel < 3; channel++) output[channel] += weight * app.correction_lut[offset + channel];
+    }
+    *red = output[0]; *green = output[1]; *blue = output[2];
+    return true;
 }
 
 static bool json_number(const char *json, const char *key, double *value)
@@ -754,6 +940,7 @@ static void poll_server(void)
 {
     char path[768], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     char window_mode[32] = "window";
+    char correction_mode[16] = "system", correction_profile[192] = "", correction_signal_mode[16] = "sdr";
     char reported_renderer[64] = "starting";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     double settings_revision_value, display_size_value, patch_size_value;
@@ -785,6 +972,15 @@ static void poll_server(void)
         json_number(response, "display_size", &display_size_value) &&
         json_string(response, "window_mode", window_mode, sizeof(window_mode))) {
         uint64_t settings_revision = (uint64_t)settings_revision_value;
+        json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
+        json_string(response, "correction_profile", correction_profile, sizeof(correction_profile));
+        json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
+        if (settings_revision != app.correction_lut_revision) {
+            SDL_strlcpy(app.correction_mode, correction_mode, sizeof(app.correction_mode));
+            SDL_strlcpy(app.correction_profile, correction_profile, sizeof(app.correction_profile));
+            SDL_strlcpy(app.correction_signal_mode, correction_signal_mode, sizeof(app.correction_signal_mode));
+            load_correction_lut(settings_revision);
+        }
         SDL_LockMutex(app.network_mutex);
         if (settings_revision != app.applied_settings_revision &&
             (!app.settings_pending || settings_revision != app.settings_revision)) {
@@ -840,6 +1036,16 @@ static void poll_server(void)
     r = fmax(0.0, fmin(1.0, (r - code_min) / (code_max - code_min)));
     g = fmax(0.0, fmin(1.0, (g - code_min) / (code_max - code_min)));
     b = fmax(0.0, fmin(1.0, (b - code_min) / (code_max - code_min)));
+    if (strcmp(app.correction_mode, "system") && strcmp(mode, app.correction_signal_mode)) {
+        acknowledge(sequence, false, "The selected ICC correction does not match the patch signal mode", "profile", false);
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
+    }
+    if (!apply_correction_lut(&r, &g, &b)) {
+        acknowledge(sequence, false, app.correction_error[0] ? app.correction_error : "The selected ICC correction is not ready", "profile", false);
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
+    }
     SDL_LockMutex(app.network_mutex);
     app.command_sequence = sequence;
     app.command_alignment = false;
@@ -928,6 +1134,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 {
     (void)argc; (void)argv;
     memset(&app, 0, sizeof(app));
+    SDL_strlcpy(app.correction_mode, "system", sizeof(app.correction_mode));
+    SDL_strlcpy(app.correction_signal_mode, "sdr", sizeof(app.correction_signal_mode));
 #ifdef _WIN32
     {
         WSADATA data;
@@ -1014,6 +1222,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         if (state->texture) SDL_DestroyTexture(state->texture);
         if (state->background_texture) SDL_DestroyTexture(state->background_texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
+        SDL_free(state->correction_lut);
         if (state->window) SDL_DestroyWindow(state->window);
         if (state->network_mutex) SDL_DestroyMutex(state->network_mutex);
     }
