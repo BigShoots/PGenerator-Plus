@@ -191,9 +191,13 @@ function meterIccAskReuseChoice(reused,total,legacy,options){
  const exact=reused
   ?reused+' also match the new '+total+'-patch set exactly, leaving '+remaining+' new '+(remaining===1?'patch':'patches')+' to measure. '
   :'None of its patch codes exactly match the new '+total+'-patch set. ';
- const preRead=options.skipPreRead?'The previous measurements can still characterize this display and skip a separate 34-patch pre-read. ':'';
- message.textContent=source+exact+preRead+'Reuse them, or start with an entirely new measurement run. Only reuse measurements if the display, input, meter, correction profile and measurement setup have not changed.';
- if(confirmButton) confirmButton.textContent=reused?'Reuse '+reused+' Matching Reads':'Reuse as Display Pre-read';
+ const preRead=options.skipPreRead
+  ?('All '+sourceCount+' completed pre-read measurements will be used to optimize the final patch set. '+reused+' of those pre-read patches also match the final set exactly and can count as final profile measurements. ')
+  :'';
+ message.textContent=source+(options.skipPreRead?preRead:exact)+'Reuse the compatible data, or start with an entirely new measurement run. Only reuse measurements if the display, input, meter, correction profile and measurement setup have not changed.';
+ if(confirmButton) confirmButton.textContent=options.skipPreRead
+  ?('Use Pre-read'+(reused?' + Reuse '+reused:'') )
+  :(reused?'Reuse '+reused+' Matching Reads':'Reuse as Display Pre-read');
  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
  modal.style.display='flex';
  uiSyncBodyScrollLock();
