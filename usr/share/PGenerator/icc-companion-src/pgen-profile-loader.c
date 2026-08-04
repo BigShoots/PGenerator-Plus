@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.9"
+#define APP_VERSION L"1.2.0"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -29,11 +29,13 @@
 #define ID_STARTUP 107
 #define ID_SETTINGS 108
 #define ID_HIDE 109
+#define ID_CLEAR_DEFAULT 110
 #define ID_TRAY_SHOW 201
 #define ID_TRAY_APPLY 202
 #define ID_TRAY_AUTOREAPPLY 203
 #define ID_TRAY_SETTINGS 204
 #define ID_TRAY_EXIT 205
+#define ID_TRAY_CLEAR_DEFAULT 206
 #define IDI_PGEN_APP 101
 #define PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)7)
 #define PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)8)
@@ -50,6 +52,8 @@ typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayList)(
 typedef HRESULT (WINAPI *PFN_ColorProfileSetDisplayDefaultAssociation)(
     WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, COLORPROFILETYPE,
     COLORPROFILESUBTYPE, LUID, UINT32);
+typedef HRESULT (WINAPI *PFN_ColorProfileRemoveDisplayAssociation)(
+    WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL);
 
 typedef struct {
     LUID adapter;
@@ -60,7 +64,7 @@ typedef struct {
 } DISPLAY_ENTRY;
 
 static HINSTANCE g_instance;
-static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply, g_browse;
+static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply, g_browse, g_clear_default;
 static NOTIFYICONDATAW g_tray;
 static HICON g_icon_ok, g_icon_bad;
 static HFONT g_font_normal, g_font_label, g_font_title, g_font_subtitle, g_font_button;
@@ -93,6 +97,7 @@ static PFN_ColorProfileGetDisplayDefault p_get_default;
 static PFN_ColorProfileGetDisplayUserScope p_get_scope;
 static PFN_ColorProfileGetDisplayList p_get_list;
 static PFN_ColorProfileSetDisplayDefaultAssociation p_set_default;
+static PFN_ColorProfileRemoveDisplayAssociation p_remove_association;
 
 static int px(int value) {
     return MulDiv(value, (int)g_dpi, 96);
@@ -587,6 +592,67 @@ static BOOL apply_profile(BOOL interactive) {
     return TRUE;
 }
 
+static void clear_display_default(void) {
+    DISPLAY_ENTRY *display = selected_display();
+    LPWSTR current = NULL;
+    COLORPROFILESUBTYPE subtype = g_associate_advanced
+                                ? PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE
+                                : PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE;
+    HRESULT hr;
+    WCHAR question[512];
+    WCHAR result[512];
+    if (!display) {
+        MessageBoxW(g_window, L"Select an active display first.", APP_NAME,
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (!p_get_default || !p_remove_association) {
+        MessageBoxW(g_window,
+                    L"This version of Windows does not provide the per-display profile removal API.",
+                    APP_NAME, MB_OK | MB_ICONERROR);
+        return;
+    }
+    hr = p_get_default(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                       display->adapter, display->source_id, CPT_ICC,
+                       subtype, &current);
+    if (FAILED(hr) || !current || !current[0]) {
+        if (current) LocalFree(current);
+        set_status(FALSE, g_associate_advanced
+                   ? L"No per-user HDR display profile is currently set as the default."
+                   : L"No per-user SDR display profile is currently set as the default.");
+        return;
+    }
+    swprintf(question, 512,
+             L"Remove %ls as the current %ls display default?\n\nThe profile will remain installed and can be applied again later.",
+             profile_basename(current), g_associate_advanced ? L"HDR" : L"SDR");
+    if (MessageBoxW(g_window, question, APP_NAME,
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        LocalFree(current);
+        return;
+    }
+    hr = p_remove_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                              current, display->adapter, display->source_id,
+                              g_associate_advanced);
+    if (FAILED(hr)) {
+        message_error(g_window, L"Removing the display profile association", (DWORD)hr);
+        LocalFree(current);
+        return;
+    }
+    if (!g_associate_advanced) {
+        /* A NULL current-user default restores the system-wide fallback. */
+        WcsSetDefaultColorProfile(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                                  display->source_name, CPT_ICC, CPST_NONE, 0, NULL);
+    }
+    g_auto_reapply = FALSE;
+    SendMessageW(GetDlgItem(g_window, ID_AUTOREAPPLY), BM_SETCHECK, BST_UNCHECKED, 0);
+    save_settings();
+    swprintf(result, 512,
+             L"Removed %ls as the per-user %ls display default. Windows will use the next available system or display profile.",
+             profile_basename(current), g_associate_advanced ? L"HDR" : L"SDR");
+    LocalFree(current);
+    set_pending_status(L"DEFAULT PROFILE CLEARED", result);
+}
+
 static DWORD WINAPI apply_profile_thread(LPVOID unused) {
     BOOL ok;
     (void)unused;
@@ -738,6 +804,7 @@ static void layout_controls(HWND hwnd) {
     MoveWindow(g_status_heading, px(58), px(333), content_w - px(56), px(20), TRUE);
     MoveWindow(g_status, px(58), px(360), content_w - px(60), px(62), TRUE);
     MoveWindow(GetDlgItem(hwnd, ID_SETTINGS), px(28), px(450), px(190), px(40), TRUE);
+    MoveWindow(g_clear_default, px(228), px(450), px(168), px(40), TRUE);
     MoveWindow(GetDlgItem(hwnd, ID_HIDE), w - px(292), px(450), px(126), px(40), TRUE);
     MoveWindow(g_apply, w - px(156), px(450), px(128), px(40), TRUE);
 }
@@ -753,6 +820,7 @@ static void show_tray_menu(void) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, L"Open Profile Loader");
     AppendMenuW(menu, MF_STRING, ID_TRAY_APPLY, L"Reapply selected profile");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_CLEAR_DEFAULT, L"Clear display default");
     AppendMenuW(menu, MF_STRING | (g_auto_reapply ? MF_CHECKED : 0),
                 ID_TRAY_AUTOREAPPLY, L"Automatically reapply");
     AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, L"Windows Color Profile settings");
@@ -841,6 +909,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             (HMENU)ID_SETTINGS, g_instance, NULL);
         apply_font(ctl, g_font_button);
         SetWindowTheme(ctl, L"Explorer", NULL);
+        g_clear_default = CreateWindowW(L"BUTTON", L"Clear display default",
+                                        WS_CHILD | WS_VISIBLE,
+                                        px(228), px(450), px(168), px(40), hwnd,
+                                        (HMENU)ID_CLEAR_DEFAULT, g_instance, NULL);
+        apply_font(g_clear_default, g_font_button);
+        SetWindowTheme(g_clear_default, L"Explorer", NULL);
         ctl = CreateWindowW(L"BUTTON", L"Hide to tray", WS_CHILD | WS_VISIBLE,
                             px(408), px(450), px(126), px(40), hwnd,
                             (HMENU)ID_HIDE, g_instance, NULL);
@@ -949,6 +1023,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (LOWORD(wp)) {
         case ID_BROWSE: choose_profile(); break;
         case ID_APPLY: start_apply_profile(); break;
+        case ID_CLEAR_DEFAULT: case ID_TRAY_CLEAR_DEFAULT: clear_display_default(); break;
         case ID_SETTINGS: case ID_TRAY_SETTINGS: open_color_settings(); break;
         case ID_HIDE: ShowWindow(hwnd, SW_HIDE); break;
         case ID_DISPLAY:
@@ -1074,6 +1149,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         memcpy(&p_get_list, &proc, sizeof(p_get_list));
         proc = GetProcAddress(g_mscms, "ColorProfileSetDisplayDefaultAssociation");
         memcpy(&p_set_default, &proc, sizeof(p_set_default));
+        proc = GetProcAddress(g_mscms, "ColorProfileRemoveDisplayAssociation");
+        memcpy(&p_remove_association, &proc, sizeof(p_remove_association));
     }
     g_icon_ok = make_status_icon(RGB(35, 166, 78));
     g_icon_bad = make_status_icon(RGB(210, 48, 48));
