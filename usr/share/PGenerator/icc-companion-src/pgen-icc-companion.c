@@ -31,6 +31,7 @@ typedef SOCKET socket_handle_t;
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -39,7 +40,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.1.2"
+#define APP_VERSION "1.1.3"
 #define RESPONSE_CAPACITY 32768
 
 typedef struct {
@@ -48,6 +49,12 @@ typedef struct {
     char token[96];
     char client[96];
     int port;
+    struct sockaddr_storage resolved_address;
+    int resolved_address_length;
+    int resolved_family;
+    int resolved_socktype;
+    int resolved_protocol;
+    bool address_resolved;
 } CompanionConfig;
 
 typedef struct {
@@ -162,43 +169,114 @@ static bool load_config(CompanionConfig *config)
     return config->host[0] && config->port > 0 && config->port < 65536;
 }
 
-static int http_request(const CompanionConfig *config, const char *method, const char *path,
-                        const char *body, char *response, size_t response_size)
+static bool connect_with_timeout(socket_handle_t sock, const struct sockaddr *address,
+                                 int address_length, int timeout_ms)
+{
+    int result, socket_error = 0;
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    int error_length = (int)sizeof(socket_error);
+    if (ioctlsocket(sock, FIONBIO, &nonblocking) != 0) return false;
+    result = connect(sock, address, address_length);
+    if (result != 0) {
+        int error = WSAGetLastError();
+        if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS) return false;
+    }
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    socklen_t error_length = (socklen_t)sizeof(socket_error);
+    if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) != 0) return false;
+    result = connect(sock, address, (socklen_t)address_length);
+    if (result != 0 && errno != EINPROGRESS) return false;
+#endif
+    if (result != 0) {
+        fd_set write_set;
+        struct timeval timeout;
+        FD_ZERO(&write_set);
+        FD_SET(sock, &write_set);
+        timeout.tv_sec = timeout_ms / 1000;
+        timeout.tv_usec = (timeout_ms % 1000) * 1000;
+#ifdef _WIN32
+        result = select(0, NULL, &write_set, NULL, &timeout);
+#else
+        result = select(sock + 1, NULL, &write_set, NULL, &timeout);
+#endif
+        if (result <= 0 || !FD_ISSET(sock, &write_set) ||
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&socket_error, &error_length) != 0 ||
+            socket_error != 0) return false;
+    }
+#ifdef _WIN32
+    nonblocking = 0;
+    if (ioctlsocket(sock, FIONBIO, &nonblocking) != 0) return false;
+#else
+    if (fcntl(sock, F_SETFL, flags) != 0) return false;
+#endif
+    return true;
+}
+
+static socket_handle_t open_server_socket(CompanionConfig *config)
 {
     struct addrinfo hints, *addresses = NULL, *address;
+    socket_handle_t sock = INVALID_SOCKET_HANDLE;
     char port[16];
+
+    if (config->address_resolved) {
+        sock = socket(config->resolved_family, config->resolved_socktype, config->resolved_protocol);
+        if (sock == INVALID_SOCKET_HANDLE) return INVALID_SOCKET_HANDLE;
+        if (connect_with_timeout(sock, (const struct sockaddr *)&config->resolved_address,
+                                 config->resolved_address_length, 2500)) return sock;
+        close_socket(sock);
+        return INVALID_SOCKET_HANDLE;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    SDL_snprintf(port, sizeof(port), "%d", config->port);
+    if (getaddrinfo(config->host, port, &hints, &addresses) != 0) return INVALID_SOCKET_HANDLE;
+    for (address = addresses; address; address = address->ai_next) {
+        if ((size_t)address->ai_addrlen > sizeof(config->resolved_address)) continue;
+        sock = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (sock == INVALID_SOCKET_HANDLE) continue;
+        if (connect_with_timeout(sock, address->ai_addr, (int)address->ai_addrlen, 2500)) {
+            memcpy(&config->resolved_address, address->ai_addr, (size_t)address->ai_addrlen);
+            config->resolved_address_length = (int)address->ai_addrlen;
+            config->resolved_family = address->ai_family;
+            config->resolved_socktype = address->ai_socktype;
+            config->resolved_protocol = address->ai_protocol;
+            config->address_resolved = true;
+            break;
+        }
+        close_socket(sock);
+        sock = INVALID_SOCKET_HANDLE;
+    }
+    freeaddrinfo(addresses);
+    return sock;
+}
+
+static int http_request(CompanionConfig *config, const char *method, const char *path,
+                        const char *body, char *response, size_t response_size)
+{
     char request[4096];
     char raw[RESPONSE_CAPACITY];
     size_t used = 0;
     socket_handle_t sock = INVALID_SOCKET_HANDLE;
     int status = 0;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    SDL_snprintf(port, sizeof(port), "%d", config->port);
-    if (getaddrinfo(config->host, port, &hints, &addresses) != 0) return 0;
-    for (address = addresses; address; address = address->ai_next) {
-        sock = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-        if (sock == INVALID_SOCKET_HANDLE) continue;
-#ifdef _WIN32
-        {
-            DWORD timeout = 2500;
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
-        }
-#else
-        {
-            struct timeval timeout = {2, 500000};
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        }
-#endif
-        if (connect(sock, address->ai_addr, (int)address->ai_addrlen) == 0) break;
-        close_socket(sock);
-        sock = INVALID_SOCKET_HANDLE;
-    }
-    freeaddrinfo(addresses);
+    sock = open_server_socket(config);
     if (sock == INVALID_SOCKET_HANDLE) return 0;
+#ifdef _WIN32
+    {
+        DWORD timeout = 2500;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+    }
+#else
+    {
+        struct timeval timeout = {2, 500000};
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    }
+#endif
     if (!body) body = "";
     SDL_snprintf(request, sizeof(request),
                  "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: %u\r\n\r\n%s",
