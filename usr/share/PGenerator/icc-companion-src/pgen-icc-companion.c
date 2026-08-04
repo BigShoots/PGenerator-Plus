@@ -47,10 +47,9 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.0"
+#define APP_VERSION "1.3.1"
 #define RESPONSE_CAPACITY 32768
-#define CORRECTION_RESPONSE_LIMIT (4 * 1024 * 1024)
-#define PROFILE_UPLOAD_LIMIT (16 * 1024 * 1024)
+#define PGEN_UNUSED __attribute__((unused))
 
 typedef struct {
     char server[256];
@@ -99,9 +98,16 @@ typedef struct {
     uint64_t applied_settings_revision;
     char correction_mode[16];
     char correction_profile[192];
+#ifdef _WIN32
+    wchar_t correction_profile_path[32768];
+#endif
     char correction_signal_mode[16];
     float *correction_lut;
     int correction_lut_grid;
+#ifdef _WIN32
+    unsigned char *correction_profile_data;
+    size_t correction_profile_size;
+#endif
     uint64_t correction_lut_revision;
     char correction_error[256];
     bool ack_pending;
@@ -118,6 +124,7 @@ typedef struct {
 static AppState app;
 
 static bool render_alignment(void);
+static double pq_to_nits(double value);
 
 #ifdef _WIN32
 typedef HRESULT (WINAPI *PFN_ColorProfileGetDisplayDefault)(
@@ -591,157 +598,7 @@ static int http_request(CompanionConfig *config, const char *method, const char 
     return status;
 }
 
-#ifdef _WIN32
-static int http_post_binary(CompanionConfig *config, const char *path,
-                            const unsigned char *body, size_t body_size)
-{
-    char header[2048], response[2048];
-    size_t sent = 0, used = 0;
-    socket_handle_t sock = open_server_socket(config);
-    int status = 0;
-    if (sock == INVALID_SOCKET_HANDLE || !body || body_size < 1) return 0;
-    {
-        DWORD timeout = 15000;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
-    }
-    SDL_snprintf(header, sizeof(header),
-                 "POST %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: application/vnd.iccprofile\r\nContent-Length: %llu\r\n\r\n",
-                 path, config->host, (unsigned long long)body_size);
-    while (sent < strlen(header)) {
-        int count = (int)send(sock, header + sent, (int)(strlen(header) - sent), 0);
-        if (count <= 0) { close_socket(sock); return 0; }
-        sent += (size_t)count;
-    }
-    sent = 0;
-    while (sent < body_size) {
-        size_t remaining = body_size - sent;
-        int amount = remaining > 65536 ? 65536 : (int)remaining;
-        int count = (int)send(sock, (const char *)body + sent, amount, 0);
-        if (count <= 0) { close_socket(sock); return 0; }
-        sent += (size_t)count;
-    }
-    while (used + 1 < sizeof(response)) {
-        int count = (int)recv(sock, response + used, (int)(sizeof(response) - used - 1), 0);
-        if (count <= 0) break;
-        used += (size_t)count;
-    }
-    close_socket(sock);
-    response[used] = '\0';
-    if (sscanf(response, "HTTP/%*s %d", &status) != 1) return 0;
-    return status;
-}
-
-static bool upload_active_profile(const wchar_t *profile_path, const char *profile_name)
-{
-    FILE *file;
-    long length;
-    unsigned char *content;
-    char profile_hex[385], path[1024];
-    int status;
-    if (!profile_path || !profile_path[0] || !profile_name || !profile_name[0]) return false;
-    file = _wfopen(profile_path, L"rb");
-    if (!file) return false;
-    if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) < 128 || length > PROFILE_UPLOAD_LIMIT ||
-        fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        return false;
-    }
-    content = SDL_malloc((size_t)length);
-    if (!content) { fclose(file); return false; }
-    if (fread(content, 1, (size_t)length, file) != (size_t)length) {
-        SDL_free(content); fclose(file); return false;
-    }
-    fclose(file);
-    profile_name_hex(profile_name, profile_hex, sizeof(profile_hex));
-    SDL_snprintf(path, sizeof(path), "/api/icc/companion/profile?token=%s&profile_hex=%s",
-                 app.config.token, profile_hex);
-    status = http_post_binary(&app.config, path, content, (size_t)length);
-    SDL_free(content);
-    return status == 200;
-}
-#endif
-
-static unsigned char *http_get_binary(CompanionConfig *config, const char *path, size_t *payload_size)
-{
-    char request[2048];
-    unsigned char *raw = NULL;
-    size_t used = 0, capacity = 65536;
-    socket_handle_t sock = open_server_socket(config);
-    int status = 0;
-    if (payload_size) *payload_size = 0;
-    if (sock == INVALID_SOCKET_HANDLE) return NULL;
-#ifdef _WIN32
-    {
-        DWORD timeout = 15000;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
-    }
-#else
-    {
-        struct timeval timeout = {15, 0};
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-    }
-#endif
-    SDL_snprintf(request, sizeof(request),
-                 "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-                 path, config->host);
-    {
-        size_t sent = 0, length = strlen(request);
-        while (sent < length) {
-            int count = (int)send(sock, request + sent, (int)(length - sent), 0);
-            if (count <= 0) { close_socket(sock); return NULL; }
-            sent += (size_t)count;
-        }
-    }
-    raw = SDL_malloc(capacity);
-    if (!raw) { close_socket(sock); return NULL; }
-    while (used < CORRECTION_RESPONSE_LIMIT) {
-        int count;
-        if (capacity - used < 16384) {
-            size_t next_capacity = capacity * 2;
-            unsigned char *next;
-            if (next_capacity > CORRECTION_RESPONSE_LIMIT) next_capacity = CORRECTION_RESPONSE_LIMIT;
-            if (next_capacity <= capacity) break;
-            next = SDL_realloc(raw, next_capacity);
-            if (!next) { SDL_free(raw); close_socket(sock); return NULL; }
-            raw = next;
-            capacity = next_capacity;
-        }
-        count = (int)recv(sock, (char *)raw + used, (int)(capacity - used), 0);
-        if (count <= 0) break;
-        used += (size_t)count;
-    }
-    close_socket(sock);
-    {
-        char status_line[64];
-        size_t status_length = used < sizeof(status_line) - 1 ? used : sizeof(status_line) - 1;
-        memcpy(status_line, raw, status_length);
-        status_line[status_length] = '\0';
-        if (used < 16 || sscanf(status_line, "HTTP/%*s %d", &status) != 1 || status != 200) {
-            SDL_free(raw);
-            return NULL;
-        }
-    }
-    {
-        unsigned char *separator = NULL;
-        for (size_t index = 0; index + 3 < used; index++) {
-            if (raw[index] == '\r' && raw[index + 1] == '\n' && raw[index + 2] == '\r' && raw[index + 3] == '\n') {
-                separator = raw + index + 4;
-                break;
-            }
-        }
-        if (!separator) { SDL_free(raw); return NULL; }
-        size_t header_size = (size_t)(separator - raw);
-        size_t body_size = used - header_size;
-        memmove(raw, separator, body_size);
-        if (payload_size) *payload_size = body_size;
-    }
-    return raw;
-}
-
-static uint16_t read_be16(const unsigned char *value)
+static PGEN_UNUSED uint16_t read_be16(const unsigned char *value)
 {
     return (uint16_t)(((uint16_t)value[0] << 8) | value[1]);
 }
@@ -752,20 +609,159 @@ static uint32_t read_be32(const unsigned char *value)
            ((uint32_t)value[2] << 8) | value[3];
 }
 
+static PGEN_UNUSED double read_s15(const unsigned char *value)
+{
+    int32_t raw = (int32_t)read_be32(value);
+    return raw / 65536.0;
+}
+
+#ifdef _WIN32
+typedef struct { const unsigned char *data; size_t size; } IccTag;
+
+static IccTag icc_tag(const unsigned char *profile, size_t size, const char signature[4])
+{
+    IccTag empty = {NULL, 0};
+    if (!profile || size < 132) return empty;
+    uint32_t count = read_be32(profile + 128);
+    if (count > 256 || 132u + (size_t)count * 12u > size) return empty;
+    for (uint32_t index = 0; index < count; index++) {
+        const unsigned char *entry = profile + 132 + (size_t)index * 12;
+        uint32_t offset = read_be32(entry + 4), length = read_be32(entry + 8);
+        if (!memcmp(entry, signature, 4) && offset >= 128 && length >= 4 && (size_t)offset + length <= size) {
+            IccTag tag = {profile + offset, length};
+            return tag;
+        }
+    }
+    return empty;
+}
+
+static double icc_table_sample(const unsigned char *table, uint32_t count, double value)
+{
+    double position = fmax(0.0, fmin(1.0, value)) * (count - 1);
+    uint32_t lower = (uint32_t)position;
+    if (lower >= count - 1) lower = count - 2;
+    double fraction = position - lower;
+    return (read_be16(table + lower * 2) * (1.0 - fraction) +
+            read_be16(table + (lower + 1) * 2) * fraction) / 65535.0;
+}
+
+static bool icc_inverse_curve(IccTag tag, double value, double *result)
+{
+    if (!tag.data || tag.size < 12 || memcmp(tag.data, "curv", 4)) return false;
+    uint32_t count = read_be32(tag.data + 8);
+    value = fmax(0.0, fmin(1.0, value));
+    if (count == 0) { *result = value; return true; }
+    if (count == 1) {
+        if (tag.size < 14) return false;
+        double gamma = read_be16(tag.data + 12) / 256.0;
+        *result = gamma > 0.0 ? pow(value, 1.0 / gamma) : value;
+        return true;
+    }
+    if (count < 2 || 12u + (size_t)count * 2u > tag.size) return false;
+    uint32_t low = 0, high = count - 1;
+    while (high - low > 1) {
+        uint32_t middle = (low + high) / 2;
+        if (read_be16(tag.data + 12 + middle * 2) / 65535.0 < value) low = middle;
+        else high = middle;
+    }
+    double y0 = read_be16(tag.data + 12 + low * 2) / 65535.0;
+    double y1 = read_be16(tag.data + 12 + high * 2) / 65535.0;
+    double fraction = y1 <= y0 ? 0.0 : (value - y0) / (y1 - y0);
+    *result = (low + fmax(0.0, fmin(1.0, fraction))) / (count - 1);
+    return true;
+}
+
+static bool inverse_matrix3(const double m[3][3], double out[3][3])
+{
+    double determinant = m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-
+                         m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+
+                         m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+    if (fabs(determinant) < 1e-12) return false;
+    out[0][0]=(m[1][1]*m[2][2]-m[1][2]*m[2][1])/determinant;
+    out[0][1]=(m[0][2]*m[2][1]-m[0][1]*m[2][2])/determinant;
+    out[0][2]=(m[0][1]*m[1][2]-m[0][2]*m[1][1])/determinant;
+    out[1][0]=(m[1][2]*m[2][0]-m[1][0]*m[2][2])/determinant;
+    out[1][1]=(m[0][0]*m[2][2]-m[0][2]*m[2][0])/determinant;
+    out[1][2]=(m[0][2]*m[1][0]-m[0][0]*m[1][2])/determinant;
+    out[2][0]=(m[1][0]*m[2][1]-m[1][1]*m[2][0])/determinant;
+    out[2][1]=(m[0][1]*m[2][0]-m[0][0]*m[2][1])/determinant;
+    out[2][2]=(m[0][0]*m[1][1]-m[0][1]*m[1][0])/determinant;
+    return true;
+}
+
+static void companion_source_xyz(const double rgb[3], const char *signal_mode, double white_nits, double xyz[3])
+{
+    static const double d65_d50[3][3]={{1.0479298,0.0229468,-0.0501922},{0.0296278,0.9904345,-0.0170738},{-0.0092430,0.0150552,0.7518743}};
+    static const double srgb_xyz[3][3]={{0.4123908,0.3575843,0.1804808},{0.2126390,0.7151687,0.0721923},{0.0193308,0.1191948,0.9505322}};
+    static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
+    double linear[3], intermediate[3];
+    for (int channel=0; channel<3; channel++) {
+        if (!strcmp(signal_mode,"hdr10")) linear[channel]=fmin(1.0,pq_to_nits(rgb[channel])/fmax(white_nits,1e-6));
+        else linear[channel]=rgb[channel]<=0.04045?rgb[channel]/12.92:pow((rgb[channel]+0.055)/1.055,2.4);
+    }
+    const double (*source)[3]=!strcmp(signal_mode,"hdr10")?bt2020_xyz:srgb_xyz;
+    for(int row=0;row<3;row++) intermediate[row]=source[row][0]*linear[0]+source[row][1]*linear[1]+source[row][2]*linear[2];
+    for(int row=0;row<3;row++) xyz[row]=d65_d50[row][0]*intermediate[0]+d65_d50[row][1]*intermediate[1]+d65_d50[row][2]*intermediate[2];
+}
+
+static bool apply_local_matrix(const double xyz[3], double output[3])
+{
+    static const char *xyz_names[3]={"rXYZ","gXYZ","bXYZ"};
+    static const char *trc_names[3]={"rTRC","gTRC","bTRC"};
+    double matrix[3][3], inverse[3][3], linear[3];
+    for(int column=0;column<3;column++) {
+        IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,xyz_names[column]);
+        if(!tag.data||tag.size<20||memcmp(tag.data,"XYZ ",4)) return false;
+        for(int row=0;row<3;row++) matrix[row][column]=read_s15(tag.data+8+row*4);
+    }
+    if(!inverse_matrix3(matrix,inverse)) return false;
+    for(int row=0;row<3;row++) linear[row]=inverse[row][0]*xyz[0]+inverse[row][1]*xyz[1]+inverse[row][2]*xyz[2];
+    for(int channel=0;channel<3;channel++) if(!icc_inverse_curve(icc_tag(app.correction_profile_data,app.correction_profile_size,trc_names[channel]),linear[channel],&output[channel])) return false;
+    return true;
+}
+
+static bool apply_local_clut(const double xyz[3], double output[3])
+{
+    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"B2A0");
+    if(!tag.data||tag.size<52||memcmp(tag.data,"mft2",4)||tag.data[8]!=3||tag.data[9]!=3||tag.data[10]<2) return false;
+    int grid=tag.data[10]; uint32_t in_count=read_be16(tag.data+48),out_count=read_be16(tag.data+50);
+    if(in_count<2||out_count<2) return false;
+    size_t input_offset=52,clut_offset=input_offset+(size_t)3*in_count*2;
+    size_t clut_size=(size_t)grid*grid*grid*3*2,output_offset=clut_offset+clut_size;
+    if(output_offset+(size_t)3*out_count*2>tag.size) return false;
+    double values[3],fraction[3]; int base[3];
+    for(int row=0;row<3;row++) {
+        double mapped=0.0; for(int column=0;column<3;column++) mapped+=read_s15(tag.data+12+(row*3+column)*4)*xyz[column];
+        values[row]=icc_table_sample(tag.data+input_offset+(size_t)row*in_count*2,in_count,mapped/(65535.0/32768.0));
+        double position=fmax(0.0,fmin(1.0,values[row]))*(grid-1); base[row]=(int)position; if(base[row]>=grid-1)base[row]=grid-2; fraction[row]=position-base[row];
+    }
+    double clut_result[3]={0,0,0};
+    for(int corner=0;corner<8;corner++) {
+        double weight=1.0; int coordinate[3];
+        for(int axis=0;axis<3;axis++){bool upper=(corner&(1<<axis))!=0;coordinate[axis]=base[axis]+(upper?1:0);weight*=upper?fraction[axis]:1.0-fraction[axis];}
+        size_t offset=clut_offset+(size_t)(((coordinate[0]*grid+coordinate[1])*grid+coordinate[2])*3)*2;
+        for(int channel=0;channel<3;channel++) clut_result[channel]+=weight*read_be16(tag.data+offset+channel*2)/65535.0;
+    }
+    for(int channel=0;channel<3;channel++) output[channel]=icc_table_sample(tag.data+output_offset+(size_t)channel*out_count*2,out_count,clut_result[channel]);
+    return true;
+}
+#endif
+
 static bool load_correction_lut(uint64_t revision)
 {
-    char path[1024], profile_hex[sizeof(app.correction_profile) * 2 + 1];
-    unsigned char *payload;
-    size_t payload_size = 0;
-    uint32_t count;
-    int grid;
-    float *values;
+#ifdef _WIN32
+    FILE *file;
+    long length;
+#endif
     if (!strcmp(app.correction_mode, "system")) {
         SDL_free(app.correction_lut);
         app.correction_lut = NULL;
         app.correction_lut_grid = 0;
         app.correction_lut_revision = revision;
         app.correction_error[0] = '\0';
+#ifdef _WIN32
+        SDL_free(app.correction_profile_data); app.correction_profile_data=NULL; app.correction_profile_size=0;
+#endif
         return true;
     }
     /* Never retain a transform from a previously selected profile if the new
@@ -778,38 +774,17 @@ static bool load_correction_lut(uint64_t revision)
         SDL_strlcpy(app.correction_error, "The operating system did not report an active ICC profile for the selected display", sizeof(app.correction_error));
         return false;
     }
-    profile_name_hex(app.correction_profile, profile_hex, sizeof(profile_hex));
-    SDL_snprintf(path, sizeof(path), "/api/icc/companion/lut?token=%s&revision=%llu&profile_hex=%s",
-                 app.config.token, (unsigned long long)revision, profile_hex);
-    payload = http_get_binary(&app.config, path, &payload_size);
-    if (!payload) {
-        SDL_strlcpy(app.correction_error, "Could not load the active display profile correction from PGenerator+", sizeof(app.correction_error));
-        return false;
-    }
-    if (payload_size < 16 || memcmp(payload, "PGLT", 4) || payload[4] != 1 || payload[6] != 3) {
-        SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "The active profile correction LUT is invalid", sizeof(app.correction_error));
-        return false;
-    }
-    grid = payload[5];
-    count = read_be32(payload + 8);
-    if (grid < 2 || grid > 65 || count != (uint32_t)(grid * grid * grid) || payload_size != 16 + (size_t)count * 6) {
-        SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "The active profile correction LUT dimensions are invalid", sizeof(app.correction_error));
-        return false;
-    }
-    values = SDL_malloc((size_t)count * 3 * sizeof(*values));
-    if (!values) {
-        SDL_free(payload);
-        SDL_strlcpy(app.correction_error, "Not enough memory to load the active profile correction", sizeof(app.correction_error));
-        return false;
-    }
-    for (uint32_t index = 0; index < count * 3; index++)
-        values[index] = read_be16(payload + 16 + (size_t)index * 2) / 65535.0f;
-    SDL_free(payload);
-    SDL_free(app.correction_lut);
-    app.correction_lut = values;
-    app.correction_lut_grid = grid;
+#ifdef _WIN32
+    file=_wfopen(app.correction_profile_path,L"rb");
+    if(!file||fseek(file,0,SEEK_END)!=0||(length=ftell(file))<132||length>16*1024*1024||fseek(file,0,SEEK_SET)!=0){if(file)fclose(file);SDL_strlcpy(app.correction_error,"Could not open the active Windows display profile",sizeof(app.correction_error));return false;}
+    SDL_free(app.correction_profile_data); app.correction_profile_data=SDL_malloc((size_t)length); app.correction_profile_size=0;
+    if(!app.correction_profile_data||fread(app.correction_profile_data,1,(size_t)length,file)!=(size_t)length){fclose(file);SDL_free(app.correction_profile_data);app.correction_profile_data=NULL;SDL_strlcpy(app.correction_error,"Could not read the active Windows display profile",sizeof(app.correction_error));return false;}
+    fclose(file); app.correction_profile_size=(size_t)length;
+    if(memcmp(app.correction_profile_data+12,"mntr",4)||memcmp(app.correction_profile_data+16,"RGB ",4)||memcmp(app.correction_profile_data+20,"XYZ ",4)){SDL_free(app.correction_profile_data);app.correction_profile_data=NULL;app.correction_profile_size=0;SDL_strlcpy(app.correction_error,"The active Windows profile is not a supported RGB display profile",sizeof(app.correction_error));return false;}
+#else
+    SDL_strlcpy(app.correction_error,"Active-profile cLUT and matrix enforcement currently require Windows",sizeof(app.correction_error));
+    return false;
+#endif
     app.correction_lut_revision = revision;
     app.correction_error[0] = '\0';
     return true;
@@ -817,32 +792,22 @@ static bool load_correction_lut(uint64_t revision)
 
 static bool apply_correction_lut(double *red, double *green, double *blue)
 {
-    double input[3] = {*red, *green, *blue};
-    double output[3] = {0.0, 0.0, 0.0};
-    int base[3];
-    double fraction[3];
-    int grid = app.correction_lut_grid;
+#ifdef _WIN32
+    double rgb[3]={*red,*green,*blue},xyz[3],output[3],white_nits=1.0;
+#endif
     if (!strcmp(app.correction_mode, "system")) return true;
-    if (!app.correction_lut || grid < 2) return false;
-    for (int axis = 0; axis < 3; axis++) {
-        double position = fmax(0.0, fmin(1.0, input[axis])) * (grid - 1);
-        base[axis] = (int)position;
-        if (base[axis] >= grid - 1) base[axis] = grid - 2;
-        fraction[axis] = position - base[axis];
-    }
-    for (int corner = 0; corner < 8; corner++) {
-        double weight = 1.0;
-        int coordinate[3];
-        for (int axis = 0; axis < 3; axis++) {
-            bool upper = (corner & (1 << axis)) != 0;
-            coordinate[axis] = base[axis] + (upper ? 1 : 0);
-            weight *= upper ? fraction[axis] : (1.0 - fraction[axis]);
-        }
-        size_t offset = (size_t)(((coordinate[0] * grid + coordinate[1]) * grid + coordinate[2]) * 3);
-        for (int channel = 0; channel < 3; channel++) output[channel] += weight * app.correction_lut[offset + channel];
-    }
+#ifdef _WIN32
+    if(!app.correction_profile_data)return false;
+    if(!strcmp(app.correction_signal_mode,"hdr10")){IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;}
+    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,xyz);
+    if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
+    else if(!apply_local_matrix(xyz,output))return false;
     *red = output[0]; *green = output[1]; *blue = output[2];
     return true;
+#else
+    (void)red; (void)green; (void)blue;
+    return false;
+#endif
 }
 
 static bool json_number(const char *json, const char *key, double *value)
@@ -1268,10 +1233,8 @@ static void poll_server(void)
             SDL_strlcpy(app.correction_profile, active_profile, sizeof(app.correction_profile));
             SDL_strlcpy(app.correction_signal_mode, correction_signal_mode, sizeof(app.correction_signal_mode));
 #ifdef _WIN32
-            if (strcmp(correction_mode, "system") &&
-                !upload_active_profile(active_profile_path, active_profile)) {
-                SDL_strlcpy(app.correction_error, "Could not transfer the active display profile to PGenerator+", sizeof(app.correction_error));
-            } else
+            wcsncpy(app.correction_profile_path,active_profile_path,SDL_arraysize(app.correction_profile_path)-1);
+            app.correction_profile_path[SDL_arraysize(app.correction_profile_path)-1]=L'\0';
 #endif
             load_correction_lut(settings_revision);
         }
@@ -1296,7 +1259,7 @@ static void poll_server(void)
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else
-            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | Operating-system correction");
+            SDL_snprintf(title, sizeof(title), "PGenerator+ ICC Companion | No application profile correction");
         queue_status(title);
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
@@ -1534,6 +1497,9 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         if (state->background_texture) SDL_DestroyTexture(state->background_texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
         SDL_free(state->correction_lut);
+#ifdef _WIN32
+        SDL_free(state->correction_profile_data);
+#endif
         if (state->window) SDL_DestroyWindow(state->window);
         if (state->network_mutex) SDL_DestroyMutex(state->network_mutex);
     }

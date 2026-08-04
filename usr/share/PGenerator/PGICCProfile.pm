@@ -280,8 +280,8 @@ sub webui_icc_companion_settings (@) {
   }
   if($status=~/"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/) {
    my $version=$1*1000000+$2*1000+$3;
-   return '{"status":"error","message":"Install ICC Companion 1.3.0 or newer before using active-profile correction"}'
-    if($version<1003000);
+   return '{"status":"error","message":"Install ICC Companion 1.3.1 or newer before using active-profile correction"}'
+    if($version<1003001);
   }
  }
  eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
@@ -301,58 +301,6 @@ sub webui_icc_companion_profile_from_query (@) {
  return "" unless($profile=~/\A[A-Za-z0-9][A-Za-z0-9 ._()-]{0,159}\.(?:icc|icm)\z/i);
  return "" if($profile=~/\.\./ || $profile=~/[\\\/]/);
  return $profile;
-}
-
-sub webui_icc_companion_profile_upload (@) {
- my ($query,$content)=@_;
- my $token=&webui_icc_companion_query_value($query,"token");
- my $expected=&webui_icc_companion_token();
- return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
- my $profile=&webui_icc_companion_profile_from_query($query);
- return '{"status":"error","message":"Invalid active display profile name"}' if($profile eq "");
- return '{"status":"error","message":"Active display profile is invalid or too large"}'
-  if(!defined($content) || length($content)<128 || length($content)>16*1024*1024 || substr($content,36,4) ne "acsp");
- my $declared=unpack("N",substr($content,0,4));
- return '{"status":"error","message":"Active display profile has an invalid ICC length"}'
-  if($declared<128 || $declared>length($content));
- eval { require File::Path; File::Path::make_path($_icc_companion_active_profile_dir,{mode=>0700}); }
-  unless(-d $_icc_companion_active_profile_dir);
- return '{"status":"error","message":"Could not prepare active display profile storage"}'
-  unless(-d $_icc_companion_active_profile_dir);
- my $path="$_icc_companion_active_profile_dir/$profile";
- return '{"status":"error","message":"Could not store the active display profile"}'
-  unless(&webui_icc_companion_write_atomic($path,$content,0600));
- return '{"status":"ok"}';
-}
-
-sub webui_icc_companion_lut (@) {
- my ($query)=@_;
- my $token=&webui_icc_companion_query_value($query,"token");
- my $expected=&webui_icc_companion_token();
- return ("","Unauthorized Companion correction request") if($expected eq "" || $token ne $expected);
- my (undef,undef,$revision,$method,undef,$signal_mode)=&webui_icc_companion_settings_values();
- return ("","Operating-system correction does not require an application LUT") if($method eq "system");
- my $profile=&webui_icc_companion_profile_from_query($query);
- return ("","The Companion could not identify the active display profile") if($profile eq "");
- my $profile_path="$_icc_companion_active_profile_dir/$profile";
- $profile_path="$_icc_profile_dir/$profile" unless(-f $profile_path);
- return ("","The active display profile has not been transferred by the Companion") unless(-f $profile_path);
- return ("","Companion LUT builder is unavailable") unless(-f $_icc_companion_lut_builder);
- my $cache_profile=$profile; $cache_profile=~s/[^A-Za-z0-9_.-]+/_/g;
- my @profile_stat=stat($profile_path);
- my $cache="/tmp/pgen_icc_companion_lut_".$revision."_".$method."_".$signal_mode."_".$cache_profile."_".($profile_stat[9]||0)."_".($profile_stat[7]||0).".bin";
- if(!-s $cache) {
-  my $output=`/usr/bin/python3 '$_icc_companion_lut_builder' '$profile_path' '$method' '$signal_mode' '$cache' 2>&1`;
-  if($?!=0 || !-s $cache) {
-   unlink($cache);
-   $output=~s/[\r\n]+/ /g;
-   $output=~s/[^A-Za-z0-9 ._:()\[\]-]+/?/g;
-   return ("",substr($output||"Could not build the Companion correction LUT",0,240));
-  }
- }
- my $content="";
- if(open(my $fh,"<:raw",$cache)) { local $/; $content=<$fh>||""; close($fh); }
- return ($content,$content ne "" ? "" : "Could not read the Companion correction LUT");
 }
 
 sub webui_icc_companion_poll (@) {

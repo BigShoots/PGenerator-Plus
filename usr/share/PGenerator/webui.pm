@@ -412,7 +412,6 @@ our $_icc_companion_dir="$var_dir/icc-companion";
 our $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
 our $_icc_companion_command_file="$_icc_companion_dir/command.json";
 our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
-our $_icc_companion_active_profile_dir="$_icc_companion_dir/active-profiles";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 my $_system_backup_helper="/usr/bin/pgenerator_system_backup.py";
@@ -710,7 +709,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/lut");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings");
  return 0;
 }
 
@@ -1669,22 +1668,6 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_ack($body);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
-   }
-   elsif($path eq "/api/icc/companion/profile" && $method eq "POST") {
-    my $result=&webui_icc_companion_profile_upload($request_query,$body);
-    my $code=($result=~/\"status\":\"unauthorized\"/)?403:($result=~/\"status\":\"ok\"/ ? 200 : 400);
-    print $client "HTTP/1.1 $code ".($code==200?"OK":$code==403?"Forbidden":"Bad Request")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
-   }
-   elsif($path eq "/api/icc/companion/lut") {
-    my ($content,$message)=&webui_icc_companion_lut($request_query);
-    if($content ne "") {
-     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
-     print $client $content;
-    } else {
-     $message="Companion correction LUT is unavailable" if(!defined($message) || $message eq "");
-     my $err='{"status":"error","message":"'.&_webui_json_escape($message).'"}';
-     print $client "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ".length($err)."\r\n$cors\r\n$err";
-    }
    }
    elsif($path eq "/api/icc/companion/download") {
     my ($fname,$content,$message)=&webui_icc_companion_download($request_query,$request_host);
@@ -13136,7 +13119,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
        <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use operating-system correction, the cLUT, or the matrix/TRC fallback from the profile active on the selected display">
-        <option value="system">Operating-system native correction</option>
+        <option value="system">No application profile correction</option>
         <option value="clut">Active profile cLUT</option>
         <option value="matrix">Active profile matrix/TRC fallback</option>
        </select>

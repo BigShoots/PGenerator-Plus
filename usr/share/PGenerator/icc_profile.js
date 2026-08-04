@@ -845,7 +845,7 @@ function meterIccSyncUi(){
   :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
  if(calibrationCorrectionMode&&calibrationCorrectionMode.value!==companionCorrectionMode) calibrationCorrectionMode.value=companionCorrectionMode;
  const correctionNote=companionCorrectionMode==='system'
-  ?'The Companion sends uncorrected patches through the active Windows Advanced Color or Linux compositor profile pipeline.'
+  ?'The Companion does not apply an ICC transform. A system-wide Windows MHC2 correction may still affect its output.'
   :(companionCorrectionMode==='clut'
    ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
    :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.');
@@ -1083,7 +1083,7 @@ async function meterIccRefreshCompanionStatus(){
     if(calibrationMode) calibrationMode.value=correctionMode;
    }
    const activeProfile=String(state.active_profile||'');
-   const correction=correctionMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):correctionMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using operating-system correction';
+   const correction=correctionMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):correctionMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using no application profile correction';
    const detail='Connected: '+client+' using '+renderer+hdr+correction+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;
    meterIccShowCompanionStatus(true,detail);
