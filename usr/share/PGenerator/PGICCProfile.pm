@@ -387,18 +387,18 @@ sub webui_icc_companion_pattern (@) {
 sub webui_icc_companion_download (@) {
  my ($query,$host)=@_;
  my $platform=&webui_icc_companion_query_value($query,"platform");
- return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "linux-x64" || $platform eq "windows-loader-x64");
+ return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "windows-portable-x64" || $platform eq "linux-x64");
  return ("","","Could not determine this PGenerator address") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/);
  return ("","","ICC Companion packager is not installed") unless(-f $_icc_companion_packager);
  my $token=&webui_icc_companion_token();
  return ("","","Could not create the ICC Companion pairing token") if($token eq "");
- my $tmp="/tmp/pgen_icc_companion_".$$ ."_".int(rand(1000000)).".zip";
+ my $tmp="/tmp/pgen_icc_companion_".$$ ."_".int(rand(1000000)).($platform eq "windows-x64" ? ".exe" : ".zip");
  my $server="http://$host";
  my $output=`/usr/bin/python3 $_icc_companion_packager '$platform' '$server' '$token' '$tmp' 2>&1`;
  chomp($output);
  my $filename=$output;
  my $content="";
- if($?==0 && $filename=~/^[A-Za-z0-9._-]+\.zip$/ && open(my $fh,"<:raw",$tmp)) { local $/; $content=<$fh>||""; close($fh); }
+ if($?==0 && $filename=~/^[A-Za-z0-9._-]+\.(?:zip|exe)$/ && open(my $fh,"<:raw",$tmp)) { local $/; $content=<$fh>||""; close($fh); }
  unlink($tmp);
  return ($filename,$content,"") if($content ne "");
  $output=~s/[\r\n]+/ /g;

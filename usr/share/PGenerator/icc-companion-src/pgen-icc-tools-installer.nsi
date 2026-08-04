@@ -1,6 +1,7 @@
 Unicode true
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
+CRCCheck off
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -42,12 +43,35 @@ Section "ICC Companion and Profile Loader" SEC_CORE
   File "PROFILE-LOADER-README.txt"
   File "..\icc-companion\SDL3-LICENSE.txt"
 
-  IfFileExists "$EXEDIR\PGenICCCompanion.conf" 0 missing_config
-    CopyFiles /SILENT "$EXEDIR\PGenICCCompanion.conf" "$INSTDIR\PGenICCCompanion.conf"
-    Goto config_done
-  missing_config:
-    MessageBox MB_OK|MB_ICONEXCLAMATION "PGenICCCompanion.conf was not found beside the installer. The patch companion will try to discover PGenerator+ at pgenerator.local, but downloading a paired installer again is recommended."
-  config_done:
+  ; The Pi appends a fixed 512-byte pairing trailer to this installer at
+  ; download time. Read it from our own executable so the user receives one
+  ; self-contained setup file.
+  FileOpen $0 "$EXEPATH" r
+  IfErrors pairing_error
+  FileSeek $0 -512 END
+  IfErrors pairing_error
+  FileRead $0 $1
+  StrCpy $2 $1 15
+  StrCmp $2 "PGEN_PAIRING_V1" 0 pairing_error
+  FileRead $0 $3
+  StrCpy $2 $3 7
+  StrCmp $2 "SERVER=" 0 pairing_error
+  FileRead $0 $4
+  StrCpy $2 $4 6
+  StrCmp $2 "TOKEN=" 0 pairing_error
+  FileClose $0
+  FileOpen $0 "$INSTDIR\PGenICCCompanion.conf" w
+  IfErrors pairing_error
+  FileWrite $0 "# Paired automatically by PGenerator+$\r$\n"
+  FileWrite $0 $3
+  FileWrite $0 $4
+  FileClose $0
+  Goto pairing_done
+  pairing_error:
+    FileClose $0
+    MessageBox MB_OK|MB_ICONSTOP "This installer does not contain valid PGenerator+ pairing information. Download a new Windows installer directly from the ICC Profile workspace."
+    Abort
+  pairing_done:
 
   CreateDirectory "$SMPROGRAMS\PGenerator+"
   CreateShortcut "$SMPROGRAMS\PGenerator+\ICC Companion.lnk" "$INSTDIR\PGenICCCompanion.exe"

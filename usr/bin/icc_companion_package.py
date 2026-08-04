@@ -11,22 +11,25 @@ import zipfile
 ROOT = "/usr/share/PGenerator"
 PLATFORMS = {
     "windows-x64": {
-        "filename": "PGenerator-ICC-Companion-Windows-x64.zip",
+        "filename": "PGeneratorPlus-ICC-Tools-Windows-x64.exe",
         "directory": "windows-x64",
-        "files": ("PGeneratorPlusICCSetup.exe",),
+        "files": (),
         "paired": True,
+        "kind": "installer",
+    },
+    "windows-portable-x64": {
+        "filename": "PGenerator-ICC-Companion-Portable-Windows-x64.zip",
+        "directory": "windows-x64",
+        "files": ("PGenICCCompanion.exe", "SDL3.dll"),
+        "paired": True,
+        "kind": "archive",
     },
     "linux-x64": {
         "filename": "PGenerator-ICC-Companion-Linux-x64.zip",
         "directory": "linux-x64",
         "files": ("PGenICCCompanion", "libSDL3.so.0"),
         "paired": True,
-    },
-    "windows-loader-x64": {
-        "filename": "PGenerator-Profile-Loader-Windows-x64.zip",
-        "directory": "windows-x64",
-        "files": ("PGenProfileLoader.exe",),
-        "paired": False,
+        "kind": "archive",
     },
 }
 SAFE_SERVER = re.compile(r"^http://[A-Za-z0-9._\-\[\]:]+$")
@@ -61,7 +64,19 @@ def build(platform, server, token, output_path):
     files = package["files"]
     binary_dir = os.path.join(ROOT, "icc-companion", package["directory"])
     source_dir = os.path.join(ROOT, "icc-companion-src")
-    config = "# Paired automatically by PGenerator\nSERVER={}\nTOKEN={}\n".format(server, token)
+    config = "# Paired automatically by PGenerator+\nSERVER={}\nTOKEN={}\n".format(server, token)
+    if package["kind"] == "installer":
+        installer = os.path.join(binary_dir, "PGeneratorPlusICCSetup.exe")
+        if not os.path.isfile(installer):
+            fail("ICC tools installer is not installed")
+        trailer = "PGEN_PAIRING_V1\nSERVER={}\nTOKEN={}\n".format(server, token).encode("ascii")
+        if len(trailer) > 512:
+            fail("Pairing information is too large")
+        with open(installer, "rb") as source, open(output_path, "wb") as target:
+            target.write(source.read())
+            target.write(trailer)
+            target.write(b" " * (512 - len(trailer)))
+        return filename
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if package["paired"]:
             config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
@@ -69,10 +84,7 @@ def build(platform, server, token, output_path):
             config_info.external_attr = 0o600 << 16
             archive.writestr(config_info, config)
             add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
-            add_file(archive, os.path.join(source_dir, "PROFILE-LOADER-README.txt"), "PROFILE-LOADER-README.txt")
             add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
-        else:
-            add_file(archive, os.path.join(source_dir, "PROFILE-LOADER-README.txt"), "README.txt")
         for name in files:
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):

@@ -1671,7 +1671,8 @@ sub webui_handle_request (@) {
    elsif($path eq "/api/icc/companion/download") {
     my ($fname,$content,$message)=&webui_icc_companion_download($request_query,$request_host);
     if($fname ne "") {
-     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
+     my $download_type=($fname=~/\.exe\z/i) ? "application/vnd.microsoft.portable-executable" : "application/zip";
+     print $client "HTTP/1.1 200 OK\r\nContent-Type: $download_type\r\nContent-Disposition: attachment; filename=\"$fname\"\r\nContent-Length: ".length($content)."\r\n$cors\r\n";
      print $client $content;
     } else {
      $message="Companion package is unavailable" if(!defined($message) || $message eq "");

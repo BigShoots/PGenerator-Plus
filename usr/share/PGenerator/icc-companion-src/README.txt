@@ -1,9 +1,13 @@
 PGenerator+ ICC Tools for Windows
 =================================
 
-Windows: keep PGenICCCompanion.conf beside PGeneratorPlusICCSetup.exe, then
-run the installer. It installs both the paired patch companion and the tray
-profile loader. Start Menu shortcuts and an uninstaller are included.
+Windows installer: run the downloaded EXE. It contains its PGenerator+ pairing
+information and installs both the patch companion and the tray profile loader.
+Start Menu shortcuts and an uninstaller are included.
+
+Portable Windows patch companion: extract the ZIP and keep
+PGenICCCompanion.conf beside PGenICCCompanion.exe. This package does not
+contain the Profile Loader.
 
 PGenerator+ ICC Companion
 =========================
