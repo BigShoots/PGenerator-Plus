@@ -17525,8 +17525,9 @@ function pgWideEnoughForDesktop(){
 function pgReadLayoutPreference(){
  try{
   const saved=localStorage.getItem(PG_LAYOUT_STORAGE_KEY);
-  return saved==='desktop'?'desktop':'tablet';
- }catch(e){ return 'tablet'; }
+  if(saved==='desktop'||saved==='tablet') return saved;
+  return pgWideEnoughForDesktop()?'desktop':'tablet';
+ }catch(e){ return pgWideEnoughForDesktop()?'desktop':'tablet'; }
 }
 function pgReadDesktopZoom(){
  try{
