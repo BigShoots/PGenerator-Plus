@@ -7,6 +7,7 @@ let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
 let meterIccCompanionLastSeenAt=0;
 let meterIccCompanionDetail='ICC Companion connected';
+let meterIccCompanionClient='';
 let meterIccCompanionTimer=null;
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
@@ -968,7 +969,7 @@ function meterIccUpdateTopCompanionStatus(connected,detail){
  const text=document.getElementById('iccCompanionTopStatusText');
  if(dot) dot.style.background='var(--green)';
  if(text){
-  text.textContent='ICC Companion';
+  text.textContent='ICC Companion'+(meterIccCompanionClient?' ['+meterIccCompanionClient+']':'');
   text.style.color='var(--text)';
  }
  if(typeof syncTopStatusStack==='function') syncTopStatusStack();
@@ -984,6 +985,7 @@ async function meterIccRefreshCompanionStatus(){
   meterIccCompanionConnected=reportedConnected||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
   if(reportedConnected){
    const client=String(state.client||'target computer');
+   meterIccCompanionClient=client;
    const renderer=String(state.renderer||'renderer');
    const version=String(state.version||'');
    const hdr=state.hdr_active?' with native HDR active':'';

@@ -1011,6 +1011,13 @@ sub webui_handle_request (@) {
     $path=~s/\?.*$// if(defined($path));
     my $request_host="";
     $request_host=$1 if($req=~/^Host:\s*([A-Za-z0-9._\-\[\]:]+)\s*$/mi);
+    # mDNS is useful for discovery, but keeping pgenerator.local in the
+    # browser address bar makes every refresh and every new connection depend
+    # on the client's mDNS resolver. Some Windows network stacks intermittently
+    # fail that lookup, especially with multiple adapters or a VPN. Redirect
+    # only the main page to the concrete address that accepted this socket;
+    # all subsequent assets and API calls then use that stable numeric host.
+    my $request_local_ip=eval { $client->sockhost() } || "";
     &log("WebUI: $method $path");
 
    # CORS headers for API
@@ -1018,6 +1025,15 @@ sub webui_handle_request (@) {
 
    if($method eq "OPTIONS") {
     print $client "HTTP/1.1 204 No Content\r\n$cors\r\n";
+   }
+   elsif(($path eq "/" || $path eq "/index.html") && $request_host=~/^pgenerator\.local(?::\d+)?$/i && $request_local_ip=~/^\d{1,3}(?:\.\d{1,3}){3}$/ && $request_local_ip ne "0.0.0.0") {
+    my $redirect_path=$path;
+    $redirect_path="/" if($redirect_path eq "/index.html");
+    my $safe_query=$request_query;
+    $safe_query=~s/[\r\n]//g;
+    $redirect_path.="?$safe_query" if($safe_query ne "");
+    my $location="http://$request_local_ip$redirect_path";
+    print $client "HTTP/1.1 307 Temporary Redirect\r\nLocation: $location\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
    }
    elsif($path eq "/" || $path eq "/index.html") {
     my $html=&webui_html();
@@ -11884,7 +11900,7 @@ body.meter-autocal-active .meter-autocal-mask{display:flex}
 .status-bar .status-stack{display:none;flex:0 1 auto;width:max-content;max-width:min(360px,42vw);flex-direction:column;align-items:stretch;justify-content:center;gap:1px;line-height:1.1;margin-top:-2px}
 .status-bar .status-stack.active{display:flex}
 .status-bar .status-stack > .status-line{display:flex;align-items:center;justify-content:flex-start;gap:4px;width:100%;min-width:0;max-width:100%;white-space:nowrap}
-.status-bar .status-stack .status-line-sub{font-size:.74rem;opacity:.94}
+.status-bar .status-stack .status-line-sub{font-size:inherit;opacity:1}
 .status-bar .status-stack .status-label{display:inline-block;flex:0 1 auto;min-width:0;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;
 transition:background .3s;cursor:default;position:relative}
