@@ -1,8 +1,8 @@
 /* PGenerator ICC Companion
  *
  * Displays measurement patches through the target computer's native output
- * pipeline. SDL3 supplies scRGB on Windows and extended-linear HDR surfaces
- * through supported Vulkan/Wayland compositors.
+ * pipeline. SDL3 supplies native HDR10 output on Windows and supported Linux
+ * compositors, so HDR patch codes remain in their original PQ/BT.2020 form.
  */
 
 #ifndef _WIN32
@@ -47,7 +47,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.4"
+#define APP_VERSION "1.3.5"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -124,7 +124,7 @@ typedef struct {
 static AppState app;
 
 static bool render_alignment(void);
-static double pq_to_nits(double value);
+static PGEN_UNUSED double pq_to_nits(double value);
 
 #ifdef _WIN32
 #define PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE ((COLORPROFILESUBTYPE)7)
@@ -968,7 +968,7 @@ static bool windows_window_hdr_enabled(SDL_Window *window)
 }
 #endif
 
-static double pq_to_nits(double value)
+static PGEN_UNUSED double pq_to_nits(double value)
 {
     const double m1 = 2610.0 / 16384.0;
     const double m2 = 2523.0 / 32.0;
@@ -979,20 +979,20 @@ static double pq_to_nits(double value)
     return 10000.0 * pow(fmax(p - c1, 0.0) / fmax(c2 - c3 * p, 1e-12), 1.0 / m1);
 }
 
-static void patch_to_linear(const char *mode, double r, double g, double b, float output[4])
+static void patch_to_sdr_linear(double r, double g, double b, float output[4])
 {
-    if (!strcmp(mode, "hdr10")) {
-        double lr = pq_to_nits(r), lg = pq_to_nits(g), lb = pq_to_nits(b);
-        /* Linear BT.2020 to linear BT.709/scRGB, then scRGB 1.0 = 80 nits. */
-        output[0] = (float)((1.660491 * lr - 0.587641 * lg - 0.072850 * lb) / 80.0);
-        output[1] = (float)((-0.124550 * lr + 1.132900 * lg - 0.008349 * lb) / 80.0);
-        output[2] = (float)((-0.018151 * lr - 0.100579 * lg + 1.118730 * lb) / 80.0);
-    } else {
-        output[0] = srgb_to_linear((float)r);
-        output[1] = srgb_to_linear((float)g);
-        output[2] = srgb_to_linear((float)b);
-    }
+    output[0] = srgb_to_linear((float)r);
+    output[1] = srgb_to_linear((float)g);
+    output[2] = srgb_to_linear((float)b);
     output[3] = 1.0f;
+}
+
+static uint32_t patch_to_hdr10(double r, double g, double b)
+{
+    uint32_t red = (uint32_t)lround(fmax(0.0, fmin(1.0, r)) * 1023.0);
+    uint32_t green = (uint32_t)lround(fmax(0.0, fmin(1.0, g)) * 1023.0);
+    uint32_t blue = (uint32_t)lround(fmax(0.0, fmin(1.0, b)) * 1023.0);
+    return 0xc0000000u | (red << 20) | (green << 10) | blue;
 }
 
 static bool update_renderer_hdr_state(void)
@@ -1018,10 +1018,9 @@ static bool update_renderer_hdr_state(void)
     }
     app.hdr_sdr_white_scale = sdr_white_scale;
 
-    /* SDL scales linear HDR rendering by the operating system's SDR white
-     * level. Our scRGB values are already absolute, with 1.0 equal to 80
-     * cd/m2, so cancel that relative-content scale before presentation. */
-    return SDL_SetRenderColorScale(app.renderer, app.hdr ? (1.0f / sdr_white_scale) : 1.0f);
+    /* Native HDR10 pixels are already PQ/BT.2020. Do not apply scRGB white
+     * scaling or any other local transfer-function adjustment. */
+    return SDL_SetRenderColorScale(app.renderer, 1.0f);
 }
 
 static void destroy_renderer(void)
@@ -1041,7 +1040,7 @@ static bool try_create_renderer(bool hdr, const char *driver)
     SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, app.window);
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER,
-                          hdr ? SDL_COLORSPACE_SRGB_LINEAR : SDL_COLORSPACE_SRGB);
+                          hdr ? SDL_COLORSPACE_HDR10 : SDL_COLORSPACE_SRGB);
     if (driver) SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, driver);
     app.renderer = SDL_CreateRendererWithProperties(props);
     SDL_DestroyProperties(props);
@@ -1056,12 +1055,16 @@ static bool try_create_renderer(bool hdr, const char *driver)
         destroy_renderer();
         return false;
     }
-    app.texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
+    app.texture = SDL_CreateTexture(app.renderer,
+                                    hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT,
+                                    SDL_TEXTUREACCESS_STREAMING, 1, 1);
     if (!app.texture) {
         destroy_renderer();
         return false;
     }
-    app.background_texture = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA128_FLOAT, SDL_TEXTUREACCESS_STREAMING, 1, 1);
+    app.background_texture = SDL_CreateTexture(app.renderer,
+                                               hdr ? SDL_PIXELFORMAT_ARGB2101010 : SDL_PIXELFORMAT_RGBA128_FLOAT,
+                                               SDL_TEXTUREACCESS_STREAMING, 1, 1);
     if (!app.background_texture) {
         destroy_renderer();
         return false;
@@ -1155,6 +1158,7 @@ static bool render_alignment(void)
 static bool render_patch(const char *mode, double r, double g, double b)
 {
     float pixel[4], background[4];
+    uint32_t hdr_pixel, hdr_background;
     SDL_FRect destination;
     int width, height, patch_size, window_percent;
     double background_signal = 0.0;
@@ -1162,7 +1166,6 @@ static bool render_patch(const char *mode, double r, double g, double b)
     if (!app.renderer || hdr != app.hdr) {
         if (!create_renderer(hdr)) return false;
     }
-    patch_to_linear(mode, r, g, b, pixel);
     patch_size = app.displayed_size > 0 ? app.displayed_size : 100;
     window_percent = patch_size;
     if (patch_size > 100 && patch_size < 199) {
@@ -1172,9 +1175,19 @@ static bool render_patch(const char *mode, double r, double g, double b)
         background_signal = (target_apl - foreground_luma * 0.10) / 0.90;
         background_signal = fmax(0.0, fmin(1.0, background_signal));
     }
-    patch_to_linear(mode, background_signal, background_signal, background_signal, background);
-    if (!SDL_UpdateTexture(app.texture, NULL, pixel, (int)sizeof(pixel))) return false;
-    if (!SDL_UpdateTexture(app.background_texture, NULL, background, (int)sizeof(background))) return false;
+    if (hdr) {
+        /* PGenerator+ sends normalized HDR10 code values. Preserve them as
+         * native 10-bit PQ/BT.2020 pixels without local PQ or roll-off math. */
+        hdr_pixel = patch_to_hdr10(r, g, b);
+        hdr_background = patch_to_hdr10(background_signal, background_signal, background_signal);
+        if (!SDL_UpdateTexture(app.texture, NULL, &hdr_pixel, (int)sizeof(hdr_pixel))) return false;
+        if (!SDL_UpdateTexture(app.background_texture, NULL, &hdr_background, (int)sizeof(hdr_background))) return false;
+    } else {
+        patch_to_sdr_linear(r, g, b, pixel);
+        patch_to_sdr_linear(background_signal, background_signal, background_signal, background);
+        if (!SDL_UpdateTexture(app.texture, NULL, pixel, (int)sizeof(pixel))) return false;
+        if (!SDL_UpdateTexture(app.background_texture, NULL, background, (int)sizeof(background))) return false;
+    }
     if (!SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
     destination.x = 0.0f;
     destination.y = 0.0f;

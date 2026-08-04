@@ -37,6 +37,8 @@ if the companion cannot create a native HDR output surface.
 The companion must remain connected for the entire measurement run. PGenerator+
 waits for each patch to be presented before it asks the meter to read. The
 alignment target returns whenever profiling finishes, is stopped, or fails.
+HDR10 patches are rendered as the native 10-bit PQ/BT.2020 code values sent by
+PGenerator+. The Companion does not add its own PQ encoding or tone-map roll-off.
 
 For post-profile verification, the WebUI can leave patches unmodified for the
 operating-system profile pipeline, apply the active display profile's BToA cLUT
