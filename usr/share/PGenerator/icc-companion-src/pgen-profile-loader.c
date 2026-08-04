@@ -14,9 +14,10 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.1"
+#define APP_VERSION L"1.1.2"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
+#define WM_BROWSE_DONE (WM_APP + 3)
 #define TIMER_VERIFY 1
 #define MAX_DISPLAYS 24
 #define ID_DISPLAY 101
@@ -52,7 +53,7 @@ typedef struct {
 } DISPLAY_ENTRY;
 
 static HINSTANCE g_instance;
-static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply;
+static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply, g_browse;
 static NOTIFYICONDATAW g_tray;
 static HICON g_icon_ok, g_icon_bad;
 static HFONT g_font_normal, g_font_label, g_font_title, g_font_subtitle, g_font_button;
@@ -74,7 +75,9 @@ static DWORD g_last_reapply_tick;
 static UINT g_mismatch_count;
 static BOOL g_reapply_attempted_for_mismatch;
 static volatile LONG g_apply_in_progress;
+static volatile LONG g_browse_in_progress;
 static BOOL g_profile_pending_selection;
+static WCHAR g_browse_path[MAX_PATH];
 static HMODULE g_mscms;
 static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
@@ -604,25 +607,47 @@ static void verify_profile(BOOL allow_reapply) {
     }
 }
 
-static void choose_profile(void) {
+static void accept_profile_path(const WCHAR *path) {
+    wcsncpy_s(g_profile_path, MAX_PATH, path, _TRUNCATE);
+    SetWindowTextW(g_profile, g_profile_path);
+    g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
+    g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
+    wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
+    g_profile_pending_selection = TRUE;
+    show_ready_status();
+}
+
+static DWORD WINAPI choose_profile_thread(LPVOID unused) {
     OPENFILENAMEW ofn;
-    WCHAR path[MAX_PATH] = L"";
+    (void)unused;
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = g_window;
     ofn.lpstrFilter = L"Color profiles (*.icc;*.icm)\0*.icc;*.icm\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = path;
+    ofn.lpstrFile = g_browse_path;
     ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&ofn)) {
-        wcsncpy_s(g_profile_path, MAX_PATH, path, _TRUNCATE);
-        SetWindowTextW(g_profile, g_profile_path);
-        g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
-        g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
-        wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
-        g_profile_pending_selection = TRUE;
-        show_ready_status();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
+    PostMessageW(g_window, WM_BROWSE_DONE, GetOpenFileNameW(&ofn) ? 1 : 0, 0);
+    CoUninitialize();
+    return 0;
+}
+
+static void choose_profile(void) {
+    HANDLE thread;
+    if (InterlockedCompareExchange(&g_browse_in_progress, 1, 0) != 0) return;
+    wcsncpy_s(g_browse_path, MAX_PATH, g_profile_path, _TRUNCATE);
+    EnableWindow(g_browse, FALSE);
+    SetWindowTextW(g_browse, L"Opening...");
+    thread = CreateThread(NULL, 0, choose_profile_thread, NULL, 0, NULL);
+    if (!thread) {
+        InterlockedExchange(&g_browse_in_progress, 0);
+        EnableWindow(g_browse, TRUE);
+        SetWindowTextW(g_browse, L"Browse");
+        message_error(g_window, L"Opening the profile picker", GetLastError());
+        return;
     }
+    CloseHandle(thread);
 }
 
 static void layout_controls(HWND hwnd) {
@@ -712,11 +737,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     (HMENU)ID_PROFILE, g_instance, NULL);
         apply_font(g_profile, g_font_normal);
         SetWindowTheme(g_profile, L"Explorer", NULL);
-        ctl = CreateWindowW(L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE,
-                            px(560), px(218), px(112), px(38), hwnd,
-                            (HMENU)ID_BROWSE, g_instance, NULL);
-        apply_font(ctl, g_font_button);
-        SetWindowTheme(ctl, L"Explorer", NULL);
+        g_browse = CreateWindowW(L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE,
+                                 px(560), px(218), px(112), px(38), hwnd,
+                                 (HMENU)ID_BROWSE, g_instance, NULL);
+        apply_font(g_browse, g_font_button);
+        SetWindowTheme(g_browse, L"Explorer", NULL);
         ctl = CreateWindowW(L"BUTTON", L"Automatically restore the selected profile",
                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, px(28), px(276), px(390), px(24),
                             hwnd, (HMENU)ID_AUTOREAPPLY, g_instance, NULL);
@@ -887,6 +912,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(g_apply, NULL, TRUE);
         if (wp) g_profile_pending_selection = FALSE;
         verify_profile(FALSE);
+        return 0;
+    case WM_BROWSE_DONE:
+        InterlockedExchange(&g_browse_in_progress, 0);
+        EnableWindow(g_browse, TRUE);
+        SetWindowTextW(g_browse, L"Browse");
+        if (wp) accept_profile_path(g_browse_path);
         return 0;
     case WM_DISPLAYCHANGE: case WM_DEVICECHANGE:
         g_reapply_attempted_for_mismatch = FALSE;
