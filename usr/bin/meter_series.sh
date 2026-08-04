@@ -72,6 +72,9 @@ export OBSERVER
 # companion. All other series continue to use the local PGenerator renderer.
 PATTERN_PROVIDER="${34:-local}"
 [[ "$PATTERN_PROVIDER" == "companion" ]] || PATTERN_PROVIDER="local"
+MIN_LUMA="${35:-0.005}"
+MAX_CLL="${36:-$MAX_LUMA}"
+MAX_FALL="${37:-400}"
 COMPANION_COMMAND_FILE="/var/lib/PGenerator/icc-companion/command.json"
 COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
@@ -335,7 +338,7 @@ post_companion_patch() {
  sequence=$(date +%s%3N)
  if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi
  COMPANION_SEQUENCE=$sequence
- payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma}"
+ payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma,\"min_luma\":$MIN_LUMA,\"max_cll\":$MAX_CLL,\"max_fall\":$MAX_FALL}"
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
  printf '%s' "$payload" > "$tmp" || companion_pattern_failure "Could not send a patch to the ICC Companion"
  # The root-run worker writes RGB patch commands, while the WebUI poll

@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.9"
+#define APP_VERSION "1.3.10"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -79,6 +79,8 @@ typedef struct {
     bool fullscreen;
     bool alignment;
     double displayed_r, displayed_g, displayed_b;
+    double displayed_max_luma, displayed_min_luma;
+    double displayed_max_cll, displayed_max_fall;
     int displayed_size;
     char displayed_mode[32];
     bool quit;
@@ -90,6 +92,8 @@ typedef struct {
     uint64_t command_sequence;
     bool command_alignment;
     double command_r, command_g, command_b;
+    double command_max_luma, command_min_luma;
+    double command_max_cll, command_max_fall;
     int command_size;
     char command_mode[32];
     bool settings_pending;
@@ -1030,6 +1034,39 @@ static bool windows_hdr_render_target(int width, int height)
     return true;
 }
 
+static bool windows_set_hdr_metadata(void)
+{
+    IDXGISwapChain4 *swapchain4 = NULL;
+    DXGI_HDR_METADATA_HDR10 metadata;
+    double min_luma_wire;
+    HRESULT result;
+    if (!app.hdr_swapchain) return false;
+    memset(&metadata, 0, sizeof(metadata));
+    /* BT.2020 mastering primaries and D65, in 0.00002 chromaticity units. */
+    metadata.RedPrimary[0] = 35400; metadata.RedPrimary[1] = 14600;
+    metadata.GreenPrimary[0] = 8500; metadata.GreenPrimary[1] = 39850;
+    metadata.BluePrimary[0] = 6550; metadata.BluePrimary[1] = 2300;
+    metadata.WhitePoint[0] = 15635; metadata.WhitePoint[1] = 16450;
+    metadata.MaxMasteringLuminance = (UINT)lround(fmax(0.0, fmin(10000.0, app.displayed_max_luma)));
+    /* Current UI values are nits. Accept the legacy/conf wire-unit form too. */
+    min_luma_wire = app.displayed_min_luma >= 1.0
+        ? app.displayed_min_luma : app.displayed_min_luma * 10000.0;
+    metadata.MinMasteringLuminance = (UINT)lround(fmax(0.0, fmin(65535.0, min_luma_wire)));
+    metadata.MaxContentLightLevel = (USHORT)lround(fmax(0.0, fmin(10000.0, app.displayed_max_cll)));
+    metadata.MaxFrameAverageLightLevel = (USHORT)lround(fmax(0.0, fmin(10000.0, app.displayed_max_fall)));
+    result = IDXGISwapChain_QueryInterface(app.hdr_swapchain, &IID_IDXGISwapChain4,
+                                           (void **)&swapchain4);
+    if (SUCCEEDED(result))
+        result = IDXGISwapChain4_SetHDRMetaData(swapchain4, DXGI_HDR_METADATA_TYPE_HDR10,
+                                                sizeof(metadata), &metadata);
+    if (swapchain4) IDXGISwapChain4_Release(swapchain4);
+    if (FAILED(result)) {
+        SDL_SetError("Could not apply HDR10 mastering metadata (0x%08lx)", (unsigned long)result);
+        return false;
+    }
+    return true;
+}
+
 static bool windows_create_hdr_output(void)
 {
     HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
@@ -1115,6 +1152,7 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     D3D11_RECT rect;
     if (!SDL_GetWindowSizeInPixels(app.window, &width, &height) ||
         !windows_hdr_render_target(width, height)) return false;
+    if (!windows_set_hdr_metadata()) return false;
     rect.left = (LONG)fmaxf(0.0f, destination->x);
     rect.top = (LONG)fmaxf(0.0f, destination->y);
     rect.right = (LONG)fminf((float)width, destination->x + destination->w);
@@ -1547,6 +1585,7 @@ static void poll_server(void)
     char correction_mode[16] = "system", active_profile[192] = "", profile_hex[385] = "", correction_signal_mode[16] = "sdr";
     char reported_renderer[64] = "starting";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
+    double max_luma = 1000.0, min_luma = 0.005, max_cll = 1000.0, max_fall = 400.0;
     double settings_revision_value, display_size_value, patch_size_value;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
@@ -1655,6 +1694,10 @@ static void poll_server(void)
         return;
     }
     json_string(response, "signal_mode", mode, sizeof(mode));
+    json_number(response, "max_luma", &max_luma);
+    json_number(response, "min_luma", &min_luma);
+    json_number(response, "max_cll", &max_cll);
+    json_number(response, "max_fall", &max_fall);
     if (input_max <= 0 || code_max <= code_min) {
         acknowledge(sequence, false, "Invalid patch range", "network", false);
         app.next_poll_ms = SDL_GetTicks() + 250;
@@ -1683,6 +1726,10 @@ static void poll_server(void)
     app.command_r = r;
     app.command_g = g;
     app.command_b = b;
+    app.command_max_luma = max_luma;
+    app.command_min_luma = min_luma;
+    app.command_max_cll = max_cll;
+    app.command_max_fall = max_fall;
     app.command_size = 100;
     if (json_number(response, "size", &patch_size_value)) app.command_size = (int)patch_size_value;
     SDL_strlcpy(app.command_mode, mode, sizeof(app.command_mode));
@@ -1711,6 +1758,7 @@ static void process_network_updates(void)
     uint64_t settings_revision = 0;
     uint64_t sequence = 0;
     double r = 0.0, g = 0.0, b = 0.0;
+    double max_luma = 1000.0, min_luma = 0.005, max_cll = 1000.0, max_fall = 400.0;
     char mode[32] = "sdr", title[256] = "";
     SDL_LockMutex(app.network_mutex);
     if (app.status_dirty) {
@@ -1730,6 +1778,8 @@ static void process_network_updates(void)
         sequence = app.command_sequence;
         alignment = app.command_alignment;
         r = app.command_r; g = app.command_g; b = app.command_b;
+        max_luma = app.command_max_luma; min_luma = app.command_min_luma;
+        max_cll = app.command_max_cll; max_fall = app.command_max_fall;
         command_size = app.command_size;
         SDL_strlcpy(mode, app.command_mode, sizeof(mode));
         app.command_pending = false;
@@ -1746,7 +1796,13 @@ static void process_network_updates(void)
     if (have_command) {
         bool ok;
         char message[256] = "";
-        if (!alignment) app.displayed_size = command_size;
+        if (!alignment) {
+            app.displayed_size = command_size;
+            app.displayed_max_luma = max_luma;
+            app.displayed_min_luma = min_luma;
+            app.displayed_max_cll = max_cll;
+            app.displayed_max_fall = max_fall;
+        }
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
         if (!ok) {
             const char *detail = SDL_GetError();
@@ -1773,6 +1829,10 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 {
     (void)argc; (void)argv;
     memset(&app, 0, sizeof(app));
+    app.displayed_max_luma = app.command_max_luma = 1000.0;
+    app.displayed_min_luma = app.command_min_luma = 0.005;
+    app.displayed_max_cll = app.command_max_cll = 1000.0;
+    app.displayed_max_fall = app.command_max_fall = 400.0;
     SDL_strlcpy(app.correction_mode, "system", sizeof(app.correction_mode));
     SDL_strlcpy(app.correction_signal_mode, "sdr", sizeof(app.correction_signal_mode));
 #ifdef _WIN32

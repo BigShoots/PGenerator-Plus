@@ -3594,6 +3594,12 @@ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2
  $request_run_id=$1 if($body=~/"run_id"\s*:\s*"([^"\\]{1,200})"/);
 my $signal_mode=&webui_pattern_signal_mode($body);
 my $max_luma=&webui_pattern_max_luma($body);
+my $min_luma=defined($pgenerator_conf{"min_luma"}) ? ($pgenerator_conf{"min_luma"}+0) : 0.005;
+my $max_cll=defined($pgenerator_conf{"max_cll"}) ? ($pgenerator_conf{"max_cll"}+0) : $max_luma;
+my $max_fall=defined($pgenerator_conf{"max_fall"}) ? ($pgenerator_conf{"max_fall"}+0) : 400;
+$min_luma=$1+0 if($body=~/"min_luma"\s*:\s*"?(\d+(?:\.\d+)?)"?/);
+$max_cll=$1+0 if($body=~/"max_cll"\s*:\s*"?(\d+(?:\.\d+)?)"?/);
+$max_fall=$1+0 if($body=~/"max_fall"\s*:\s*"?(\d+(?:\.\d+)?)"?/);
 my $request_dv_map_mode="";
 $request_dv_map_mode=$1 if($body=~/"dv_map_mode"\s*:\s*"?([0-9])"?/);
 $request_dv_map_mode="" unless($request_dv_map_mode eq "1" || $request_dv_map_mode eq "2");
@@ -5052,7 +5058,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # password and the launch silently fails ("Process died unexpectedly").
  # A trailing arg keeps the authorized command intact. Empty value ->
  # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -36098,6 +36104,9 @@ function meterMeasurementSignalContext(payload){
   body.dv_interface=dvTransport.dv_interface;
  }
  body.max_luma=(document.getElementById('max_luma')||{}).value||((config&&config.max_luma)||'1000');
+ body.min_luma=meterHdrMetadataFieldValue('min_luma')||((config&&config.min_luma)||'0.005');
+ body.max_cll=meterHdrMetadataFieldValue('max_cll')||((config&&config.max_cll)||body.max_luma);
+ body.max_fall=meterHdrMetadataFieldValue('max_fall')||((config&&config.max_fall)||'400');
  if(body.measurement_meter_port==null){
   const measurementPort=meterSelectedMeasurementPort();
   if(measurementPort) body.measurement_meter_port=measurementPort;

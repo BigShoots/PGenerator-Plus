@@ -401,11 +401,14 @@ sub webui_icc_companion_pattern (@) {
   my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/); $size=100 if($size<1 || $size>100);
   my $signal_mode="sdr"; $signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"(sdr|hdr10|hlg|dv)"/);
   my $max_luma=1000; $max_luma=$1 if($body=~/"max_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $min_luma=0.005; $min_luma=$1 if($body=~/"min_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $max_cll=$max_luma; $max_cll=$1 if($body=~/"max_cll"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $max_fall=400; $max_fall=$1 if($body=~/"max_fall"\s*:\s*(\d+(?:\.\d+)?)/);
   my $signal_range=""; $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
   my $scale=1; $scale=4 if($input_max==1023); $scale=16 if($input_max==4095);
   my $code_min=($signal_range eq "1") ? 16*$scale : 0;
   my $code_max=($signal_range eq "1") ? 235*$scale : $input_max;
-  $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).'}';
+  $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).',"min_luma":'.($min_luma+0).',"max_cll":'.($max_cll+0).',"max_fall":'.($max_fall+0).'}';
  }
  return &webui_icc_companion_write_atomic($_icc_companion_command_file,$payload,0644)
   ? '{"status":"ok","sequence":'.$sequence.'}'
