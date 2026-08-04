@@ -79,6 +79,29 @@ Section "ICC Companion and Profile Loader" SEC_CORE
   CreateShortcut "$SMPROGRAMS\PGenerator+\Uninstall ICC Tools.lnk" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\PGenerator+\ICC Tools" "InstallDir" "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  ; Register the per-user installation in Windows Settings > Apps > Installed
+  ; apps and the legacy Programs and Features control panel.
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "DisplayName" "PGenerator+ ICC Tools"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "DisplayVersion" "1.0.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "Publisher" "PGenerator+"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "DisplayIcon" "$INSTDIR\PGenProfileLoader.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+              "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+                "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+                "NoRepair" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
+                "EstimatedSize" 6280
 SectionEnd
 
 Section "Start Profile Loader with Windows" SEC_STARTUP
@@ -98,6 +121,7 @@ Section "Uninstall"
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "PGenerator+ Profile Loader"
   DeleteRegKey HKCU "Software\PGenerator+\ICC Tools"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools"
   Delete "$SMPROGRAMS\PGenerator+\ICC Companion.lnk"
   Delete "$SMPROGRAMS\PGenerator+\Profile Loader.lnk"
   Delete "$SMPROGRAMS\PGenerator+\Uninstall ICC Tools.lnk"
