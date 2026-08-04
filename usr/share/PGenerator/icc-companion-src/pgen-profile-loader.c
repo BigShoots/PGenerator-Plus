@@ -14,7 +14,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.1.3"
+#define APP_VERSION L"1.1.4"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -80,6 +80,8 @@ static volatile LONG g_apply_in_progress;
 static volatile LONG g_browse_in_progress;
 static BOOL g_profile_pending_selection;
 static WCHAR g_browse_path[MAX_PATH];
+static BOOL g_browse_has_mhc2;
+static BOOL g_browse_advanced;
 static HMODULE g_mscms;
 static PFN_ColorProfileAddDisplayAssociation p_add_association;
 static PFN_ColorProfileGetDisplayDefault p_get_default;
@@ -644,8 +646,8 @@ static void verify_profile(BOOL allow_reapply) {
 static void accept_profile_path(const WCHAR *path) {
     wcsncpy_s(g_profile_path, MAX_PATH, path, _TRUNCATE);
     SetWindowTextW(g_profile, g_profile_path);
-    g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
-    g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
+    g_profile_has_mhc2 = g_browse_has_mhc2;
+    g_associate_advanced = g_browse_advanced;
     wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
     g_profile_pending_selection = TRUE;
     show_ready_status();
@@ -657,12 +659,20 @@ static DWORD WINAPI choose_profile_thread(LPVOID unused) {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = g_window;
+    /* Do not make a window from another thread the modal owner. That can
+       deadlock the Explorer dialog while it re-enables the owner on Open. */
+    ofn.hwndOwner = NULL;
     ofn.lpstrFilter = L"Color profiles (*.icc;*.icm)\0*.icc;*.icm\0All files (*.*)\0*.*\0";
     ofn.lpstrFile = g_browse_path;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
-    PostMessageW(g_window, WM_BROWSE_DONE, GetOpenFileNameW(&ofn) ? 1 : 0, 0);
+    if (GetOpenFileNameW(&ofn)) {
+        g_browse_has_mhc2 = profile_contains_mhc2(g_browse_path);
+        g_browse_advanced = g_browse_has_mhc2 && profile_name_is_hdr(g_browse_path);
+        PostMessageW(g_window, WM_BROWSE_DONE, 1, 0);
+    } else {
+        PostMessageW(g_window, WM_BROWSE_DONE, 0, 0);
+    }
     CoUninitialize();
     return 0;
 }
@@ -672,11 +682,13 @@ static void choose_profile(void) {
     if (InterlockedCompareExchange(&g_browse_in_progress, 1, 0) != 0) return;
     wcsncpy_s(g_browse_path, MAX_PATH, g_profile_path, _TRUNCATE);
     EnableWindow(g_browse, FALSE);
+    EnableWindow(g_apply, FALSE);
     SetWindowTextW(g_browse, L"Opening...");
     thread = CreateThread(NULL, 0, choose_profile_thread, NULL, 0, NULL);
     if (!thread) {
         InterlockedExchange(&g_browse_in_progress, 0);
         EnableWindow(g_browse, TRUE);
+        EnableWindow(g_apply, TRUE);
         SetWindowTextW(g_browse, L"Browse");
         message_error(g_window, L"Opening the profile picker", GetLastError());
         return;
@@ -936,7 +948,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_TIMER:
-        if (wp == TIMER_VERIFY && InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0)
+        if (wp == TIMER_VERIFY &&
+            InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0 &&
+            InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0)
             verify_profile(TRUE);
         return 0;
     case WM_APPLY_DONE:
@@ -950,6 +964,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_BROWSE_DONE:
         InterlockedExchange(&g_browse_in_progress, 0);
         EnableWindow(g_browse, TRUE);
+        if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0)
+            EnableWindow(g_apply, TRUE);
         SetWindowTextW(g_browse, L"Browse");
         if (wp) accept_profile_path(g_browse_path);
         return 0;
