@@ -21,11 +21,15 @@
 #include <string.h>
 
 #ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <commctrl.h>
 #include <dxgi1_6.h>
 #define close_socket closesocket
 typedef SOCKET socket_handle_t;
@@ -42,7 +46,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.2.0"
+#define APP_VERSION "1.2.1"
 #define RESPONSE_CAPACITY 32768
 #define CORRECTION_RESPONSE_LIMIT (4 * 1024 * 1024)
 
@@ -113,12 +117,78 @@ static AppState app;
 
 static bool render_alignment(void);
 
+#ifdef _WIN32
+static void set_windows_window_icon(void)
+{
+    HWND window = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
+                                                SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    HINSTANCE instance = GetModuleHandleW(NULL);
+    HICON large, small;
+    if (!window || !instance) return;
+    large = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                              GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED);
+    small = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                              GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+    if (large) SendMessageW(window, WM_SETICON, ICON_BIG, (LPARAM)large);
+    if (small) SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)small);
+}
+
+static bool select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
+{
+    TASKDIALOGCONFIG dialog;
+    TASKDIALOG_BUTTON *buttons = SDL_calloc((size_t)count, sizeof(*buttons));
+    wchar_t (*labels)[256] = SDL_calloc((size_t)count, sizeof(*labels));
+    int chosen = 0;
+    HRESULT result;
+    if (!buttons || !labels) {
+        SDL_free(labels);
+        SDL_free(buttons);
+        return false;
+    }
+    for (int index = 0; index < count; index++) {
+        const char *name = SDL_GetDisplayName(displays[index]);
+        wchar_t display_name[192] = L"Unnamed display";
+        if (name && name[0]) {
+            int converted = MultiByteToWideChar(CP_UTF8, 0, name, -1, display_name, (int)SDL_arraysize(display_name));
+            if (converted <= 0) lstrcpyW(display_name, L"Unnamed display");
+        }
+        _snwprintf(labels[index], SDL_arraysize(labels[index]) - 1,
+                   L"Display %d\n%s", index + 1, display_name);
+        labels[index][SDL_arraysize(labels[index]) - 1] = L'\0';
+        buttons[index].nButtonID = index + 1;
+        buttons[index].pszButtonText = labels[index];
+    }
+    ZeroMemory(&dialog, sizeof(dialog));
+    dialog.cbSize = sizeof(dialog);
+    dialog.hwndParent = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
+                                                     SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    dialog.hInstance = GetModuleHandleW(NULL);
+    dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION |
+                     TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SIZE_TO_CONTENT;
+    dialog.pszWindowTitle = L"PGenerator+ ICC Companion";
+    dialog.pszMainInstruction = L"Select the profiling display";
+    dialog.pszContent = L"Choose the monitor that will show measurement patches. You can move and resize the Companion window afterward.";
+    dialog.pszMainIcon = MAKEINTRESOURCEW(1);
+    dialog.cButtons = (UINT)count;
+    dialog.pButtons = buttons;
+    dialog.nDefaultButton = 1;
+    result = TaskDialogIndirect(&dialog, &chosen, NULL, NULL);
+    SDL_free(labels);
+    SDL_free(buttons);
+    if (FAILED(result) || chosen < 1 || chosen > count) return false;
+    *selected = chosen;
+    return true;
+}
+#endif
+
 static bool select_target_display(void)
 {
     SDL_DisplayID *displays;
+#ifndef _WIN32
     SDL_MessageBoxButtonData *buttons = NULL;
     char (*labels)[192] = NULL;
     SDL_MessageBoxData dialog;
+#endif
     SDL_Rect bounds;
     int count = 0, selected = 1;
     bool ok = true;
@@ -129,6 +199,12 @@ static bool select_target_display(void)
         SDL_free(displays);
         return true;
     }
+#ifdef _WIN32
+    if (!select_windows_target_display(displays, count, &selected)) {
+        ok = false;
+        goto done;
+    }
+#else
     buttons = SDL_calloc((size_t)count, sizeof(*buttons));
     labels = SDL_calloc((size_t)count, sizeof(*labels));
     if (!buttons || !labels) {
@@ -154,6 +230,7 @@ static bool select_target_display(void)
         ok = false;
         goto done;
     }
+#endif
     if (selected < 1 || selected > count) selected = 1;
     if (!SDL_GetDisplayUsableBounds(displays[selected - 1], &bounds)) {
         ok = false;
@@ -173,8 +250,10 @@ static bool select_target_display(void)
         SDL_RaiseWindow(app.window);
     }
 done:
+#ifndef _WIN32
     SDL_free(labels);
     SDL_free(buttons);
+#endif
     SDL_free(displays);
     return ok;
 }
@@ -1150,9 +1229,12 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
     app.network_mutex = SDL_CreateMutex();
     if (!app.network_mutex) return SDL_APP_FAILURE;
-    app.window = SDL_CreateWindow("PGenerator ICC Companion", 1280, 720,
+    app.window = SDL_CreateWindow("PGenerator+ ICC Companion", 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
+#ifdef _WIN32
+    set_windows_window_icon();
+#endif
     if (!select_target_display()) return SDL_APP_FAILURE;
     app.fullscreen = false;
     app.displayed_size = 100;
