@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.8"
+#define APP_VERSION "1.3.9"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1053,7 +1053,10 @@ static bool windows_create_hdr_output(void)
     desc.BufferCount = 2;
     desc.OutputWindow = hwnd;
     desc.Windowed = TRUE;
-    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    /* Match the proven dogegen HDR presentation path. Flip-discard avoids
+     * preserving old back-buffer contents, while the main loop redraws the
+     * currently selected patch for every presented frame. */
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     result = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
                                            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                            NULL, 0, D3D11_SDK_VERSION, &desc,
@@ -1116,16 +1119,14 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     rect.top = (LONG)fmaxf(0.0f, destination->y);
     rect.right = (LONG)fminf((float)width, destination->x + destination->w);
     rect.bottom = (LONG)fminf((float)height, destination->y + destination->h);
-    for (int frame = 0; frame < 3; frame++) {
-        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context, app.hdr_render_target,
-                                                  background_color);
-        ID3D11DeviceContext1_ClearView(app.hdr_context1,
-                                      (ID3D11View *)app.hdr_render_target,
-                                      patch_color, &rect, 1);
-        if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) {
-            SDL_SetError("The native HDR10 frame could not be presented");
-            return false;
-        }
+    ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context, app.hdr_render_target,
+                                              background_color);
+    ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                  (ID3D11View *)app.hdr_render_target,
+                                  patch_color, &rect, 1);
+    if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) {
+        SDL_SetError("The native HDR10 frame could not be presented");
+        return false;
     }
     return true;
 }
@@ -1358,14 +1359,12 @@ static bool render_alignment(void)
         rects[1].right = (LONG)(vertical.x + vertical.w);
         rects[1].bottom = (LONG)(vertical.y + vertical.h);
         if (!windows_hdr_render_target(width, height)) return false;
-        for (int frame = 0; frame < 3; frame++) {
-            ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
-                                                      app.hdr_render_target, black);
-            ID3D11DeviceContext1_ClearView(app.hdr_context1,
-                                          (ID3D11View *)app.hdr_render_target,
-                                          white, rects, 2);
-            if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) return false;
-        }
+        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
+                                                  app.hdr_render_target, black);
+        ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                      (ID3D11View *)app.hdr_render_target,
+                                      white, rects, 2);
+        if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) return false;
         app.alignment = true;
         return true;
     }
@@ -1661,9 +1660,13 @@ static void poll_server(void)
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }
-    r = fmax(0.0, fmin(1.0, (r - code_min) / (code_max - code_min)));
-    g = fmax(0.0, fmin(1.0, (g - code_min) / (code_max - code_min)));
-    b = fmax(0.0, fmin(1.0, (b - code_min) / (code_max - code_min)));
+    /* The server has already produced the final video code values. Preserve
+     * them exactly, including legal-range codes, by normalizing only against
+     * their declared bit depth. code_min/code_max describe the authored
+     * range; they must not be expanded into a second full-range signal here. */
+    r = fmax(0.0, fmin(1.0, r / input_max));
+    g = fmax(0.0, fmin(1.0, g / input_max));
+    b = fmax(0.0, fmin(1.0, b / input_max));
     if (strcmp(app.correction_mode, "system") && strcmp(mode, app.correction_signal_mode)) {
         acknowledge(sequence, false, "The selected ICC correction does not match the patch signal mode", "profile", false);
         app.next_poll_ms = SDL_GetTicks() + 250;
@@ -1852,6 +1855,12 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 {
     AppState *state = (AppState *)appstate;
     process_network_updates();
+#ifdef _WIN32
+    /* A flip-model swapchain owns multiple buffers. Keep drawing the active
+     * HDR patch every refresh, as dogegen does, so the desktop compositor can
+     * never surface an untouched or stale buffer after a Present rotation. */
+    if (state->hdr_swapchain && !render_current_frame()) return SDL_APP_FAILURE;
+#endif
     SDL_Delay(5);
     return state->quit ? SDL_APP_SUCCESS : SDL_APP_CONTINUE;
 }
