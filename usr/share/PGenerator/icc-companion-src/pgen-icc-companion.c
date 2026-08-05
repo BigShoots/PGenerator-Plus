@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.22"
+#define APP_VERSION "1.3.23"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1834,7 +1834,7 @@ static bool render_current_frame(void)
 #ifdef _WIN32
 static bool windows_activate_pattern_window(HWND window)
 {
-    HWND foreground;
+    HWND foreground, shell_window = NULL;
     DWORD current_thread, foreground_thread = 0;
     bool attached = false;
     BOOL foreground_result;
@@ -1850,9 +1850,30 @@ static bool windows_activate_pattern_window(HWND window)
      * back to the Companion. */
     foreground = GetForegroundWindow();
     current_thread = GetCurrentThreadId();
+    if (foreground == window) {
+        /* SetForegroundWindow(window) is a no-op when Windows already labels
+         * this HWND foreground, even if DWM/NVIDIA has left its fullscreen
+         * swapchain in the dim composition state. Produce the same real
+         * deactivate/reactivate edge as Alt-Tab without minimizing or
+         * replacing the visible topmost patch. */
+        shell_window = GetShellWindow();
+        if (!shell_window) shell_window = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (shell_window && shell_window != window) {
+            foreground_thread = GetWindowThreadProcessId(shell_window, NULL);
+            if (foreground_thread && foreground_thread != current_thread)
+                attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+            if (SetForegroundWindow(shell_window)) Sleep(16);
+            foreground = GetForegroundWindow();
+        }
+    }
     if (foreground && foreground != window) {
-        foreground_thread = GetWindowThreadProcessId(foreground, NULL);
-        if (foreground_thread && foreground_thread != current_thread)
+        DWORD new_foreground_thread = GetWindowThreadProcessId(foreground, NULL);
+        if (attached && new_foreground_thread != foreground_thread) {
+            AttachThreadInput(current_thread, foreground_thread, FALSE);
+            attached = false;
+        }
+        foreground_thread = new_foreground_thread;
+        if (!attached && foreground_thread && foreground_thread != current_thread)
             attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
     }
     ShowWindow(window, SW_RESTORE);
