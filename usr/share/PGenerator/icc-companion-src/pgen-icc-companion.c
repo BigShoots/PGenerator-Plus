@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.19"
+#define APP_VERSION "1.3.18"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1698,15 +1698,7 @@ static bool windows_set_borderless_windowed(bool fullscreen)
 
 static void raise_pattern_window(void)
 {
-#ifdef _WIN32
-    /* A topmost monitor-covering window can be promoted into Windows'
-     * fullscreen presentation policy even when the DXGI swapchain remains
-     * composed. Keep the borderless HDR window in the normal foreground
-     * band so it follows the same color path as the working windowed mode. */
-    SDL_SetWindowAlwaysOnTop(app.window, false);
-#else
     SDL_SetWindowAlwaysOnTop(app.window, app.fullscreen);
-#endif
     SDL_ShowWindow(app.window);
     SDL_RaiseWindow(app.window);
 #ifdef _WIN32
@@ -1716,7 +1708,7 @@ static void raise_pattern_window(void)
             SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         if (window) {
             ShowWindow(window, SW_SHOW);
-            SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             BringWindowToTop(window);
             SetForegroundWindow(window);
