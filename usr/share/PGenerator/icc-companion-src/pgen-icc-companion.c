@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.21"
+#define APP_VERSION "1.3.22"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1832,6 +1832,41 @@ static bool render_current_frame(void)
 }
 
 #ifdef _WIN32
+static bool windows_activate_pattern_window(HWND window)
+{
+    HWND foreground;
+    DWORD current_thread, foreground_thread = 0;
+    bool attached = false;
+    BOOL foreground_result;
+    if (!window) return false;
+
+    /* A topmost window is not necessarily the foreground/active window.
+     * Windows and the NVIDIA driver can keep an exact-monitor HDR swapchain
+     * in the dim desktop-composition policy until it receives a genuine
+     * foreground activation. SetForegroundWindow alone is routinely denied
+     * for remotely driven patches because the Companion did not receive the
+     * most recent user input. Temporarily join the foreground input queue so
+     * the activation is honored, matching the state produced by Alt-Tabbing
+     * back to the Companion. */
+    foreground = GetForegroundWindow();
+    current_thread = GetCurrentThreadId();
+    if (foreground && foreground != window) {
+        foreground_thread = GetWindowThreadProcessId(foreground, NULL);
+        if (foreground_thread && foreground_thread != current_thread)
+            attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    }
+    ShowWindow(window, SW_RESTORE);
+    SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(window);
+    foreground_result = SetForegroundWindow(window);
+    SetActiveWindow(window);
+    SetFocus(window);
+    if (attached)
+        AttachThreadInput(current_thread, foreground_thread, FALSE);
+    return foreground_result != FALSE || GetForegroundWindow() == window;
+}
+
 static bool windows_set_borderless_windowed(bool fullscreen)
 {
     if (fullscreen) {
@@ -1876,11 +1911,7 @@ static void raise_pattern_window(void)
             SDL_GetWindowProperties(app.window),
             SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         if (window) {
-            ShowWindow(window, SW_SHOW);
-            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-            BringWindowToTop(window);
-            SetForegroundWindow(window);
+            windows_activate_pattern_window(window);
         }
     }
 #endif
@@ -2306,6 +2337,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         }
     }
     if (event->type == SDL_EVENT_WINDOW_EXPOSED ||
+        event->type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
         event->type == SDL_EVENT_WINDOW_RESTORED ||
         event->type == SDL_EVENT_WINDOW_SHOWN ||
         event->type == SDL_EVENT_WINDOW_RESIZED ||
