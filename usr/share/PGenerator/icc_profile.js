@@ -560,7 +560,8 @@ function meterIccApplyPatchPreset(presetName){
  if(good) good.checked=!!preset.good_optimization;
  const auto=document.getElementById('meterIccAutoPrecondition');
  if(auto) auto.checked=!!preset.auto_precondition;
- set('meterIccProfileQuality',preset.profile_quality||'high');
+ // Patch count and profile calculation effort are independent choices. Keep
+ // the quality the user selected even when changing patch presets or models.
  meterIccSyncUi();
 }
 
