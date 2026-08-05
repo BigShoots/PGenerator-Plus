@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.23"
+#define APP_VERSION "1.3.24"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1834,7 +1834,7 @@ static bool render_current_frame(void)
 #ifdef _WIN32
 static bool windows_activate_pattern_window(HWND window)
 {
-    HWND foreground, shell_window = NULL;
+    HWND foreground;
     DWORD current_thread, foreground_thread = 0;
     bool attached = false;
     BOOL foreground_result;
@@ -1850,30 +1850,9 @@ static bool windows_activate_pattern_window(HWND window)
      * back to the Companion. */
     foreground = GetForegroundWindow();
     current_thread = GetCurrentThreadId();
-    if (foreground == window) {
-        /* SetForegroundWindow(window) is a no-op when Windows already labels
-         * this HWND foreground, even if DWM/NVIDIA has left its fullscreen
-         * swapchain in the dim composition state. Produce the same real
-         * deactivate/reactivate edge as Alt-Tab without minimizing or
-         * replacing the visible topmost patch. */
-        shell_window = GetShellWindow();
-        if (!shell_window) shell_window = FindWindowW(L"Shell_TrayWnd", NULL);
-        if (shell_window && shell_window != window) {
-            foreground_thread = GetWindowThreadProcessId(shell_window, NULL);
-            if (foreground_thread && foreground_thread != current_thread)
-                attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
-            if (SetForegroundWindow(shell_window)) Sleep(16);
-            foreground = GetForegroundWindow();
-        }
-    }
     if (foreground && foreground != window) {
-        DWORD new_foreground_thread = GetWindowThreadProcessId(foreground, NULL);
-        if (attached && new_foreground_thread != foreground_thread) {
-            AttachThreadInput(current_thread, foreground_thread, FALSE);
-            attached = false;
-        }
-        foreground_thread = new_foreground_thread;
-        if (!attached && foreground_thread && foreground_thread != current_thread)
+        foreground_thread = GetWindowThreadProcessId(foreground, NULL);
+        if (foreground_thread && foreground_thread != current_thread)
             attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
     }
     ShowWindow(window, SW_RESTORE);
@@ -2243,6 +2222,18 @@ static void process_network_updates(void)
     }
     if (have_command) {
         bool ok;
+#ifdef _WIN32
+        bool refresh_fullscreen_hdr =
+            app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            app.hdr_swapchain &&
+            (strcmp(app.displayed_mode, mode) || app.displayed_r != r ||
+             app.displayed_g != g || app.displayed_b != b ||
+             app.displayed_size != command_size ||
+             app.displayed_max_luma != max_luma ||
+             app.displayed_min_luma != min_luma ||
+             app.displayed_max_cll != max_cll ||
+             app.displayed_max_fall != max_fall);
+#endif
         char message[256] = "";
         raise_pattern_window();
         if (!alignment) {
@@ -2252,7 +2243,19 @@ static void process_network_updates(void)
             app.displayed_max_cll = max_cll;
             app.displayed_max_fall = max_fall;
         }
+#ifdef _WIN32
+        /* On this Windows/NVIDIA path, an exact-fullscreen HDR swapchain can
+         * remain tagged with the dim desktop composition policy after a dark
+         * patch. Alt-Tab or an SDR-to-HDR transition immediately restores the
+         * correct PQ output. Recreate only when a new fullscreen HDR patch is
+         * selected, not for the per-refresh redraw loop or repeated reads of
+         * the same patch. Destroying the old source state and creating a new
+         * PQ swapchain forces DWM and the driver to classify it again. */
+        if (refresh_fullscreen_hdr && !create_renderer(true)) ok = false;
+        else ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+#else
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+#endif
         if (!ok) {
             const char *detail = SDL_GetError();
             if (detail && detail[0]) SDL_strlcpy(message, detail, sizeof(message));
