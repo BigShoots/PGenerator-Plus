@@ -1152,6 +1152,29 @@ static bool windows_hdr_render_target(int width, int height)
     return true;
 }
 
+static bool windows_activate_for_dxgi_fullscreen(HWND hwnd)
+{
+    HWND foreground;
+    DWORD current_thread;
+    DWORD foreground_thread;
+    bool attached = false;
+    if (!hwnd) return false;
+    foreground = GetForegroundWindow();
+    current_thread = GetCurrentThreadId();
+    foreground_thread = foreground ? GetWindowThreadProcessId(foreground, NULL) : 0;
+    if (foreground_thread && foreground_thread != current_thread)
+        attached = AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    ShowWindow(hwnd, SW_SHOW);
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+    SetForegroundWindow(hwnd);
+    if (attached) AttachThreadInput(current_thread, foreground_thread, FALSE);
+    return GetForegroundWindow() == hwnd;
+}
+
 static bool windows_set_dxgi_fullscreen(bool fullscreen)
 {
     IDXGIOutput *target = NULL;
@@ -1169,11 +1192,19 @@ static bool windows_set_dxgi_fullscreen(bool fullscreen)
                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
     monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
     if (fullscreen) {
-        result = IDXGISwapChain_GetContainingOutput(app.hdr_swapchain, &target);
+        result = windows_activate_for_dxgi_fullscreen(hwnd)
+               ? S_OK : DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+        if (SUCCEEDED(result))
+            result = IDXGISwapChain_GetContainingOutput(app.hdr_swapchain, &target);
         if (SUCCEEDED(result)) result = IDXGIOutput_GetDesc(target, &target_desc);
         if (SUCCEEDED(result) && target_desc.Monitor != monitor) result = E_INVALIDARG;
         if (SUCCEEDED(result))
             result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, TRUE, target);
+        /* Some drivers reject an explicit output pointer even though they can
+         * select the same output from the focused window. The verified target
+         * check below still prevents DXGI from choosing a different display. */
+        if (result == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE)
+            result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, TRUE, NULL);
     } else {
         result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
     }
@@ -1182,6 +1213,10 @@ static bool windows_set_dxgi_fullscreen(bool fullscreen)
         result = IDXGISwapChain_GetFullscreenState(app.hdr_swapchain,
                                                     &reported_fullscreen,
                                                     &reported_target);
+    if (SUCCEEDED(result) && fullscreen && reported_target) {
+        result = IDXGIOutput_GetDesc(reported_target, &target_desc);
+        if (SUCCEEDED(result) && target_desc.Monitor != monitor) result = E_INVALIDARG;
+    }
     if (reported_target) IDXGIOutput_Release(reported_target);
     if (FAILED(result) || reported_fullscreen != (fullscreen ? TRUE : FALSE)) {
         if (fullscreen) IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
