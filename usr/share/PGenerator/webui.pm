@@ -457,6 +457,7 @@ my $_dtype_info={
  "projector"    => ["p",""],
  "oled_generic" => ["c","WRGB_OLED_LG.ccss"],
  "qdoled"       => ["c","QD-OLED_Generic.ccss"],
+ "amoled"       => ["l",""],
  "lcd_wled"     => ["l","WLEDFamily_07Feb11.ccss"],
  "lcd_ccfl"     => ["l","CCFLFamily_07Feb11.ccss"],
  "lcd_wgccfl"   => ["l","WGCCFLFamily_07Feb11.ccss"],
@@ -482,6 +483,7 @@ my $_ccxxmake_disptech_map={
  "oled"           => "o",
  "oled_generic"   => "w",
  "qdoled"         => "o",
+ "amoled"         => "a",
  "plasma"         => "m",
  "projector"      => "p",
  "projector_ccss" => "p",
@@ -2154,7 +2156,7 @@ sub webui_spyderx_native_display_type (@) {
  return "e" if($key eq "lcd_wled");
  return "b" if($key eq "lcd_rgbled");
  return "i" if($key eq "lcd_gbled");
- # SpyderX has no native OLED, plasma, projector, CCFL or QD-OLED spectral
+ # SpyderX has no native OLED, AMOLED, plasma, projector, CCFL or QD-OLED spectral
  # calibration. Its General mode is the least-assumptive native fallback.
  return "l";
 }
@@ -13082,6 +13084,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <option value="refresh">Refresh display</option>
       <option value="oled_generic">WRGB OLED</option>
       <option value="qdoled">QD-OLED</option>
+      <option value="amoled">AMOLED</option>
       <option value="lcd_wled">LCD - White LED</option>
       <option value="lcd_rgbled">LCD - RGB LED</option>
       <option value="lcd_gbled">LCD - GB-R LED</option>
@@ -13857,6 +13860,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <select id="meterCcssCreateDisplayType" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
         <option value="oled_generic">WRGB OLED</option>
         <option value="qdoled">QD-OLED</option>
+        <option value="amoled">AMOLED</option>
         <option value="lcd_wled">LCD - White LED</option>
         <option value="lcd_rgbled">LCD - RGB LED</option>
         <option value="lcd_gbled">LCD - GB-R LED</option>
@@ -26803,6 +26807,7 @@ function meterCcmxTechnologyName(key){
  return {
   oled_generic:'LED WOLED',
   qdoled:'OLED',
+  amoled:'LED AMOLED',
   lcd_wled:'LCD White LED',
   lcd_rgbled:'LCD RGB LED',
   lcd_gbled:'LCD GB-R LED',
@@ -52017,7 +52022,7 @@ function meterDisplayTypeMetaText(value){
 
 function meterDisplayTypePatchSizeDefault(value){
  const current=String(value||'').toLowerCase();
- if(current.startsWith('oled')||current.startsWith('qdoled')) return '10';
+ if(current.startsWith('oled')||current.startsWith('qdoled')||current==='amoled') return '10';
  if(current==='non_refresh'||current==='refresh'||current==='lcd'||current.startsWith('lcd_')||current==='projector'||current==='projector_ccss') return '100';
  if(current.startsWith('ccss_')||current.startsWith('custom_')){
   const meta=meterDisplayTypeMetaText(value);
@@ -52040,7 +52045,7 @@ function meterApplyDisplayTypeSelection(v,opts){
  // or the custom-upload panel.
  const vl=v.toLowerCase();
  const ccssEmissive=(vl.startsWith('ccss_')||vl.startsWith('custom_'))&&/(oled|plasma|crt)/i.test(vl);
- const emissive=v.startsWith('oled')||v.startsWith('qdoled')||v==='plasma'||v==='crt'||v==='custom'||ccssEmissive;
+ const emissive=v.startsWith('oled')||v.startsWith('qdoled')||v==='amoled'||v==='plasma'||v==='crt'||v==='custom'||ccssEmissive;
  const showCcssPanel=v==='custom'||vl.startsWith('ccss_')||vl.startsWith('custom_');
  document.getElementById('meterPatchInsert').checked=emissive;
  if(opts.patchSizeDefault) meterApplyDisplayTypePatchSizeDefault(v);
@@ -52893,6 +52898,7 @@ function meterTechnologyDefaultCcssLabel(){
  if(tech==='refresh') return 'raw refresh, no correction';
  if(tech==='oled_generic') return 'WRGB OLED (built-in)';
  if(tech==='qdoled') return 'QD-OLED (built-in)';
+ if(tech==='amoled') return 'AMOLED, no built-in correction';
  if(tech==='lcd_wled') return 'W-LED family (built-in)';
  if(tech==='lcd_ccfl') return 'CCFL family (built-in)';
  if(tech==='lcd_wgccfl') return 'Wide gamut CCFL (built-in)';
@@ -53541,13 +53547,14 @@ async function loadMeterSettings(){
    // Was a CCSS token. Map the filename to the technology it implies and
    // keep the token as the CCSS override. Else infer technology from
    // filename tokens (woled/wrgb -> oled_generic, qd[-_]oled/qdoled ->
-   // qdoled, lcd/wled -> lcd_wled); unknown tech leaves display_type
+   // qdoled, amoled -> amoled, lcd/wled -> lcd_wled); unknown tech leaves display_type
    // unset so we preserve today's WRGB state instead of silently changing.
    const token=(legacyValue==='custom'&&s.ccss_file)?('custom_'+s.ccss_file):legacyValue;
    const fname=String(token).replace(/^(?:ccss_|custom_)/,'').toLowerCase();
    let inferred='';
    if(/woled|wrgb/.test(fname)) inferred='oled_generic';
    else if(/qd[-_]?oled|qdoled/.test(fname)) inferred='qdoled';
+   else if(/amoled/.test(fname)) inferred='amoled';
    else if(/lcd|wled/.test(fname)) inferred='lcd_wled';
    _migratedDisplayType=inferred;
    _migratedCcssOverride=token;

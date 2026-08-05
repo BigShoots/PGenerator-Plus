@@ -1337,7 +1337,7 @@ sub model_from_readings {
  my $wrgb_force="";
  if($display_type eq "oled_generic" || $display_type =~ /woled|wrgb/) {
   $wrgb_force="wrgb";
- } elsif($display_type =~ /qdoled|qd[-_]oled|lcd|crt|plasma|projector/) {
+ } elsif($display_type =~ /qdoled|qd[-_]oled|amoled|rgb[-_]?oled|joled|lcd|crt|plasma|projector/) {
   $wrgb_force="additive";
  }
  my $wrgb_comp_source="auto";
