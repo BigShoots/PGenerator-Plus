@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.28"
+#define APP_VERSION "1.3.29"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1018,86 +1018,6 @@ static bool apply_local_clut(const double xyz[3], double output[3])
     return true;
 }
 
-static bool mhc2_inverse_adjustment_curve(IccTag tag, uint32_t offset,
-                                          uint32_t count, double value,
-                                          double *result)
-{
-    if (!offset) { *result = fmax(0.0, fmin(1.0, value)); return true; }
-    if (count < 2 || offset > tag.size || tag.size - offset < 8u + (size_t)count * 4u ||
-        memcmp(tag.data + offset, "sf32", 4)) return false;
-    const unsigned char *table = tag.data + offset + 8;
-    value = fmax(0.0, fmin(1.0, value));
-    double first = read_s15(table), last = read_s15(table + (size_t)(count - 1) * 4);
-    if (value <= first) { *result = 0.0; return true; }
-    if (value > last) { *result = 1.0; return true; }
-    uint32_t low = 0, high = count - 1;
-    while (high - low > 1) {
-        uint32_t middle = (low + high) / 2;
-        if (read_s15(table + (size_t)middle * 4) < value) low = middle;
-        else high = middle;
-    }
-    double y0 = read_s15(table + (size_t)low * 4);
-    double y1 = read_s15(table + (size_t)high * 4);
-    double fraction = y1 <= y0 ? 1.0 : (value - y0) / (y1 - y0);
-    *result = (low + fmax(0.0, fmin(1.0, fraction))) / (count - 1);
-    return true;
-}
-
-static double linear_to_srgb_double(double value)
-{
-    value = fmax(0.0, fmin(1.0, value));
-    return value <= 0.0031308 ? 12.92 * value : 1.055 * pow(value, 1.0 / 2.4) - 0.055;
-}
-
-static double nits_to_pq(double nits)
-{
-    const double m1 = 2610.0 / 16384.0, m2 = 2523.0 / 32.0;
-    const double c1 = 3424.0 / 4096.0, c2 = 2413.0 / 128.0, c3 = 2392.0 / 128.0;
-    double linear = fmax(0.0, fmin(1.0, nits / 10000.0));
-    double p = pow(linear, m1);
-    return pow((c1 + c2 * p) / (1.0 + c3 * p), m2);
-}
-
-/* Windows loads an active profile's MHC2 calibration into the display
- * pipeline even when this application evaluates B2A0 or the matrix fallback
- * itself. Convert the desired device codes back through MHC2 first so the
- * system stage lands on those codes instead of applying the calibration a
- * second time. */
-static bool compensate_active_mhc2(double output[3], const char *signal_mode)
-{
-    static const double srgb_xyz[3][3]={{0.4123908,0.3575843,0.1804808},{0.2126390,0.7151687,0.0721923},{0.0193308,0.1191948,0.9505322}};
-    static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
-    IccTag tag = icc_tag(app.correction_profile_data, app.correction_profile_size, "MHC2");
-    double adjustment[3][3]={{1,0,0},{0,1,0},{0,0,1}}, inverse_adjustment[3][3];
-    double inverse_wire[3][3], adjusted_encoded[3], adjusted_linear[3], xyz[3], source_xyz[3], source_linear[3];
-    const double (*wire)[3] = !strcmp(signal_mode, "hdr10") ? bt2020_xyz : srgb_xyz;
-    uint32_t count, matrix_offset;
-    if (!tag.data) return true;
-    if (tag.size < 36 || memcmp(tag.data, "MHC2", 4)) return false;
-    count=read_be32(tag.data+8);
-    if (count == 1 || count > 4096) return false;
-    matrix_offset=read_be32(tag.data+20);
-    if (matrix_offset) {
-        if (matrix_offset > tag.size || tag.size - matrix_offset < 48) return false;
-        for (int row=0; row<3; row++)
-            for (int column=0; column<3; column++)
-                adjustment[row][column]=read_s15(tag.data+matrix_offset+(size_t)(row*4+column)*4);
-    }
-    for (int channel=0; channel<3; channel++)
-        if (!mhc2_inverse_adjustment_curve(tag,read_be32(tag.data+24+channel*4),count,
-                                           output[channel],&adjusted_encoded[channel])) return false;
-    for (int channel=0; channel<3; channel++) {
-        if (!strcmp(signal_mode,"hdr10")) adjusted_linear[channel]=pq_to_nits(adjusted_encoded[channel])/10000.0;
-        else adjusted_linear[channel]=adjusted_encoded[channel]<=0.04045?adjusted_encoded[channel]/12.92:pow((adjusted_encoded[channel]+0.055)/1.055,2.4);
-    }
-    if (!inverse_matrix3(adjustment,inverse_adjustment) || !inverse_matrix3(wire,inverse_wire)) return false;
-    for (int row=0; row<3; row++) xyz[row]=wire[row][0]*adjusted_linear[0]+wire[row][1]*adjusted_linear[1]+wire[row][2]*adjusted_linear[2];
-    for (int row=0; row<3; row++) source_xyz[row]=inverse_adjustment[row][0]*xyz[0]+inverse_adjustment[row][1]*xyz[1]+inverse_adjustment[row][2]*xyz[2];
-    for (int row=0; row<3; row++) source_linear[row]=inverse_wire[row][0]*source_xyz[0]+inverse_wire[row][1]*source_xyz[1]+inverse_wire[row][2]*source_xyz[2];
-    for (int channel=0; channel<3; channel++)
-        output[channel]=!strcmp(signal_mode,"hdr10")?nits_to_pq(source_linear[channel]*10000.0):linear_to_srgb_double(source_linear[channel]);
-    return true;
-}
 #endif
 
 static bool load_correction_lut(uint64_t revision)
@@ -1159,7 +1079,6 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
-    if(!compensate_active_mhc2(output,app.correction_signal_mode))return false;
     *red = output[0]; *green = output[1]; *blue = output[2];
     return true;
 #else
