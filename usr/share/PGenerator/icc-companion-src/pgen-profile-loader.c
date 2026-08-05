@@ -14,12 +14,13 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.2.0"
+#define APP_VERSION L"1.3.0"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
 #define TIMER_VERIFY 1
 #define MAX_DISPLAYS 24
+#define MAX_DISPLAY_PROFILES 256
 #define ID_DISPLAY 101
 #define ID_PROFILE 102
 #define ID_BROWSE 103
@@ -30,6 +31,8 @@
 #define ID_SETTINGS 108
 #define ID_HIDE 109
 #define ID_CLEAR_DEFAULT 110
+#define ID_DISPLAY_PROFILES 111
+#define ID_SET_DEFAULT 112
 #define ID_TRAY_SHOW 201
 #define ID_TRAY_APPLY 202
 #define ID_TRAY_AUTOREAPPLY 203
@@ -63,8 +66,16 @@ typedef struct {
     WCHAR monitor_path[256];
 } DISPLAY_ENTRY;
 
+typedef struct {
+    WCHAR name[MAX_PATH];
+    BOOL advanced;
+    BOOL current_standard;
+    BOOL current_advanced;
+} PROFILE_ENTRY;
+
 static HINSTANCE g_instance;
-static HWND g_window, g_display, g_profile, g_status, g_status_heading, g_apply, g_browse, g_clear_default;
+static HWND g_window, g_display, g_profile, g_display_profiles, g_set_default;
+static HWND g_status, g_status_heading, g_apply, g_browse, g_clear_default;
 static NOTIFYICONDATAW g_tray;
 static HICON g_icon_ok, g_icon_bad;
 static HFONT g_font_normal, g_font_label, g_font_title, g_font_subtitle, g_font_button;
@@ -74,6 +85,8 @@ static BOOL g_status_ok;
 static BOOL g_status_pending;
 static DISPLAY_ENTRY g_displays[MAX_DISPLAYS];
 static UINT g_display_count;
+static PROFILE_ENTRY g_profiles[MAX_DISPLAY_PROFILES];
+static UINT g_profile_count;
 static WCHAR g_ini[MAX_PATH];
 static WCHAR g_profile_path[MAX_PATH];
 static WCHAR g_profile_name[MAX_PATH];
@@ -501,6 +514,139 @@ static BOOL display_profile_is_associated(DISPLAY_ENTRY *display, const WCHAR *n
     return found;
 }
 
+static BOOL installed_profile_path(const WCHAR *name, WCHAR *path, size_t path_count) {
+    WCHAR directory[MAX_PATH];
+    DWORD count = MAX_PATH;
+    if (!name || !name[0] || !path || path_count == 0 ||
+        !GetColorDirectoryW(NULL, directory, &count)) return FALSE;
+    if (swprintf(path, path_count, L"%ls\\%ls", directory,
+                 profile_basename(name)) < 0) return FALSE;
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL get_default_name(DISPLAY_ENTRY *display, COLORPROFILESUBTYPE subtype,
+                             WCHAR *name, size_t name_count) {
+    WCS_PROFILE_MANAGEMENT_SCOPE scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+    WCS_PROFILE_MANAGEMENT_SCOPE alternate;
+    LPWSTR current = NULL;
+    HRESULT hr;
+    if (!display || !p_get_default || !name || name_count == 0) return FALSE;
+    name[0] = L'\0';
+    if (p_get_scope && FAILED(p_get_scope(display->adapter, display->source_id, &scope)))
+        scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+    hr = p_get_default(scope, display->adapter, display->source_id,
+                       CPT_ICC, subtype, &current);
+    if (FAILED(hr) || !current || !current[0]) {
+        if (current) LocalFree(current);
+        current = NULL;
+        alternate = scope == WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
+                  ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE
+                  : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+        hr = p_get_default(alternate, display->adapter, display->source_id,
+                           CPT_ICC, subtype, &current);
+    }
+    if (FAILED(hr) || !current || !current[0]) {
+        if (current) LocalFree(current);
+        return FALSE;
+    }
+    wcsncpy_s(name, name_count, profile_basename(current), _TRUNCATE);
+    LocalFree(current);
+    return TRUE;
+}
+
+static BOOL profile_already_listed(const WCHAR *name) {
+    UINT i;
+    for (i = 0; i < g_profile_count; i++)
+        if (_wcsicmp(g_profiles[i].name, profile_basename(name)) == 0) return TRUE;
+    return FALSE;
+}
+
+static void append_display_profile_scope(DISPLAY_ENTRY *display,
+                                         WCS_PROFILE_MANAGEMENT_SCOPE scope) {
+    LPWSTR *profiles = NULL;
+    DWORD count = 0, i;
+    HRESULT hr;
+    if (!display || !p_get_list || g_profile_count >= MAX_DISPLAY_PROFILES) return;
+    hr = p_get_list(scope, display->adapter, display->source_id, &profiles, &count);
+    if (FAILED(hr) || !profiles) return;
+    for (i = 0; i < count && g_profile_count < MAX_DISPLAY_PROFILES; i++) {
+        const WCHAR *name;
+        PROFILE_ENTRY *entry;
+        WCHAR path[MAX_PATH];
+        if (!profiles[i] || !profiles[i][0]) continue;
+        name = profile_basename(profiles[i]);
+        if (profile_already_listed(name)) continue;
+        entry = &g_profiles[g_profile_count++];
+        ZeroMemory(entry, sizeof(*entry));
+        wcsncpy_s(entry->name, MAX_PATH, name, _TRUNCATE);
+        entry->advanced = installed_profile_path(name, path, MAX_PATH) &&
+                          profile_contains_mhc2(path);
+    }
+    LocalFree(profiles);
+}
+
+static void refresh_display_profiles(void) {
+    DISPLAY_ENTRY *display = selected_display();
+    WCHAR standard_default[MAX_PATH] = L"";
+    WCHAR advanced_default[MAX_PATH] = L"";
+    WCHAR selected_name[MAX_PATH] = L"";
+    int preferred = -1, current = -1;
+    UINT i;
+    if (!g_display_profiles) return;
+    {
+        LRESULT selection = SendMessageW(g_display_profiles, LB_GETCURSEL, 0, 0);
+        if (selection != LB_ERR) {
+            LRESULT entry_index = SendMessageW(g_display_profiles, LB_GETITEMDATA,
+                                                (WPARAM)selection, 0);
+            if (entry_index >= 0 && (UINT)entry_index < g_profile_count)
+                wcsncpy_s(selected_name, MAX_PATH,
+                          g_profiles[entry_index].name, _TRUNCATE);
+        }
+    }
+    SendMessageW(g_display_profiles, LB_RESETCONTENT, 0, 0);
+    g_profile_count = 0;
+    if (!display || !p_get_list) {
+        EnableWindow(g_set_default, FALSE);
+        return;
+    }
+    get_default_name(display, PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE,
+                     standard_default, MAX_PATH);
+    get_default_name(display, PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE,
+                     advanced_default, MAX_PATH);
+    append_display_profile_scope(display, WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER);
+    append_display_profile_scope(display, WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE);
+    for (i = 0; i < g_profile_count; i++) {
+        PROFILE_ENTRY *entry = &g_profiles[i];
+        WCHAR label[MAX_PATH + 64];
+        LRESULT row;
+        entry->current_standard = standard_default[0] &&
+                                  _wcsicmp(entry->name, standard_default) == 0;
+        entry->current_advanced = advanced_default[0] &&
+                                  _wcsicmp(entry->name, advanced_default) == 0;
+        if (entry->current_standard && entry->current_advanced)
+            swprintf(label, MAX_PATH + 64, L"%ls  (Current SDR and HDR profile)", entry->name);
+        else if (entry->current_advanced)
+            swprintf(label, MAX_PATH + 64, L"%ls  (Current HDR profile)", entry->name);
+        else if (entry->current_standard)
+            swprintf(label, MAX_PATH + 64, L"%ls  (Current SDR profile)", entry->name);
+        else
+            swprintf(label, MAX_PATH + 64, L"%ls  (%ls profile)", entry->name,
+                     entry->advanced ? L"HDR" : L"SDR");
+        row = SendMessageW(g_display_profiles, LB_ADDSTRING, 0, (LPARAM)label);
+        if (row == LB_ERR || row == LB_ERRSPACE) continue;
+        SendMessageW(g_display_profiles, LB_SETITEMDATA, (WPARAM)row, (LPARAM)i);
+        if ((selected_name[0] && _wcsicmp(entry->name, selected_name) == 0) ||
+            (!selected_name[0] && g_profile_name[0] &&
+             _wcsicmp(entry->name, g_profile_name) == 0)) preferred = (int)row;
+        if (current < 0 && (entry->current_advanced || entry->current_standard))
+            current = (int)row;
+    }
+    if (preferred < 0) preferred = current;
+    if (preferred < 0 && g_profile_count) preferred = 0;
+    if (preferred >= 0) SendMessageW(g_display_profiles, LB_SETCURSEL, preferred, 0);
+    EnableWindow(g_set_default, preferred >= 0);
+}
+
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
@@ -544,6 +690,41 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     g_last_reapply_tick = GetTickCount();
     g_mismatch_count = 0;
     return TRUE;
+}
+
+static void set_selected_profile_default(void) {
+    DISPLAY_ENTRY *display = selected_display();
+    LRESULT row, entry_index;
+    PROFILE_ENTRY *entry;
+    WCHAR path[MAX_PATH];
+    if (!display) {
+        MessageBoxW(g_window, L"Select an active display first.", APP_NAME,
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    row = SendMessageW(g_display_profiles, LB_GETCURSEL, 0, 0);
+    if (row == LB_ERR) return;
+    entry_index = SendMessageW(g_display_profiles, LB_GETITEMDATA, (WPARAM)row, 0);
+    if (entry_index < 0 || (UINT)entry_index >= g_profile_count) return;
+    entry = &g_profiles[entry_index];
+    if (!installed_profile_path(entry->name, path, MAX_PATH)) {
+        MessageBoxW(g_window,
+                    L"Windows reports this display association, but the installed profile file could not be found.",
+                    APP_NAME, MB_OK | MB_ICONERROR);
+        return;
+    }
+    wcsncpy_s(g_profile_path, MAX_PATH, path, _TRUNCATE);
+    wcsncpy_s(g_profile_name, MAX_PATH, entry->name, _TRUNCATE);
+    g_profile_has_mhc2 = profile_contains_mhc2(path);
+    g_associate_advanced = entry->current_advanced ||
+                           (!entry->current_standard && entry->advanced);
+    g_profile_pending_selection = FALSE;
+    SetWindowTextW(g_profile, g_profile_path);
+    if (!associate_profile(display, TRUE)) return;
+    wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
+    save_settings();
+    refresh_display_profiles();
+    verify_profile(FALSE);
 }
 
 static BOOL apply_profile(BOOL interactive) {
@@ -651,6 +832,7 @@ static void clear_display_default(void) {
              profile_basename(current), g_associate_advanced ? L"HDR" : L"SDR");
     LocalFree(current);
     set_pending_status(L"DEFAULT PROFILE CLEARED", result);
+    refresh_display_profiles();
 }
 
 static DWORD WINAPI apply_profile_thread(LPVOID unused) {
@@ -801,12 +983,14 @@ static void layout_controls(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd, ID_BROWSE), w - px(140), px(218), px(112), px(38), TRUE);
     MoveWindow(GetDlgItem(hwnd, ID_AUTOREAPPLY), px(28), px(276), px(390), px(24), TRUE);
     MoveWindow(GetDlgItem(hwnd, ID_STARTUP), w - px(190), px(276), px(162), px(24), TRUE);
-    MoveWindow(g_status_heading, px(58), px(333), content_w - px(56), px(20), TRUE);
-    MoveWindow(g_status, px(58), px(360), content_w - px(60), px(62), TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_SETTINGS), px(28), px(450), px(190), px(40), TRUE);
-    MoveWindow(g_clear_default, px(228), px(450), px(168), px(40), TRUE);
-    MoveWindow(GetDlgItem(hwnd, ID_HIDE), w - px(292), px(450), px(126), px(40), TRUE);
-    MoveWindow(g_apply, w - px(156), px(450), px(128), px(40), TRUE);
+    MoveWindow(g_display_profiles, px(28), px(342), content_w - px(170), px(112), TRUE);
+    MoveWindow(g_set_default, w - px(188), px(342), px(160), px(40), TRUE);
+    MoveWindow(g_status_heading, px(58), px(497), content_w - px(56), px(20), TRUE);
+    MoveWindow(g_status, px(58), px(524), content_w - px(60), px(62), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_SETTINGS), px(28), px(614), px(190), px(40), TRUE);
+    MoveWindow(g_clear_default, px(228), px(614), px(168), px(40), TRUE);
+    MoveWindow(GetDlgItem(hwnd, ID_HIDE), w - px(292), px(614), px(126), px(40), TRUE);
+    MoveWindow(g_apply, w - px(156), px(614), px(128), px(40), TRUE);
 }
 
 static void show_window(void) {
@@ -833,8 +1017,12 @@ static void show_tray_menu(void) {
 }
 
 static void open_color_settings(void) {
-    HINSTANCE result = ShellExecuteW(g_window, L"open", L"ms-settings:display-advancedcolor",
+    HINSTANCE result = ShellExecuteW(g_window, L"open",
+                                     L"ms-settings:display?settingId=SystemSettings_Display_ColorProfileSetting",
                                      NULL, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)result <= 32)
+        result = ShellExecuteW(g_window, L"open", L"ms-settings:display",
+                               NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)result <= 32)
         ShellExecuteW(g_window, L"open", L"colorcpl.exe", NULL, NULL, SW_SHOWNORMAL);
 }
@@ -896,36 +1084,54 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         apply_font(ctl, g_font_normal);
         SetWindowTheme(ctl, L"Explorer", NULL);
         SendMessageW(ctl, BM_SETCHECK, startup_enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+        ctl = CreateWindowW(L"STATIC", L"PROFILES FOR SELECTED DISPLAY",
+                            WS_CHILD | WS_VISIBLE, px(28), px(316), px(260), px(20),
+                            hwnd, NULL, g_instance, NULL);
+        apply_font(ctl, g_font_label);
+        g_display_profiles = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                              WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                                              LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                                              px(28), px(342), px(474), px(112), hwnd,
+                                              (HMENU)ID_DISPLAY_PROFILES, g_instance, NULL);
+        apply_font(g_display_profiles, g_font_normal);
+        SetWindowTheme(g_display_profiles, L"Explorer", NULL);
+        g_set_default = CreateWindowW(L"BUTTON", L"Set as default",
+                                      WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                                      px(512), px(342), px(160), px(40), hwnd,
+                                      (HMENU)ID_SET_DEFAULT, g_instance, NULL);
+        apply_font(g_set_default, g_font_button);
+        SetWindowTheme(g_set_default, L"Explorer", NULL);
         g_status_heading = CreateWindowW(L"STATIC", L"ATTENTION REQUIRED",
-                                         WS_CHILD | WS_VISIBLE, px(58), px(333), px(520), px(20),
+                                         WS_CHILD | WS_VISIBLE, px(58), px(497), px(520), px(20),
                                          hwnd, NULL, g_instance, NULL);
         apply_font(g_status_heading, g_font_label);
         g_status = CreateWindowW(L"STATIC", L"",
-                                   WS_CHILD | WS_VISIBLE | SS_LEFT, px(58), px(360), px(570), px(62),
+                                   WS_CHILD | WS_VISIBLE | SS_LEFT, px(58), px(524), px(570), px(62),
                                    hwnd, (HMENU)ID_STATUS, g_instance, NULL);
         apply_font(g_status, g_font_normal);
         ctl = CreateWindowW(L"BUTTON", L"Windows color settings", WS_CHILD | WS_VISIBLE,
-                            px(28), px(450), px(190), px(40), hwnd,
+                            px(28), px(614), px(190), px(40), hwnd,
                             (HMENU)ID_SETTINGS, g_instance, NULL);
         apply_font(ctl, g_font_button);
         SetWindowTheme(ctl, L"Explorer", NULL);
         g_clear_default = CreateWindowW(L"BUTTON", L"Clear display default",
                                         WS_CHILD | WS_VISIBLE,
-                                        px(228), px(450), px(168), px(40), hwnd,
+                                        px(228), px(614), px(168), px(40), hwnd,
                                         (HMENU)ID_CLEAR_DEFAULT, g_instance, NULL);
         apply_font(g_clear_default, g_font_button);
         SetWindowTheme(g_clear_default, L"Explorer", NULL);
         ctl = CreateWindowW(L"BUTTON", L"Hide to tray", WS_CHILD | WS_VISIBLE,
-                            px(408), px(450), px(126), px(40), hwnd,
+                            px(408), px(614), px(126), px(40), hwnd,
                             (HMENU)ID_HIDE, g_instance, NULL);
         apply_font(ctl, g_font_button);
         SetWindowTheme(ctl, L"Explorer", NULL);
         g_apply = CreateWindowW(L"BUTTON", L"Install and apply", WS_CHILD | WS_VISIBLE |
-                                BS_OWNERDRAW, px(544), px(450), px(128), px(40), hwnd,
+                                BS_OWNERDRAW, px(544), px(614), px(128), px(40), hwnd,
                                 (HMENU)ID_APPLY, g_instance, NULL);
         apply_font(g_apply, g_font_button);
         SetWindowTextW(g_profile, g_profile_path);
         enumerate_displays();
+        refresh_display_profiles();
         SetTimer(hwnd, TIMER_VERIFY, 5000, NULL);
         verify_profile(FALSE);
         break;
@@ -949,9 +1155,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FillRect(dc, &rc, g_brush_background);
         rc.bottom = px(5);
         FillRect(dc, &rc, accent);
-        card.left = px(28); card.top = px(316);
+        card.left = px(28); card.top = px(480);
         card.right = rc.right - px(28);
-        card.bottom = px(430);
+        card.bottom = px(594);
         old_pen = SelectObject(dc, border_pen);
         old_brush = SelectObject(dc, g_brush_card);
         RoundRect(dc, card.left, card.top, card.right, card.bottom, px(14), px(14));
@@ -959,7 +1165,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SelectObject(dc, old_pen);
         old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
         old_brush = SelectObject(dc, dot);
-        Ellipse(dc, px(42), px(335), px(52), px(345));
+        Ellipse(dc, px(42), px(499), px(52), px(509));
         SelectObject(dc, old_brush);
         SelectObject(dc, old_pen);
         DeleteObject(accent);
@@ -1023,6 +1229,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (LOWORD(wp)) {
         case ID_BROWSE: choose_profile(); break;
         case ID_APPLY: start_apply_profile(); break;
+        case ID_SET_DEFAULT: set_selected_profile_default(); break;
+        case ID_DISPLAY_PROFILES:
+            if (HIWORD(wp) == LBN_SELCHANGE)
+                EnableWindow(g_set_default,
+                             SendMessageW(g_display_profiles, LB_GETCURSEL, 0, 0) != LB_ERR);
+            else if (HIWORD(wp) == LBN_DBLCLK)
+                set_selected_profile_default();
+            break;
         case ID_CLEAR_DEFAULT: case ID_TRAY_CLEAR_DEFAULT: clear_display_default(); break;
         case ID_SETTINGS: case ID_TRAY_SETTINGS: open_color_settings(); break;
         case ID_HIDE: ShowWindow(hwnd, SW_HIDE); break;
@@ -1030,7 +1244,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 DISPLAY_ENTRY *d = selected_display();
                 if (d) wcsncpy_s(g_saved_monitor_path, 256, d->monitor_path, _TRUNCATE);
-                save_settings(); verify_profile(FALSE);
+                save_settings(); refresh_display_profiles(); verify_profile(FALSE);
             }
             break;
         case ID_AUTOREAPPLY:
@@ -1062,6 +1276,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetWindowTextW(g_apply, L"Install and apply");
         InvalidateRect(g_apply, NULL, TRUE);
         if (wp) g_profile_pending_selection = FALSE;
+        refresh_display_profiles();
         verify_profile(FALSE);
         return 0;
     case WM_BROWSE_DONE:
@@ -1074,9 +1289,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DISPLAYCHANGE: case WM_DEVICECHANGE:
         g_reapply_attempted_for_mismatch = FALSE;
-        enumerate_displays(); verify_profile(TRUE); return 0;
+        enumerate_displays(); refresh_display_profiles(); verify_profile(TRUE); return 0;
     case WM_SETTINGCHANGE:
-        verify_profile(TRUE); return 0;
+        refresh_display_profiles(); verify_profile(TRUE); return 0;
     case WM_TRAYICON:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) show_window();
         else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_tray_menu();
@@ -1168,7 +1383,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     if (!RegisterClassExW(&wc)) return 1;
     g_window = CreateWindowExW(0, wc.lpszClassName, APP_NAME L" " APP_VERSION,
                                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(550),
+                                CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(714),
                                 NULL, NULL, instance, NULL);
     if (!g_window) return 1;
     {

@@ -8,14 +8,22 @@ selected profile for one active display.
 2. Select the display and choose an ICC or ICM profile.
 3. Click Install and apply. Windows may request administrator permission to
    install the profile in its color profile directory.
-4. Leave Automatically reapply enabled if you want the loader to restore the
+4. Profiles already associated with the selected display are shown in the
+   display profile list. Select one and click Set as default to switch the
+   Windows default without reinstalling it. Current SDR and HDR defaults are
+   identified separately.
+5. Leave Automatically reapply enabled if you want the loader to restore the
    association after display, HDR, GPU, or Windows setting changes.
-5. Enable Start with Windows if you want verification to begin at sign-in.
+6. Enable Start with Windows if you want verification to begin at sign-in.
 
 A green tray icon means Windows reports the selected file as the display's
 active default. A red icon means the profile is missing, the display is not
 available, or Windows reports another default. Right-click the tray icon to
 reapply the profile or open Windows Color Profile settings.
+
+The Windows color settings button opens System > Display > Color management on
+supported Windows 11 builds. Older builds fall back to Display settings or the
+classic Color Management control panel.
 
 For a profile containing an MHC2 tag, Windows applies the correction through
 the Advanced Color system pipeline. For an ordinary ICC profile, the loader
