@@ -40,6 +40,8 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 #meterIccStartDelay{max-width:120px}
 .meter-icc-progress-track{height:10px;border:1px solid var(--border);border-radius:5px;overflow:hidden;background:var(--surface-inset)}
 .meter-icc-progress-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+.meter-icc-progress-fill.indeterminate{width:35%;animation:meter-icc-progress-indeterminate 1.2s ease-in-out infinite;transition:none}
+@keyframes meter-icc-progress-indeterminate{0%{transform:translateX(-110%)}50%{transform:translateX(95%)}100%{transform:translateX(285%)}}
 .meter-icc-profile-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
 .meter-icc-profile-row:last-child{border-bottom:0}
 .meter-icc-profile-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}

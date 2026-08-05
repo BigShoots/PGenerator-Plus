@@ -782,7 +782,14 @@ def generate_preconditioned_patches(payload, output_dir):
     try:
         profile_path = os.path.join(temp_dir, "precondition.icc")
         precondition_payload = dict(payload)
-        precondition_payload["profile_quality"] = "medium"
+        # This profile is only a temporary device model for targen's patch
+        # distribution. It is never installed or returned to the user. A
+        # Medium matrix/shaper fit over a reusable 425-patch run can consume
+        # several minutes on a Pi 4 before any measurement progress appears.
+        # Low quality preserves the measured response needed for chart
+        # preconditioning while avoiding an unnecessarily expensive final-fit
+        # optimization. The requested quality is still used for the real ICC.
+        precondition_payload["profile_quality"] = "low"
         run_colprof(precondition_payload, ti3, profile_path, "matrix", "small")
         settings = dict(settings)
         settings["precondition_profile"] = "precondition.icc"

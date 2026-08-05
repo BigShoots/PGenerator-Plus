@@ -1403,8 +1403,12 @@ function meterIccSetProgress(label,current,total){
  const fill=document.getElementById('meterIccProgressFill');
  if(wrap) wrap.style.display='';
  if(labelEl) labelEl.textContent=label||'Measuring';
- if(count) count.textContent=Math.max(0,Number(current)||0)+' / '+Math.max(0,Number(total)||0);
- if(fill) fill.style.width=(total>0?Math.max(0,Math.min(100,100*current/total)):0)+'%';
+ const determinate=Number(total)>0;
+ if(count) count.textContent=determinate?(Math.max(0,Number(current)||0)+' / '+Math.max(0,Number(total)||0)):'Working...';
+ if(fill){
+  fill.classList.toggle('indeterminate',!determinate);
+  fill.style.width=determinate?(Math.max(0,Math.min(100,100*current/total))+'%'):'';
+ }
 }
 
 function meterIccSetRunning(running){
@@ -1530,8 +1534,8 @@ async function meterIccStart(){
   let usedPreviousPreRead=false;
   let stage=usePreRead?'precondition':'profile';
   if(usePreRead&&previousReadings.length){
-   if(status) status.textContent='Generating the display-aware patch set to compare with previous measurements...';
-   meterIccSetProgress('Checking reusable patches',0,patchSettings.patch_count);
+   if(status) status.textContent='Building a temporary display model from '+previousReadings.length+' saved measurements. This CPU-only step may take a minute on Pi 4; measurement begins when it finishes.';
+   meterIccSetProgress('Building display model for patch reuse',0,0);
    try{
     const candidateSteps=meterIccStampReuseSignature(await meterIccGeneratePreconditionedSteps(previousReadings,baseRunConfig),reuseSignature);
     const matches=meterIccMatchReusableReadings(candidateSteps,previousReadings,reuseSignature);
