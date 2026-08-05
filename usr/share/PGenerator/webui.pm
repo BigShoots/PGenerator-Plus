@@ -459,12 +459,39 @@ my $_dtype_info={
  "qdoled"       => ["c","QD-OLED_Generic.ccss"],
  "amoled"       => ["l",""],
  "lcd_wled"     => ["l","WLEDFamily_07Feb11.ccss"],
+ "lcd_wled_ips" => ["l","WLEDFamily_07Feb11.ccss"],
+ "lcd_wled_pva" => ["l","WLEDFamily_07Feb11.ccss"],
+ "lcd_wled_tft" => ["l","WLEDFamily_07Feb11.ccss"],
  "lcd_ccfl"     => ["l","CCFLFamily_07Feb11.ccss"],
+ "lcd_ccfl_ips" => ["l","CCFLFamily_07Feb11.ccss"],
+ "lcd_ccfl_pva" => ["l","CCFLFamily_07Feb11.ccss"],
+ "lcd_ccfl_tft" => ["l","CCFLFamily_07Feb11.ccss"],
  "lcd_wgccfl"   => ["l","WGCCFLFamily_07Feb11.ccss"],
+ "lcd_wgccfl_ips"=>["l","WGCCFLFamily_07Feb11.ccss"],
+ "lcd_wgccfl_pva"=>["l","WGCCFLFamily_07Feb11.ccss"],
+ "lcd_wgccfl_tft"=>["l","WGCCFLFamily_07Feb11.ccss"],
  "lcd_rgbled"   => ["l","RGBLEDFamily_07Feb11.ccss"],
+ "lcd_rgbled_ips"=>["l","RGBLEDFamily_07Feb11.ccss"],
+ "lcd_rgbled_pva"=>["l","RGBLEDFamily_07Feb11.ccss"],
+ "lcd_rgbled_tft"=>["l","RGBLEDFamily_07Feb11.ccss"],
+ "lcd_rgphosphor"=>["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_rgphosphor_ips"=>["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_rgphosphor_pva"=>["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_rgphosphor_tft"=>["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_pfsphosphor"=>["l","PFS_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_pfsphosphor_ips"=>["l","PFS_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_pfsphosphor_pva"=>["l","PFS_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_pfsphosphor_tft"=>["l","PFS_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
  "lcd_gbled"    => ["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_gbled_ips"=> ["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_gbled_pva"=> ["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
+ "lcd_gbled_tft"=> ["l","RG_Phosphor_-_Konica_Minolta_CS-1000_5nm.ccss"],
  "plasma"       => ["c","PlasmaFamily_20Jul12.ccss"],
  "projector_ccss"=>["p","ProjectorFamily_07Feb11.ccss"],
+ "projector_rgb"=> ["p",""],
+ "projector_rgbw"=>["p",""],
+ "projector_rgbcmy"=>["p",""],
+ "unknown"      => ["l",""],
  "crt"          => ["c","CRT.ccss"],
  "l"            => ["l",""],
  "c"            => ["c",""],
@@ -476,10 +503,33 @@ my $_ccxxmake_disptech_map={
  "refresh"        => "c",
  "lcd"            => "l",
  "lcd_wled"       => "e",
- "lcd_ccfl"       => "l",
+ "lcd_ccfl"       => "1",
+ "lcd_ccfl_ips"   => "2",
+ "lcd_ccfl_pva"   => "3",
+ "lcd_ccfl_tft"   => "4",
  "lcd_wgccfl"     => "L",
+ "lcd_wgccfl_ips" => "5",
+ "lcd_wgccfl_pva" => "6",
+ "lcd_wgccfl_tft" => "7",
  "lcd_rgbled"     => "b",
+ "lcd_rgbled_ips" => "f",
+ "lcd_rgbled_pva" => "g",
+ "lcd_rgbled_tft" => "j",
+ "lcd_rgphosphor" => "h",
+ "lcd_rgphosphor_ips" => "k",
+ "lcd_rgphosphor_pva" => "n",
+ "lcd_rgphosphor_tft" => "q",
+ "lcd_pfsphosphor" => "r",
+ "lcd_pfsphosphor_ips" => "s",
+ "lcd_pfsphosphor_pva" => "t",
+ "lcd_pfsphosphor_tft" => "v",
  "lcd_gbled"      => "i",
+ "lcd_gbled_ips"  => "x",
+ "lcd_gbled_pva"  => "y",
+ "lcd_gbled_tft"  => "z",
+ "lcd_wled_ips"   => "8",
+ "lcd_wled_pva"   => "9",
+ "lcd_wled_tft"   => "d",
  "oled"           => "o",
  "oled_generic"   => "w",
  "qdoled"         => "o",
@@ -487,6 +537,10 @@ my $_ccxxmake_disptech_map={
  "plasma"         => "m",
  "projector"      => "p",
  "projector_ccss" => "p",
+ "projector_rgb"  => "A",
+ "projector_rgbw" => "B",
+ "projector_rgbcmy"=>"C",
+ "unknown"        => "u",
  "crt"            => "c",
  "l"              => "l",
  "c"              => "c",
@@ -2153,9 +2207,9 @@ sub webui_meter_is_spyderx (@) {
 sub webui_spyderx_native_display_type (@) {
  my ($display_type_key)=@_;
  my $key=lc($display_type_key||"");
- return "e" if($key eq "lcd_wled");
- return "b" if($key eq "lcd_rgbled");
- return "i" if($key eq "lcd_gbled");
+ return "e" if($key=~/^lcd_wled(?:_|$)/);
+ return "b" if($key=~/^lcd_rgbled(?:_|$)/);
+ return "i" if($key=~/^lcd_gbled(?:_|$)/);
  # SpyderX has no native OLED, AMOLED, plasma, projector, CCFL or QD-OLED spectral
  # calibration. Its General mode is the least-assumptive native fallback.
  return "l";
@@ -13080,23 +13134,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div class="meter-card-header-col meter-card-header-col-display">
     <label class="meter-header-label">Display Type <span class="meter-help-tip" title="Panel technology used for calibration paths (OLED window size, WRGB compensation and pattern insertion defaults). Correction selection is controlled separately by Meter Profile." aria-label="Display type help">?</span></label>
-    <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile.">
-     <optgroup label="Generic" id="meterDtGeneric">
-      <option value="non_refresh">Non-refresh display</option>
-      <option value="refresh">Refresh display</option>
-      <option value="oled_generic">WRGB OLED</option>
-      <option value="qdoled">QD-OLED</option>
-      <option value="amoled">AMOLED</option>
-      <option value="lcd_wled">LCD - White LED</option>
-      <option value="lcd_rgbled">LCD - RGB LED</option>
-      <option value="lcd_gbled">LCD - GB-R LED</option>
-      <option value="lcd_ccfl">LCD - CCFL</option>
-      <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
-      <option value="plasma">Plasma</option>
-      <option value="projector_ccss">Projector</option>
-      <option value="crt">CRT</option>
-     </optgroup>
-   </select>
+    <select id="meterDisplayType" class="meter-card-header-select" title="Panel technology for calibration paths (OLED/LCD/WRGB, pattern defaults). Selecting a type resets Meter Profile (CCSS) to that technology's built-in profile."><option value="non_refresh">Non-refresh display</option><option value="refresh">Refresh display</option></select>
    </div>
    <div class="meter-card-header-col meter-card-header-col-profile" id="meterProfileHeaderCol">
     <div class="meter-ccss-profile-row field">
@@ -13859,19 +13897,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
       <div style="margin-bottom:12px">
        <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
-       <select id="meterCcssCreateDisplayType" onchange="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
-        <option value="oled_generic">WRGB OLED</option>
-        <option value="qdoled">QD-OLED</option>
-        <option value="amoled">AMOLED</option>
-        <option value="lcd_wled">LCD - White LED</option>
-        <option value="lcd_rgbled">LCD - RGB LED</option>
-        <option value="lcd_gbled">LCD - GB-R LED</option>
-        <option value="lcd_ccfl">LCD - CCFL</option>
-        <option value="lcd_wgccfl">LCD - Wide Gamut CCFL</option>
-        <option value="plasma">Plasma</option>
-        <option value="projector_ccss">Projector</option>
-        <option value="crt">CRT</option>
-       </select>
+       <select id="meterCcssCreateDisplayType" onchange="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box"></select>
        <div id="meterCcssCreateDisplayHelp" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45"></div>
       </div>
     <div id="meterCcssCreateReferenceSection" style="margin-bottom:12px">
@@ -18624,6 +18650,57 @@ let meterChromaticityLockedMode='';
 let meterActiveHcfrSessionId=null;
 let meterCcssCreateDisplayType='oled_generic';
 let meterExportFilenameBases={};
+
+// ArgyllCMS ccxxmake -t technologies. Labels intentionally omit redundant
+// umbrella prefixes: the backend still writes canonical values such as
+// "LED AMOLED" and "LCD White LED IPS" into CCSS/CCMX metadata.
+const METER_ARGYLL_DISPLAY_TECHNOLOGY_GROUPS=[
+ {label:'OLED and emissive',options:[
+  ['oled','OLED'],['qdoled','QD-OLED'],['amoled','AMOLED'],['oled_generic','WOLED'],
+  ['plasma','Plasma'],['crt','CRT']
+ ]},
+ {label:'LCD',options:[
+  ['lcd','LCD'],
+  ['lcd_ccfl','CCFL'],['lcd_ccfl_ips','CCFL IPS'],['lcd_ccfl_pva','CCFL PVA'],['lcd_ccfl_tft','CCFL TFT'],
+  ['lcd_wgccfl','Wide Gamut CCFL'],['lcd_wgccfl_ips','Wide Gamut CCFL IPS'],['lcd_wgccfl_pva','Wide Gamut CCFL PVA'],['lcd_wgccfl_tft','Wide Gamut CCFL TFT'],
+  ['lcd_wled','White LED'],['lcd_wled_ips','White LED IPS'],['lcd_wled_pva','White LED PVA'],['lcd_wled_tft','White LED TFT'],
+  ['lcd_rgbled','RGB LED'],['lcd_rgbled_ips','RGB LED IPS'],['lcd_rgbled_pva','RGB LED PVA'],['lcd_rgbled_tft','RGB LED TFT'],
+  ['lcd_rgphosphor','RG Phosphor'],['lcd_rgphosphor_ips','RG Phosphor IPS'],['lcd_rgphosphor_pva','RG Phosphor PVA'],['lcd_rgphosphor_tft','RG Phosphor TFT'],
+  ['lcd_pfsphosphor','PFS Phosphor'],['lcd_pfsphosphor_ips','PFS Phosphor IPS'],['lcd_pfsphosphor_pva','PFS Phosphor PVA'],['lcd_pfsphosphor_tft','PFS Phosphor TFT'],
+  ['lcd_gbled','GB-R Phosphor'],['lcd_gbled_ips','GB-R Phosphor IPS'],['lcd_gbled_pva','GB-R Phosphor PVA'],['lcd_gbled_tft','GB-R Phosphor TFT']
+ ]},
+ {label:'Projector',options:[
+  ['projector_ccss','DLP Projector'],['projector_rgb','DLP Projector, RGB Filter Wheel'],
+  ['projector_rgbw','DLP Projector, RGBW Filter Wheel'],['projector_rgbcmy','DLP Projector, RGBCMY Filter Wheel']
+ ]},
+ {label:'Other',options:[['unknown','Unknown']]}
+];
+
+function meterPopulateDisplayTechnologySelect(select,includeMeasurementModes){
+ if(!select) return;
+ const previous=String(select.value||'');
+ select.innerHTML='';
+ const addGroup=(label,options)=>{
+  const group=document.createElement('optgroup');
+  group.label=label;
+  options.forEach(([value,text])=>{
+   const option=document.createElement('option');
+   option.value=value;
+   option.textContent=text;
+   group.appendChild(option);
+  });
+  select.appendChild(group);
+ };
+ if(includeMeasurementModes) addGroup('Measurement mode',[
+  ['non_refresh','Non-refresh display'],['refresh','Refresh display']
+ ]);
+ METER_ARGYLL_DISPLAY_TECHNOLOGY_GROUPS.forEach(group=>addGroup(group.label,group.options));
+ const fallback=select.id==='meterCcssCreateDisplayType'?meterCcssCreateDisplayType:'oled_generic';
+ select.value=Array.from(select.options).some(option=>option.value===previous)?previous:fallback;
+}
+
+meterPopulateDisplayTechnologySelect(document.getElementById('meterDisplayType'),true);
+meterPopulateDisplayTechnologySelect(document.getElementById('meterCcssCreateDisplayType'),false);
 
 function meterSanitizeExportFilenameBase(value){
  let text=String(value==null?'':value).replace(/[<>:"/\\|?*\x00-\x1f]/g,' ').replace(/\s+/g,' ').trim();
@@ -24223,7 +24300,7 @@ const METER_HDR_DIFFUSE_WHITE_DEFAULT=92.2457;
 
 function meterDisplayTypeIsProjector(value){
  const current=String(value||((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
- if(current==='projector'||current==='projector_ccss') return true;
+ if(current==='projector'||current.startsWith('projector_')) return true;
  if(current.startsWith('ccss_')||current.startsWith('custom_')){
   const source=current.startsWith('custom_')?'custom':'system';
   const name=current.replace(/^(?:ccss|custom)_/,'');
@@ -26045,9 +26122,9 @@ function meterSelectedMeasurementIsSpyderX(){
 
 function meterSpyderXNativeModeLabel(){
  const tech=getDisplayTechnology();
- if(tech==='lcd_wled') return 'Standard LED';
- if(tech==='lcd_rgbled') return 'Wide Gamut LED';
- if(tech==='lcd_gbled') return 'GB-R LED';
+ if(tech.startsWith('lcd_wled')) return 'Standard LED';
+ if(tech.startsWith('lcd_rgbled')) return 'Wide Gamut LED';
+ if(tech.startsWith('lcd_gbled')) return 'GB-R LED';
  return 'General';
 }
 
@@ -26813,16 +26890,45 @@ function meterCcmxInstrumentName(meter){
 function meterCcmxTechnologyName(key){
  return {
   oled_generic:'LED WOLED',
-  qdoled:'OLED',
+  oled:'LED OLED',
+  qdoled:'LED OLED',
   amoled:'LED AMOLED',
-  lcd_wled:'LCD White LED',
-  lcd_rgbled:'LCD RGB LED',
-  lcd_gbled:'LCD GB-R LED',
+  lcd:'LCD',
   lcd_ccfl:'LCD CCFL',
-  lcd_wgccfl:'LCD Wide Gamut CCFL',
+  lcd_ccfl_ips:'LCD CCFL IPS',
+  lcd_ccfl_pva:'LCD CCFL PVA',
+  lcd_ccfl_tft:'LCD CCFL TFT',
+  lcd_wgccfl:'LCD CCFL Wide Gamut',
+  lcd_wgccfl_ips:'LCD CCFL Wide Gamut IPS',
+  lcd_wgccfl_pva:'LCD CCFL Wide Gamut PVA',
+  lcd_wgccfl_tft:'LCD CCFL Wide Gamut TFT',
+  lcd_wled:'LCD White LED',
+  lcd_wled_ips:'LCD White LED IPS',
+  lcd_wled_pva:'LCD White LED PVA',
+  lcd_wled_tft:'LCD White LED TFT',
+  lcd_rgbled:'LCD RGB LED',
+  lcd_rgbled_ips:'LCD RGB LED IPS',
+  lcd_rgbled_pva:'LCD RGB LED PVA',
+  lcd_rgbled_tft:'LCD RGB LED TFT',
+  lcd_rgphosphor:'LCD RG Phosphor',
+  lcd_rgphosphor_ips:'LCD RG Phosphor IPS',
+  lcd_rgphosphor_pva:'LCD RG Phosphor PVA',
+  lcd_rgphosphor_tft:'LCD RG Phosphor TFT',
+  lcd_pfsphosphor:'LCD PFS Phosphor',
+  lcd_pfsphosphor_ips:'LCD PFS Phosphor IPS',
+  lcd_pfsphosphor_pva:'LCD PFS Phosphor PVA',
+  lcd_pfsphosphor_tft:'LCD PFS Phosphor TFT',
+  lcd_gbled:'LCD GB-R Phosphor',
+  lcd_gbled_ips:'LCD GB-R Phosphor IPS',
+  lcd_gbled_pva:'LCD GB-R Phosphor PVA',
+  lcd_gbled_tft:'LCD GB-R Phosphor TFT',
   plasma:'Plasma',
-  projector_ccss:'Projector',
-  crt:'CRT'
+  projector_ccss:'DLP Projector',
+  projector_rgb:'DLP Projector RGB Filter Wheel',
+  projector_rgbw:'DLP Projector RGBW Filter Wheel',
+  projector_rgbcmy:'DLP Projector RGBCMY Filter Wheel',
+  crt:'CRT',
+  unknown:'Unknown'
  }[String(key||'')]||meterCcmxHeaderValue(key)||'Unknown';
 }
 
@@ -42485,9 +42591,9 @@ function meterAutoCalDisplayTypeUpdateSummary(){
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
  if(meterSelectedMeasurementIsSpyderX()){
   let nativeMode='General';
-  if(dst.value==='lcd_wled') nativeMode='Standard LED';
-  else if(dst.value==='lcd_rgbled') nativeMode='Wide Gamut LED';
-  else if(dst.value==='lcd_gbled') nativeMode='GB-R LED';
+  if(dst.value.startsWith('lcd_wled')) nativeMode='Standard LED';
+  else if(dst.value.startsWith('lcd_rgbled')) nativeMode='Wide Gamut LED';
+  else if(dst.value.startsWith('lcd_gbled')) nativeMode='GB-R LED';
   const profile=document.getElementById('meterAutoCalCcssProfile');
   const hasCcmx=profile&&/\.ccmx$/i.test(String(profile.value||''));
   summary+=' SpyderX will use its '+nativeMode+' native calibration'
@@ -52030,7 +52136,7 @@ function meterDisplayTypeMetaText(value){
 function meterDisplayTypePatchSizeDefault(value){
  const current=String(value||'').toLowerCase();
  if(current.startsWith('oled')||current.startsWith('qdoled')||current==='amoled') return '10';
- if(current==='non_refresh'||current==='refresh'||current==='lcd'||current.startsWith('lcd_')||current==='projector'||current==='projector_ccss') return '100';
+ if(current==='non_refresh'||current==='refresh'||current==='lcd'||current.startsWith('lcd_')||current==='projector'||current.startsWith('projector_')) return '100';
  if(current.startsWith('ccss_')||current.startsWith('custom_')){
   const meta=meterDisplayTypeMetaText(value);
   if(/\b(?:qd[-\s]*oled|wrgb[-\s]*oled|rgb[-\s]*oled|woled|amoled|oled)\b/i.test(meta)) return '10';
@@ -52401,8 +52507,18 @@ function ccssPrettyTechnology(text){
   .replace(/\bMini LED\b/gi,'Mini-LED')
   .replace(/\bGB R LED\b/gi,'GB-R LED')
   .replace(/\bRG Phosphor\b/gi,'RG Phosphor')
-  .replace(/\bPFS Phosphor\b/gi,'PFS Phosphor')
-  .replace(/\bLCD White LED IPS\b/gi,'W-LED IPS LCD');
+  .replace(/\bPFS Phosphor\b/gi,'PFS Phosphor');
+ tech=tech
+  .replace(/^LED AMOLED\b/i,'AMOLED')
+  .replace(/^LED WOLED\b/i,'WOLED')
+  .replace(/^LED OLED\b/i,'OLED')
+  .replace(/^LCD CCFL Wide Gamut\b/i,'Wide Gamut CCFL')
+  .replace(/^LCD CCFL\b/i,'CCFL')
+  .replace(/^LCD White LED\b/i,'White LED')
+  .replace(/^LCD RGB LED\b/i,'RGB LED')
+  .replace(/^LCD RG Phosphor\b/i,'RG Phosphor')
+  .replace(/^LCD PFS Phosphor\b/i,'PFS Phosphor')
+  .replace(/^LCD GB-R (?:LED|Phosphor)\b/i,'GB-R Phosphor');
  return tech;
 }
 
@@ -52903,17 +53019,23 @@ function meterTechnologyDefaultCcssLabel(){
  const tech=getDisplayTechnology();
  if(tech==='non_refresh') return 'raw non-refresh, no correction';
  if(tech==='refresh') return 'raw refresh, no correction';
- if(tech==='oled_generic') return 'WRGB OLED (built-in)';
+ if(tech==='oled') return 'OLED, no built-in correction';
+ if(tech==='oled_generic') return 'WOLED family (built-in)';
  if(tech==='qdoled') return 'QD-OLED (built-in)';
  if(tech==='amoled') return 'AMOLED, no built-in correction';
- if(tech==='lcd_wled') return 'W-LED family (built-in)';
- if(tech==='lcd_ccfl') return 'CCFL family (built-in)';
- if(tech==='lcd_wgccfl') return 'Wide gamut CCFL (built-in)';
- if(tech==='lcd_rgbled') return 'RGB LED family (built-in)';
- if(tech==='lcd_gbled') return 'GB-R LED (built-in)';
+ if(tech==='lcd') return 'LCD, no built-in correction';
+ if(tech.startsWith('lcd_wled')) return 'White LED family (built-in)';
+ if(tech.startsWith('lcd_ccfl')) return 'CCFL family (built-in)';
+ if(tech.startsWith('lcd_wgccfl')) return 'Wide gamut CCFL family (built-in)';
+ if(tech.startsWith('lcd_rgbled')) return 'RGB LED family (built-in)';
+ if(tech.startsWith('lcd_rgphosphor')) return 'RG phosphor (built-in)';
+ if(tech.startsWith('lcd_pfsphosphor')) return 'PFS phosphor (built-in)';
+ if(tech.startsWith('lcd_gbled')) return 'GB-R phosphor (built-in)';
  if(tech==='plasma') return 'Plasma (built-in)';
  if(tech==='projector_ccss') return 'Projector family (built-in)';
+ if(tech.startsWith('projector_')) return 'Projector, no built-in correction';
  if(tech==='crt') return 'CRT (built-in)';
+ if(tech==='unknown') return 'Unknown technology, no built-in correction';
  return 'technology default';
 }
 
