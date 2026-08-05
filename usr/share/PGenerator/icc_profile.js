@@ -84,7 +84,7 @@ function meterIccRestoreUiSettings(){
   set('meterIccQuality',saved.quality,['small','medium','large','custom']);
   set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
-  set('meterIccCompanionCorrectionMode',saved.companion_correction,['system','clut']);
+  set('meterIccCompanionCorrectionMode',saved.companion_correction,['system','clut','matrix']);
   set('meterIccStartDelay',saved.start_delay);
   const patch=saved.patch_settings;
   if(patch&&typeof patch==='object'){
@@ -844,7 +844,7 @@ function meterIccSyncUi(){
   ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size. Press F11 on the Companion computer to exit fullscreen.'
   :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
  if(calibrationCorrectionMode){
-  const calibrationMode=companionCorrectionMode==='clut'?'clut':'system';
+  const calibrationMode=['system','clut','matrix'].includes(companionCorrectionMode)?companionCorrectionMode:'system';
   if(calibrationCorrectionMode.value!==calibrationMode) calibrationCorrectionMode.value=calibrationMode;
  }
  const correctionNote=companionCorrectionMode==='system'
@@ -855,7 +855,9 @@ function meterIccSyncUi(){
  if(companionCorrectionNote) companionCorrectionNote.textContent=correctionNote;
  if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=companionCorrectionMode==='clut'
   ?'The Companion explicitly applies the active profile B2A cLUT, then submits the corrected patch through its native HDR swapchain.'
-  :'The Companion submits the unmodified patch through its native HDR swapchain and leaves profile handling to Windows.';
+  :(companionCorrectionMode==='matrix'
+   ?'The Companion explicitly applies the active profile matrix and tone curves, then submits the corrected patch through its native HDR swapchain.'
+   :'The Companion submits the unmodified patch through its native HDR swapchain and leaves profile handling to Windows.');
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -1036,7 +1038,8 @@ async function meterCalibrationPatternProviderChanged(){
 async function meterCalibrationPushCompanionCorrection(){
  const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionMode');
  const correction=document.getElementById('meterIccCompanionCorrectionMode');
- const mode=calibrationCorrection&&calibrationCorrection.value==='clut'?'clut':'system';
+ const requested=String((calibrationCorrection||{}).value||'system');
+ const mode=['system','clut','matrix'].includes(requested)?requested:'system';
  if(correction) correction.value=mode;
  meterIccSyncUi();
  return meterIccPushCompanionDisplaySettings(true);
@@ -1098,7 +1101,7 @@ async function meterIccRefreshCompanionStatus(){
    const transformMode=String(state.transform_mode||correctionMode);
    const transformReady=state.transform_ready!==false;
    const selectedDisplay=String(state.selected_display||'');
-   if(!meterIccCompanionSettingsPending&&['system','clut'].includes(correctionMode)){
+   if(!meterIccCompanionSettingsPending&&['system','clut','matrix'].includes(correctionMode)){
     const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
     const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
     if(workspaceMode) workspaceMode.value=correctionMode;

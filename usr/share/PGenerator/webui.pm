@@ -13124,12 +13124,13 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling or application cLUT correction in the ICC Companion">
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, application cLUT correction, or matrix/TRC fallback in the ICC Companion">
         <option value="system">Windows profile handling</option>
         <option value="clut">Active profile cLUT in Companion</option>
+        <option value="matrix">Active profile matrix/TRC fallback</option>
        </select>
       </div>
-      <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile B2A cLUT.</div>
+      <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile cLUT or matrix/TRC fallback.</div>
       <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">KDE/Linux</button></div>
      </div></span>
     </div>
