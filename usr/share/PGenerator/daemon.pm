@@ -636,6 +636,13 @@ sub legacy_external_set_client_name (@) {
  return $software;
 }
 
+sub legacy_external_client_name_from_text (@) {
+ my $connection=shift;
+ my $text=shift || "";
+ return "" if($text !~/^\s*(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*?)\s*$/i);
+ return &legacy_external_set_client_name($connection,$1);
+}
+
 sub legacy_external_mark_hcfr (@) {
  my $connection=shift;
  $hcfr_client{$connection}=1;
@@ -2406,7 +2413,10 @@ sub pattern_daemon {
     # Optional classic-protocol client identity. This lets a port 85 client
     # advertise its product name in the WebUI status bar without changing
     # the behavior of clients that do not send an identity command.
-    # CLIENTNAME:PerceptualPro (CLIENT_NAME/SOFTWARE and '=' are aliases)
+    # CLIENTNAME:PerceptualPro (CLIENT_NAME/SOFTWARE and '=' are aliases).
+    # Clients that must also support PGenerator 1.6 can instead put the same
+    # marker in the optional TEXT field of a normal RGB=RECTANGLE command;
+    # 1.6 accepts and ignores rectangle text while PGenerator+ reads the name.
     #
     if($key=~/^(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*)$/i) {
      my $software=&legacy_external_set_client_name($connection,$1);
@@ -2617,6 +2627,7 @@ sub pattern_daemon {
     #
     if($key=~/$rgb_triplet_command=(.*)/) {
       my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
+      &legacy_external_client_name_from_text($connection,$text);
       my $hcfr_marker_only=&legacy_external_detect_hcfr_rgb($draw,$text);
       my $hcfr_marker_text=($hcfr_marker_only && uc($draw || "") eq "TEXT") ? 1 : 0;
       my $source_range="";

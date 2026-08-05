@@ -442,18 +442,28 @@ FRAME=1
 
 The C/C++ binary (`PGeneratord`) reads this file and renders directly to the display via the Pi's GPU.
 
-Classic TCP clients on port `85` may identify themselves with
-`CLIENTNAME:PerceptualPro` followed by the normal command terminator (`0x02 0x0d`).
-`CLIENT_NAME` and `SOFTWARE` are accepted aliases, and `=` may be used instead
-of `:`. The advertised name appears in the PGenerator+ status bar while that
-socket is connected. Names are limited to 64 safe display characters.
+Standard Dolby Vision remains wire-compatible with PGenerator 1.6 on port
+`85`. Clients send the same ordinary 8-bit `RGB`, `TESTPATTERN`, or
+`TESTTEMPLATE` request they send to 1.6. PGenerator+ performs the 8-bit to
+12-bit Dolby source conversion internally while preserving the 8-bit HDMI
+tunnel. Clients must not send the internal `SOURCE_MAX` operations-file field.
+Existing `10bit` declarations are also accepted and retain their added source
+precision, but they are not required for 1.6-compatible operation.
 
-In standard Dolby Vision mode, the port `85` `RGB`, `TESTPATTERN`, and
-`TESTTEMPLATE` paths preserve the 8-bit HDMI tunnel while expanding declared
-8-bit or 10-bit source values into the renderer's 12-bit source domain. A
-`10bit` or `12bit` draw suffix, or the `TESTTEMPLATE` bits field, declares a
-higher-precision source. Existing commands without a declaration remain
-8-bit source commands.
+A client that supports both versions can advertise its name without detecting
+the PGenerator version by using the existing optional TEXT field of a normal
+rectangle request:
+
+```
+RGB=RECTANGLE;500,500;0;235,235,235;16,16,16;50,50;CLIENTNAME=PerceptualPro
+```
+
+PGenerator 1.6 accepts and ignores the TEXT field for a rectangle. PGenerator+
+shows the sanitized name in its status bar while the socket is connected. A
+PGenerator+-only client may alternatively send `CLIENTNAME:PerceptualPro` as a
+standalone command. `CLIENT_NAME` and `SOFTWARE` are accepted aliases, `=` may
+replace `:`, names are limited to 64 safe display characters, and commands use
+the normal `0x02 0x0d` terminator.
 
 ### Privilege Separation
 
