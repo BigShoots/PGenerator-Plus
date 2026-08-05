@@ -276,6 +276,18 @@ def linear_to_srgb(value):
     return 1.055 * (value ** (1.0 / 2.4)) - 0.055
 
 
+def pq_to_nits(value):
+    """Decode a normalized ST.2084 signal value into absolute cd/m2."""
+    value = max(0.0, min(1.0, value))
+    m1 = 2610.0 / 16384.0
+    m2 = 2523.0 / 32.0
+    c1 = 3424.0 / 4096.0
+    c2 = 2413.0 / 128.0
+    c3 = 2392.0 / 128.0
+    power = value ** (1.0 / m2)
+    return 10000.0 * (max(power - c1, 0.0) / max(c2 - c3 * power, 1e-12)) ** (1.0 / m1)
+
+
 def target_transfer_to_linear(value, transfer, black_ratio=0.0):
     value = max(0.0, min(1.0, value))
     black_ratio = max(0.0, min(0.999, black_ratio))
@@ -423,6 +435,48 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
     return luts
 
 
+def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment):
+    """Invert the measured neutral response in the post-PQ MHC2 stage.
+
+    Windows applies the MHC2 matrix in linear XYZ, encodes the active HDR wire
+    transfer function, then evaluates these per-channel adjustment tables. The
+    table input is therefore a PQ code, while the measured response is relative
+    to the panel's black-to-peak range. Mapping absolute PQ luminance into that
+    measured range corrects both channel balance and a display-side roll-off or
+    plateau without applying PQ a second time.
+    """
+    channel_samples = neutral_channel_samples(rows, black, primaries)
+    black_nits = max(0.0, black["xyz"][1])
+    peak_nits = max(white["xyz"][1], black_nits + 0.0001)
+    span = peak_nits - black_nits
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+        fail("HDR MHC2 calibration matrix has an invalid neutral response")
+    luts = []
+    for channel in range(3):
+        values = []
+        previous = 0.0
+        # A raw peak-white correction cannot request more than the measured
+        # maximum of any physical channel. Hold every channel at the same
+        # corrected-white luminance once the largest matrix gain reaches that
+        # limit. This preserves the calibrated white point instead of letting
+        # all three curves eventually saturate to the uncorrected native white.
+        channel_limit = neutral_gains[channel] / maximum_gain
+        for index in range(entries):
+            encoded = index / float(entries - 1)
+            target = max(0.0, min(1.0, (pq_to_nits(encoded) - black_nits) / span))
+            target = min(target, channel_limit)
+            value = invert_channel_response(channel_samples[channel], target)
+            previous = max(previous, max(0.0, min(1.0, value)))
+            values.append(previous)
+        values[0] = 0.0
+        values[-1] = max(values[-2], values[-1])
+        luts.append(values)
+    return luts
+
+
 def mhc2_wire_matrix(profile_type):
     if profile_type == "windows-hdr":
         return xy_matrix(((0.708, 0.292), (0.170, 0.797), (0.131, 0.046)), (0.3127, 0.3290))
@@ -434,17 +488,22 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     wire = mhc2_wire_matrix(profile_type)
     adjustment = mat_mul(wire, mat_inv(physical))
     calibrated_peak = max(white["xyz"][1], black["xyz"][1] + 0.0001)
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
     if profile_type == "windows-sdr":
         # A white-point correction that asks any channel for more than 1.0
         # clips before reaching the requested chromaticity. Apply a uniform
         # matrix scale so corrected neutral white remains inside RGB range.
-        rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
-        neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
         maximum_gain = max(neutral_gains)
         if maximum_gain > 1.0:
             matrix_scale = 1.0 / maximum_gain
             adjustment = [[value * matrix_scale for value in row] for row in adjustment]
             calibrated_peak = black["xyz"][1] + matrix_scale * (white["xyz"][1] - black["xyz"][1])
+    else:
+        maximum_gain = max(neutral_gains)
+        if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+            fail("HDR MHC2 calibration matrix has an invalid neutral response")
+        calibrated_peak = black["xyz"][1] + (white["xyz"][1] - black["xyz"][1]) / maximum_gain
     entries = 256
     header_size = 36
     matrix_offset = header_size
@@ -462,13 +521,13 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
         for value in (row[0], row[1], row[2], 0.0):
             data.extend(s15fixed16(value))
     # MHC2 curves operate after Windows applies the wire transfer function.
-    # HDR keeps identity curves so PQ is not applied twice. SDR inverts each
-    # measured channel ramp so the resulting scanout follows the sRGB wire
-    # response while the matrix corrects primaries and white point.
+    # They contain only the measured post-transfer adjustment, never the wire
+    # transfer function itself. Both HDR and SDR invert the measured channel
+    # ramps while the matrix corrects primaries and white point.
     if profile_type == "windows-sdr":
         luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
     else:
-        luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
+        luts = windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment)
     for values in luts:
         data.extend(b"sf32" + b"\0\0\0\0")
         for value in values:
@@ -587,8 +646,6 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         abs(value - index / float(entries - 1)) <= 1.5 / 65536.0
         for curve in curves for index, value in enumerate(curve)
     )
-    if profile_type == "windows-hdr" and not curves_identity:
-        fail("HDR MHC2 curves must remain identity so PQ is applied once")
     return {
         "status": "passed",
         "tag_version": "MHC2",
@@ -965,7 +1022,12 @@ def build(payload, output_dir):
         mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
         # SDR uses the measured profiling white. HDR uses a dedicated metadata
         # white measured with the user's selected window or APL patch geometry.
-        luminance = metadata_white_rows[0]["xyz"][1] if metadata_white_rows else calibrated_white
+        if metadata_white_rows and profile_type == "windows-hdr":
+            raw_profile_peak = max(white["xyz"][1], black["xyz"][1] + 0.0001)
+            calibration_scale = (calibrated_white - black["xyz"][1]) / (raw_profile_peak - black["xyz"][1])
+            luminance = black["xyz"][1] + calibration_scale * (metadata_white_rows[0]["xyz"][1] - black["xyz"][1])
+        else:
+            luminance = metadata_white_rows[0]["xyz"][1] if metadata_white_rows else calibrated_white
         profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
         mhc2_validation = validate_mhc2_profile(
             profile, mhc2, measured_primary_matrix(black, white, primaries),
@@ -980,7 +1042,7 @@ def build(payload, output_dir):
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
     if mhc2_validation:
         validation["mhc2"] = mhc2_validation
-        validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check also verifies the correction tag structure, matrix direction, luminance metadata and HDR identity curves."
+        validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check also verifies the correction tag structure, matrix direction, adjustment curves and luminance metadata."
     write_json_atomic(output_path + ".validation.json", validation)
     # Keep the merged characterization readings with the finished profile.
     # The WebUI can then offer them for a later, larger patch set even after a
