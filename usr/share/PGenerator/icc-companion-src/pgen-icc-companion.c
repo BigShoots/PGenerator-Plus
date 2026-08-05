@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.20"
+#define APP_VERSION "1.3.19"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1680,8 +1680,8 @@ static bool windows_set_borderless_windowed(bool fullscreen)
          * the measurement target effectively fullscreen. */
         if (!SDL_SetWindowBordered(app.window, false) ||
             !SDL_SetWindowResizable(app.window, false) ||
-            !SDL_SetWindowPosition(app.window, bounds.x + 1, bounds.y + 1) ||
-            !SDL_SetWindowSize(app.window, bounds.w - 2, bounds.h - 2) ||
+            !SDL_SetWindowPosition(app.window, bounds.x + 8, bounds.y + 8) ||
+            !SDL_SetWindowSize(app.window, bounds.w - 16, bounds.h - 16) ||
             !SDL_SyncWindow(app.window)) return false;
     } else if (app.windowed_geometry_valid) {
         if (!SDL_SetWindowBordered(app.window, true) ||
