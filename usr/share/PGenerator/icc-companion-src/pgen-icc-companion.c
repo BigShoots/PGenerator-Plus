@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.17"
+#define APP_VERSION "1.3.16"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -106,9 +106,6 @@ typedef struct {
     char correction_profile[192];
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
-    LONG_PTR windowed_style;
-    RECT windowed_rect;
-    bool windowed_placement_valid;
     ID3D11Device *hdr_device;
     ID3D11DeviceContext *hdr_context;
     ID3D11DeviceContext1 *hdr_context1;
@@ -1658,66 +1655,9 @@ static bool render_current_frame(void)
                         app.displayed_r, app.displayed_g, app.displayed_b);
 }
 
-#ifdef _WIN32
-static bool windows_set_borderless_fullscreen(bool fullscreen)
-{
-    HWND window = (HWND)SDL_GetPointerProperty(
-        SDL_GetWindowProperties(app.window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    if (!window) {
-        SDL_SetError("Could not get the Windows patch-window handle");
-        return false;
-    }
-    if (fullscreen) {
-        MONITORINFO monitor_info;
-        HMONITOR monitor;
-        LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-        if (!app.windowed_placement_valid) {
-            if (!GetWindowRect(window, &app.windowed_rect)) {
-                SDL_SetError("Could not save the patch-window position");
-                return false;
-            }
-            app.windowed_style = style;
-            app.windowed_placement_valid = true;
-        }
-        monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-        SDL_zero(monitor_info);
-        monitor_info.cbSize = sizeof(monitor_info);
-        if (!monitor || !GetMonitorInfoW(monitor, &monitor_info)) {
-            SDL_SetError("Could not get the selected display bounds");
-            return false;
-        }
-        SetWindowLongPtrW(window, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
-        if (!SetWindowPos(window, HWND_TOP,
-                          monitor_info.rcMonitor.left,
-                          monitor_info.rcMonitor.top,
-                          monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
-                          monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
-                          SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)) {
-            SDL_SetError("Could not enter native borderless fullscreen");
-            return false;
-        }
-    } else if (app.windowed_placement_valid) {
-        SetWindowLongPtrW(window, GWL_STYLE, app.windowed_style);
-        if (!SetWindowPos(window, HWND_NOTOPMOST,
-                          app.windowed_rect.left,
-                          app.windowed_rect.top,
-                          app.windowed_rect.right - app.windowed_rect.left,
-                          app.windowed_rect.bottom - app.windowed_rect.top,
-                          SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)) {
-            SDL_SetError("Could not restore the patch window");
-            return false;
-        }
-        app.windowed_placement_valid = false;
-    }
-    app.fullscreen = fullscreen;
-    return true;
-}
-#endif
-
 static void raise_pattern_window(void)
 {
-    SDL_SetWindowAlwaysOnTop(app.window, false);
+    SDL_SetWindowAlwaysOnTop(app.window, app.fullscreen);
     SDL_ShowWindow(app.window);
     SDL_RaiseWindow(app.window);
 #ifdef _WIN32
@@ -1727,7 +1667,7 @@ static void raise_pattern_window(void)
             SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         if (window) {
             ShowWindow(window, SW_SHOW);
-            SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             BringWindowToTop(window);
             SetForegroundWindow(window);
@@ -1738,14 +1678,8 @@ static void raise_pattern_window(void)
 
 static bool apply_display_settings(bool fullscreen, int patch_size)
 {
-#ifndef _WIN32
     SDL_WindowFlags flags;
-#endif
     if (patch_size < 1 || patch_size > 198) patch_size = 100;
-#ifdef _WIN32
-    if (app.fullscreen != fullscreen &&
-        !windows_set_borderless_fullscreen(fullscreen)) return false;
-#else
     flags = SDL_GetWindowFlags(app.window);
     app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
     if (app.fullscreen != fullscreen) {
@@ -1757,7 +1691,6 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
         if (!SDL_SetWindowFullscreen(app.window, fullscreen)) return false;
         app.fullscreen = fullscreen;
     }
-#endif
     app.displayed_size = patch_size;
     raise_pattern_window();
     return render_current_frame();
@@ -2146,12 +2079,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     if (event->type == SDL_EVENT_KEY_DOWN) {
         if (event->key.key == SDLK_ESCAPE) return SDL_APP_SUCCESS;
         if (event->key.key == SDLK_F11) {
-#ifdef _WIN32
-            bool fullscreen = !state->fullscreen;
-#else
             SDL_WindowFlags flags = SDL_GetWindowFlags(state->window);
             bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) == 0;
-#endif
             apply_display_settings(fullscreen, state->displayed_size);
         }
     }
