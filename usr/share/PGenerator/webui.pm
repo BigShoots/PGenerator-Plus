@@ -5408,31 +5408,13 @@ sub webui_meter_lg_autocal_start (@) {
   return '{"status":"error","message":"LG Auto Cal is already running"}';
  }
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
- # Final server-side power gate immediately before any meter/session teardown
- # or worker launch. The browser's LG status is only a pairing snapshot and
- # can still say "connected" after the panel has entered standby. Use the
- # fresh CEC-backed LG status here so direct API callers and stale browser
- # tabs cannot launch AutoCal unless the display is definitely on.
- if(defined(&lg_cec_status)) {
-  my $tv_status=eval { &lg_cec_status() };
-  if(ref($tv_status) eq "HASH") {
-   my $power=lc($tv_status->{"tv_power"}||"");
-   $power=~s/^\s+|\s+$//g;
-   if($power eq "standby" || $power eq "off" || $power eq "powering-off") {
-    return '{"status":"error","message":"LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."}';
-   }
-   if($power eq "powering-on") {
-    return '{"status":"error","message":"LG TV is still starting. Wait until it is fully on before Auto Cal."}';
-   }
-   if($power ne "on") {
-    return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
-   }
-  } else {
-   return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
-  }
- } else {
-  return '{"status":"error","message":"Unable to verify LG TV power before Auto Cal."}';
- }
+ # CEC power is advisory: valid WebOS sessions can coexist with unknown or
+ # stale CEC state, so nothing here refuses a launch on a CEC reading.
+ # Consequence worth stating plainly: the teardown below and the worker launch
+ # now happen before anything has established the panel is reachable. The
+ # worker's initial picture-settings read is the reachability authority, so an
+ # unreachable TV costs the meter session first and reports the failure a few
+ # minutes later, rather than failing at this boundary.
  &webui_meter_stop();
  # Drop any stale stop file before launch. A root-owned leftover in sticky
  # /tmp cannot be unlinked by the pgenerator webui user, and the worker
@@ -5772,6 +5754,60 @@ sub webui_meter_lg_3d_autocal_same_run_running (@) {
  return 0;
 }
 
+# A completed Full AutoCal stage is a one-shot operation.  Its start handler
+# calls webui_meter_stop() before launching the worker, so replaying an old
+# greyscale completion is not harmless: it cancels any post-cal report series
+# currently using the meter and can upload another LUT to the TV.  Keep the
+# matching predicates pure so the safety contract is directly testable.
+sub webui_meter_lg_3d_autocal_completed_state_matches (@) {
+ my ($state,$run)=@_;
+ return 0 if(ref($state) ne "HASH" || !defined($run) || $run eq "");
+ return 0 if(lc($state->{"status"}||"") ne "complete" || !$state->{"upload_verified"});
+ my @runs=grep { defined($_) && !ref($_) && $_ ne "" } ($state->{"full_autocal_run_id"},$state->{"run_id"});
+ return scalar(grep { $_ eq $run } @runs) ? 1 : 0;
+}
+
+sub webui_meter_lg_3d_autocal_completed_report_matches (@) {
+ my ($archive,$run)=@_;
+ return 0 if(ref($archive) ne "HASH" || !defined($run) || $run eq "");
+ my $report=(ref($archive->{"report"}) eq "HASH") ? $archive->{"report"} : {};
+ my $archive_run=$archive->{"run_id"} || $report->{"run_id"} || "";
+ return 0 if(ref($archive_run) || $archive_run ne $run);
+ my $completion=(ref($report->{"completion_status"}) eq "HASH") ? $report->{"completion_status"} : {};
+ return 0 if(lc($completion->{"status"}||"") ne "complete");
+ return ($completion->{"full_workflow"} || $completion->{"full_autocal"}) ? 1 : 0;
+}
+
+sub webui_meter_lg_3d_autocal_full_run_already_complete (@) {
+ my ($body)=@_;
+ my $payload=eval { require JSON::PP; JSON::PP::decode_json($body||""); };
+ return 0 if(ref($payload) ne "HASH" || !$payload->{"full_workflow"});
+ my $run=$payload->{"full_autocal_run_id"} || $payload->{"run_id"} || "";
+ return 0 if(ref($run) || $run!~/\A[A-Za-z0-9._-]{1,200}\z/);
+
+ # Before /api/lg/autocal/run/end strips the workflow metadata, the terminal
+ # worker state is the quickest receipt and also protects the touch-up gap.
+ if(-f $_meter_lg_3d_autocal_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
+  my $state=eval { JSON::PP::decode_json($json||""); };
+  return 1 if(&webui_meter_lg_3d_autocal_completed_state_matches($state,$run));
+ }
+
+ # The report archive survives that metadata cleanup and is atomically
+ # replaced throughout the optional post-cal reads.  completion_status stays
+ # present in every later archive stage, making it the durable replay guard.
+ foreach my $dir ("/var/lib/PGenerator/reports/full-autocal","/tmp/PGenerator_full_autocal_reports") {
+  my $file="$dir/$run.json";
+  next if(!-f $file);
+  my $json="";
+  if(open(my $fh,"<",$file)) { local $/; $json=<$fh>; close($fh); }
+  my $archive=eval { JSON::PP::decode_json($json||""); };
+  return 1 if(&webui_meter_lg_3d_autocal_completed_report_matches($archive,$run));
+ }
+ return 0;
+}
+
 sub webui_meter_lg_3d_autocal_mark_cancelled (@) {
  return unless(-f $_meter_lg_3d_autocal_file);
  my $json="";
@@ -5811,6 +5847,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ # Reject a stale browser's same-run replay before webui_meter_stop() can
+ # cancel an active report series or the worker can write the panel again.
+ return '{"status":"error","message":"This Full AutoCal run has already completed its 3D LUT stage","already_complete":true}'
+  if(&webui_meter_lg_3d_autocal_full_run_already_complete($body));
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
@@ -37979,7 +38019,7 @@ async function meterAutoCalLoadClipControls(){
  const r=await fetchJSON('/api/lg/picture-settings',{
   method:'POST',
   headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({keys:['pictureMode','brightness','contrast'],picture_mode:meterLgPictureModeValue()}),
+  body:JSON.stringify({keys:['pictureMode','brightness','contrast'],picture_mode:meterLgPictureModeValue(),helper_timeout:8}),
   _quiet:true,
   _timeoutMs:10000
  });
@@ -39959,9 +39999,15 @@ function meterFullAutoCalMergeCleanupConfigFromStatus(status){
 }
 
 function meterFullAutoCalEnsureStatusPhase(status,phase){
- if(meterFullAutoCalRunning&&meterFullAutoCalPhase===phase) return true;
- if(status&&status.full_workflow&&!meterFullAutoCalStatusMatchesRun(status)) return false;
+ // A saved browser phase is not authority. A stale tab/device can retain
+ // first-greyscale long after the backend has advanced or cleared the run;
+ // trusting it here replayed that completed result and launched another 3D
+ // LUT while the real session was measuring its post-cal report.
+ const currentPhase=String(meterFullAutoCalPhase||'');
+ if(currentPhase==='precal-report'||currentPhase==='postcal-report') return false;
  if(!(status&&status.full_workflow&&meterFullAutoCalStatusPhase(status)===phase)) return false;
+ if(!meterFullAutoCalStatusMatchesRun(status)) return false;
+ if(meterFullAutoCalRunning&&currentPhase===phase) return true;
  // Never re-adopt a terminal full-workflow status from a fresh browser
  // (Stop + refresh left status=complete + full_workflow on the 3D file and
  // this would open the Generate Post-Cal Report popup). Mid-session
@@ -40726,7 +40772,6 @@ async function meterStartFullAutoCal(){
  if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterFullAutoCalAvailable()){toast('Connect an LG TV before starting Full Auto Cal',true);return;}
- if(!(await meterEnsureLgTvReadyForAutoCal('Full Auto Cal'))) return;
  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal'))) return;
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
@@ -40879,7 +40924,7 @@ async function meterStartFullAutoCal(){
 }
 
 async function meterFullAutoCalStart3d(firstStatus){
- if(!meterFullAutoCalRunning) return;
+ if(!meterFullAutoCalRunning||meterFullAutoCalPhase!=='first-greyscale') return false;
  meterFullAutoCalResults.first=firstStatus||null;
  const firstRunId=firstStatus&&(firstStatus.full_autocal_run_id||firstStatus.run_id);
  if(firstRunId) meterFullAutoCalRunId=firstRunId;
@@ -41023,7 +41068,7 @@ async function meterFullAutoCalAdvancePastGreyscale(status){
 // meterStartFullAutoCal before greyscale started) and stays Relative through
 // this stage.
 async function meterDvAutoCalStartProfile(firstStatus){
- if(!meterFullAutoCalRunning) return;
+ if(!meterFullAutoCalRunning||meterFullAutoCalPhase!=='first-greyscale') return false;
  meterFullAutoCalResults.first=firstStatus||null;
  const firstRunId=firstStatus&&(firstStatus.full_autocal_run_id||firstStatus.run_id);
  if(firstRunId) meterFullAutoCalRunId=firstRunId;
@@ -41856,38 +41901,6 @@ async function meterAutoCalBackendRecoveryWatchdog(){
  }
 }
 
-// Confirm the display is actually awake before entering the AutoCal wizard or
-// launching its worker. LG's `connected` flag means a saved WebOS pairing is
-// available; it is not a live power check and remains true while the TV is in
-// standby. AutoCal requires a definite CEC `on` state. Retry transient unknown
-// readings briefly, then fail closed; the server and worker repeat the gate at
-// the launch boundary.
-async function meterEnsureLgTvReadyForAutoCal(label){
- let status=null;
- let power='';
- for(let attempt=0;attempt<3;attempt++){
-  try{
-   status=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:5000});
-  }catch(e){ status=null; }
-  power=String((status&&status.tv_power)||'').trim().toLowerCase();
-  if(power==='on'||power==='standby'||power==='off'||power==='powering-off'||power==='powering-on') break;
-  if(attempt<2) await new Promise(resolve=>setTimeout(resolve,1000));
- }
- if(power==='standby'||power==='off'||power==='powering-off'){
-  toast('LG TV is powered off. Turn it on and wait for it to finish starting before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power==='powering-on'){
-  toast('LG TV is still starting. Wait until it is fully on before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power!=='on'){
-  toast('Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try '+(label||'Auto Cal')+' again.',true);
-  return false;
- }
- return true;
-}
-
 async function meterAutoCalInitialRecoveryPoll(){
  if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
@@ -41922,7 +41935,14 @@ async function meterStartAutoCal(options){
   meterSetActiveSeriesChartContext();
  }
 	 if(!meterAutoCalAvailable()) return fail(fullWorkflow?'Connect an LG TV before starting Full Auto Cal':'Connect an LG TV and select Greyscale LG 26pt AutoCal first');
-	 if(!(await meterEnsureLgTvReadyForAutoCal(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
+	 // CEC stays available as status and manual control, but no longer gates
+	 // launch. Be clear about what that leaves, because it is easy to misread
+	 // the calls below as checks: meterAutoCalAvailable() above is a pairing
+	 // snapshot rather than a liveness test, and both transport preflights
+	 // below have been unconditional `return true` since 2026-06-13. So the
+	 // browser no longer verifies the panel is awake at all. The worker's
+	 // initial picture-settings read is the only reachability authority, and
+	 // it surfaces failure minutes in -- after the meter session is torn down.
 	 meterAutoCalWizardContextActive=true;
 	 if(!(await meterEnsureLgAutoCalTransport(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
 	 if(!meterEnsureLgAutoCalExtendedVideoTransport()) return fail('');
@@ -43862,6 +43882,22 @@ refresh_rate:getMeterRefreshRate()||undefined,
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r&&r.message)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
+   }
+   if(r&&r.already_complete){
+    // A stale browser tried to replay a terminal Full AutoCal stage. The
+    // server rejected it before touching the shared meter or TV; retire only
+    // this browser's stale workflow state and do not run the normal retry /
+    // abort path (which would send CAL_END and /autocal/run/end itself).
+    meterLg3dAutoCalRunning=false;
+    meterActionPending=false;
+    meterHideWorkflowProgress();
+    if(meterLg3dAutoCalSpectroSetupActive){
+     meterLg3dAutoCalSpectroSetupActive=false;
+     meterSpectroSetupApply(null);
+    }
+    if(fullWorkflow) meterFullAutoCalResetState(true);
+    toast(r.message||'This Full AutoCal 3D LUT stage is already complete');
+    return 'already-complete';
    }
    if(!r||r.status!=='started'){
     // The start handler always spawns the worker before returning 'started',

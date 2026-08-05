@@ -274,30 +274,6 @@ sub api_json {
  return { status=>"error", message=>"Invalid Web UI API response" };
 }
 
-# Worker-side launch boundary check. The WebUI performs the same check before
-# opening the wizard, but the TV can power off later or a caller can start the
-# endpoint directly. Require a definite CEC `on` result before resets,
-# calibration mode, pattern output, or meter reads begin.
-sub verify_lg_tv_power_for_autocal {
- my ($state)=@_;
- if(ref($state) eq "HASH") {
-  $state->{"phase"}="preparing";
-  $state->{"current_name"}="Verifying LG TV power";
-  $state->{"message"}="Checking that the LG TV is powered on";
-  write_state($state);
- }
- my $status=api_json("GET","/api/lg/status",undef,10);
- my $power=(ref($status) eq "HASH") ? lc($status->{"tv_power"}||"") : "";
- $power=~s/^\s+|\s+$//g;
- return "LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."
-  if($power eq "standby" || $power eq "off" || $power eq "powering-off");
- return "LG TV is still starting. Wait until it is fully on before Auto Cal."
-  if($power eq "powering-on");
- return "Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."
-  if($power ne "on");
- return undef;
-}
-
 sub shell_quote {
  my ($text)=@_;
  $text="" if(!defined($text));
@@ -22073,8 +22049,12 @@ my $active_picture_mode_for_cleanup="";
 
 eval {
  die "No greyscale steps were supplied" if(!@{$steps});
- my $tv_power_error=verify_lg_tv_power_for_autocal($state);
- die $tv_power_error if(defined($tv_power_error) && $tv_power_error ne "");
+ # CEC can be stale or unknown even when WebOS is reachable, so no CEC reading
+ # gates this run. Reachability is established by read_initial_picture_settings
+ # further down, which is unconditional and dies on failure. The three restore/
+ # reset calls immediately below are NOT that authority -- every UI launcher
+ # posts restore_factory_levels and reset_ddc_baseline as false, so the first
+ # two return without touching the TV, and the third only acts on hdr10.
  my $level_restore_error=restore_factory_levels_for_autocal($config,$state);
  die $level_restore_error if($level_restore_error);
  my $reset_error=reset_ddc_baseline_for_autocal($config,$state);
