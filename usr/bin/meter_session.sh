@@ -679,7 +679,8 @@ build_sr_cmd () {
 # applies to this and every subsequent read until it changes again.
 respawn_spotread () {
  local new_mode="${1:-off}"
- log "respawn: switching spotread to low_light mode=$new_mode (was $CURRENT_LOW_LIGHT_MODE)"
+ local respawn_reason="${2:-low-light mode change}"
+ log "respawn: restarting spotread for $respawn_reason with low_light mode=$new_mode (was $CURRENT_LOW_LIGHT_MODE)"
  # Close the current spotread cleanly. SIGKILLing it mid-read wedges the
  # Pi's dwc2 USB controller, so ask politely first and escalate only if
  # it ignores the quit.
@@ -784,8 +785,8 @@ respawn_spotread () {
   fi
   pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  done
- log "respawn: spotread failed to ready within 15s on both attempts, surfacing error"
- write_state '{"status":"error","message":"Meter respawn failed (low-light mode change)"}'
+ log "respawn: spotread failed to ready within 15s on both attempts after $respawn_reason, surfacing error"
+ write_state '{"status":"error","message":"Meter respawn failed"}'
  return 1
 }
 trap cleanup EXIT INT TERM
@@ -1128,6 +1129,14 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	  READ_TIMEOUT=90
 	  ire_le "$IRE" 25 && READ_TIMEOUT=120
 	  ire_le "$IRE" 5 && READ_TIMEOUT=140
+	  # A healthy i1Display Pro Plus returns a single, non-averaged read well
+	  # inside this window even at black. If it produces no result for 45s,
+	  # spotread has wedged rather than merely selected a long integration.
+	  # Do not wait the generic spectro-oriented 120/140s watchdog and then
+	  # keep feeding commands to the same dead interactive process.
+	  if [[ "${METER_USB_ID,,}" == "0765:5020" && "$CURRENT_LOW_LIGHT_MODE" == "off" ]]; then
+	   READ_TIMEOUT=45
+	  fi
 	  if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( CMD_READ_TIMEOUT >= 10 )); then
 	   READ_TIMEOUT="$CMD_READ_TIMEOUT"
 	   (( READ_TIMEOUT > 300 )) && READ_TIMEOUT=300
@@ -1243,6 +1252,13 @@ print(json.dumps({'status':'complete','request_id':os.environ.get('READ_REQUEST_
     fi
    else
     log "read timed out after ${READ_TIMEOUT}s"
+    # A timeout leaves spotread's interactive process in an unknown state.
+    # Recover it now so Continuous does not submit every subsequent read to
+    # the same wedged process. The browser will start a fresh READ iteration
+    # after it receives this error state.
+    if ! respawn_spotread "$CURRENT_LOW_LIGHT_MODE" "read timeout"; then
+     log "read-timeout recovery failed"
+    fi
     write_state '{"status":"error","message":"Read timed out"}'
    fi
    ;;
