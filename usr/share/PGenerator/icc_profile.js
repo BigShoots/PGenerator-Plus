@@ -850,7 +850,9 @@ function meterIccSyncUi(){
    ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
    :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.');
  if(companionCorrectionNote) companionCorrectionNote.textContent=correctionNote;
- if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=correctionNote;
+ if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=calibrationCorrectionMode
+  ?correctionNote
+  :'Calibration patches use the native HDR swapchain and the active Windows display profile. Windows MHC2 supports a matrix and 1D curves, but not an ICC 3D cLUT.';
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -1024,13 +1026,20 @@ async function meterCalibrationPatternProviderChanged(){
  saveMeterSettings();
  const connected=await meterIccRefreshCompanionStatus();
  if(meterCalibrationUsesCompanion()&&connected){
+  if(!await meterCalibrationForceNativeCompanionCorrection()) return;
   try{ await fetchJSON('/api/icc/companion/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'align'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
  }
+}
+async function meterCalibrationForceNativeCompanionCorrection(){
+ const correction=document.getElementById('meterIccCompanionCorrectionMode');
+ if(correction&&correction.value!=='system') correction.value='system';
+ meterIccSyncUi();
+ return meterIccPushCompanionDisplaySettings(true);
 }
 async function meterCalibrationRequirePatternProvider(){
  if(meterCalibrationReadPatternProvider()!=='companion') return true;
  const connected=await meterIccRefreshCompanionStatus();
- if(connected) return true;
+ if(connected) return meterCalibrationForceNativeCompanionCorrection();
  toast('Run the paired ICC Companion on the target computer before reading',true);
  return false;
 }

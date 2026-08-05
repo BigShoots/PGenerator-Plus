@@ -13122,15 +13122,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <select id="meterCalibrationCompanionPatchSize" class="meter-card-header-select" onchange="meterCalibrationCompanionDisplaySettingsChanged()"></select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
-      <div class="field">
-       <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose whether Companion patches use operating-system correction, the cLUT, or the matrix/TRC fallback from the profile active on the selected display">
-        <option value="system">No application profile correction</option>
-        <option value="clut">Active profile cLUT</option>
-        <option value="matrix">Active profile matrix/TRC fallback</option>
-       </select>
-      </div>
-      <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion sends patches through the active operating-system profile pipeline.</div>
+      <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">Calibration patches use the native HDR swapchain and the active Windows display profile. Windows MHC2 supports a matrix and 1D curves, but not an ICC 3D cLUT.</div>
       <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">KDE/Linux</button></div>
      </div></span>
     </div>
