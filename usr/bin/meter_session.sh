@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id] [observer] [pattern_provider]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode] [continuous]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -1056,12 +1056,12 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    ;;
   READ\ *)
 	    STARTUP_CALIBRATION_COMPLETED=0
-	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE]
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE] [CONTINUOUS]
 	    # LOW_LIGHT_MODE (15th, optional) is the PER-READ handler mode. When
 	    # it differs from the currently-running spotread's mode the session
 	    # respawns spotread (NOT the wrapper) so the session-level
 	    # METER_AVERAGING (and the want_config 7th field) stay stable.
-	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT CMD_LOW_LIGHT_MODE <<< "$line"
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT CMD_LOW_LIGHT_MODE CMD_CONTINUOUS <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -1074,6 +1074,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
 		     [[ -z "$CMD_READ_TIMEOUT" ]] && CMD_READ_TIMEOUT=""
 		     [[ -z "$CMD_LOW_LIGHT_MODE" ]] && CMD_LOW_LIGHT_MODE="off"
+		     [[ -z "$CMD_CONTINUOUS" ]] && CMD_CONTINUOUS="0"
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
@@ -1134,7 +1135,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	  # spotread has wedged rather than merely selected a long integration.
 	  # Do not wait the generic spectro-oriented 120/140s watchdog and then
 	  # keep feeding commands to the same dead interactive process.
-	  if [[ "${METER_USB_ID,,}" == "0765:5020" && "$CURRENT_LOW_LIGHT_MODE" == "off" ]]; then
+	  if [[ "$CMD_CONTINUOUS" == "1" && "${METER_USB_ID,,}" == "0765:5020" && "$CURRENT_LOW_LIGHT_MODE" == "off" ]]; then
 	   READ_TIMEOUT=45
 	  fi
 	  if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( CMD_READ_TIMEOUT >= 10 )); then
@@ -1253,12 +1254,15 @@ print(json.dumps({'status':'complete','request_id':os.environ.get('READ_REQUEST_
    else
     log "read timed out after ${READ_TIMEOUT}s"
     # A timeout leaves spotread's interactive process in an unknown state.
-    # Recover it now so Continuous does not submit every subsequent read to
-    # the same wedged process. The browser will start a fresh READ iteration
-    # after it receives this error state.
-    if ! respawn_spotread "$CURRENT_LOW_LIGHT_MODE" "read timeout"; then
-     log "read-timeout recovery failed"
-    fi
+	    # Recover only Continuous reads. Read Once deliberately leaves timeout
+	    # handling to the operator, and series reads use their own worker and
+	    # retry policy. Respawning every non-continuous miss adds a long delay
+	    # and previously made unreported reads stall an entire workflow.
+	    if [[ "$CMD_CONTINUOUS" == "1" ]]; then
+	     if ! respawn_spotread "$CURRENT_LOW_LIGHT_MODE" "continuous read timeout"; then
+	      log "continuous read-timeout recovery failed"
+	     fi
+	    fi
     write_state '{"status":"error","message":"Read timed out"}'
    fi
    ;;

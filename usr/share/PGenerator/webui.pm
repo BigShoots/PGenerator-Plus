@@ -2928,7 +2928,8 @@ sub webui_meter_read (@) {
 			 my $cmd_request_id=($request_id ne "") ? $request_id : "-";
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
 			 my $cmd_low_light_mode=($avg_mode ne "") ? $avg_mode : "-";
-			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode" if(!$calibrate_only);
+			 my $cmd_continuous=$is_continuous ? "1" : "0";
+			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous" if(!$calibrate_only);
 		 $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
