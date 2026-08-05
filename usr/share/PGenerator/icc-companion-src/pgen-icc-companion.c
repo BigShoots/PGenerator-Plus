@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.19"
+#define APP_VERSION "1.3.20"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -118,6 +118,7 @@ typedef struct {
     ID3D11RenderTargetView *hdr_render_target;
     int hdr_width;
     int hdr_height;
+    bool hdr_exclusive;
 #endif
     char correction_signal_mode[16];
     float *correction_lut;
@@ -173,6 +174,7 @@ static void set_windows_window_icon(void)
 }
 
 static bool windows_window_hdr_enabled(SDL_Window *window);
+static bool windows_set_dxgi_fullscreen(bool fullscreen);
 
 /* 1 means selected, 0 means cancelled, and -1 requests the SDL fallback. */
 static int select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
@@ -1041,7 +1043,9 @@ static void windows_hdr_diagnostics(char *swapchain_color_space,
     static const GUID pgen_iid_idxgi_swapchain_media =
         { 0xdd95b90b, 0xf05f, 0x4f6a, { 0xbd, 0x65, 0x25, 0xbf, 0xb2, 0x64, 0xbd, 0x84 } };
     IDXGISwapChainMedia *swapchain_media = NULL;
+    IDXGIOutput *fullscreen_output = NULL;
     DXGI_FRAME_STATISTICS_MEDIA statistics;
+    BOOL fullscreen = FALSE;
 
     SDL_strlcpy(swapchain_color_space, "none", swapchain_color_space_size);
     SDL_strlcpy(presentation_mode, "unknown", presentation_mode_size);
@@ -1075,16 +1079,29 @@ static void windows_hdr_diagnostics(char *swapchain_color_space,
         }
         IDXGISwapChainMedia_Release(swapchain_media);
     }
+    if (SUCCEEDED(IDXGISwapChain_GetFullscreenState(app.hdr_swapchain,
+                                                     &fullscreen,
+                                                     &fullscreen_output)) &&
+        fullscreen)
+        SDL_strlcpy(presentation_mode, "exclusive", presentation_mode_size);
+    if (fullscreen_output) IDXGIOutput_Release(fullscreen_output);
 }
 
 static void windows_destroy_hdr_output(void)
 {
+    BOOL fullscreen = FALSE;
     if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
     if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
     if (app.hdr_swapchain) {
+        if (app.hdr_exclusive ||
+            (SUCCEEDED(IDXGISwapChain_GetFullscreenState(app.hdr_swapchain,
+                                                         &fullscreen, NULL)) &&
+             fullscreen))
+            IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
         IDXGISwapChain_Release(app.hdr_swapchain);
         app.hdr_swapchain = NULL;
     }
+    app.hdr_exclusive = false;
     if (app.hdr_context1) { ID3D11DeviceContext1_Release(app.hdr_context1); app.hdr_context1 = NULL; }
     if (app.hdr_context) { ID3D11DeviceContext_Release(app.hdr_context); app.hdr_context = NULL; }
     if (app.hdr_device) { ID3D11Device_Release(app.hdr_device); app.hdr_device = NULL; }
@@ -1132,6 +1149,69 @@ static bool windows_hdr_render_target(int width, int height)
     }
     app.hdr_width = width;
     app.hdr_height = height;
+    return true;
+}
+
+static bool windows_set_dxgi_fullscreen(bool fullscreen)
+{
+    IDXGIOutput *target = NULL;
+    IDXGIOutput *reported_target = NULL;
+    DXGI_OUTPUT_DESC target_desc;
+    HWND hwnd;
+    HMONITOR monitor;
+    RECT client;
+    BOOL reported_fullscreen = FALSE;
+    HRESULT result;
+
+    if (!app.hdr_swapchain) return !fullscreen;
+    if (app.hdr_exclusive == fullscreen) return true;
+    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
+    if (fullscreen) {
+        result = IDXGISwapChain_GetContainingOutput(app.hdr_swapchain, &target);
+        if (SUCCEEDED(result)) result = IDXGIOutput_GetDesc(target, &target_desc);
+        if (SUCCEEDED(result) && target_desc.Monitor != monitor) result = E_INVALIDARG;
+        if (SUCCEEDED(result))
+            result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, TRUE, target);
+    } else {
+        result = IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
+    }
+    if (target) IDXGIOutput_Release(target);
+    if (SUCCEEDED(result))
+        result = IDXGISwapChain_GetFullscreenState(app.hdr_swapchain,
+                                                    &reported_fullscreen,
+                                                    &reported_target);
+    if (reported_target) IDXGIOutput_Release(reported_target);
+    if (FAILED(result) || reported_fullscreen != (fullscreen ? TRUE : FALSE)) {
+        if (fullscreen) IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
+        app.hdr_exclusive = false;
+        SDL_SetError("Could not enter verified DXGI fullscreen on the selected display (0x%08lx)",
+                     (unsigned long)(FAILED(result) ? result : E_FAIL));
+        return false;
+    }
+
+    if (app.hdr_context)
+        ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
+    if (app.hdr_render_target) {
+        ID3D11RenderTargetView_Release(app.hdr_render_target);
+        app.hdr_render_target = NULL;
+    }
+    app.hdr_width = 0;
+    app.hdr_height = 0;
+    app.hdr_exclusive = fullscreen;
+    SDL_strlcpy(app.renderer_name,
+                fullscreen ? "direct3d11-hdr10-exclusive" :
+                             "direct3d11-hdr10-composed",
+                sizeof(app.renderer_name));
+    if (!fullscreen) return true;
+    if (!hwnd || !GetClientRect(hwnd, &client) ||
+        !windows_hdr_render_target((int)(client.right - client.left),
+                                   (int)(client.bottom - client.top))) {
+        IDXGISwapChain_SetFullscreenState(app.hdr_swapchain, FALSE, NULL);
+        app.hdr_exclusive = false;
+        return false;
+    }
     return true;
 }
 
@@ -1270,9 +1350,15 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
+    if (app.fullscreen && !windows_set_dxgi_fullscreen(true)) {
+        windows_destroy_hdr_output();
+        return false;
+    }
     app.hdr = true;
     app.hdr_active = windows_window_hdr_enabled(app.window);
-    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-composed",
+    SDL_strlcpy(app.renderer_name,
+                app.hdr_exclusive ? "direct3d11-hdr10-exclusive" :
+                                    "direct3d11-hdr10-composed",
                 sizeof(app.renderer_name));
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
@@ -1673,17 +1759,16 @@ static bool windows_set_borderless_windowed(bool fullscreen)
                                    &app.windowed_height)) return false;
             app.windowed_geometry_valid = true;
         }
-        /* Leave a narrow perimeter outside the borderless client area. A
-         * monitor-covering window, including one extended past the edges, can
-         * be promoted into Windows' fullscreen presentation policy. An inset
-         * window remains on the proven windowed HDR color path while keeping
-         * the measurement target effectively fullscreen. */
+        /* Match the selected output exactly before asking the HDR swapchain
+         * to take verified DXGI fullscreen ownership of that output. */
         if (!SDL_SetWindowBordered(app.window, false) ||
             !SDL_SetWindowResizable(app.window, false) ||
-            !SDL_SetWindowPosition(app.window, bounds.x + 8, bounds.y + 8) ||
-            !SDL_SetWindowSize(app.window, bounds.w - 16, bounds.h - 16) ||
+            !SDL_SetWindowPosition(app.window, bounds.x, bounds.y) ||
+            !SDL_SetWindowSize(app.window, bounds.w, bounds.h) ||
             !SDL_SyncWindow(app.window)) return false;
+        if (app.hdr_swapchain && !windows_set_dxgi_fullscreen(true)) return false;
     } else if (app.windowed_geometry_valid) {
+        if (app.hdr_swapchain && !windows_set_dxgi_fullscreen(false)) return false;
         if (!SDL_SetWindowBordered(app.window, true) ||
             !SDL_SetWindowResizable(app.window, true) ||
             !SDL_SetWindowPosition(app.window, app.windowed_x, app.windowed_y) ||
