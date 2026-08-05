@@ -36,6 +36,27 @@
 #define close_socket closesocket
 typedef SOCKET socket_handle_t;
 #define INVALID_SOCKET_HANDLE INVALID_SOCKET
+
+typedef int (__cdecl *PgenNvInitialize)(void);
+typedef int (__cdecl *PgenNvUnload)(void);
+typedef int (__cdecl *PgenNvGetDisplayId)(const char *, unsigned long *);
+typedef int (__cdecl *PgenNvSetSourceColorSpace)(unsigned long, int);
+typedef int (__cdecl *PgenNvSetSourceHdrMetadata)(unsigned long, const void *);
+typedef int (__cdecl *PgenNvGetHdrToneMapping)(unsigned long, int *);
+typedef int (__cdecl *PgenNvSetHdrToneMapping)(unsigned long, int);
+typedef void *(__cdecl *PgenNvQueryInterface)(unsigned int);
+
+typedef struct {
+    unsigned long version;
+    unsigned short display_primary_x0, display_primary_y0;
+    unsigned short display_primary_x1, display_primary_y1;
+    unsigned short display_primary_x2, display_primary_y2;
+    unsigned short display_white_point_x, display_white_point_y;
+    unsigned short max_display_mastering_luminance;
+    unsigned short min_display_mastering_luminance;
+    unsigned short max_content_light_level;
+    unsigned short max_frame_average_light_level;
+} PgenNvHdrMetadata;
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -48,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.20"
+#define APP_VERSION "1.3.21"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -144,6 +165,140 @@ typedef struct {
 } AppState;
 
 static AppState app;
+
+#ifdef _WIN32
+static HMODULE pgen_nvapi_module;
+static PgenNvUnload pgen_nvapi_unload;
+static PgenNvSetSourceColorSpace pgen_nvapi_set_source_color_space;
+static PgenNvSetSourceHdrMetadata pgen_nvapi_set_source_hdr_metadata;
+static PgenNvSetHdrToneMapping pgen_nvapi_set_hdr_tone_mapping;
+static unsigned long pgen_nvapi_display_id;
+static int pgen_nvapi_original_tone_mapping;
+static int pgen_nvapi_last_status;
+static bool pgen_nvapi_source_active;
+static bool pgen_nvapi_tone_mapping_saved;
+static bool pgen_nvapi_metadata_valid;
+static PgenNvHdrMetadata pgen_nvapi_metadata;
+
+static void *pgen_nvapi_function(PgenNvQueryInterface query, unsigned int id)
+{
+    return query ? query(id) : NULL;
+}
+
+static void windows_nvapi_hdr_source_end(void)
+{
+    if (pgen_nvapi_source_active && pgen_nvapi_set_source_color_space)
+        pgen_nvapi_set_source_color_space(pgen_nvapi_display_id, 0);
+    if (pgen_nvapi_tone_mapping_saved && pgen_nvapi_set_hdr_tone_mapping)
+        pgen_nvapi_set_hdr_tone_mapping(pgen_nvapi_display_id,
+                                        pgen_nvapi_original_tone_mapping);
+    if (pgen_nvapi_unload) pgen_nvapi_unload();
+    if (pgen_nvapi_module) FreeLibrary(pgen_nvapi_module);
+    pgen_nvapi_module = NULL;
+    pgen_nvapi_unload = NULL;
+    pgen_nvapi_set_source_color_space = NULL;
+    pgen_nvapi_set_source_hdr_metadata = NULL;
+    pgen_nvapi_set_hdr_tone_mapping = NULL;
+    pgen_nvapi_source_active = false;
+    pgen_nvapi_tone_mapping_saved = false;
+    pgen_nvapi_metadata_valid = false;
+}
+
+static bool windows_nvapi_hdr_source_begin(SDL_Window *window)
+{
+    PgenNvQueryInterface query;
+    PgenNvInitialize initialize;
+    PgenNvGetDisplayId get_display_id;
+    PgenNvGetHdrToneMapping get_tone_mapping;
+    MONITORINFOEXA monitor_info;
+    HWND hwnd;
+    HMONITOR monitor;
+    FARPROC query_function;
+    void *function;
+    int status;
+
+    windows_nvapi_hdr_source_end();
+    pgen_nvapi_last_status = -2;
+    pgen_nvapi_module = LoadLibraryA("nvapi64.dll");
+    if (!pgen_nvapi_module) return false;
+    query_function = GetProcAddress(pgen_nvapi_module, "nvapi_QueryInterface");
+    memcpy(&query, &query_function, sizeof(query));
+    if (!query) goto failed;
+#define PGEN_NVAPI_LOAD(target, type, id) \
+    do { function = pgen_nvapi_function(query, id); memcpy(&(target), &function, sizeof(type)); } while (0)
+    PGEN_NVAPI_LOAD(initialize, PgenNvInitialize, 0x0150e828);
+    PGEN_NVAPI_LOAD(pgen_nvapi_unload, PgenNvUnload, 0xd22bdd7e);
+    PGEN_NVAPI_LOAD(get_display_id, PgenNvGetDisplayId, 0xae457190);
+    PGEN_NVAPI_LOAD(pgen_nvapi_set_source_color_space,
+                    PgenNvSetSourceColorSpace, 0x473b6caf);
+    PGEN_NVAPI_LOAD(pgen_nvapi_set_source_hdr_metadata,
+                    PgenNvSetSourceHdrMetadata, 0x905eb63b);
+    PGEN_NVAPI_LOAD(get_tone_mapping, PgenNvGetHdrToneMapping, 0xfbd36e71);
+    PGEN_NVAPI_LOAD(pgen_nvapi_set_hdr_tone_mapping,
+                    PgenNvSetHdrToneMapping, 0xdd6da362);
+#undef PGEN_NVAPI_LOAD
+    if (!initialize || !pgen_nvapi_unload || !get_display_id ||
+        !pgen_nvapi_set_source_color_space || !pgen_nvapi_set_source_hdr_metadata)
+        goto failed;
+    status = initialize();
+    if (status != 0) { pgen_nvapi_last_status = status; goto failed; }
+    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
+    ZeroMemory(&monitor_info, sizeof(monitor_info));
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (!monitor || !GetMonitorInfoA(monitor, (MONITORINFO *)&monitor_info)) goto failed;
+    status = get_display_id(monitor_info.szDevice, &pgen_nvapi_display_id);
+    if (status != 0) { pgen_nvapi_last_status = status; goto failed; }
+    status = pgen_nvapi_set_source_color_space(pgen_nvapi_display_id, 12);
+    if (status != 0) { pgen_nvapi_last_status = status; goto failed; }
+    pgen_nvapi_source_active = true;
+    if (get_tone_mapping && pgen_nvapi_set_hdr_tone_mapping &&
+        get_tone_mapping(pgen_nvapi_display_id,
+                         &pgen_nvapi_original_tone_mapping) == 0) {
+        pgen_nvapi_tone_mapping_saved = true;
+        status = pgen_nvapi_set_hdr_tone_mapping(pgen_nvapi_display_id, 0);
+        if (status != 0) { pgen_nvapi_last_status = status; goto failed; }
+    }
+    pgen_nvapi_last_status = 0;
+    return true;
+failed:
+    windows_nvapi_hdr_source_end();
+    return false;
+}
+
+static bool windows_nvapi_hdr_metadata(const DXGI_HDR_METADATA_HDR10 *metadata)
+{
+    PgenNvHdrMetadata converted;
+    int status;
+    if (!pgen_nvapi_source_active || !pgen_nvapi_set_source_hdr_metadata)
+        return false;
+    ZeroMemory(&converted, sizeof(converted));
+    converted.version = (unsigned long)(sizeof(converted) | (1U << 16));
+    converted.display_primary_x0 = metadata->RedPrimary[0];
+    converted.display_primary_y0 = metadata->RedPrimary[1];
+    converted.display_primary_x1 = metadata->GreenPrimary[0];
+    converted.display_primary_y1 = metadata->GreenPrimary[1];
+    converted.display_primary_x2 = metadata->BluePrimary[0];
+    converted.display_primary_y2 = metadata->BluePrimary[1];
+    converted.display_white_point_x = metadata->WhitePoint[0];
+    converted.display_white_point_y = metadata->WhitePoint[1];
+    converted.max_display_mastering_luminance =
+        (unsigned short)metadata->MaxMasteringLuminance;
+    converted.min_display_mastering_luminance =
+        (unsigned short)metadata->MinMasteringLuminance;
+    converted.max_content_light_level = metadata->MaxContentLightLevel;
+    converted.max_frame_average_light_level = metadata->MaxFrameAverageLightLevel;
+    if (pgen_nvapi_metadata_valid &&
+        !memcmp(&converted, &pgen_nvapi_metadata, sizeof(converted))) return true;
+    status = pgen_nvapi_set_source_hdr_metadata(pgen_nvapi_display_id, &converted);
+    pgen_nvapi_last_status = status;
+    if (status != 0) return false;
+    pgen_nvapi_metadata = converted;
+    pgen_nvapi_metadata_valid = true;
+    return true;
+}
+#endif
 
 static bool render_alignment(void);
 static PGEN_UNUSED double pq_to_nits(double value);
@@ -1079,6 +1234,7 @@ static void windows_hdr_diagnostics(char *swapchain_color_space,
 
 static void windows_destroy_hdr_output(void)
 {
+    windows_nvapi_hdr_source_end();
     if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
     if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
     if (app.hdr_swapchain) {
@@ -1164,6 +1320,15 @@ static bool windows_set_hdr_metadata(void)
     if (FAILED(result)) {
         SDL_SetError("Could not apply HDR10 mastering metadata (0x%08lx)", (unsigned long)result);
         return false;
+    }
+    if (pgen_nvapi_source_active) {
+        if (windows_nvapi_hdr_metadata(&metadata))
+            SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-composed-nvapi",
+                        sizeof(app.renderer_name));
+        else
+            SDL_snprintf(app.renderer_name, sizeof(app.renderer_name),
+                         "direct3d11-hdr10-nvapi-error-%d",
+                         pgen_nvapi_last_status);
     }
     return true;
 }
@@ -1270,10 +1435,16 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
+    windows_nvapi_hdr_source_begin(app.window);
     app.hdr = true;
     app.hdr_active = windows_window_hdr_enabled(app.window);
-    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-composed",
-                sizeof(app.renderer_name));
+    if (pgen_nvapi_source_active)
+        SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-nvapi-rec2100",
+                    sizeof(app.renderer_name));
+    else
+        SDL_snprintf(app.renderer_name, sizeof(app.renderer_name),
+                     "direct3d11-hdr10-nvapi-error-%d",
+                     pgen_nvapi_last_status);
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
         windows_destroy_hdr_output();
