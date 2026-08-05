@@ -86,10 +86,9 @@
         <div class="meter-icc-field">
          <label for="meterIccCompanionCorrectionMode">Companion profile correction</label>
          <select id="meterIccCompanionCorrectionMode" onchange="meterIccCompanionCorrectionChanged('icc')">
-          <option value="system" selected>No application profile correction</option>
-          <option value="clut">Active profile cLUT</option>
-          <option value="matrix">Active profile matrix/TRC fallback</option>
-         </select>
+         <option value="system" selected>Windows profile handling</option>
+         <option value="clut">Active profile cLUT in Companion</option>
+        </select>
         </div>
         <div class="meter-icc-note" id="meterIccCompanionCorrectionNote" style="margin-bottom:10px">The Companion does not apply an ICC transform. A system-wide Windows MHC2 correction may still affect its output.</div>
         <div class="btn-row" style="margin:0 0 10px">

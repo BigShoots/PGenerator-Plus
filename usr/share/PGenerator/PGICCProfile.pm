@@ -245,7 +245,7 @@ sub webui_icc_companion_settings_values () {
   $window_mode=$1 if($content=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
   $patch_size=int($1) if($content=~/"patch_size"\s*:\s*(\d+)/);
   $revision=int($1) if($content=~/"revision"\s*:\s*(\d+)/);
-  $correction_mode=$1 if($content=~/"correction_mode"\s*:\s*"(system|clut|matrix)"/);
+  $correction_mode=$1 if($content=~/"correction_mode"\s*:\s*"(system|clut)"/);
   $signal_mode=$1 if($content=~/"correction_signal_mode"\s*:\s*"(sdr|hdr10)"/);
  }
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
@@ -267,7 +267,7 @@ sub webui_icc_companion_settings (@) {
  my $signal_mode="sdr";
  $window_mode=$1 if($body=~/"window_mode"\s*:\s*"(window|fullscreen)"/);
  $patch_size=int($1) if($body=~/"patch_size"\s*:\s*(\d+)/);
- $correction_mode=$1 if($body=~/"correction_mode"\s*:\s*"(system|clut|matrix)"/);
+ $correction_mode=$1 if($body=~/"correction_mode"\s*:\s*"(system|clut)"/);
  $signal_mode=$1 if($body=~/"correction_signal_mode"\s*:\s*"(sdr|hdr10)"/);
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
  return '{"status":"error","message":"Invalid ICC Companion window mode"}' if($window_mode eq "");
