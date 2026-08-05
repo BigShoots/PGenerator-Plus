@@ -7589,10 +7589,11 @@ sub webui_ccss_create_stop (@) {
 
 sub webui_ccss_create_start (@) {
  my ($body)=@_;
- my $name="";
- $name=$1 if($body=~/"name"\s*:\s*"([^"\\]{1,80})"/);
- my $display_type_key="";
- $display_type_key=$1 if($body=~/"display_type"\s*:\s*"([^"\\]{1,80})"/);
+ my $request=eval { require JSON::PP; JSON::PP::decode_json($body); };
+ $request={} if($@ || ref($request) ne "HASH");
+ my $name=defined($request->{"name"}) && !ref($request->{"name"}) ? "$request->{name}" : "";
+ $name=~s/^\s+|\s+$//g;
+ my $display_type_key=defined($request->{"display_type"}) && !ref($request->{"display_type"}) ? "$request->{display_type}" : "";
  my $format="ccss";
  $format=lc($1) if($body=~/"format"\s*:\s*"(ccss|ccmx)"/i);
  my $signal_mode=&webui_pattern_signal_mode($body);
@@ -7607,6 +7608,7 @@ sub webui_ccss_create_start (@) {
  $target_port=$1 if($body=~/"target_meter_port"\s*:\s*"?(\d+)"?/);
 
  return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
+ return '{"status":"error","message":"Profile name must be 80 characters or fewer"}' if(length($name)>80);
  return '{"status":"error","message":"Interactive meter profile creator is not installed on this image"}' if(!-x $_ccss_create_ccxxmake_bin);
  return '{"status":"error","message":"Meter profile create helper is missing"}' if(!-x $_ccss_create_runner || !-x $_ccss_create_patch_cmd);
  my $python_runner=`command -v python3 2>/dev/null || command -v python2 2>/dev/null || command -v python 2>/dev/null`;
@@ -13857,7 +13859,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
       <div style="margin-bottom:12px">
        <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Display Technology</label>
-       <select id="meterCcssCreateDisplayType" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+       <select id="meterCcssCreateDisplayType" onchange="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
         <option value="oled_generic">WRGB OLED</option>
         <option value="qdoled">QD-OLED</option>
         <option value="amoled">AMOLED</option>
@@ -13904,7 +13906,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div style="margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Profile Name</label>
-    <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" oninput="meterCcssCreateUpdateStartState()" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
+    <input type="text" id="meterCcssCreateName" placeholder="Ex. LG G4 WRGB OLED" oninput="meterCcssCreateUpdateStartState(true)" style="width:100%;font-size:.8rem;padding:7px 8px;background:#12121e;border:1px solid #444;border-radius:4px;color:var(--text);box-sizing:border-box">
     </div>
     <div id="meterCcssCreateProgress" style="font-size:.74rem;color:var(--text2);margin-bottom:12px;min-height:2.4em;line-height:1.45">Select a profile type and the required meter or meters, then start.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
@@ -26459,10 +26461,11 @@ function meterCcssCreateStartBlockReason(){
  return '';
 }
 
-function meterCcssCreateUpdateStartState(){
+function meterCcssCreateUpdateStartState(clearStaleMessage){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
  if(!startBtn) return;
  const startHint=document.getElementById('meterCcssCreateStartBtnHint');
+ const progress=document.getElementById('meterCcssCreateProgress');
  const reason=meterCcssCreateStartBlockReason();
  const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
  if(!startBtn.dataset.starting) startBtn.textContent=supplied?'Create CCMX':'Start Creation';
@@ -26473,6 +26476,10 @@ function meterCcssCreateUpdateStartState(){
   startHint.title=explanation;
   startHint.dataset.tooltip=startBtn.disabled?explanation:'';
   startHint.setAttribute('aria-label',explanation);
+ }
+ if(clearStaleMessage&&progress&&!meterCcssCreateJobActive&&!startBtn.dataset.starting){
+  progress.textContent=reason||'Ready to start meter profile creation.';
+  delete progress.dataset.starting;
  }
 }
 
