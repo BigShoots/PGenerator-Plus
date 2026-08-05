@@ -16,10 +16,10 @@ BrandingText "PGenerator+"
 Icon "..\favicon.ico"
 UninstallIcon "..\favicon.ico"
 
-VIProductVersion "1.3.27.0"
+VIProductVersion "1.3.28.0"
 VIAddVersionKey "ProductName" "PGenerator+ ICC Tools"
-VIAddVersionKey "FileDescription" "PGenerator Patch Companion and Profile Loader installer"
-VIAddVersionKey "FileVersion" "1.3.27"
+VIAddVersionKey "FileDescription" "PGenerator+ Patch Companion and Profile Loader installer"
+VIAddVersionKey "FileVersion" "1.3.28"
 VIAddVersionKey "LegalCopyright" "GNU GPL"
 
 !define MUI_ABORTWARNING
@@ -37,13 +37,15 @@ VIAddVersionKey "LegalCopyright" "GNU GPL"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-Section "PGenerator Patch Companion and Profile Loader" SEC_CORE
+Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   SectionIn RO
   ; Close an older installed build before replacing its executable files.
+  ExecWait '"$SYSDIR\taskkill.exe" /IM PGeneratorPlusPatchCompanion.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenICCCompanion.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   SetOutPath "$INSTDIR"
-  File "..\icc-companion\windows-x64\PGenICCCompanion.exe"
+  Delete "$INSTDIR\PGenICCCompanion.exe"
+  File "..\icc-companion\windows-x64\PGeneratorPlusPatchCompanion.exe"
   File "..\icc-companion\windows-x64\PGenProfileLoader.exe"
   File "..\icc-companion\windows-x64\SDL3.dll"
   File /oname=README.txt "README.txt"
@@ -57,7 +59,8 @@ Section "PGenerator Patch Companion and Profile Loader" SEC_CORE
 
   CreateDirectory "$SMPROGRAMS\PGenerator+"
   Delete "$SMPROGRAMS\PGenerator+\ICC Companion.lnk"
-  CreateShortcut "$SMPROGRAMS\PGenerator+\PGenerator Patch Companion.lnk" "$INSTDIR\PGenICCCompanion.exe"
+  Delete "$SMPROGRAMS\PGenerator+\PGenerator Patch Companion.lnk"
+  CreateShortcut "$SMPROGRAMS\PGenerator+\PGenerator+ Patch Companion.lnk" "$INSTDIR\PGeneratorPlusPatchCompanion.exe"
   CreateShortcut "$SMPROGRAMS\PGenerator+\Profile Loader.lnk" "$INSTDIR\PGenProfileLoader.exe"
   CreateShortcut "$SMPROGRAMS\PGenerator+\Uninstall ICC Tools.lnk" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\PGenerator+\ICC Tools" "InstallDir" "$INSTDIR"
@@ -68,7 +71,7 @@ Section "PGenerator Patch Companion and Profile Loader" SEC_CORE
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "DisplayName" "PGenerator+ ICC Tools"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
-              "DisplayVersion" "1.3.27"
+              "DisplayVersion" "1.3.28"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "Publisher" "PGenerator+"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
@@ -100,6 +103,7 @@ LangString DESC_SEC_STARTUP ${LANG_ENGLISH} "Starts the profile loader at sign-i
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
+  ExecWait '"$SYSDIR\taskkill.exe" /IM PGeneratorPlusPatchCompanion.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenICCCompanion.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "PGenerator+ Profile Loader"
@@ -107,9 +111,11 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools"
   Delete "$SMPROGRAMS\PGenerator+\ICC Companion.lnk"
   Delete "$SMPROGRAMS\PGenerator+\PGenerator Patch Companion.lnk"
+  Delete "$SMPROGRAMS\PGenerator+\PGenerator+ Patch Companion.lnk"
   Delete "$SMPROGRAMS\PGenerator+\Profile Loader.lnk"
   Delete "$SMPROGRAMS\PGenerator+\Uninstall ICC Tools.lnk"
   RMDir "$SMPROGRAMS\PGenerator+"
+  Delete "$INSTDIR\PGeneratorPlusPatchCompanion.exe"
   Delete "$INSTDIR\PGenICCCompanion.exe"
   Delete "$INSTDIR\PGenProfileLoader.exe"
   Delete "$INSTDIR\SDL3.dll"

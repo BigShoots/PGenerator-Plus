@@ -6,7 +6,7 @@ let meterIccRunConfig=null;
 let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
 let meterIccCompanionLastSeenAt=0;
-let meterIccCompanionDetail='PGenerator Patch Companion connected';
+let meterIccCompanionDetail='PGenerator+ Patch Companion connected';
 let meterIccCompanionClient='';
 let meterIccCompanionTimer=null;
 let meterIccCompanionSettingsPending=0;
@@ -368,10 +368,10 @@ async function meterIccPushCompanionDisplaySettings(showError){
    body:JSON.stringify({window_mode:mode,patch_size:meterIccCompanionPatchSizeValue(),correction_mode:correctionMode,correction_signal_mode:activeSignal}),
    _quiet:true,_timeoutMs:5000
   });
-  if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Could not update PGenerator Patch Companion');
+  if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Could not update PGenerator+ Patch Companion');
   return true;
  }catch(error){
-  if(showError!==false) toast(error&&error.message?error.message:'Could not update PGenerator Patch Companion',true);
+  if(showError!==false) toast(error&&error.message?error.message:'Could not update PGenerator+ Patch Companion',true);
   return false;
  }finally{
   meterIccCompanionSettingsPending=Math.max(0,meterIccCompanionSettingsPending-1);
@@ -891,7 +891,7 @@ function meterIccSyncUi(){
  const companionPatchSizeSelect=document.getElementById('meterIccCompanionPatchSize');
  const companionPatchSizeOption=companionPatchSizeSelect&&companionPatchSizeSelect.selectedOptions?companionPatchSizeSelect.selectedOptions[0]:null;
  const generatorLabel=usesCompanion
-  ?('PGenerator Patch Companion '+(companionWindowMode==='fullscreen'?('fullscreen, '+String(companionPatchSizeOption?companionPatchSizeOption.textContent:'controlled patch')):'resizable window'))
+  ?('PGenerator+ Patch Companion '+(companionWindowMode==='fullscreen'?('fullscreen, '+String(companionPatchSizeOption?companionPatchSizeOption.textContent:'controlled patch')):'resizable window'))
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected grayscale, single-channel, white and black coverage.')
@@ -906,10 +906,10 @@ function meterIccSyncUi(){
   start.disabled=!meterReady||generatorUnavailable||busy||invalidPatchSet;
   start.textContent=meterIccBuildPending?'Building Profile...':(meterIccStarting||meterIccRunning?'Profiling...':'Start Profiling');
   start.setAttribute('aria-busy',(meterIccStarting||meterIccRunning||meterIccBuildPending)?'true':'false');
-  const startReason=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Start PGenerator Patch Companion on the target computer before profiling':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
+  const startReason=!meterDetected?'Connect a meter first':!meterReady?'Waiting for the meter settings to finish loading':invalidPatchSet?('Increase total patches to at least '+patchMinimum):usesCompanion&&!meterIccCompanionConnected?'Start PGenerator+ Patch Companion on the target computer before profiling':busy?'A meter operation is already running':!usesCompanion&&!localMode.matches?'Start profiling to review and apply the required output mode':'Start the ICC profiling measurements';
   start.title='';
   if(startHint){
-   const companionTip=start.disabled&&generatorUnavailable?'Start PGenerator Patch Companion on the target computer before profiling':'';
+   const companionTip=start.disabled&&generatorUnavailable?'Start PGenerator+ Patch Companion on the target computer before profiling':'';
    startHint.title='';
    startHint.dataset.tooltip=companionTip;
    startHint.setAttribute('aria-label',startReason);
@@ -985,8 +985,8 @@ function meterCalibrationApplyCompanionAvailability(connected){
  if(companionOption){
   companionOption.disabled=!connected;
   companionOption.title=connected
-   ?'Use the connected PGenerator Patch Companion for patch generation'
-   :'Run PGenerator Patch Companion on the target computer to enable this option';
+   ?'Use the connected PGenerator+ Patch Companion for patch generation'
+   :'Run PGenerator+ Patch Companion on the target computer to enable this option';
  }
  if(!connected) meterCalibrationSelectLocalOutput();
 }
@@ -1049,7 +1049,7 @@ async function meterCalibrationRequirePatternProvider(){
  if(meterCalibrationReadPatternProvider()!=='companion') return true;
  const connected=await meterIccRefreshCompanionStatus();
  if(connected) return meterCalibrationPushCompanionCorrection();
- toast('Run the paired PGenerator Patch Companion on the target computer before reading',true);
+ toast('Run the paired PGenerator+ Patch Companion on the target computer before reading',true);
  return false;
 }
 
@@ -1068,12 +1068,12 @@ function meterIccUpdateTopCompanionStatus(connected,detail){
  const wrap=document.getElementById('iccCompanionTopStatusWrap');
  if(!wrap) return;
  wrap.style.display=connected?'':'none';
- wrap.title=connected?String(detail||'PGenerator Patch Companion connected'):'PGenerator Patch Companion not connected';
+ wrap.title=connected?String(detail||'PGenerator+ Patch Companion connected'):'PGenerator+ Patch Companion not connected';
  const dot=document.getElementById('iccCompanionTopDot');
  const text=document.getElementById('iccCompanionTopStatusText');
  if(dot) dot.style.background='var(--green)';
  if(text){
-  text.textContent='PGenerator Patch Companion'+(meterIccCompanionClient?' ['+meterIccCompanionClient+']':'');
+  text.textContent='PGenerator+ Patch Companion'+(meterIccCompanionClient?' ['+meterIccCompanionClient+']':'');
   text.style.color='var(--text)';
  }
  if(typeof syncTopStatusStack==='function') syncTopStatusStack();
@@ -1485,7 +1485,7 @@ async function meterIccStart(){
  const mode=info.mode;
  const patternProvider=meterIccPatternProvider();
  if(patternProvider==='companion'){
-  if(!await meterIccRefreshCompanionStatus()){ toast('Run PGenerator Patch Companion on the target computer first',true); return; }
+  if(!await meterIccRefreshCompanionStatus()){ toast('Run PGenerator+ Patch Companion on the target computer first',true); return; }
   const nativeCorrection=document.getElementById('meterIccCompanionCorrectionMode');
   if(nativeCorrection&&nativeCorrection.value!=='system'){
    nativeCorrection.value='system';
@@ -1609,7 +1609,7 @@ async function meterIccStart(){
   for(let remaining=startDelay;remaining>0;remaining--){
    if(startToken!==meterIccStartToken) throw new Error('ICC profiling stopped');
    if(status) status.textContent=patternProvider==='companion'
-    ?('Starting in '+remaining+' seconds. Move and resize PGenerator Patch Companion on the target display now.')
+    ?('Starting in '+remaining+' seconds. Move and resize PGenerator+ Patch Companion on the target display now.')
     :('Starting in '+remaining+' seconds. Switch the display to the PGenerator+ HDMI input now.');
    meterIccSetProgress('Waiting to start',startDelay-remaining,startDelay);
    await new Promise(resolve=>setTimeout(resolve,1000));

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a paired PGenerator Patch Companion download package."""
+"""Create a paired PGenerator+ Patch Companion download package."""
 
 import os
 import re
@@ -20,7 +20,7 @@ PLATFORMS = {
     "windows-portable-x64": {
         "filename": "PGenerator-ICC-Companion-Portable-Windows-x64.zip",
         "directory": "windows-x64",
-        "files": ("PGenICCCompanion.exe", "SDL3.dll"),
+        "files": ("PGeneratorPlusPatchCompanion.exe", "SDL3.dll"),
         "paired": True,
         "kind": "archive",
     },

@@ -1,4 +1,4 @@
-/* PGenerator Patch Companion
+/* PGenerator+ Patch Companion
  *
  * Displays measurement patches through the target computer's native output
  * pipeline. Windows uses a native DXGI HDR10 swapchain so PQ/BT.2020 patch
@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.27"
+#define APP_VERSION "1.3.28"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -362,7 +362,7 @@ static int select_windows_target_display(SDL_DisplayID *displays, int count, int
     dialog.hInstance = GetModuleHandleW(NULL);
     dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION |
                      TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SIZE_TO_CONTENT;
-    dialog.pszWindowTitle = L"PGenerator Patch Companion";
+    dialog.pszWindowTitle = L"PGenerator+ Patch Companion";
     dialog.pszMainInstruction = L"Select the profiling display";
     dialog.pszContent = L"Choose the monitor that will show measurement patches. You can move and resize the Companion window afterward.";
     dialog.pszMainIcon = MAKEINTRESOURCEW(1);
@@ -2149,15 +2149,15 @@ static void poll_server(void)
     {
         char title[512];
         if (!strcmp(app.correction_mode, "clut"))
-            SDL_snprintf(title, sizeof(title), "PGenerator Patch Companion | Active profile cLUT: %s%s",
+            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | Active profile cLUT: %s%s",
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else if (!strcmp(app.correction_mode, "matrix"))
-            SDL_snprintf(title, sizeof(title), "PGenerator Patch Companion | Active profile matrix/TRC: %s%s",
+            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | Active profile matrix/TRC: %s%s",
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else
-            SDL_snprintf(title, sizeof(title), "PGenerator Patch Companion | No application profile correction");
+            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | No application profile correction");
         queue_status(title);
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
@@ -2380,14 +2380,14 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     }
 #endif
     if (!load_config(&app.config)) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator Patch Companion",
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
                                  "PGenICCCompanion.conf is missing or invalid. Download the companion again from your PGenerator.", NULL);
         return SDL_APP_FAILURE;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
     app.network_mutex = SDL_CreateMutex();
     if (!app.network_mutex) return SDL_APP_FAILURE;
-    app.window = SDL_CreateWindow("PGenerator Patch Companion", 1280, 720,
+    app.window = SDL_CreateWindow("PGenerator+ Patch Companion", 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) return SDL_APP_FAILURE;
 #ifdef _WIN32

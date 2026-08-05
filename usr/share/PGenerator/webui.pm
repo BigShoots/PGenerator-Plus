@@ -12792,10 +12792,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <span title="" id="statusWrap"><span class="status-dot" id="statusDot"></span><span id="statusText">...</span></span>
    <span id="tempDisplay"></span>
    <span id="calStatusWrap" title="No calibration software connected"><span class="status-dot" id="calDot" style="background:var(--text2)"></span><span id="calStatusText" style="color:var(--text2)">No SW</span></span>
-   <span id="meterDisplayStatusStack" class="status-stack" title="Meter, display and PGenerator Patch Companion">
+   <span id="meterDisplayStatusStack" class="status-stack" title="Meter, display and PGenerator+ Patch Companion">
     <span id="meterStatusWrap" class="status-line" style="display:none" title="Colorimeter"><span class="status-dot" id="meterDot" style="background:var(--text2)"></span><span class="status-label" id="meterStatusText" style="color:var(--text2)">Meter</span></span>
     <span id="lgTopStatusWrap" class="status-line status-line-sub" style="display:none" title="Display"><span class="status-dot" id="lgTopDot" style="background:var(--text2)"></span><span class="status-label" id="lgTopStatusText" style="color:var(--text2)">Display</span></span>
-    <span id="iccCompanionTopStatusWrap" class="status-line status-line-sub" style="display:none" title="PGenerator Patch Companion connected"><span class="status-dot" id="iccCompanionTopDot" style="background:var(--green)"></span><span class="status-label" id="iccCompanionTopStatusText" style="color:var(--text)">PGenerator Patch Companion</span></span>
+    <span id="iccCompanionTopStatusWrap" class="status-line status-line-sub" style="display:none" title="PGenerator+ Patch Companion connected"><span class="status-dot" id="iccCompanionTopDot" style="background:var(--green)"></span><span class="status-label" id="iccCompanionTopStatusText" style="color:var(--text)">PGenerator+ Patch Companion</span></span>
    </span>
    <span id="hdmiWarnBadge" onclick="hdmiShowOverlay()" title="HDMI cable is on the wrong port">&#9888; Wrong HDMI Port</span>
    <span id="meterUsbWarnBadge" title="USB link unstable">&#9888; USB Unstable</span>
@@ -13103,14 +13103,14 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
-    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. PGenerator Patch Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
+    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. PGenerator+ Patch Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
     <div class="meter-generator-control-row">
      <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
       <option value="local">PGenerator output</option>
-      <option value="companion" disabled title="Run PGenerator Patch Companion on the target computer to enable this option">PGenerator Patch Companion</option>
+      <option value="companion" disabled title="Run PGenerator+ Patch Companion on the target computer to enable this option">PGenerator+ Patch Companion</option>
      </select>
-     <span id="meterCompanionGearWrap" class="meter-xyz-gear-wrap is-hidden"><button type="button" id="meterCompanionGear" class="meter-xyz-gear" aria-label="PGenerator Patch Companion settings" aria-expanded="false" title="PGenerator Patch Companion settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterCompanionGearPopover" role="dialog" aria-label="PGenerator Patch Companion settings">
-      <div class="meter-profile-title">PGenerator Patch Companion Settings</div>
+     <span id="meterCompanionGearWrap" class="meter-xyz-gear-wrap is-hidden"><button type="button" id="meterCompanionGear" class="meter-xyz-gear" aria-label="PGenerator+ Patch Companion settings" aria-expanded="false" title="PGenerator+ Patch Companion settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterCompanionGearPopover" role="dialog" aria-label="PGenerator+ Patch Companion settings">
+      <div class="meter-profile-title">PGenerator+ Patch Companion Settings</div>
       <div class="field">
        <label for="meterCalibrationCompanionWindowMode">Display mode</label>
        <select id="meterCalibrationCompanionWindowMode" class="meter-card-header-select" onchange="meterCalibrationCompanionDisplaySettingsChanged()">
@@ -13125,7 +13125,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, application cLUT correction, or matrix/TRC fallback in PGenerator Patch Companion">
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, application cLUT correction, or matrix/TRC fallback in PGenerator+ Patch Companion">
         <option value="system">Windows profile handling</option>
         <option value="clut">Active profile cLUT in Companion</option>
         <option value="matrix">Active profile matrix/TRC fallback</option>

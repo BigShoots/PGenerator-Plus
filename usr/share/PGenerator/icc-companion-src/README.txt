@@ -6,17 +6,17 @@ information and installs both the patch companion and the tray profile loader.
 Start Menu shortcuts and an uninstaller are included.
 
 Portable Windows patch companion: extract the ZIP and keep
-PGenICCCompanion.conf beside PGenICCCompanion.exe. This package does not
+PGenICCCompanion.conf beside PGeneratorPlusPatchCompanion.exe. This package does not
 contain the Profile Loader.
 
-PGenerator Patch Companion
+PGenerator+ Patch Companion
 ==========================
 
 This package is paired with the PGenerator+ from which it was downloaded.
 
 1. Keep PGenICCCompanion.conf beside the executable.
 2. Enable HDR in the operating system before starting an HDR profile.
-3. Run PGenICCCompanion. It initially opens in a movable, resizable window.
+3. Run PGeneratorPlusPatchCompanion.exe. It initially opens in a movable, resizable window.
    Use the ICC Profile workspace to switch it live between a resizable window
    and borderless fullscreen output. In fullscreen mode, the WebUI Patch Size
    setting controls centered window and APL patterns.

@@ -2,7 +2,7 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="1.2.1.0" processorArchitecture="amd64"
                     name="PGeneratorPlus.ICCCompanion" type="win32" />
-  <description>PGenerator Patch Companion</description>
+  <description>PGenerator+ Patch Companion</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"

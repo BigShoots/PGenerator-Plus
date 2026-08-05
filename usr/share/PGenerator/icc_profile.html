@@ -4,7 +4,7 @@
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
       <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">ICC Profile Builder</div>
-      <div class="meter-icc-note">Measure patches from PGenerator Patch Companion or PGenerator+ HDMI output, build the profile on PGenerator+, then download the finished profile.</div>
+      <div class="meter-icc-note">Measure patches from PGenerator+ Patch Companion or PGenerator+ HDMI output, build the profile on PGenerator+, then download the finished profile.</div>
      </div>
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
     </div>
@@ -68,7 +68,7 @@
        <div class="meter-icc-field" style="margin-bottom:10px">
         <label for="meterIccPatternProvider">Patch generator</label>
         <select id="meterIccPatternProvider" onchange="meterIccPatternProviderChanged()">
-         <option value="companion" selected>PGenerator Patch Companion on the target computer</option>
+         <option value="companion" selected>PGenerator+ Patch Companion on the target computer</option>
          <option value="local">PGenerator+ HDMI output</option>
         </select>
        </div>
