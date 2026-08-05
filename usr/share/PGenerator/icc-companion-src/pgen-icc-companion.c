@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.18"
+#define APP_VERSION "1.3.17"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -114,7 +114,6 @@ typedef struct {
     ID3D11DeviceContext1 *hdr_context1;
     IDXGISwapChain *hdr_swapchain;
     ID3D11RenderTargetView *hdr_render_target;
-    HANDLE hdr_frame_latency_waitable;
     int hdr_width;
     int hdr_height;
 #endif
@@ -1084,7 +1083,6 @@ static void windows_destroy_hdr_output(void)
         IDXGISwapChain_Release(app.hdr_swapchain);
         app.hdr_swapchain = NULL;
     }
-    app.hdr_frame_latency_waitable = NULL;
     if (app.hdr_context1) { ID3D11DeviceContext1_Release(app.hdr_context1); app.hdr_context1 = NULL; }
     if (app.hdr_context) { ID3D11DeviceContext_Release(app.hdr_context); app.hdr_context = NULL; }
     if (app.hdr_device) { ID3D11Device_Release(app.hdr_device); app.hdr_device = NULL; }
@@ -1101,10 +1099,8 @@ static bool windows_hdr_render_target(int width, int height)
     if (app.hdr_render_target && width == app.hdr_width && height == app.hdr_height) return true;
     if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
     if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
-    result = IDXGISwapChain_ResizeBuffers(
-        app.hdr_swapchain, 0, (UINT)width, (UINT)height,
-        DXGI_FORMAT_R10G10B10A2_UNORM,
-        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+    result = IDXGISwapChain_ResizeBuffers(app.hdr_swapchain, 0, (UINT)width, (UINT)height,
+                                         DXGI_FORMAT_R10G10B10A2_UNORM, 0);
     if (FAILED(result)) {
         SDL_SetError("Could not resize the native HDR10 swapchain (0x%08lx)", (unsigned long)result);
         return false;
@@ -1185,7 +1181,6 @@ static bool windows_create_hdr_output(void)
     IDXGIAdapter *adapter = NULL;
     IDXGIFactory2 *factory = NULL;
     IDXGISwapChain1 *swapchain1 = NULL;
-    IDXGISwapChain2 *swapchain2 = NULL;
     IDXGISwapChain3 *swapchain3 = NULL;
     UINT color_support = 0;
     RECT client;
@@ -1204,7 +1199,6 @@ static bool windows_create_hdr_output(void)
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     /* Create the device separately, then obtain its current DXGI factory and
      * use the modern HWND flip-model path. This is the same native HDR10
@@ -1242,19 +1236,6 @@ static bool windows_create_hdr_output(void)
     if (dxgi_device) IDXGIDevice_Release(dxgi_device);
     if (FAILED(result)) {
         SDL_SetError("Could not create the native Windows HDR10 renderer (0x%08lx)", (unsigned long)result);
-        windows_destroy_hdr_output();
-        return false;
-    }
-    result = IDXGISwapChain_QueryInterface(app.hdr_swapchain,
-                                           &IID_IDXGISwapChain2,
-                                           (void **)&swapchain2);
-    if (SUCCEEDED(result))
-        app.hdr_frame_latency_waitable =
-            IDXGISwapChain2_GetFrameLatencyWaitableObject(swapchain2);
-    if (swapchain2) IDXGISwapChain2_Release(swapchain2);
-    if (FAILED(result) || !app.hdr_frame_latency_waitable) {
-        SDL_SetError("The native Windows HDR10 frame scheduler is unavailable (0x%08lx)",
-                     (unsigned long)result);
         windows_destroy_hdr_output();
         return false;
     }
@@ -1306,14 +1287,8 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     float background_color[4] = {(float)background, (float)background, (float)background, 1.0f};
     float patch_color[4] = {(float)r, (float)g, (float)b, 1.0f};
     D3D11_RECT rect;
-    DWORD wait_result;
     if (!SDL_GetWindowSizeInPixels(app.window, &width, &height) ||
         !windows_hdr_render_target(width, height)) return false;
-    wait_result = WaitForSingleObjectEx(app.hdr_frame_latency_waitable, 1000, TRUE);
-    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_IO_COMPLETION) {
-        SDL_SetError("The native HDR10 frame scheduler did not become ready");
-        return false;
-    }
     if (!windows_set_hdr_metadata()) return false;
     rect.left = (LONG)fmaxf(0.0f, destination->x);
     rect.top = (LONG)fmaxf(0.0f, destination->y);
