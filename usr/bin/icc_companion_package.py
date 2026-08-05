@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create a paired PGenerator+ Patch Companion download package."""
 
+import hashlib
 import os
 import re
 import sys
@@ -69,14 +70,24 @@ def build(platform, server, token, output_path):
     config = "# Paired automatically by PGenerator+\nSERVER={}\nTOKEN={}\n".format(server, token)
     if package["kind"] == "installer":
         installer = os.path.join(binary_dir, "PGeneratorPlusICCSetup.exe")
+        checksum_path = installer + ".sha256"
         if not os.path.isfile(installer):
             fail("ICC tools installer is not installed")
+        if not os.path.isfile(checksum_path):
+            fail("ICC tools installer checksum is not installed")
+        with open(checksum_path, "r", encoding="ascii") as checksum_file:
+            checksum_fields = checksum_file.read().strip().split()
+        expected_checksum = checksum_fields[0].lower() if checksum_fields else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_checksum):
+            fail("ICC tools installer checksum is invalid")
         server_value = server.encode("ascii")
         token_value = token.encode("ascii")
         if len(server_value) > len(SERVER_SLOT):
             fail("Pairing information is too large")
         with open(installer, "rb") as source:
             payload = source.read()
+        if hashlib.sha256(payload).hexdigest() != expected_checksum:
+            fail("ICC tools installer failed its release checksum")
         if payload.count(SERVER_SLOT) != 1 or payload.count(TOKEN_SLOT) != 1:
             fail("ICC tools installer pairing slots are invalid")
         payload = payload.replace(SERVER_SLOT, server_value.ljust(len(SERVER_SLOT), b" "), 1)
