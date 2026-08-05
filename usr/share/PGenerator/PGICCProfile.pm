@@ -260,7 +260,7 @@ sub webui_icc_companion_settings_fragment () {
 
 sub webui_icc_companion_settings (@) {
  my ($body)=@_;
- return '{"status":"error","message":"Invalid ICC Companion display settings"}' unless(defined($body) && length($body)<2048);
+ return '{"status":"error","message":"Invalid PGenerator Patch Companion display settings"}' unless(defined($body) && length($body)<2048);
  my $window_mode="";
  my $patch_size=0;
  my $correction_mode="system";
@@ -270,8 +270,8 @@ sub webui_icc_companion_settings (@) {
  $correction_mode=$1 if($body=~/"correction_mode"\s*:\s*"(system|clut|matrix)"/);
  $signal_mode=$1 if($body=~/"correction_signal_mode"\s*:\s*"(sdr|hdr10)"/);
  my %allowed=map { $_=>1 } (2,5,10,18,25,50,75,100,105,110,118,125,150);
- return '{"status":"error","message":"Invalid ICC Companion window mode"}' if($window_mode eq "");
- return '{"status":"error","message":"Invalid ICC Companion patch size"}' unless($allowed{$patch_size});
+ return '{"status":"error","message":"Invalid PGenerator Patch Companion window mode"}' if($window_mode eq "");
+ return '{"status":"error","message":"Invalid PGenerator Patch Companion patch size"}' unless($allowed{$patch_size});
  if($correction_mode ne "system") {
   my @status_stat=stat($_icc_companion_status_file);
   my $status="";
@@ -280,7 +280,7 @@ sub webui_icc_companion_settings (@) {
   }
   if($status=~/"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/) {
    my $version=$1*1000000+$2*1000+$3;
-   return '{"status":"error","message":"Install ICC Companion 1.3.1 or newer before using active-profile correction"}'
+   return '{"status":"error","message":"Install PGenerator Patch Companion 1.3.1 or newer before using active-profile correction"}'
     if($version<1003001);
   }
  }
@@ -289,7 +289,7 @@ sub webui_icc_companion_settings (@) {
  my $revision=int(Time::HiRes::time()*1000);
  $revision=$previous_revision+1 if($revision<=$previous_revision);
  my $content='{"window_mode":"'.$window_mode.'","patch_size":'.$patch_size.',"revision":'.$revision.',"correction_mode":"'.$correction_mode.'","correction_signal_mode":"'.$signal_mode.'"}';
- return '{"status":"error","message":"Could not save ICC Companion display settings"}'
+ return '{"status":"error","message":"Could not save PGenerator Patch Companion display settings"}'
   unless(&webui_icc_companion_write_atomic($_icc_companion_settings_file,$content,0600));
  return '{"status":"ok",'.&webui_icc_companion_settings_fragment().'}';
 }
@@ -407,7 +407,7 @@ sub webui_icc_companion_pattern (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Invalid companion pattern request"}' unless(defined($body) && length($body)<8192);
  my $connected=&webui_icc_companion_status();
- return '{"status":"error","message":"ICC Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
+ return '{"status":"error","message":"PGenerator Patch Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
  my $sequence=int(Time::HiRes::time()*1000);
  if(open(my $fh,"<",$_icc_companion_command_file)) {
   local $/; my $previous=<$fh>||""; close($fh);
@@ -439,17 +439,17 @@ sub webui_icc_companion_pattern (@) {
  }
  return &webui_icc_companion_write_atomic($_icc_companion_command_file,$payload,0644)
   ? '{"status":"ok","sequence":'.$sequence.'}'
-  : '{"status":"error","message":"Could not send a pattern to the ICC Companion"}';
+  : '{"status":"error","message":"Could not send a pattern to PGenerator Patch Companion"}';
 }
 
 sub webui_icc_companion_download (@) {
  my ($query,$host)=@_;
  my $platform=&webui_icc_companion_query_value($query,"platform");
- return ("","","Unsupported ICC Companion platform") unless($platform eq "windows-x64" || $platform eq "windows-portable-x64" || $platform eq "linux-x64");
+ return ("","","Unsupported PGenerator Patch Companion platform") unless($platform eq "windows-x64" || $platform eq "windows-portable-x64" || $platform eq "linux-x64");
  return ("","","Could not determine this PGenerator address") unless(defined($host) && $host=~/^[A-Za-z0-9._\-\[\]:]+$/);
- return ("","","ICC Companion packager is not installed") unless(-f $_icc_companion_packager);
+ return ("","","PGenerator Patch Companion packager is not installed") unless(-f $_icc_companion_packager);
  my $token=&webui_icc_companion_token();
- return ("","","Could not create the ICC Companion pairing token") if($token eq "");
+ return ("","","Could not create the PGenerator Patch Companion pairing token") if($token eq "");
  my $tmp="/tmp/pgen_icc_companion_".$$ ."_".int(rand(1000000)).($platform eq "windows-x64" ? ".exe" : ".zip");
  my $server="http://$host";
  my $output=`/usr/bin/python3 $_icc_companion_packager '$platform' '$server' '$token' '$tmp' 2>&1`;
@@ -462,8 +462,8 @@ sub webui_icc_companion_download (@) {
  $output=~s/[\r\n]+/ /g;
  $output=~s/[^A-Za-z0-9 ._:\/()\[\]-]+/?/g;
  $output=substr($output,0,240);
- &log("ICC Companion package failed: ".($output||"unknown packager error"));
- return ("","",$output||"ICC Companion package generation failed");
+ &log("PGenerator Patch Companion package failed: ".($output||"unknown packager error"));
+ return ("","",$output||"PGenerator Patch Companion package generation failed");
 }
 
 

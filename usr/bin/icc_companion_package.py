@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a PGenerator-paired ICC Companion download package."""
+"""Create a paired PGenerator Patch Companion download package."""
 
 import os
 import re

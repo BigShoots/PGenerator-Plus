@@ -413,9 +413,9 @@ post_companion_patch() {
  COMPANION_SEQUENCE=$sequence
  payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma}"
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
- printf '%s' "$payload" > "$tmp" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
+ printf '%s' "$payload" > "$tmp" || { write_state '{"status":"error","message":"Could not send a patch to PGenerator Patch Companion"}'; return 1; }
  chmod 644 "$tmp" 2>/dev/null || true
- mv -f "$tmp" "$COMPANION_COMMAND_FILE" || { write_state '{"status":"error","message":"Could not send a patch to the ICC Companion"}'; return 1; }
+ mv -f "$tmp" "$COMPANION_COMMAND_FILE" || { write_state '{"status":"error","message":"Could not send a patch to PGenerator Patch Companion"}'; return 1; }
  # Windows can briefly pause the Companion while changing HDR or fullscreen
  # swapchains. Keep the patch pending long enough for polling to resume rather
  # than aborting an otherwise valid measurement run after ten seconds.
@@ -428,13 +428,13 @@ post_companion_patch() {
     ack_status=$(printf '%s' "$ack" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     [[ "$ack_status" == "ok" ]] && return 0
     ack_message=$(printf '%s' "$ack" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-    write_state "{\"status\":\"error\",\"message\":\"${ack_message:-The ICC Companion could not render the requested patch}\"}"
+    write_state "{\"status\":\"error\",\"message\":\"${ack_message:-PGenerator Patch Companion could not render the requested patch}\"}"
     return 1
    fi
   fi
   sleep 0.05
  done
- write_state '{"status":"error","message":"The ICC Companion did not acknowledge the patch"}'
+ write_state '{"status":"error","message":"PGenerator Patch Companion did not acknowledge the patch"}'
  return 1
 }
 

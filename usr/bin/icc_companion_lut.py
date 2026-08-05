@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a compact RGB correction LUT for the PGenerator+ ICC Companion."""
+"""Build a compact RGB correction LUT for PGenerator Patch Companion."""
 
 import math
 import os

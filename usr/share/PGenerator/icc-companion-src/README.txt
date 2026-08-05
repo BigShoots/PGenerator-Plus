@@ -9,8 +9,8 @@ Portable Windows patch companion: extract the ZIP and keep
 PGenICCCompanion.conf beside PGenICCCompanion.exe. This package does not
 contain the Profile Loader.
 
-PGenerator+ ICC Companion
-=========================
+PGenerator Patch Companion
+==========================
 
 This package is paired with the PGenerator+ from which it was downloaded.
 
