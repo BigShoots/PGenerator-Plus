@@ -1355,11 +1355,19 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     rect.bottom = (LONG)fminf((float)height, destination->y + destination->h);
     ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 1,
                                            &app.hdr_render_target, NULL);
-    ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context, app.hdr_render_target,
-                                              background_color);
-    ID3D11DeviceContext1_ClearView(app.hdr_context1,
-                                  (ID3D11View *)app.hdr_render_target,
-                                  patch_color, &rect, 1);
+    if (rect.left <= 0 && rect.top <= 0 &&
+        rect.right >= width && rect.bottom >= height) {
+        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
+                                                  app.hdr_render_target,
+                                                  patch_color);
+    } else {
+        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
+                                                  app.hdr_render_target,
+                                                  background_color);
+        ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                      (ID3D11View *)app.hdr_render_target,
+                                      patch_color, &rect, 1);
+    }
     return windows_present_hdr();
 }
 #endif
