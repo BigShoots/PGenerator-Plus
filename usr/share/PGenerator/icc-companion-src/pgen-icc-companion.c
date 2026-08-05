@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.19"
+#define APP_VERSION "1.3.20"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1673,15 +1673,12 @@ static bool windows_set_borderless_windowed(bool fullscreen)
                                    &app.windowed_height)) return false;
             app.windowed_geometry_valid = true;
         }
-        /* Leave a narrow perimeter outside the borderless client area. A
-         * monitor-covering window, including one extended past the edges, can
-         * be promoted into Windows' fullscreen presentation policy. An inset
-         * window remains on the proven windowed HDR color path while keeping
-         * the measurement target effectively fullscreen. */
+        /* Exact monitor coverage intentionally exercises Windows' fullscreen
+         * presentation promotion path. */
         if (!SDL_SetWindowBordered(app.window, false) ||
             !SDL_SetWindowResizable(app.window, false) ||
-            !SDL_SetWindowPosition(app.window, bounds.x + 8, bounds.y + 8) ||
-            !SDL_SetWindowSize(app.window, bounds.w - 16, bounds.h - 16) ||
+            !SDL_SetWindowPosition(app.window, bounds.x, bounds.y) ||
+            !SDL_SetWindowSize(app.window, bounds.w, bounds.h) ||
             !SDL_SyncWindow(app.window)) return false;
     } else if (app.windowed_geometry_valid) {
         if (!SDL_SetWindowBordered(app.window, true) ||
