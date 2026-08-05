@@ -442,6 +442,19 @@ FRAME=1
 
 The C/C++ binary (`PGeneratord`) reads this file and renders directly to the display via the Pi's GPU.
 
+Classic TCP clients on port `85` may identify themselves with
+`CLIENTNAME:PerceptualPro` followed by the normal command terminator (`0x02 0x0d`).
+`CLIENT_NAME` and `SOFTWARE` are accepted aliases, and `=` may be used instead
+of `:`. The advertised name appears in the PGenerator+ status bar while that
+socket is connected. Names are limited to 64 safe display characters.
+
+In standard Dolby Vision mode, the port `85` `RGB`, `TESTPATTERN`, and
+`TESTTEMPLATE` paths preserve the 8-bit HDMI tunnel while expanding declared
+8-bit or 10-bit source values into the renderer's 12-bit source domain. A
+`10bit` or `12bit` draw suffix, or the `TESTTEMPLATE` bits field, declares a
+higher-precision source. Existing commands without a declaration remain
+8-bit source commands.
+
 ### Privilege Separation
 
 The daemon runs as the `pgenerator` user. Privileged operations (config writes, service control, updates) are delegated to `PGenerator_cmd.pl` via `sudo`, with arguments passed as base64-encoded environment variables.

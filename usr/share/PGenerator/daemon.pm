@@ -617,8 +617,23 @@ sub legacy_external_set_status (@) {
  my $connection=shift;
  my $software=shift;
  $software="DeviceControl" if($software eq "");
+ if($software eq "DeviceControl" && ($legacy_external_client_name{$connection} || "") ne "") {
+  $software=$legacy_external_client_name{$connection};
+ }
  $calibration_client_ip=$client_ip{$connection} || $client_address;
  $calibration_client_software=$software;
+}
+
+sub legacy_external_set_client_name (@) {
+ my $connection=shift;
+ my $software=shift || "";
+ $software=~s/^\s+|\s+$//g;
+ $software=~s/[^A-Za-z0-9 ._+()\/-]//g;
+ $software=substr($software,0,64);
+ return "" if($software eq "");
+ $legacy_external_client_name{$connection}=$software;
+ &legacy_external_set_status($connection,$software);
+ return $software;
 }
 
 sub legacy_external_mark_hcfr (@) {
@@ -632,6 +647,74 @@ sub legacy_external_dv_active (@) {
  return 1 if(int($pgenerator_conf{"is_ll_dovi"} || 0) == 1);
  return 1 if(int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
  return 0;
+}
+
+sub legacy_external_dv_source_max (@) {
+ return 4095 if(int($pgenerator_conf{"dv_status"} || 0) == 1 &&
+                int($pgenerator_conf{"is_std_dovi"} || 0) == 1);
+ return 0;
+}
+
+sub legacy_external_source_bits (@) {
+ my $declared=shift;
+ my $draw=shift || "";
+ return int($1) if($draw =~/(8|10|12)bit$/i);
+ return int($declared) if(defined $declared && $declared =~/^(8|10|12)$/);
+ return 8;
+}
+
+sub legacy_external_scale_dv_value (@) {
+ my $value=shift;
+ my $source_bits=int(shift || 8);
+ return $value if($value !~/^\d+$/);
+ return $value if(&legacy_external_dv_source_max() != 4095);
+ my $source_max=(1 << $source_bits) - 1;
+ if($source_bits == 12) {
+  return 4095 if($value > 4095);
+  return $value;
+ }
+ return 4095 if($value >= $source_max);
+ return $value << (12 - $source_bits);
+}
+
+sub legacy_external_scale_dv_triplet (@) {
+ my $triplet=shift;
+ my $source_bits=shift;
+ return $triplet if(!defined $triplet || $triplet eq "" || &legacy_external_dv_source_max() != 4095);
+ my @values=split(/,/,$triplet,-1);
+ return $triplet if(@values != 3);
+ foreach my $value (@values) {
+  return $triplet if($value !~/^\d+$/);
+  $value=&legacy_external_scale_dv_value($value,$source_bits);
+ }
+ return join(",",@values);
+}
+
+sub legacy_external_prepare_dv_pattern (@) {
+ my ($draw,$rgb,$bg,$declared_bits)=@_;
+ my $source_max=&legacy_external_dv_source_max();
+ return ($draw,$rgb,$bg,0) if($source_max != 4095);
+ my $source_bits=&legacy_external_source_bits($declared_bits,$draw);
+ $rgb=&legacy_external_scale_dv_triplet($rgb,$source_bits);
+ $bg=&legacy_external_scale_dv_triplet($bg,$source_bits);
+ $draw=~s/(?:8|10|12)bit$//i;
+ return ($draw,$rgb,$bg,$source_max);
+}
+
+sub legacy_external_prepare_dv_template_payload (@) {
+ my $payload=shift;
+ my $source_max=&legacy_external_dv_source_max();
+ return ($payload,0) if($source_max != 4095);
+ my @fields=split(/;/,$payload || "",-1);
+ for my $idx (0..8) {
+  $fields[$idx]="" if(!defined $fields[$idx]);
+ }
+ my $source_bits=&legacy_external_source_bits($fields[8],$fields[2]);
+ $fields[0]=&legacy_external_scale_dv_triplet($fields[0],$source_bits);
+ $fields[1]=&legacy_external_scale_dv_triplet($fields[1],$source_bits);
+ $fields[2]=~s/(?:8|10|12)bit$//i;
+ $fields[8]="8";
+ return (join(";",@fields),$source_max);
 }
 
 sub legacy_external_hcfr_triplet_quant_range (@) {
@@ -2320,6 +2403,22 @@ sub pattern_daemon {
      last;
     }
     #
+    # Optional classic-protocol client identity. This lets a port 85 client
+    # advertise its product name in the WebUI status bar without changing
+    # the behavior of clients that do not send an identity command.
+    # CLIENTNAME:PerceptualPro (CLIENT_NAME/SOFTWARE and '=' are aliases)
+    #
+    if($key=~/^(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*)$/i) {
+     my $software=&legacy_external_set_client_name($connection,$1);
+     if($software eq "") {
+      &send_key_to_client($connection,&error("invalid client name"));
+     } else {
+      &log("Pattern client identified: peer=".($client_ip{$connection} || "")." software=$software");
+      &send_key_to_client($connection,$ok_response);
+     }
+     last;
+    }
+    #
     # PGenerator command
     # CMD:GET_CPU
     #
@@ -2439,7 +2538,9 @@ sub pattern_daemon {
      } else {
       &legacy_external_set_status($connection,"DeviceControl");
      }
-      $response=&get_pattern($1,$2,$payload,"TESTTEMPLATE:$2",$source_range);
+      my $source_max=0;
+      ($payload,$source_max)=&legacy_external_prepare_dv_template_payload($payload);
+      $response=&get_pattern($1,$2,$payload,"TESTTEMPLATE:$2",$source_range,$source_max);
      &send_key_to_client($connection,$response);
      &clean_pattern_files();
      last;
@@ -2451,6 +2552,7 @@ sub pattern_daemon {
     #
     if($key=~/$test_pattern_command:(.*):(.*):(.*):(.*):(.*):/) {
       my $draw=$2;
+      my $rgb=$5;
       my $source_range="";
       if($hcfr_client{$connection}) {
        &legacy_external_set_status($connection,"HCFR");
@@ -2459,9 +2561,12 @@ sub pattern_daemon {
       } else {
        &legacy_external_set_status($connection,"DeviceControl");
       }
+      my $source_max=0;
+      my $unused_bg;
+      ($draw,$rgb,$unused_bg,$source_max)=&legacy_external_prepare_dv_pattern($draw,$rgb,undef,undef);
      $pname_file=$1;
      &clean_pattern_files();
-      $response="$ok_response:".&create_pattern_file($draw,$3,$4,"$5","","","","",1,"TESTPATTERN",$source_range);
+      $response="$ok_response:".&create_pattern_file($draw,$3,$4,$rgb,"","","","",1,"TESTPATTERN",$source_range,$source_max);
      &send_key_to_client($connection,$response);
      last;
     }
@@ -2523,6 +2628,8 @@ sub pattern_daemon {
       } else {
        &legacy_external_set_status($connection,"DeviceControl");
       }
+      my $source_max=0;
+      ($draw,$rgb,$bg,$source_max)=&legacy_external_prepare_dv_pattern($draw,$rgb,$bg,undef);
      $command_found=1;
      if($hcfr_marker_text) {
       $log_string="Received hcfr marker text command";
@@ -2535,7 +2642,7 @@ sub pattern_daemon {
      $log_string="Received rgb triplet request command";
      $log_string.=" ($key)" if($key ne "");
      &log($log_string);
-    &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB",$source_range);
+    &create_pattern_file($draw,"$dim",$res,"$rgb","$bg","$position","$text","",1,"RGB",$source_range,$source_max);
      &send_key_to_client($connection,$ok_response);
      last;
     }
@@ -2626,6 +2733,7 @@ sub close_connection {
  $socket_kind="classic" if($socket_kind eq "");
  &log("Pattern socket close: type=$socket_kind peer=$conn_ip reason=$reason") if($reason ne "");
  my $is_hcfr=delete $hcfr_client{$connection};
+ delete $legacy_external_client_name{$connection};
  if($calman{$connection} || ($conn_ip ne "" && $conn_ip eq $calibration_client_ip)) {
   &log("Calman: socket disconnected, preserving pattern state");
   $calibration_client_ip="";
