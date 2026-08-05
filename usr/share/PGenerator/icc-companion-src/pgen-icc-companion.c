@@ -1772,7 +1772,7 @@ static bool windows_set_borderless_windowed(bool fullscreen)
         }
         SetWindowLongPtrW(window, GWL_STYLE,
                           app.windowed_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
-        if (!SetWindowPos(window, HWND_TOP,
+        if (!SetWindowPos(window, HWND_TOPMOST,
                           monitor_info.rcMonitor.left,
                           monitor_info.rcMonitor.top,
                           monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
@@ -1797,11 +1797,7 @@ static bool windows_set_borderless_windowed(bool fullscreen)
 
 static void raise_pattern_window(void)
 {
-#ifdef _WIN32
-    SDL_SetWindowAlwaysOnTop(app.window, false);
-#else
     SDL_SetWindowAlwaysOnTop(app.window, app.fullscreen);
-#endif
     SDL_ShowWindow(app.window);
     SDL_RaiseWindow(app.window);
 #ifdef _WIN32
@@ -1811,8 +1807,11 @@ static void raise_pattern_window(void)
             SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         if (window) {
             ShowWindow(window, SW_SHOW);
-            SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
+            SetWindowPos(window, app.fullscreen ? HWND_TOPMOST : HWND_TOP,
+                         0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            BringWindowToTop(window);
+            SetForegroundWindow(window);
         }
     }
 #endif
