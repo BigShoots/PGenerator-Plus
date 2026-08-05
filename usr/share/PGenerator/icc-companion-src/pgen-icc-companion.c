@@ -31,7 +31,6 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <d3d11_1.h>
-#include <dwmapi.h>
 #include <dxgi1_6.h>
 #include <icm.h>
 #define close_socket closesocket
@@ -49,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.20"
+#define APP_VERSION "1.3.19"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -112,15 +111,11 @@ typedef struct {
     int windowed_width;
     int windowed_height;
     bool windowed_geometry_valid;
-    LONG_PTR windowed_style;
     ID3D11Device *hdr_device;
     ID3D11DeviceContext *hdr_context;
     ID3D11DeviceContext1 *hdr_context1;
     IDXGISwapChain *hdr_swapchain;
     ID3D11RenderTargetView *hdr_render_target;
-    HANDLE hdr_frame_latency_waitable;
-    DXGI_HDR_METADATA_HDR10 hdr_metadata;
-    bool hdr_metadata_valid;
     int hdr_width;
     int hdr_height;
 #endif
@@ -178,7 +173,6 @@ static void set_windows_window_icon(void)
 }
 
 static bool windows_window_hdr_enabled(SDL_Window *window);
-static bool windows_set_borderless_windowed(bool fullscreen);
 
 /* 1 means selected, 0 means cancelled, and -1 requests the SDL fallback. */
 static int select_windows_target_display(SDL_DisplayID *displays, int count, int *selected)
@@ -1091,8 +1085,6 @@ static void windows_destroy_hdr_output(void)
         IDXGISwapChain_Release(app.hdr_swapchain);
         app.hdr_swapchain = NULL;
     }
-    app.hdr_frame_latency_waitable = NULL;
-    app.hdr_metadata_valid = false;
     if (app.hdr_context1) { ID3D11DeviceContext1_Release(app.hdr_context1); app.hdr_context1 = NULL; }
     if (app.hdr_context) { ID3D11DeviceContext_Release(app.hdr_context); app.hdr_context = NULL; }
     if (app.hdr_device) { ID3D11Device_Release(app.hdr_device); app.hdr_device = NULL; }
@@ -1110,8 +1102,7 @@ static bool windows_hdr_render_target(int width, int height)
     if (app.hdr_context) ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 0, NULL, NULL);
     if (app.hdr_render_target) { ID3D11RenderTargetView_Release(app.hdr_render_target); app.hdr_render_target = NULL; }
     result = IDXGISwapChain_ResizeBuffers(app.hdr_swapchain, 0, (UINT)width, (UINT)height,
-                                         DXGI_FORMAT_R10G10B10A2_UNORM,
-                                         DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+                                         DXGI_FORMAT_R10G10B10A2_UNORM, 0);
     if (FAILED(result)) {
         SDL_SetError("Could not resize the native HDR10 swapchain (0x%08lx)", (unsigned long)result);
         return false;
@@ -1164,8 +1155,6 @@ static bool windows_set_hdr_metadata(void)
     metadata.MinMasteringLuminance = (UINT)lround(fmax(0.0, fmin(65535.0, min_luma_wire)));
     metadata.MaxContentLightLevel = (USHORT)lround(fmax(0.0, fmin(10000.0, app.displayed_max_cll)));
     metadata.MaxFrameAverageLightLevel = (USHORT)lround(fmax(0.0, fmin(10000.0, app.displayed_max_fall)));
-    if (app.hdr_metadata_valid &&
-        !memcmp(&metadata, &app.hdr_metadata, sizeof(metadata))) return true;
     result = IDXGISwapChain_QueryInterface(app.hdr_swapchain, &IID_IDXGISwapChain4,
                                            (void **)&swapchain4);
     if (SUCCEEDED(result))
@@ -1174,37 +1163,6 @@ static bool windows_set_hdr_metadata(void)
     if (swapchain4) IDXGISwapChain4_Release(swapchain4);
     if (FAILED(result)) {
         SDL_SetError("Could not apply HDR10 mastering metadata (0x%08lx)", (unsigned long)result);
-        return false;
-    }
-    app.hdr_metadata = metadata;
-    app.hdr_metadata_valid = true;
-    return true;
-}
-
-static bool windows_wait_hdr_frame(void)
-{
-    DWORD wait_result;
-    if (app.hdr_frame_latency_waitable) {
-        do {
-            wait_result = WaitForSingleObjectEx(app.hdr_frame_latency_waitable,
-                                                1000, TRUE);
-        } while (wait_result == WAIT_IO_COMPLETION);
-        if (wait_result != WAIT_OBJECT_0) {
-            SDL_SetError("The dogegen-style HDR frame wait failed (0x%08lx)",
-                         (unsigned long)wait_result);
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool windows_present_hdr(void)
-{
-    HRESULT result;
-    result = IDXGISwapChain_Present(app.hdr_swapchain, 1, 0);
-    if (FAILED(result)) {
-        SDL_SetError("The native HDR10 frame could not be presented (0x%08lx)",
-                     (unsigned long)result);
         return false;
     }
     return true;
@@ -1225,7 +1183,6 @@ static bool windows_create_hdr_output(void)
     IDXGIAdapter *adapter = NULL;
     IDXGIFactory2 *factory = NULL;
     IDXGISwapChain1 *swapchain1 = NULL;
-    IDXGISwapChain2 *swapchain2 = NULL;
     IDXGISwapChain3 *swapchain3 = NULL;
     UINT color_support = 0;
     RECT client;
@@ -1244,7 +1201,6 @@ static bool windows_create_hdr_output(void)
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     /* Create the device separately, then obtain its current DXGI factory and
      * use the modern HWND flip-model path. This is the same native HDR10
@@ -1285,18 +1241,6 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
-    result = IDXGISwapChain_QueryInterface(app.hdr_swapchain, &IID_IDXGISwapChain2,
-                                           (void **)&swapchain2);
-    if (SUCCEEDED(result))
-        app.hdr_frame_latency_waitable =
-            IDXGISwapChain2_GetFrameLatencyWaitableObject(swapchain2);
-    if (swapchain2) IDXGISwapChain2_Release(swapchain2);
-    if (FAILED(result) || !app.hdr_frame_latency_waitable) {
-        SDL_SetError("Could not create the dogegen-style HDR frame wait object (0x%08lx)",
-                     (unsigned long)result);
-        windows_destroy_hdr_output();
-        return false;
-    }
     result = ID3D11DeviceContext_QueryInterface(app.hdr_context,
                                                 &IID_ID3D11DeviceContext1,
                                                 (void **)&app.hdr_context1);
@@ -1328,7 +1272,7 @@ static bool windows_create_hdr_output(void)
     }
     app.hdr = true;
     app.hdr_active = windows_window_hdr_enabled(app.window);
-    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-dogegen",
+    SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-composed",
                 sizeof(app.renderer_name));
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
@@ -1346,29 +1290,22 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     float patch_color[4] = {(float)r, (float)g, (float)b, 1.0f};
     D3D11_RECT rect;
     if (!SDL_GetWindowSizeInPixels(app.window, &width, &height) ||
-        !windows_wait_hdr_frame() ||
         !windows_hdr_render_target(width, height)) return false;
     if (!windows_set_hdr_metadata()) return false;
     rect.left = (LONG)fmaxf(0.0f, destination->x);
     rect.top = (LONG)fmaxf(0.0f, destination->y);
     rect.right = (LONG)fminf((float)width, destination->x + destination->w);
     rect.bottom = (LONG)fminf((float)height, destination->y + destination->h);
-    ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 1,
-                                           &app.hdr_render_target, NULL);
-    if (rect.left <= 0 && rect.top <= 0 &&
-        rect.right >= width && rect.bottom >= height) {
-        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
-                                                  app.hdr_render_target,
-                                                  patch_color);
-    } else {
-        ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
-                                                  app.hdr_render_target,
-                                                  background_color);
-        ID3D11DeviceContext1_ClearView(app.hdr_context1,
-                                      (ID3D11View *)app.hdr_render_target,
-                                      patch_color, &rect, 1);
+    ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context, app.hdr_render_target,
+                                              background_color);
+    ID3D11DeviceContext1_ClearView(app.hdr_context1,
+                                  (ID3D11View *)app.hdr_render_target,
+                                  patch_color, &rect, 1);
+    if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) {
+        SDL_SetError("The native HDR10 frame could not be presented");
+        return false;
     }
-    return windows_present_hdr();
+    return true;
 }
 #endif
 
@@ -1598,16 +1535,13 @@ static bool render_alignment(void)
         rects[1].left = (LONG)vertical.x; rects[1].top = (LONG)vertical.y;
         rects[1].right = (LONG)(vertical.x + vertical.w);
         rects[1].bottom = (LONG)(vertical.y + vertical.h);
-        if (!windows_wait_hdr_frame() ||
-            !windows_hdr_render_target(width, height)) return false;
-        ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 1,
-                                               &app.hdr_render_target, NULL);
+        if (!windows_hdr_render_target(width, height)) return false;
         ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
                                                   app.hdr_render_target, black);
         ID3D11DeviceContext1_ClearView(app.hdr_context1,
                                       (ID3D11View *)app.hdr_render_target,
                                       white, rects, 2);
-        if (!windows_present_hdr()) return false;
+        if (FAILED(IDXGISwapChain_Present(app.hdr_swapchain, 1, 0))) return false;
         app.alignment = true;
         return true;
     }
@@ -1644,31 +1578,10 @@ static bool render_patch(const char *mode, double r, double g, double b)
     bool hdr = !strcmp(mode, "hdr10");
     bool renderer_ready = app.renderer != NULL;
 #ifdef _WIN32
-    bool restore_dogegen_fullscreen = false;
-#endif
-#ifdef _WIN32
     renderer_ready = renderer_ready || app.hdr_swapchain != NULL;
 #endif
     if (!renderer_ready || hdr != app.hdr) {
-#ifdef _WIN32
-        /* dogegen creates and configures its HDR10 swapchain while windowed,
-         * then moves that same chain into monitor-sized borderless output. */
-        if (hdr && app.fullscreen && !app.hdr_swapchain) {
-            if (!windows_set_borderless_windowed(false)) return false;
-            restore_dogegen_fullscreen = true;
-        }
-#endif
-        if (!create_renderer(hdr)) {
-#ifdef _WIN32
-            if (restore_dogegen_fullscreen)
-                windows_set_borderless_windowed(true);
-#endif
-            return false;
-        }
-#ifdef _WIN32
-        if (restore_dogegen_fullscreen &&
-            !windows_set_borderless_windowed(true)) return false;
-#endif
+        if (!create_renderer(hdr)) return false;
     }
     patch_size = app.displayed_size > 0 ? app.displayed_size : 100;
     window_percent = patch_size;
@@ -1750,44 +1663,33 @@ static bool render_current_frame(void)
 #ifdef _WIN32
 static bool windows_set_borderless_windowed(bool fullscreen)
 {
-    HWND window = (HWND)SDL_GetPointerProperty(
-        SDL_GetWindowProperties(app.window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    if (!window) return false;
     if (fullscreen) {
-        MONITORINFO monitor_info;
-        RECT window_rect;
-        HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-        SDL_zero(monitor_info);
-        monitor_info.cbSize = sizeof(monitor_info);
-        if (!monitor || !GetMonitorInfoW(monitor, &monitor_info)) return false;
+        SDL_Rect bounds;
+        SDL_DisplayID display = SDL_GetDisplayForWindow(app.window);
+        if (!display || !SDL_GetDisplayBounds(display, &bounds)) return false;
         if (!app.windowed_geometry_valid) {
-            if (!GetWindowRect(window, &window_rect)) return false;
-            app.windowed_x = window_rect.left;
-            app.windowed_y = window_rect.top;
-            app.windowed_width = window_rect.right - window_rect.left;
-            app.windowed_height = window_rect.bottom - window_rect.top;
-            app.windowed_style = GetWindowLongPtrW(window, GWL_STYLE);
+            if (!SDL_GetWindowPosition(app.window, &app.windowed_x, &app.windowed_y) ||
+                !SDL_GetWindowSize(app.window, &app.windowed_width,
+                                   &app.windowed_height)) return false;
             app.windowed_geometry_valid = true;
         }
-        SetWindowLongPtrW(window, GWL_STYLE,
-                          app.windowed_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
-        if (!SetWindowPos(window, HWND_TOPMOST,
-                          monitor_info.rcMonitor.left,
-                          monitor_info.rcMonitor.top,
-                          monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
-                          monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
-                          SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) return false;
-        ShowWindow(window, SW_MAXIMIZE);
-        if (!SDL_SyncWindow(app.window)) return false;
+        /* Leave a narrow perimeter outside the borderless client area. A
+         * monitor-covering window, including one extended past the edges, can
+         * be promoted into Windows' fullscreen presentation policy. An inset
+         * window remains on the proven windowed HDR color path while keeping
+         * the measurement target effectively fullscreen. */
+        if (!SDL_SetWindowBordered(app.window, false) ||
+            !SDL_SetWindowResizable(app.window, false) ||
+            !SDL_SetWindowPosition(app.window, bounds.x + 8, bounds.y + 8) ||
+            !SDL_SetWindowSize(app.window, bounds.w - 16, bounds.h - 16) ||
+            !SDL_SyncWindow(app.window)) return false;
     } else if (app.windowed_geometry_valid) {
-        SetWindowLongPtrW(window, GWL_STYLE, app.windowed_style);
-        if (!SetWindowPos(window, HWND_NOTOPMOST,
-                          app.windowed_x, app.windowed_y,
-                          app.windowed_width, app.windowed_height,
-                          SWP_FRAMECHANGED | SWP_NOACTIVATE)) return false;
-        ShowWindow(window, SW_NORMAL);
-        if (!SDL_SyncWindow(app.window)) return false;
+        if (!SDL_SetWindowBordered(app.window, true) ||
+            !SDL_SetWindowResizable(app.window, true) ||
+            !SDL_SetWindowPosition(app.window, app.windowed_x, app.windowed_y) ||
+            !SDL_SetWindowSize(app.window, app.windowed_width,
+                               app.windowed_height) ||
+            !SDL_SyncWindow(app.window)) return false;
         app.windowed_geometry_valid = false;
     }
     app.fullscreen = fullscreen;
@@ -1807,8 +1709,7 @@ static void raise_pattern_window(void)
             SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         if (window) {
             ShowWindow(window, SW_SHOW);
-            SetWindowPos(window, app.fullscreen ? HWND_TOPMOST : HWND_TOP,
-                         0, 0, 0, 0,
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             BringWindowToTop(window);
             SetForegroundWindow(window);
@@ -2167,8 +2068,6 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 #ifdef _WIN32
     {
         WSADATA data;
-        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return SDL_APP_FAILURE;
     }
 #endif
@@ -2185,15 +2084,6 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     if (!app.window) return SDL_APP_FAILURE;
 #ifdef _WIN32
     set_windows_window_icon();
-    {
-        HWND window = (HWND)SDL_GetPointerProperty(
-            SDL_GetWindowProperties(app.window),
-            SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-        DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_DONOTROUND;
-        if (window)
-            DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE,
-                                  &corners, sizeof(corners));
-    }
 #endif
     if (!select_target_display()) return SDL_APP_FAILURE;
     app.fullscreen = false;
@@ -2293,7 +2183,6 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     }
     SDL_Quit();
 #ifdef _WIN32
-    SetThreadExecutionState(ES_CONTINUOUS);
     WSACleanup();
 #endif
 }
