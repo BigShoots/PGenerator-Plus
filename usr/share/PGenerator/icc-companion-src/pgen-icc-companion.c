@@ -48,7 +48,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.16"
+#define APP_VERSION "1.3.17"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -106,6 +106,11 @@ typedef struct {
     char correction_profile[192];
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
+    int windowed_x;
+    int windowed_y;
+    int windowed_width;
+    int windowed_height;
+    bool windowed_geometry_valid;
     ID3D11Device *hdr_device;
     ID3D11DeviceContext *hdr_context;
     ID3D11DeviceContext1 *hdr_context1;
@@ -1655,6 +1660,38 @@ static bool render_current_frame(void)
                         app.displayed_r, app.displayed_g, app.displayed_b);
 }
 
+#ifdef _WIN32
+static bool windows_set_borderless_windowed(bool fullscreen)
+{
+    if (fullscreen) {
+        SDL_Rect bounds;
+        SDL_DisplayID display = SDL_GetDisplayForWindow(app.window);
+        if (!display || !SDL_GetDisplayBounds(display, &bounds)) return false;
+        if (!app.windowed_geometry_valid) {
+            if (!SDL_GetWindowPosition(app.window, &app.windowed_x, &app.windowed_y) ||
+                !SDL_GetWindowSize(app.window, &app.windowed_width,
+                                   &app.windowed_height)) return false;
+            app.windowed_geometry_valid = true;
+        }
+        if (!SDL_SetWindowBordered(app.window, false) ||
+            !SDL_SetWindowResizable(app.window, false) ||
+            !SDL_SetWindowPosition(app.window, bounds.x, bounds.y) ||
+            !SDL_SetWindowSize(app.window, bounds.w, bounds.h) ||
+            !SDL_SyncWindow(app.window)) return false;
+    } else if (app.windowed_geometry_valid) {
+        if (!SDL_SetWindowBordered(app.window, true) ||
+            !SDL_SetWindowResizable(app.window, true) ||
+            !SDL_SetWindowPosition(app.window, app.windowed_x, app.windowed_y) ||
+            !SDL_SetWindowSize(app.window, app.windowed_width,
+                               app.windowed_height) ||
+            !SDL_SyncWindow(app.window)) return false;
+        app.windowed_geometry_valid = false;
+    }
+    app.fullscreen = fullscreen;
+    return true;
+}
+#endif
+
 static void raise_pattern_window(void)
 {
     SDL_SetWindowAlwaysOnTop(app.window, app.fullscreen);
@@ -1678,8 +1715,14 @@ static void raise_pattern_window(void)
 
 static bool apply_display_settings(bool fullscreen, int patch_size)
 {
+#ifndef _WIN32
     SDL_WindowFlags flags;
+#endif
     if (patch_size < 1 || patch_size > 198) patch_size = 100;
+#ifdef _WIN32
+    if (app.fullscreen != fullscreen &&
+        !windows_set_borderless_windowed(fullscreen)) return false;
+#else
     flags = SDL_GetWindowFlags(app.window);
     app.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
     if (app.fullscreen != fullscreen) {
@@ -1691,6 +1734,7 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
         if (!SDL_SetWindowFullscreen(app.window, fullscreen)) return false;
         app.fullscreen = fullscreen;
     }
+#endif
     app.displayed_size = patch_size;
     raise_pattern_window();
     return render_current_frame();
@@ -2079,8 +2123,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     if (event->type == SDL_EVENT_KEY_DOWN) {
         if (event->key.key == SDLK_ESCAPE) return SDL_APP_SUCCESS;
         if (event->key.key == SDLK_F11) {
+#ifdef _WIN32
+            bool fullscreen = !state->fullscreen;
+#else
             SDL_WindowFlags flags = SDL_GetWindowFlags(state->window);
             bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) == 0;
+#endif
             apply_display_settings(fullscreen, state->displayed_size);
         }
     }
