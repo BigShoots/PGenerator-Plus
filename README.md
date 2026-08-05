@@ -451,19 +451,19 @@ Existing `10bit` declarations are also accepted and retain their added source
 precision, but they are not required for 1.6-compatible operation.
 
 A client that supports both versions can advertise its name without detecting
-the PGenerator version by using the existing optional TEXT field of a normal
-rectangle request:
+the PGenerator version by extending the side-effect-free `GETSTATUS` request:
 
 ```
-RGB=RECTANGLE;500,500;0;235,235,235;16,16,16;50,50;CLIENTNAME=PerceptualPro
+GETSTATUS:CLIENTNAME=PerceptualPro
 ```
 
-PGenerator 1.6 accepts and ignores the TEXT field for a rectangle. PGenerator+
-shows the sanitized name in its status bar while the socket is connected. A
-PGenerator+-only client may alternatively send `CLIENTNAME:PerceptualPro` as a
-standalone command. `CLIENT_NAME` and `SOFTWARE` are accepted aliases, `=` may
-replace `:`, names are limited to 64 safe display characters, and commands use
-the normal `0x02 0x0d` terminator.
+PGenerator 1.6 handles this with its existing `GETSTATUS` command and does not
+draw or alter the current pattern. PGenerator+ returns the same status response
+and also shows the sanitized name in its status bar while the socket is
+connected. A PGenerator+-only client may alternatively send
+`CLIENTNAME:PerceptualPro` as a standalone command. `CLIENT_NAME` and
+`SOFTWARE` are accepted aliases, `=` may replace `:`, names are limited to 64
+safe display characters, and commands use the normal `0x02 0x0d` terminator.
 
 ### Privilege Separation
 

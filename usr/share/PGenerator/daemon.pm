@@ -636,10 +636,10 @@ sub legacy_external_set_client_name (@) {
  return $software;
 }
 
-sub legacy_external_client_name_from_text (@) {
+sub legacy_external_client_name_from_marker (@) {
  my $connection=shift;
- my $text=shift || "";
- return "" if($text !~/^\s*(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*?)\s*$/i);
+ my $marker=shift || "";
+ return "" if($marker !~/^\s*(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*?)\s*$/i);
  return &legacy_external_set_client_name($connection,$1);
 }
 
@@ -2403,8 +2403,14 @@ sub pattern_daemon {
     #
     # GET STATUS
     # GETSTATUS
+    # GETSTATUS:CLIENTNAME=PerceptualPro is a side-effect-free identity form
+    # that remains compatible with PGenerator 1.6. Its legacy matcher accepts
+    # any command containing GETSTATUS and returns status without drawing.
     #
     if($key=~/$status_command/) {
+     if($key=~/^\Q$status_command\E\s*[:;]\s*(.*)$/i) {
+      &legacy_external_client_name_from_marker($connection,$1);
+     }
      $response="$ok_response:$status";
      &send_key_to_client($connection,$response);
      last;
@@ -2414,9 +2420,8 @@ sub pattern_daemon {
     # advertise its product name in the WebUI status bar without changing
     # the behavior of clients that do not send an identity command.
     # CLIENTNAME:PerceptualPro (CLIENT_NAME/SOFTWARE and '=' are aliases).
-    # Clients that must also support PGenerator 1.6 can instead put the same
-    # marker in the optional TEXT field of a normal RGB=RECTANGLE command;
-    # 1.6 accepts and ignores rectangle text while PGenerator+ reads the name.
+    # Clients that must also support PGenerator 1.6 should use the extended
+    # GETSTATUS form above because a standalone identity is unknown to 1.6.
     #
     if($key=~/^(?:CLIENTNAME|CLIENT_NAME|SOFTWARE)\s*[:=]\s*(.*)$/i) {
      my $software=&legacy_external_set_client_name($connection,$1);
@@ -2627,7 +2632,6 @@ sub pattern_daemon {
     #
     if($key=~/$rgb_triplet_command=(.*)/) {
       my ($draw,$dim,$res,$rgb,$bg,$position,$text)=split($separator,$1);
-      &legacy_external_client_name_from_text($connection,$text);
       my $hcfr_marker_only=&legacy_external_detect_hcfr_rgb($draw,$text);
       my $hcfr_marker_text=($hcfr_marker_only && uc($draw || "") eq "TEXT") ? 1 : 0;
       my $source_range="";
