@@ -1181,10 +1181,9 @@ static bool windows_set_hdr_metadata(void)
     return true;
 }
 
-static bool windows_present_hdr(void)
+static bool windows_wait_hdr_frame(void)
 {
     DWORD wait_result;
-    HRESULT result;
     if (app.hdr_frame_latency_waitable) {
         do {
             wait_result = WaitForSingleObjectEx(app.hdr_frame_latency_waitable,
@@ -1196,6 +1195,12 @@ static bool windows_present_hdr(void)
             return false;
         }
     }
+    return true;
+}
+
+static bool windows_present_hdr(void)
+{
+    HRESULT result;
     result = IDXGISwapChain_Present(app.hdr_swapchain, 1, 0);
     if (FAILED(result)) {
         SDL_SetError("The native HDR10 frame could not be presented (0x%08lx)",
@@ -1341,6 +1346,7 @@ static bool windows_render_hdr(double r, double g, double b, double background,
     float patch_color[4] = {(float)r, (float)g, (float)b, 1.0f};
     D3D11_RECT rect;
     if (!SDL_GetWindowSizeInPixels(app.window, &width, &height) ||
+        !windows_wait_hdr_frame() ||
         !windows_hdr_render_target(width, height)) return false;
     if (!windows_set_hdr_metadata()) return false;
     rect.left = (LONG)fmaxf(0.0f, destination->x);
@@ -1584,7 +1590,8 @@ static bool render_alignment(void)
         rects[1].left = (LONG)vertical.x; rects[1].top = (LONG)vertical.y;
         rects[1].right = (LONG)(vertical.x + vertical.w);
         rects[1].bottom = (LONG)(vertical.y + vertical.h);
-        if (!windows_hdr_render_target(width, height)) return false;
+        if (!windows_wait_hdr_frame() ||
+            !windows_hdr_render_target(width, height)) return false;
         ID3D11DeviceContext_OMSetRenderTargets(app.hdr_context, 1,
                                                &app.hdr_render_target, NULL);
         ID3D11DeviceContext_ClearRenderTargetView(app.hdr_context,
