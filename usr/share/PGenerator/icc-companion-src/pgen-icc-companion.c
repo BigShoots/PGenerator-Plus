@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.24"
+#define APP_VERSION "1.3.25"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -2247,11 +2247,14 @@ static void process_network_updates(void)
         /* On this Windows/NVIDIA path, an exact-fullscreen HDR swapchain can
          * remain tagged with the dim desktop composition policy after a dark
          * patch. Alt-Tab or an SDR-to-HDR transition immediately restores the
-         * correct PQ output. Recreate only when a new fullscreen HDR patch is
-         * selected, not for the per-refresh redraw loop or repeated reads of
-         * the same patch. Destroying the old source state and creating a new
-         * PQ swapchain forces DWM and the driver to classify it again. */
-        if (refresh_fullscreen_hdr && !create_renderer(true)) ok = false;
+         * correct PQ output. Perform a short real SDR presentation reset only
+         * when a new fullscreen HDR patch is selected, not for the per-refresh
+         * redraw loop or repeated reads of the same patch. The normal meter
+         * settle delay starts after the new HDR patch is acknowledged, so it
+         * cannot sample this reset frame. */
+        if (refresh_fullscreen_hdr &&
+            (!try_create_renderer(false, NULL) ||
+             (SDL_Delay(50), !create_renderer(true)))) ok = false;
         else ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
 #else
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
