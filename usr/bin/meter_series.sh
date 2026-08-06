@@ -1613,6 +1613,41 @@ nonblack_zero_reading() {
   }'
 }
 
+# Convert a persistent all-zero parsed reading into an explicit measured-zero
+# result. nonblack_zero_reading only fires on a SUCCESSFULLY PARSED all-zero
+# XYZ: an instrument that failed to read produces no parsed result at all and
+# is handled by the separate no_reading path. Once the retries have
+# re-displayed the patch and re-read it, a persistent exact zero is a real
+# measurement of a crushed output, so it is recorded rather than discarded.
+mark_measured_zero_reading() {
+ local reading="$1" retries="${2:-0}"
+ READING_JSON="$reading" ZERO_RETRIES="$retries" "${PYTHON_BIN:-python}" - <<'PY'
+import json, os, sys
+
+try:
+    rd = json.loads(os.environ.get("READING_JSON", "") or "{}")
+except Exception:
+    sys.exit(1)
+if not isinstance(rd, dict):
+    sys.exit(1)
+
+for key in ("X", "Y", "Z", "luminance"):
+    rd[key] = 0.0
+# A zero reading carries no chromaticity; leave x/y absent rather than 0,0.
+rd.pop("x", None)
+rd.pop("y", None)
+rd["measured_zero"] = 1
+try:
+    rd["zero_read_retries"] = int(os.environ.get("ZERO_RETRIES", "0") or 0)
+except Exception:
+    pass
+# It is a measurement, not an error.
+rd.pop("error", None)
+rd.pop("reason", None)
+sys.stdout.write(json.dumps(rd))
+PY
+}
+
 normalize_oled_zero_black_reading() {
  local reading="$1"
  READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" CCSS_FILE_VALUE="${CCSS_FILE:-}" "${PYTHON_BIN:-python}" - <<'PY'
@@ -2092,8 +2127,15 @@ EOJSON
    ZERO_RETRY_READING=""
   done
   if nonblack_zero_reading "$READING" "$IRE" "$R" "$G" "$B"; then
-   echo "[$(date '+%H:%M:%S.%3N')] zero read guard excluded: step=$STEP_NUM ire=$IRE retries=$ZERO_READ_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
-   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\",\"reason\":\"zero_xyz_luminance\"}")
+   # Keep the measurement. Discarding it removed the node from every chart and
+   # report, which hid exactly the defect being measured: a panel whose low end
+   # is crushed to black genuinely emits no light at these stimuli, and that
+   # zero is the result the operator needs to see.
+   echo "[$(date '+%H:%M:%S.%3N')] zero read guard: recording measured zero step=$STEP_NUM ire=$IRE retries=$ZERO_READ_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
+   MEASURED_ZERO_READING=$(mark_measured_zero_reading "$READING" "$ZERO_READ_RETRIES" 2>/dev/null || true)
+   if [[ -n "$MEASURED_ZERO_READING" ]]; then
+    READING="$MEASURED_ZERO_READING"
+   fi
   fi
  fi
 

@@ -22537,10 +22537,17 @@ function meterReadingXYZ(reading){
  meterNormalizeMeasuredReading(reading);
  const Y=meterReadingLuminanceNits(reading);
  if(!(Y>0)){
-  if(Number(Y)===0&&meterReadingTargetsBlack(reading)){
+  // A measured zero is a REAL result for any patch, not just the black step.
+  // A crushed panel genuinely emits no light at 5%/10% stimulus, and the meter
+  // reports an exact 0 XYZ for it. Restricting this to meterReadingTargetsBlack
+  // returned null for every other patch that measured 0, which dropped the node
+  // out of meterReadingXYZ and therefore out of RGB balance, the per-channel
+  // overlays and the report tables -- hiding the very defect being measured.
+  // Only a genuinely absent reading (luminance/Y not present) stays null.
+  if(Number(Y)===0){
    const X=(reading.X!=null)?Number(reading.X):0;
    const Z=(reading.Z!=null)?Number(reading.Z):0;
-   if(Number.isFinite(X)&&Number.isFinite(Z)&&Math.abs(X)<1e-9&&Math.abs(Z)<1e-9) return {X:0,Y:0,Z:0};
+   return {X:Number.isFinite(X)?X:0,Y:0,Z:Number.isFinite(Z)?Z:0,observer:reading.observer||'1931_2'};
   }
   return null;
  }
@@ -23975,7 +23982,12 @@ function meterRgbBalanceFormula(){
 function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
- if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100,noChroma:true};
+ // A patch that emitted no light has no chromaticity, so it has no RGB balance.
+ // In the chroma-only modes the target is rescaled to the measured luminance,
+ // so a zero measurement would otherwise collapse target and measurement onto
+ // each other and plot as a flawless 100/100/100.
+ if(!(readingXYZ.Y>0)) return {R:100,G:100,B:100,noChroma:true};
  const mode = meterResolveGreyRefMode(modeOrIncl);
  // Use the absolute D65 white target for greyscale RGB balance in all modes
  // so HDR/DV 100% white shows its real white-point error instead of being
@@ -24043,12 +24055,16 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel){
 function rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
- if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100};
+ if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100,noChroma:true};
+ // A patch that emitted no light has no chromaticity, so it has no RGB balance.
+ // Report that explicitly instead of returning a neutral 100/100/100, which
+ // reads as "perfectly balanced" on the chart and in the report tables.
+ if(!(readingXYZ.Y>0)) return {R:100,G:100,B:100,noChroma:true};
  const mode = meterResolveGreyRefMode(modeOrIncl);
  const s = readingXYZ.X+readingXYZ.Y+readingXYZ.Z;
- if(!(s>0)) return {R:100,G:100,B:100};
+ if(!(s>0)) return {R:100,G:100,B:100,noChroma:true};
  const x = readingXYZ.X/s, y = readingXYZ.Y/s;
- if(!(y>0)) return {R:100,G:100,B:100};
+ if(!(y>0)) return {R:100,G:100,B:100,noChroma:true};
  let fact = 1.0;
  if(mode==='eotf'){
   const explicitBlack=Number(blackLevel);
@@ -47734,7 +47750,7 @@ function drawRGBChart(gs,allSteps,readingMap){
  const blackLevel=meterChartBlackLevel(gs);
  gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode,blackLevel);});
  // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
- const allVals=Object.values(balMap).flatMap(b=>[b.R,b.G,b.B]);
+ const allVals=Object.values(balMap).filter(b=>b&&!b.noChroma).flatMap(b=>[b.R,b.G,b.B]);
  let yMin,yMax;
  if(allVals.length>0){
   const dataMin=Math.min(...allVals),dataMax=Math.max(...allVals);
@@ -47760,7 +47776,10 @@ function drawRGBChart(gs,allSteps,readingMap){
  xSteps.forEach((step,idx)=>{
   const x=meterGreyCategoryChartX(xSteps,idx);
   const bal=balMap[step.ire];
-  if(bal){
+  // noChroma == the patch emitted no light, so it has no RGB balance to plot.
+  // Skipping the point keeps the trace honest; the luminance/EOTF and Delta E
+  // charts still carry the node and show the size of the error.
+  if(bal&&!bal.noChroma){
    rPts.push([x,Math.max(0,Math.min(1,(bal.R-yMin)/(yMax-yMin)))]);
    gPts.push([x,Math.max(0,Math.min(1,(bal.G-yMin)/(yMax-yMin)))]);
    bPts.push([x,Math.max(0,Math.min(1,(bal.B-yMin)/(yMax-yMin)))]);
