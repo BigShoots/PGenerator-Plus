@@ -69,7 +69,10 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.33"
+#define APP_VERSION "1.3.34"
+/* Width in source code units over which the grey-axis calibration blends into
+ * the cLUT result. */
+#define PGEN_NEUTRAL_BLEND 0.06
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1110,6 +1113,62 @@ static double mhc2_curve_sample(const unsigned char *curve, uint32_t count,
  * bypassed once Advanced Color is on, so for HDR the Companion is the only
  * thing that can. A profile without the tag is left untouched.
  */
+/* Undo the MHC2 stage Windows applies to windowed output.
+ *
+ * In windowed mode Windows applies the active profile's MHC2 calibration to
+ * the Companion's surface. When the Companion is also applying that profile's
+ * cLUT, the display is corrected twice and the shadows overshoot -- which is
+ * what lifted blacks in a windowed post-calibration read. Fullscreen does not
+ * have the problem because Windows bypasses MHC2 for a borderless
+ * monitor-covering swapchain, which is why the two modes disagreed.
+ *
+ * Pre-compensating with the inverse cancels the OS stage, so windowed and
+ * fullscreen land on the same corrected output.
+ */
+static bool apply_mhc2_inverse(double rgb[3])
+{
+    static const double wire[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
+    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"MHC2");
+    double inverse_wire[3][3],inverse_matrix[3][3],linear[3],xyz[3],undone[3],target[3];
+    double matrix[3][3]={{1,0,0},{0,1,0},{0,0,1}};
+    uint32_t count,matrix_offset,curve_offsets[3];
+    if(!tag.data||tag.size<36||memcmp(tag.data,"MHC2",4))return false;
+    count=read_be32(tag.data+8);matrix_offset=read_be32(tag.data+20);
+    for(int channel=0;channel<3;channel++)curve_offsets[channel]=read_be32(tag.data+24+channel*4);
+    if(matrix_offset){
+        if(matrix_offset+48>tag.size)return false;
+        for(int row=0;row<3;row++)for(int column=0;column<3;column++)
+            matrix[row][column]=read_s15(tag.data+matrix_offset+(row*4+column)*4);
+    }
+    if(count>4096||(count>0&&count<2))return false;
+    if(count)for(int channel=0;channel<3;channel++)
+        if(curve_offsets[channel]<36||curve_offsets[channel]+8+(size_t)count*4>tag.size||
+           memcmp(tag.data+curve_offsets[channel],"sf32",4))return false;
+    if(!inverse_matrix3(wire,inverse_wire))return false;
+    if(!inverse_matrix3(matrix,inverse_matrix))return false;
+    /* Invert the per-channel curve first, then the matrix: the reverse of the
+     * order Windows applies them. */
+    for(int channel=0;channel<3;channel++){
+        double encoded=rgb[channel];
+        if(count){
+            /* The curves are monotonic, so a bisection recovers the input. */
+            double low=0.0,high=1.0;
+            for(int step=0;step<24;step++){
+                double middle=0.5*(low+high);
+                if(mhc2_curve_sample(tag.data+curve_offsets[channel],count,middle)<encoded)low=middle;
+                else high=middle;
+            }
+            encoded=0.5*(low+high);
+        }
+        target[channel]=pq_to_nits(encoded)/10000.0;
+    }
+    for(int row=0;row<3;row++)xyz[row]=wire[row][0]*target[0]+wire[row][1]*target[1]+wire[row][2]*target[2];
+    for(int row=0;row<3;row++)undone[row]=inverse_matrix[row][0]*xyz[0]+inverse_matrix[row][1]*xyz[1]+inverse_matrix[row][2]*xyz[2];
+    for(int row=0;row<3;row++)linear[row]=inverse_wire[row][0]*undone[0]+inverse_wire[row][1]*undone[1]+inverse_wire[row][2]*undone[2];
+    for(int channel=0;channel<3;channel++)rgb[channel]=linear_to_pq(linear[channel]<0.0?0.0:linear[channel]);
+    return true;
+}
+
 static bool apply_vcgt(double rgb[3])
 {
     IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt");
@@ -1134,6 +1193,56 @@ static bool apply_vcgt(double rgb[3])
         double second=read_be16(base+((size_t)low+1)*2)/65535.0;
         rgb[channel]=first*(1.0-fraction)+second*fraction;
     }
+    return true;
+}
+
+/* Sample one vcgt channel curve. */
+static bool vcgt_table(const unsigned char **table,uint32_t *entries)
+{
+    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt");
+    if(!tag.data||tag.size<18||memcmp(tag.data,"vcgt",4))return false;
+    if(read_be32(tag.data+8)!=0)return false;
+    uint32_t channels=read_be16(tag.data+12),count=read_be16(tag.data+14),size=read_be16(tag.data+16);
+    if(channels!=3||count<2||size!=2)return false;
+    if(tag.size<18u+(size_t)channels*count*2u)return false;
+    *table=tag.data+18;*entries=count;
+    return true;
+}
+
+static double vcgt_sample(const unsigned char *table,uint32_t entries,int channel,double value)
+{
+    if(!(value>0.0))value=0.0;
+    if(value>1.0)value=1.0;
+    double position=value*(double)(entries-1);
+    uint32_t low=(uint32_t)position;
+    if(low>entries-2)low=entries-2;
+    double fraction=position-(double)low;
+    const unsigned char *base=table+(size_t)channel*entries*2u;
+    double first=read_be16(base+(size_t)low*2)/65535.0;
+    double second=read_be16(base+((size_t)low+1)*2)/65535.0;
+    return first*(1.0-fraction)+second*fraction;
+}
+
+/* Apply vcgt to the SOURCE code rather than to the cLUT's output.
+ *
+ * vcgt is normally a post-transform stage, but that is precisely why it could
+ * not fix the grey axis: the cLUT converts absolute PCS XYZ into a code, and
+ * its shadow grid cannot resolve that conversion, so the error is already
+ * baked in before vcgt ever sees the value. Measured on one panel, 5% stimulus
+ * still landed 6.7x short of target with vcgt applied downstream.
+ *
+ * The calibration is parameterised on absolute PQ, so for a neutral patch the
+ * correct device value is simply curve(code) -- no cLUT involved. That is the
+ * same position MHC2 occupies, and the reason MHC2 tracks the grey axis while
+ * a downstream vcgt cannot. Chromatic patches still need the cLUT, so the two
+ * are blended by how neutral the request is rather than switched at a
+ * threshold, which would put a seam one code off neutral.
+ */
+static bool apply_vcgt_direct(const double rgb[3],double output[3])
+{
+    const unsigned char *table;uint32_t entries;
+    if(!vcgt_table(&table,&entries))return false;
+    for(int channel=0;channel<3;channel++)output[channel]=vcgt_sample(table,entries,channel,rgb[channel]);
     return true;
 }
 
@@ -1259,9 +1368,30 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
-    /* 1D calibration last, closest to the panel: the transform above was fitted
+    /* 1D calibration, closest to the panel: the transform above was fitted
      * against a display already carrying it. */
     apply_vcgt(output);
+    {
+        /* On the grey axis take the calibration straight from the source code
+         * instead, bypassing the cLUT whose shadow grid cannot resolve the PQ
+         * conversion. Blend by how neutral the request is so there is no seam
+         * one code off neutral. */
+        double direct[3];
+        double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
+        double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
+        double spread=high-low;
+        double weight=1.0-spread/PGEN_NEUTRAL_BLEND;
+        if(weight>0.0&&apply_vcgt_direct(rgb,direct)){
+            if(weight>1.0)weight=1.0;
+            for(int channel=0;channel<3;channel++)
+                output[channel]=weight*direct[channel]+(1.0-weight)*output[channel];
+        }
+    }
+    if(!app.fullscreen&&!app.settings_fullscreen){
+        /* Windowed output still passes through the OS MHC2 stage, so cancel it
+         * here or the display is corrected twice. */
+        apply_mhc2_inverse(output);
+    }
     *red = output[0]; *green = output[1]; *blue = output[2];
     return true;
 #else

@@ -330,15 +330,23 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
     well-behaved display, instead of a near-black response that changes faster
     than its grid can represent.
 
-    The target spans the panel's own black-to-peak range so the curve always
-    covers the full device range: an absolute PQ target would saturate at the
-    measured peak and leave everything above it mapped to device maximum.
+    For HDR the curve is parameterised on ABSOLUTE PQ, so its input is the same
+    PQ code the framebuffer carries. Scaling PQ into the panel's own range
+    instead -- which an earlier revision did to keep the curve invertible --
+    made the curve's input something other than a PQ code, which is wrong for a
+    stage the framebuffer feeds directly.
+
+    No tone mapping is applied here. The HDR metadata already advertises the
+    mastering peak, so rolling off is the display's or the application's job;
+    doing it in the calibration would tone map a second time. Codes above the
+    panel's measured peak simply clip, and the saturated tail is ramped below
+    so the curve still has a usable inverse for the characterization remap.
     """
     channel_samples = neutral_channel_samples(rows, black, primaries)
     black_nits = max(0.0, black["xyz"][1])
     peak_nits = max(white["xyz"][1], black_nits + 1e-4)
     span = peak_nits - black_nits
-    peak_pq = nits_to_pq(peak_nits) if profile_type in ("kde-hdr", "windows-hdr") else 0.0
+    hdr = profile_type in ("kde-hdr", "windows-hdr")
     black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
     curves = []
     for channel in range(3):
@@ -346,8 +354,8 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
         previous = 0.0
         for index in range(entries):
             position = index / float(entries - 1)
-            if peak_pq > 0.0:
-                target = (pq_to_nits(position * peak_pq) - black_nits) / span
+            if hdr:
+                target = (pq_to_nits(position) - black_nits) / span
             else:
                 target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
             target = max(0.0, min(1.0, target))
@@ -355,6 +363,23 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
             previous = max(previous, max(0.0, min(1.0, device)))
             values.append(previous)
         values[0] = 0.0
+        # The roll-off asymptotes to the panel peak, so every code above the
+        # knee lands on device maximum. Left flat, the characterization remap
+        # has no inverse there and collapses the whole highlight range onto a
+        # single value. Ramp the saturated tail instead: strictly increasing,
+        # still reaching maximum at full scale, and far too small a change to
+        # affect the luminance the panel actually produces.
+        saturated = entries
+        for index in range(entries):
+            if values[index] >= 1.0:
+                saturated = index
+                break
+        if saturated < entries - 1:
+            base = values[saturated - 1] if saturated > 0 else 0.0
+            remaining = entries - saturated
+            for offset in range(remaining):
+                step = (offset + 1) / float(remaining)
+                values[saturated + offset] = base + (1.0 - base) * step
         values[-1] = 1.0
         curves.append(values)
     return curves
