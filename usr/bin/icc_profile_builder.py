@@ -348,6 +348,23 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
     span = peak_nits - black_nits
     hdr = profile_type in ("kde-hdr", "windows-hdr")
     black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
+    # Per-channel white balance. Driving every channel to the same fraction of
+    # its own maximum reproduces the panel's NATIVE white, not the target one:
+    # it is a tone curve with no chromatic component at all. Measured on one
+    # panel that left the grey axis on native white (0.3048/0.3205 against a
+    # 0.3127/0.3290 target, 7048K), and because this curve overrides the cLUT
+    # on the grey axis it discarded the cLUT's white correction too. Scale each
+    # channel by its neutral gain, the same derivation MHC2 uses, normalised so
+    # the largest channel still reaches full scale.
+    wire = mhc2_wire_matrix(profile_type)
+    physical = measured_primary_matrix(black, white, primaries)
+    adjustment = mat_mul(wire, mat_inv(physical))
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+        fail("Calibration white balance has an invalid neutral response")
+    channel_limits = [gain / maximum_gain for gain in neutral_gains]
     curves = []
     for channel in range(3):
         values = []
@@ -359,28 +376,19 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
             else:
                 target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
             target = max(0.0, min(1.0, target))
+            # Hold this channel at its share of the corrected white so the
+            # grey axis lands on the target white point rather than native.
+            target = min(target, channel_limits[channel])
             device = invert_channel_response(channel_samples[channel], target)
             previous = max(previous, max(0.0, min(1.0, device)))
             values.append(previous)
         values[0] = 0.0
-        # The roll-off asymptotes to the panel peak, so every code above the
-        # knee lands on device maximum. Left flat, the characterization remap
-        # has no inverse there and collapses the whole highlight range onto a
-        # single value. Ramp the saturated tail instead: strictly increasing,
-        # still reaching maximum at full scale, and far too small a change to
-        # affect the luminance the panel actually produces.
-        saturated = entries
-        for index in range(entries):
-            if values[index] >= 1.0:
-                saturated = index
-                break
-        if saturated < entries - 1:
-            base = values[saturated - 1] if saturated > 0 else 0.0
-            remaining = entries - saturated
-            for offset in range(remaining):
-                step = (offset + 1) / float(remaining)
-                values[saturated + offset] = base + (1.0 - base) * step
-        values[-1] = 1.0
+        # No forced endpoint and no tail ramp. Both were wrong: forcing full
+        # scale overwrote the white-balance clamp that holds the two weaker
+        # channels below maximum, and ramping the plateau invented output the
+        # panel cannot produce. Above the measured peak the display simply
+        # clips, so the curve is legitimately flat there -- the remap handles
+        # that by resolving a plateau to its first entry.
         curves.append(values)
     return curves
 
@@ -390,12 +398,18 @@ def calibration_to_profile_value(curve, device):
     entries = len(curve)
     if device <= curve[0]:
         return 0.0
+    # Full scale maps to full scale. Resolving the plateau to its first entry
+    # is physically truer -- the panel reaches peak at its own PQ code, not at
+    # 1.0 -- but it leaves the characterization with no white patch at full
+    # scale and ArgyllCMS cannot fit a profile without one. Sending PQ 1.0 does
+    # still produce peak white, so this remains a true statement about the
+    # display; only the clipped range above the peak is left unsampled.
     if device >= curve[-1]:
         return 1.0
     low, high = 0, entries - 1
     while low < high - 1:
         middle = (low + high) // 2
-        if curve[middle] <= device:
+        if curve[middle] < device:
             low = middle
         else:
             high = middle
