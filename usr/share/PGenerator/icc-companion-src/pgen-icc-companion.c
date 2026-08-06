@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.31"
+#define APP_VERSION "1.3.32"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1101,6 +1101,42 @@ static double mhc2_curve_sample(const unsigned char *curve, uint32_t count,
            read_s15(curve+8+(lower+1)*4)*fraction;
 }
 
+/* Apply the profile's vcgt calibration to a device triple.
+ *
+ * vcgt is the 1D per-channel calibration stage. When the profile carries one,
+ * its cLUT was fitted in the calibrated domain, so this must run between the
+ * profile transform and the panel or the shadows come out under-driven. On
+ * Windows an OS profile loader would normally do this, but the GPU LUT is
+ * bypassed once Advanced Color is on, so for HDR the Companion is the only
+ * thing that can. A profile without the tag is left untouched.
+ */
+static bool apply_vcgt(double rgb[3])
+{
+    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt");
+    if(!tag.data||tag.size<18||memcmp(tag.data,"vcgt",4)) return false;
+    if(read_be32(tag.data+8)!=0) return false;           /* 0 = table, 1 = formula */
+    uint32_t channels=read_be16(tag.data+12);
+    uint32_t entries=read_be16(tag.data+14);
+    uint32_t entry_size=read_be16(tag.data+16);
+    if(channels!=3||entries<2||entry_size!=2) return false;
+    if(tag.size < 18u + (size_t)channels*entries*2u) return false;
+    const unsigned char *table=tag.data+18;
+    for(int channel=0;channel<3;channel++){
+        double value=rgb[channel];
+        if(!(value>0.0)) value=0.0;
+        if(value>1.0) value=1.0;
+        double position=value*(double)(entries-1);
+        uint32_t low=(uint32_t)position;
+        if(low>entries-2) low=entries-2;
+        double fraction=position-(double)low;
+        const unsigned char *base=table+(size_t)channel*entries*2u;
+        double first=read_be16(base+(size_t)low*2)/65535.0;
+        double second=read_be16(base+((size_t)low+1)*2)/65535.0;
+        rgb[channel]=first*(1.0-fraction)+second*fraction;
+    }
+    return true;
+}
+
 static bool apply_local_mhc2(const double input[3], double output[3])
 {
     static const double wire[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
@@ -1215,6 +1251,9 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
+    /* 1D calibration last, closest to the panel: the transform above was fitted
+     * against a display already carrying it. */
+    apply_vcgt(output);
     *red = output[0]; *green = output[1]; *blue = output[2];
     return true;
 #else

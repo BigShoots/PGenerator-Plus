@@ -288,6 +288,119 @@ def pq_to_nits(value):
     return 10000.0 * (max(power - c1, 0.0) / max(c2 - c3 * power, 1e-12)) ** (1.0 / m1)
 
 
+# Entries in the per-channel calibration curve written to vcgt. A 1D curve can
+# afford resolution a 3D cLUT cannot: 33 grid nodes per axis leave only two
+# below 1.2 cd/m2 on a display whose shadow response is steep, which is far too
+# coarse to invert. The calibration carries that region instead.
+VCGT_ENTRIES = 1024
+
+
+def nits_to_pq(nits):
+    """Encode absolute cd/m2 as a normalized ST.2084 signal value."""
+    m1 = 2610.0 / 16384.0
+    m2 = 2523.0 / 32.0
+    c1 = 3424.0 / 4096.0
+    c2 = 2413.0 / 128.0
+    c3 = 2392.0 / 128.0
+    ratio = max(0.0, nits) / 10000.0
+    powered = ratio ** m1
+    return ((c1 + c2 * powered) / (1.0 + c3 * powered)) ** m2
+
+
+def calibration_curves(rows, black, white, primaries, profile_type, target_transfer,
+                       entries=VCGT_ENTRIES):
+    """Per-channel 1D calibration: profile value -> panel device value.
+
+    This is the stage ArgyllCMS produces with dispcal and stores in vcgt, and
+    the reason its workflow calibrates before it profiles. Linearising each
+    channel first means the cLUT fitted afterwards only has to model a
+    well-behaved display, instead of a near-black response that changes faster
+    than its grid can represent.
+
+    The target spans the panel's own black-to-peak range so the curve always
+    covers the full device range: an absolute PQ target would saturate at the
+    measured peak and leave everything above it mapped to device maximum.
+    """
+    channel_samples = neutral_channel_samples(rows, black, primaries)
+    black_nits = max(0.0, black["xyz"][1])
+    peak_nits = max(white["xyz"][1], black_nits + 1e-4)
+    span = peak_nits - black_nits
+    peak_pq = nits_to_pq(peak_nits) if profile_type in ("kde-hdr", "windows-hdr") else 0.0
+    black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
+    curves = []
+    for channel in range(3):
+        values = []
+        previous = 0.0
+        for index in range(entries):
+            position = index / float(entries - 1)
+            if peak_pq > 0.0:
+                target = (pq_to_nits(position * peak_pq) - black_nits) / span
+            else:
+                target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
+            target = max(0.0, min(1.0, target))
+            device = invert_channel_response(channel_samples[channel], target)
+            previous = max(previous, max(0.0, min(1.0, device)))
+            values.append(previous)
+        values[0] = 0.0
+        values[-1] = 1.0
+        curves.append(values)
+    return curves
+
+
+def calibration_to_profile_value(curve, device):
+    """Invert one calibration curve: panel device value -> profile value."""
+    entries = len(curve)
+    if device <= curve[0]:
+        return 0.0
+    if device >= curve[-1]:
+        return 1.0
+    low, high = 0, entries - 1
+    while low < high - 1:
+        middle = (low + high) // 2
+        if curve[middle] <= device:
+            low = middle
+        else:
+            high = middle
+    step = curve[high] - curve[low]
+    fraction = 0.0 if step <= 0 else (device - curve[low]) / step
+    return (low + fraction) / (entries - 1.0)
+
+
+def apply_calibration_to_rows(rows, curves):
+    """Re-express measurements in the calibrated domain.
+
+    The measurement is panel_device -> XYZ. With the calibration loaded the
+    profile is handed a value v and the panel receives curve(v), so the profile
+    must model v -> XYZ measured at curve(v). Re-expressing each row's RGB as
+    curve^-1(device) states exactly that, which is why no second measurement
+    pass through the calibration is needed.
+    """
+    calibrated = []
+    for row in rows:
+        rgb = tuple(
+            calibration_to_profile_value(curves[channel], row["rgb"][channel])
+            for channel in range(3)
+        )
+        updated = dict(row)
+        updated["rgb"] = rgb
+        calibrated.append(updated)
+    return calibrated
+
+
+def vcgt_tag(curves):
+    """Serialise per-channel calibration curves as an ICC vcgt table tag."""
+    entries = len(curves[0])
+    data = bytearray()
+    data.extend(b"vcgt")
+    data.extend(b"\0\0\0\0")
+    data.extend(struct.pack(">I", 0))          # 0 = table, 1 = formula
+    data.extend(struct.pack(">HHH", 3, entries, 2))
+    for curve in curves:
+        for value in curve:
+            data.extend(struct.pack(">H", max(0, min(65535, int(round(value * 65535.0))))))
+    return bytes(data)
+
+
 def target_transfer_to_linear(value, transfer, black_ratio=0.0):
     value = max(0.0, min(1.0, value))
     black_ratio = max(0.0, min(0.999, black_ratio))
@@ -997,8 +1110,26 @@ def build(payload, output_dir):
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
-    ti3, black, white = make_ti3(payload, profile_rows)
+    # Derive the 1D calibration from the measured neutral ramp, then fit the
+    # cLUT in the calibrated domain. MHC2 and the characterization summary keep
+    # using the raw measurements: they describe the panel, not the calibrated
+    # signal, and neutral_channel_samples reads the measured device values.
     _, _, primaries = profile_measurement_summary(profile_rows)
+    measured_black, measured_white, _ = profile_measurement_summary(profile_rows)
+    calibration = None
+    if payload.get("calibration", True) and PROFILE_MODELS[profile_model]["family"] == "clut":
+        try:
+            calibration = calibration_curves(
+                profile_rows, measured_black, measured_white, primaries,
+                profile_type, target_transfer,
+            )
+        except ValueError:
+            # A characterization without a usable black-to-white neutral ramp
+            # cannot produce a calibration. Fall back to the uncalibrated fit
+            # rather than failing the whole build.
+            calibration = None
+    ti3_rows = apply_calibration_to_rows(profile_rows, calibration) if calibration else profile_rows
+    ti3, black, white = make_ti3(payload, ti3_rows)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, 0o755)
     stem = safe_basename(payload.get("name", "PGenerator+ display profile"))
@@ -1035,6 +1166,16 @@ def build(payload, output_dir):
         )
         with open(output_path, "wb") as handle:
             handle.write(profile)
+    if calibration:
+        # The cLUT above was fitted in the calibrated domain, so every consumer
+        # needs this 1D stage in front of it. vcgt is the portable one: OS
+        # profile loaders apply it, and the Companion applies it for HDR where
+        # Windows bypasses the GPU LUT. MHC2 carries the same calibration for
+        # the OS system-correction path.
+        with open(output_path, "rb") as handle:
+            profile = handle.read()
+        with open(output_path, "wb") as handle:
+            handle.write(rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration)}))
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     write_text_atomic(ti3_path, ti3)
