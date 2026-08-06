@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.29"
+#define APP_VERSION "1.3.30"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -961,9 +961,11 @@ static bool inverse_matrix3(const double m[3][3], double out[3][3])
     return true;
 }
 
-static void companion_source_xyz(const double rgb[3], const char *signal_mode, double white_nits, double xyz[3])
+static void companion_source_xyz(const double rgb[3], const char *signal_mode,
+                                 double white_nits, const double media_white[3],
+                                 double xyz[3])
 {
-    static const double d65_d50[3][3]={{1.0479298,0.0229468,-0.0501922},{0.0296278,0.9904345,-0.0170738},{-0.0092430,0.0150552,0.7518743}};
+    static const double pcs_white[3]={0.9642,1.0,0.8249};
     static const double srgb_xyz[3][3]={{0.4123908,0.3575843,0.1804808},{0.2126390,0.7151687,0.0721923},{0.0193308,0.1191948,0.9505322}};
     static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
     double linear[3], intermediate[3];
@@ -973,7 +975,13 @@ static void companion_source_xyz(const double rgb[3], const char *signal_mode, d
     }
     const double (*source)[3]=!strcmp(signal_mode,"hdr10")?bt2020_xyz:srgb_xyz;
     for(int row=0;row<3;row++) intermediate[row]=source[row][0]*linear[0]+source[row][1]*linear[1]+source[row][2]*linear[2];
-    for(int row=0;row<3;row++) xyz[row]=d65_d50[row][0]*intermediate[0]+d65_d50[row][1]*intermediate[1]+d65_d50[row][2]*intermediate[2];
+    /* Argyll display profiles use relative-colorimetric PCS. Feeding a fixed
+     * D65-to-D50 adaptation maps neutral input to the display's measured
+     * media white, preserving its error instead of correcting it. Convert the
+     * desired absolute XYZ through the destination media-white scaling so the
+     * inverse profile targets the requested physical D65 chromaticity. */
+    for(int row=0;row<3;row++)
+        xyz[row]=intermediate[row]*pcs_white[row]/fmax(media_white[row],1e-9);
 }
 
 static bool apply_local_matrix(const double xyz[3], double output[3])
@@ -1018,6 +1026,57 @@ static bool apply_local_clut(const double xyz[3], double output[3])
     return true;
 }
 
+static double linear_to_pq(double value)
+{
+    const double m1=2610.0/16384.0,m2=2523.0/32.0;
+    const double c1=3424.0/4096.0,c2=2413.0/128.0,c3=2392.0/128.0;
+    double power=pow(fmax(0.0,value),m1);
+    return pow((c1+c2*power)/(1.0+c3*power),m2);
+}
+
+static double mhc2_curve_sample(const unsigned char *curve, uint32_t count,
+                                double value)
+{
+    double position=fmax(0.0,fmin(1.0,value))*(count-1);
+    uint32_t lower=(uint32_t)position;
+    double fraction;
+    if(lower>=count-1)lower=count-2;
+    fraction=position-lower;
+    return read_s15(curve+8+lower*4)*(1.0-fraction)+
+           read_s15(curve+8+(lower+1)*4)*fraction;
+}
+
+static bool apply_local_mhc2(const double input[3], double output[3])
+{
+    static const double wire[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
+    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"MHC2");
+    double inverse_wire[3][3],linear[3],xyz[3],adjusted[3],target[3];
+    double matrix[3][3]={{1,0,0},{0,1,0},{0,0,1}};
+    uint32_t count,matrix_offset,curve_offsets[3];
+    if(!tag.data||tag.size<36||memcmp(tag.data,"MHC2",4))return false;
+    count=read_be32(tag.data+8);matrix_offset=read_be32(tag.data+20);
+    for(int channel=0;channel<3;channel++)curve_offsets[channel]=read_be32(tag.data+24+channel*4);
+    if(matrix_offset){
+        if(matrix_offset+48>tag.size)return false;
+        for(int row=0;row<3;row++)for(int column=0;column<3;column++)
+            matrix[row][column]=read_s15(tag.data+matrix_offset+(row*4+column)*4);
+    }
+    if(count>4096||(count>0&&count<2))return false;
+    if(count)for(int channel=0;channel<3;channel++)
+        if(curve_offsets[channel]<36||curve_offsets[channel]+8+(size_t)count*4>tag.size||
+           memcmp(tag.data+curve_offsets[channel],"sf32",4))return false;
+    if(!inverse_matrix3(wire,inverse_wire))return false;
+    for(int channel=0;channel<3;channel++)linear[channel]=pq_to_nits(input[channel])/10000.0;
+    for(int row=0;row<3;row++)xyz[row]=wire[row][0]*linear[0]+wire[row][1]*linear[1]+wire[row][2]*linear[2];
+    for(int row=0;row<3;row++)adjusted[row]=matrix[row][0]*xyz[0]+matrix[row][1]*xyz[1]+matrix[row][2]*xyz[2];
+    for(int row=0;row<3;row++)target[row]=inverse_wire[row][0]*adjusted[0]+inverse_wire[row][1]*adjusted[1]+inverse_wire[row][2]*adjusted[2];
+    for(int channel=0;channel<3;channel++){
+        double encoded=linear_to_pq(target[channel]);
+        output[channel]=count?mhc2_curve_sample(tag.data+curve_offsets[channel],count,encoded):encoded;
+    }
+    return true;
+}
+
 #endif
 
 static bool load_correction_lut(uint64_t revision)
@@ -1026,33 +1085,23 @@ static bool load_correction_lut(uint64_t revision)
     FILE *file;
     long length;
 #endif
-    if (!strcmp(app.correction_mode, "system")) {
-        SDL_free(app.correction_lut);
-        app.correction_lut = NULL;
-        app.correction_lut_grid = 0;
-        app.correction_lut_revision = revision;
-        app.correction_error[0] = '\0';
-        app.correction_ready = true;
-#ifdef _WIN32
-        SDL_free(app.correction_profile_data); app.correction_profile_data=NULL; app.correction_profile_size=0;
-#endif
-        return true;
-    }
+    bool system_mode=!strcmp(app.correction_mode,"system");
     /* Never retain a transform from a previously selected profile if the new
      * LUT cannot be downloaded or decoded. A stale correction would produce a
      * valid patch acknowledgement while applying the wrong profile. */
     SDL_free(app.correction_lut);
     app.correction_lut = NULL;
     app.correction_lut_grid = 0;
-    app.correction_ready = false;
+    app.correction_ready = system_mode;
     if (!app.correction_profile[0]) {
+        if(system_mode){app.correction_lut_revision=revision;app.correction_error[0]='\0';return true;}
         app.correction_ready = false;
         SDL_strlcpy(app.correction_error, "The operating system did not report an active ICC profile for the selected display", sizeof(app.correction_error));
         return false;
     }
 #ifdef _WIN32
     file=_wfopen(app.correction_profile_path,L"rb");
-    if(!file||fseek(file,0,SEEK_END)!=0||(length=ftell(file))<132||length>16*1024*1024||fseek(file,0,SEEK_SET)!=0){if(file)fclose(file);SDL_strlcpy(app.correction_error,"Could not open the active Windows display profile",sizeof(app.correction_error));return false;}
+    if(!file||fseek(file,0,SEEK_END)!=0||(length=ftell(file))<132||length>16*1024*1024||fseek(file,0,SEEK_SET)!=0){if(file)fclose(file);if(system_mode){app.correction_lut_revision=revision;app.correction_error[0]='\0';return true;}SDL_strlcpy(app.correction_error,"Could not open the active Windows display profile",sizeof(app.correction_error));return false;}
     SDL_free(app.correction_profile_data); app.correction_profile_data=SDL_malloc((size_t)length); app.correction_profile_size=0;
     if(!app.correction_profile_data||fread(app.correction_profile_data,1,(size_t)length,file)!=(size_t)length){fclose(file);SDL_free(app.correction_profile_data);app.correction_profile_data=NULL;SDL_strlcpy(app.correction_error,"Could not read the active Windows display profile",sizeof(app.correction_error));return false;}
     fclose(file); app.correction_profile_size=(size_t)length;
@@ -1071,12 +1120,37 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
 {
 #ifdef _WIN32
     double rgb[3]={*red,*green,*blue},xyz[3],output[3],white_nits=1.0;
+    double media_white[3];
 #endif
-    if (!strcmp(app.correction_mode, "system")) return true;
 #ifdef _WIN32
+    if(!strcmp(app.correction_mode,"system")){
+        /* Windows can bypass an HDR profile's MHC2 transform for a
+         * borderless monitor-covering swapchain even when DWM reports the
+         * presentation as composed. Apply that native HDR calibration stage
+         * ourselves for fullscreen Companion output. Windowed output remains
+         * OS-managed so Windows cannot apply the same MHC2 transform twice. */
+        if((app.fullscreen||app.settings_fullscreen)&&app.correction_profile_data&&
+           !strcmp(app.correction_signal_mode,"hdr10")&&apply_local_mhc2(rgb,output)){
+            *red=output[0];*green=output[1];*blue=output[2];
+        }
+        return true;
+    }
     if(!app.correction_profile_data)return false;
+    /* BToA and matrix/TRC display transforms are relative-colorimetric: their
+     * PCS white maps to the uncalibrated media white. In an HDR MHC profile,
+     * neutral-axis calibration and peak-preserving white balance belong to
+     * MHC2. Keep that calibration stage for neutral HDR patches in every
+     * correction mode, while the selected cLUT or matrix/TRC path continues
+     * to handle chromatic patches. */
+    if(!strcmp(app.correction_signal_mode,"hdr10")&&
+       fabs(rgb[0]-rgb[1])<1e-9&&fabs(rgb[1]-rgb[2])<1e-9&&
+       apply_local_mhc2(rgb,output)){
+        *red=output[0];*green=output[1];*blue=output[2];
+        return true;
+    }
+    {IccTag wtpt=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");if(!wtpt.data||wtpt.size<20||memcmp(wtpt.data,"XYZ ",4))return false;for(int channel=0;channel<3;channel++){media_white[channel]=read_s15(wtpt.data+8+channel*4);if(media_white[channel]<=0.0)return false;}}
     if(!strcmp(app.correction_signal_mode,"hdr10")){IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;}
-    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,xyz);
+    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,media_white,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
     *red = output[0]; *green = output[1]; *blue = output[2];
@@ -2226,6 +2300,7 @@ static void process_network_updates(void)
 #ifdef _WIN32
         bool refresh_fullscreen_hdr =
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            command_size >= 100 &&
             app.hdr_swapchain &&
             (strcmp(app.displayed_mode, mode) || app.displayed_r != r ||
              app.displayed_g != g || app.displayed_b != b ||

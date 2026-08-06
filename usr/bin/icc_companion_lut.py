@@ -181,11 +181,7 @@ def srgb_linear(value):
     return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
 
 
-D65_TO_D50 = (
-    (1.0479298, 0.0229468, -0.0501922),
-    (0.0296278, 0.9904345, -0.0170738),
-    (-0.0092430, 0.0150552, 0.7518743),
-)
+PCS_WHITE = (0.9642, 1.0, 0.8249)
 SRGB_TO_XYZ = (
     (0.4123908, 0.3575843, 0.1804808),
     (0.2126390, 0.7151687, 0.0721923),
@@ -208,18 +204,32 @@ def profile_luminance(profile_tags):
     return white_nits
 
 
-def source_xyz(rgb, signal_mode, white_nits):
+def profile_media_white(profile_tags):
+    white = profile_tags.get(b"wtpt", b"")
+    if white[:4] != b"XYZ " or len(white) < 20:
+        fail("Companion correction requires an ICC media white point")
+    values = [s15(white, 8 + channel * 4) for channel in range(3)]
+    if any(not math.isfinite(value) or value <= 0.0 for value in values):
+        fail("Companion correction has an invalid ICC media white point")
+    return values
+
+
+def source_xyz(rgb, signal_mode, white_nits, media_white):
     if signal_mode == "hdr10":
         # ICC display PCS values are relative to the measured display white,
         # while PQ is absolute with 1.0 representing 10,000 cd/m2. Scale the
         # requested absolute light level into the selected profile's relative
         # PCS before evaluating its PCS-to-device transform.
         linear = [min(1.0, pq_linear(value) * 10000.0 / white_nits) for value in rgb]
-        xyz = mat_vec(BT2020_TO_XYZ, linear)
+        absolute_xyz = mat_vec(BT2020_TO_XYZ, linear)
     else:
         linear = [srgb_linear(value) for value in rgb]
-        xyz = mat_vec(SRGB_TO_XYZ, linear)
-    return mat_vec(D65_TO_D50, xyz)
+        absolute_xyz = mat_vec(SRGB_TO_XYZ, linear)
+    # Display BToA tables are relative-colorimetric. Scale the requested
+    # absolute XYZ by the destination media white so D65 is corrected to D65,
+    # rather than being remapped to the display's uncalibrated native white.
+    return [absolute_xyz[channel] * PCS_WHITE[channel] / media_white[channel]
+            for channel in range(3)]
 
 
 def build(profile_path, method, signal_mode, output_path):
@@ -234,6 +244,7 @@ def build(profile_path, method, signal_mode, output_path):
     profile_tags = tags(profile)
     transform = Lut16Transform(profile_tags.get(b"B2A0", b"")) if method == "clut" else MatrixTransform(profile_tags)
     white_nits = profile_luminance(profile_tags) if signal_mode == "hdr10" else 1.0
+    media_white = profile_media_white(profile_tags)
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
@@ -241,7 +252,7 @@ def build(profile_path, method, signal_mode, output_path):
         for green in range(GRID):
             for blue in range(GRID):
                 rgb = (red / (GRID - 1.0), green / (GRID - 1.0), blue / (GRID - 1.0))
-                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits))
+                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, media_white))
                 for value in corrected:
                     output.extend(struct.pack(">H", int(round(max(0.0, min(1.0, value)) * 65535.0))))
     temporary = output_path + ".tmp.{}".format(os.getpid())
