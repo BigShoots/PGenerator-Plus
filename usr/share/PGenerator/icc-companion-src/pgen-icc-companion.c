@@ -961,11 +961,36 @@ static bool inverse_matrix3(const double m[3][3], double out[3][3])
     return true;
 }
 
+/* Bradford adaptation from the profile's media white onto the D50 PCS white.
+ * ArgyllCMS adapts display profiles with this transform and bakes it into the
+ * cLUT, leaving wtpt holding the unadapted native white and no chad tag to
+ * read back. Scaling XYZ channel-wise from wtpt to the PCS white -- the old
+ * shortcut -- lands neutral away from where the profile expects it and biases
+ * the corrected white point. */
+static bool companion_adaptation(const double media_white[3], double out[3][3])
+{
+    static const double bradford[3][3]={{0.8951,0.2664,-0.1614},{-0.7502,1.7135,0.0367},{0.0389,-0.0685,1.0296}};
+    static const double pcs_white[3]={0.9642,1.0,0.8249};
+    double inverse[3][3], source[3], destination[3], scaled[3][3];
+    if(!inverse_matrix3(bradford,inverse)) return false;
+    for(int row=0;row<3;row++) {
+        source[row]=bradford[row][0]*media_white[0]+bradford[row][1]*media_white[1]+bradford[row][2]*media_white[2];
+        destination[row]=bradford[row][0]*pcs_white[0]+bradford[row][1]*pcs_white[1]+bradford[row][2]*pcs_white[2];
+        if(fabs(source[row])<1e-9) return false;
+    }
+    for(int row=0;row<3;row++)
+        for(int column=0;column<3;column++)
+            scaled[row][column]=(destination[row]/source[row])*bradford[row][column];
+    for(int row=0;row<3;row++)
+        for(int column=0;column<3;column++)
+            out[row][column]=inverse[row][0]*scaled[0][column]+inverse[row][1]*scaled[1][column]+inverse[row][2]*scaled[2][column];
+    return true;
+}
+
 static void companion_source_xyz(const double rgb[3], const char *signal_mode,
-                                 double white_nits, const double media_white[3],
+                                 double white_nits, const double adaptation[3][3],
                                  double xyz[3])
 {
-    static const double pcs_white[3]={0.9642,1.0,0.8249};
     static const double srgb_xyz[3][3]={{0.4123908,0.3575843,0.1804808},{0.2126390,0.7151687,0.0721923},{0.0193308,0.1191948,0.9505322}};
     static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
     double linear[3], intermediate[3];
@@ -975,13 +1000,43 @@ static void companion_source_xyz(const double rgb[3], const char *signal_mode,
     }
     const double (*source)[3]=!strcmp(signal_mode,"hdr10")?bt2020_xyz:srgb_xyz;
     for(int row=0;row<3;row++) intermediate[row]=source[row][0]*linear[0]+source[row][1]*linear[1]+source[row][2]*linear[2];
-    /* Argyll display profiles use relative-colorimetric PCS. Feeding a fixed
-     * D65-to-D50 adaptation maps neutral input to the display's measured
-     * media white, preserving its error instead of correcting it. Convert the
-     * desired absolute XYZ through the destination media-white scaling so the
-     * inverse profile targets the requested physical D65 chromaticity. */
     for(int row=0;row<3;row++)
-        xyz[row]=intermediate[row]*pcs_white[row]/fmax(media_white[row],1e-9);
+        xyz[row]=adaptation[row][0]*intermediate[0]+adaptation[row][1]*intermediate[1]+adaptation[row][2]*intermediate[2];
+}
+
+/* Absolute luminance of the profile's PCS white. The measurement set is
+ * normalised so PCS Y=1.0 is the profiling white, and ArgyllCMS embeds that
+ * value as LUMINANCE_XYZ_CDM2 in the retained characterization tags. The lumi
+ * tag is not interchangeable: for Windows HDR profiles the builder writes the
+ * MHC2-calibrated peak there, which is lower by the white-balance headroom the
+ * matrix takes, so normalising PQ by it over-drives every level. */
+static bool companion_characterization_white(double *white_nits)
+{
+    static const char *names[3]={"targ","CIED","DevD"};
+    for(int index=0;index<3;index++) {
+        IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,names[index]);
+        if(!tag.data||tag.size<16||memcmp(tag.data,"text",4)) continue;
+        for(size_t offset=8;offset+18<tag.size;offset++) {
+            if(memcmp(tag.data+offset,"LUMINANCE_XYZ_CDM2",18)) continue;
+            const char *cursor=(const char *)tag.data+offset+18;
+            const char *limit=(const char *)tag.data+tag.size;
+            char buffer[128];
+            size_t length=0;
+            while(cursor<limit&&*cursor!='"') cursor++;
+            if(cursor>=limit) break;
+            cursor++;
+            while(cursor<limit&&*cursor!='"'&&length<sizeof(buffer)-1) buffer[length++]=*cursor++;
+            buffer[length]='\0';
+            char *end=NULL;
+            double x=strtod(buffer,&end);
+            if(end==buffer) break;
+            double y=strtod(end,&end);
+            (void)x;
+            if(isfinite(y)&&y>0.0) { *white_nits=y; return true; }
+            break;
+        }
+    }
+    return false;
 }
 
 static bool apply_local_matrix(const double xyz[3], double output[3])
@@ -1120,7 +1175,7 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
 {
 #ifdef _WIN32
     double rgb[3]={*red,*green,*blue},xyz[3],output[3],white_nits=1.0;
-    double media_white[3];
+    double media_white[3],adaptation[3][3];
 #endif
 #ifdef _WIN32
     if(!strcmp(app.correction_mode,"system")){
@@ -1149,8 +1204,12 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         return true;
     }
     {IccTag wtpt=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");if(!wtpt.data||wtpt.size<20||memcmp(wtpt.data,"XYZ ",4))return false;for(int channel=0;channel<3;channel++){media_white[channel]=read_s15(wtpt.data+8+channel*4);if(media_white[channel]<=0.0)return false;}}
-    if(!strcmp(app.correction_signal_mode,"hdr10")){IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;}
-    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,media_white,xyz);
+    if(!companion_adaptation(media_white,adaptation))return false;
+    if(!strcmp(app.correction_signal_mode,"hdr10")&&!companion_characterization_white(&white_nits)){
+        IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");
+        if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;
+    }
+    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
     *red = output[0]; *green = output[1]; *blue = output[2];
