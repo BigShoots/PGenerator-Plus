@@ -54,8 +54,19 @@ function meterIccUiSettings(){
   profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
   companion_correction:value('meterIccCompanionCorrectionMode'),
+  avg_deviation:value('meterIccAvgDeviation'),
   patch_settings:meterIccPatchSettings()
  };
+}
+
+function meterIccAvgDeviationValue(){
+ const input=document.getElementById('meterIccAvgDeviation');
+ if(!input) return '';
+ const raw=String(input.value||'').trim();
+ if(!raw) return '';
+ const number=Number(raw);
+ if(!Number.isFinite(number)||number<0||number>5) return '';
+ return String(number);
 }
 
 function meterIccRememberUiSettings(){
@@ -88,6 +99,10 @@ function meterIccRestoreUiSettings(){
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
   set('meterIccCompanionCorrectionMode',saved.companion_correction,['system','clut','matrix']);
   set('meterIccStartDelay',saved.start_delay);
+  if(saved.avg_deviation!==undefined&&saved.avg_deviation!==null&&saved.avg_deviation!==''){
+   const number=Number(saved.avg_deviation);
+   if(Number.isFinite(number)&&number>=0&&number<=5) set('meterIccAvgDeviation',saved.avg_deviation);
+  }
   const patch=saved.patch_settings;
   if(patch&&typeof patch==='object'){
    set('meterIccPatchCount',patch.patch_count); set('meterIccPatchCountRange',patch.patch_count);
@@ -585,13 +600,14 @@ const METER_ICC_PATCH_PRESETS={
 };
 
 const METER_ICC_PROFILE_MODELS={
- clut:{label:'XYZ cLUT + matrix',family:'clut',windows:true,note:'Recommended for detailed characterization. It creates an XYZ cLUT and accurate matrix/TRC fallback tags, so software without cLUT support can still use the profile.'},
- xyz_clut:{label:'XYZ cLUT only',family:'clut',windows:false,note:'Creates only an XYZ lookup-table transform. It can model nonlinear color interactions but has no matrix fallback for software that ignores display cLUT tags.'},
- lab_clut:{label:'L*a*b* cLUT only',family:'clut',windows:false,note:'Creates a Lab PCS lookup-table profile. It is mainly useful for compatibility testing and specialized color-managed workflows, and has no matrix fallback.'},
- matrix:{label:'Curves + matrix',family:'matrix',windows:true,note:'Uses independent RGB tone curves and a 3x3 colorant matrix. It is compact, broadly compatible, and a good choice for displays with mostly separable channel behavior.'},
- single_curve_matrix:{label:'Single curve + matrix',family:'matrix',windows:true,note:'Uses one shared tone curve for all three channels plus a 3x3 matrix. It preserves neutral balance but cannot model different per-channel tone responses.'},
- gamma_matrix:{label:'Gamma + matrix',family:'matrix',windows:true,note:'Fits a separate simple gamma exponent for each RGB channel plus a 3x3 matrix. It is smaller but less flexible than full tone curves.'},
- single_gamma_matrix:{label:'Single gamma + matrix',family:'matrix',windows:true,note:'Fits one shared gamma exponent plus a 3x3 matrix. This is highly compatible but only suitable for displays with a simple, common channel response.'}
+ clut:{label:'XYZ cLUT + matrix',family:'clut',mhc2:true,note:'Recommended for detailed characterization. It creates an XYZ cLUT and accurate matrix/TRC fallback tags, so software without cLUT support can still use the profile.'},
+ xyz_clut:{label:'XYZ cLUT only',family:'clut',mhc2:false,note:'Creates only an XYZ lookup-table transform. It can model nonlinear color interactions but has no matrix fallback for software that ignores display cLUT tags.'},
+ lab_clut:{label:'L*a*b* cLUT only',family:'clut',mhc2:false,note:'Creates a Lab PCS lookup-table profile. It is mainly useful for compatibility testing and specialized color-managed workflows, and has no matrix fallback.'},
+ matrix:{label:'Shaper + matrix (curves)',family:'matrix',mhc2:true,note:'Uses independent RGB tone curves and a 3x3 colorant matrix. It is compact, broadly compatible, and a good choice for displays with mostly separable channel behavior.'},
+ matrix_only:{label:'Matrix only',family:'matrix',mhc2:false,note:'A 3x3 colorant matrix with identity tone curves, so the profile describes the display as linear light. It is the smallest and most portable model, but because it carries no measured tone response it is only meaningful when the signal path is already linearised. Not available for MHC2 profiles, which need a usable tone-curve fallback.'},
+ single_curve_matrix:{label:'Single curve + matrix',family:'matrix',mhc2:true,note:'Uses one shared tone curve for all three channels plus a 3x3 matrix. It preserves neutral balance but cannot model different per-channel tone responses.'},
+ gamma_matrix:{label:'Gamma + matrix',family:'matrix',mhc2:true,note:'Fits a separate simple gamma exponent for each RGB channel plus a 3x3 matrix. It is smaller but less flexible than full tone curves.'},
+ single_gamma_matrix:{label:'Single gamma + matrix',family:'matrix',mhc2:true,note:'Fits one shared gamma exponent plus a 3x3 matrix. This is highly compatible but only suitable for displays with a simple, common channel response.'}
 };
 
 function meterIccProfileModelInfo(value){
@@ -783,11 +799,11 @@ function meterIccProfileTypeChanged(){
  const modelSelect=document.getElementById('meterIccProfileModel');
  if(modelSelect){
   Array.from(modelSelect.options).forEach(option=>{
-   const supported=!mhc2||meterIccProfileModelInfo(option.value).windows;
+   const supported=!mhc2||meterIccProfileModelInfo(option.value).mhc2;
    option.disabled=!supported;
    option.title=supported?'':'MHC2 profiles require matrix and tone-curve fallback tags.';
   });
-  if(mhc2&&!meterIccProfileModelInfo(modelSelect.value).windows){
+  if(mhc2&&!meterIccProfileModelInfo(modelSelect.value).mhc2){
    modelSelect.value='clut';
    meterIccApplyPatchPreset(String((document.getElementById('meterIccQuality')||{}).value||'medium'));
   }
@@ -1461,6 +1477,8 @@ async function meterIccRetryBuild(){
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
+  const avgDeviation=meterIccAvgDeviationValue();
+  if(avgDeviation) meterIccRunConfig.avg_deviation=avgDeviation;
   const status=document.getElementById('meterIccStatus');
   if(status) status.textContent='Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' calculation quality. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.';
   await meterIccBuild(readings);
@@ -1598,6 +1616,8 @@ async function meterIccStart(){
    code_min:0,code_max:mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
+  const avgDeviation=meterIccAvgDeviationValue();
+  if(avgDeviation) baseRunConfig.avg_deviation=avgDeviation;
   if(status) status.textContent='Checking for compatible completed ICC measurements...';
   const previousReuse=await meterIccPreviousReusableReadings(reuseSignature,type);
   const previousReadings=previousReuse.readings;

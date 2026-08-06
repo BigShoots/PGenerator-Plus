@@ -11,7 +11,7 @@
     <div class="meter-icc-grid">
       <div class="meter-icc-panel meter-icc-profile-panel">
        <h3><span class="meter-icc-step">1</span>Profile</h3>
-       <p class="meter-icc-section-intro">Choose where the profile will be used and how it will represent the display.</p>
+       <p class="meter-icc-section-intro">Pick where this profile will be used and how it should describe the display.</p>
        <div class="meter-icc-field meter-icc-profile-name-field">
         <label for="meterIccProfileName">Profile name</label>
         <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
@@ -44,7 +44,8 @@
          <option value="clut" selected>XYZ cLUT + matrix fallback (recommended)</option>
          <option value="xyz_clut">XYZ cLUT only</option>
          <option value="lab_clut">L*a*b* cLUT only</option>
-         <option value="matrix">Curves + matrix</option>
+         <option value="matrix">Shaper + matrix (curves)</option>
+         <option value="matrix_only">Matrix only</option>
          <option value="single_curve_matrix">Single curve + matrix</option>
          <option value="gamma_matrix">Gamma + matrix</option>
          <option value="single_gamma_matrix">Single gamma + matrix</option>
@@ -60,6 +61,11 @@
          <option value="ultra">Ultra</option>
         </select>
         <div class="meter-icc-note" style="margin-top:6px">Controls profile fitting effort, independently of the number of measured patches. High is recommended. After a completed measurement run, you can rebuild the same readings at another quality without measuring again.</div>
+       </div>
+       <div class="meter-icc-field meter-icc-avg-deviation-field">
+        <label for="meterIccAvgDeviation">Measurement deviation (%)</label>
+        <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
+        <div class="meter-icc-note" style="margin-top:6px">How much noise ArgyllCMS should expect in the meter readings. Lower values tell ArgyllCMS to trust the readings more and fit them more tightly; higher values smooth over noisier measurements. ArgyllCMS defaults to 0.50%, which suits a typical meter. Leave blank to use that default.</div>
        </div>
       </div>
       <div class="meter-icc-panel meter-icc-generator-panel">
@@ -162,7 +168,7 @@
       </div>
       <div class="meter-icc-panel">
        <h3><span class="meter-icc-step">4</span>Meter</h3>
-       <p class="meter-icc-section-intro">Confirm the display technology and correction used by the connected meter.</p>
+       <p class="meter-icc-section-intro">Confirm the display type and the meter correction that match this setup.</p>
        <div class="meter-icc-field">
         <label for="meterIccDisplayType">Display type</label>
         <select id="meterIccDisplayType" onchange="meterIccLinkedDisplayTypeChanged()"></select>

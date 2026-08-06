@@ -31,7 +31,12 @@ PROFILE_MODELS = {
     "clut": {"label": "XYZ cLUT + matrix", "argyll": "X", "family": "clut", "matrix_fallback": True},
     "xyz_clut": {"label": "XYZ cLUT only", "argyll": "x", "family": "clut", "matrix_fallback": False},
     "lab_clut": {"label": "L*a*b* cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
-    "matrix": {"label": "Curves + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
+    "matrix": {"label": "Shaper + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
+    # colprof -am writes identity tone curves, so the profile asserts a
+    # linear-light display. MHC2 carries its own measured curves and would
+    # still work, but the matrix/TRC fallback inside the same profile would
+    # not, which is the thing MHC2 profile types require. Keep it out of them.
+    "matrix_only": {"label": "Matrix only", "argyll": "m", "family": "matrix", "matrix_fallback": False},
     "single_curve_matrix": {"label": "Single curve + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
     "gamma_matrix": {"label": "Gamma + matrix", "argyll": "g", "family": "matrix", "matrix_fallback": True},
     "single_gamma_matrix": {"label": "Single gamma + matrix", "argyll": "G", "family": "matrix", "matrix_fallback": True},
@@ -798,6 +803,22 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
+        # ArgyllCMS accepts -r avgdev to describe the average deviation of
+        # the device+instrument readings as a percentage. Leaving it unset
+        # means ArgyllCMS uses its own 0.50% default; passing a value outside
+        # the supported 0-5% range (or anything that fails to parse) is
+        # silently dropped rather than failing the build.
+        raw_avg_deviation = payload.get("avg_deviation")
+        avg_deviation = None
+        if raw_avg_deviation not in (None, ""):
+            try:
+                candidate = float(raw_avg_deviation)
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and 0.0 <= candidate <= 5.0:
+                avg_deviation = candidate
+        if avg_deviation is not None:
+            command.insert(1, "-r{:.3f}".format(avg_deviation))
         # cLUT fitting on the Pi is substantially slower than matrix fitting,
         # and scales with both characterization size and requested quality.
         # The former 90-second floor killed a normal 175-patch Medium XYZ cLUT
