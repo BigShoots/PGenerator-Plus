@@ -30,22 +30,9 @@ PROFILE_TYPES = {
 PROFILE_MODELS = {
     "clut": {"label": "XYZ cLUT + matrix", "argyll": "X", "family": "clut", "matrix_fallback": True},
     "xyz_clut": {"label": "XYZ cLUT only", "argyll": "x", "family": "clut", "matrix_fallback": False},
-    "lab_clut": {"label": "Lab cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
-    # colprof -aY is a display XYZ cLUT with a debug matrix for matrix/cLUT
-    # comparison. It is not the production display fallback path used by -aX.
-    "xyz_clut_debug_matrix": {
-        "label": "XYZ cLUT + debug matrix",
-        "argyll": "Y",
-        "family": "clut",
-        "matrix_fallback": False,
-    },
-    "matrix": {"label": "Shaper + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
-    # colprof -am writes identity tone curves, so the profile asserts a
-    # linear-light display. MHC2 carries its own measured curves and would
-    # still work, but the matrix/TRC fallback inside the same profile would
-    # not, which is the thing MHC2 profile types require. Keep it out of them.
-    "matrix_only": {"label": "Matrix only", "argyll": "m", "family": "matrix", "matrix_fallback": False},
-    "single_curve_matrix": {"label": "Single shaper + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
+    "lab_clut": {"label": "L*a*b* cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
+    "matrix": {"label": "Curves + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
+    "single_curve_matrix": {"label": "Single curve + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
     "gamma_matrix": {"label": "Gamma + matrix", "argyll": "g", "family": "matrix", "matrix_fallback": True},
     "single_gamma_matrix": {"label": "Single gamma + matrix", "argyll": "G", "family": "matrix", "matrix_fallback": True},
 }
@@ -320,6 +307,39 @@ def nits_to_pq(nits):
     return ((c1 + c2 * powered) / (1.0 + c3 * powered)) ** m2
 
 
+def vcgt_from_mhc2(matrix, adjustment_luts, wire, entries=VCGT_ENTRIES):
+    """Reproduce MHC2's neutral-axis behaviour as a vcgt table.
+
+    vcgt is only ever used for the grey axis, and on that axis MHC2's 3x3
+    reduces to a fixed per-channel gain -- a matrix cannot be expressed as
+    three independent curves in general, but along neutral it can. Tabulating
+    MHC2's own neutral output therefore gives a vcgt that matches it exactly
+    where it is used, so the fallback path and the preferred path agree
+    instead of the fallback approximating with per-channel scaling.
+    """
+    inverse_wire = mat_inv(wire)
+    curves = [[], [], []]
+    for index in range(entries):
+        position = index / float(entries - 1)
+        linear = [pq_to_nits(position) / 10000.0] * 3
+        target = mat_vec_mul(inverse_wire, mat_vec_mul(matrix, mat_vec_mul(wire, linear)))
+        for channel in range(3):
+            encoded = nits_to_pq(max(0.0, target[channel]) * 10000.0)
+            if adjustment_luts:
+                table = adjustment_luts[channel]
+                spot = max(0.0, min(1.0, encoded)) * (len(table) - 1)
+                low = min(len(table) - 2, int(spot))
+                fraction = spot - low
+                encoded = table[low] * (1.0 - fraction) + table[low + 1] * fraction
+            curves[channel].append(max(0.0, min(1.0, encoded)))
+    for channel in range(3):
+        previous = 0.0
+        for index in range(entries):
+            previous = max(previous, curves[channel][index])
+            curves[channel][index] = previous
+    return curves
+
+
 def calibration_curves(rows, black, white, primaries, profile_type, target_transfer,
                        entries=VCGT_ENTRIES):
     """Per-channel 1D calibration: profile value -> panel device value.
@@ -330,66 +350,32 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
     well-behaved display, instead of a near-black response that changes faster
     than its grid can represent.
 
-    For HDR the curve is parameterised on ABSOLUTE PQ, so its input is the same
-    PQ code the framebuffer carries. Scaling PQ into the panel's own range
-    instead -- which an earlier revision did to keep the curve invertible --
-    made the curve's input something other than a PQ code, which is wrong for a
-    stage the framebuffer feeds directly.
-
-    No tone mapping is applied. Rolling the target off with BT.2390 to match
-    the post-calibration chart was tried and measured much worse -- it
-    compressed the highlights hard, taking mean dE ITP from 3.51 to 8.44 and
-    peak from 7.48 to 26.08 around the knee. The metadata already advertises
-    the mastering peak, so tone mapping belongs to whatever is displaying the
-    content. Codes above the panel's peak simply clip.
+    The target spans the panel's own black-to-peak range so the curve always
+    covers the full device range: an absolute PQ target would saturate at the
+    measured peak and leave everything above it mapped to device maximum.
     """
     channel_samples = neutral_channel_samples(rows, black, primaries)
     black_nits = max(0.0, black["xyz"][1])
     peak_nits = max(white["xyz"][1], black_nits + 1e-4)
     span = peak_nits - black_nits
-    hdr = profile_type in ("kde-hdr", "windows-hdr")
+    peak_pq = nits_to_pq(peak_nits) if profile_type in ("kde-hdr", "windows-hdr") else 0.0
     black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
-    # Per-channel white balance. Driving every channel to the same fraction of
-    # its own maximum reproduces the panel's NATIVE white, not the target one:
-    # it is a tone curve with no chromatic component at all. Measured on one
-    # panel that left the grey axis on native white (0.3048/0.3205 against a
-    # 0.3127/0.3290 target, 7048K), and because this curve overrides the cLUT
-    # on the grey axis it discarded the cLUT's white correction too. Scale each
-    # channel by its neutral gain, the same derivation MHC2 uses, normalised so
-    # the largest channel still reaches full scale.
-    wire = mhc2_wire_matrix(profile_type)
-    physical = measured_primary_matrix(black, white, primaries)
-    adjustment = mat_mul(wire, mat_inv(physical))
-    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
-    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
-    maximum_gain = max(neutral_gains)
-    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
-        fail("Calibration white balance has an invalid neutral response")
-    channel_limits = [gain / maximum_gain for gain in neutral_gains]
     curves = []
     for channel in range(3):
         values = []
         previous = 0.0
         for index in range(entries):
             position = index / float(entries - 1)
-            if hdr:
-                target = (pq_to_nits(position) - black_nits) / span
+            if peak_pq > 0.0:
+                target = (pq_to_nits(position * peak_pq) - black_nits) / span
             else:
                 target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
             target = max(0.0, min(1.0, target))
-            # Hold this channel at its share of the corrected white so the
-            # grey axis lands on the target white point rather than native.
-            target = min(target, channel_limits[channel])
             device = invert_channel_response(channel_samples[channel], target)
             previous = max(previous, max(0.0, min(1.0, device)))
             values.append(previous)
         values[0] = 0.0
-        # No forced endpoint and no tail ramp. Both were wrong: forcing full
-        # scale overwrote the white-balance clamp that holds the two weaker
-        # channels below maximum, and ramping the plateau invented output the
-        # panel cannot produce. Above the measured peak the display simply
-        # clips, so the curve is legitimately flat there -- the remap handles
-        # that by resolving a plateau to its first entry.
+        values[-1] = 1.0
         curves.append(values)
     return curves
 
@@ -399,18 +385,12 @@ def calibration_to_profile_value(curve, device):
     entries = len(curve)
     if device <= curve[0]:
         return 0.0
-    # Full scale maps to full scale. Resolving the plateau to its first entry
-    # is physically truer -- the panel reaches peak at its own PQ code, not at
-    # 1.0 -- but it leaves the characterization with no white patch at full
-    # scale and ArgyllCMS cannot fit a profile without one. Sending PQ 1.0 does
-    # still produce peak white, so this remains a true statement about the
-    # display; only the clipped range above the peak is left unsampled.
     if device >= curve[-1]:
         return 1.0
     low, high = 0, entries - 1
     while low < high - 1:
         middle = (low + high) // 2
-        if curve[middle] < device:
+        if curve[middle] <= device:
             low = middle
         else:
             high = middle
@@ -851,22 +831,6 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
-        # ArgyllCMS accepts -r avgdev to describe the average deviation of
-        # the device+instrument readings as a percentage. Leaving it unset
-        # means ArgyllCMS uses its own 0.50% default; passing a value outside
-        # the supported 0-5% range (or anything that fails to parse) is
-        # silently dropped rather than failing the build.
-        raw_avg_deviation = payload.get("avg_deviation")
-        avg_deviation = None
-        if raw_avg_deviation not in (None, ""):
-            try:
-                candidate = float(raw_avg_deviation)
-            except (TypeError, ValueError):
-                candidate = None
-            if candidate is not None and 0.0 <= candidate <= 5.0:
-                avg_deviation = candidate
-        if avg_deviation is not None:
-            command.insert(1, "-r{:.3f}".format(avg_deviation))
         # cLUT fitting on the Pi is substantially slower than matrix fitting,
         # and scales with both characterization size and requested quality.
         # The former 90-second floor killed a normal 175-patch Medium XYZ cLUT
@@ -972,30 +936,17 @@ def generate_patches(payload, output_dir):
     black = bounded_integer(payload.get("black_patches", 4), "black patches", 1, 32)
     single = bounded_integer(payload.get("single_channel_steps", 17), "single-channel steps", 0, 129)
     gray = bounded_integer(payload.get("gray_steps", 49), "grayscale steps", 2, 257)
-    cube = bounded_integer(payload.get("cube_steps", 0), "cube steps", 0, 21)
-    surface = bounded_integer(payload.get("cube_surface_steps", 0), "cube surface steps", 0, 21)
-    bcc = bounded_integer(payload.get("bcc_steps", 0), "body centered cubic steps", 0, 21)
     neutral = max(0.0, min(1.0, finite_number(payload.get("neutral_emphasis", 0.5), "neutral-axis emphasis")))
     dark = max(0.0, min(1.0, finite_number(payload.get("dark_emphasis", 0.2), "dark-region emphasis")))
-    structured = white + black + gray + max(0, single - 2) * 3
-    if cube >= 2:
-        structured += cube * cube * cube
-    if surface >= 2:
-        inner = max(0, surface - 2)
-        structured += (surface * surface * surface) - (inner * inner * inner)
-    if bcc >= 2:
-        # Conservative upper bound: lattice points plus body centers.
-        structured += (bcc * bcc * bcc) + (max(0, bcc - 1) ** 3)
-    if total < structured:
-        fail("Patch count is too small for the selected structured patch coverage")
+    base_minimum = white + black + gray + max(0, single - 2) * 3
+    if total < base_minimum:
+        fail("Patch count is too small for the selected grayscale and single-channel coverage")
     temp_dir = tempfile.mkdtemp(prefix="pgen_icc_chart_")
     try:
         base = os.path.join(temp_dir, "patches")
         command = [
             targen, "-v", "-d3", "-e{}".format(white), "-B{}".format(black),
-            "-s{}".format(single), "-g{}".format(gray),
-            "-m{}".format(cube), "-M{}".format(surface), "-b{}".format(bcc),
-            "-f{}".format(total),
+            "-s{}".format(single), "-g{}".format(gray), "-m0", "-f{}".format(total),
             "-A1.0", "-N{:.3f}".format(neutral), "-V{:.3f}".format(1.0 + dark * 3.0), "-p1.0",
         ]
         if payload.get("good_optimization", True):
@@ -1248,6 +1199,11 @@ def build(payload, output_dir):
         )
         with open(output_path, "wb") as handle:
             handle.write(profile)
+    if profile_type in ("windows-sdr", "windows-hdr") and matrix and adjustment_luts:
+        # Clone the vcgt from MHC2 so the fallback matches the preferred path
+        # on the grey axis, inheriting MHC2's chromatic correction rather than
+        # approximating it per channel.
+        calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(profile_type))
     if calibration:
         # The cLUT above was fitted in the calibrated domain, so every consumer
         # needs this 1D stage in front of it. vcgt is the portable one: OS
