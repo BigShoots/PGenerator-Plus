@@ -336,11 +336,12 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
     made the curve's input something other than a PQ code, which is wrong for a
     stage the framebuffer feeds directly.
 
-    No tone mapping is applied here. The HDR metadata already advertises the
-    mastering peak, so rolling off is the display's or the application's job;
-    doing it in the calibration would tone map a second time. Codes above the
-    panel's measured peak simply clip, and the saturated tail is ramped below
-    so the curve still has a usable inverse for the characterization remap.
+    No tone mapping is applied. Rolling the target off with BT.2390 to match
+    the post-calibration chart was tried and measured much worse -- it
+    compressed the highlights hard, taking mean dE ITP from 3.51 to 8.44 and
+    peak from 7.48 to 26.08 around the knee. The metadata already advertises
+    the mastering peak, so tone mapping belongs to whatever is displaying the
+    content. Codes above the panel's peak simply clip.
     """
     channel_samples = neutral_channel_samples(rows, black, primaries)
     black_nits = max(0.0, black["xyz"][1])
