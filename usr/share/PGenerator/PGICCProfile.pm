@@ -427,10 +427,20 @@ sub webui_icc_companion_pattern (@) {
   $r=$input_max if($r>$input_max); $g=$input_max if($g>$input_max); $b=$input_max if($b>$input_max);
   my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/); $size=100 if($size<1 || $size>100);
   my $signal_mode="sdr"; $signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"(sdr|hdr10|hlg|dv)"/);
-  my $max_luma=1000; $max_luma=$1 if($body=~/"max_luma"\s*:\s*(\d+(?:\.\d+)?)/);
-  my $min_luma=0.005; $min_luma=$1 if($body=~/"min_luma"\s*:\s*(\d+(?:\.\d+)?)/);
-  my $max_cll=$max_luma; $max_cll=$1 if($body=~/"max_cll"\s*:\s*(\d+(?:\.\d+)?)/);
-  my $max_fall=400; $max_fall=$1 if($body=~/"max_fall"\s*:\s*(\d+(?:\.\d+)?)/);
+  # Fall back to the configured HDR metadata, not to fixed literals. A display
+  # tone maps against the mastering metadata it is sent, so an ICC
+  # characterization measured with different max_luma/max_cll/max_fall than the
+  # verification series is measuring a differently behaving display, and the
+  # resulting profile can never agree with the charts.
+  my $max_luma=defined($pgenerator_conf{"max_luma"}) ? ($pgenerator_conf{"max_luma"}+0) : 1000;
+  $max_luma=$1 if($body=~/"max_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+  $max_luma=1000 if($max_luma<=0); $max_luma=10000 if($max_luma>10000);
+  my $min_luma=defined($pgenerator_conf{"min_luma"}) ? ($pgenerator_conf{"min_luma"}+0) : 0.005;
+  $min_luma=$1 if($body=~/"min_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $max_cll=defined($pgenerator_conf{"max_cll"}) ? ($pgenerator_conf{"max_cll"}+0) : $max_luma;
+  $max_cll=$1 if($body=~/"max_cll"\s*:\s*(\d+(?:\.\d+)?)/);
+  my $max_fall=defined($pgenerator_conf{"max_fall"}) ? ($pgenerator_conf{"max_fall"}+0) : 400;
+  $max_fall=$1 if($body=~/"max_fall"\s*:\s*(\d+(?:\.\d+)?)/);
   my $signal_range=""; $signal_range=$1 if($body=~/"signal_range"\s*:\s*"?(\d+)"?/);
   my $scale=1; $scale=4 if($input_max==1023); $scale=16 if($input_max==4095);
   my $code_min=($signal_range eq "1") ? 16*$scale : 0;
