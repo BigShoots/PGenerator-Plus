@@ -594,6 +594,111 @@ def rebuild_icc(profile, replacements):
 # Device level below which the B2A black pedestal is considered already
 # anchored and left alone (well under one 8-bit code).
 BLACK_ANCHOR_EPSILON = 1.0 / 1024.0
+# PCS luminance at or below which the forward model is treated as emitting no
+# light, and the device step used when walking it.
+BLACK_ANCHOR_DARK_PCS = 1.0e-5
+BLACK_ANCHOR_PROBE_STEP = 0.005
+# The anchor may not move the inverse by more than this multiple of the
+# pedestal it removes; beyond that the correction is ill-conditioned.
+BLACK_ANCHOR_MAX_SPILL = 1.5
+
+
+def parse_mft2(tag):
+    """Parse an ICC lut16Type tag into its matrix, curves and cLUT."""
+    if tag[:4] != b"mft2" or len(tag) < 52:
+        return None
+    input_channels, output_channels, grid = tag[8], tag[9], tag[10]
+    if input_channels != 3 or output_channels != 3 or grid < 2:
+        return None
+    input_entries, output_entries = struct.unpack_from(">HH", tag, 48)
+    if input_entries < 2 or output_entries < 2:
+        return None
+    offset = 52
+    input_tables = []
+    for _ in range(input_channels):
+        if offset + input_entries * 2 > len(tag):
+            return None
+        input_tables.append([
+            struct.unpack_from(">H", tag, offset + i * 2)[0] / 65535.0
+            for i in range(input_entries)
+        ])
+        offset += input_entries * 2
+    clut_offset = offset
+    clut_count = (grid ** input_channels) * output_channels
+    if clut_offset + clut_count * 2 > len(tag):
+        return None
+    clut = [
+        struct.unpack_from(">H", tag, clut_offset + i * 2)[0] / 65535.0
+        for i in range(clut_count)
+    ]
+    offset = clut_offset + clut_count * 2
+    output_tables = []
+    for _ in range(output_channels):
+        if offset + output_entries * 2 > len(tag):
+            return None
+        output_tables.append([
+            struct.unpack_from(">H", tag, offset + i * 2)[0] / 65535.0
+            for i in range(output_entries)
+        ])
+        offset += output_entries * 2
+    return {
+        "grid": grid, "channels": output_channels,
+        "input_tables": input_tables, "output_tables": output_tables,
+        "clut": clut, "clut_offset": clut_offset,
+    }
+
+
+def apply_mft2(parsed, values):
+    """Evaluate a parsed lut16Type (trilinear), ignoring the identity matrix."""
+    grid = parsed["grid"]
+    channels = parsed["channels"]
+    clut = parsed["clut"]
+    coordinates = [
+        curve_lookup(parsed["input_tables"][c], values[c]) * (grid - 1)
+        for c in range(3)
+    ]
+    base, fraction = [], []
+    for coordinate in coordinates:
+        low = min(grid - 2, max(0, int(coordinate)))
+        base.append(low)
+        fraction.append(min(1.0, max(0.0, coordinate - low)))
+    output = [0.0] * channels
+    for corner in range(8):
+        weight = 1.0
+        index = 0
+        for axis in range(3):
+            high = (corner >> axis) & 1
+            weight *= fraction[axis] if high else (1.0 - fraction[axis])
+            index = index * grid + (base[axis] + high)
+        if weight <= 0.0:
+            continue
+        for c in range(channels):
+            output[c] += weight * clut[index * channels + c]
+    return [curve_lookup(parsed["output_tables"][c], output[c]) for c in range(channels)]
+
+
+def forward_dark_device_limit(profile):
+    """Highest neutral device level the forward model still maps to no light.
+
+    This is the span over which the PCS->device inversion is under-determined:
+    every device level below it produces the same zero luminance.
+    """
+    tag = None
+    for signature, payload in read_icc_tags(profile):
+        if signature == b"A2B0":
+            tag = payload
+            break
+    parsed = parse_mft2(tag) if tag else None
+    if not parsed:
+        return 0.0
+    limit = 0.0
+    device = 0.0
+    while device <= 0.60:
+        if apply_mft2(parsed, [device] * 3)[1] > BLACK_ANCHOR_DARK_PCS:
+            break
+        limit = device
+        device += BLACK_ANCHOR_PROBE_STEP
+    return limit
 
 
 def curve_lookup(table, value):
@@ -621,7 +726,7 @@ def curve_invert(table, value):
     return (low + fraction) / (len(table) - 1.0)
 
 
-def anchor_b2a_black(tag):
+def anchor_b2a_black(tag, dark_device_limit):
     """Drive the B2A0 black pedestal to device zero.
 
     A display whose low end is crushed emits no light across a whole span of
@@ -637,55 +742,37 @@ def anchor_b2a_black(tag):
     value that achieves the target, which for PCS black is device black.
     Subtract that pedestal from the PCS-black plane of the cLUT, fading to
     zero by the first grid node above black so nothing else in the fit moves.
+
+    Only valid when the pedestal lies INSIDE the forward model's zero-light
+    span.  If the forward model says that device level already emits light,
+    the pedestal is a real fitted value rather than an inversion artifact, and
+    removing it would change the display's actual output.  A profile measured
+    on a panel with a real black floor falls in that second group and is left
+    alone -- verified against a profile whose pedestal (0.0678) sits well
+    outside its 0.010 flat span, where anchoring shifted the near-black
+    inverse by up to 0.22 device.
     """
-    if tag[:4] != b"mft2" or len(tag) < 52:
+    parsed = parse_mft2(tag)
+    if not parsed:
         return tag
-    input_channels, output_channels, grid = tag[8], tag[9], tag[10]
-    if input_channels != 3 or output_channels != 3 or grid < 2:
-        return tag
-    input_entries, output_entries = struct.unpack_from(">HH", tag, 48)
-    if input_entries < 2 or output_entries < 2:
-        return tag
+    grid = parsed["grid"]
+    channels = parsed["channels"]
+    clut = parsed["clut"]
+    output_tables = parsed["output_tables"]
+    clut_offset = parsed["clut_offset"]
 
-    offset = 52
-    input_tables = []
-    for _ in range(input_channels):
-        if offset + input_entries * 2 > len(tag):
-            return tag
-        input_tables.append([
-            struct.unpack_from(">H", tag, offset + i * 2)[0] / 65535.0
-            for i in range(input_entries)
-        ])
-        offset += input_entries * 2
-
-    clut_offset = offset
-    clut_count = (grid ** input_channels) * output_channels
-    if clut_offset + clut_count * 2 > len(tag):
-        return tag
-    clut = [
-        struct.unpack_from(">H", tag, clut_offset + i * 2)[0] / 65535.0
-        for i in range(clut_count)
-    ]
-    offset = clut_offset + clut_count * 2
-
-    output_tables = []
-    for _ in range(output_channels):
-        if offset + output_entries * 2 > len(tag):
-            return tag
-        output_tables.append([
-            struct.unpack_from(">H", tag, offset + i * 2)[0] / 65535.0
-            for i in range(output_entries)
-        ])
-        offset += output_entries * 2
-
-    pedestal = [curve_lookup(output_tables[c], clut[c]) for c in range(3)]
+    pedestal = [curve_lookup(output_tables[c], clut[c]) for c in range(channels)]
     if max(pedestal) <= BLACK_ANCHOR_EPSILON:
+        return tag
+    if max(pedestal) > dark_device_limit:
         return tag
 
     # PCS luminance at each grid node along the Y axis (the second input
     # channel of an XYZ PCS B2A).  The fade reaches zero at the first node
     # above black, so only the PCS-black plane is rewritten.
-    node_luminance = [curve_invert(input_tables[1], j / (grid - 1.0)) for j in range(grid)]
+    node_luminance = [
+        curve_invert(parsed["input_tables"][1], j / (grid - 1.0)) for j in range(grid)
+    ]
     blend = node_luminance[1]
     if blend <= 0.0:
         return tag
@@ -698,8 +785,8 @@ def anchor_b2a_black(tag):
         weight = min(1.0, weight)
         for i in range(grid):
             for k in range(grid):
-                node = ((i * grid + j) * grid + k) * 3
-                for c in range(output_channels):
+                node = ((i * grid + j) * grid + k) * channels
+                for c in range(channels):
                     device = curve_lookup(output_tables[c], clut[node + c])
                     corrected = max(0.0, device - weight * pedestal[c])
                     stored = curve_invert(output_tables[c], corrected)
@@ -710,15 +797,51 @@ def anchor_b2a_black(tag):
     return bytes(data)
 
 
+def black_anchor_spill(original, anchored):
+    """Largest device shift the anchor causes on a neutral PCS ramp."""
+    before = parse_mft2(original)
+    after = parse_mft2(anchored)
+    if not before or not after:
+        return None
+    worst = 0.0
+    for probe in (0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
+                  0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0):
+        old = apply_mft2(before, [probe] * 3)
+        new = apply_mft2(after, [probe] * 3)
+        worst = max(worst, max(abs(new[c] - old[c]) for c in range(len(old))))
+    return worst
+
+
 def anchor_profile_black(path):
     """Rewrite a saved cLUT profile so PCS black maps to device black."""
     with open(path, "rb") as handle:
         profile = handle.read()
+    dark_device_limit = forward_dark_device_limit(profile)
+    if dark_device_limit <= 0.0:
+        return False
     replacement = None
     for signature, payload in read_icc_tags(profile):
         if signature == b"B2A0":
-            anchored = anchor_b2a_black(payload)
+            anchored = anchor_b2a_black(payload, dark_device_limit)
             if anchored != payload:
+                # Removing a pedestal of magnitude P must not move the inverse
+                # by more than P.  The cLUT interpolates in stored units while
+                # the pedestal is subtracted in device units, so on a profile
+                # whose output curve is steep near black the correction is
+                # ill-conditioned and a small subtraction can swing the
+                # near-black inverse wildly (0.37 device for a 0.068 pedestal
+                # on one measured profile).  That is a worse profile than the
+                # pedestal it removes, so discard the anchor instead.
+                parsed = parse_mft2(payload)
+                pedestal = 0.0
+                if parsed:
+                    pedestal = max(
+                        curve_lookup(parsed["output_tables"][c], parsed["clut"][c])
+                        for c in range(parsed["channels"])
+                    )
+                spill = black_anchor_spill(payload, anchored)
+                if spill is None or pedestal <= 0.0 or spill > pedestal * BLACK_ANCHOR_MAX_SPILL:
+                    return False
                 replacement = anchored
             break
     if replacement is None:
