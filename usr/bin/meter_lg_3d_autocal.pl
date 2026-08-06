@@ -10,6 +10,9 @@ use JSON::PP ();
 use MIME::Base64 ();
 use POSIX qw(strftime WNOHANG);
 use Time::HiRes qw(sleep time);
+use FindBin qw($Bin);
+use lib "$Bin/../share/PGenerator";
+use PGAutoCalSafety qw(profile_reading_plausibility_error profile_primary_monotonicity_error);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -1163,7 +1166,7 @@ sub capture_volume_drift_anchor {
   $state->{"current_name"}=($label||"Drift anchor")." ".uc(substr($kind,0,1));
   $state->{"message"}="WRGB drift re-anchor - reading ".$kind;
   write_state($state);
-  my ($reading,$error)=read_step($config,$step,$state);
+  my ($reading,$error)=read_validated_profile_step($config,$step,$state,undef);
   die "Drift anchor $kind failed: $error\n" if($error);
   my $xyz=reading_xyz($reading);
   die "Drift anchor $kind returned no XYZ\n" if(!$xyz);
@@ -3051,6 +3054,49 @@ sub read_step {
  return (undef,$last||"Meter read failed");
 }
 
+# Profile measurements are solver inputs, not ordinary chart samples.  Retry
+# impossible values here so a stale black result can never become a valid
+# colour-model endpoint merely because the meter request itself succeeded.
+sub read_validated_profile_step {
+ my ($config,$step,$state,$previous_entries)=@_;
+ my $attempts=3;
+ my $last="";
+ for(my $attempt=1;$attempt<=$attempts;$attempt++) {
+  my ($reading,$error)=read_step($config,$step,$state);
+  return (undef,$error) if($error);
+  my $reason=profile_reading_plausibility_error($step,$reading);
+  $reason=profile_primary_monotonicity_error($step,$reading,$previous_entries) if(!defined($reason));
+  if(!defined($reason)) {
+   if($attempt > 1 && ref($state) eq "HASH") {
+    $state->{profile_validation_recoveries}=($state->{profile_validation_recoveries}||0)+1;
+    write_state($state);
+   }
+   return ($reading,undef);
+  }
+  $last=$reason;
+  my $name=$step->{name}||"profile patch";
+  log_line("Rejected implausible profile reading for $name ($attempt/$attempts): $reason");
+  if(ref($state) eq "HASH") {
+   $state->{profile_validation_failures}=[] if(ref($state->{profile_validation_failures}) ne "ARRAY");
+   push @{$state->{profile_validation_failures}},{
+    name=>$name,
+    attempt=>$attempt+0,
+    reason=>$reason,
+    X=>defined($reading->{X}) ? ($reading->{X}+0) : undef,
+    Y=>defined($reading->{Y}) ? ($reading->{Y}+0) : undef,
+    Z=>defined($reading->{Z}) ? ($reading->{Z}+0) : undef,
+    r_code=>defined($step->{r}) ? ($step->{r}+0) : undef,
+    g_code=>defined($step->{g}) ? ($step->{g}+0) : undef,
+    b_code=>defined($step->{b}) ? ($step->{b}+0) : undef,
+   };
+   $state->{message}="Rejected implausible $name reading; retrying ($attempt/$attempts)";
+   write_state($state);
+  }
+  sleep(1+$attempt) if($attempt < $attempts);
+ }
+ return (undef,"Invalid profile reading for ".($step->{name}||"patch")." after $attempts attempts: $last");
+}
+
 sub post_check_steps {
 	 my ($config)=@_;
 	 my @steps;
@@ -4568,7 +4614,7 @@ eval {
   $state->{"profile_total"}=$profile_total;
   $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
   write_state($state);
-  my ($reading,$error)=read_step($config,$step,$state);
+  my ($reading,$error)=read_validated_profile_step($config,$step,$state,\@profile_readings);
   die "$error\n" if($error);
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
@@ -4990,6 +5036,20 @@ eval {
     log_line("HDR20 shadow-after re-commit MISMATCH: 3D LUT failed (".$sl_detail->{message}.") but tone map ok — manual 3D LUT re-upload needed");
    } else {
     $state->{"postcal_shadow_recommit_mismatch"}=JSON::PP::false;
+   }
+   # A failed attempt to rebuild the held calibration session is recoverable:
+   # this explicit final LUT + tone-map re-commit establishes the same panel
+   # state through the normal verified upload path.  Do not leave the terminal
+   # status carrying the earlier "will likely fail" note after both uploads
+   # have demonstrably succeeded.
+   if($sl_status eq "ok" && $st_status eq "ok" && ref($state->{"hdr20_postcal_shadow"}) eq "HASH") {
+    $state->{"hdr20_postcal_shadow"}->{"reestablished"}=JSON::PP::true;
+    $state->{"hdr20_postcal_shadow"}->{"final_recommit_verified"}=JSON::PP::true;
+    my $_shadow_note=$state->{"hdr20_postcal_shadow"}->{"note"}||"";
+    $_shadow_note=~s/re-establish reported failure; 3D profiling will likely fail\.//g;
+    $_shadow_note=~s/^\s+|\s+$//g;
+    $state->{"hdr20_postcal_shadow"}->{"note"}=$_shadow_note;
+    $state->{"postcal_shadow_final_recommit_verified"}=JSON::PP::true;
    }
    write_state($state);
    1;

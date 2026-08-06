@@ -17,9 +17,11 @@ use PGenSource qw(repo_root source_path);
 my $root=repo_root($Bin);
 
 my @sources=qw(
+ usr/share/PGenerator/PGAutoCalSafety.pm
  usr/share/PGenerator/lg.pm
  usr/share/PGenerator/webui.pm
  usr/bin/meter_lg_autocal.pl
+ usr/bin/meter_lg_3d_autocal.pl
  usr/sbin/pgenerator-lg
  tools/check_lg_picture_mode_regression.pl
 );

@@ -6301,6 +6301,7 @@ sub webui_meter_settings_save (@) {
     low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
+  target_white_use_measured target_white_level target_black_use_measured target_black_level
   target_white_x target_white_y custom_d65_enabled
   hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum simulate_spectro
  );
@@ -28462,6 +28463,10 @@ function meterSetTargetLevels(){
   black:{useMeasured:bUseMeasured,value:bValue,overridden:bOver}
  };
  try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
+ // Target levels must also be shared by every browser and survive a daemon
+ // restart. The server settings payload is authoritative; localStorage is
+ // retained only as a warm-start fallback while the settings request loads.
+ try{ if(meterSettingsLoaded&&typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
  // Let the checkbox/input state paint before recalculating charts. Rapid
  // toggles coalesce into one refresh instead of stacking expensive canvases.
  try{ meterScheduleTargetCurveRefresh(); }catch(e){}
@@ -38991,7 +38996,45 @@ async function meterAutoCalApplyStatus(status){
 	  const completed=new Set(meterReadings.filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
 	  if(sorted.length) {
-	   drawAllCharts(sorted);
+	   // AutoCal status is polled every 1.5s, but most polls only update the
+	   // current iteration/progress text. Repainting all five canvases and
+	   // serialising the whole series cache on every unchanged poll blocks the
+	   // browser's main thread and makes the rest of the UI visibly judder.
+	   //
+	   // Track only inputs which affect the greyscale charts. During a running
+	   // pass, use the same frame-budgeted painter as an ordinary greyscale
+	   // series. A terminal status always cancels queued work and performs one
+	   // synchronous final paint so the completed charts cannot be left on a
+	   // mixture of two status revisions.
+	   const statusRunning=String(status.status||'').toLowerCase()==='running';
+	   const chartSignature=JSON.stringify([
+	    sorted.map(rd=>[
+	     meterStepNameKey(rd),
+	     rd.luminance,rd.X,rd.Y,rd.Z,
+	     rd.target_x,rd.target_y,rd.target_Yn,rd.target_luminance,
+	     rd.series_target_white_y,rd.lg_target_white_y,rd.autocal_white_y,
+	     rd.series_target_black_y,rd.best_known_delta_e
+	    ]),
+	    Number.isFinite(chartWhiteY)?chartWhiteY:null,
+	    status.target_gamma||meterActiveSeriesTargetGamma||'',
+	    status.signal_mode||meterActiveSeriesSignalMode||'',
+	    status.ddc_layout||''
+	   ]);
+	   const chartChanged=sorted.length!==meterLastChartCount||chartSignature!==meterLastChartSignature;
+	   if(statusRunning){
+	    if(chartChanged){
+	     meterLastChartCount=sorted.length;
+	     meterLastChartSignature=chartSignature;
+	     meterQueueRunningGreyscaleChartRefresh(sorted);
+	     meterCacheSeriesState(status.status||'running');
+	    }
+	   }else{
+	    meterCancelRunningGreyscaleChartRefresh();
+	    meterLastChartCount=sorted.length;
+	    meterLastChartSignature=chartSignature;
+	    drawAllCharts(sorted);
+	    meterCacheSeriesState(status.status||'complete');
+	   }
 	   const currentValid=currentKey?meterReadings.find(rd=>rd&&rd.luminance!=null&&meterStepNameKey(rd)===currentKey):null;
 	   // meterReadings is sorted by IRE (see meterAutoCalStatusChartReadings),
 	   // NOT by measurement order, so reverse().find() returned the HIGHEST-IRE
@@ -39008,7 +39051,6 @@ async function meterAutoCalApplyStatus(status){
 	    });
 	   }
 	   if(lastValid) updateLiveReading(lastValid);
-	   meterCacheSeriesState(status.status||'running');
 	  }
   if(meterSeriesSteps){
    const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
@@ -41403,6 +41445,11 @@ function meterFullAutoCalTouchupTargetY(){
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
     target_delta_e:target,
+    // Send the target redundantly under the specialised worker keys as well.
+    // New workers inherit target_delta_e directly; these explicit values keep
+    // older HDR/DV and SDR DPG workers from silently falling back to 0.5.
+    lg_autocal_hdr20_dpg_target_de:target,
+    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
@@ -41573,6 +41620,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
     target_delta_e:target,
+    lg_autocal_hdr20_dpg_target_de:target,
+    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
@@ -42547,7 +42596,9 @@ async function meterAutoCalConfirmAndStart(){
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
-    target_delta_e:target,
+	    target_delta_e:target,
+	    lg_autocal_hdr20_dpg_target_de:target,
+	    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:hdrWorkflow?undefined:targetY,
     setup_luminance_reference:hdrWorkflow?undefined:setupY,
@@ -52983,6 +53034,10 @@ function saveMeterSettings(){
   color_de_form:val('meterColorDeltaEForm','de2000'),
     color_incl_lum:chk('meterColorIncludeLumError'),
   target_gamma:val('meterTargetGamma'),
+  target_white_use_measured:chk('meterTargetWhiteUseMeasured'),
+  target_white_level:chk('meterTargetWhiteUseMeasured')?null:(val('meterTargetWhite')||null),
+  target_black_use_measured:chk('meterTargetBlackUseMeasured'),
+  target_black_level:chk('meterTargetBlackUseMeasured')?null:(val('meterTargetBlack')||null),
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
@@ -53197,6 +53252,13 @@ async function loadMeterSettings(){
  // ST 2084 never survives into SDR.
  try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  meterSyncTargetGammaControl();
+ if(s.target_white_use_measured!=null||s.target_white_level!=null||s.target_black_use_measured!=null||s.target_black_level!=null){
+  setChk('meterTargetWhiteUseMeasured',s.target_white_use_measured==null?true:s.target_white_use_measured);
+  setVal('meterTargetWhite',s.target_white_level==null?'':String(s.target_white_level));
+  setChk('meterTargetBlackUseMeasured',s.target_black_use_measured==null?!meterDisplayTypeIsOledClass():s.target_black_use_measured);
+  setVal('meterTargetBlack',s.target_black_level==null?'':String(s.target_black_level));
+  meterSetTargetLevels();
+ }
  setChk('meterCustomD65Enabled', s.custom_d65_enabled);
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);
