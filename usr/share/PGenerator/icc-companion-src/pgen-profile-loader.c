@@ -6,6 +6,8 @@
 #include <icm.h>
 #include <uxtheme.h>
 #include <dwmapi.h>
+#include <setupapi.h>
+#include <devguid.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +16,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.3.0"
+#define APP_VERSION L"1.3.1"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -64,6 +66,7 @@ typedef struct {
     WCHAR source_name[CCHDEVICENAME];
     WCHAR friendly[128];
     WCHAR monitor_path[256];
+    WCHAR driver_key[128];
 } DISPLAY_ENTRY;
 
 typedef struct {
@@ -251,6 +254,51 @@ static BOOL same_luid(LUID a, LUID b) {
     return a.HighPart == b.HighPart && a.LowPart == b.LowPart;
 }
 
+static BOOL monitor_instance_id(const WCHAR *path, WCHAR *instance, size_t count) {
+    const WCHAR *source;
+    size_t used = 0;
+    int separators = 0;
+    if (!path || !instance || count < 2) return FALSE;
+    source = !wcsncmp(path, L"\\\\?\\", 4) ? path + 4 : path;
+    while (*source && used + 1 < count) {
+        if (source[0] == L'#' && source[1] == L'{') break;
+        if (*source == L'#' && separators < 2) {
+            instance[used++] = L'\\';
+            separators++;
+        } else {
+            instance[used++] = *source;
+        }
+        source++;
+    }
+    instance[used] = L'\0';
+    return separators == 2 && used > 0;
+}
+
+static BOOL monitor_driver_key(const WCHAR *monitor_path, WCHAR *driver, size_t count) {
+    HDEVINFO devices;
+    SP_DEVINFO_DATA info;
+    WCHAR wanted[256], instance[256];
+    DWORD index;
+    BOOL found = FALSE;
+    if (!monitor_instance_id(monitor_path, wanted, 256)) return FALSE;
+    devices = SetupDiGetClassDevsW(&GUID_DEVCLASS_MONITOR, NULL, NULL, DIGCF_PRESENT);
+    if (devices == INVALID_HANDLE_VALUE) return FALSE;
+    ZeroMemory(&info, sizeof(info));
+    info.cbSize = sizeof(info);
+    for (index = 0; SetupDiEnumDeviceInfo(devices, index, &info); index++) {
+        DWORD type = 0, bytes = 0;
+        if (!SetupDiGetDeviceInstanceIdW(devices, &info, instance, 256, NULL) ||
+            _wcsicmp(instance, wanted) != 0) continue;
+        if (SetupDiGetDeviceRegistryPropertyW(devices, &info, SPDRP_DRIVER,
+                                              &type, (BYTE *)driver,
+                                              (DWORD)(count * sizeof(WCHAR)), &bytes) &&
+            type == REG_SZ && driver[0]) found = TRUE;
+        break;
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return found;
+}
+
 static void enumerate_displays(void) {
     UINT32 path_count = 0, mode_count = 0, i;
     DISPLAYCONFIG_PATH_INFO *paths = NULL;
@@ -304,6 +352,7 @@ static void enumerate_displays(void) {
                   target.monitorFriendlyDeviceName[0] ? target.monitorFriendlyDeviceName : source.viewGdiDeviceName,
                   _TRUNCATE);
         wcsncpy_s(entry->monitor_path, 256, target.monitorDevicePath, _TRUNCATE);
+        monitor_driver_key(entry->monitor_path, entry->driver_key, 128);
         {
             WCHAR label[320];
             UINT duplicate_number = 1;
@@ -368,6 +417,70 @@ static void update_tray(BOOL ok, const WCHAR *detail) {
     Shell_NotifyIconW(NIM_MODIFY, &g_tray);
 }
 
+static BOOL read_profile_list(HKEY key, const WCHAR *value, WCHAR *buffer,
+                              DWORD buffer_count) {
+    DWORD type = 0, bytes = buffer_count * sizeof(WCHAR);
+    LONG rc;
+    if (!key || !buffer || buffer_count < 2) return FALSE;
+    ZeroMemory(buffer, bytes);
+    rc = RegQueryValueExW(key, value, NULL, &type, (BYTE *)buffer, &bytes);
+    if (rc != ERROR_SUCCESS || (type != REG_MULTI_SZ && type != REG_SZ)) return FALSE;
+    buffer[buffer_count - 1] = L'\0';
+    buffer[buffer_count - 2] = L'\0';
+    return buffer[0] != L'\0';
+}
+
+static HKEY open_display_profile_registry(DISPLAY_ENTRY *display) {
+    static const WCHAR *user_base =
+        L"Software\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\";
+    static const WCHAR *system_base =
+        L"SYSTEM\\CurrentControlSet\\Control\\Class\\";
+    WCHAR path[512];
+    HKEY key = NULL;
+    DWORD use_user = 0, type = 0, bytes = sizeof(use_user);
+    if (!display || !display->driver_key[0]) return NULL;
+    swprintf(path, 512, L"%ls%ls", user_base, display->driver_key);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(key, L"UsePerUserProfiles", NULL, &type,
+                            (BYTE *)&use_user, &bytes) == ERROR_SUCCESS &&
+            type == REG_DWORD && use_user) return key;
+        RegCloseKey(key);
+        key = NULL;
+    }
+    swprintf(path, 512, L"%ls%ls", system_base, display->driver_key);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return NULL;
+    return key;
+}
+
+static BOOL last_profile_name(const WCHAR *profiles, WCHAR *name, size_t count) {
+    const WCHAR *item;
+    BOOL found = FALSE;
+    if (!profiles || !name || !count) return FALSE;
+    for (item = profiles; *item; item += wcslen(item) + 1) {
+        wcsncpy_s(name, count, item, _TRUNCATE);
+        found = TRUE;
+    }
+    return found;
+}
+
+static BOOL registry_profile_defaults(DISPLAY_ENTRY *display,
+                                      WCHAR *standard, size_t standard_count,
+                                      WCHAR *advanced, size_t advanced_count) {
+    HKEY key = open_display_profile_registry(display);
+    WCHAR profiles[8192];
+    BOOL found = FALSE;
+    if (standard && standard_count) standard[0] = L'\0';
+    if (advanced && advanced_count) advanced[0] = L'\0';
+    if (!key) return FALSE;
+    if (standard && read_profile_list(key, L"ICMProfile", profiles, 8192))
+        found |= last_profile_name(profiles, standard, standard_count);
+    if (advanced && read_profile_list(key, L"ICMProfileAC", profiles, 8192))
+        found |= last_profile_name(profiles, advanced, advanced_count);
+    RegCloseKey(key);
+    return found;
+}
+
 static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
                                   WCS_PROFILE_MANAGEMENT_SCOPE *scope) {
     HRESULT hr;
@@ -377,6 +490,21 @@ static HRESULT get_active_default(DISPLAY_ENTRY *display, LPWSTR *name,
                                 : PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE;
     *name = NULL;
     *scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+    {
+        WCHAR standard[MAX_PATH] = L"", advanced[MAX_PATH] = L"";
+        const WCHAR *selected;
+        if (registry_profile_defaults(display, standard, MAX_PATH,
+                                      advanced, MAX_PATH)) {
+            selected = g_associate_advanced ? advanced : standard;
+            if (selected[0]) {
+                size_t bytes = (wcslen(selected) + 1) * sizeof(WCHAR);
+                *name = (LPWSTR)LocalAlloc(LMEM_FIXED, bytes);
+                if (!*name) return E_OUTOFMEMORY;
+                memcpy(*name, selected, bytes);
+                return S_OK;
+            }
+        }
+    }
     if (!p_get_default) return E_NOTIMPL;
     if (p_get_scope) {
         hr = p_get_scope(display->adapter, display->source_id, scope);
@@ -500,7 +628,27 @@ static BOOL display_profile_is_associated(DISPLAY_ENTRY *display, const WCHAR *n
     DWORD count = 0, i;
     HRESULT hr;
     BOOL found = FALSE;
-    if (!display || !name || !p_get_list) return FALSE;
+    HKEY key;
+    WCHAR stored[8192];
+    const WCHAR *item;
+    if (!display || !name) return FALSE;
+    key = open_display_profile_registry(display);
+    if (key) {
+        const WCHAR *values[2] = {L"ICMProfile", L"ICMProfileAC"};
+        int value_index;
+        for (value_index = 0; value_index < 2 && !found; value_index++) {
+            if (!read_profile_list(key, values[value_index], stored, 8192)) continue;
+            for (item = stored; *item; item += wcslen(item) + 1) {
+                if (_wcsicmp(profile_basename(item), name) == 0) {
+                    found = TRUE;
+                    break;
+                }
+            }
+        }
+        RegCloseKey(key);
+        if (found) return TRUE;
+    }
+    if (!p_get_list) return FALSE;
     hr = p_get_list(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
                     display->adapter, display->source_id, &profiles, &count);
     if (FAILED(hr) || !profiles) return FALSE;
@@ -554,11 +702,38 @@ static BOOL get_default_name(DISPLAY_ENTRY *display, COLORPROFILESUBTYPE subtype
     return TRUE;
 }
 
-static BOOL profile_already_listed(const WCHAR *name) {
+static void append_display_profile_name(const WCHAR *name, BOOL advanced) {
     UINT i;
-    for (i = 0; i < g_profile_count; i++)
-        if (_wcsicmp(g_profiles[i].name, profile_basename(name)) == 0) return TRUE;
-    return FALSE;
+    PROFILE_ENTRY *entry;
+    WCHAR path[MAX_PATH];
+    if (!name || !name[0]) return;
+    for (i = 0; i < g_profile_count; i++) {
+        if (_wcsicmp(g_profiles[i].name, profile_basename(name)) == 0) {
+            if (advanced) g_profiles[i].advanced = TRUE;
+            return;
+        }
+    }
+    if (g_profile_count >= MAX_DISPLAY_PROFILES) return;
+    entry = &g_profiles[g_profile_count++];
+    ZeroMemory(entry, sizeof(*entry));
+    wcsncpy_s(entry->name, MAX_PATH, profile_basename(name), _TRUNCATE);
+    entry->advanced = advanced ||
+                      (installed_profile_path(entry->name, path, MAX_PATH) &&
+                       profile_contains_mhc2(path));
+}
+
+static void append_display_profile_registry(DISPLAY_ENTRY *display) {
+    HKEY key = open_display_profile_registry(display);
+    WCHAR profiles[8192];
+    const WCHAR *item;
+    if (!key) return;
+    if (read_profile_list(key, L"ICMProfile", profiles, 8192))
+        for (item = profiles; *item; item += wcslen(item) + 1)
+            append_display_profile_name(item, FALSE);
+    if (read_profile_list(key, L"ICMProfileAC", profiles, 8192))
+        for (item = profiles; *item; item += wcslen(item) + 1)
+            append_display_profile_name(item, TRUE);
+    RegCloseKey(key);
 }
 
 static void append_display_profile_scope(DISPLAY_ENTRY *display,
@@ -571,16 +746,9 @@ static void append_display_profile_scope(DISPLAY_ENTRY *display,
     if (FAILED(hr) || !profiles) return;
     for (i = 0; i < count && g_profile_count < MAX_DISPLAY_PROFILES; i++) {
         const WCHAR *name;
-        PROFILE_ENTRY *entry;
-        WCHAR path[MAX_PATH];
         if (!profiles[i] || !profiles[i][0]) continue;
         name = profile_basename(profiles[i]);
-        if (profile_already_listed(name)) continue;
-        entry = &g_profiles[g_profile_count++];
-        ZeroMemory(entry, sizeof(*entry));
-        wcsncpy_s(entry->name, MAX_PATH, name, _TRUNCATE);
-        entry->advanced = installed_profile_path(name, path, MAX_PATH) &&
-                          profile_contains_mhc2(path);
+        append_display_profile_name(name, FALSE);
     }
     LocalFree(profiles);
 }
@@ -605,14 +773,19 @@ static void refresh_display_profiles(void) {
     }
     SendMessageW(g_display_profiles, LB_RESETCONTENT, 0, 0);
     g_profile_count = 0;
-    if (!display || !p_get_list) {
+    if (!display) {
         EnableWindow(g_set_default, FALSE);
         return;
     }
-    get_default_name(display, PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE,
-                     standard_default, MAX_PATH);
-    get_default_name(display, PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE,
-                     advanced_default, MAX_PATH);
+    registry_profile_defaults(display, standard_default, MAX_PATH,
+                              advanced_default, MAX_PATH);
+    if (!standard_default[0])
+        get_default_name(display, PGEN_CPST_STANDARD_DISPLAY_COLOR_MODE,
+                         standard_default, MAX_PATH);
+    if (!advanced_default[0])
+        get_default_name(display, PGEN_CPST_EXTENDED_DISPLAY_COLOR_MODE,
+                         advanced_default, MAX_PATH);
+    append_display_profile_registry(display);
     append_display_profile_scope(display, WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER);
     append_display_profile_scope(display, WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE);
     for (i = 0; i < g_profile_count; i++) {
