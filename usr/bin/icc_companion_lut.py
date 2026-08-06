@@ -3,6 +3,7 @@
 
 import math
 import os
+import re
 import struct
 import sys
 
@@ -51,6 +52,37 @@ def inverse3(matrix):
 
 def mat_vec(matrix, vector):
     return [sum(matrix[row][column] * vector[column] for column in range(3)) for row in range(3)]
+
+
+def mat_mul(left, right):
+    return [[sum(left[row][k] * right[k][column] for k in range(3)) for column in range(3)]
+            for row in range(3)]
+
+
+BRADFORD = (
+    (0.8951, 0.2664, -0.1614),
+    (-0.7502, 1.7135, 0.0367),
+    (0.0389, -0.0685, 1.0296),
+)
+
+
+def chromatic_adaptation(source_white, destination_white):
+    """Bradford adaptation from one white point to another.
+
+    ArgyllCMS adapts display profiles to the D50 PCS with this transform and
+    bakes it into the cLUT, leaving wtpt holding the unadapted native white and
+    no chad tag to read back. Scaling XYZ channel-wise by PCS/wtpt instead --
+    the old shortcut -- lands the neutral target away from where the profile
+    expects it, which biases the corrected white point.
+    """
+    source_cone = mat_vec(BRADFORD, source_white)
+    destination_cone = mat_vec(BRADFORD, destination_white)
+    if any(abs(value) < 1e-9 for value in source_cone):
+        fail("Companion correction has a degenerate media white point")
+    scale = [[0.0] * 3 for _ in range(3)]
+    for index in range(3):
+        scale[index][index] = destination_cone[index] / source_cone[index]
+    return mat_mul(inverse3(BRADFORD), mat_mul(scale, BRADFORD))
 
 
 def table_sample(table, value):
@@ -194,7 +226,38 @@ BT2020_TO_XYZ = (
 )
 
 
+def characterization_white_nits(profile_tags):
+    """Absolute luminance of the profile's PCS white.
+
+    The measurement set is normalized so PCS Y=1.0 is the profiling white, and
+    ArgyllCMS embeds that absolute value as LUMINANCE_XYZ_CDM2 in the retained
+    characterization tags. The lumi tag is NOT interchangeable with it: for
+    Windows HDR profiles the builder writes the MHC2-calibrated peak there,
+    which is lower by the white-balance headroom the matrix takes. Normalizing
+    PQ by lumi therefore asks the display for more light than was requested at
+    every level.
+    """
+    for name in (b"targ", b"CIED", b"DevD"):
+        tag = profile_tags.get(name, b"")
+        if tag[:4] != b"text" or len(tag) < 12:
+            continue
+        match = re.search(
+            br'LUMINANCE_XYZ_CDM2\s*"\s*[-0-9.eE+]+\s+([-0-9.eE+]+)', tag[8:])
+        if not match:
+            continue
+        try:
+            white_nits = float(match.group(1))
+        except ValueError:
+            continue
+        if math.isfinite(white_nits) and white_nits > 0.0:
+            return white_nits
+    return None
+
+
 def profile_luminance(profile_tags):
+    white_nits = characterization_white_nits(profile_tags)
+    if white_nits is not None:
+        return white_nits
     luminance = profile_tags.get(b"lumi", b"")
     if luminance[:4] != b"XYZ " or len(luminance) < 20:
         fail("HDR Companion correction requires an ICC luminance tag")
@@ -214,7 +277,7 @@ def profile_media_white(profile_tags):
     return values
 
 
-def source_xyz(rgb, signal_mode, white_nits, media_white):
+def source_xyz(rgb, signal_mode, white_nits, adaptation):
     if signal_mode == "hdr10":
         # ICC display PCS values are relative to the measured display white,
         # while PQ is absolute with 1.0 representing 10,000 cd/m2. Scale the
@@ -225,11 +288,11 @@ def source_xyz(rgb, signal_mode, white_nits, media_white):
     else:
         linear = [srgb_linear(value) for value in rgb]
         absolute_xyz = mat_vec(SRGB_TO_XYZ, linear)
-    # Display BToA tables are relative-colorimetric. Scale the requested
-    # absolute XYZ by the destination media white so D65 is corrected to D65,
-    # rather than being remapped to the display's uncalibrated native white.
-    return [absolute_xyz[channel] * PCS_WHITE[channel] / media_white[channel]
-            for channel in range(3)]
+    # Display BToA tables are relative-colorimetric and D50-referenced. Adapt
+    # the requested absolute XYZ with the same transform the profile was built
+    # with, so D65 is corrected to D65 rather than being remapped towards the
+    # display's uncalibrated native white.
+    return mat_vec(adaptation, absolute_xyz)
 
 
 def build(profile_path, method, signal_mode, output_path):
@@ -244,7 +307,7 @@ def build(profile_path, method, signal_mode, output_path):
     profile_tags = tags(profile)
     transform = Lut16Transform(profile_tags.get(b"B2A0", b"")) if method == "clut" else MatrixTransform(profile_tags)
     white_nits = profile_luminance(profile_tags) if signal_mode == "hdr10" else 1.0
-    media_white = profile_media_white(profile_tags)
+    adaptation = chromatic_adaptation(profile_media_white(profile_tags), PCS_WHITE)
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
@@ -252,7 +315,7 @@ def build(profile_path, method, signal_mode, output_path):
         for green in range(GRID):
             for blue in range(GRID):
                 rgb = (red / (GRID - 1.0), green / (GRID - 1.0), blue / (GRID - 1.0))
-                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, media_white))
+                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
                 for value in corrected:
                     output.extend(struct.pack(">H", int(round(max(0.0, min(1.0, value)) * 65535.0))))
     temporary = output_path + ".tmp.{}".format(os.getpid())
