@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.34"
+#define APP_VERSION "1.3.35"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -1375,13 +1375,19 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         /* On the grey axis take the calibration straight from the source code
          * instead, bypassing the cLUT whose shadow grid cannot resolve the PQ
          * conversion. Blend by how neutral the request is so there is no seam
-         * one code off neutral. */
+         * one code off neutral.
+         *
+         * MHC2 is preferred over vcgt here: both carry the same measured 1D
+         * response, but MHC2 also carries the 3x3, so it corrects chromaticity
+         * as well as tone. vcgt is per-channel only and can do no more than
+         * scale each channel, which measured a worse white point. vcgt remains
+         * the fallback for profiles built without an MHC2 tag. */
         double direct[3];
         double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
         double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
         double spread=high-low;
         double weight=1.0-spread/PGEN_NEUTRAL_BLEND;
-        if(weight>0.0&&apply_vcgt_direct(rgb,direct)){
+        if(weight>0.0&&(apply_local_mhc2(rgb,direct)||apply_vcgt_direct(rgb,direct))){
             if(weight>1.0)weight=1.0;
             for(int channel=0;channel<3;channel++)
                 output[channel]=weight*direct[channel]+(1.0-weight)*output[channel];
