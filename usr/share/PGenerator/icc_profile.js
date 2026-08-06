@@ -53,7 +53,6 @@ function meterIccUiSettings(){
   name:value('meterIccProfileName'),profile_type:value('meterIccProfileType'),target_transfer:value('meterIccTargetTransfer'),
   profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
-  companion_correction:value('meterIccCompanionCorrectionMode'),
   avg_deviation:value('meterIccAvgDeviation'),
   patch_settings:meterIccPatchSettings()
  };
@@ -97,7 +96,6 @@ function meterIccRestoreUiSettings(){
   set('meterIccQuality',saved.quality,['small','medium','large','custom']);
   set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
-  set('meterIccCompanionCorrectionMode',saved.companion_correction,['system','clut','matrix']);
   set('meterIccStartDelay',saved.start_delay);
   if(saved.avg_deviation!==undefined&&saved.avg_deviation!==null&&saved.avg_deviation!==''){
    const number=Number(saved.avg_deviation);
@@ -446,9 +444,19 @@ function meterIccCompanionPatchSizeValue(){
  return [2,5,10,18,25,50,75,100,105,110,118,125,150].includes(value)?value:100;
 }
 
-async function meterIccPushCompanionDisplaySettings(showError){
+// The ICC workspace no longer carries a correction selector: profile builds
+// always measure the uncorrected path, so there is nothing to choose. The
+// calibration workspace keeps its selector for measurement and verification,
+// which makes it the source of truth for everything except a profile build.
+function meterIccCompanionCorrectionValue(){
+ const calibration=document.getElementById('meterCalibrationCompanionCorrectionMode');
+ const requested=String((calibration||{}).value||'system');
+ return ['system','none','clut','matrix'].includes(requested)?requested:'system';
+}
+
+async function meterIccPushCompanionDisplaySettings(showError,correctionOverride){
  const mode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
- const correctionMode=String((document.getElementById('meterIccCompanionCorrectionMode')||{}).value||'system');
+ const correctionMode=correctionOverride||meterIccCompanionCorrectionValue();
  const activeSignal=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase()==='hdr10'?'hdr10':'sdr';
  meterIccCompanionSettingsPending++;
  try{
@@ -468,10 +476,9 @@ async function meterIccPushCompanionDisplaySettings(showError){
 }
 
 function meterIccCompanionCorrectionChanged(source){
- const fromCalibration=source==='calibration';
- const sourceMode=document.getElementById(fromCalibration?'meterCalibrationCompanionCorrectionMode':'meterIccCompanionCorrectionMode');
- const targetMode=document.getElementById(fromCalibration?'meterIccCompanionCorrectionMode':'meterCalibrationCompanionCorrectionMode');
- if(sourceMode&&targetMode) targetMode.value=sourceMode.value;
+ // Only the calibration workspace still carries a correction selector. The
+ // ICC workspace has none: a profile build forces no correction for its whole
+ // run, so there was nothing to choose and every choice but one was a trap.
  meterIccSyncUi();
  meterIccPushCompanionDisplaySettings(true);
 }
@@ -905,7 +912,7 @@ function meterIccSyncUi(){
  const companionPatchSizeField=document.getElementById('meterIccCompanionPatchSizeField');
  const patchSizeNote=document.getElementById('meterIccPatchSizeNote');
  const companionDisplayModeNote=document.getElementById('meterIccCompanionDisplayModeNote');
- const companionCorrectionMode=String((document.getElementById('meterIccCompanionCorrectionMode')||{}).value||'system');
+ const companionCorrectionMode=meterIccCompanionCorrectionValue();
  const companionCorrectionNote=document.getElementById('meterIccCompanionCorrectionNote');
  const calibrationCorrectionMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
  const calibrationCorrectionNote=document.getElementById('meterCalibrationCompanionCorrectionNote');
@@ -945,7 +952,10 @@ function meterIccSyncUi(){
   :(companionCorrectionMode==='clut'
    ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
    :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'));
- if(companionCorrectionNote) companionCorrectionNote.textContent=correctionNote;
+ // The ICC workspace note is a fixed statement in the markup: a profile build
+ // always forces no correction, so it must not track the calibration card's
+ // selector. Only the calibration note is dynamic.
+ void companionCorrectionNote;
  if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=companionCorrectionMode==='clut'
   ?'The Companion explicitly applies the active profile B2A cLUT, then submits the corrected patch through its native HDR swapchain.'
   :(companionCorrectionMode==='matrix'
@@ -1132,10 +1142,9 @@ async function meterCalibrationPatternProviderChanged(){
 }
 async function meterCalibrationPushCompanionCorrection(){
  const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionMode');
- const correction=document.getElementById('meterIccCompanionCorrectionMode');
  const requested=String((calibrationCorrection||{}).value||'system');
- const mode=['system','clut','matrix'].includes(requested)?requested:'system';
- if(correction) correction.value=mode;
+ const mode=['system','none','clut','matrix'].includes(requested)?requested:'system';
+ if(calibrationCorrection) calibrationCorrection.value=mode;
  meterIccSyncUi();
  return meterIccPushCompanionDisplaySettings(true);
 }
@@ -1197,9 +1206,7 @@ async function meterIccRefreshCompanionStatus(){
    const transformReady=state.transform_ready!==false;
    const selectedDisplay=String(state.selected_display||'');
    if(!meterIccCompanionSettingsPending&&['system','none','clut','matrix'].includes(correctionMode)){
-    const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
     const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
-    if(workspaceMode) workspaceMode.value=correctionMode;
     if(calibrationMode) calibrationMode.value=correctionMode;
    }
    const activeProfile=String(state.active_profile||'');
@@ -1583,19 +1590,12 @@ async function meterIccStart(){
  const patternProvider=meterIccPatternProvider();
  if(patternProvider==='companion'){
   if(!await meterIccRefreshCompanionStatus()){ toast('Run PGenerator+ Patch Companion on the target computer first',true); return; }
-  // Profiling must always measure the panel itself. 'system' is NOT a
+  // Profile builds always measure the panel itself, so the correction is
+  // forced off for the run rather than offered as a choice. 'system' is NOT a
   // no-correction mode: on fullscreen HDR the Companion stands in for the
-  // MHC2 stage Windows skips, so selecting it here still characterized the
-  // display through the previously active profile's curves.
-  const nativeCorrection=document.getElementById('meterIccCompanionCorrectionMode');
-  if(nativeCorrection&&nativeCorrection.value!=='none'){
-   nativeCorrection.value='none';
-   const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionMode');
-   if(calibrationCorrection) calibrationCorrection.value='none';
-   meterIccSyncUi();
-   toast('Companion profile correction was turned off so the new profile measures the uncorrected display path');
-  }
-  if(!await meterIccPushCompanionDisplaySettings(true)) return;
+  // MHC2 stage Windows skips, which characterized the display through the
+  // previously active profile's curves.
+  if(!await meterIccPushCompanionDisplaySettings(true,'none')) return;
  }else{
   if(!await meterIccEnsureLocalOutputMode(type)) return;
  }

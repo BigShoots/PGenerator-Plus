@@ -90,15 +90,8 @@
         </div>
         <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" style="margin-bottom:10px">Each patch fills the movable Companion window. Resize and position that window on the display being profiled.</div>
         <div class="meter-icc-field">
-         <label for="meterIccCompanionCorrectionMode">Companion profile correction</label>
-         <select id="meterIccCompanionCorrectionMode" onchange="meterIccCompanionCorrectionChanged('icc')">
-         <option value="system" selected>Windows profile handling</option>
-         <option value="none">No correction (raw output)</option>
-         <option value="clut">Active profile cLUT in Companion</option>
-         <option value="matrix">Active profile matrix/TRC fallback</option>
-        </select>
         </div>
-        <div class="meter-icc-note" id="meterIccCompanionCorrectionNote" style="margin-bottom:10px">The Companion does not apply an ICC transform. A system-wide Windows MHC2 correction may still affect its output.</div>
+        <div class="meter-icc-note" id="meterIccCompanionCorrectionNote" style="margin-bottom:10px">Profile builds always measure the uncorrected display path. The Companion is switched to no correction for the whole run and submits every patch exactly as sent, so the characterization describes the panel itself rather than the panel plus an existing profile.</div>
         <div class="btn-row" style="margin:0 0 10px">
          <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Download Windows Installer x64</button>
          <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Download Portable Windows Patch Companion</button>
