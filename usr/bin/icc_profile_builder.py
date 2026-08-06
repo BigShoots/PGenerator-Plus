@@ -30,14 +30,22 @@ PROFILE_TYPES = {
 PROFILE_MODELS = {
     "clut": {"label": "XYZ cLUT + matrix", "argyll": "X", "family": "clut", "matrix_fallback": True},
     "xyz_clut": {"label": "XYZ cLUT only", "argyll": "x", "family": "clut", "matrix_fallback": False},
-    "lab_clut": {"label": "L*a*b* cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
+    "lab_clut": {"label": "Lab cLUT only", "argyll": "l", "family": "clut", "matrix_fallback": False},
+    # colprof -aY is a display XYZ cLUT with a debug matrix for matrix/cLUT
+    # comparison. It is not the production display fallback path used by -aX.
+    "xyz_clut_debug_matrix": {
+        "label": "XYZ cLUT + debug matrix",
+        "argyll": "Y",
+        "family": "clut",
+        "matrix_fallback": False,
+    },
     "matrix": {"label": "Shaper + matrix", "argyll": "s", "family": "matrix", "matrix_fallback": True},
     # colprof -am writes identity tone curves, so the profile asserts a
     # linear-light display. MHC2 carries its own measured curves and would
     # still work, but the matrix/TRC fallback inside the same profile would
     # not, which is the thing MHC2 profile types require. Keep it out of them.
     "matrix_only": {"label": "Matrix only", "argyll": "m", "family": "matrix", "matrix_fallback": False},
-    "single_curve_matrix": {"label": "Single curve + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
+    "single_curve_matrix": {"label": "Single shaper + matrix", "argyll": "S", "family": "matrix", "matrix_fallback": True},
     "gamma_matrix": {"label": "Gamma + matrix", "argyll": "g", "family": "matrix", "matrix_fallback": True},
     "single_gamma_matrix": {"label": "Single gamma + matrix", "argyll": "G", "family": "matrix", "matrix_fallback": True},
 }
@@ -924,17 +932,30 @@ def generate_patches(payload, output_dir):
     black = bounded_integer(payload.get("black_patches", 4), "black patches", 1, 32)
     single = bounded_integer(payload.get("single_channel_steps", 17), "single-channel steps", 0, 129)
     gray = bounded_integer(payload.get("gray_steps", 49), "grayscale steps", 2, 257)
+    cube = bounded_integer(payload.get("cube_steps", 0), "cube steps", 0, 21)
+    surface = bounded_integer(payload.get("cube_surface_steps", 0), "cube surface steps", 0, 21)
+    bcc = bounded_integer(payload.get("bcc_steps", 0), "body centered cubic steps", 0, 21)
     neutral = max(0.0, min(1.0, finite_number(payload.get("neutral_emphasis", 0.5), "neutral-axis emphasis")))
     dark = max(0.0, min(1.0, finite_number(payload.get("dark_emphasis", 0.2), "dark-region emphasis")))
-    base_minimum = white + black + gray + max(0, single - 2) * 3
-    if total < base_minimum:
-        fail("Patch count is too small for the selected grayscale and single-channel coverage")
+    structured = white + black + gray + max(0, single - 2) * 3
+    if cube >= 2:
+        structured += cube * cube * cube
+    if surface >= 2:
+        inner = max(0, surface - 2)
+        structured += (surface * surface * surface) - (inner * inner * inner)
+    if bcc >= 2:
+        # Conservative upper bound: lattice points plus body centers.
+        structured += (bcc * bcc * bcc) + (max(0, bcc - 1) ** 3)
+    if total < structured:
+        fail("Patch count is too small for the selected structured patch coverage")
     temp_dir = tempfile.mkdtemp(prefix="pgen_icc_chart_")
     try:
         base = os.path.join(temp_dir, "patches")
         command = [
             targen, "-v", "-d3", "-e{}".format(white), "-B{}".format(black),
-            "-s{}".format(single), "-g{}".format(gray), "-m0", "-f{}".format(total),
+            "-s{}".format(single), "-g{}".format(gray),
+            "-m{}".format(cube), "-M{}".format(surface), "-b{}".format(bcc),
+            "-f{}".format(total),
             "-A1.0", "-N{:.3f}".format(neutral), "-V{:.3f}".format(1.0 + dark * 3.0), "-p1.0",
         ]
         if payload.get("good_optimization", True):

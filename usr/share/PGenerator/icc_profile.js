@@ -106,6 +106,9 @@ function meterIccRestoreUiSettings(){
    set('meterIccPatchCount',patch.patch_count); set('meterIccPatchCountRange',patch.patch_count);
    set('meterIccWhitePatches',patch.white_patches); set('meterIccBlackPatches',patch.black_patches);
    set('meterIccGraySteps',patch.gray_steps); set('meterIccSingleSteps',patch.single_channel_steps);
+   set('meterIccCubeSteps',patch.cube_steps!=null?patch.cube_steps:0);
+   set('meterIccCubeSurfaceSteps',patch.cube_surface_steps!=null?patch.cube_surface_steps:0);
+   set('meterIccBccSteps',patch.bcc_steps!=null?patch.bcc_steps:0);
    set('meterIccNeutralEmphasis',Math.round(Number(patch.neutral_emphasis||0)*100));
    set('meterIccDarkEmphasis',Math.round(Number(patch.dark_emphasis||0)*100));
    const good=document.getElementById('meterIccGoodOptimization'); if(good) good.checked=!!patch.good_optimization;
@@ -556,23 +559,27 @@ function meterIccProfileInfo(type){
  const info={
   sdr:{
    mode:'sdr',
-   description:'Creates a measured ICC v2 display profile with ArgyllCMS. Choose a compact matrix/shaper model or an XYZ cLUT with a fallback matrix.',
-   compatibility:'Portable conventional ICC profile for Linux, Windows and other ICC-aware software. It has no MHC2 system-calibration data, so unmanaged desktop output and raw Companion patches are not corrected.'
+   description:'Standard Dynamic Range ICC display profile built from measured patches with ArgyllCMS. Choose a compact shaper/matrix model or an XYZ cLUT with matrix fallback.',
+   compatibility:'Portable conventional ICC for Linux, Windows, macOS and other ICC-aware software. No MHC2 system-calibration data, so unmanaged desktop output is not corrected.',
+   install:''
   },
   'windows-sdr':{
    mode:'sdr',
-   description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data. Its measured 3x3 matrix corrects primaries and white, and its per-channel 1D curves correct the measured RGB response to the selected target transfer.',
-   compatibility:'Use with Windows 10 version 2004 or newer Advanced Color, or KDE Plasma 6.5.3 or newer on Wayland. Software that ignores the private MHC2 tag can still read the standard ICC matrix or cLUT fallback.'
+   description:'SDR ICC with MHC2 / Advanced Color system calibration. A measured 3x3 matrix corrects primaries and white; per-channel 1D curves correct response to the selected target curve. Helps unmanaged apps while ICC-aware apps can still use the standard tags.',
+   compatibility:'Windows 10 version 2004+ Advanced Color, or KDE Plasma 6.5.3+ on Wayland. Apps that ignore MHC2 still get the standard matrix or cLUT fallback.',
+   install:'Windows: Settings > System > Display > Color profile. Plasma 6.5.3+: select the file as the display ICC profile in System Settings.'
   },
   'kde-hdr':{
    mode:'hdr10',
-   description:'Creates a measured HDR ICC v2 display profile without MHC2. KDE Plasma can use the full BToA cLUT through KWin for system-wide HDR color management.',
-   compatibility:'Requires KDE Plasma 6.7 or newer on Wayland with HDR enabled. This is the higher-accuracy KDE path for cLUT profiles. Windows Advanced Color requires the HDR ICC + MHC2 option instead.'
+   description:'HDR display ICC without MHC2. Intended for system-wide HDR color management where the compositor can apply the full BToA cLUT (for example KWin on Plasma).',
+   compatibility:'KDE Plasma 6.7+ on Wayland with HDR enabled. For Windows Advanced Color, use HDR with MHC2 instead.',
+   install:'Plasma 6.7+: enable HDR and select this file as the display HDR ICC profile in System Settings.'
   },
   'windows-hdr':{
    mode:'hdr10',
-   description:'Creates a portable ICC v2 display profile with MHC2 system-calibration data for HDR. It records measured peak, black, HDR metadata white, primaries and white, and applies a measured XYZ primary/white correction matrix.',
-   compatibility:'Use with Windows Advanced Color or KDE Plasma 6.7 or newer on Wayland with HDR enabled. In Windows, install it through Settings > System > Display > Color profile while HDR is enabled. The legacy Color Management dialog associates it as an ordinary ICC profile instead of an HDR Advanced Color profile. MHC2 supports a 3x3 matrix and per-channel 1D curves, not a 3D LUT. The HDR curves remain at identity so the operating system applies PQ only once. Software that ignores MHC2 can still read the standard ICC fallback.'
+   description:'HDR ICC with MHC2 system calibration. Records measured peak, black, HDR metadata white, primaries and white, plus a measured XYZ correction matrix. MHC2 uses a 3x3 matrix and per-channel 1D curves, not a 3D LUT; HDR curves stay at identity so the OS applies PQ only once.',
+   compatibility:'Windows Advanced Color or KDE Plasma 6.7+ on Wayland with HDR enabled. Do not use the legacy Color Management dialog for the Windows HDR association.',
+   install:'Windows: enable HDR, then Settings > System > Display > Color profile as the HDR display default. Plasma 6.7+: enable HDR and select the file as the display ICC profile.'
   }
  };
  return info[type]||info.sdr;
@@ -595,30 +602,49 @@ function meterIccTargetTransferValue(){
 
 const METER_ICC_PATCH_PRESETS={
  matrix:{
-  small:{patch_count:55,white_patches:1,black_patches:1,gray_steps:17,single_channel_steps:9,neutral_emphasis:50,dark_emphasis:0,good_optimization:true,auto_precondition:false,profile_quality:'medium'},
-  medium:{patch_count:95,white_patches:2,black_patches:2,gray_steps:25,single_channel_steps:13,neutral_emphasis:50,dark_emphasis:10,good_optimization:true,auto_precondition:false,profile_quality:'high'},
-  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:17,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
+  small:{patch_count:55,white_patches:1,black_patches:1,gray_steps:17,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:0,good_optimization:true,auto_precondition:false,profile_quality:'medium'},
+  medium:{patch_count:95,white_patches:2,black_patches:2,gray_steps:25,single_channel_steps:13,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:10,good_optimization:true,auto_precondition:false,profile_quality:'high'},
+  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
  },
  clut:{
-  small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:9,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
-  medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:49,single_channel_steps:17,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
-  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:73,single_channel_steps:25,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
+  small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
+  medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:49,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
+  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:73,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
  }
 };
 
 const METER_ICC_PROFILE_MODELS={
- clut:{label:'XYZ cLUT + matrix',family:'clut',mhc2:true,note:'Recommended for detailed characterization. It creates an XYZ cLUT and accurate matrix/TRC fallback tags, so software without cLUT support can still use the profile.'},
- xyz_clut:{label:'XYZ cLUT only',family:'clut',mhc2:false,note:'Creates only an XYZ lookup-table transform. It can model nonlinear color interactions but has no matrix fallback for software that ignores display cLUT tags.'},
- lab_clut:{label:'L*a*b* cLUT only',family:'clut',mhc2:false,note:'Creates a Lab PCS lookup-table profile. It is mainly useful for compatibility testing and specialized color-managed workflows, and has no matrix fallback.'},
- matrix:{label:'Shaper + matrix (curves)',family:'matrix',mhc2:true,note:'Uses independent RGB tone curves and a 3x3 colorant matrix. It is compact, broadly compatible, and a good choice for displays with mostly separable channel behavior.'},
- matrix_only:{label:'Matrix only',family:'matrix',mhc2:false,note:'A 3x3 colorant matrix with identity tone curves, so the profile describes the display as linear light. It is the smallest and most portable model, but because it carries no measured tone response it is only meaningful when the signal path is already linearised. Not available for MHC2 profiles, which need a usable tone-curve fallback.'},
- single_curve_matrix:{label:'Single curve + matrix',family:'matrix',mhc2:true,note:'Uses one shared tone curve for all three channels plus a 3x3 matrix. It preserves neutral balance but cannot model different per-channel tone responses.'},
- gamma_matrix:{label:'Gamma + matrix',family:'matrix',mhc2:true,note:'Fits a separate simple gamma exponent for each RGB channel plus a 3x3 matrix. It is smaller but less flexible than full tone curves.'},
- single_gamma_matrix:{label:'Single gamma + matrix',family:'matrix',mhc2:true,note:'Fits one shared gamma exponent plus a 3x3 matrix. This is highly compatible but only suitable for displays with a simple, common channel response.'}
+ clut:{label:'XYZ cLUT + matrix',family:'clut',mhc2:true,note:'Recommended for detailed characterization. Creates an XYZ cLUT plus accurate matrix/TRC fallback tags so software without cLUT support can still use the profile.'},
+ xyz_clut:{label:'XYZ cLUT only',family:'clut',mhc2:false,note:'Creates only an XYZ lookup-table transform. Can model nonlinear color interactions, but has no matrix fallback for software that ignores display cLUT tags.'},
+ lab_clut:{label:'Lab cLUT only',family:'clut',mhc2:false,note:'Creates a Lab PCS lookup-table profile. Mainly useful for compatibility testing and specialized color-managed workflows. No matrix fallback.'},
+ xyz_clut_debug_matrix:{label:'XYZ cLUT + debug matrix',family:'clut',mhc2:false,note:'ArgyllCMS display XYZ cLUT with a debug matrix (colprof -aY). Useful for comparing matrix versus cLUT behavior. Not a production MHC2 fallback path.'},
+ matrix:{label:'Shaper + matrix',family:'matrix',mhc2:true,note:'Independent RGB shaper curves and a 3x3 colorant matrix. Compact, broadly compatible, and a good choice for displays with mostly separable channel behavior.'},
+ matrix_only:{label:'Matrix only',family:'matrix',mhc2:false,note:'A 3x3 colorant matrix with identity tone curves, so the profile describes the display as linear light. Smallest model; only meaningful when the signal path is already linearised. Not available for MHC2 profiles.'},
+ single_curve_matrix:{label:'Single shaper + matrix',family:'matrix',mhc2:true,note:'One shared shaper curve for all three channels plus a 3x3 matrix. Preserves neutral balance but cannot model different per-channel tone responses.'},
+ gamma_matrix:{label:'Gamma + matrix',family:'matrix',mhc2:true,note:'A separate simple gamma exponent for each RGB channel plus a 3x3 matrix. Smaller but less flexible than full shaper curves.'},
+ single_gamma_matrix:{label:'Single gamma + matrix',family:'matrix',mhc2:true,note:'One shared gamma exponent plus a 3x3 matrix. Highly compatible, but only suitable for displays with a simple shared channel response.'}
 };
 
 function meterIccProfileModelInfo(value){
  return METER_ICC_PROFILE_MODELS[value]||METER_ICC_PROFILE_MODELS.clut;
+}
+
+function meterIccStructuredPatchEstimate(settings){
+ const white=Math.max(0,Math.round(Number(settings.white_patches)||0));
+ const black=Math.max(0,Math.round(Number(settings.black_patches)||0));
+ const gray=Math.max(0,Math.round(Number(settings.gray_steps)||0));
+ const single=Math.max(0,Math.round(Number(settings.single_channel_steps)||0));
+ const cube=Math.max(0,Math.round(Number(settings.cube_steps)||0));
+ const surface=Math.max(0,Math.round(Number(settings.cube_surface_steps)||0));
+ const bcc=Math.max(0,Math.round(Number(settings.bcc_steps)||0));
+ let total=white+black+gray+Math.max(0,single-2)*3;
+ if(cube>=2) total+=cube*cube*cube;
+ if(surface>=2){
+  const inner=Math.max(0,surface-2);
+  total+=(surface*surface*surface)-(inner*inner*inner);
+ }
+ if(bcc>=2) total+=(bcc*bcc*bcc)+(Math.max(0,bcc-1)**3);
+ return total;
 }
 
 function meterIccPatchSettings(){
@@ -632,6 +658,9 @@ function meterIccPatchSettings(){
   black_patches:Math.max(1,Math.min(32,Math.round(number('meterIccBlackPatches',2)))),
   gray_steps:Math.max(2,Math.min(257,Math.round(number('meterIccGraySteps',25)))),
   single_channel_steps:Math.max(0,Math.min(129,Math.round(number('meterIccSingleSteps',13)))),
+  cube_steps:Math.max(0,Math.min(21,Math.round(number('meterIccCubeSteps',0)))),
+  cube_surface_steps:Math.max(0,Math.min(21,Math.round(number('meterIccCubeSurfaceSteps',0)))),
+  bcc_steps:Math.max(0,Math.min(21,Math.round(number('meterIccBccSteps',0)))),
   neutral_emphasis:Math.max(0,Math.min(1,number('meterIccNeutralEmphasis',50)/100)),
   dark_emphasis:Math.max(0,Math.min(1,number('meterIccDarkEmphasis',10)/100)),
   good_optimization:!!((document.getElementById('meterIccGoodOptimization')||{}).checked),
@@ -651,14 +680,17 @@ function meterIccApplyPatchPreset(presetName){
  set('meterIccBlackPatches',preset.black_patches);
  set('meterIccGraySteps',preset.gray_steps);
  set('meterIccSingleSteps',preset.single_channel_steps);
+ set('meterIccCubeSteps',preset.cube_steps!=null?preset.cube_steps:0);
+ set('meterIccCubeSurfaceSteps',preset.cube_surface_steps!=null?preset.cube_surface_steps:0);
+ set('meterIccBccSteps',preset.bcc_steps!=null?preset.bcc_steps:0);
  set('meterIccNeutralEmphasis',preset.neutral_emphasis);
  set('meterIccDarkEmphasis',preset.dark_emphasis);
  const good=document.getElementById('meterIccGoodOptimization');
  if(good) good.checked=!!preset.good_optimization;
  const auto=document.getElementById('meterIccAutoPrecondition');
  if(auto) auto.checked=!!preset.auto_precondition;
- // Patch count and profile calculation effort are independent choices. Keep
- // the quality the user selected even when changing patch presets or models.
+ // Patch count and table resolution are independent choices. Keep the
+ // resolution the user selected even when changing patch presets or models.
  meterIccSyncUi();
 }
 
@@ -797,7 +829,7 @@ function meterIccMissingPreconditionAnchors(error){
 }
 
 function meterIccPreReadSettings(){
- return {patch_count:34,white_patches:2,black_patches:2,gray_steps:8,single_channel_steps:5,neutral_emphasis:.5,dark_emphasis:.2,good_optimization:true};
+ return {patch_count:34,white_patches:2,black_patches:2,gray_steps:8,single_channel_steps:5,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:.5,dark_emphasis:.2,good_optimization:true};
 }
 
 function meterIccProfileTypeChanged(){
@@ -808,7 +840,7 @@ function meterIccProfileTypeChanged(){
   Array.from(modelSelect.options).forEach(option=>{
    const supported=!mhc2||meterIccProfileModelInfo(option.value).mhc2;
    option.disabled=!supported;
-   option.title=supported?'':'MHC2 profiles require matrix and tone-curve fallback tags.';
+   option.title=supported?'':'MHC2 profiles require matrix and shaper/tone-curve fallback tags.';
   });
   if(mhc2&&!meterIccProfileModelInfo(modelSelect.value).mhc2){
    modelSelect.value='clut';
@@ -884,9 +916,6 @@ function meterIccSyncUi(){
  const provider=meterIccPatternProvider();
  const usesCompanion=provider==='companion';
  const localMode=meterIccLocalOutputModeStatus(type);
- const desc=document.getElementById('meterIccProfileDescription');
- const compatibility=document.getElementById('meterIccCompatibility');
- const windowsInstallGuide=document.getElementById('meterIccWindowsInstallGuide');
  const summary=document.getElementById('meterIccRunSummary');
  const start=document.getElementById('meterIccStartBtn');
  const startHint=document.getElementById('meterIccStartBtnHint');
@@ -897,14 +926,16 @@ function meterIccSyncUi(){
  const patchSettings=meterIccPatchSettings();
  const count=patchSettings.patch_count+(type==='windows-hdr'?1:0);
  const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
- const patchMinimum=patchSettings.white_patches+patchSettings.black_patches+patchSettings.gray_steps+Math.max(0,patchSettings.single_channel_steps-2)*3;
+ const patchMinimum=meterIccStructuredPatchEstimate(patchSettings);
  const invalidPatchSet=patchSettings.patch_count<patchMinimum;
- const modelNote=document.getElementById('meterIccProfileModelNote');
  const transferField=document.getElementById('meterIccTargetTransferField');
- const transferNote=document.getElementById('meterIccTargetTransferNote');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
- if(transferNote) transferNote.textContent=transfer.note;
+ const setTip=(id,text)=>{ const el=document.getElementById(id); if(el) el.setAttribute('data-tip',String(text||'')); };
+ const typeTip=[info.description,info.compatibility,info.install].filter(Boolean).join(' ');
+ setTip('meterIccProfileTypeHelp',typeTip);
+ setTip('meterIccProfileModelHelp',profileModelInfo.note+(profileModelInfo.mhc2?'':' Not available for MHC2 profile categories.'));
+ setTip('meterIccTargetTransferHelp',transfer.note);
  const companionSetup=document.getElementById('meterIccCompanionSetup');
  const localSetup=document.getElementById('meterIccLocalSetup');
  const delayNote=document.getElementById('meterIccStartDelayNote');
@@ -922,9 +953,11 @@ function meterIccSyncUi(){
  const calibrationDisplayModeNote=document.getElementById('meterCalibrationCompanionDisplayModeNote');
  if(companionSetup) companionSetup.style.display=usesCompanion?'':'none';
  if(localSetup) localSetup.style.display=usesCompanion?'none':'';
- if(delayNote) delayNote.textContent=usesCompanion
+ const delayTip=usesCompanion
   ?'For single-monitor setups using the same computer for the WebUI and profiling, this delay gives you time to switch the display to the required input before measurements begin.'
   :'The delay gives you time to switch the display to the PGenerator+ HDMI input before measurements begin.';
+ if(delayNote) delayNote.textContent=delayTip;
+ setTip('meterIccStartDelayHelp',delayTip);
  if(companionPatchSizeField) companionPatchSizeField.style.display=(!usesCompanion||companionWindowMode==='fullscreen')?'':'none';
  if(calibrationWindowMode&&calibrationWindowMode.value!==companionWindowMode) calibrationWindowMode.value=companionWindowMode;
  if(calibrationPatchSize){
@@ -932,12 +965,16 @@ function meterIccSyncUi(){
   if(Array.from(calibrationPatchSize.options).some(option=>option.value===patchSize)) calibrationPatchSize.value=patchSize;
  }
  if(calibrationPatchSizeField) calibrationPatchSizeField.style.display=companionWindowMode==='fullscreen'?'':'none';
- if(patchSizeNote) patchSizeNote.textContent=usesCompanion
+ const patchSizeTip=usesCompanion
   ?'Linked to Patch Size in the Calibration workspace. Window and APL selections are applied live to the running Companion.'
   :'Linked to Patch Size in the Calibration workspace and used by the PGenerator+ HDMI output.';
- if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionWindowMode==='fullscreen'
+ if(patchSizeNote) patchSizeNote.textContent=patchSizeTip;
+ setTip('meterIccPatchSizeHelp',patchSizeTip);
+ const companionModeTip=companionWindowMode==='fullscreen'
   ?('The Companion uses a borderless fullscreen window. The selected centered window or APL pattern is rendered using the chosen patch size.'+(type==='windows-hdr'?' The HDR metadata white uses this same patch size.':'')+' Press F11 on the Companion computer to exit fullscreen.')
   :('Each patch fills the movable Companion window. Resize and position that window on the display being profiled.'+(type==='windows-hdr'?' The HDR metadata white uses this same window geometry.':''));
+ if(companionDisplayModeNote) companionDisplayModeNote.textContent=companionModeTip;
+ setTip('meterIccCompanionDisplayModeHelp',companionModeTip);
  if(calibrationDisplayModeNote) calibrationDisplayModeNote.textContent=companionWindowMode==='fullscreen'
   ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size. Press F11 on the Companion computer to exit fullscreen.'
   :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
@@ -975,17 +1012,6 @@ function meterIccSyncUi(){
  if(patchCountLabel) patchCountLabel.textContent=String(patchSettings.patch_count);
  if(neutralLabel) neutralLabel.textContent=Math.round(patchSettings.neutral_emphasis*100)+'%';
  if(darkLabel) darkLabel.textContent=Math.round(patchSettings.dark_emphasis*100)+'%';
- if(modelNote) modelNote.textContent=profileModelInfo.note;
- if(desc) desc.textContent=info.description;
- if(compatibility) compatibility.textContent=info.compatibility;
- if(windowsInstallGuide){
-  windowsInstallGuide.style.display=(type==='windows-sdr'||type==='kde-hdr'||type==='windows-hdr')?'':'none';
-  windowsInstallGuide.textContent=type==='kde-hdr'
-   ?'Plasma 6.7+: enable HDR and select this file as the display HDR ICC profile in System Settings. KWin applies its cLUT through the compositor.'
-   :type==='windows-hdr'
-   ?'Windows: enable HDR, then add the file under Settings > System > Display > Color profile and set it as the HDR display default. Do not use the legacy Color Management dialog, because it creates a standard ICC association instead of an HDR Advanced Color association. Plasma 6.7+: enable HDR and select the same file as the display ICC profile in System Settings.'
-   :'Windows: add the file under Settings > System > Display > Color profile and set it as the display default. Plasma 6.5.3+: select the same file as the display ICC profile in System Settings.';
- }
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
  const displayOptions=(document.getElementById('meterIccDisplayType')||{}).selectedOptions;
  const displayLabel=displayOptions&&displayOptions[0]?String(displayOptions[0].textContent||'').trim():'Auto';
@@ -998,8 +1024,8 @@ function meterIccSyncUi(){
   ?('PGenerator+ Patch Companion '+(companionWindowMode==='fullscreen'?('fullscreen, '+String(companionPatchSizeOption?companionPatchSizeOption.textContent:'controlled patch')):'resizable window'))
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
-  ?('Increase total patches to at least '+patchMinimum+' for the selected grayscale, single-channel, white and black coverage.')
-  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Profile: '+profileModelInfo.label+' at '+profileQuality+' calculation quality. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
+  ?('Increase total patches to at least '+patchMinimum+' for the selected structured patch coverage.')
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
@@ -1308,7 +1334,7 @@ function meterIccRenderValidation(file,result){
  set('meterIccValidationPeak',number(result.peak_de00));
  set('meterIccValidationMedian',number(result.median_de00));
  set('meterIccValidationP95',number(result.p95_de00));
- set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' calculation quality; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
+ set('meterIccValidationMeta',String(result.profile_model_label||'ICC profile')+'; '+String(result.profile_quality||'standard')+' table resolution; '+Number(result.patches||0)+' characterization patches; '+String(result.engine||'ArgyllCMS profcheck'));
  const info=result&&result.profile_info&&typeof result.profile_info==='object'?result.profile_info:null;
  set('meterIccValidationStructure',info
   ?('Profile structure: ICC '+String(info.icc_version||'unknown')+'; '+String(info.profile_class||'display')+'; '+String(info.color_space||'RGB')+' to '+String(info.pcs||'XYZ')+'; '+String(info.rendering_intent||'unknown intent')+'; '+Number(info.tag_count||0)+' tags; '+String(info.size_label||'unknown size')+'.')
@@ -1427,7 +1453,7 @@ async function meterIccRefreshRecoveryAvailability(){
   }
   const calculationQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||(saved&&saved.profile_quality)||'medium');
   retry.textContent='Rebuild '+profileCount+' Measurements ('+calculationQuality.replace(/^./,letter=>letter.toUpperCase())+' Quality)';
-  retry.title='Rebuild exactly these saved measurements using the selected profile model and calculation quality. No larger patch set will be generated or measured.';
+  retry.title='Rebuild exactly these saved measurements using the selected algorithm type and table resolution. No larger patch set will be generated or measured.';
   }
   return available;
  }catch(error){
@@ -1491,7 +1517,7 @@ async function meterIccRetryBuild(){
   const avgDeviation=meterIccAvgDeviationValue();
   if(avgDeviation) meterIccRunConfig.avg_deviation=avgDeviation;
   const status=document.getElementById('meterIccStatus');
-  if(status) status.textContent='Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' calculation quality. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.';
+  if(status) status.textContent='Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' table resolution. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.';
   await meterIccBuild(readings);
  }catch(error){
   const status=document.getElementById('meterIccStatus');
@@ -1885,7 +1911,7 @@ async function meterIccBuild(readings){
   buildElapsed=meterIccStopBuildClock(buildClock,true);
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
-   const transferText=response.target_transfer?(' Target transfer: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
+   const transferText=response.target_transfer?(' Target response curve: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
    const measuredWhite=Number(response.white_nits);
    const calibratedWhite=Number(response.calibrated_white_nits);
    const whiteText=(windowsMhc&&calibratedWhite>0&&measuredWhite>calibratedWhite+0.1)
