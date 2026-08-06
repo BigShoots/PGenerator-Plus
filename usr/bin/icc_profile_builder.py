@@ -1199,11 +1199,30 @@ def build(payload, output_dir):
         )
         with open(output_path, "wb") as handle:
             handle.write(profile)
-    if profile_type in ("windows-sdr", "windows-hdr") and matrix and adjustment_luts:
+    if profile_type not in ("windows-sdr", "windows-hdr"):
+        # Derive the 1D stage from MHC2 even when the profile will not carry
+        # the tag. The MHC2 curves measure closest to target on the grey axis,
+        # so they are the best source for vcgt regardless of whether Windows
+        # will ever see them; the tag itself is simply not embedded below.
+        # SDR and KDE HDR map onto their MHC2 equivalents only to select the
+        # right wire primaries and transfer handling.
+        mhc2_equivalent = "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr"
+        try:
+            _, matrix, adjustment_luts, _ = mhc2_payload(
+                mhc2_equivalent, black, white, primaries, profile_rows, target_transfer or "srgb")
+            wire_source = mhc2_equivalent
+        except ValueError:
+            # No usable neutral ramp for the MHC2 derivation. Fall back to the
+            # calibration curves computed above rather than failing the build.
+            matrix = adjustment_luts = None
+            wire_source = profile_type
+    else:
+        wire_source = profile_type
+    if matrix and adjustment_luts:
         # Clone the vcgt from MHC2 so the fallback matches the preferred path
         # on the grey axis, inheriting MHC2's chromatic correction rather than
         # approximating it per channel.
-        calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(profile_type))
+        calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(wire_source))
     if calibration:
         # The cLUT above was fitted in the calibrated domain, so every consumer
         # needs this 1D stage in front of it. vcgt is the portable one: OS
