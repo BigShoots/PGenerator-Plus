@@ -93,6 +93,7 @@
          <label for="meterIccCompanionCorrectionMode">Companion profile correction</label>
          <select id="meterIccCompanionCorrectionMode" onchange="meterIccCompanionCorrectionChanged('icc')">
          <option value="system" selected>Windows profile handling</option>
+         <option value="none">No correction (raw output)</option>
          <option value="clut">Active profile cLUT in Companion</option>
          <option value="matrix">Active profile matrix/TRC fallback</option>
         </select>

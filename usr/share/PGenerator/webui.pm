@@ -13168,8 +13168,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, application cLUT correction, or matrix/TRC fallback in PGenerator+ Patch Companion">
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, no correction at all, application cLUT correction, or matrix/TRC fallback in PGenerator+ Patch Companion">
         <option value="system">Windows profile handling</option>
+        <option value="none">No correction (raw output)</option>
         <option value="clut">Active profile cLUT in Companion</option>
         <option value="matrix">Active profile matrix/TRC fallback</option>
        </select>

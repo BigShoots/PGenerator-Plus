@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.32"
+#define APP_VERSION "1.3.33"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1176,7 +1176,10 @@ static bool load_correction_lut(uint64_t revision)
     FILE *file;
     long length;
 #endif
-    bool system_mode=!strcmp(app.correction_mode,"system");
+    /* "none" is a true passthrough: no profile is required and nothing is
+     * applied. "system" still needs the profile for the fullscreen MHC2
+     * stand-in below, so the two are only equivalent for readiness. */
+    bool system_mode=!strcmp(app.correction_mode,"system")||!strcmp(app.correction_mode,"none");
     /* Never retain a transform from a previously selected profile if the new
      * LUT cannot be downloaded or decoded. A stale correction would produce a
      * valid patch acknowledgement while applying the wrong profile. */
@@ -1214,6 +1217,11 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     double media_white[3],adaptation[3][3];
 #endif
 #ifdef _WIN32
+    /* Pure passthrough. Profiling selects this so the characterization
+     * measures the panel itself: "system" is NOT a no-correction mode,
+     * because the branch below deliberately applies MHC2 on fullscreen HDR
+     * where Windows would skip it. */
+    if(!strcmp(app.correction_mode,"none")) return true;
     if(!strcmp(app.correction_mode,"system")){
         /* Windows can bypass an HDR profile's MHC2 transform for a
          * borderless monitor-covering swapchain even when DWM reports the
@@ -2310,7 +2318,7 @@ static void poll_server(void)
     app.source_r = r;
     app.source_g = g;
     app.source_b = b;
-    if (strcmp(app.correction_mode, "system") && strcmp(mode, app.correction_signal_mode)) {
+    if (strcmp(app.correction_mode, "system") && strcmp(app.correction_mode, "none") && strcmp(mode, app.correction_signal_mode)) {
         acknowledge(sequence, false, "The selected ICC correction does not match the patch signal mode", "profile", false);
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;

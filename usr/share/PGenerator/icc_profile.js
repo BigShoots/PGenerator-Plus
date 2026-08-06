@@ -935,20 +935,24 @@ function meterIccSyncUi(){
   ?'The Companion uses a borderless fullscreen window and renders the selected centered window or APL patch size. Press F11 on the Companion computer to exit fullscreen.'
   :'Each patch fills the movable Companion window. Resize and position that window on the display being measured.';
  if(calibrationCorrectionMode){
-  const calibrationMode=['system','clut','matrix'].includes(companionCorrectionMode)?companionCorrectionMode:'system';
+  const calibrationMode=['system','none','clut','matrix'].includes(companionCorrectionMode)?companionCorrectionMode:'system';
   if(calibrationCorrectionMode.value!==calibrationMode) calibrationCorrectionMode.value=calibrationMode;
  }
- const correctionNote=companionCorrectionMode==='system'
-  ?'The Companion does not apply an ICC transform. A system-wide Windows MHC2 correction may still affect its output.'
+ const correctionNote=companionCorrectionMode==='none'
+  ?'The Companion submits every patch exactly as sent, with no transform of any kind. Profiling selects this automatically so the characterization measures the panel itself.'
+  :(companionCorrectionMode==='system'
+  ?'The Companion leaves profile handling to Windows, but on fullscreen HDR it applies the active profile MHC2 stage itself because Windows skips it there. This is not a no-correction mode.'
   :(companionCorrectionMode==='clut'
    ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
-   :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.');
+   :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'));
  if(companionCorrectionNote) companionCorrectionNote.textContent=correctionNote;
  if(calibrationCorrectionNote) calibrationCorrectionNote.textContent=companionCorrectionMode==='clut'
   ?'The Companion explicitly applies the active profile B2A cLUT, then submits the corrected patch through its native HDR swapchain.'
   :(companionCorrectionMode==='matrix'
    ?'The Companion explicitly applies the active profile matrix and tone curves, then submits the corrected patch through its native HDR swapchain.'
-   :'The Companion submits the unmodified patch through its native HDR swapchain and leaves profile handling to Windows.');
+   :(companionCorrectionMode==='none'
+    ?'The Companion submits the unmodified patch through its native HDR swapchain and applies no transform at all.'
+    :'The Companion submits the patch through its native HDR swapchain and leaves profile handling to Windows, except on fullscreen HDR where it applies the active profile MHC2 stage itself.'));
  const qualitySelect=document.getElementById('meterIccQuality');
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
@@ -1192,7 +1196,7 @@ async function meterIccRefreshCompanionStatus(){
    const transformMode=String(state.transform_mode||correctionMode);
    const transformReady=state.transform_ready!==false;
    const selectedDisplay=String(state.selected_display||'');
-   if(!meterIccCompanionSettingsPending&&['system','clut','matrix'].includes(correctionMode)){
+   if(!meterIccCompanionSettingsPending&&['system','none','clut','matrix'].includes(correctionMode)){
     const workspaceMode=document.getElementById('meterIccCompanionCorrectionMode');
     const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
     if(workspaceMode) workspaceMode.value=correctionMode;
@@ -1579,13 +1583,17 @@ async function meterIccStart(){
  const patternProvider=meterIccPatternProvider();
  if(patternProvider==='companion'){
   if(!await meterIccRefreshCompanionStatus()){ toast('Run PGenerator+ Patch Companion on the target computer first',true); return; }
+  // Profiling must always measure the panel itself. 'system' is NOT a
+  // no-correction mode: on fullscreen HDR the Companion stands in for the
+  // MHC2 stage Windows skips, so selecting it here still characterized the
+  // display through the previously active profile's curves.
   const nativeCorrection=document.getElementById('meterIccCompanionCorrectionMode');
-  if(nativeCorrection&&nativeCorrection.value!=='system'){
-   nativeCorrection.value='system';
+  if(nativeCorrection&&nativeCorrection.value!=='none'){
+   nativeCorrection.value='none';
    const calibrationCorrection=document.getElementById('meterCalibrationCompanionCorrectionMode');
-   if(calibrationCorrection) calibrationCorrection.value='system';
+   if(calibrationCorrection) calibrationCorrection.value='none';
    meterIccSyncUi();
-   toast('Companion profile correction was disabled so the new profile measures the uncorrected display path');
+   toast('Companion profile correction was turned off so the new profile measures the uncorrected display path');
   }
   if(!await meterIccPushCompanionDisplaySettings(true)) return;
  }else{
