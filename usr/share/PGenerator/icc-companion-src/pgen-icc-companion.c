@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.30"
+#define APP_VERSION "1.3.31"
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -1191,18 +1191,21 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         return true;
     }
     if(!app.correction_profile_data)return false;
-    /* BToA and matrix/TRC display transforms are relative-colorimetric: their
-     * PCS white maps to the uncalibrated media white. In an HDR MHC profile,
-     * neutral-axis calibration and peak-preserving white balance belong to
-     * MHC2. Keep that calibration stage for neutral HDR patches in every
-     * correction mode, while the selected cLUT or matrix/TRC path continues
-     * to handle chromatic patches. */
-    if(!strcmp(app.correction_signal_mode,"hdr10")&&
-       fabs(rgb[0]-rgb[1])<1e-9&&fabs(rgb[1]-rgb[2])<1e-9&&
-       apply_local_mhc2(rgb,output)){
-        *red=output[0];*green=output[1];*blue=output[2];
-        return true;
-    }
+    /* Neutral HDR patches used to be diverted to MHC2 here, because a
+     * relative-colorimetric BToA maps PCS white onto the uncalibrated media
+     * white and so returned neutrals at the panel's native white. That is a
+     * property of how the PCS target was built, not of the table: adapting the
+     * requested XYZ with the profile's own Bradford transform now lands
+     * neutral on the requested white through the cLUT itself.
+     *
+     * Keeping the diversion actively hurt. It corrected the grey axis with a
+     * different engine than everything around it, so an exactly neutral patch
+     * and a patch one code off neutral took different paths and disagreed at
+     * the boundary, and the grey axis inherited the MHC2 curves' behaviour of
+     * freezing once the measured channel response saturates. In these modes
+     * the Companion is the only correction stage, so one transform handles the
+     * whole space. MHC2 still runs for correction_mode "system", where it
+     * stands in for the calibration stage Windows skips on fullscreen output. */
     {IccTag wtpt=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");if(!wtpt.data||wtpt.size<20||memcmp(wtpt.data,"XYZ ",4))return false;for(int channel=0;channel<3;channel++){media_white[channel]=read_s15(wtpt.data+8+channel*4);if(media_white[channel]<=0.0)return false;}}
     if(!companion_adaptation(media_white,adaptation))return false;
     if(!strcmp(app.correction_signal_mode,"hdr10")&&!companion_characterization_white(&white_nits)){
