@@ -1161,8 +1161,14 @@ def build(payload, output_dir):
             # cannot produce a calibration. Fall back to the uncalibrated fit
             # rather than failing the whole build.
             calibration = None
-    ti3_rows = apply_calibration_to_rows(profile_rows, calibration) if calibration else profile_rows
-    ti3, black, white = make_ti3(payload, ti3_rows)
+    # The cLUT is fitted to the RAW measurements. Re-expressing them in a
+    # calibrated domain only makes sense when that same calibration is applied
+    # downstream, and it is not: the grey axis is taken from MHC2 applied to
+    # the source code, which bypasses the cLUT entirely, so the cLUT carries
+    # chroma alone. With the vcgt tag now cloned from MHC2 the remap curve was
+    # not even present in the profile any more -- the fit assumed a curve
+    # diverging from the shipped one by up to 0.595.
+    ti3, black, white = make_ti3(payload, profile_rows)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, 0o755)
     stem = safe_basename(payload.get("name", "PGenerator+ display profile"))

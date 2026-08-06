@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.35"
+#define APP_VERSION "1.3.36"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -1368,9 +1368,10 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
-    /* 1D calibration, closest to the panel: the transform above was fitted
-     * against a display already carrying it. */
-    apply_vcgt(output);
+    /* No vcgt after the cLUT. The cLUT is fitted to raw measurements, so it is
+     * already a complete PCS->device transform and composing a calibration on
+     * top would correct twice. The 1D stage runs on the SOURCE code below,
+     * where it bypasses the cLUT's shadow grid. */
     {
         /* On the grey axis take the calibration straight from the source code
          * instead, bypassing the cLUT whose shadow grid cannot resolve the PQ
