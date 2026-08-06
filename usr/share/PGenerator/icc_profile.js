@@ -12,8 +12,10 @@ let meterIccCompanionTimer=null;
 let meterIccCompanionSettingsPending=0;
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
+let meterIccMeasurementClock=null;
 
-const METER_ICC_BUILD_TIMING_KEY='pgen.iccBuildTiming.v1';
+const METER_ICC_BUILD_TIMING_KEY='pgen.iccBuildTiming.v2';
+const METER_ICC_LEGACY_BUILD_TIMING_KEY='pgen.iccBuildTiming.v1';
 const METER_ICC_UI_SETTINGS_KEY='pgen.iccUiSettings.v1';
 const METER_ICC_LAST_RUN_KEY='pgen.iccLastRun.v1';
 let meterIccUiSettingsRestored=false;
@@ -109,56 +111,128 @@ function meterIccFormatDuration(seconds){
  return hours?(hours+':'+String(minutes).padStart(2,'0')+':'+String(remainder).padStart(2,'0')):(minutes+':'+String(remainder).padStart(2,'0'));
 }
 
-function meterIccBuildTimingKey(config,patchCount){
+function meterIccBuildTimingKey(config){
  const model=String((config&&config.profile_model)||'clut');
  const family=meterIccProfileModelInfo(model).family;
  const quality=String((config&&config.profile_quality)||'medium').toLowerCase();
- return family+':'+model+':'+quality+':'+Math.max(1,Math.round(Number(patchCount)||1));
+ return family+':'+model+':'+quality;
 }
 
 function meterIccRememberBuildDuration(config,patchCount,seconds){
  try{
-  const key=meterIccBuildTimingKey(config,patchCount);
+  const key=meterIccBuildTimingKey(config);
   const timings=JSON.parse(localStorage.getItem(METER_ICC_BUILD_TIMING_KEY)||'{}');
-  const previous=Number(timings[key]);
-  timings[key]=previous>0?Math.round(previous*.35+seconds*.65):Math.round(seconds);
-  const keys=Object.keys(timings);
-  while(keys.length>40) delete timings[keys.shift()];
+  const samples=Array.isArray(timings[key])?timings[key]:[];
+  samples.push({patches:Math.max(1,Math.round(Number(patchCount)||1)),seconds:Math.max(1,Math.round(seconds)),at:Date.now()});
+  timings[key]=samples.slice(-16);
+  const keys=Object.keys(timings).sort((a,b)=>Number((timings[b]||[]).slice(-1)[0]?.at||0)-Number((timings[a]||[]).slice(-1)[0]?.at||0));
+  keys.slice(20).forEach(oldKey=>delete timings[oldKey]);
   localStorage.setItem(METER_ICC_BUILD_TIMING_KEY,JSON.stringify(timings));
  }catch(error){}
 }
 
-function meterIccEstimatedBuildSeconds(config,patchCount){
+function meterIccBuildWorkScale(family,patchCount){
  const count=Math.max(16,Math.round(Number(patchCount)||16));
- try{
-  const timings=JSON.parse(localStorage.getItem(METER_ICC_BUILD_TIMING_KEY)||'{}');
-  const measured=Number(timings[meterIccBuildTimingKey(config,count)]);
-  if(Number.isFinite(measured)&&measured>=5) return measured;
- }catch(error){}
+ return family==='matrix'
+  ?(.82+.18*Math.sqrt(count/175))
+  :(.68+.32*Math.sqrt(count/175));
+}
+
+function meterIccMedian(values){
+ const sorted=values.filter(Number.isFinite).sort((a,b)=>a-b);
+ if(!sorted.length) return 0;
+ const middle=Math.floor(sorted.length/2);
+ return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
+}
+
+function meterIccEstimatedBuildRange(config,patchCount){
+ const count=Math.max(16,Math.round(Number(patchCount)||16));
  const model=String((config&&config.profile_model)||'clut');
  const family=meterIccProfileModelInfo(model).family;
  const quality=String((config&&config.profile_quality)||'medium').toLowerCase();
- if(family==='matrix'){
-  const base={low:12,medium:22,high:40,ultra:75,l:12,m:22,h:40,u:75}[quality]||22;
-  return Math.max(10,Math.round(base*(.75+.25*Math.sqrt(count/95))));
+ const scale=meterIccBuildWorkScale(family,count);
+ let learned=[];
+ try{
+  const timings=JSON.parse(localStorage.getItem(METER_ICC_BUILD_TIMING_KEY)||'{}');
+  const samples=Array.isArray(timings[meterIccBuildTimingKey(config)])?timings[meterIccBuildTimingKey(config)]:[];
+  learned=samples.filter(sample=>Number(sample.seconds)>=5&&Number(sample.patches)>0).map(sample=>
+   Number(sample.seconds)*scale/meterIccBuildWorkScale(family,Number(sample.patches))
+  );
+ }catch(error){}
+ if(!learned.length){
+  try{
+   const legacy=JSON.parse(localStorage.getItem(METER_ICC_LEGACY_BUILD_TIMING_KEY)||'{}');
+   const exact=Number(legacy[family+':'+model+':'+quality+':'+count]);
+   if(Number.isFinite(exact)&&exact>=5) learned=[exact];
+  }catch(error){}
  }
- const base={low:180,medium:360,high:600,ultra:1100,l:180,m:360,h:600,u:1100}[quality]||360;
- return Math.max(60,Math.round(base*(.7+.3*Math.sqrt(count/425))));
+ const base=family==='matrix'
+  ?({low:14,medium:26,high:48,ultra:90,l:14,m:26,h:48,u:90}[quality]||26)
+  :({low:260,medium:480,high:780,ultra:1650,l:260,m:480,h:780,u:1650}[quality]||480);
+ const expected=learned.length?meterIccMedian(learned):base*scale;
+ const spread=learned.length>=3?.22:learned.length?.32:.38;
+ return {
+  expected:Math.max(10,Math.round(expected)),
+  low:Math.max(5,Math.round(expected*(1-spread))),
+  high:Math.max(20,Math.round(expected*(1+spread))),
+  learned:learned.length
+ };
 }
 
 function meterIccStartBuildClock(status,config,patchCount){
- const clock={startedAt:Date.now(),estimated:meterIccEstimatedBuildSeconds(config,patchCount),timer:null,config,patchCount};
+ const clock={startedAt:Date.now(),estimate:meterIccEstimatedBuildRange(config,patchCount),timer:null,config,patchCount};
  const update=()=>{
   if(!status) return;
   const elapsed=Math.max(0,(Date.now()-clock.startedAt)/1000);
-  const estimate=clock.estimated;
-  const remaining=Math.max(0,estimate-elapsed);
-  status.textContent='Measurements complete. Building the ICC profile. Elapsed '+meterIccFormatDuration(elapsed)+'. '
-   +(remaining>0?('Estimated total '+meterIccFormatDuration(estimate)+', about '+meterIccFormatDuration(remaining)+' remaining.'):'The initial time estimate has been exceeded; the build is still working.');
+  const lowTotal=Math.max(elapsed,clock.estimate.low);
+  const highTotal=Math.max(elapsed+60,clock.estimate.high);
+  const lowRemaining=Math.max(0,lowTotal-elapsed);
+  const highRemaining=Math.max(60,highTotal-elapsed);
+  const remaining=lowRemaining<30
+   ?('up to '+meterIccFormatDuration(highRemaining)+' remaining')
+   :(meterIccFormatDuration(lowRemaining)+' to '+meterIccFormatDuration(highRemaining)+' remaining');
+  status.textContent='Measurements complete. Building the ICC profile. Elapsed '+meterIccFormatDuration(elapsed)+'. Estimated '+remaining+'.'
+   +(clock.estimate.learned?' Based on previous builds on this browser.':'');
  };
  update();
  clock.timer=setInterval(update,1000);
  return clock;
+}
+
+function meterIccStartMeasurementClock(total){
+ meterIccMeasurementClock={startedAt:Date.now(),lastStep:0,lastStepAt:0,samples:[],total:Math.max(0,Number(total)||0)};
+}
+
+function meterIccMeasurementRemaining(current,total){
+ const clock=meterIccMeasurementClock;
+ if(!clock||current<=0||total<=0) return '';
+ const now=Date.now();
+ if(current!==clock.lastStep){
+  if(clock.lastStep>0&&clock.lastStepAt>0&&current>clock.lastStep){
+   const perPatch=(now-clock.lastStepAt)/1000/Math.max(1,current-clock.lastStep);
+   if(perPatch>=.25&&perPatch<=300) clock.samples.push(perPatch);
+   clock.samples=clock.samples.slice(-12);
+  }
+  clock.lastStep=current;
+  clock.lastStepAt=now;
+ }
+ if(clock.samples.length<2) return ' Estimating remaining time from the first few patches.';
+ const perPatch=meterIccMedian(clock.samples);
+ const measurementRemaining=Math.max(0,(total-current)*perPatch);
+ const config=meterIccRunConfig||{};
+ const finalPatchCount=config.stage==='precondition'
+  ?Math.max(1,Number((config.patch_settings||{}).patch_count)||total)
+  :((config.steps||[]).length||total);
+ const build=meterIccEstimatedBuildRange(config,finalPatchCount);
+ let extraMeasurement=0;
+ let preparation=0;
+ if(config.stage==='precondition'){
+  extraMeasurement=Math.max(0,Number((config.patch_settings||{}).patch_count)||0)*perPatch;
+  preparation=60;
+ }
+ const low=Math.max(0,measurementRemaining+extraMeasurement+preparation+build.low);
+ const high=Math.max(low+30,measurementRemaining+extraMeasurement+preparation+build.high);
+ return ' Estimated profiling time remaining: '+meterIccFormatDuration(low)+' to '+meterIccFormatDuration(high)+'.';
 }
 
 function meterIccStopBuildClock(clock,remember){
@@ -1462,6 +1536,7 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
  meterIccSetRunning(true);
  meterIccStarting=false;
  meterActionPending=false;
+ meterIccStartMeasurementClock(steps.length);
  if(meterIccPollTimer) clearInterval(meterIccPollTimer);
  meterIccPollTimer=setInterval(meterIccPoll,1000);
 }
@@ -1700,9 +1775,10 @@ async function meterIccPoll(){
    if(state.status==='setup') status.textContent='Complete the meter setup prompt to continue.';
    else if(current>0){
     const reused=(meterIccRunConfig&&meterIccRunConfig.stage==='profile'&&Array.isArray(meterIccRunConfig.reused_readings))?meterIccRunConfig.reused_readings.length:0;
-    status.textContent=reused
+    const timing=meterIccMeasurementRemaining(current,total);
+    status.textContent=(reused
      ?('Measuring new patch '+Math.min(current,total)+' of '+total+'. Reused '+reused+' of '+(reused+total)+' final profile patches.')
-     :('Measuring patch '+Math.min(current,total)+' of '+total+'.');
+     :('Measuring patch '+Math.min(current,total)+' of '+total+'.'))+timing;
    }
    else status.textContent=state.current_name||'Initializing the meter. The first patch will appear when it is ready.';
   }
@@ -1717,6 +1793,7 @@ async function meterIccPoll(){
   clearInterval(meterIccPollTimer);
   meterIccPollTimer=null;
   meterSeriesRunning=false;
+  meterIccMeasurementClock=null;
   meterSeriesAwaitingReady=false;
   meterSpectroSetupApply(null);
   meterIccSetRunning(false);
@@ -1833,6 +1910,7 @@ async function meterIccStop(){
   if(meterIccReuseChoiceResolver) meterIccResolveReuseChoice('cancel');
   meterIccStartToken++;
   meterIccStarting=false;
+  meterIccMeasurementClock=null;
   meterActionPending=false;
   const status=document.getElementById('meterIccStatus');
   if(status) status.textContent='ICC profiling stopped before measurements began.';
