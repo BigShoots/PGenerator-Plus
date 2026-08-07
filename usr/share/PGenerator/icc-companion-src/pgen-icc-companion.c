@@ -67,6 +67,10 @@ typedef struct {
 #define close_socket close
 typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
+/* Windows takes its icon from the resource script. Everywhere else the same
+ * artwork is compiled in, because the Companion ships as a small zip that must
+ * not gain a runtime file dependency. */
+#include "pgen-icc-companion-icon.h"
 #endif
 
 #define APP_VERSION "1.3.38"
@@ -557,6 +561,25 @@ done:
     SDL_free(paths); SDL_free(modes);
     if (!found) { output[0] = '\0'; profile_path[0] = L'\0'; }
     return found;
+}
+#endif
+
+#ifndef _WIN32
+/* The non-Windows counterpart to set_windows_window_icon(). Both use the same
+ * favicon: Windows loads it as icon resource 1 out of the executable's resource
+ * section, and pgen-icc-companion-icon.h carries the largest frame of that same
+ * file as raw RGBA so no icon has to be shipped or found at runtime. */
+static void set_embedded_window_icon(void)
+{
+    SDL_Surface *icon = SDL_CreateSurfaceFrom(PGEN_COMPANION_ICON_WIDTH,
+                                              PGEN_COMPANION_ICON_HEIGHT,
+                                              SDL_PIXELFORMAT_RGBA32,
+                                              (void *)pgen_companion_icon_rgba,
+                                              PGEN_COMPANION_ICON_WIDTH * 4);
+    if (!icon) return;
+    /* SDL copies the pixels it needs before this returns. */
+    SDL_SetWindowIcon(app.window, icon);
+    SDL_DestroySurface(icon);
 }
 #endif
 
@@ -2984,6 +3007,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     if (!app.window) return SDL_APP_FAILURE;
 #ifdef _WIN32
     set_windows_window_icon();
+#else
+    set_embedded_window_icon();
 #endif
     if (!select_target_display()) return SDL_APP_FAILURE;
     app.fullscreen = false;
