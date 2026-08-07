@@ -861,12 +861,18 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
         # Hand over only the arguments that describe the fit. Paths are rewritten
         # by the Companion against its own working directory.
         flags = [item for item in command[1:] if item not in (temporary_output,)]
+        # The characterization goes in its own file rather than inline in the
+        # job: the Companion's poll response buffer is 32 KB and a 1000-patch
+        # .ti3 is around 76 KB, so inlining would fail on exactly the large
+        # profiles that most deserve offloading. The Companion fetches it.
+        ti3_path = os.path.join(COMPANION_BUILD_DIR, "job.ti3")
+        write_text_atomic(ti3_path, ti3)
         job = {
             "job": job_id,
             "argyll_version": local_version,
             "timeout": timeout_seconds,
             "flags": flags,
-            "ti3": ti3,
+            "ti3_bytes": len(ti3),
         }
         write_json_atomic(os.path.join(COMPANION_BUILD_DIR, "job.json"), job)
         deadline = time.time() + timeout_seconds
@@ -883,10 +889,11 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
     except (OSError, IOError, ValueError, KeyError):
         return False
     finally:
-        try:
-            os.remove(os.path.join(COMPANION_BUILD_DIR, "job.json"))
-        except OSError:
-            pass
+        for leftover in ("job.json", "job.ti3"):
+            try:
+                os.remove(os.path.join(COMPANION_BUILD_DIR, leftover))
+            except OSError:
+                pass
 
 
 def argyll_version():

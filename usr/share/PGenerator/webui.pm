@@ -417,6 +417,7 @@ our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
 # profile back, so no new transport is involved.
 our $_icc_companion_build_dir="$_icc_companion_dir/build";
 our $_icc_companion_build_job="$_icc_companion_build_dir/job.json";
+our $_icc_companion_build_ti3="$_icc_companion_build_dir/job.ti3";
 our $_icc_companion_build_result="$_icc_companion_build_dir/result.icc";
 our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
 our $_icc_companion_build_state="$_icc_companion_build_dir/companion.json";
@@ -773,7 +774,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result" || $path eq "/api/icc/companion/build-ti3");
  return 0;
 }
 
@@ -1727,6 +1728,11 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_poll($request_query);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/build-ti3") {
+    my ($ok,$data)=&webui_icc_companion_build_ti3($request_query);
+    if($ok) { print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
+    else { print $client "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
    }
    elsif($path eq "/api/icc/companion/build-result" && $method eq "POST") {
     my $result=&webui_icc_companion_build_result($request_query,$body);

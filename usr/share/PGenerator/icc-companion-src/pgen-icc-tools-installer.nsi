@@ -51,6 +51,14 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   File /oname=README.txt "README.txt"
   File "PROFILE-LOADER-README.txt"
   File "..\icc-companion\SDL3-LICENSE.txt"
+  ; ArgyllCMS colprof/profcheck let the Companion run the profile fit locally.
+  ; A high-quality cLUT fit takes about ten minutes on a Pi 4 and under a
+  ; minute here. Version-matched to the Pi's ArgyllCMS: the same measurements
+  ; fitted by a different version produce a different profile.
+  ; AGPLv3 -- the licence ships alongside, and source is at argyllcms.com.
+  File "..\icc-companion\windows-x64\colprof.exe"
+  File "..\icc-companion\windows-x64\profcheck.exe"
+  File /oname=ArgyllCMS-LICENSE.txt "..\icc-companion\ArgyllCMS-LICENSE.txt"
   ; Stored without compression so the Pi can replace the fixed-width pairing
   ; slots before download. The resulting EXE remains a single installer.
   SetCompress off
@@ -123,6 +131,9 @@ Section "Uninstall"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\PROFILE-LOADER-README.txt"
   Delete "$INSTDIR\SDL3-LICENSE.txt"
+  Delete "$INSTDIR\ArgyllCMS-LICENSE.txt"
+  Delete "$INSTDIR\colprof.exe"
+  Delete "$INSTDIR\profcheck.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

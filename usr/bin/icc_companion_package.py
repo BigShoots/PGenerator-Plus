@@ -28,7 +28,13 @@ PLATFORMS = {
     "linux-x64": {
         "filename": "PGenerator-ICC-Companion-Linux-x64.zip",
         "directory": "linux-x64",
-        "files": ("PGenICCCompanion", "libSDL3.so.0"),
+        # colprof/profcheck let the Companion run the profile fit locally: a
+        # high-quality cLUT fit is about ten minutes on a Pi 4 and under a
+        # minute on a desktop. Version-matched to the Pi's ArgyllCMS, because
+        # the same measurements fitted by a different version produce a
+        # different profile. AGPLv3; the licence travels with them.
+        "files": ("PGenICCCompanion", "libSDL3.so.0", "colprof", "profcheck",
+                  "ArgyllCMS-LICENSE.txt"),
         "paired": True,
         "kind": "archive",
     },
@@ -107,7 +113,8 @@ def build(platform, server, token, output_path):
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
-            mode = 0o755 if package["directory"] == "linux-x64" and name == "PGenICCCompanion" else 0o644
+            executable = ("PGenICCCompanion", "colprof", "profcheck")
+            mode = 0o755 if package["directory"] == "linux-x64" and name in executable else 0o644
             add_file(archive, path, name, mode)
     return filename
 

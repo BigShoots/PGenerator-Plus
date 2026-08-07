@@ -436,6 +436,21 @@ sub webui_icc_companion_build_state (@) {
  return &webui_icc_companion_write_atomic($_icc_companion_build_state,$json,0600);
 }
 
+# Serve the characterization for the pending build. Kept out of the poll
+# response because that buffer is 32 KB on the Companion and a 1000-patch .ti3
+# is around 76 KB.
+sub webui_icc_companion_build_ti3 (@) {
+ my ($query)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return (0,'{"status":"unauthorized"}') if($expected eq "" || $token ne $expected);
+ return (0,'{"status":"error","message":"No build is pending"}') unless(-f $_icc_companion_build_job && -f $_icc_companion_build_ti3);
+ my $data="";
+ if(open(my $fh,"<",$_icc_companion_build_ti3)) { local $/; $data=<$fh>||""; close($fh); }
+ return (0,'{"status":"error","message":"Characterization is unavailable"}') if($data eq "");
+ return (1,$data);
+}
+
 # Receive a profile built by the Companion, or the reason it could not be.
 sub webui_icc_companion_build_result (@) {
  my ($query,$body)=@_;
