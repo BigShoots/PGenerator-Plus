@@ -986,7 +986,9 @@ function meterIccSyncUi(){
  const correctionNote=companionCorrectionMode==='none'
   ?'The Companion submits every patch exactly as sent, with no transform of any kind. Profiling selects this automatically so the characterization measures the panel itself.'
   :(companionCorrectionMode==='system'
-  ?'The Companion leaves profile handling to Windows, but on fullscreen HDR it applies the active profile MHC2 stage itself because Windows skips it there. This is not a no-correction mode.'
+  ?(meterIccCompanionPlatform==='linux'
+   ?'The compositor applies whatever ICC profile is assigned to the display, so patches are measured through that correction. Assign the profile you want to verify, and clear it before profiling so the characterization measures the raw panel.'
+   :'The Companion leaves profile handling to Windows, but on fullscreen HDR it applies the active profile MHC2 stage itself because Windows skips it there. This is not a no-correction mode.')
   :(companionCorrectionMode==='clut'
    ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
    :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'));
@@ -1079,6 +1081,40 @@ function meterCloseIccProfileBuilder(){
  if(modal) modal.style.display='none';
  if(meterIccCompanionTimer){ clearInterval(meterIccCompanionTimer); meterIccCompanionTimer=null; }
  uiSyncBodyScrollLock();
+}
+
+// Last platform reported by the connected Companion ('windows', 'linux', '').
+var meterIccCompanionPlatform='';
+
+// The cLUT and matrix modes transform the patch inside the Companion using the
+// display's active OS profile. Only the Windows build can read that profile; on
+// KDE the compositor applies the assigned profile to everything it composites,
+// so the correction happens downstream and asking the Companion to do it as
+// well would either fail or double-correct. Offering modes that cannot work is
+// worse than not offering them, so they are removed rather than left to fail at
+// the first patch.
+function meterIccApplyCompanionCorrectionAvailability(){
+ const linux=meterIccCompanionPlatform==='linux';
+ ['meterCalibrationCompanionCorrectionMode','meterIccCompanionCorrectionMode'].forEach(function(id){
+  const select=document.getElementById(id);
+  if(!select) return;
+  let reselect=false;
+  Array.prototype.forEach.call(select.options,function(option){
+   const unavailable=linux&&(option.value==='clut'||option.value==='matrix');
+   option.hidden=unavailable;
+   option.disabled=unavailable;
+   if(unavailable&&select.value===option.value) reselect=true;
+  });
+  const system=select.querySelector('option[value="system"]');
+  if(system) system.textContent=linux?'Compositor profile handling (KWin)':'Windows profile handling';
+  // A stored selection from a Windows session must not survive onto a Linux
+  // Companion as a hidden-but-selected value.
+  if(reselect){
+   select.value='none';
+   if(typeof meterIccCompanionCorrectionChanged==='function')
+    meterIccCompanionCorrectionChanged(id.indexOf('Calibration')>=0?'calibration':'icc');
+  }
+ });
 }
 
 function meterIccDownloadCompanion(platform){
@@ -1271,6 +1307,10 @@ async function meterIccRefreshCompanionStatus(){
    }
    const activeProfile=String(state.active_profile||'');
    const platform=String(state.platform||'');
+   // Remembered so the correction selector can hide the modes this Companion
+   // cannot perform. Only the status response carries the platform.
+   meterIccCompanionPlatform=platform;
+   meterIccApplyCompanionCorrectionAvailability();
    const transformNote=String(state.transform_note||'');
    // The Companion only reads the display's active OS profile on Windows, so an
    // empty name there means none was found, while elsewhere it means the build
@@ -1338,6 +1378,18 @@ async function meterIccLoadProfiles(){
    const name=document.createElement('span');
    name.className='meter-icc-profile-name';
    name.textContent=profile.name;
+   // Rows are newest first; the date makes that ordering visible and tells the
+   // user which of several similarly named builds they are about to download.
+   const created=document.createElement('span');
+   created.className='meter-icc-profile-date';
+   const stamp=Number(profile&&profile.mtime||0);
+   if(stamp>0){
+    const when=new Date(stamp*1000);
+    created.textContent=when.toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    created.title='Created '+when.toString();
+   } else {
+    created.textContent='date unknown';
+   }
    const download=document.createElement('button');
    download.type='button';
    download.className='btn btn-sm btn-primary';
@@ -1355,7 +1407,7 @@ async function meterIccLoadProfiles(){
    remove.className='btn btn-sm btn-danger';
    remove.textContent='Delete';
    remove.onclick=()=>meterIccDeleteProfile(profile.name);
-   row.append(name,download,validate,remove);
+   row.append(name,created,download,validate,remove);
    list.appendChild(row);
   });
  }catch(error){
