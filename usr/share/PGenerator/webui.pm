@@ -13226,7 +13226,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile cLUT or matrix/TRC fallback.</div>
-      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Download ICC Tools</button><span class="meter-companion-downloads-hint" id="meterIccReleaseHint"></span><span class="meter-help-tip" title="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired -- the Companion finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, which the browser flags as an insecure download." aria-label="Patch Companion download help">?</span></div>
+      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Download ICC Tools</button><span class="meter-companion-downloads-hint" id="meterIccReleaseHint"></span><span class="meter-help-tip" title="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired -- the Companion finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects." aria-label="Patch Companion download help">?</span></div>
      </div></span>
     </div>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
@@ -17828,10 +17828,6 @@ function pgSyncMeterDesktopWorkspaceAvailability(){
   const show=available||!desktop;
   if(nav){ nav.hidden=!show; nav.setAttribute('aria-hidden',show?'false':'true'); }
   if(panel) panel.style.display=(available||!desktop)?'':'none';
-  document.querySelectorAll('[data-series-tab="'+entry.tab+'"]').forEach(function(button){
-   button.hidden=!available;
-   button.setAttribute('aria-hidden',available?'false':'true');
-  });
   if(desktop&&!available&&pgDesktopWorkspace===entry.target) strandedOn=entry.target;
  });
  if(!desktop) return;
@@ -31078,7 +31074,10 @@ function meterUpdateSeriesTabUi(){
   const tabKey=btn.dataset.seriesTab||'';
   let visible=true;
   if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
-  else if(tabKey==='3dlut') visible=!!meterDetected;
+  // Both of these drive a meter and do nothing without one. This loop is the
+  // authoritative renderer for the row and runs after any other visibility
+  // pass, so the test has to live here or it gets overwritten.
+  else if(tabKey==='3dlut'||tabKey==='icc') visible=!!meterDetected;
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
