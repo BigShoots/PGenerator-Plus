@@ -1121,6 +1121,26 @@ function meterIccDownloadCompanion(platform){
  window.location.href='/api/icc/companion/download?platform='+encodeURIComponent(platform);
 }
 
+// Asset filenames match what icc_companion_package.py produces, so a release
+// built from that same packager output can be uploaded to GitHub unchanged.
+const METER_ICC_GITHUB_RELEASE_ASSETS={
+ 'windows-x64':'PGeneratorPlus-ICC-Tools-Windows-x64.exe',
+ 'windows-portable-x64':'PGenerator-ICC-Companion-Portable-Windows-x64.zip',
+ 'linux-x64':'PGenerator-ICC-Companion-Linux-x64.zip'
+};
+
+// GitHub redirects "latest/download/<asset>" to whichever release is newest,
+// so this needs no version lookup and works even though the Pi itself has no
+// internet route -- the browser does the fetching, not the server. Opened in
+// a new tab because it leaves the WebUI (and any running measurement) in
+// place. This copy is unpaired: it discovers this PGenerator+ by resolving
+// pgenerator.local and waits for approval through the pairing prompt below.
+function meterIccOpenGithubRelease(platform){
+ const asset=METER_ICC_GITHUB_RELEASE_ASSETS[platform];
+ if(!asset) return;
+ window.open('https://github.com/BigShoots/Pgenerator_Plus_ICC_Tools/releases/latest/download/'+asset,'_blank','noopener');
+}
+
 let meterCalibrationCompanionTimer=null;
 function meterCalibrationPatternProvider(){
  const select=document.getElementById('meterPatternProvider');
@@ -1235,6 +1255,105 @@ function meterIccAppendCompanionVersionWarning(target,connected){
  target.append(warn);
 }
 
+const METER_ICC_GITHUB_VERSION_KEY='pgen.iccGithubVersion.v1';
+const METER_ICC_GITHUB_VERSION_TTL_MS=6*60*60*1000;
+let meterIccGithubVersionCache='';
+let meterIccGithubVersionAttempted=false;
+let meterIccGithubVersionInFlight=false;
+
+// Talks straight to the GitHub API rather than through the Pi: this network's
+// Pi has no internet route or nameserver, so a server-side lookup would always
+// fail, but the operator's browser normally does have one, and an http page
+// fetching an https URL is not the mixed-content direction browsers block.
+// Every failure mode -- offline, DNS, a 403 rate limit, CORS, malformed JSON
+// -- is swallowed here: this is a nice-to-have version hint, never something
+// allowed to toast an error or stall the status poll that calls it.
+async function meterIccFetchGithubLatestVersion(){
+ let timer=null;
+ try{
+  const controller=new AbortController();
+  timer=setTimeout(()=>controller.abort(),4000);
+  const response=await fetch('https://api.github.com/repos/BigShoots/Pgenerator_Plus_ICC_Tools/releases/latest',{signal:controller.signal});
+  if(!response||!response.ok) return '';
+  const data=await response.json();
+  const tag=String((data&&data.tag_name)||'').replace(/^v/i,'');
+  return /^[0-9]+(\.[0-9]+){1,3}$/.test(tag)?tag:'';
+ }catch(error){ return ''; }
+ finally{ if(timer) clearTimeout(timer); }
+}
+
+// Kicks off (at most once per page load) refreshing the cached latest-release
+// version in the background. Deliberately fire-and-forget: callers read
+// whatever meterIccGithubVersionCache already holds rather than awaiting
+// this, so a slow or hung lookup can never delay the companion status poll.
+function meterIccRefreshGithubVersionCache(){
+ if(meterIccGithubVersionInFlight||meterIccGithubVersionAttempted) return;
+ try{
+  const cached=JSON.parse(localStorage.getItem(METER_ICC_GITHUB_VERSION_KEY)||'null');
+  if(cached&&typeof cached==='object'&&(Date.now()-Number(cached.time||0))<METER_ICC_GITHUB_VERSION_TTL_MS){
+   meterIccGithubVersionCache=String(cached.version||'');
+   meterIccGithubVersionAttempted=true;
+   return;
+  }
+ }catch(error){}
+ meterIccGithubVersionAttempted=true;
+ meterIccGithubVersionInFlight=true;
+ meterIccFetchGithubLatestVersion().then(version=>{
+  meterIccGithubVersionCache=version;
+  try{ localStorage.setItem(METER_ICC_GITHUB_VERSION_KEY,JSON.stringify({version:version,time:Date.now()})); }catch(error){}
+ }).finally(()=>{ meterIccGithubVersionInFlight=false; });
+}
+
+// One render function for both companion-status locations (the ICC workspace
+// modal and the calibration card), fed the same pair_requests array from the
+// status poll, so the two prompts can never drift the way separately
+// maintained renderers have before in this codebase.
+function meterIccRenderPairRequestsInto(container,requests,rowClass,metaClass,codeClass){
+ container.textContent='';
+ if(!Array.isArray(requests)||!requests.length) return;
+ requests.forEach(function(request){
+  const id=String((request&&request.id)||'');
+  if(!id) return;
+  const row=document.createElement('div');
+  row.className=rowClass;
+  const meta=document.createElement('div');
+  meta.className=metaClass;
+  const client=String((request&&request.client)||'a computer');
+  const platform=String((request&&request.platform)||'');
+  const ip=String((request&&request.ip)||'');
+  meta.textContent='"'+client+'"'+(platform?' ('+platform+')':'')+(ip?' at '+ip:'')+' wants to pair. Check that this code matches the one shown on the Companion, then approve or deny:';
+  const code=document.createElement('span');
+  code.className=codeClass;
+  code.textContent=String((request&&request.code)||'------');
+  const approve=document.createElement('button');
+  approve.type='button';
+  approve.className='btn btn-sm btn-primary';
+  approve.textContent='Approve';
+  approve.onclick=()=>meterIccDecidePairRequest(id,'approve');
+  const deny=document.createElement('button');
+  deny.type='button';
+  deny.className='btn btn-sm btn-danger';
+  deny.textContent='Deny';
+  deny.onclick=()=>meterIccDecidePairRequest(id,'deny');
+  row.append(meta,code,approve,deny);
+  container.appendChild(row);
+ });
+}
+
+function meterIccRenderPairRequests(requests){
+ const icc=document.getElementById('meterIccPairRequests');
+ if(icc) meterIccRenderPairRequestsInto(icc,requests,'meter-icc-pair-row','meter-icc-pair-meta','meter-icc-pair-code');
+ const calibration=document.getElementById('meterCalibrationPairRequests');
+ if(calibration) meterIccRenderPairRequestsInto(calibration,requests,'meter-companion-pair-row','meter-companion-pair-meta','meter-companion-pair-code');
+}
+
+async function meterIccDecidePairRequest(id,action){
+ try{
+  await fetchJSON('/api/icc/companion/pair-decide',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request:id,action:action}),_quiet:true,_timeoutMs:5000});
+ }catch(error){}
+ meterIccRefreshCompanionStatus();
+}
+
 function meterIccVersionBelow(have,want){
  if(!have||!want) return false;
  const a=String(have).split('.').map(n=>parseInt(n,10)||0);
@@ -1275,8 +1394,15 @@ function meterIccUpdateTopCompanionStatus(connected,detail){
 }
 
 async function meterIccRefreshCompanionStatus(){
+ // Fire-and-forget: this only ever primes a cache that the outdated-version
+ // check below reads synchronously, so it cannot delay this poll.
+ meterIccRefreshGithubVersionCache();
  try{
   const state=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:3500});
+  // Shown in both companion-status locations regardless of connection state --
+  // an unpaired Companion is by definition not connected yet, so the approval
+  // prompt has to appear anyway.
+  meterIccRenderPairRequests(state&&Array.isArray(state.pair_requests)?state.pair_requests:[]);
   const windowMode=document.getElementById('meterIccCompanionWindowMode');
   if(windowMode&&state&&['window','fullscreen'].includes(String(state.window_mode||''))) windowMode.value=String(state.window_mode);
   const reportedConnected=!!(state&&state.connected);
@@ -1287,9 +1413,13 @@ async function meterIccRefreshCompanionStatus(){
    meterIccCompanionClient=client;
    const renderer=String(state.renderer||'renderer');
    const version=String(state.version||'');
+   // Prefer the newest GitHub release tag; fall back to what this PGenerator
+   // ships (read from the Companion source tree) when that lookup has not
+   // resolved, which keeps offline behavior identical to before this existed.
    const shipped=String(state.shipped_version||'');
-   meterIccCompanionOutdated=meterIccVersionBelow(version,shipped)
-    ?('Patch Companion '+version+' is out of date \u2014 this PGenerator ships '+shipped+'. Download and install the current version before profiling or reading.')
+   const latestKnown=meterIccGithubVersionCache||shipped;
+   meterIccCompanionOutdated=meterIccVersionBelow(version,latestKnown)
+    ?('Patch Companion '+version+' is out of date \u2014 a newer version ('+latestKnown+') is available from the GitHub release. Download and install it before profiling or reading.')
     :'';
    const hdr=state.hdr_active?' with native HDR active':'';
    const swapchain=String(state.swapchain_color_space||'');

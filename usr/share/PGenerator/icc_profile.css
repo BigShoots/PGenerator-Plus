@@ -20,6 +20,12 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!importa
 .meter-icc-advanced{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .meter-icc-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
 .meter-icc-note{font-size:.72rem;color:var(--text2);line-height:1.5}
+.meter-icc-note a{color:var(--text2);text-decoration:underline;cursor:pointer}
+.meter-icc-note a:hover{color:var(--text)}
+.meter-icc-pair-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border);font-size:.72rem}
+.meter-icc-pair-row:last-child{border-bottom:0}
+.meter-icc-pair-meta{min-width:0;flex:1 1 auto;color:var(--text2)}
+.meter-icc-pair-code{font-family:'Courier New',monospace;font-weight:700;font-size:1rem;letter-spacing:.12em;color:var(--accent);background:rgba(91,127,255,.12);border:1px solid var(--border);border-radius:6px;padding:3px 8px}
 .meter-disabled-action-hint{position:relative}
 .meter-disabled-action-hint>button:disabled{pointer-events:none;cursor:not-allowed;opacity:.5;filter:grayscale(.35);transform:none}
 .meter-disabled-action-hint[data-tooltip]:not([data-tooltip=""]):hover::after{content:attr(data-tooltip);position:absolute;right:0;bottom:calc(100% + 8px);z-index:10020;width:max-content;max-width:min(360px,80vw);box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:.7rem;font-weight:400;line-height:1.35;white-space:normal;box-shadow:0 5px 18px rgba(0,0,0,.35);pointer-events:none}

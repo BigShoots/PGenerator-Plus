@@ -12060,8 +12060,14 @@ body.layout-desktop .meter-card-header-col{width:100%;max-width:none}
 body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:100%;min-width:0;flex:1 1 auto}
 @media(max-width:1250px){body.layout-desktop .meter-card-header-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
-.meter-companion-downloads{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.meter-companion-downloads{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:8px}
 .meter-companion-downloads .btn{font-size:.6rem;padding:2px 6px}
+.meter-companion-downloads-secondary{font-size:.6rem;color:var(--text2);margin-top:4px}
+.meter-companion-downloads-secondary a{color:var(--text2);text-decoration:underline;cursor:pointer}
+.meter-companion-downloads-secondary a:hover{color:var(--text)}
+.meter-companion-pair-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border);font-size:.62rem}
+.meter-companion-pair-meta{flex:1 1 auto;min-width:0;color:var(--text2)}
+.meter-companion-pair-code{font-family:'Courier New',monospace;font-weight:700;font-size:.85rem;letter-spacing:.1em;color:var(--accent)}
 .meter-card-header-meter{display:flex;align-items:center;gap:6px;width:100%;max-width:100%;margin:0}
 /* Same metrics as .field select so Meter/Display Type match Target Colorspace etc. */
 .meter-card-header-select{width:100%;max-width:100%;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);color:var(--text);padding:6px 24px 6px 10px;border-radius:6px;font-size:.82rem;line-height:normal;outline:none;transition:border .2s;-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
@@ -13223,10 +13229,12 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile cLUT or matrix/TRC fallback.</div>
-      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccDownloadCompanion('linux-x64')">KDE/Linux</button></div>
+      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccOpenGithubRelease('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccOpenGithubRelease('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" onclick="meterIccOpenGithubRelease('linux-x64')">KDE/Linux</button><span class="meter-help-tip" title="Opens the latest release on GitHub in a new tab. That copy is unpaired -- it finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, so the browser may warn it is insecure." aria-label="Patch Companion download help">?</span></div>
+      <div class="meter-companion-downloads-secondary">Already-paired copy from this PGenerator: <a href="#" onclick="meterIccDownloadCompanion('windows-x64');return false;">Windows Installer</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('windows-portable-x64');return false;">Windows Portable</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('linux-x64');return false;">KDE/Linux</a></div>
      </div></span>
     </div>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>
+    <div id="meterCalibrationPairRequests"></div>
    </div>
   </div>
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
