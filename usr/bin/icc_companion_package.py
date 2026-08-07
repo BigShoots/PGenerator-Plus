@@ -19,9 +19,14 @@ PLATFORMS = {
         "kind": "installer",
     },
     "windows-portable-x64": {
+        # The same payload as the installer, minus the installing: the Profile
+        # Loader and the ArgyllCMS pair are what make this the ICC tools rather
+        # than the Companion alone, and leaving them out of the portable route
+        # would quietly cost it local profile fitting and profile installation.
         "filename": "PGeneratorPlus-ICC-Tools-Portable-Windows-x64.zip",
         "directory": "windows-x64",
-        "files": ("PGeneratorPlusPatchCompanion.exe", "SDL3.dll"),
+        "files": ("PGeneratorPlusPatchCompanion.exe", "PGenProfileLoader.exe", "SDL3.dll",
+                  "colprof.exe", "profcheck.exe"),
         "paired": True,
         "kind": "archive",
     },
@@ -65,12 +70,12 @@ def add_file(archive, path, name, mode=0o644):
         archive.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED)
 
 
-def build(platform, server, token, output_path):
+def build(platform, server, token, output_path, paired=True):
     if platform not in PLATFORMS:
         fail("Unsupported companion platform")
-    if not SAFE_SERVER.match(server):
+    if paired and not SAFE_SERVER.match(server):
         fail("Invalid PGenerator address")
-    if not SAFE_TOKEN.match(token):
+    if paired and not SAFE_TOKEN.match(token):
         fail("Invalid pairing token")
     package = PLATFORMS[platform]
     filename = package["filename"]
@@ -83,6 +88,16 @@ def build(platform, server, token, output_path):
         checksum_path = installer + ".sha256"
         if not os.path.isfile(installer):
             fail("ICC tools installer is not installed")
+        if not paired:
+            # The release copy is the installer exactly as built, pairing slots
+            # still unfilled. The Companion recognises the untouched slot text
+            # as "no address, no token" and discovers its PGenerator+ instead,
+            # so one installer serves both the paired download and the release.
+            with open(installer, "rb") as source:
+                payload = source.read()
+            with open(output_path, "wb") as target:
+                target.write(payload)
+            return filename
         if not os.path.isfile(checksum_path):
             fail("ICC tools installer checksum is not installed")
         with open(checksum_path, "r", encoding="ascii") as checksum_file:
@@ -107,15 +122,25 @@ def build(platform, server, token, output_path):
         return filename
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if package["paired"]:
-            config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
-            config_info.create_system = 3
-            config_info.external_attr = 0o600 << 16
-            archive.writestr(config_info, config)
+            # Omitted from a release archive on purpose: with no conf beside it
+            # the Companion resolves pgenerator.local and asks to be approved,
+            # which is the only pairing a static download can do.
+            if paired:
+                config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
+                config_info.create_system = 3
+                config_info.external_attr = 0o600 << 16
+                archive.writestr(config_info, config)
             add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
             add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
             if package["directory"] == "linux-x64":
                 add_file(archive, os.path.join(ROOT, "icc-companion", "DejaVu-LICENSE.txt"),
                          "DejaVu-LICENSE.txt")
+            # AGPLv3 has to travel with colprof/profcheck. The Linux archive
+            # already carries its copy out of the binary directory; the Windows
+            # one has no copy there, so it comes from the shared location.
+            elif any(name.startswith(("colprof", "profcheck")) for name in files):
+                add_file(archive, os.path.join(ROOT, "icc-companion", "ArgyllCMS-LICENSE.txt"),
+                         "ArgyllCMS-LICENSE.txt")
         for name in files:
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
@@ -127,11 +152,19 @@ def build(platform, server, token, output_path):
 
 
 def main():
-    if len(sys.argv) != 5:
+    # The release form exists so the assets published on GitHub are built from
+    # this same description of what a package contains, rather than from a
+    # second list that would drift away from the paired download.
+    unpaired = len(sys.argv) == 4 and sys.argv[1] == "--unpaired"
+    if not unpaired and len(sys.argv) != 5:
         print("Usage: icc_companion_package.py PLATFORM SERVER TOKEN OUTPUT", file=sys.stderr)
+        print("       icc_companion_package.py --unpaired PLATFORM OUTPUT", file=sys.stderr)
         return 2
     try:
-        filename = build(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+        if unpaired:
+            filename = build(sys.argv[2], "", "", sys.argv[3], paired=False)
+        else:
+            filename = build(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
         print(filename)
         return 0
     except (ValueError, OSError, zipfile.BadZipFile) as error:
