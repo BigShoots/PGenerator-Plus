@@ -2465,7 +2465,7 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
 
 static void queue_status(const char *text);
 
-/* Tell the Pi the fit failed so it falls back to its own colprof immediately
+/* Tell the generator the fit failed so it falls back to its own colprof
  * instead of waiting out the build timeout. */
 static void companion_report_build_error(const char *reason)
 {
@@ -2484,14 +2484,14 @@ static void companion_report_build_error(const char *reason)
     http_binary(&app.config, "POST", path, "text/plain", (const unsigned char *)"x", 1, NULL, NULL);
 }
 
-/* Run the profile fit the Pi handed over.
+/* Run the profile fit the generator handed over.
  *
  * colprof is single-threaded and a high-quality cLUT fit is roughly ten
- * minutes on a Pi 4 against under a minute here, so the Pi offloads the fit
- * when this Companion reports a matching ArgyllCMS. Only the fit moves: the
- * characterization, the MHC2/vcgt derivation and the ICC rebuild all stay on
- * the Pi. Any failure is reported so the Pi falls back to its own colprof
- * rather than waiting out the timeout.
+ * minutes on the generator against under a minute here, so the generator
+ * offloads the fit when this Companion reports a matching ArgyllCMS. Only the
+ * fit moves: the characterization, the MHC2/vcgt derivation and the ICC
+ * rebuild all stay there. Any failure is reported so the generator falls back
+ * to its own colprof rather than waiting out the timeout.
  */
 /* Append one shell-quoted argument, separated by a space. Returns false when
    the destination is too small, so the caller can refuse the job rather than
@@ -2549,7 +2549,7 @@ static void companion_run_build(const char *poll_response)
     bool built = false;
 
     if (!companion_tool_path("colprof", tool, sizeof(tool))) return;
-    /* Flags are produced by the Pi's builder from its own argument list. */
+    /* Flags are produced by the generator's builder from its argument list. */
     flags[0] = '\0';
     {
         const char *start = strstr(poll_response, "\"flags\":[");
@@ -2563,7 +2563,7 @@ static void companion_run_build(const char *poll_response)
         }
     }
 
-    {   /* Work inside the OS temp directory; the Pi keeps the authoritative copies. */
+    {   /* Work in the OS temp directory; the generator keeps the authoritative copies. */
         const char *base = SDL_GetPrefPath("PGeneratorPlus", "build");
         if (!base) return;
         SDL_strlcpy(directory, base, sizeof(directory));
@@ -2833,7 +2833,7 @@ static void poll_server(void)
             SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | No application profile correction");
         queue_status(title);
     }
-    /* A build job pre-empts the patch path: the Pi's builder is blocked on it
+    /* A build job pre-empts the patch path: the generator's builder is blocked
      * and no patch is pending while a fit runs. */
     if (strstr(response, "\"status\":\"build\"")) {
         companion_run_build(response);
