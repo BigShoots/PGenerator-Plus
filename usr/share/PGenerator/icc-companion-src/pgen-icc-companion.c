@@ -2311,8 +2311,9 @@ static bool try_create_renderer(bool hdr, const char *driver)
         /* On Windows the swapchain's Advanced Color state may not be exposed
          * until its first scRGB frame has been presented. Checking the HDR
          * property before that frame falsely rejects an HDR-enabled desktop.
-         * Give DWM and the renderer time to publish the dynamic state. */
-        hdr_deadline = SDL_GetTicks() + 1000;
+         * Wayland/KWin can also lag a bit after fullscreen + first present.
+         * Give the compositor time to publish the dynamic HDR state. */
+        hdr_deadline = SDL_GetTicks() + 2500;
         do {
             SDL_PumpEvents();
             if (!update_renderer_hdr_state()) {
@@ -2323,7 +2324,12 @@ static bool try_create_renderer(bool hdr, const char *driver)
             SDL_Delay(20);
         } while (SDL_GetTicks() < hdr_deadline);
         if (!app.hdr_active) {
-            SDL_SetError("The scRGB renderer did not enter HDR after its first presented frame");
+            SDL_SetError(
+                "The scRGB renderer did not enter HDR after its first presented frame "
+                "(driver=%s). On Linux install a working Vulkan stack "
+                "(vulkan-loader + mesa-vulkan-drivers or the vendor Vulkan package) "
+                "and enable HDR for this display in Plasma.",
+                app.renderer_name[0] ? app.renderer_name : (driver ? driver : "default"));
             destroy_renderer();
             return false;
         }
@@ -2346,10 +2352,13 @@ static bool try_create_renderer(bool hdr, const char *driver)
 static bool create_renderer(bool hdr)
 {
 #ifndef _WIN32
+    /* Prefer Vulkan (the path proven on Kubuntu/KDE Wayland). Then SDL's GPU
+     * backend, then the platform default. NULL must stay last. */
     const char *hdr_drivers[] = { "vulkan", "gpu", NULL };
     size_t index;
+    char attempt_error[256];
 #endif
-    char last_error[256] = "No HDR renderer was available";
+    char last_error[512] = "No HDR renderer was available";
 
     if (!hdr) return try_create_renderer(false, NULL);
 #ifdef _WIN32
@@ -2357,11 +2366,35 @@ static bool create_renderer(bool hdr)
     if (windows_create_hdr_output()) return true;
     SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
 #else
-    for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
-        if (try_create_renderer(true, hdr_drivers[index])) return true;
-        if (SDL_GetError() && SDL_GetError()[0]) {
-            SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
+    /* KWin only exposes an HDR-capable surface for some clients after the
+     * window is fullscreen on an HDR output. Attempt that before creating the
+     * scRGB renderer so SDL_PROP_RENDERER_HDR_ENABLED_BOOLEAN can become true. */
+    {
+        SDL_WindowFlags flags = SDL_GetWindowFlags(app.window);
+        if ((flags & SDL_WINDOW_FULLSCREEN) == 0) {
+            (void)SDL_SetWindowFullscreenMode(app.window, NULL);
+            if (SDL_SetWindowFullscreen(app.window, true)) {
+                app.fullscreen = true;
+                SDL_SyncWindow(app.window);
+                SDL_PumpEvents();
+                SDL_Delay(50);
+            }
         }
+        SDL_ShowWindow(app.window);
+        SDL_RaiseWindow(app.window);
+    }
+    for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
+        const char *driver = hdr_drivers[index];
+        if (try_create_renderer(true, driver)) return true;
+        attempt_error[0] = '\0';
+        if (SDL_GetError() && SDL_GetError()[0])
+            SDL_strlcpy(attempt_error, SDL_GetError(), sizeof(attempt_error));
+        else
+            SDL_strlcpy(attempt_error, "create failed", sizeof(attempt_error));
+        if (driver && driver[0])
+            SDL_snprintf(last_error, sizeof(last_error), "%s: %s", driver, attempt_error);
+        else
+            SDL_snprintf(last_error, sizeof(last_error), "default: %s", attempt_error);
     }
 #endif
 
