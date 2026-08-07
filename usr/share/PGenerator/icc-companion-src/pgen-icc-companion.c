@@ -73,12 +73,25 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.3.39"
+#define APP_VERSION "1.4.0"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
+/* PGenerator+ runs its own mDNS responder under this name, independent of
+ * whatever mDNS stack the host OS may or may not have configured, so a plain
+ * getaddrinfo() for it resolves on both Windows 10+ and Linux with
+ * nss-mdns/avahi installed. */
+#define PGEN_DISCOVERY_HOST "pgenerator.local"
+/* PGenICCCompanion.template.conf ships inside the installer with these
+ * literal slot markers in place of a real SERVER/TOKEN; PGenerator+
+ * overwrites the fixed-width slots only when a unit downloads its own
+ * personalised copy. A static installer taken straight from a GitHub release
+ * still carries the markers, so their presence means the value was never
+ * personalised and must be treated the same as the field being absent. */
+#define PGEN_SERVER_SLOT_MARKER "__PGEN_SERVER_SLOT__"
+#define PGEN_TOKEN_SLOT_MARKER "__PGEN_TOKEN_SLOT__"
 
 typedef struct {
     char server[256];
@@ -703,16 +716,31 @@ static void trim(char *text)
     *end = '\0';
 }
 
-static bool load_config(CompanionConfig *config)
+/* Exactly 64 lowercase hex characters, matching the token PGenerator+ mints.
+ * A conf value carrying the un-personalised template text, or a --token
+ * typo, fails this and is treated the same as no token at all. */
+static bool token_is_valid(const char *token)
 {
-    char path[1024];
-    const char *base = SDL_GetBasePath();
-    FILE *file;
+    size_t length = strlen(token);
+    if (length != 64) return false;
+    for (size_t index = 0; index < length; index++) {
+        char c = token[index];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+/* Reads one PGenICCCompanion.conf and fills in whichever of SERVER/TOKEN/
+ * DISPLAY it defines. Fields the file does not mention are left untouched, so
+ * a caller can read the beside-the-binary copy and the pref-path copy into
+ * separate buffers and merge them itself. Returns false only when the file
+ * could not be opened. */
+static bool load_conf_fields(const char *path, char *server, size_t server_size,
+                             char *token, size_t token_size,
+                             char *display, size_t display_size)
+{
+    FILE *file = fopen(path, "rb");
     char line[512];
-    memset(config, 0, sizeof(*config));
-    config->port = 80;
-    SDL_snprintf(path, sizeof(path), "%sPGenICCCompanion.conf", base ? base : "");
-    file = fopen(path, "rb");
     if (!file) return false;
     while (fgets(line, sizeof(line), file)) {
         char *equals;
@@ -723,12 +751,82 @@ static bool load_config(CompanionConfig *config)
         *equals++ = '\0';
         trim(line);
         trim(equals);
-        if (!strcmp(line, "SERVER")) SDL_strlcpy(config->server, equals, sizeof(config->server));
-        else if (!strcmp(line, "TOKEN")) SDL_strlcpy(config->token, equals, sizeof(config->token));
-        else if (!strcmp(line, "DISPLAY")) SDL_strlcpy(config->display, equals, sizeof(config->display));
+        if (!strcmp(line, "SERVER")) SDL_strlcpy(server, equals, server_size);
+        else if (!strcmp(line, "TOKEN")) SDL_strlcpy(token, equals, token_size);
+        else if (!strcmp(line, "DISPLAY")) SDL_strlcpy(display, equals, display_size);
     }
     fclose(file);
-    if (!config->server[0] || !config->token[0]) return false;
+    return true;
+}
+
+static bool load_config(CompanionConfig *config, int argc, char *argv[])
+{
+    char base_path[1024], pref_path[1024];
+    char conf_server[256] = "", conf_token[96] = "", conf_display[192] = "";
+    char pref_server[256] = "", pref_token[96] = "", pref_display[192] = "";
+    const char *arg_server = NULL, *arg_token = NULL, *arg_display = NULL;
+    const char *server_value, *token_value, *display_value;
+    const char *base, *pref;
+
+    memset(config, 0, sizeof(*config));
+    config->port = 80;
+
+    for (int index = 1; index < argc; index++) {
+        if (!strncmp(argv[index], "--server=", 9)) arg_server = argv[index] + 9;
+        else if (!strncmp(argv[index], "--token=", 8)) arg_token = argv[index] + 8;
+        else if (!strncmp(argv[index], "--display=", 10)) arg_display = argv[index] + 10;
+    }
+
+    base = SDL_GetBasePath();
+    SDL_snprintf(base_path, sizeof(base_path), "%sPGenICCCompanion.conf", base ? base : "");
+    load_conf_fields(base_path, conf_server, sizeof(conf_server),
+                     conf_token, sizeof(conf_token), conf_display, sizeof(conf_display));
+    /* Learned at run time via companion_pair() and save_config() when the
+     * beside-the-binary location is not writable, e.g. under Program Files. */
+    pref = SDL_GetPrefPath("PGeneratorPlus", "PatchCompanion");
+    if (pref) {
+        SDL_snprintf(pref_path, sizeof(pref_path), "%sPGenICCCompanion.conf", pref);
+        load_conf_fields(pref_path, pref_server, sizeof(pref_server),
+                         pref_token, sizeof(pref_token), pref_display, sizeof(pref_display));
+    }
+
+    if (strstr(conf_server, PGEN_SERVER_SLOT_MARKER)) conf_server[0] = '\0';
+    if (strstr(conf_token, PGEN_TOKEN_SLOT_MARKER)) conf_token[0] = '\0';
+    if (strstr(pref_server, PGEN_SERVER_SLOT_MARKER)) pref_server[0] = '\0';
+    if (strstr(pref_token, PGEN_TOKEN_SLOT_MARKER)) pref_token[0] = '\0';
+
+    server_value = conf_server[0] ? conf_server : (pref_server[0] ? pref_server : NULL);
+    token_value = conf_token[0] ? conf_token : (pref_token[0] ? pref_token : NULL);
+    display_value = conf_display[0] ? conf_display : pref_display;
+
+    if (arg_display && arg_display[0]) SDL_strlcpy(config->display, arg_display, sizeof(config->display));
+    else SDL_strlcpy(config->display, display_value, sizeof(config->display));
+
+    if (arg_token && token_is_valid(arg_token)) SDL_strlcpy(config->token, arg_token, sizeof(config->token));
+    else if (token_value && token_is_valid(token_value)) SDL_strlcpy(config->token, token_value, sizeof(config->token));
+    /* A missing or invalid token is not fatal here: SDL_AppInit sends this
+     * Companion through companion_pair() to obtain one when it is empty. */
+
+    if (arg_server && arg_server[0]) {
+        SDL_strlcpy(config->server, arg_server, sizeof(config->server));
+    } else if (server_value) {
+        SDL_strlcpy(config->server, server_value, sizeof(config->server));
+    } else {
+        /* Nothing on the command line or in either conf file: see whether
+         * PGenerator+'s own mDNS responder answers for its fixed name before
+         * giving up entirely. */
+        struct addrinfo hints, *addresses = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(PGEN_DISCOVERY_HOST, "80", &hints, &addresses) == 0) {
+            freeaddrinfo(addresses);
+            /* Keep the name, not the address it resolved to today, so a
+             * PGenerator+ that later gets a new DHCP lease still resolves. */
+            SDL_strlcpy(config->server, "http://" PGEN_DISCOVERY_HOST, sizeof(config->server));
+        }
+    }
+    if (!config->server[0]) return false;
 
     {
         const char *source = config->server;
@@ -757,6 +855,41 @@ static bool load_config(CompanionConfig *config)
 #endif
     for (char *p = config->client; *p; p++) if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') *p = '_';
     return config->host[0] && config->port > 0 && config->port < 65536;
+}
+
+/* Remembers a pairing this Companion just obtained so the next launch does
+ * not have to repeat it. Tried beside the executable first, matching where
+ * PGenerator+ places a personalised download; falls back to the pref path
+ * when that location cannot be written, which is the common case once a
+ * Windows installer has placed the program under Program Files. Not being
+ * able to write anywhere is not fatal: the caller keeps the token in memory
+ * either way, so this session still works, and only the next launch is
+ * affected. */
+static bool save_config(const CompanionConfig *config)
+{
+    char path[1024];
+    const char *base = SDL_GetBasePath();
+    const char *pref;
+    FILE *file = NULL;
+
+    if (base) {
+        SDL_snprintf(path, sizeof(path), "%sPGenICCCompanion.conf", base);
+        file = fopen(path, "wb");
+    }
+    if (!file) {
+        pref = SDL_GetPrefPath("PGeneratorPlus", "PatchCompanion");
+        if (pref) {
+            SDL_snprintf(path, sizeof(path), "%sPGenICCCompanion.conf", pref);
+            file = fopen(path, "wb");
+        }
+    }
+    if (!file) return false;
+    fprintf(file, "# Paired with PGenerator+\n");
+    fprintf(file, "SERVER=%s\n", config->server);
+    fprintf(file, "TOKEN=%s\n", config->token);
+    if (config->display[0]) fprintf(file, "DISPLAY=%s\n", config->display);
+    fclose(file);
+    return true;
 }
 
 static bool connect_with_timeout(socket_handle_t sock, const struct sockaddr *address,
@@ -3043,9 +3176,175 @@ static void process_network_updates(void)
     }
 }
 
+/* Draws one line of SDL_RenderDebugText and returns the device-pixel y
+ * position for the line after it. SDL_SetRenderScale multiplies whatever
+ * coordinates a render call is given by the active scale, so this converts
+ * the caller's desired pixel position into that scale's local coordinate
+ * space rather than making every call site do the division itself. */
+static float pairing_draw_line(float pixel_x, float pixel_y, float scale, const char *text)
+{
+    SDL_SetRenderScale(app.renderer, scale, scale);
+    SDL_RenderDebugText(app.renderer, pixel_x / scale, pixel_y / scale, text);
+    return pixel_y + 10.0f * scale * 1.6f;
+}
+
+/* Drawn before any patch has ever been shown, on the plain SDL renderer
+ * create_renderer(false) made at startup - never the Windows HDR swapchain
+ * path, so there is no PQ scaling to account for here. SDL_RenderDebugText is
+ * SDL3's built-in 8x8 bitmap font: the Companion ships as a small zip and
+ * must not gain a font file dependency just to ask for a pairing code. */
+static bool render_pairing(const char *code, const char *server, int seconds_left, const char *note)
+{
+    int width, height;
+    float body_scale, code_scale, margin, y;
+    char line[256];
+
+    if (!app.renderer) return false;
+    if (!SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
+    (void)width;
+
+    /* Small enough that the surrounding sentences stay readable at arm's
+     * length; the code below gets a much larger multiple of it so it can be
+     * read back across a room while approving the pairing in the WebUI. */
+    body_scale = fmaxf(2.0f, (float)height / 360.0f);
+    code_scale = body_scale * 5.0f;
+    margin = 24.0f * body_scale;
+
+    SDL_SetRenderScale(app.renderer, 1.0f, 1.0f);
+    SDL_SetRenderDrawColorFloat(app.renderer, 0.0f, 0.0f, 0.0f, 1.0f);
+    if (!SDL_RenderClear(app.renderer)) return false;
+    SDL_SetRenderDrawColorFloat(app.renderer, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    y = margin;
+    y = pairing_draw_line(margin, y, body_scale, "PGenerator+ Patch Companion");
+    SDL_snprintf(line, sizeof(line), "Server: %s", server ? server : "");
+    y = pairing_draw_line(margin, y, body_scale, line);
+    y += 10.0f * body_scale;
+    y = pairing_draw_line(margin, y, body_scale,
+                          "Approve this computer in the PGenerator+ WebUI to finish pairing.");
+    y = pairing_draw_line(margin, y, body_scale, "Check the code shown there matches:");
+    y += 6.0f * body_scale;
+    y = pairing_draw_line(margin, y, code_scale, code && code[0] ? code : "------");
+    y += 10.0f * body_scale;
+    SDL_snprintf(line, sizeof(line), "Time remaining: %d seconds", seconds_left > 0 ? seconds_left : 0);
+    y = pairing_draw_line(margin, y, body_scale, line);
+    y = pairing_draw_line(margin, y, body_scale, "Press Escape to cancel.");
+    if (note && note[0]) {
+        y += 10.0f * body_scale;
+        y = pairing_draw_line(margin, y, body_scale, note);
+    }
+    (void)y;
+
+    SDL_SetRenderScale(app.renderer, 1.0f, 1.0f);
+    return SDL_RenderPresent(app.renderer);
+}
+
+/* Set by companion_pair() on any false return, so SDL_AppInit can show the
+ * specific reason without threading a buffer through a signature the caller
+ * only ever needs to check as a bool. */
+static char companion_pair_error[256];
+
+/* Runs the unattended pairing handshake against the PGenerator+ this
+ * Companion has already found an address for but has no token for yet. The
+ * server side mints a six-digit code and a one-shot request id; this pumps
+ * SDL's event queue and redraws the pairing screen itself for up to
+ * expires_in seconds, since SDL_AppIterate's own loop has not started yet at
+ * this point in SDL_AppInit, while polling for the operator's decision no
+ * more often than every 1500 ms. */
+static bool companion_pair(void)
+{
+    char body[256], response[2048];
+    char request_id[40] = "", code[16] = "", message[256] = "";
+    double expires_in = 180.0, parsed;
+    int status;
+    uint64_t deadline, next_poll;
+
+    companion_pair_error[0] = '\0';
+    SDL_snprintf(body, sizeof(body), "{\"client\":\"%s\",\"platform\":\"%s\",\"version\":\"%s\"}",
+                 app.config.client, companion_platform(), APP_VERSION);
+    status = http_request(&app.config, "POST", "/api/icc/companion/pair-request", body,
+                          response, sizeof(response));
+    if (status != 200 || !json_string(response, "request", request_id, sizeof(request_id)) ||
+        !json_string(response, "code", code, sizeof(code))) {
+        if (!json_string(response, "message", message, sizeof(message)) || !message[0])
+            SDL_strlcpy(message, "PGenerator+ did not accept the pairing request.", sizeof(message));
+        SDL_strlcpy(companion_pair_error, message, sizeof(companion_pair_error));
+        return false;
+    }
+    if (json_number(response, "expires_in", &parsed) && parsed > 0.0) expires_in = parsed;
+
+    deadline = SDL_GetTicks() + (uint64_t)(expires_in * 1000.0);
+    next_poll = SDL_GetTicks();
+    for (;;) {
+        SDL_Event event;
+        uint64_t now = SDL_GetTicks();
+        int seconds_left = (int)((deadline > now ? deadline - now : 0) / 1000);
+
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE)) {
+                SDL_strlcpy(companion_pair_error, "Pairing cancelled.", sizeof(companion_pair_error));
+                return false;
+            }
+        }
+        if (!render_pairing(code, app.config.server, seconds_left, NULL)) {
+            SDL_strlcpy(companion_pair_error, "Could not draw the pairing screen.",
+                       sizeof(companion_pair_error));
+            return false;
+        }
+        if (now >= deadline) {
+            SDL_strlcpy(companion_pair_error,
+                       "Pairing timed out. Try again from the PGenerator+ WebUI.",
+                       sizeof(companion_pair_error));
+            return false;
+        }
+        if (now >= next_poll) {
+            char path[96], poll_response[512], poll_status[24] = "";
+            SDL_snprintf(path, sizeof(path), "/api/icc/companion/pair-status?request=%s", request_id);
+            status = http_request(&app.config, "GET", path, NULL, poll_response, sizeof(poll_response));
+            next_poll = now + 1500;
+            if (status == 200 && json_string(poll_response, "status", poll_status, sizeof(poll_status))) {
+                /* "approved" and "denied" are one-shot: the server deletes the
+                 * request as soon as this read happens, so the token below
+                 * must be kept now - a second poll only ever sees "expired". */
+                if (!strcmp(poll_status, "approved")) {
+                    char token[96] = "";
+                    if (!json_string(poll_response, "token", token, sizeof(token)) ||
+                        !token_is_valid(token)) {
+                        SDL_strlcpy(companion_pair_error,
+                                   "PGenerator+ approved pairing but did not send a usable token.",
+                                   sizeof(companion_pair_error));
+                        return false;
+                    }
+                    SDL_strlcpy(app.config.token, token, sizeof(app.config.token));
+                    if (!save_config(&app.config)) {
+                        render_pairing(code, app.config.server, seconds_left,
+                                      "Paired, but could not save the token for next launch.");
+                        SDL_Delay(2000);
+                    }
+                    return true;
+                }
+                if (!strcmp(poll_status, "denied")) {
+                    SDL_strlcpy(companion_pair_error,
+                               "Pairing was denied in the PGenerator+ WebUI.",
+                               sizeof(companion_pair_error));
+                    return false;
+                }
+                if (!strcmp(poll_status, "expired")) {
+                    SDL_strlcpy(companion_pair_error,
+                               "Pairing request expired. Try again from the PGenerator+ WebUI.",
+                               sizeof(companion_pair_error));
+                    return false;
+                }
+                /* "pending": keep waiting. */
+            }
+        }
+        SDL_Delay(16);
+    }
+}
+
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 {
-    (void)argc; (void)argv;
     memset(&app, 0, sizeof(app));
     app.displayed_max_luma = app.command_max_luma = 1000.0;
     app.displayed_min_luma = app.command_min_luma = 0.005;
@@ -3060,9 +3359,13 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return SDL_APP_FAILURE;
     }
 #endif
-    if (!load_config(&app.config)) {
+    if (!load_config(&app.config, argc, argv)) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
-                                 "PGenICCCompanion.conf is missing or invalid. Download the companion again from your PGenerator.", NULL);
+                                 "Could not find a PGenerator+ on this network. PGenerator+ answers to "
+                                 "the name " PGEN_DISCOVERY_HOST ". If this computer cannot resolve that "
+                                 "name, put a line reading SERVER=http://<address of your PGenerator+> "
+                                 "in PGenICCCompanion.conf beside this program, or start it with "
+                                 "--server=http://<address>.", NULL);
         return SDL_APP_FAILURE;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
@@ -3081,6 +3384,19 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     app.displayed_size = 100;
     if (!create_renderer(false)) return SDL_APP_FAILURE;
     if (!render_alignment()) return SDL_APP_FAILURE;
+    if (!app.config.token[0]) {
+        /* A static, unpaired download has an address but no token yet: ask
+         * the operator to approve this computer in the WebUI before falling
+         * through to the normal alignment target and network thread below. */
+        if (!companion_pair()) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                     companion_pair_error[0] ? companion_pair_error
+                                                              : "Pairing with PGenerator+ failed.",
+                                     NULL);
+            return SDL_APP_FAILURE;
+        }
+        if (!render_alignment()) return SDL_APP_FAILURE;
+    }
     SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
     app.ack_hdr_active = app.hdr_active;
     SDL_SetAtomicInt(&app.quit_requested, 0);
