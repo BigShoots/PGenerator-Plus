@@ -858,9 +858,24 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
         for stale in (result_path, error_path):
             if os.path.exists(stale):
                 os.remove(stale)
-        # Hand over only the arguments that describe the fit. Paths are rewritten
-        # by the Companion against its own working directory.
-        flags = [item for item in command[1:] if item not in (temporary_output,)]
+        # Hand over only the arguments that describe the fit. The Companion
+        # appends its own "-O <output> <basename>" against its own working
+        # directory, so -O, the output path and the input basename all have to
+        # go: leaving a bare -O behind makes colprof swallow the basename as an
+        # output name and it then exits without ever writing a profile.
+        base_name = temporary_output[:-4] if temporary_output.endswith(".icc") else temporary_output
+        flags = []
+        drop_value = False
+        for item in command[1:]:
+            if drop_value:
+                drop_value = False
+                continue
+            if item == "-O":
+                drop_value = True
+                continue
+            if item in (temporary_output, base_name):
+                continue
+            flags.append(item)
         # The characterization goes in its own file rather than inline in the
         # job: the Companion's poll response buffer is 32 KB and a 1000-patch
         # .ti3 is around 76 KB, so inlining would fail on exactly the large

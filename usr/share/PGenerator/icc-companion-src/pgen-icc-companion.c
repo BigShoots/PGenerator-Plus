@@ -69,7 +69,7 @@ typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
 #endif
 
-#define APP_VERSION "1.3.36"
+#define APP_VERSION "1.3.38"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -871,6 +871,149 @@ static int http_request(CompanionConfig *config, const char *method, const char 
         SDL_strlcpy(response, payload, response_size);
     }
     return status;
+}
+
+/* Binary-safe request/response. http_request above is built for JSON: it
+ * measures the body with strlen and copies the reply with strlcpy, and an ICC
+ * profile is full of NUL bytes at both ends of that exchange. */
+static int http_binary(CompanionConfig *config, const char *method, const char *path,
+                       const char *content_type, const unsigned char *body, size_t body_length,
+                       unsigned char **reply, size_t *reply_length)
+{
+    char header[2048];
+    socket_handle_t sock;
+    int status = 0;
+    size_t capacity = 1 << 20, used = 0;
+    unsigned char *raw = NULL;
+    if (reply) *reply = NULL;
+    if (reply_length) *reply_length = 0;
+    sock = open_server_socket(config);
+    if (sock == INVALID_SOCKET_HANDLE) return 0;
+#ifdef _WIN32
+    { DWORD t = 120000; setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&t, sizeof(t));
+                        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&t, sizeof(t)); }
+#else
+    { struct timeval t = {120, 0}; setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof(t));
+                                   setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &t, sizeof(t)); }
+#endif
+    SDL_snprintf(header, sizeof(header),
+                 "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: %s\r\nContent-Length: %u\r\n\r\n",
+                 method, path, config->host, content_type, (unsigned)body_length);
+    {
+        size_t sent = 0, length = strlen(header);
+        while (sent < length) {
+            int count = (int)send(sock, header + sent, (int)(length - sent), 0);
+            if (count <= 0) { close_socket(sock); return 0; }
+            sent += (size_t)count;
+        }
+    }
+    while (body_length > 0) {
+        int count = (int)send(sock, (const char *)body, (int)(body_length > 32768 ? 32768 : body_length), 0);
+        if (count <= 0) { close_socket(sock); return 0; }
+        body += count; body_length -= (size_t)count;
+    }
+    raw = (unsigned char *)SDL_malloc(capacity);
+    if (!raw) { close_socket(sock); return 0; }
+    for (;;) {
+        int count;
+        if (used + 16384 > capacity) {
+            unsigned char *grown;
+            if (capacity >= (size_t)96 * 1024 * 1024) break;
+            capacity *= 2;
+            grown = (unsigned char *)SDL_realloc(raw, capacity);
+            if (!grown) break;
+            raw = grown;
+        }
+        count = (int)recv(sock, (char *)raw + used, 16384, 0);
+        if (count <= 0) break;
+        used += (size_t)count;
+    }
+    close_socket(sock);
+    if (used < 12 || sscanf((const char *)raw, "HTTP/%*s %d", &status) != 1) { SDL_free(raw); return 0; }
+    {
+        size_t index;
+        size_t start = used;
+        for (index = 0; index + 3 < used; index++) {
+            if (raw[index] == '\r' && raw[index + 1] == '\n' && raw[index + 2] == '\r' && raw[index + 3] == '\n') {
+                start = index + 4; break;
+            }
+        }
+        if (start >= used) { SDL_free(raw); return status; }
+        if (reply && reply_length) {
+            size_t length = used - start;
+            unsigned char *payload = (unsigned char *)SDL_malloc(length + 1);
+            if (payload) {
+                memcpy(payload, raw + start, length);
+                payload[length] = 0;
+                *reply = payload;
+                *reply_length = length;
+            }
+        }
+    }
+    SDL_free(raw);
+    return status;
+}
+
+/* Absolute path to a tool shipped beside this executable. */
+static bool companion_tool_path(const char *name, char *out, size_t out_size)
+{
+    const char *base = SDL_GetBasePath();
+    if (!base || !name) return false;
+#ifdef _WIN32
+    SDL_snprintf(out, out_size, "%s%s.exe", base, name);
+#else
+    SDL_snprintf(out, out_size, "%s%s", base, name);
+#endif
+    return true;
+}
+
+/* ArgyllCMS version of the bundled colprof, empty when it is absent or will
+ * not run. Reported to the server so the builder can refuse to offload to a
+ * version other than its own. */
+static const char *companion_argyll_version(void)
+{
+    static char cached[32];
+    static bool probed = false;
+    char path[1024];
+    char command[1200];
+    FILE *pipe;
+    if (probed) return cached;
+    probed = true;
+    cached[0] = '\0';
+    if (!companion_tool_path("colprof", path, sizeof(path))) return cached;
+    {   /* Presence check without platform access(): the tool either opens or it does not. */
+        FILE *probe = fopen(path, "rb");
+        if (!probe) return cached;
+        fclose(probe);
+    }
+#ifdef _WIN32
+    SDL_snprintf(command, sizeof(command), "\"\"%s\"\" 2>&1", path);
+    pipe = _popen(command, "r");
+#else
+    SDL_snprintf(command, sizeof(command), "\"%s\" 2>&1", path);
+    pipe = popen(command, "r");
+#endif
+    if (!pipe) return cached;
+    {
+        char line[512];
+        while (fgets(line, sizeof(line), pipe)) {
+            const char *found = strstr(line, "Version ");
+            if (found) {
+                unsigned index = 0;
+                found += 8;
+                while (index + 1 < sizeof(cached) && ((*found >= '0' && *found <= '9') || *found == '.'))
+                    cached[index++] = *found++;
+                cached[index] = '\0';
+                break;
+            }
+        }
+    }
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    return cached;
 }
 
 static PGEN_UNUSED uint16_t read_be16(const unsigned char *value)
@@ -2265,6 +2408,207 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
     return render_current_frame();
 }
 
+static void queue_status(const char *text);
+
+/* Tell the Pi the fit failed so it falls back to its own colprof immediately
+ * instead of waiting out the build timeout. */
+static void companion_report_build_error(const char *reason)
+{
+    char path[768];
+    char escaped[240];
+    size_t out = 0, index;
+    for (index = 0; reason[index] && out + 4 < sizeof(escaped); index++) {
+        char c = reason[index];
+        if (c == ' ') { escaped[out++] = '+'; continue; }
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '.' || c == '_' || c == '-') { escaped[out++] = c; continue; }
+    }
+    escaped[out] = '\0';
+    SDL_snprintf(path, sizeof(path), "/api/icc/companion/build-result?token=%s&error=%s",
+                 app.config.token, escaped);
+    http_binary(&app.config, "POST", path, "text/plain", (const unsigned char *)"x", 1, NULL, NULL);
+}
+
+/* Run the profile fit the Pi handed over.
+ *
+ * colprof is single-threaded and a high-quality cLUT fit is roughly ten
+ * minutes on a Pi 4 against under a minute here, so the Pi offloads the fit
+ * when this Companion reports a matching ArgyllCMS. Only the fit moves: the
+ * characterization, the MHC2/vcgt derivation and the ICC rebuild all stay on
+ * the Pi. Any failure is reported so the Pi falls back to its own colprof
+ * rather than waiting out the timeout.
+ */
+/* Append one shell-quoted argument, separated by a space. Returns false when
+   the destination is too small, so the caller can refuse the job rather than
+   run colprof with a silently truncated argument list. */
+static bool companion_quote_append(char *destination, size_t capacity, size_t *used, const char *argument)
+{
+    size_t out = *used;
+    const char *cursor;
+
+    if (out && out + 1 < capacity) destination[out++] = ' ';
+#ifdef _WIN32
+    /* cmd.exe: double quotes, and a literal quote cannot survive inside them. */
+    if (out + 1 >= capacity) return false;
+    destination[out++] = '"';
+    for (cursor = argument; *cursor; cursor++) {
+        char c = (*cursor == '"') ? '\'' : *cursor;
+        if (out + 2 >= capacity) return false;
+        destination[out++] = c;
+    }
+    if (out + 1 >= capacity) return false;
+    destination[out++] = '"';
+#else
+    /* POSIX: single quotes take everything literally; close, escape, reopen. */
+    if (out + 1 >= capacity) return false;
+    destination[out++] = '\'';
+    for (cursor = argument; *cursor; cursor++) {
+        if (*cursor == '\'') {
+            if (out + 5 >= capacity) return false;
+            destination[out++] = '\'';
+            destination[out++] = '\\';
+            destination[out++] = '\'';
+            destination[out++] = '\'';
+            continue;
+        }
+        if (out + 2 >= capacity) return false;
+        destination[out++] = *cursor;
+    }
+    if (out + 1 >= capacity) return false;
+    destination[out++] = '\'';
+#endif
+    if (out >= capacity) return false;
+    destination[out] = '\0';
+    *used = out;
+    return true;
+}
+
+static void companion_run_build(const char *poll_response)
+{
+    char ti3_path[1200], icc_path[1200], base_path[1200], tool[1024];
+    char command[8192], flags[2048], directory[1024];
+    unsigned char *ti3 = NULL;
+    size_t ti3_length = 0;
+    FILE *handle;
+    int status;
+    bool built = false;
+
+    if (!companion_tool_path("colprof", tool, sizeof(tool))) return;
+    /* Flags are produced by the Pi's builder from its own argument list. */
+    flags[0] = '\0';
+    {
+        const char *start = strstr(poll_response, "\"flags\":[");
+        if (start) {
+            const char *end = strchr(start, ']');
+            size_t length = end ? (size_t)(end - start - 9) : 0;
+            if (length && length < sizeof(flags)) {
+                memcpy(flags, start + 9, length);
+                flags[length] = '\0';
+            }
+        }
+    }
+
+    {   /* Work inside the OS temp directory; the Pi keeps the authoritative copies. */
+        const char *base = SDL_GetPrefPath("PGeneratorPlus", "build");
+        if (!base) return;
+        SDL_strlcpy(directory, base, sizeof(directory));
+        SDL_snprintf(base_path, sizeof(base_path), "%sfit", directory);
+        SDL_snprintf(ti3_path, sizeof(ti3_path), "%sfit.ti3", directory);
+        SDL_snprintf(icc_path, sizeof(icc_path), "%sfit.icc", directory);
+    }
+    remove(icc_path);
+
+    {   /* Fetch the characterization: too large for the poll response buffer. */
+        char path[512];
+        SDL_snprintf(path, sizeof(path), "/api/icc/companion/build-ti3?token=%s", app.config.token);
+        status = http_binary(&app.config, "GET", path, "text/plain", NULL, 0, &ti3, &ti3_length);
+        if (status != 200 || !ti3 || ti3_length < 32) {
+            if (ti3) SDL_free(ti3);
+            companion_report_build_error("could not fetch the characterization");
+            return;
+        }
+    }
+    handle = fopen(ti3_path, "wb");
+    if (!handle || fwrite(ti3, 1, ti3_length, handle) != ti3_length) {
+        if (handle) fclose(handle);
+        SDL_free(ti3);
+        companion_report_build_error("could not stage the characterization");
+        return;
+    }
+    fclose(handle);
+    SDL_free(ti3);
+
+    {   /* The flags arrive as a JSON array. Rebuild them as shell arguments,
+           quoting each element on its own: values routinely contain spaces
+           (-D "Living room OLED", -C "Created from user measurements by
+           PGenerator+"), and flattening the buffer would hand colprof those
+           words as stray positional arguments. */
+        char cleaned[3072];
+        size_t out = 0, index = 0;
+
+        while (flags[index]) {
+            char argument[1024];
+            size_t length = 0;
+            bool truncated = false;
+
+            while (flags[index] == ' ' || flags[index] == ',') index++;
+            if (flags[index] != '"') break;
+            index++;
+            while (flags[index] && flags[index] != '"') {
+                char c = flags[index++];
+                if (c == '\\' && flags[index]) c = flags[index++];
+                if (length + 1 >= sizeof(argument)) { truncated = true; break; }
+                argument[length++] = c;
+            }
+            if (truncated || flags[index] != '"') { out = 0; break; }
+            index++;
+            argument[length] = '\0';
+            if (!companion_quote_append(cleaned, sizeof(cleaned), &out, argument)) { out = 0; break; }
+        }
+        if (!out) {
+            companion_report_build_error("the fit arguments could not be read");
+            return;
+        }
+        cleaned[out] = '\0';
+#ifdef _WIN32
+        SDL_snprintf(command, sizeof(command), "\"\"%s\" %s -O \"%s\" \"%s\"\"",
+                     tool, cleaned, icc_path, base_path);
+#else
+        SDL_snprintf(command, sizeof(command), "\"%s\" %s -O \"%s\" \"%s\"",
+                     tool, cleaned, icc_path, base_path);
+#endif
+    }
+    queue_status("PGenerator+ Patch Companion | Building ICC profile...");
+    status = system(command);
+    (void)status;
+
+    handle = fopen(icc_path, "rb");
+    if (handle) {
+        long size;
+        fseek(handle, 0, SEEK_END);
+        size = ftell(handle);
+        fseek(handle, 0, SEEK_SET);
+        if (size > 128 && size < 96 * 1024 * 1024) {
+            unsigned char *icc = (unsigned char *)SDL_malloc((size_t)size);
+            if (icc && fread(icc, 1, (size_t)size, handle) == (size_t)size) {
+                char path[512];
+                unsigned char *reply = NULL;
+                size_t reply_length = 0;
+                SDL_snprintf(path, sizeof(path), "/api/icc/companion/build-result?token=%s", app.config.token);
+                if (http_binary(&app.config, "POST", path, "application/octet-stream",
+                                icc, (size_t)size, &reply, &reply_length) == 200)
+                    built = true;
+                if (reply) SDL_free(reply);
+            }
+            if (icc) SDL_free(icc);
+        }
+        fclose(handle);
+    }
+    remove(ti3_path);
+    remove(icc_path);
+    if (!built) companion_report_build_error("colprof did not produce a profile");
+}
+
 static void acknowledge(uint64_t sequence, bool ok, const char *message,
                         const char *renderer, bool hdr_active)
 {
@@ -2340,7 +2684,7 @@ static void poll_server(void)
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     profile_name_hex(app.selected_display, display_hex, sizeof(display_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
                  app.config.token, app.config.client, APP_VERSION,
                  reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
                  display_hex,
@@ -2349,7 +2693,8 @@ static void poll_server(void)
                  output_bits_per_color, app.correction_mode,
                  app.correction_ready ? 1 : 0,
                  app.source_r, app.source_g, app.source_b,
-                 app.submitted_r, app.submitted_g, app.submitted_b);
+                 app.submitted_r, app.submitted_g, app.submitted_b,
+                 companion_argyll_version());
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
         char title[256];
@@ -2398,6 +2743,13 @@ static void poll_server(void)
         else
             SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | No application profile correction");
         queue_status(title);
+    }
+    /* A build job pre-empts the patch path: the Pi's builder is blocked on it
+     * and no patch is pending while a fit runs. */
+    if (strstr(response, "\"status\":\"build\"")) {
+        companion_run_build(response);
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
     }
     is_alignment = strstr(response, "\"status\":\"align\"") != NULL;
     if (!is_alignment && !strstr(response, "\"status\":\"patch\"")) {
