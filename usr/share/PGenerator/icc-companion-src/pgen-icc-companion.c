@@ -629,13 +629,17 @@ static bool select_target_display(void)
         SDL_free(displays);
         return true;
     }
+    /* A saved DISPLAY= value only pre-selects the default button. It must not
+     * skip the picker on multi-monitor machines: substring matches like
+     * DISPLAY=YCT against "YCT Innoview" previously auto-selected the wrong
+     * panel and made the OLED unreachable without hand-editing the conf. */
     if (app.config.display[0]) {
         for (int index = 0; index < count; index++) {
             const char *name = SDL_GetDisplayName(displays[index]);
             if (name && (SDL_strcasecmp(name, app.config.display) == 0 ||
                          SDL_strcasestr(name, app.config.display))) {
                 selected = index + 1;
-                goto display_selected;
+                break;
             }
         }
     }
@@ -661,7 +665,7 @@ static bool select_target_display(void)
                      index + 1, (name && name[0]) ? name : "Unnamed display");
         buttons[index].buttonID = index + 1;
         buttons[index].text = labels[index];
-        if (index == 0) buttons[index].flags = SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
+        if (index + 1 == selected) buttons[index].flags = SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
     }
     SDL_zero(dialog);
     dialog.flags = SDL_MESSAGEBOX_INFORMATION;
@@ -695,9 +699,44 @@ display_selected:
          * session, and many other pure-Wayland desktops) refuse absolute
          * client-driven window placement. Treating that failure as fatal made
          * the Companion exit silently right after the monitor picker, so the
-         * pairing screen never appeared. X11/Kubuntu sessions usually allow
-         * the move and keep the historical multi-monitor behavior. */
-        if (SDL_SetWindowPosition(app.window, x, y)) SDL_SyncWindow(app.window);
+         * pairing screen never appeared. X11 sessions usually allow the move.
+         *
+         * When SetWindowPosition is rejected, recreate the window with the
+         * target display's coordinates as create-time properties. Many
+         * Wayland compositors still use those as an output placement hint,
+         * which matters for multi-monitor HDR profiling where the patch
+         * window must land on the HDR display rather than the primary. */
+        if (!SDL_SetWindowPosition(app.window, x, y)) {
+#ifndef _WIN32
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_Window *moved = NULL;
+            if (props) {
+                SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
+                                      "PGenerator+ Patch Companion");
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width);
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height);
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                                      SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
+                moved = SDL_CreateWindowWithProperties(props);
+                SDL_DestroyProperties(props);
+            }
+            if (moved) {
+                SDL_DestroyWindow(app.window);
+                app.window = moved;
+#ifdef _WIN32
+                set_windows_window_icon();
+#else
+                set_embedded_window_icon();
+#endif
+            }
+#else
+            /* Keep the existing window on Windows if the move fails. */
+#endif
+        } else {
+            SDL_SyncWindow(app.window);
+        }
         SDL_ShowWindow(app.window);
         SDL_RaiseWindow(app.window);
     }
