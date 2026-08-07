@@ -97,6 +97,10 @@ static WCHAR g_saved_monitor_path[256];
 static BOOL g_profile_has_mhc2;
 static BOOL g_associate_advanced;
 static BOOL g_auto_reapply = TRUE;
+/* Owner-drawn checkboxes do not maintain check state themselves, so the
+ * two toggles are tracked here and drawn from these. */
+static BOOL g_startup_enabled;
+static HBRUSH g_brush_input;
 static BOOL g_exiting;
 static DWORD g_last_reapply_tick;
 static UINT g_mismatch_count;
@@ -129,6 +133,9 @@ static PFN_ColorProfileRemoveDisplayAssociation p_remove_association;
 typedef struct {
     COLORREF background, card, border, text, muted, accent, accent_pressed;
     COLORREF ok, bad, pending, disabled, on_accent;
+    /* Win32 common controls keep their own light theme regardless of the
+     * window's, so the control surfaces are part of the palette too. */
+    COLORREF input, control, control_hot, selection, selection_text;
     BOOL dark;
 } PGEN_PALETTE;
 
@@ -168,8 +175,12 @@ static void load_system_palette(void) {
         g_palette.muted = RGB(168, 172, 180);
         g_palette.ok = RGB(94, 208, 143);
         g_palette.bad = RGB(255, 130, 120);
-        g_palette.disabled = RGB(128, 132, 140);
+        /* A disabled grey picked for a light background disappears on dark. */
+        g_palette.disabled = RGB(132, 136, 144);
         g_palette.accent_pressed = blend_color(g_palette.accent, RGB(255, 255, 255), 0.18);
+        g_palette.input = RGB(24, 24, 24);
+        g_palette.control = RGB(53, 53, 53);
+        g_palette.control_hot = RGB(66, 66, 66);
     } else {
         g_palette.background = RGB(246, 248, 252);
         g_palette.card = RGB(255, 255, 255);
@@ -180,7 +191,13 @@ static void load_system_palette(void) {
         g_palette.bad = RGB(190, 55, 48);
         g_palette.disabled = RGB(166, 174, 190);
         g_palette.accent_pressed = blend_color(g_palette.accent, RGB(0, 0, 0), 0.22);
+        g_palette.input = RGB(255, 255, 255);
+        g_palette.control = RGB(255, 255, 255);
+        g_palette.control_hot = RGB(240, 244, 251);
     }
+    g_palette.selection = blend_color(g_palette.input, g_palette.accent,
+                                      g_palette.dark ? 0.42 : 0.22);
+    g_palette.selection_text = g_palette.text;
     g_palette.pending = g_palette.accent;
     /* Keep the label on the primary button legible whatever the accent is. */
     g_palette.on_accent = (GetRValue(g_palette.accent) * 299 + GetGValue(g_palette.accent) * 587 +
@@ -210,6 +227,16 @@ static HFONT make_ui_font(int points, int weight) {
 
 static void apply_font(HWND control, HFONT font) {
     SendMessageW(control, WM_SETFONT, (WPARAM)font, TRUE);
+}
+
+/* Every surface in this window is drawn from the palette, but the scrollbars
+ * inside the list and the combo drop-down belong to the control and cannot be
+ * owner-drawn. DarkMode_Explorer is the theme class that renders those dark.
+ * SetWindowTheme is documented and simply leaves the control on its default
+ * theme when the class name is not recognised, so an older or newer Windows
+ * loses the dark scrollbar and nothing else. */
+static void apply_control_theme(HWND control) {
+    SetWindowTheme(control, g_palette.dark ? L"DarkMode_Explorer" : L"Explorer", NULL);
 }
 
 static void message_error(HWND owner, const WCHAR *action, DWORD code) {
@@ -1080,7 +1107,7 @@ static void clear_display_default(void) {
                                   display->source_name, CPT_ICC, CPST_NONE, 0, NULL);
     }
     g_auto_reapply = FALSE;
-    SendMessageW(GetDlgItem(g_window, ID_AUTOREAPPLY), BM_SETCHECK, BST_UNCHECKED, 0);
+    InvalidateRect(GetDlgItem(g_window, ID_AUTOREAPPLY), NULL, TRUE);
     save_settings();
     swprintf(result, 512,
              L"Removed %ls as the per-user %ls display default. Windows will use the next available system or display profile.",
@@ -1314,10 +1341,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             px(28), px(112), px(120), px(20), hwnd, NULL, g_instance, NULL);
         apply_font(ctl, g_font_label);
         g_display = CreateWindowW(WC_COMBOBOXW, L"", WS_CHILD | WS_VISIBLE |
-                                  CBS_DROPDOWNLIST | WS_VSCROLL, px(28), px(140), px(644), px(280),
+                                  CBS_DROPDOWNLIST | WS_VSCROLL |
+                                  CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                                  px(28), px(140), px(644), px(280),
                                   hwnd, (HMENU)ID_DISPLAY, g_instance, NULL);
         apply_font(g_display, g_font_normal);
-        SetWindowTheme(g_display, L"Explorer", NULL);
+        apply_control_theme(g_display);
         ctl = CreateWindowW(L"STATIC", L"ICC PROFILE", WS_CHILD | WS_VISIBLE,
                             px(28), px(192), px(140), px(20), hwnd, NULL, g_instance, NULL);
         apply_font(ctl, g_font_label);
@@ -1326,41 +1355,39 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     px(28), px(220), px(520), px(34), hwnd,
                                     (HMENU)ID_PROFILE, g_instance, NULL);
         apply_font(g_profile, g_font_normal);
-        SetWindowTheme(g_profile, L"Explorer", NULL);
-        g_browse = CreateWindowW(L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE,
+        apply_control_theme(g_profile);
+        g_browse = CreateWindowW(L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                  px(560), px(218), px(112), px(38), hwnd,
                                  (HMENU)ID_BROWSE, g_instance, NULL);
         apply_font(g_browse, g_font_button);
-        SetWindowTheme(g_browse, L"Explorer", NULL);
+        apply_control_theme(g_browse);
         ctl = CreateWindowW(L"BUTTON", L"Automatically restore the selected profile",
-                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, px(28), px(276), px(390), px(24),
+                            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, px(28), px(276), px(390), px(24),
                             hwnd, (HMENU)ID_AUTOREAPPLY, g_instance, NULL);
         apply_font(ctl, g_font_normal);
-        SetWindowTheme(ctl, L"Explorer", NULL);
-        SendMessageW(ctl, BM_SETCHECK, g_auto_reapply ? BST_CHECKED : BST_UNCHECKED, 0);
         ctl = CreateWindowW(L"BUTTON", L"Start with Windows", WS_CHILD | WS_VISIBLE |
-                            BS_AUTOCHECKBOX, px(510), px(276), px(162), px(24), hwnd,
+                            BS_OWNERDRAW, px(510), px(276), px(162), px(24), hwnd,
                             (HMENU)ID_STARTUP, g_instance, NULL);
         apply_font(ctl, g_font_normal);
-        SetWindowTheme(ctl, L"Explorer", NULL);
-        SendMessageW(ctl, BM_SETCHECK, startup_enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+        g_startup_enabled = startup_enabled();
         ctl = CreateWindowW(L"STATIC", L"PROFILES FOR SELECTED DISPLAY",
                             WS_CHILD | WS_VISIBLE, px(28), px(316), px(260), px(20),
                             hwnd, NULL, g_instance, NULL);
         apply_font(ctl, g_font_label);
         g_display_profiles = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                                               WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-                                              LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                                              LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+                                              LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
                                               px(28), px(342), px(474), px(112), hwnd,
                                               (HMENU)ID_DISPLAY_PROFILES, g_instance, NULL);
         apply_font(g_display_profiles, g_font_normal);
-        SetWindowTheme(g_display_profiles, L"Explorer", NULL);
+        apply_control_theme(g_display_profiles);
         g_set_default = CreateWindowW(L"BUTTON", L"Set as default",
-                                      WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                                      WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
                                       px(512), px(342), px(160), px(40), hwnd,
                                       (HMENU)ID_SET_DEFAULT, g_instance, NULL);
         apply_font(g_set_default, g_font_button);
-        SetWindowTheme(g_set_default, L"Explorer", NULL);
+        apply_control_theme(g_set_default);
         g_status_heading = CreateWindowW(L"STATIC", L"ATTENTION REQUIRED",
                                          WS_CHILD | WS_VISIBLE, px(58), px(497), px(520), px(20),
                                          hwnd, NULL, g_instance, NULL);
@@ -1369,22 +1396,23 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                    WS_CHILD | WS_VISIBLE | SS_LEFT, px(58), px(524), px(570), px(62),
                                    hwnd, (HMENU)ID_STATUS, g_instance, NULL);
         apply_font(g_status, g_font_normal);
-        ctl = CreateWindowW(L"BUTTON", L"Windows color settings", WS_CHILD | WS_VISIBLE,
+        ctl = CreateWindowW(L"BUTTON", L"Windows color settings",
+                            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                             px(28), px(614), px(190), px(40), hwnd,
                             (HMENU)ID_SETTINGS, g_instance, NULL);
         apply_font(ctl, g_font_button);
-        SetWindowTheme(ctl, L"Explorer", NULL);
+        apply_control_theme(ctl);
         g_clear_default = CreateWindowW(L"BUTTON", L"Clear display default",
-                                        WS_CHILD | WS_VISIBLE,
+                                        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                         px(228), px(614), px(168), px(40), hwnd,
                                         (HMENU)ID_CLEAR_DEFAULT, g_instance, NULL);
         apply_font(g_clear_default, g_font_button);
         SetWindowTheme(g_clear_default, L"Explorer", NULL);
-        ctl = CreateWindowW(L"BUTTON", L"Hide to tray", WS_CHILD | WS_VISIBLE,
+        ctl = CreateWindowW(L"BUTTON", L"Hide to tray", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                             px(408), px(614), px(126), px(40), hwnd,
                             (HMENU)ID_HIDE, g_instance, NULL);
         apply_font(ctl, g_font_button);
-        SetWindowTheme(ctl, L"Explorer", NULL);
+        apply_control_theme(ctl);
         g_apply = CreateWindowW(L"BUTTON", L"Install and apply", WS_CHILD | WS_VISIBLE |
                                 BS_OWNERDRAW, px(544), px(614), px(128), px(40), hwnd,
                                 (HMENU)ID_APPLY, g_instance, NULL);
@@ -1451,9 +1479,144 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_CTLCOLORBTN:
         SetBkMode((HDC)wp, TRANSPARENT);
+        SetTextColor((HDC)wp, g_palette.text);
         return (LRESULT)g_brush_background;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        /* Cached brush: creating one per message would leak a GDI object on
+         * every repaint. It is rebuilt on a theme change and freed on destroy. */
+        HDC dc = (HDC)wp;
+        SetTextColor(dc, g_palette.text);
+        SetBkColor(dc, g_palette.input);
+        if (!g_brush_input) g_brush_input = CreateSolidBrush(g_palette.input);
+        return (LRESULT)g_brush_input;
+    }
+    case WM_MEASUREITEM: {
+        MEASUREITEMSTRUCT *measure = (MEASUREITEMSTRUCT *)lp;
+        if (measure && (measure->CtlID == ID_DISPLAY_PROFILES || measure->CtlID == ID_DISPLAY)) {
+            measure->itemHeight = (UINT)px(22);
+            return TRUE;
+        }
+        break;
+    }
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
+        /* The list and the combo are owner-drawn because their selection bar is
+         * otherwise system blue on system white, which is unreadable inside a
+         * dark panel. */
+        if (item && (item->CtlID == ID_DISPLAY_PROFILES || item->CtlID == ID_DISPLAY) &&
+            item->CtlType != ODT_BUTTON) {
+            WCHAR text[MAX_PATH + 96];
+            BOOL selected = (item->itemState & ODS_SELECTED) != 0;
+            HBRUSH back = CreateSolidBrush(selected ? g_palette.selection : g_palette.input);
+            RECT text_rect = item->rcItem;
+            if ((int)item->itemID < 0) {
+                DeleteObject(back);
+                break;
+            }
+            FillRect(item->hDC, &item->rcItem, back);
+            DeleteObject(back);
+            text[0] = L'\0';
+            if (item->CtlType == ODT_COMBOBOX)
+                SendMessageW(item->hwndItem, CB_GETLBTEXT, item->itemID, (LPARAM)text);
+            else
+                SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, (LPARAM)text);
+            SetBkMode(item->hDC, TRANSPARENT);
+            SetTextColor(item->hDC, (item->itemState & ODS_DISABLED) ? g_palette.disabled
+                                    : (selected ? g_palette.selection_text : g_palette.text));
+            SelectObject(item->hDC, g_font_normal);
+            text_rect.left += px(6);
+            text_rect.right -= px(6);
+            DrawTextW(item->hDC, text, -1, &text_rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &item->rcItem);
+            return TRUE;
+        }
+        /* Checkboxes are BUTTON-class windows, so WM_CTLCOLORSTATIC never
+         * reaches their label and a dark brush cannot fix the text colour.
+         * They are drawn here from the palette instead of opting the process
+         * into dark mode through the undocumented uxtheme ordinals, which vary
+         * by Windows build and cannot be tested here. Owner-drawing means this
+         * control no longer keeps its own check state, so the two toggles are
+         * tracked in g_auto_reapply and g_startup_enabled. */
+        if (item && item->CtlType == ODT_BUTTON &&
+            (item->CtlID == ID_AUTOREAPPLY || item->CtlID == ID_STARTUP)) {
+            BOOL checked = item->CtlID == ID_AUTOREAPPLY ? g_auto_reapply : g_startup_enabled;
+            BOOL disabled = (item->itemState & ODS_DISABLED) != 0;
+            int side = px(15);
+            RECT box = item->rcItem;
+            RECT label = item->rcItem;
+            WCHAR text[128];
+            HBRUSH face = CreateSolidBrush(checked && !disabled ? g_palette.accent
+                                                                : g_palette.input);
+            HPEN pen = CreatePen(PS_SOLID, 1, disabled ? g_palette.disabled :
+                                 (checked ? g_palette.accent : g_palette.border));
+            HGDIOBJ old_brush, old_pen;
+            box.top += (box.bottom - box.top - side) / 2;
+            box.bottom = box.top + side;
+            box.right = box.left + side;
+            FillRect(item->hDC, &item->rcItem, g_brush_background);
+            old_brush = SelectObject(item->hDC, face);
+            old_pen = SelectObject(item->hDC, pen);
+            Rectangle(item->hDC, box.left, box.top, box.right, box.bottom);
+            SelectObject(item->hDC, old_brush);
+            SelectObject(item->hDC, old_pen);
+            DeleteObject(face);
+            DeleteObject(pen);
+            if (checked) {
+                /* A tick drawn as two strokes, so no font or glyph is needed. */
+                HPEN tick = CreatePen(PS_SOLID, px(2),
+                                      disabled ? g_palette.disabled : g_palette.on_accent);
+                HGDIOBJ old_tick = SelectObject(item->hDC, tick);
+                MoveToEx(item->hDC, box.left + px(3), box.top + px(7), NULL);
+                LineTo(item->hDC, box.left + px(6), box.bottom - px(4));
+                LineTo(item->hDC, box.right - px(3), box.top + px(4));
+                SelectObject(item->hDC, old_tick);
+                DeleteObject(tick);
+            }
+            GetWindowTextW(item->hwndItem, text, 128);
+            label.left = box.right + px(8);
+            SetBkMode(item->hDC, TRANSPARENT);
+            SetTextColor(item->hDC, disabled ? g_palette.disabled : g_palette.text);
+            SelectObject(item->hDC, g_font_normal);
+            DrawTextW(item->hDC, text, -1, &label,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &item->rcItem);
+            return TRUE;
+        }
+        /* Secondary push buttons. Win32 leaves these light in a dark window
+         * even with a dark theme class applied, so they are drawn to match the
+         * primary action instead of being left as white rectangles. */
+        if (item && item->CtlType == ODT_BUTTON && item->CtlID != ID_APPLY) {
+            BOOL disabled = (item->itemState & ODS_DISABLED) != 0;
+            BOOL pressed = (item->itemState & ODS_SELECTED) != 0;
+            COLORREF fill = disabled ? blend_color(g_palette.control, g_palette.background, 0.55)
+                                     : (pressed ? g_palette.control_hot : g_palette.control);
+            HBRUSH brush = CreateSolidBrush(fill);
+            HPEN pen = CreatePen(PS_SOLID, 1, g_palette.border);
+            HGDIOBJ old_brush = SelectObject(item->hDC, brush);
+            HGDIOBJ old_pen = SelectObject(item->hDC, pen);
+            WCHAR text[64];
+            FillRect(item->hDC, &item->rcItem, g_brush_background);
+            RoundRect(item->hDC, item->rcItem.left, item->rcItem.top,
+                      item->rcItem.right, item->rcItem.bottom, px(10), px(10));
+            SelectObject(item->hDC, old_brush);
+            SelectObject(item->hDC, old_pen);
+            DeleteObject(brush);
+            DeleteObject(pen);
+            GetWindowTextW(item->hwndItem, text, 64);
+            SetBkMode(item->hDC, TRANSPARENT);
+            SetTextColor(item->hDC, disabled ? g_palette.disabled : g_palette.text);
+            SelectObject(item->hDC, g_font_button);
+            DrawTextW(item->hDC, text, -1, &item->rcItem,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (item->itemState & ODS_FOCUS) {
+                RECT focus = item->rcItem;
+                InflateRect(&focus, -px(4), -px(4));
+                DrawFocusRect(item->hDC, &focus);
+            }
+            return TRUE;
+        }
         if (item && item->CtlID == ID_APPLY) {
             COLORREF color = (item->itemState & ODS_DISABLED) ? g_palette.disabled :
                              ((item->itemState & ODS_SELECTED) ? g_palette.accent_pressed
@@ -1509,18 +1672,20 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case ID_AUTOREAPPLY:
-            g_auto_reapply = SendMessageW(GetDlgItem(hwnd, ID_AUTOREAPPLY), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            g_auto_reapply = !g_auto_reapply;
+            InvalidateRect(GetDlgItem(hwnd, ID_AUTOREAPPLY), NULL, TRUE);
             save_settings(); break;
         case ID_STARTUP:
-            if (!set_startup(SendMessageW(GetDlgItem(hwnd, ID_STARTUP), BM_GETCHECK, 0, 0) == BST_CHECKED))
+            g_startup_enabled = !g_startup_enabled;
+            InvalidateRect(GetDlgItem(hwnd, ID_STARTUP), NULL, TRUE);
+            if (!set_startup(g_startup_enabled))
                 message_error(hwnd, L"Updating Windows startup", GetLastError());
             break;
         case ID_TRAY_SHOW: show_window(); break;
         case ID_TRAY_APPLY: start_apply_profile(); break;
         case ID_TRAY_AUTOREAPPLY:
             g_auto_reapply = !g_auto_reapply;
-            SendMessageW(GetDlgItem(hwnd, ID_AUTOREAPPLY), BM_SETCHECK,
-                         g_auto_reapply ? BST_CHECKED : BST_UNCHECKED, 0);
+            InvalidateRect(GetDlgItem(hwnd, ID_AUTOREAPPLY), NULL, TRUE);
             save_settings(); break;
         case ID_TRAY_EXIT: g_exiting = TRUE; DestroyWindow(hwnd); break;
         }
@@ -1564,10 +1729,15 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_brush_card = CreateSolidBrush(g_palette.card);
             if (g_icon_ok) DestroyIcon(g_icon_ok);
             if (g_icon_bad) DestroyIcon(g_icon_bad);
+            if (g_brush_input) { DeleteObject(g_brush_input); g_brush_input = NULL; }
             g_icon_ok = make_status_icon(g_palette.ok);
             g_icon_bad = make_status_icon(g_palette.bad);
             g_tray.hIcon = g_status_ok ? g_icon_ok : g_icon_bad;
             Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+            /* The scrollbar theme class differs between light and dark. */
+            apply_control_theme(g_display);
+            apply_control_theme(g_profile);
+            apply_control_theme(g_display_profiles);
             InvalidateRect(hwnd, NULL, TRUE);
         }
         refresh_display_profiles(); verify_profile(TRUE); return 0;
@@ -1588,6 +1758,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DeleteObject(g_font_button);
         DeleteObject(g_brush_background);
         DeleteObject(g_brush_card);
+        if (g_brush_input) DeleteObject(g_brush_input);
         PostQuitMessage(0);
         return 0;
     }
