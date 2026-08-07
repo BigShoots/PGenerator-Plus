@@ -2,7 +2,7 @@
  *
  * Generated from the DejaVu fonts. Do not edit by hand; regenerate with:
  *
- *     python3 usr/share/PGenerator/icc-companion-src/make-font-header.py
+ *     python3 make-font-header.py
  *
  * Each face is an alpha-only atlas laid out as one row of tightly cropped
  * glyphs for ASCII 32..126. Metrics are in atlas texels.

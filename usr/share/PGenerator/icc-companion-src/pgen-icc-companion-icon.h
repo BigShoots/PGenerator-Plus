@@ -1,10 +1,10 @@
 /* PGenerator+ Patch Companion window icon.
  *
- * Generated from usr/share/PGenerator/favicon.ico, the same artwork the
- * Windows resource script compiles in as icon resource 1. Do not edit by
- * hand; regenerate with:
+ * Generated from favicon.ico, the same artwork the Windows resource
+ * script compiles in as icon resource 1. Do not edit by hand;
+ * regenerate with:
  *
- *     python3 usr/share/PGenerator/icc-companion-src/make-icon-header.py
+ *     python3 make-icon-header.py
  */
 
 #ifndef PGEN_ICC_COMPANION_ICON_H

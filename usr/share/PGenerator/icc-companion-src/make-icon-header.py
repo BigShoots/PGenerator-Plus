@@ -6,9 +6,9 @@ Windows takes its icon from pgen-icc-companion.rc, which points at
 small zip that must not gain a runtime file dependency, so the same artwork is
 compiled in as a raw RGBA byte array instead.
 
-Regenerate after changing usr/share/PGenerator/favicon.ico:
+Regenerate after changing the shipped favicon.ico:
 
-    python3 usr/share/PGenerator/icc-companion-src/make-icon-header.py
+    python3 make-icon-header.py
 
 Requires Pillow, which is only needed to regenerate the header, never to build
 the Companion.
@@ -21,7 +21,14 @@ from PIL import Image
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.normpath(os.path.join(HERE, os.pardir, "favicon.ico"))
+# The artwork sits one level above this script in the PGenerator tree and at the
+# top of the standalone tools repository, which is the same relative place. Beside
+# the script is accepted too so the generator does not care how it was checked out.
+CANDIDATES = (
+    os.path.normpath(os.path.join(HERE, os.pardir, "favicon.ico")),
+    os.path.join(HERE, "favicon.ico"),
+)
+SOURCE = next((path for path in CANDIDATES if os.path.isfile(path)), CANDIDATES[0])
 TARGET = os.path.join(HERE, "pgen-icc-companion-icon.h")
 
 
@@ -43,11 +50,11 @@ def main():
         handle.write(
             "/* PGenerator+ Patch Companion window icon.\n"
             " *\n"
-            " * Generated from usr/share/PGenerator/favicon.ico, the same artwork the\n"
-            " * Windows resource script compiles in as icon resource 1. Do not edit by\n"
-            " * hand; regenerate with:\n"
+            " * Generated from favicon.ico, the same artwork the Windows resource\n"
+            " * script compiles in as icon resource 1. Do not edit by hand;\n"
+            " * regenerate with:\n"
             " *\n"
-            " *     python3 usr/share/PGenerator/icc-companion-src/make-icon-header.py\n"
+            " *     python3 make-icon-header.py\n"
             " */\n"
             "\n"
             "#ifndef PGEN_ICC_COMPANION_ICON_H\n"

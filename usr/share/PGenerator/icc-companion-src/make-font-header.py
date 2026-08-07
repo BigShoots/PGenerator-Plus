@@ -14,12 +14,13 @@ the atlas pixel size is never a second scale factor.
 
 Regenerate with:
 
-    python3 usr/share/PGenerator/icc-companion-src/make-font-header.py
+    python3 make-font-header.py
 
 Requires Pillow and the DejaVu fonts, both only needed to regenerate the
 header, never to build the loader. DejaVu is used because its licence (the
 Bitstream Vera licence) explicitly permits redistribution; the licence ships
-alongside the binary.
+alongside the binary. Set PGEN_FONT_DIR if the fonts are somewhere this script
+does not already look.
 """
 
 import os
@@ -30,7 +31,17 @@ from PIL import Image, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = os.path.join(HERE, "pgen-ui-font.h")
-FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+# Distributions disagree about where DejaVu lives; Debian and Fedora between them
+# cover nearly every host this is regenerated on.
+FONT_DIRS = (
+    os.environ.get("PGEN_FONT_DIR", ""),
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu",
+    "/usr/share/fonts/dejavu-sans-fonts",
+)
+FONT_DIR = next((path for path in FONT_DIRS
+                 if path and os.path.isfile(os.path.join(path, "DejaVuSans.ttf"))),
+                FONT_DIRS[1])
 
 # name, file, em height of the atlas in texels.
 FACES = (
@@ -94,7 +105,7 @@ def main():
         " *\n"
         " * Generated from the DejaVu fonts. Do not edit by hand; regenerate with:\n"
         " *\n"
-        " *     python3 usr/share/PGenerator/icc-companion-src/make-font-header.py\n"
+        " *     python3 make-font-header.py\n"
         " *\n"
         " * Each face is an alpha-only atlas laid out as one row of tightly cropped\n"
         " * glyphs for ASCII %d..%d. Metrics are in atlas texels.\n"
