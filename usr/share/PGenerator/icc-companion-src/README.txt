@@ -1,20 +1,39 @@
-PGenerator+ ICC Tools for Windows
-=================================
+PGenerator+ ICC Tools
+=====================
 
-Windows installer: run the downloaded EXE. It contains its PGenerator+ pairing
-information and installs both the patch companion and the tray profile loader.
-Start Menu shortcuts and an uninstaller are included.
+Windows installer: run the downloaded EXE. It installs both the patch
+companion and the tray profile loader, with Start Menu shortcuts and an
+uninstaller.
 
-Portable Windows patch companion: extract the ZIP and keep
-PGenICCCompanion.conf beside PGeneratorPlusPatchCompanion.exe. This package does not
-contain the Profile Loader.
+Portable packages: extract the ZIP and run the programs from where they land.
+Nothing is installed and nothing is written outside that folder.
+
+Pairing
+=======
+
+A copy downloaded from a PGenerator+ arrives already paired with that unit and
+needs nothing from you.
+
+A copy downloaded from the GitHub releases page is the same file for everyone,
+so it pairs itself the first time it runs:
+
+1. It finds your PGenerator+ by resolving the name pgenerator.local.
+2. It shows a six-digit code and waits. The same request and code appear in
+   the PGenerator+ WebUI beside the Patch Companion status.
+3. Approve it there, once. The companion saves the result and never asks
+   again.
+
+If the name cannot be resolved -- more than one PGenerator+ on the network, a
+routed network, or mDNS blocked -- give the address explicitly instead, either
+as a line reading SERVER=http://<address> in PGenICCCompanion.conf beside the
+executable, or by starting the companion with --server=http://<address>. A
+SERVER set that way always wins over discovery.
 
 PGenerator+ Patch Companion
 ==========================
 
-This package is paired with the PGenerator+ from which it was downloaded.
-
-1. Keep PGenICCCompanion.conf beside the executable.
+1. If a PGenICCCompanion.conf came with this package, keep it beside the
+   executable.
 2. Enable HDR in the operating system before starting an HDR profile.
 3. Run PGeneratorPlusPatchCompanion.exe. It initially opens in a movable, resizable window.
    Use the ICC Profile workspace to switch it live between a resizable window
@@ -51,8 +70,7 @@ active while using either application-managed mode, because that would apply
 two corrections to the measurement patches.
 
 Windows may show a SmartScreen warning because this build is not code-signed.
-The application communicates only with the PGenerator+ address embedded in the
-configuration file.
+The application communicates only with the one PGenerator+ it is paired with.
 
 PGenerator+ Profile Loader (Linux)
 ==================================
@@ -82,8 +100,8 @@ An HDR profile only describes the display in HDR mode, so enable HDR for that
 display before applying one; the loader says so if the two do not match. The
 window follows the desktop's colour scheme.
 
-The Windows package also contains PGenProfileLoader.exe. It is a separate tray
+The Windows packages also contain PGenProfileLoader.exe. It is a separate tray
 application for installing, applying, and continuously verifying a display
 profile. See PROFILE-LOADER-README.txt for setup and status details. The
-profile loader does not need PGenICCCompanion.conf and can remain running when
-the patch generator is closed.
+profile loader needs no pairing at all and can remain running when the patch
+generator is closed.
