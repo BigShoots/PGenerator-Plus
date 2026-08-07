@@ -178,6 +178,7 @@ typedef struct {
     bool status_dirty;
     char renderer_name[64];
     char selected_display[192];
+    SDL_DisplayID selected_display_id;
     double source_r, source_g, source_b;
     double submitted_r, submitted_g, submitted_b;
     bool correction_ready;
@@ -626,6 +627,7 @@ static bool select_target_display(void)
         const char *name = SDL_GetDisplayName(displays[0]);
         SDL_strlcpy(app.selected_display, name ? name : "Unnamed display",
                     sizeof(app.selected_display));
+        app.selected_display_id = displays[0];
         SDL_free(displays);
         return true;
     }
@@ -681,40 +683,29 @@ static bool select_target_display(void)
 display_selected:
     if (selected < 1 || selected > count) selected = 1;
     {
-        const char *name = SDL_GetDisplayName(displays[selected - 1]);
+        SDL_DisplayID target = displays[selected - 1];
+        const char *name = SDL_GetDisplayName(target);
+        int width = 1280, height = 720;
         SDL_strlcpy(app.selected_display, name ? name : "Unnamed display",
                     sizeof(app.selected_display));
-    }
-    if (!SDL_GetDisplayUsableBounds(displays[selected - 1], &bounds)) {
-        ok = false;
-        goto done;
-    }
-    {
-        int width = 1280, height = 720;
-        int x, y;
+        app.selected_display_id = target;
         SDL_GetWindowSize(app.window, &width, &height);
-        x = bounds.x + (bounds.w - width) / 2;
-        y = bounds.y + (bounds.h - height) / 2;
-        /* Best-effort only. Wayland compositors (Fedora KDE Plasma 6.x default
-         * session, and many other pure-Wayland desktops) refuse absolute
-         * client-driven window placement. Treating that failure as fatal made
-         * the Companion exit silently right after the monitor picker, so the
-         * pairing screen never appeared. X11 sessions usually allow the move.
-         *
-         * When SetWindowPosition is rejected, recreate the window with the
-         * target display's coordinates as create-time properties. Many
-         * Wayland compositors still use those as an output placement hint,
-         * which matters for multi-monitor HDR profiling where the patch
-         * window must land on the HDR display rather than the primary. */
-        if (!SDL_SetWindowPosition(app.window, x, y)) {
 #ifndef _WIN32
+        /* Wayland ignores most SetWindowPosition calls. The reliable way to
+         * land on a chosen output is to recreate the window with
+         * SDL_WINDOWPOS_CENTERED_DISPLAY and then enter borderless fullscreen
+         * for that display. Otherwise the picker can say "Innoview" while the
+         * surface stays on the MSI primary and HDR/series fail. */
+        {
             SDL_PropertiesID props = SDL_CreateProperties();
             SDL_Window *moved = NULL;
             if (props) {
                 SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
                                       "PGenerator+ Patch Companion");
-                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
-                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER,
+                                      SDL_WINDOWPOS_CENTERED_DISPLAY(target));
+                SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER,
+                                      SDL_WINDOWPOS_CENTERED_DISPLAY(target));
                 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width);
                 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height);
                 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
@@ -725,18 +716,28 @@ display_selected:
             if (moved) {
                 SDL_DestroyWindow(app.window);
                 app.window = moved;
-#ifdef _WIN32
-                set_windows_window_icon();
-#else
                 set_embedded_window_icon();
-#endif
+            } else if (SDL_GetDisplayUsableBounds(target, &bounds)) {
+                int x = bounds.x + (bounds.w - width) / 2;
+                int y = bounds.y + (bounds.h - height) / 2;
+                (void)SDL_SetWindowPosition(app.window, x, y);
             }
-#else
-            /* Keep the existing window on Windows if the move fails. */
-#endif
-        } else {
-            SDL_SyncWindow(app.window);
+            /* Borderless desktop fullscreen on the target output is the most
+             * reliable Wayland multi-monitor placement + HDR enable path. */
+            (void)SDL_SetWindowFullscreenMode(app.window, NULL);
+            if (SDL_SetWindowFullscreen(app.window, true)) {
+                app.fullscreen = true;
+                SDL_SyncWindow(app.window);
+                SDL_PumpEvents();
+            }
         }
+#else
+        if (SDL_GetDisplayUsableBounds(target, &bounds)) {
+            int x = bounds.x + (bounds.w - width) / 2;
+            int y = bounds.y + (bounds.h - height) / 2;
+            if (SDL_SetWindowPosition(app.window, x, y)) SDL_SyncWindow(app.window);
+        }
+#endif
         SDL_ShowWindow(app.window);
         SDL_RaiseWindow(app.window);
     }
