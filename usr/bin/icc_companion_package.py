@@ -19,14 +19,14 @@ PLATFORMS = {
         "kind": "installer",
     },
     "windows-portable-x64": {
-        "filename": "PGenerator-ICC-Companion-Portable-Windows-x64.zip",
+        "filename": "PGeneratorPlus-ICC-Tools-Portable-Windows-x64.zip",
         "directory": "windows-x64",
         "files": ("PGeneratorPlusPatchCompanion.exe", "SDL3.dll"),
         "paired": True,
         "kind": "archive",
     },
     "linux-x64": {
-        "filename": "PGenerator-ICC-Companion-Linux-x64.zip",
+        "filename": "PGeneratorPlus-ICC-Tools-Linux-x64.zip",
         "directory": "linux-x64",
         # colprof/profcheck let the Companion run the profile fit locally: a
         # high-quality cLUT fit is about ten minutes on a Pi 4 and under a

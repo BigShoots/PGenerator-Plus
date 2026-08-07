@@ -1125,8 +1125,8 @@ function meterIccDownloadCompanion(platform){
 // built from that same packager output can be uploaded to GitHub unchanged.
 const METER_ICC_GITHUB_RELEASE_ASSETS={
  'windows-x64':'PGeneratorPlus-ICC-Tools-Windows-x64.exe',
- 'windows-portable-x64':'PGenerator-ICC-Companion-Portable-Windows-x64.zip',
- 'linux-x64':'PGenerator-ICC-Companion-Linux-x64.zip'
+ 'windows-portable-x64':'PGeneratorPlus-ICC-Tools-Portable-Windows-x64.zip',
+ 'linux-x64':'PGeneratorPlus-ICC-Tools-Linux-x64.zip'
 };
 
 // GitHub redirects "latest/download/<asset>" to whichever release is newest,
