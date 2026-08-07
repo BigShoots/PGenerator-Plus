@@ -1148,12 +1148,12 @@ function meterIccPreferredDownloadPlatform(){
 // answer changes the moment a Companion connects or goes away.
 function meterIccApplyDownloadRecommendation(){
  const preferred=meterIccPreferredDownloadPlatform();
- document.querySelectorAll('[data-icc-download]').forEach(function(button){
-  const match=button.getAttribute('data-icc-download')===preferred;
-  button.classList.toggle('btn-primary',match);
-  button.classList.toggle('btn-secondary',!match);
-  button.title=match?'Recommended for this computer':'';
- });
+ // The release page lists every platform, so rather than choosing for the
+ // visitor, name the file they want. Runs on every status poll because the
+ // answer changes the moment a Companion connects or goes away.
+ const labels={'windows-x64':'the Windows installer','windows-portable-x64':'the Windows portable zip','linux-x64':'the KDE/Linux zip'};
+ const hint=document.getElementById('meterIccReleaseHint');
+ if(hint) hint.textContent=labels[preferred]?('Look for '+labels[preferred]+'.'):'';
 }
 
 // GitHub redirects "latest/download/<asset>" to whichever release is newest,
@@ -1162,10 +1162,14 @@ function meterIccApplyDownloadRecommendation(){
 // a new tab because it leaves the WebUI (and any running measurement) in
 // place. This copy is unpaired: it discovers this PGenerator+ by resolving
 // pgenerator.local and waits for approval through the pairing prompt below.
-function meterIccOpenGithubRelease(platform){
- const asset=METER_ICC_GITHUB_RELEASE_ASSETS[platform];
- if(!asset) return;
- window.open('https://github.com/BigShoots/Pgenerator_Plus_ICC_Tools/releases/latest/download/'+asset,'_blank','noopener');
+// Opens the release PAGE, not an asset. Chrome and Edge judge a download by
+// the origin of the page that started it, so a direct asset link from this
+// plain-http WebUI is flagged insecure however the asset itself is served.
+// Navigating to GitHub first makes the download originate there, over https,
+// and the browser is satisfied. It also means one button instead of three
+// guesses at which platform the visitor wants.
+function meterIccOpenGithubRelease(){
+ window.open('https://github.com/BigShoots/Pgenerator_Plus_ICC_Tools/releases/latest','_blank','noopener');
 }
 
 let meterCalibrationCompanionTimer=null;

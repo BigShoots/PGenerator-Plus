@@ -13229,7 +13229,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile cLUT or matrix/TRC fallback.</div>
-      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-secondary" data-icc-download="windows-x64" onclick="meterIccOpenGithubRelease('windows-x64')">Windows Installer</button><button type="button" class="btn btn-sm btn-secondary" data-icc-download="windows-portable-x64" onclick="meterIccOpenGithubRelease('windows-portable-x64')">Windows Portable</button><button type="button" class="btn btn-sm btn-secondary" data-icc-download="linux-x64" onclick="meterIccOpenGithubRelease('linux-x64')">KDE/Linux</button><span class="meter-help-tip" title="Opens the latest release on GitHub in a new tab. That copy is unpaired -- it finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, so the browser may warn it is insecure." aria-label="Patch Companion download help">?</span></div>
+      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Get the Patch Companion</button><span class="meter-companion-downloads-hint" id="meterIccReleaseHint"></span><span class="meter-help-tip" title="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired -- the Companion finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, which the browser flags as an insecure download." aria-label="Patch Companion download help">?</span></div>
       <div class="meter-companion-downloads-secondary">Already-paired copy from this PGenerator: <a href="#" onclick="meterIccDownloadCompanion('windows-x64');return false;">Windows Installer</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('windows-portable-x64');return false;">Windows Portable</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('linux-x64');return false;">KDE/Linux</a></div>
      </div></span>
     </div>
@@ -17815,22 +17815,33 @@ function pgSyncDesktopPanels(){
  });
 }
 function pgSyncMeterDesktopWorkspaceAvailability(){
- const nav=document.querySelector('.desktop-nav-btn[data-workspace-target="3d-lut"]');
- const panel=document.getElementById('meter3dLutWorkspaceCard');
- const desktop=document.body.classList.contains('layout-desktop');
- if(!desktop){
-  if(nav){ nav.hidden=false; nav.removeAttribute('aria-hidden'); }
-  if(panel) panel.style.display='';
-  return;
- }
  const available=!!meterDetected;
- if(nav){ nav.hidden=!available; nav.setAttribute('aria-hidden',available?'false':'true'); }
- if(panel) panel.style.display=available?'':'none';
- if(!available&&pgDesktopWorkspace==='3d-lut'){
-  pgSelectDesktopWorkspace('calibration');
- }else{
-  pgSyncDesktopPanels();
- }
+ const desktop=document.body.classList.contains('layout-desktop');
+ // Both of these workspaces exist only to drive a meter, so neither the nav
+ // entry nor the panel means anything without one. The series tab buttons are
+ // gated in every layout, not just desktop -- they are how tablet mode reaches
+ // the same screens, and they were still offering them with no meter attached.
+ const workspaces=[
+  {target:'3d-lut',panel:'meter3dLutWorkspaceCard',tab:'3dlut'},
+  {target:'icc-profile',panel:'meterIccWorkspaceCard',tab:'icc'}
+ ];
+ let strandedOn='';
+ workspaces.forEach(function(entry){
+  const nav=document.querySelector('.desktop-nav-btn[data-workspace-target="'+entry.target+'"]');
+  const panel=document.getElementById(entry.panel);
+  const show=available||!desktop;
+  if(nav){ nav.hidden=!show; nav.setAttribute('aria-hidden',show?'false':'true'); }
+  if(panel) panel.style.display=(available||!desktop)?'':'none';
+  document.querySelectorAll('[data-series-tab="'+entry.tab+'"]').forEach(function(button){
+   button.hidden=!available;
+   button.setAttribute('aria-hidden',available?'false':'true');
+  });
+  if(desktop&&!available&&pgDesktopWorkspace===entry.target) strandedOn=entry.target;
+ });
+ if(!desktop) return;
+ // Do not leave the operator looking at a workspace that just disappeared.
+ if(strandedOn) pgSelectDesktopWorkspace('calibration');
+ else pgSyncDesktopPanels();
 }
 function pgRefreshVisibleWorkspace(options){
  const layoutOnly=!!(options&&options.layoutOnly);
