@@ -691,11 +691,14 @@ display_selected:
         SDL_GetWindowSize(app.window, &width, &height);
         x = bounds.x + (bounds.w - width) / 2;
         y = bounds.y + (bounds.h - height) / 2;
-        if (!SDL_SetWindowPosition(app.window, x, y)) {
-            ok = false;
-            goto done;
-        }
-        SDL_SyncWindow(app.window);
+        /* Best-effort only. Wayland compositors (Fedora KDE Plasma 6.x default
+         * session, and many other pure-Wayland desktops) refuse absolute
+         * client-driven window placement. Treating that failure as fatal made
+         * the Companion exit silently right after the monitor picker, so the
+         * pairing screen never appeared. X11/Kubuntu sessions usually allow
+         * the move and keep the historical multi-monitor behavior. */
+        if (SDL_SetWindowPosition(app.window, x, y)) SDL_SyncWindow(app.window);
+        SDL_ShowWindow(app.window);
         SDL_RaiseWindow(app.window);
     }
 done:
@@ -3368,22 +3371,60 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
                                  "--server=http://<address>.", NULL);
         return SDL_APP_FAILURE;
     }
-    if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_APP_FAILURE;
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 SDL_GetError()[0] ? SDL_GetError()
+                                                   : "Could not initialize video.",
+                                 NULL);
+        return SDL_APP_FAILURE;
+    }
     app.network_mutex = SDL_CreateMutex();
     if (!app.network_mutex) return SDL_APP_FAILURE;
     app.window = SDL_CreateWindow("PGenerator+ Patch Companion", 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
-    if (!app.window) return SDL_APP_FAILURE;
+    if (!app.window) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 SDL_GetError()[0] ? SDL_GetError()
+                                                   : "Could not create the Patch Companion window.",
+                                 NULL);
+        return SDL_APP_FAILURE;
+    }
 #ifdef _WIN32
     set_windows_window_icon();
 #else
     set_embedded_window_icon();
 #endif
-    if (!select_target_display()) return SDL_APP_FAILURE;
+    if (!select_target_display()) {
+        char detail[320];
+        const char *error = SDL_GetError();
+        if (error && error[0])
+            SDL_snprintf(detail, sizeof(detail),
+                         "Could not select the profiling display.\n\n%s", error);
+        else
+            SDL_strlcpy(detail, "Could not select the profiling display.", sizeof(detail));
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 detail, app.window);
+        return SDL_APP_FAILURE;
+    }
     app.fullscreen = false;
     app.displayed_size = 100;
-    if (!create_renderer(false)) return SDL_APP_FAILURE;
-    if (!render_alignment()) return SDL_APP_FAILURE;
+    if (!create_renderer(false)) {
+        char detail[320];
+        const char *error = SDL_GetError();
+        if (error && error[0])
+            SDL_snprintf(detail, sizeof(detail),
+                         "Could not create the Patch Companion renderer.\n\n%s", error);
+        else
+            SDL_strlcpy(detail, "Could not create the Patch Companion renderer.", sizeof(detail));
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 detail, app.window);
+        return SDL_APP_FAILURE;
+    }
+    if (!render_alignment()) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 "Could not draw the alignment target.", app.window);
+        return SDL_APP_FAILURE;
+    }
     if (!app.config.token[0]) {
         /* A static, unpaired download has an address but no token yet: ask
          * the operator to approve this computer in the WebUI before falling
@@ -3392,16 +3433,25 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
                                      companion_pair_error[0] ? companion_pair_error
                                                               : "Pairing with PGenerator+ failed.",
-                                     NULL);
+                                     app.window);
             return SDL_APP_FAILURE;
         }
-        if (!render_alignment()) return SDL_APP_FAILURE;
+        if (!render_alignment()) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                     "Could not draw the alignment target after pairing.",
+                                     app.window);
+            return SDL_APP_FAILURE;
+        }
     }
     SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
     app.ack_hdr_active = app.hdr_active;
     SDL_SetAtomicInt(&app.quit_requested, 0);
     app.network_thread = SDL_CreateThread(network_thread_main, "PGen ICC network", NULL);
-    if (!app.network_thread) return SDL_APP_FAILURE;
+    if (!app.network_thread) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
+                                 "Could not start the network thread.", app.window);
+        return SDL_APP_FAILURE;
+    }
     *appstate = &app;
     return SDL_APP_CONTINUE;
 }
