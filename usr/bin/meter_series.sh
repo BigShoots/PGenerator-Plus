@@ -1598,7 +1598,13 @@ nonblack_zero_reading() {
  # A black target is expected to read ~0; do not treat its zero reading as a
  # meter failure. Check IRE (the 0% greyscale step sends the limited-range
  # black code, e.g. 64, not r=g=b=0, so the r=g=b=0 test below alone misses it).
- awk -v ire="$ire" 'BEGIN { exit !(ire+0 <= 0) }' && return 1
+ # An EMPTY or non-numeric IRE means "unspecified", NOT 0: feeding it straight
+ # to awk made ire+0 collapse to 0, which exempted the patch and silently
+ # disabled this guard for it. The series loop validates IRE before it gets
+ # here, so this is belt-and-braces, but the helper must not be the weak link.
+ if [[ "$ire" =~ ^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]; then
+  awk -v ire="$ire" 'BEGIN { exit !(ire+0 <= 0) }' && return 1
+ fi
  awk -v r="$r" -v g="$g" -v b="$b" 'BEGIN { exit !((r+0)==0 && (g+0)==0 && (b+0)==0) }' && return 1
  local X Y Z lum
  X=$(printf '%s' "$reading" | sed -n 's/.*"X":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')

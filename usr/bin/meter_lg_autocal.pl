@@ -21360,6 +21360,18 @@ sub median_autocal_readings {
 	 return $merged;
 }
 
+# meter_session.sh owns the null-read detection and the re-measure: it is the
+# only layer that both knows the requested patch and can issue a genuinely new
+# spotread measurement, so every /api/meter/read consumer inherits the same
+# guard from it. When an all-zero reading survives every re-read of a patch
+# that drives light it comes back stamped rather than discarded, and consumers
+# only have to honour that verdict.
+sub session_flagged_null_reading {
+ my ($reading)=@_;
+ return 0 if(ref($reading) ne "HASH");
+ return ($reading->{"null_read"}) ? 1 : 0;
+}
+
 sub invalid_low_shadow_reading {
  my ($reading,$step)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -21414,6 +21426,20 @@ sub read_step {
 	 for(my $attempt=1;$attempt<=$attempts;$attempt++) {
 	  my ($reading,$error)=read_step_once($config,$step,$attempt);
 	  if(!$error) {
+	   # An all-zero reading the meter session already re-measured and could not
+	   # clear. Inside the shadow ladder that can be a genuinely crushed output,
+	   # and the sampling path above handles it by discarding samples rather than
+	   # aborting a calibration that exists to fix exactly that. Above the ladder
+	   # a lit patch cannot legitimately measure zero, so stop with something the
+	   # operator can act on instead of baking the zero into a DPG or a LUT. The
+	   # wording deliberately avoids the transient_read_error vocabulary: this is
+	   # not a retryable hiccup, the session already retried.
+	   if(session_flagged_null_reading($reading) && !autocal_step_is_low_shadow($step)) {
+	    my $label=$step->{"name"}||format_percent($step->{"ire"}||0)."%";
+	    my $retries=($reading->{"null_read_retries"}||0)+0;
+	    log_line("Rejecting null meter reading for $label that survived $retries re-measures");
+	    return (undef,"Meter returned an unusable all-zero reading for $label that survived $retries re-measures; check the meter is aimed at the patch, awake, and still connected");
+	   }
 	   delete $state_ref->{"meter_read_retry"} if(ref($state_ref) eq "HASH");
 	   reset_meter_session_success();
 	   return ($reading,undef);

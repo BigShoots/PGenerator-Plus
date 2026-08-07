@@ -584,6 +584,86 @@ else:
  return 0
 }
 
+# --- Null-read guard -------------------------------------------------------
+# A meter that has drifted off the patch, gone to sleep, or lost its USB
+# interface can still answer a read "successfully" with an all-zero
+# measurement: X=Y=Z=0. Chromaticity is derived from XYZ, so x and y then come
+# back pinned at 1/3 (printed as 0.333333 here, rounded to 0.3333 once the API
+# has serialised it). Nothing downstream of this script rejected that, so a
+# plainly lit patch entered a calibration, a profile or a chart as if it were
+# black.
+#
+# This is the lowest common point for the whole /api/meter/read family: the
+# browser's Read Once / Continuous, meter_lg_autocal.pl, meter_lg_3d_autocal.pl
+# and meter_lg_dv_profile.pl all POST /api/meter/read, which lands on the READ
+# command below. It is also the only layer that both knows the REQUESTED patch
+# and can issue a genuinely new measurement (another " " down spotread's stdin)
+# rather than re-reading the same completed result. (meter_series.sh runs its
+# own spotread pipeline and carries the sibling guard nonblack_zero_reading.)
+#
+# The numeric signature is deliberately identical to the two proven Perl
+# implementations (invalid_low_shadow_reading / invalid_null_reading),
+# INCLUDING the 0.0002 chromaticity window: the API hands back rounded JSON, so
+# a real null read arrives as 0.3333 -- 3.3e-5 from 1/3 -- and any tighter
+# window would never fire.
+NULL_READ_RETRIES=2
+
+# Does the REQUESTED patch actually drive light?
+#
+# This is the half that must not be got wrong. A 0% black patch on an emissive
+# panel legitimately measures X=Y=Z=0 and its chromaticity legitimately
+# degenerates to 1/3,1/3, so rejecting the reading alone would make every black
+# read retry until it failed. The gate therefore keys off the patch that was
+# asked for, never off the reading.
+#
+# Two things make it awkward:
+#   * Colour patches (ColorChecker, saturation sweeps) arrive with ire=0 while
+#     driving real colour, so an IRE-only gate would exempt all of them.
+#   * A limited-range black is NOT code 0: it is 16 at 8-bit and 64 at 10-bit,
+#     so an r=g=b=0 gate would treat a limited black as lit.
+# So: light is driven when the IRE says so, or when any channel sits above the
+# black floor for the patch's code scale. The floor is derived from input_max
+# (16/255 of full scale) and is applied whether or not the caller told us the
+# signal range -- for full range that only exempts codes 1..16, which are
+# deep-shadow greys that carry a non-zero IRE anyway. Erring toward "this is
+# black" is the safe direction: it can only ever mean a null read slips through
+# on a near-black patch, never that a legitimate black is thrown away.
+patch_drives_light() {
+ local r="${1:-0}" g="${2:-0}" b="${3:-0}" ire="${4:-0}" input_max="${5:-255}"
+ awk -v ire="$ire" 'BEGIN{ exit !((ire+0) > 0) }' && return 0
+ awk -v r="$r" -v g="$g" -v b="$b" -v m="$input_max" '
+  BEGIN {
+   m = m + 0
+   if (m <= 0) m = 255
+   black_floor = int(16.0 * m / 255.0 + 0.5)
+   hi = r + 0
+   if (g + 0 > hi) hi = g + 0
+   if (b + 0 > hi) hi = b + 0
+   exit !(hi > black_floor)
+  }'
+}
+
+# Returns 0 (shell true) when a reading the meter reported as successful is in
+# fact an unusable null read.
+null_meter_reading() {
+ local reading="$1"
+ local Y lum x_chr y_chr
+ Y=$(printf '%s' "$reading" | sed -n 's/.*"Y":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ lum=$(printf '%s' "$reading" | sed -n 's/.*"luminance":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ x_chr=$(printf '%s' "$reading" | sed -n 's/.*"x":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ y_chr=$(printf '%s' "$reading" | sed -n 's/.*"y":[[:space:]]*\([-+0-9.eE]*\).*/\1/p')
+ awk -v Y="$Y" -v lum="$lum" -v x="$x_chr" -v y="$y_chr" '
+  function abs(v) { return v < 0 ? -v : v }
+  BEGIN {
+   v = (lum != "" ? lum : Y)
+   if (v == "") exit 1
+   if (v + 0 <= 0) exit 0
+   if (x == "" || y == "") exit 1
+   if (v + 0 < 0.5 && abs(x + 0 - 0.333333) < 0.0002 && abs(y + 0 - 0.333333) < 0.0002) exit 0
+   exit 1
+  }'
+}
+
 cleanup() {
  log "cleanup: tearing down spotread"
  companion_show_alignment
@@ -1145,6 +1225,8 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    READ_START=$SECONDS
    GOT_RESULT=false
    RETRIED_COMM=0
+   NULL_READ_DISCARDS=0
+   NULL_READ_FLAGGED=0
    while (( SECONDS - READ_START < READ_TIMEOUT )); do
       NEW_OUTPUT=$(clean_output_since "$SCAN_OFFSET")
       if [[ -n "$NEW_OUTPUT" ]]; then
@@ -1176,6 +1258,24 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
        if [[ "$READ_OUTPUT" == *"Result is XYZ:"* ]]; then
         PARSED_RESULT=$(parse_latest_result_text "$READ_OUTPUT")
         if [[ -n "$PARSED_RESULT" ]]; then
+         # Null-read guard. Only ever fires for a patch that actually drives
+         # light (see patch_drives_light) -- a 0% black reads zero and is
+         # accepted as-is. Each discard sends spotread another " ", which is a
+         # genuinely NEW measurement; re-polling the parsed result would just
+         # hand back the same zero until the deadline expired.
+         if (( NULL_READ_DISCARDS < NULL_READ_RETRIES )) \
+            && patch_drives_light "$R" "$G" "$B" "$IRE" "$INPUT_MAX" \
+            && null_meter_reading "$PARSED_RESULT"; then
+          NULL_READ_DISCARDS=$(( NULL_READ_DISCARDS + 1 ))
+          log "null meter reading (all-zero XYZ) for $NAME at a light-driving patch (rgb=$R/$G/$B ire=$IRE input_max=$INPUT_MAX); re-reading ${NULL_READ_DISCARDS}/${NULL_READ_RETRIES}"
+          write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
+          PARSED_RESULT=""
+          READ_OUTPUT=""
+          SCAN_OFFSET=$(output_size)
+          READ_START=$SECONDS
+          printf " " >&3
+          continue
+         fi
          GOT_RESULT=true
          break
         fi
@@ -1219,13 +1319,28 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
     sleep 0.1
    done
 
+   # Re-reads exhausted and the patch still measures zero. Do NOT discard it and
+   # do NOT fail the read: once the patch has been re-measured this many times,
+   # a persistent exact zero at a low drive is a real measurement of a crushed
+   # output (the same reasoning meter_series.sh records a measured zero on), and
+   # aborting here would break the very calibration that is trying to fix it.
+   # Instead stamp the reading so it can never be mistaken for clean data, and
+   # let the consumer decide -- meter_lg_autocal.pl fails the read outright above
+   # its shadow ladder, where a zero cannot be legitimate.
+   if $GOT_RESULT && (( NULL_READ_DISCARDS >= NULL_READ_RETRIES )) \
+      && patch_drives_light "$R" "$G" "$B" "$IRE" "$INPUT_MAX" \
+      && null_meter_reading "$PARSED_RESULT"; then
+    NULL_READ_FLAGGED=1
+    log "null meter reading persisted for $NAME after $NULL_READ_RETRIES re-reads; recording it flagged (check the meter is on the patch, awake, and its USB link)"
+   fi
+
    if $GOT_RESULT; then
 	    PARSED="$PARSED_RESULT"
 	    if [[ -n "$PARSED" ]]; then
 	     # Wrap as a complete reading record (matches spotread_wrapper.sh shape).
 	     # Pass parsed JSON via environment variables so Python 2 shells on older
 	     # Pi images do not choke on inline quoting.
-	     OUT=$(PARSED_JSON="$PARSED" READ_IRE="$IRE" READ_NAME="$NAME" READ_R="$R" READ_G="$G" READ_B="$B" READ_REQUEST_ID="$REQUEST_ID" python -c "
+	     OUT=$(PARSED_JSON="$PARSED" READ_IRE="$IRE" READ_NAME="$NAME" READ_R="$R" READ_G="$G" READ_B="$B" READ_REQUEST_ID="$REQUEST_ID" READ_NULL_FLAG="$NULL_READ_FLAGGED" READ_NULL_RETRIES="$NULL_READ_DISCARDS" python -c "
 import json, os
 r=json.loads(os.environ.get('PARSED_JSON','{}'))
 try:
@@ -1241,7 +1356,26 @@ r['g_code']=int(os.environ.get('READ_G','0') or 0)
 r['b_code']=int(os.environ.get('READ_B','0') or 0)
 r['request_id']=os.environ.get('READ_REQUEST_ID','')
 r['observer']=os.environ.get('OBSERVER','1931_2')
-print(json.dumps({'status':'complete','request_id':os.environ.get('READ_REQUEST_ID',''),'readings':[r],'count':1}))
+out={'status':'complete','request_id':os.environ.get('READ_REQUEST_ID',''),'readings':[r],'count':1}
+try:
+ retries=int(os.environ.get('READ_NULL_RETRIES','0') or 0)
+except Exception:
+ retries=0
+if os.environ.get('READ_NULL_FLAG','0') == '1':
+ # An all-zero measurement that survived every re-read of a patch that
+ # drives light. Recorded, never discarded, but stamped so no consumer can
+ # mistake it for clean data.
+ r['null_read']=1
+ r['measured_zero']=1
+ r['null_read_retries']=retries
+ out['null_read']=True
+ out['null_read_warning']=('The meter returned an all-zero reading for '+str(r['name'])+' after '+str(retries)+' re-reads. Check the meter is aimed at the patch, awake, and still on its USB link.')
+ # Mirrored into 'message' so the existing error toasts and the workers'
+ # generic failure reporting have something actionable to show.
+ out['message']=out['null_read_warning']
+elif retries > 0:
+ r['null_read_retries']=retries
+print(json.dumps(out))
 		" 2>/dev/null)
      if [[ -n "$OUT" ]]; then
       write_state "$OUT"

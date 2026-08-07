@@ -301,7 +301,20 @@ sub read_patch {
   return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
   if((($result->{"status"}||"") eq "ok") && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
-   return ($result->{"readings"}[0],undef);
+   my $reading=$result->{"readings"}[0];
+   # meter_session.sh owns the null-read detection and the re-measure (it is
+   # the only layer that knows the requested patch AND can trigger a genuinely
+   # new spotread measurement). It stamps null_read when an all-zero reading
+   # survived every re-read of a patch that drives light. This worker measures
+   # white, black and the three primaries: a zero on anything but black would
+   # be written into the uploaded profile as the panel's peak or a primary, so
+   # stop rather than record it.
+   if(ref($reading) eq "HASH" && $reading->{"null_read"}) {
+    my $label=$patch->{"kind"}||$patch->{"name"}||"patch";
+    my $retries=($reading->{"null_read_retries"}||0)+0;
+    return (undef,"Meter returned an unusable all-zero reading for the $label patch that survived $retries re-measures; check the meter is aimed at the patch, awake, and still connected");
+   }
+   return ($reading,undef);
   }
   return (undef,$result->{"message"}||"Meter read failed") if(($result->{"status"}||"") eq "error");
   select(undef,undef,undef,0.35);

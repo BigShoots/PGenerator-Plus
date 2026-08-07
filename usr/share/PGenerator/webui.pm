@@ -28575,7 +28575,10 @@ function meterStepInputMax(step){
 }
 
 function meterApplySingleReadResult(result,requestedStep){
- if(result&&result.status==='ok'&&result.readings&&result.readings.length>0){
+ // meterReadResultOk also rejects a reading the meter session flagged as an
+ // unusable all-zero (null_read). The else branch below already surfaces the
+ // server's message, which for that case explains what to check.
+ if(meterReadResultOk(result)){
   const rd=result.readings[0];
   meterNormalizeMeasuredReading(rd);
   // Only commit the result if the user is still on the patch this read was
@@ -29137,6 +29140,12 @@ async function meterRunManualReadStep(step,ctx){
 }
 
 function meterReadResultOk(result){
+ // null_read is stamped by meter_session.sh when an all-zero measurement
+ // survived every re-read of a patch that DRIVES LIGHT (a 0% black reads zero
+ // legitimately and is never flagged). Treat it as a failed read here rather
+ // than letting a lit patch enter a chart, a white reference or a peak probe
+ // as 0 cd/m2; the payload carries a message explaining what to check.
+ if(result&&result.null_read) return false;
  return !!(result&&result.status==='ok'&&Array.isArray(result.readings)&&result.readings.length>0);
 }
 
