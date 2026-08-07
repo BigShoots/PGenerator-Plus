@@ -819,6 +819,33 @@ COMPANION_BUILD_DIR = "/var/lib/PGenerator/icc-companion/build"
 COMPANION_BUILD_POLL_SECONDS = 2.0
 
 
+# The Companion polls every few seconds whenever it is running, whether or not
+# it is the selected patch source, so a generous window still catches a missed
+# poll or two without waiting on a Companion that has gone.
+COMPANION_SEEN_SECONDS = 120
+
+
+def read_companion_state(state_path):
+    """Current companion.json contents, or an empty dict if unreadable."""
+    try:
+        with io.open(state_path, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except (OSError, IOError, ValueError):
+        return {}
+
+
+def companion_seen_recently(state):
+    if not state.get("connected"):
+        return False
+    try:
+        seen = float(state.get("seen", 0))
+    except (TypeError, ValueError):
+        return False
+    # Tolerate a clock that has stepped backwards rather than refusing forever.
+    return abs(time.time() - seen) <= COMPANION_SEEN_SECONDS
+
+
 def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
     """Ask a connected Patch Companion to run colprof, returning True on success.
 
@@ -842,6 +869,12 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
         with io.open(state_path, "r", encoding="utf-8") as handle:
             state = json.load(handle)
         if not state.get("connected"):
+            return False
+        # "connected" is written by the poll handler and is never cleared, so a
+        # Companion that was closed leaves it true. Without a freshness check
+        # the wait below would sit out the whole colprof timeout before falling
+        # back, turning a ten-minute local fit into a twenty-five minute one.
+        if not companion_seen_recently(state):
             return False
         # Refuse to offload to a different ArgyllCMS than the one here: the same
         # measurements fitted by a different version produce a different profile,
@@ -898,6 +931,10 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
                 return True
             if os.path.isfile(error_path):
                 os.remove(error_path)
+                return False
+            # A Companion closed mid-fit stops polling. Give up as soon as that
+            # shows rather than holding the build until the colprof timeout.
+            if not companion_seen_recently(read_companion_state(state_path)):
                 return False
             time.sleep(COMPANION_BUILD_POLL_SECONDS)
         return False
