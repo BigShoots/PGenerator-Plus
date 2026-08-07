@@ -1473,9 +1473,10 @@ async function meterIccRefreshCompanionStatus(){
    // The Companion only reads the display's active OS profile on Windows, so an
    // empty name there means none was found, while elsewhere it means the build
    // never looks. Saying which keeps an unavailable feature from reading as a
-   // missing profile.
-   const profileLabel=activeProfile?' ['+activeProfile+']':(platform==='linux'?' [active OS profile is not readable on Linux]':' [none detected]');
-   const correction=transformMode==='clut'?(' using active-profile cLUT'+profileLabel):transformMode==='matrix'?(' using active-profile matrix/TRC'+profileLabel):' using no application profile correction';
+   // missing profile. "system" mode does not load an ICC inside the Companion;
+   // on Linux the compositor still applies the display profile KDE has set.
+   const profileLabel=activeProfile?' ['+activeProfile+']':(platform==='linux'?' [OS profile not reported by Linux Companion]':' [none detected]');
+   const correction=transformMode==='clut'?(' using active-profile cLUT'+profileLabel):transformMode==='matrix'?(' using active-profile matrix/TRC'+profileLabel):(platform==='linux'?' leaving color management to the compositor (KDE/colord profile still applies outside the app)':' using no application profile correction');
    const transformState=transformMode!==correctionMode?' [requested transform not yet applied]':(!transformReady?(' [transform not ready'+(transformNote?': '+transformNote:'')+']'):'');
    // "none" is the Windows swapchain reporting no HDR colorspace, not a missing
    // value; spell that out rather than leaving a bare "[none]" on screen.

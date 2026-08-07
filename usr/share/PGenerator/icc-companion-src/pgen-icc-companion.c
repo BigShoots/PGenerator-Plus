@@ -3151,11 +3151,14 @@ static void process_network_updates(void)
     SDL_UnlockMutex(app.network_mutex);
     if (status_dirty) SDL_SetWindowTitle(app.window, title);
     if (have_settings) {
-        if (apply_display_settings(settings_fullscreen, settings_size)) {
-            SDL_LockMutex(app.network_mutex);
-            app.applied_settings_revision = settings_revision;
-            SDL_UnlockMutex(app.network_mutex);
-        }
+        /* Always consume the revision. On Wayland, fullscreen/position changes
+         * can fail or be asynchronous; retrying every poll (50-500 ms) made the
+         * window thrash in and out of the taskbar. One attempt per revision is
+         * enough: the operator can toggle the setting again if needed. */
+        (void)apply_display_settings(settings_fullscreen, settings_size);
+        SDL_LockMutex(app.network_mutex);
+        app.applied_settings_revision = settings_revision;
+        SDL_UnlockMutex(app.network_mutex);
     }
     if (have_command) {
         bool ok;
