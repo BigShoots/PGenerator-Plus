@@ -1270,10 +1270,20 @@ async function meterIccRefreshCompanionStatus(){
     if(calibrationMode) calibrationMode.value=correctionMode;
    }
    const activeProfile=String(state.active_profile||'');
-   const correction=transformMode==='clut'?(' using active-profile cLUT'+(activeProfile?' ['+activeProfile+']':'')):transformMode==='matrix'?(' using active-profile matrix/TRC'+(activeProfile?' ['+activeProfile+']':'')):' using no application profile correction';
-   const transformState=transformMode!==correctionMode?' [requested transform not yet applied]':(!transformReady?' [transform not ready]':'');
+   const platform=String(state.platform||'');
+   const transformNote=String(state.transform_note||'');
+   // The Companion only reads the display's active OS profile on Windows, so an
+   // empty name there means none was found, while elsewhere it means the build
+   // never looks. Saying which keeps an unavailable feature from reading as a
+   // missing profile.
+   const profileLabel=activeProfile?' ['+activeProfile+']':(platform==='linux'?' [active OS profile is not readable on Linux]':' [none detected]');
+   const correction=transformMode==='clut'?(' using active-profile cLUT'+profileLabel):transformMode==='matrix'?(' using active-profile matrix/TRC'+profileLabel):' using no application profile correction';
+   const transformState=transformMode!==correctionMode?' [requested transform not yet applied]':(!transformReady?(' [transform not ready'+(transformNote?': '+transformNote:'')+']'):'');
+   // "none" is the Windows swapchain reporting no HDR colorspace, not a missing
+   // value; spell that out rather than leaving a bare "[none]" on screen.
+   const swapchainLabel=swapchain==='none'?'no HDR swapchain':swapchain;
    const nativeDetail=swapchain&&swapchain!=='unknown'
-    ?(' ['+swapchain+(presentation&&presentation!=='unknown'?', '+presentation:'')+(outputBits?', '+outputBits+'-bit':'')+(outputMax?', peak '+outputMax.toFixed(1)+' cd/m²':'')+(outputFull?', full-frame '+outputFull.toFixed(1)+' cd/m²':'')+']')
+    ?(' ['+swapchainLabel+(presentation&&presentation!=='unknown'?', '+presentation:'')+(outputBits?', '+outputBits+'-bit':'')+(outputMax?', peak '+outputMax.toFixed(1)+' cd/m²':'')+(outputFull?', full-frame '+outputFull.toFixed(1)+' cd/m²':'')+']')
     :'';
    const detail='Connected: '+client+(selectedDisplay?' on '+selectedDisplay:'')+' using '+renderer+hdr+nativeDetail+correction+transformState+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;

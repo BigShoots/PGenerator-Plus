@@ -73,7 +73,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.3.38"
+#define APP_VERSION "1.3.39"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -990,6 +990,19 @@ static bool companion_tool_path(const char *name, char *out, size_t out_size)
     return true;
 }
 
+/* Which build this is; only these two are packaged. Reported so the server can
+ * describe what is genuinely unavailable instead of showing an empty value as a
+ * failure: reading the display's active ICC profile, and the active-profile
+ * transforms that depend on it, are Windows-only. */
+static const char *companion_platform(void)
+{
+#ifdef _WIN32
+    return "windows";
+#else
+    return "linux";
+#endif
+}
+
 /* ArgyllCMS version of the bundled colprof, empty when it is absent or will
  * not run. Reported to the server so the builder can refuse to offload to a
  * version other than its own. */
@@ -1462,6 +1475,22 @@ static bool load_correction_lut(uint64_t revision)
     app.correction_lut = NULL;
     app.correction_lut_grid = 0;
     app.correction_ready = system_mode;
+#ifndef _WIN32
+    /* Report the real reason first. Reading the display's active profile and
+     * applying it are both Windows-only here, so the generic "the operating
+     * system did not report an active ICC profile" message below would blame a
+     * missing profile for something this build cannot do at all. */
+    if (!system_mode) {
+        app.correction_ready = false;
+        SDL_strlcpy(app.correction_error,
+                    "Active-profile correction needs the Windows Companion",
+                    sizeof(app.correction_error));
+        return false;
+    }
+    app.correction_lut_revision = revision;
+    app.correction_error[0] = '\0';
+    return true;
+#endif
     if (!app.correction_profile[0]) {
         if(system_mode){app.correction_lut_revision=revision;app.correction_error[0]='\0';return true;}
         app.correction_ready = false;
@@ -1475,9 +1504,6 @@ static bool load_correction_lut(uint64_t revision)
     if(!app.correction_profile_data||fread(app.correction_profile_data,1,(size_t)length,file)!=(size_t)length){fclose(file);SDL_free(app.correction_profile_data);app.correction_profile_data=NULL;SDL_strlcpy(app.correction_error,"Could not read the active Windows display profile",sizeof(app.correction_error));return false;}
     fclose(file); app.correction_profile_size=(size_t)length;
     if(memcmp(app.correction_profile_data+12,"mntr",4)||memcmp(app.correction_profile_data+16,"RGB ",4)||memcmp(app.correction_profile_data+20,"XYZ ",4)){SDL_free(app.correction_profile_data);app.correction_profile_data=NULL;app.correction_profile_size=0;SDL_strlcpy(app.correction_error,"The active Windows profile is not a supported RGB display profile",sizeof(app.correction_error));return false;}
-#else
-    SDL_strlcpy(app.correction_error,"Active-profile cLUT and matrix enforcement currently require Windows",sizeof(app.correction_error));
-    return false;
 #endif
     app.correction_lut_revision = revision;
     app.correction_error[0] = '\0';
@@ -1569,7 +1595,13 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     return true;
 #else
     (void)red; (void)green; (void)blue;
-    return false;
+    /* "none" and "system" are the same true passthrough here: there is no
+     * OS-managed display transform to apply, and none to cancel either, so the
+     * requested code reaches the panel unchanged. Returning false for them
+     * rejected every patch this Companion was ever sent. The active-profile
+     * modes really cannot run, and say so. */
+    return !strcmp(app.correction_mode, "none") ||
+           !strcmp(app.correction_mode, "system");
 #endif
 }
 
@@ -2672,12 +2704,16 @@ static void send_pending_ack(void)
 
 static void poll_server(void)
 {
-    char path[2048], response[RESPONSE_CAPACITY], mode[32] = "sdr";
+    char path[3072], response[RESPONSE_CAPACITY], mode[32] = "sdr";
     char window_mode[32] = "window";
     char correction_mode[16] = "system", active_profile[192] = "", profile_hex[385] = "", correction_signal_mode[16] = "sdr";
     char display_hex[385] = "";
     char reported_renderer[64] = "starting";
-    char swapchain_color_space[32] = "none", presentation_mode[32] = "unknown";
+    /* "unknown" is the value the server treats as "nothing to report", so a
+     * platform that has no such concept must leave these alone rather than
+     * inventing a placeholder the operator then has to interpret. */
+    char swapchain_color_space[32] = "unknown", presentation_mode[32] = "unknown";
+    char transform_note[128] = "", transform_note_hex[257] = "";
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     double max_luma = 1000.0, min_luma = 0.005, max_cll = 1000.0, max_fall = 400.0;
     double settings_revision_value, display_size_value, patch_size_value;
@@ -2703,18 +2739,48 @@ static void poll_server(void)
     windows_active_profile(app.window, active_profile, sizeof(active_profile),
                            active_profile_path, SDL_arraysize(active_profile_path),
                            reported_hdr_active);
+#else
+    /* There is no DXGI swapchain and no OS presentation-mode query here, and no
+     * portable way to read the display's active ICC profile either. Report what
+     * this build genuinely knows - the colorspace the renderer presents in and
+     * the video backend carrying it - instead of a placeholder that reads as a
+     * failure. active_profile stays empty because none was read, not because
+     * none is installed. */
+    {
+        SDL_PropertiesID renderer_props =
+            app.renderer ? SDL_GetRendererProperties(app.renderer) : 0;
+        SDL_Colorspace colorspace = renderer_props
+            ? (SDL_Colorspace)SDL_GetNumberProperty(renderer_props,
+                                                    SDL_PROP_RENDERER_OUTPUT_COLORSPACE_NUMBER,
+                                                    SDL_COLORSPACE_UNKNOWN)
+            : SDL_COLORSPACE_UNKNOWN;
+        const char *driver = SDL_GetCurrentVideoDriver();
+        if (colorspace == SDL_COLORSPACE_SRGB_LINEAR)
+            SDL_strlcpy(swapchain_color_space, "scrgb-linear", sizeof(swapchain_color_space));
+        else if (colorspace == SDL_COLORSPACE_SRGB)
+            SDL_strlcpy(swapchain_color_space, "srgb", sizeof(swapchain_color_space));
+        if (driver && driver[0])
+            SDL_strlcpy(presentation_mode, driver, sizeof(presentation_mode));
+    }
 #endif
+    /* Carry the reason a requested transform is not running, so the server does
+     * not have to guess whether a profile is missing or the whole feature is.
+     * Both fields belong to this thread: load_correction_lut runs from here. */
+    if (!app.correction_ready && app.correction_error[0])
+        SDL_strlcpy(transform_note, app.correction_error, sizeof(transform_note));
+    profile_name_hex(transform_note, transform_note_hex, sizeof(transform_note_hex));
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     profile_name_hex(app.selected_display, display_hex, sizeof(display_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&platform=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&transform_note_hex=%s&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
                  app.config.token, app.config.client, APP_VERSION,
+                 companion_platform(),
                  reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
                  display_hex,
                  swapchain_color_space, presentation_mode,
                  output_maximum_luminance, output_full_frame_luminance,
                  output_bits_per_color, app.correction_mode,
-                 app.correction_ready ? 1 : 0,
+                 app.correction_ready ? 1 : 0, transform_note_hex,
                  app.source_r, app.source_g, app.source_b,
                  app.submitted_r, app.submitted_g, app.submitted_b,
                  companion_argyll_version());
