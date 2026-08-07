@@ -389,15 +389,36 @@ sub webui_icc_companion_ack (@) {
  return &webui_icc_companion_write_atomic($_icc_companion_ack_file,$ack,0600) ? '{"status":"ok"}' : '{"status":"error","message":"Could not acknowledge patch"}';
 }
 
+# Version of the Patch Companion this PGenerator ships. Read from the resource
+# script rather than hard-coded so it cannot drift from the binary: both are
+# produced from the same source tree, and a stale constant here would tell
+# users their Companion is current when it is not.
+my $_icc_companion_shipped_version;
+sub webui_icc_companion_shipped_version () {
+ return $_icc_companion_shipped_version if(defined($_icc_companion_shipped_version));
+ $_icc_companion_shipped_version="";
+ my $dir=__FILE__;
+ $dir=~s{/[^/]+\z}{};
+ if(open(my $fh,"<","$dir/icc-companion-src/pgen-icc-companion.rc")) {
+  local $/;
+  my $rc=<$fh>||"";
+  close($fh);
+  $_icc_companion_shipped_version=$1 if($rc=~/VALUE\s+"FileVersion"\s*,\s*"([0-9]+(?:\.[0-9]+){1,3})"/);
+ }
+ return $_icc_companion_shipped_version;
+}
+
 sub webui_icc_companion_status (@) {
  my $content="";
  my @st=stat($_icc_companion_status_file);
  # The companion's synchronous HTTP poll can take about three seconds on a
  # busy or remote link. Allow several missed polls before declaring it gone.
  if(@st && time()-($st[9]||0)<=12 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
- return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().'}' unless($content=~/^\s*\{/);
+ my $shipped=&webui_icc_companion_shipped_version();
+ my $shipped_json=($shipped ne "") ? ',"shipped_version":"'.&_webui_json_escape($shipped).'"' : "";
+ return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().$shipped_json.'}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
- return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().','.$content;
+ return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().$shipped_json.','.$content;
 }
 
 # Publish a calibration-card patch to the paired target-computer companion.

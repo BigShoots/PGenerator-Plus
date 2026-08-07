@@ -8,6 +8,7 @@ let meterIccCompanionConnected=false;
 let meterIccCompanionLastSeenAt=0;
 let meterIccCompanionDetail='PGenerator+ Patch Companion connected';
 let meterIccCompanionClient='';
+let meterIccCompanionOutdated='';
 let meterIccCompanionTimer=null;
 let meterIccCompanionSettingsPending=0;
 let meterIccPollPending=false;
@@ -1130,6 +1131,7 @@ function meterCalibrationShowCompanionStatus(connected,text){
  dot.style.color=connected?'var(--green)':'var(--red)';
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
+ meterIccAppendCompanionVersionWarning(target,connected);
 }
 function meterCalibrationSyncPatternProviderUi(){
  const col=document.getElementById('meterPatternProviderCol');
@@ -1182,6 +1184,33 @@ async function meterCalibrationRequirePatternProvider(){
  return false;
 }
 
+// Numeric version compare so 1.3.9 sorts below 1.3.36 rather than above it,
+// which a string compare would get wrong exactly where it matters.
+// Append the out-of-date notice under a connected status line. An outdated
+// Companion silently mismatches the profile it is handed -- the correction
+// stages moved between releases -- so it is reported where the connection is,
+// not left to be discovered in the measurements.
+function meterIccAppendCompanionVersionWarning(target,connected){
+ if(!target||!connected||!meterIccCompanionOutdated) return;
+ const warn=document.createElement('div');
+ warn.style.color='var(--red)';
+ warn.style.marginTop='2px';
+ warn.textContent=meterIccCompanionOutdated;
+ target.append(warn);
+}
+
+function meterIccVersionBelow(have,want){
+ if(!have||!want) return false;
+ const a=String(have).split('.').map(n=>parseInt(n,10)||0);
+ const b=String(want).split('.').map(n=>parseInt(n,10)||0);
+ for(let i=0;i<Math.max(a.length,b.length);i++){
+  const x=a[i]||0, y=b[i]||0;
+  if(x!==y) return x<y;
+ }
+ return false;
+}
+
+
 function meterIccShowCompanionStatus(connected,text){
  const target=document.getElementById('meterIccCompanionStatus');
  if(!target) return;
@@ -1191,6 +1220,7 @@ function meterIccShowCompanionStatus(connected,text){
  dot.style.color=connected?'var(--green)':'var(--red)';
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
+ meterIccAppendCompanionVersionWarning(target,connected);
 }
 
 function meterIccUpdateTopCompanionStatus(connected,detail){
@@ -1221,6 +1251,10 @@ async function meterIccRefreshCompanionStatus(){
    meterIccCompanionClient=client;
    const renderer=String(state.renderer||'renderer');
    const version=String(state.version||'');
+   const shipped=String(state.shipped_version||'');
+   meterIccCompanionOutdated=meterIccVersionBelow(version,shipped)
+    ?('Patch Companion '+version+' is out of date \u2014 this PGenerator ships '+shipped+'. Download and install the current version before profiling or reading.')
+    :'';
    const hdr=state.hdr_active?' with native HDR active':'';
    const swapchain=String(state.swapchain_color_space||'');
    const presentation=String(state.presentation_mode||'');
