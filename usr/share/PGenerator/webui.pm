@@ -423,6 +423,15 @@ our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
 our $_icc_companion_build_state="$_icc_companion_build_dir/companion.json";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
+# Pairing handshake for a Companion that arrived from the public GitHub
+# release rather than the paired-download packager: it has no token yet, so it
+# asks here, a human approves it in the WebUI, and only then does it get one.
+our $_icc_companion_pairing_file="$_icc_companion_dir/pairing.requests.json";
+# :shared - guards the pairing store's read-modify-write cycle. It is a list,
+# not a single last-write-wins value like the other Companion state files, so
+# two fast-lane workers racing a load against a save could silently drop
+# whichever request lost the race instead of just going stale for one poll.
+our $_icc_pairing_lock :shared = 0;
 my $_system_backup_helper="/usr/bin/pgenerator_system_backup.py";
 my $_system_backup_upload_dir="/tmp/pgenerator-system-backup-import";
 my $_system_backup_max_bytes=512*1024*1024;
@@ -773,8 +782,12 @@ sub webui_route_is_concurrent_safe (@) {
  return 1 if($path eq "/api/stats" || $path eq "/api/info");
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
- # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result" || $path eq "/api/icc/companion/build-ti3");
+ # measurement series and its status polling are active. The three pairing
+ # endpoints join this lane too -- pair-request/pair-status run before a
+ # Companion has a token at all, and pair-decide is the matching one-shot
+ # click from the WebUI -- but they stay safe under two concurrent workers
+ # because the pairing store's read-modify-write cycle is lock()-guarded.
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result" || $path eq "/api/icc/companion/build-ti3" || $path eq "/api/icc/companion/pair-request" || $path eq "/api/icc/companion/pair-status" || $path eq "/api/icc/companion/pair-decide");
  return 0;
 }
 
@@ -1084,6 +1097,9 @@ sub webui_handle_request (@) {
     # only the main page to the concrete address that accepted this socket;
     # all subsequent assets and API calls then use that stable numeric host.
     my $request_local_ip=eval { $client->sockhost() } || "";
+    # Only the pairing endpoints use this -- it lets the approval prompt show
+    # which machine on the network is asking, alongside its name and code.
+    my $request_peer_ip=eval { $client->peerhost() } || "";
     &log("WebUI: $method $path");
 
    # CORS headers for API
@@ -1743,6 +1759,18 @@ sub webui_handle_request (@) {
     my $result=&webui_icc_companion_ack($body);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/pair-request" && $method eq "POST") {
+    my $result=&webui_icc_pair_request($body,$request_peer_ip);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/pair-status") {
+    my $result=&webui_icc_pair_status($request_query);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/pair-decide" && $method eq "POST") {
+    my $result=&webui_icc_pair_decide($body);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/icc/companion/download") {
     my ($fname,$content,$message)=&webui_icc_companion_download($request_query,$request_host);

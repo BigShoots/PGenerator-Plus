@@ -232,6 +232,186 @@ sub webui_icc_companion_token (@) {
  return $token;
 }
 
+sub webui_icc_pairing_read () {
+ my @requests;
+ if(open(my $fh,"<",$_icc_companion_pairing_file)) {
+  local $/; my $data=<$fh>||""; close($fh);
+  if($data=~/^\s*\[/) {
+   eval {
+    require JSON::PP;
+    my $decoded=JSON::PP::decode_json($data);
+    @requests=grep { ref($_) eq "HASH" } @$decoded if(ref($decoded) eq "ARRAY");
+   };
+  }
+ }
+ return @requests;
+}
+
+sub webui_icc_pairing_write (@) {
+ my (@requests)=@_;
+ my $json="[]";
+ eval { require JSON::PP; $json=JSON::PP->new->canonical(1)->encode(\@requests); };
+ eval { require File::Path; File::Path::make_path($_icc_companion_dir,{mode=>0700}); } unless(-d $_icc_companion_dir);
+ return &webui_icc_companion_write_atomic($_icc_companion_pairing_file,$json,0600);
+}
+
+# Runs $code with the current (already pruned) request list and persists
+# whatever it returns, all inside one lock. Two fast-lane workers can call the
+# pairing endpoints at the same moment; unlike the other Companion state files
+# this one is a list, so a load here racing a save there would silently drop
+# whichever request lost the race, rather than just going stale for a poll.
+sub webui_icc_pairing_mutate (@) {
+ my ($code)=@_;
+ my @after;
+ {
+  lock($_icc_pairing_lock);
+  my @before=&webui_icc_pairing_read();
+  my $now=time();
+  my @kept=grep { defined($_->{created}) && ($now-$_->{created})<180 } @before;
+  # Skip the write when nothing actually changed -- this runs on every
+  # status poll (every companion-status container, every open tab), and most
+  # of those calls are a pure read with zero pending requests to prune.
+  # Snapshotted BEFORE calling $code: $code can mutate an entry's hashref in
+  # place (pair-decide does), and those hashrefs are the same objects @before
+  # holds, so encoding @before afterwards would already show the mutation and
+  # this check would never see a difference.
+  my ($before_json,$after_json)=("a","b");
+  eval { require JSON::PP; $before_json=JSON::PP->new->canonical(1)->encode(\@kept); };
+  @after=$code->(@kept);
+  eval { require JSON::PP; $after_json=JSON::PP->new->canonical(1)->encode(\@after); };
+  &webui_icc_pairing_write(@after) if($before_json ne $after_json);
+ }
+ return @after;
+}
+
+sub webui_icc_pairing_random_hex (@) {
+ my ($bytes)=@_;
+ my $random="";
+ if(open(my $rf,"<:raw","/dev/urandom")) { read($rf,$random,$bytes); close($rf); }
+ return "" unless(length($random)==$bytes);
+ return unpack("H*",$random);
+}
+
+# 6-digit pairing code, generated here rather than trusted from the client --
+# a hostile requester choosing its own code could otherwise steer a human
+# into approving the wrong machine.
+sub webui_icc_pairing_random_code () {
+ my $random="";
+ if(open(my $rf,"<:raw","/dev/urandom")) { read($rf,$random,4); close($rf); }
+ return "" unless(length($random)==4);
+ return sprintf("%06d",unpack("N",$random)%1000000);
+}
+
+# Called by an unpaired Companion, with no token, to ask a human to approve
+# it. A retry from the same client name while its first request is still
+# pending gets back the identical id/code rather than queuing a second prompt.
+sub webui_icc_pair_request (@) {
+ my ($body,$ip)=@_;
+ return '{"status":"error","message":"Pairing request is empty"}' unless(defined($body) && length($body)>0 && length($body)<4096);
+ my ($client,$platform,$version)=("","","");
+ $client=$1 if($body=~/"client"\s*:\s*"([A-Za-z0-9._-]{1,64})"/);
+ $platform=$1 if($body=~/"platform"\s*:\s*"(windows|linux)"/);
+ $version=$1 if($body=~/"version"\s*:\s*"([0-9.]{1,16})"/);
+ return '{"status":"error","message":"Invalid pairing request"}' if($client eq "" || $platform eq "" || $version eq "");
+ $ip="" unless(defined($ip) && $ip=~/^[0-9A-Fa-f:.]{1,45}$/);
+ my $outcome="";
+ &webui_icc_pairing_mutate(sub {
+  my (@requests)=@_;
+  foreach my $request (@requests) {
+   next unless(($request->{status}||"") eq "pending" && ($request->{client}||"") eq $client);
+   $outcome=$request;
+   return @requests;
+  }
+  if(scalar(grep { ($_->{status}||"") eq "pending" } @requests)>=4) {
+   $outcome="full";
+   return @requests;
+  }
+  my $id=&webui_icc_pairing_random_hex(16);
+  my $code=&webui_icc_pairing_random_code();
+  if($id eq "" || $code eq "") { $outcome="random"; return @requests; }
+  my $entry={id=>$id,code=>$code,client=>$client,platform=>$platform,version=>$version,ip=>$ip,created=>time(),status=>"pending"};
+  $outcome=$entry;
+  push @requests,$entry;
+  return @requests;
+ });
+ return '{"status":"error","message":"Too many pending pairing requests"}' if(!ref($outcome) && $outcome eq "full");
+ return '{"status":"error","message":"Could not create the pairing request"}' if(!ref($outcome));
+ my $expires=180-(time()-($outcome->{created}||time()));
+ $expires=0 if($expires<0);
+ return "{\"status\":\"pending\",\"request\":\"$outcome->{id}\",\"code\":\"$outcome->{code}\",\"expires_in\":$expires}";
+}
+
+# Called by the Companion, with no token, to find out whether a human has
+# decided yet. Approved and denied are both one-shot: the entry is deleted the
+# moment either is read, so the token is handed out exactly once and a second
+# poll for the same id can only ever see "expired".
+sub webui_icc_pair_status (@) {
+ my ($query)=@_;
+ my $id="";
+ $id=$1 if(defined($query) && $query=~/(?:^|&)request=([0-9a-f]{32})(?:&|$)/);
+ return '{"status":"expired"}' if($id eq "");
+ my $outcome="expired";
+ &webui_icc_pairing_mutate(sub {
+  my (@requests)=@_;
+  my @kept;
+  foreach my $request (@requests) {
+   if(($request->{id}||"") ne $id) { push @kept,$request; next; }
+   my $status=$request->{status}||"pending";
+   if($status eq "approved" || $status eq "denied") { $outcome=$status; next; }
+   $outcome="pending";
+   push @kept,$request;
+  }
+  return @kept;
+ });
+ return '{"status":"pending"}' if($outcome eq "pending");
+ return '{"status":"denied"}' if($outcome eq "denied");
+ if($outcome eq "approved") {
+  my $token=&webui_icc_companion_token();
+  return '{"status":"expired"}' if($token eq "");
+  return "{\"status\":\"approved\",\"token\":\"$token\"}";
+ }
+ return '{"status":"expired"}';
+}
+
+# Called by the WebUI itself when a human clicks Approve or Deny. Only marks a
+# still-pending entry -- one already decided, or gone, is not this call's to
+# resolve twice.
+sub webui_icc_pair_decide (@) {
+ my ($body)=@_;
+ return '{"status":"error","message":"Pairing decision is empty"}' unless(defined($body) && length($body)<2048);
+ my ($id,$action)=("","");
+ $id=$1 if($body=~/"request"\s*:\s*"([0-9a-f]{32})"/);
+ $action=$1 if($body=~/"action"\s*:\s*"(approve|deny)"/);
+ return '{"status":"error","message":"Invalid pairing decision"}' if($id eq "" || $action eq "");
+ my $found=0;
+ &webui_icc_pairing_mutate(sub {
+  my (@requests)=@_;
+  foreach my $request (@requests) {
+   next unless(($request->{id}||"") eq $id && ($request->{status}||"") eq "pending");
+   $request->{status}=($action eq "approve")?"approved":"denied";
+   $found=1;
+  }
+  return @requests;
+ });
+ return '{"status":"error","message":"Pairing request not found"}' unless($found);
+ return '{"status":"ok"}';
+}
+
+# Fed into webui_icc_companion_status() so the browser learns about pending
+# approvals through the poll it already runs, with no second polling loop.
+# Returned even when no Companion is connected -- an unpaired Companion is by
+# definition not connected yet, so the prompt has to appear anyway.
+sub webui_icc_pair_requests_fragment () {
+ my @requests=&webui_icc_pairing_mutate(sub { my (@requests)=@_; return @requests; });
+ my $now=time();
+ my @out;
+ foreach my $request (@requests) {
+  next unless(($request->{status}||"") eq "pending");
+  push @out,"{\"id\":\"".($request->{id}||"")."\",\"client\":\"".&_webui_json_escape($request->{client}||"")."\",\"platform\":\"".($request->{platform}||"")."\",\"code\":\"".($request->{code}||"")."\",\"age\":".($now-($request->{created}||$now)).",\"ip\":\"".&_webui_json_escape($request->{ip}||"")."\"}";
+ }
+ return "[".join(",",@out)."]";
+}
+
 sub webui_icc_companion_query_value (@) {
  my ($query,$name)=@_;
  return "" unless(defined($query) && $query=~/(?:^|&)\Q$name\E=([A-Za-z0-9._-]{1,128})(?:&|$)/);
@@ -414,10 +594,12 @@ sub webui_icc_companion_ack (@) {
  return &webui_icc_companion_write_atomic($_icc_companion_ack_file,$ack,0600) ? '{"status":"ok"}' : '{"status":"error","message":"Could not acknowledge patch"}';
 }
 
-# Version of the Patch Companion this PGenerator ships. Read from the resource
-# script rather than hard-coded so it cannot drift from the binary: both are
-# produced from the same source tree, and a stale constant here would tell
-# users their Companion is current when it is not.
+# Version of the Patch Companion this PGenerator ships, read from the resource
+# script rather than hard-coded so it cannot drift from the binary. The
+# browser now prefers the newest tagged release on GitHub for its
+# outdated-Companion check, since the Pi has no internet route on this
+# network to look that up itself; this stays as the offline fallback for
+# whenever that browser-side lookup never resolves.
 my $_icc_companion_shipped_version;
 sub webui_icc_companion_shipped_version () {
  return $_icc_companion_shipped_version if(defined($_icc_companion_shipped_version));
@@ -498,9 +680,10 @@ sub webui_icc_companion_status (@) {
  if(@st && time()-($st[9]||0)<=12 && open(my $fh,"<",$_icc_companion_status_file)) { local $/; $content=<$fh>||""; close($fh); }
  my $shipped=&webui_icc_companion_shipped_version();
  my $shipped_json=($shipped ne "") ? ',"shipped_version":"'.&_webui_json_escape($shipped).'"' : "";
- return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().$shipped_json.'}' unless($content=~/^\s*\{/);
+ my $pair_requests_json=',"pair_requests":'.&webui_icc_pair_requests_fragment();
+ return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.'}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
- return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().$shipped_json.','.$content;
+ return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.','.$content;
 }
 
 # Publish a calibration-card patch to the paired target-computer companion.
