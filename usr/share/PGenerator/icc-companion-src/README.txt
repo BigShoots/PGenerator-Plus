@@ -54,6 +54,34 @@ Windows may show a SmartScreen warning because this build is not code-signed.
 The application communicates only with the PGenerator+ address embedded in the
 configuration file.
 
+PGenerator+ Profile Loader (Linux)
+==================================
+
+The Linux package also contains PGenProfileLoader, the counterpart to the
+Windows profile loader. It installs a finished PGenerator+ profile and applies
+it to a display, for SDR and HDR alike. Run `chmod +x PGenProfileLoader` if the
+executable bit was not preserved, then start it beside the companion; it does
+not need PGenICCCompanion.conf.
+
+Pick the display, pick the profile, and press Apply to display. That single
+action does the whole job: a profile still sitting in a download folder is
+copied into your personal ICC directory (~/.local/share/icc) first, then
+assigned to the display. Copy to system folder is only for making a profile
+available to every user account, and is the one action that asks for
+administrator rights.
+
+On a KDE Plasma Wayland session the compositor owns the display profile, and
+the loader applies it through kscreen-doctor. colord is not involved there:
+KWin does not register its outputs with it, so colord lists no display device.
+That is normal and needs no action. On X11 sessions and other desktops the
+loader falls back to colord, and offers to install `colord colord-kde` if it is
+missing. Privileged steps go through pkexec; the exact command is always shown
+so it can be run by hand instead. The loader itself never needs to run as root.
+
+An HDR profile only describes the display in HDR mode, so enable HDR for that
+display before applying one; the loader says so if the two do not match. The
+window follows the desktop's colour scheme.
+
 The Windows package also contains PGenProfileLoader.exe. It is a separate tray
 application for installing, applying, and continuously verifying a display
 profile. See PROFILE-LOADER-README.txt for setup and status details. The

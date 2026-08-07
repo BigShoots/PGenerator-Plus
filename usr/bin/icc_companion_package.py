@@ -33,8 +33,12 @@ PLATFORMS = {
         # minute on a desktop. Version-matched to the Pi's ArgyllCMS, because
         # the same measurements fitted by a different version produce a
         # different profile. AGPLv3; the licence travels with them.
-        "files": ("PGenICCCompanion", "libSDL3.so.0", "colprof", "profcheck",
-                  "ArgyllCMS-LICENSE.txt"),
+        # PGenProfileLoader is the Linux counterpart to the Windows profile
+        # loader: it installs a built profile and applies it to the display
+        # through KWin, or colord on non-KDE sessions. DejaVu-LICENSE.txt
+        # covers the glyphs its interface is drawn with.
+        "files": ("PGenICCCompanion", "PGenProfileLoader", "libSDL3.so.0",
+                  "colprof", "profcheck", "ArgyllCMS-LICENSE.txt"),
         "paired": True,
         "kind": "archive",
     },
@@ -109,11 +113,14 @@ def build(platform, server, token, output_path):
             archive.writestr(config_info, config)
             add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
             add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
+            if package["directory"] == "linux-x64":
+                add_file(archive, os.path.join(ROOT, "icc-companion", "DejaVu-LICENSE.txt"),
+                         "DejaVu-LICENSE.txt")
         for name in files:
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
-            executable = ("PGenICCCompanion", "colprof", "profcheck")
+            executable = ("PGenICCCompanion", "PGenProfileLoader", "colprof", "profcheck")
             mode = 0o755 if package["directory"] == "linux-x64" and name in executable else 0o644
             add_file(archive, path, name, mode)
     return filename
