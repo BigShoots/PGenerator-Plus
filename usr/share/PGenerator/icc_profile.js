@@ -1129,6 +1129,33 @@ const METER_ICC_GITHUB_RELEASE_ASSETS={
  'linux-x64':'PGeneratorPlus-ICC-Tools-Linux-x64.zip'
 };
 
+// Which package this visitor most likely wants. A connected Companion is the
+// only reliable answer, because the WebUI is routinely open on a phone or a
+// second machine while a different computer is the one being profiled; the
+// browser is only guessed from when nothing is connected to ask.
+function meterIccPreferredDownloadPlatform(){
+ if(meterIccCompanionPlatform==='linux') return 'linux-x64';
+ if(meterIccCompanionPlatform==='windows') return 'windows-x64';
+ const hint=String((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||navigator.userAgent||'');
+ if(/win/i.test(hint)) return 'windows-x64';
+ if(/linux|x11|cros/i.test(hint)&&!/android/i.test(hint)) return 'linux-x64';
+ return '';
+}
+
+// Marks the matching release button as the primary action wherever a download
+// row is rendered, so the visitor is not left choosing between three packages
+// with nothing to tell them apart. Runs on every status poll because the
+// answer changes the moment a Companion connects or goes away.
+function meterIccApplyDownloadRecommendation(){
+ const preferred=meterIccPreferredDownloadPlatform();
+ document.querySelectorAll('[data-icc-download]').forEach(function(button){
+  const match=button.getAttribute('data-icc-download')===preferred;
+  button.classList.toggle('btn-primary',match);
+  button.classList.toggle('btn-secondary',!match);
+  button.title=match?'Recommended for this computer':'';
+ });
+}
+
 // GitHub redirects "latest/download/<asset>" to whichever release is newest,
 // so this needs no version lookup and works even though the Pi itself has no
 // internet route -- the browser does the fetching, not the server. Opened in
@@ -1466,6 +1493,10 @@ async function meterIccRefreshCompanionStatus(){
  }
  meterIccUpdateTopCompanionStatus(meterIccCompanionConnected,meterIccCompanionDetail);
  meterCalibrationApplyCompanionAvailability(meterIccCompanionConnected);
+ // Out here rather than in the success branch so the recommendation is still
+ // right when the status request itself failed and only the browser guess is
+ // available to go on.
+ meterIccApplyDownloadRecommendation();
  meterIccSyncUi();
  return meterIccCompanionConnected;
 }
