@@ -341,6 +341,13 @@ sub webui_icc_companion_poll (@) {
   $patch_values[$index]=$1+0 if($query=~/(?:^|&)\Q$key\E=(\d+(?:\.\d+)?)(?:&|$)/);
  }
  my $seen=time();
+ # Record whether this Companion can run colprof locally, and which ArgyllCMS
+ # it has. The builder reads this to decide whether to offload; a version that
+ # does not match the Pi's is treated as no capability at all, because the same
+ # measurements fitted by a different ArgyllCMS produce a different profile.
+ my $build_argyll="";
+ $build_argyll=$1 if($query=~/(?:^|&)build_argyll=([0-9]+(?:\.[0-9]+){1,3})(?:&|$)/);
+ &webui_icc_companion_build_state($build_argyll);
  my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"selected_display\":\"".&_webui_json_escape($selected_display)."\",\"swapchain_color_space\":\"".&_webui_json_escape($swapchain_cs)."\",\"presentation_mode\":\"".&_webui_json_escape($presentation)."\",\"output_max_luminance\":".($output_max+0).",\"output_full_frame_luminance\":".($output_full+0).",\"output_bits_per_color\":".($output_bits+0).",\"active_profile\":\"".&_webui_json_escape($active_profile)."\",\"transform_mode\":\"$transform\",\"transform_ready\":".($transform_ready?"true":"false").",\"source_rgb\":[".join(",",@patch_values[0..2])."],\"submitted_rgb\":[".join(",",@patch_values[3..5])."],\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
  &webui_icc_companion_write_atomic($_icc_companion_status_file,$status,0600);
  my $command="";
@@ -354,6 +361,16 @@ sub webui_icc_companion_poll (@) {
    my $settings=&webui_icc_companion_settings_fragment();
    $command=~s/\}\s*$/,$settings}/;
    return $command;
+  }
+ }
+ # A pending colprof job outranks the idle response: the builder is blocked
+ # waiting on it, and the patch path is idle while a fit runs.
+ if($build_argyll ne "" && -f $_icc_companion_build_job) {
+  my $job="";
+  if(open(my $jf,"<",$_icc_companion_build_job)) { local $/; $job=<$jf>||""; close($jf); }
+  if($job=~/^\s*\{/ && length($job)<64*1024*1024) {
+   $job=~s/\}\s*\z//;
+   return $job.',"status":"build",'.&webui_icc_companion_settings_fragment().'}';
   }
  }
  my $poll_ms=500;
@@ -406,6 +423,48 @@ sub webui_icc_companion_shipped_version () {
   $_icc_companion_shipped_version=$1 if($rc=~/VALUE\s+"FileVersion"\s*,\s*"([0-9]+(?:\.[0-9]+){1,3})"/);
  }
  return $_icc_companion_shipped_version;
+}
+
+# Publish the Companion's colprof capability for the builder to read. Written on
+# every poll so a Companion that goes away stops being offered work within one
+# poll interval, rather than stalling a build until its timeout.
+sub webui_icc_companion_build_state (@) {
+ my ($argyll)=@_;
+ eval { require File::Path; File::Path::make_path($_icc_companion_build_dir,{mode=>0700}); } unless(-d $_icc_companion_build_dir);
+ my $connected=($argyll ne "") ? "true" : "false";
+ my $json='{"connected":'.$connected.',"argyll_version":"'.&_webui_json_escape($argyll).'","seen":'.time().'}';
+ return &webui_icc_companion_write_atomic($_icc_companion_build_state,$json,0600);
+}
+
+# Receive a profile built by the Companion, or the reason it could not be.
+sub webui_icc_companion_build_result (@) {
+ my ($query,$body)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
+ return '{"status":"error","message":"No build is pending"}' unless(-f $_icc_companion_build_job);
+ # Parsed here rather than through webui_icc_companion_query_value: that parser
+ # is deliberately strict because it also reads tokens and client names, and a
+ # build failure message needs spaces and punctuation to be worth reporting.
+ # Sanitised immediately below to the same character class it enforces.
+ my $error="";
+ $error=$1 if($query=~/(?:^|&)error=([^&]{1,240})(?:&|$)/);
+ $error=~s/\+/ /g;
+ $error=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+ if($error ne "") {
+  $error=~s/[^A-Za-z0-9 ._:\/()\[\]-]+/?/g;
+  &webui_icc_companion_write_atomic($_icc_companion_build_error,substr($error,0,240),0600);
+  return '{"status":"ok"}';
+ }
+ return '{"status":"error","message":"Empty profile payload"}' unless(defined($body) && length($body)>128);
+ return '{"status":"error","message":"Profile payload is too large"}' if(length($body)>64*1024*1024);
+ # An ICC declares its own byte count in the first four bytes and carries the
+ # acsp signature; reject anything else rather than handing the builder a file
+ # that will only fail later.
+ my $declared=unpack("N",substr($body,0,4));
+ return '{"status":"error","message":"Payload is not an ICC profile"}' if($declared!=length($body) || substr($body,36,4) ne "acsp");
+ return &webui_icc_companion_write_atomic($_icc_companion_build_result,$body,0600)
+  ? '{"status":"ok"}' : '{"status":"error","message":"Could not store the built profile"}';
 }
 
 sub webui_icc_companion_status (@) {

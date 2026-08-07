@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 
 PROFILE_TYPES = {
@@ -811,6 +812,96 @@ def safe_basename(name):
     return cleaned[:80]
 
 
+# Offload directory shared with the WebUI. The builder writes a job here, the
+# Companion collects it through the existing poll channel, and the finished
+# profile is written back by the result endpoint.
+COMPANION_BUILD_DIR = "/var/lib/PGenerator/icc-companion/build"
+COMPANION_BUILD_POLL_SECONDS = 2.0
+
+
+def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
+    """Ask a connected Patch Companion to run colprof, returning True on success.
+
+    colprof is single-threaded and the Pi 4 needs roughly ten minutes for a
+    high-quality cLUT fit that an x86 desktop finishes in under a minute, so
+    the fit is handed to the Companion when one is connected. Only colprof
+    moves: the characterization, the MHC2/vcgt derivation and the ICC rebuild
+    all stay here, so there is one implementation of the calibration logic
+    regardless of where the fit ran.
+
+    Every failure path returns False and leaves the caller to run colprof
+    locally, because a profile that silently did not get built is worse than a
+    slow one.
+    """
+    if os.environ.get("PGEN_ICC_NO_OFFLOAD"):
+        return False
+    try:
+        state_path = os.path.join(COMPANION_BUILD_DIR, "companion.json")
+        if not os.path.isfile(state_path):
+            return False
+        with io.open(state_path, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if not state.get("connected"):
+            return False
+        # Refuse to offload to a different ArgyllCMS than the one here: the same
+        # measurements fitted by a different version produce a different profile,
+        # and the user would have no way to tell which built theirs.
+        local_version = argyll_version()
+        remote_version = str(state.get("argyll_version", ""))
+        if not local_version or not remote_version or local_version != remote_version:
+            return False
+        if not os.path.isdir(COMPANION_BUILD_DIR):
+            return False
+        job_id = "%d-%d" % (int(time.time()), os.getpid())
+        result_path = os.path.join(COMPANION_BUILD_DIR, "result.icc")
+        error_path = os.path.join(COMPANION_BUILD_DIR, "error.txt")
+        for stale in (result_path, error_path):
+            if os.path.exists(stale):
+                os.remove(stale)
+        # Hand over only the arguments that describe the fit. Paths are rewritten
+        # by the Companion against its own working directory.
+        flags = [item for item in command[1:] if item not in (temporary_output,)]
+        job = {
+            "job": job_id,
+            "argyll_version": local_version,
+            "timeout": timeout_seconds,
+            "flags": flags,
+            "ti3": ti3,
+        }
+        write_json_atomic(os.path.join(COMPANION_BUILD_DIR, "job.json"), job)
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if os.path.isfile(result_path) and os.path.getsize(result_path) > 128:
+                shutil.copyfile(result_path, temporary_output)
+                os.remove(result_path)
+                return True
+            if os.path.isfile(error_path):
+                os.remove(error_path)
+                return False
+            time.sleep(COMPANION_BUILD_POLL_SECONDS)
+        return False
+    except (OSError, IOError, ValueError, KeyError):
+        return False
+    finally:
+        try:
+            os.remove(os.path.join(COMPANION_BUILD_DIR, "job.json"))
+        except OSError:
+            pass
+
+
+def argyll_version():
+    """Version string of the local colprof, used to gate the offload."""
+    colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
+    try:
+        process = subprocess.Popen([colprof], stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, universal_newlines=True)
+        text = process.communicate()[0] or ""
+    except (OSError, ValueError):
+        return ""
+    match = re.search(r"Version\s+([0-9]+(?:\.[0-9]+)+)", text)
+    return match.group(1) if match else ""
+
+
 def run_colprof(payload, ti3, output_path, profile_model, patch_set):
     colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
     if not os.path.isfile(colprof) or not os.access(colprof, os.X_OK):
@@ -848,6 +939,9 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             timeout_seconds = min(2400, max(quality_floor, int(180 + line_count * quality_factor * 1.5)))
         else:
             timeout_seconds = min(900, max(180, int(90 + line_count * quality_factor * 0.5)))
+        if companion_build_offload(ti3, command, temporary_output, timeout_seconds):
+            os.rename(temporary_output, output_path)
+            return
         completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
         if completed.returncode != 0 or not os.path.isfile(temporary_output) or os.path.getsize(temporary_output) <= 0:

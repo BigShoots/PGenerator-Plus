@@ -412,6 +412,14 @@ our $_icc_companion_dir="$var_dir/icc-companion";
 our $_icc_companion_token_file="$_icc_companion_dir/pairing.token";
 our $_icc_companion_command_file="$_icc_companion_dir/command.json";
 our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
+# colprof offload: the ICC builder drops a job here and waits for result.icc.
+# The Companion collects the job through its existing poll and posts the built
+# profile back, so no new transport is involved.
+our $_icc_companion_build_dir="$_icc_companion_dir/build";
+our $_icc_companion_build_job="$_icc_companion_build_dir/job.json";
+our $_icc_companion_build_result="$_icc_companion_build_dir/result.icc";
+our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
+our $_icc_companion_build_state="$_icc_companion_build_dir/companion.json";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 my $_system_backup_helper="/usr/bin/pgenerator_system_backup.py";
@@ -765,7 +773,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result");
  return 0;
 }
 
@@ -1717,6 +1725,11 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/icc/companion/poll") {
     my $result=&webui_icc_companion_poll($request_query);
+    my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/build-result" && $method eq "POST") {
+    my $result=&webui_icc_companion_build_result($request_query,$body);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }
