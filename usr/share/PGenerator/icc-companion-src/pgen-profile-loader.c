@@ -115,6 +115,88 @@ static PFN_ColorProfileGetDisplayList p_get_list;
 static PFN_ColorProfileSetDisplayDefaultAssociation p_set_default;
 static PFN_ColorProfileRemoveDisplayAssociation p_remove_association;
 
+/* SYSTEM THEME
+ *
+ * The palette is read from the OS at startup rather than hardcoded, so a
+ * dark-themed desktop does not get a glaring light window. Sources:
+ *   HKCU\...\Themes\Personalize  AppsUseLightTheme  (0 = dark, 1 = light)
+ *   HKCU\Software\Microsoft\Windows\DWM  AccentColor  (ABGR)
+ * Both are plain registry reads, so no dependency is added. The title bar is
+ * switched with DWMWA_USE_IMMERSIVE_DARK_MODE, because a dark window under a
+ * light title bar looks broken.
+ *
+ * Read once at startup and refreshed on WM_SETTINGCHANGE. */
+typedef struct {
+    COLORREF background, card, border, text, muted, accent, accent_pressed;
+    COLORREF ok, bad, pending, disabled, on_accent;
+    BOOL dark;
+} PGEN_PALETTE;
+
+static PGEN_PALETTE g_palette;
+
+static DWORD read_dword_value(HKEY root, const WCHAR *path, const WCHAR *name, DWORD fallback) {
+    HKEY key;
+    DWORD value = fallback, size = sizeof(value), type = 0;
+    if (RegOpenKeyExW(root, path, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) return fallback;
+    if (RegQueryValueExW(key, name, NULL, &type, (LPBYTE)&value, &size) != ERROR_SUCCESS ||
+        type != REG_DWORD) value = fallback;
+    RegCloseKey(key);
+    return value;
+}
+
+static COLORREF blend_color(COLORREF a, COLORREF b, double t) {
+    return RGB((int)(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t),
+               (int)(GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t),
+               (int)(GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t));
+}
+
+static void load_system_palette(void) {
+    DWORD light = read_dword_value(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme", 1);
+    DWORD accent = read_dword_value(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", 0);
+    g_palette.dark = light == 0;
+    /* DWM stores the accent as ABGR, not ARGB. */
+    g_palette.accent = accent ? RGB(accent & 0xFF, (accent >> 8) & 0xFF, (accent >> 16) & 0xFF)
+                              : (g_palette.dark ? RGB(76, 148, 255) : RGB(55, 96, 220));
+    if (g_palette.dark) {
+        g_palette.background = RGB(32, 32, 32);
+        g_palette.card = RGB(43, 43, 43);
+        g_palette.border = RGB(64, 64, 64);
+        g_palette.text = RGB(244, 244, 244);
+        g_palette.muted = RGB(168, 172, 180);
+        g_palette.ok = RGB(94, 208, 143);
+        g_palette.bad = RGB(255, 130, 120);
+        g_palette.disabled = RGB(128, 132, 140);
+        g_palette.accent_pressed = blend_color(g_palette.accent, RGB(255, 255, 255), 0.18);
+    } else {
+        g_palette.background = RGB(246, 248, 252);
+        g_palette.card = RGB(255, 255, 255);
+        g_palette.border = RGB(221, 226, 235);
+        g_palette.text = RGB(48, 56, 72);
+        g_palette.muted = RGB(110, 120, 138);
+        g_palette.ok = RGB(24, 132, 70);
+        g_palette.bad = RGB(190, 55, 48);
+        g_palette.disabled = RGB(166, 174, 190);
+        g_palette.accent_pressed = blend_color(g_palette.accent, RGB(0, 0, 0), 0.22);
+    }
+    g_palette.pending = g_palette.accent;
+    /* Keep the label on the primary button legible whatever the accent is. */
+    g_palette.on_accent = (GetRValue(g_palette.accent) * 299 + GetGValue(g_palette.accent) * 587 +
+                           GetBValue(g_palette.accent) * 114) / 1000 > 150
+                          ? RGB(16, 18, 22) : RGB(255, 255, 255);
+}
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+static void apply_titlebar_theme(HWND window) {
+    BOOL dark = g_palette.dark;
+    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+}
+
 static int px(int value) {
     return MulDiv(value, (int)g_dpi, 96);
 }
@@ -1206,13 +1288,18 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HWND ctl;
         g_dpi = GetDpiForWindow(hwnd);
         if (!g_dpi) g_dpi = 96;
-        g_font_normal = make_ui_font(10, FW_NORMAL);
-        g_font_label = make_ui_font(9, FW_SEMIBOLD);
-        g_font_title = make_ui_font(20, FW_SEMIBOLD);
-        g_font_subtitle = make_ui_font(10, FW_NORMAL);
-        g_font_button = make_ui_font(10, FW_SEMIBOLD);
-        g_brush_background = CreateSolidBrush(RGB(246, 248, 252));
-        g_brush_card = CreateSolidBrush(RGB(255, 255, 255));
+        /* Segoe UI is 9pt in native Windows dialogs. px() and make_ui_font()
+         * already convert 96-dpi design units once each under the PerMonitorV2
+         * manifest, so there is no scale multiplier to remove here - the title
+         * was simply authored far larger than any native dialog heading. */
+        g_font_normal = make_ui_font(9, FW_NORMAL);
+        g_font_label = make_ui_font(8, FW_SEMIBOLD);
+        g_font_title = make_ui_font(13, FW_SEMIBOLD);
+        g_font_subtitle = make_ui_font(9, FW_NORMAL);
+        g_font_button = make_ui_font(9, FW_SEMIBOLD);
+        apply_titlebar_theme(hwnd);
+        g_brush_background = CreateSolidBrush(g_palette.background);
+        g_brush_card = CreateSolidBrush(g_palette.card);
 
         ctl = CreateWindowW(L"STATIC", L"PGenerator+ Profile Loader",
                             WS_CHILD | WS_VISIBLE, px(28), px(22), px(520), px(38),
@@ -1319,10 +1406,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PAINTSTRUCT ps;
         RECT rc, card;
         HDC dc = BeginPaint(hwnd, &ps);
-        HBRUSH accent = CreateSolidBrush(RGB(55, 96, 220));
-        HBRUSH dot = CreateSolidBrush(g_status_ok ? RGB(31, 157, 85) :
-                                     (g_status_pending ? RGB(55, 96, 220) : RGB(218, 74, 65)));
-        HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(221, 226, 235));
+        HBRUSH accent = CreateSolidBrush(g_palette.accent);
+        HBRUSH dot = CreateSolidBrush(g_status_ok ? g_palette.ok :
+                                     (g_status_pending ? g_palette.pending : g_palette.bad));
+        HPEN border_pen = CreatePen(PS_SOLID, 1, g_palette.border);
         HGDIOBJ old_pen, old_brush;
         GetClientRect(hwnd, &rc);
         FillRect(dc, &rc, g_brush_background);
@@ -1353,13 +1440,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetBkMode(dc, TRANSPARENT);
         if (control == g_status || control == g_status_heading) {
             SetTextColor(dc, control == g_status_heading
-                             ? (g_status_ok ? RGB(24, 132, 70) :
-                                (g_status_pending ? RGB(55, 96, 220) : RGB(190, 55, 48)))
-                             : RGB(45, 52, 66));
-            SetBkColor(dc, RGB(255, 255, 255));
+                             ? (g_status_ok ? g_palette.ok :
+                                (g_status_pending ? g_palette.pending : g_palette.bad))
+                             : g_palette.text);
+            SetBkColor(dc, g_palette.card);
             return (LRESULT)g_brush_card;
         }
-        SetTextColor(dc, RGB(48, 56, 72));
+        SetTextColor(dc, g_palette.text);
         return (LRESULT)g_brush_background;
     }
     case WM_CTLCOLORBTN:
@@ -1368,8 +1455,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
         if (item && item->CtlID == ID_APPLY) {
-            COLORREF color = (item->itemState & ODS_DISABLED) ? RGB(166, 174, 190) :
-                             ((item->itemState & ODS_SELECTED) ? RGB(39, 74, 177) : RGB(55, 96, 220));
+            COLORREF color = (item->itemState & ODS_DISABLED) ? g_palette.disabled :
+                             ((item->itemState & ODS_SELECTED) ? g_palette.accent_pressed
+                                                               : g_palette.accent);
             HBRUSH brush = CreateSolidBrush(color);
             HGDIOBJ old_brush = SelectObject(item->hDC, brush);
             HGDIOBJ old_pen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
@@ -1381,7 +1469,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DeleteObject(brush);
             GetWindowTextW(item->hwndItem, text, 64);
             SetBkMode(item->hDC, TRANSPARENT);
-            SetTextColor(item->hDC, RGB(255, 255, 255));
+            SetTextColor(item->hDC, g_palette.on_accent);
             SelectObject(item->hDC, g_font_button);
             DrawTextW(item->hDC, text, -1, &item->rcItem,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1464,6 +1552,24 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_reapply_attempted_for_mismatch = FALSE;
         enumerate_displays(); refresh_display_profiles(); verify_profile(TRUE); return 0;
     case WM_SETTINGCHANGE:
+        /* Windows broadcasts ImmersiveColorSet when the light/dark preference
+         * or the accent changes; rebuild the palette-derived GDI objects so the
+         * window follows the system theme while running. */
+        if (lp && !lstrcmpiW((const WCHAR *)lp, L"ImmersiveColorSet")) {
+            load_system_palette();
+            apply_titlebar_theme(hwnd);
+            if (g_brush_background) DeleteObject(g_brush_background);
+            if (g_brush_card) DeleteObject(g_brush_card);
+            g_brush_background = CreateSolidBrush(g_palette.background);
+            g_brush_card = CreateSolidBrush(g_palette.card);
+            if (g_icon_ok) DestroyIcon(g_icon_ok);
+            if (g_icon_bad) DestroyIcon(g_icon_bad);
+            g_icon_ok = make_status_icon(g_palette.ok);
+            g_icon_bad = make_status_icon(g_palette.bad);
+            g_tray.hIcon = g_status_ok ? g_icon_ok : g_icon_bad;
+            Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+            InvalidateRect(hwnd, NULL, TRUE);
+        }
         refresh_display_profiles(); verify_profile(TRUE); return 0;
     case WM_TRAYICON:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) show_window();
@@ -1540,8 +1646,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         proc = GetProcAddress(g_mscms, "ColorProfileRemoveDisplayAssociation");
         memcpy(&p_remove_association, &proc, sizeof(p_remove_association));
     }
-    g_icon_ok = make_status_icon(RGB(35, 166, 78));
-    g_icon_bad = make_status_icon(RGB(210, 48, 48));
+    load_system_palette();
+    g_icon_ok = make_status_icon(g_palette.ok);
+    g_icon_bad = make_status_icon(g_palette.bad);
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = window_proc;
