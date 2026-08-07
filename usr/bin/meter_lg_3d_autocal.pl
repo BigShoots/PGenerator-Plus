@@ -2926,6 +2926,86 @@ sub maybe_reset_meter_session_after_read_error {
  $_meter_session_consecutive_transient_failures=0;
 }
 
+# --- Null-read guard -------------------------------------------------------
+# A meter that has drifted off the patch, gone to sleep, or lost its USB
+# interface can still answer a read "successfully" with an all-zero
+# measurement: X=Y=Z=0. Chromaticity is derived from XYZ, so x and y then come
+# back pinned at 1/3 (reported as 0.3333 / 0.333333). Nothing downstream
+# rejects that, so the zero lands in the profile as if the lit patch really
+# were black, and the 3D solve bends the whole neighbourhood around it --
+# which is what shows up as posterisation in the emitted LUT.
+#
+# The greyscale worker (meter_lg_autocal.pl) has carried the same test for its
+# shadow ladder for a long time (invalid_low_shadow_reading). The numeric
+# signature below is deliberately identical to it, INCLUDING the 0.0002
+# chromaticity tolerance: the meter API hands back rounded JSON, so a real null
+# read arrives as 0.3333 and would slip through any tighter window.
+#
+# Deliberately a sibling implementation rather than shared code: the only
+# module both workers pull in is PGAutoCalRun.pm, which is loaded through an
+# eval'd require and is fail-safe diagnostics, so a guard the run depends on
+# must not live there -- and the gating half genuinely differs. The greyscale
+# worker keys off IRE (its ladder is 0<ire<=10); this worker measures colour
+# patches whose ire/stimulus fields are 0 while the patch is plainly lit (the
+# CC24 post-check steps are built ire=>0, stimulus=>0 with real signal_*_pct
+# drives), so "is this patch legitimately black" has to be answered from the
+# signal drives instead.
+sub step_drives_light {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH");
+ my $max=0;
+ my $have_drives=0;
+ foreach my $key (qw(signal_r_pct signal_g_pct signal_b_pct)) {
+  next if(!defined($step->{$key}));
+  $have_drives=1;
+  my $v=$step->{$key}+0;
+  $max=$v if($v > $max);
+ }
+ if(!$have_drives) {
+  # Steps built without explicit drives fall back to their level fields.
+  foreach my $key (qw(stimulus ire level)) {
+   next if(!defined($step->{$key}));
+   my $v=$step->{$key}+0;
+   $max=$v if($v > $max);
+  }
+ }
+ return ($max > 0.1) ? 1 : 0;
+}
+
+# Returns 1 when a reading that the meter reported as successful is in fact an
+# unusable null read and must be thrown away and re-measured.
+sub invalid_null_reading {
+ my ($reading,$step)=@_;
+ # A 0% black patch legitimately measures zero -- never reject it.
+ return 0 if(!step_drives_light($step));
+ return 1 if(ref($reading) ne "HASH");
+ my $Y=defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0)
+      : (defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef);
+ return 1 if(defined($Y) && $Y <= 0);
+ my $x=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
+ my $y=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
+ return 1 if(defined($Y) && $Y < 0.5 && defined($x) && defined($y) && abs($x-0.333333) < 0.0002 && abs($y-0.333333) < 0.0002);
+ return 0;
+}
+
+sub step_read_label {
+ my ($step)=@_;
+ return "patch" if(ref($step) ne "HASH");
+ return $step->{"name"} if(defined($step->{"name"}) && $step->{"name"} ne "");
+ return format_percent($step->{"ire"}||0)."%";
+}
+
+# Count discarded null reads in the run state so they surface after the run.
+# Deliberately just a counter plus the first few patch names -- the state file
+# is rewritten on every step and must stay small.
+sub note_null_reading {
+ my ($state,$step)=@_;
+ return if(ref($state) ne "HASH");
+ $state->{"null_reads"}=($state->{"null_reads"}||0)+1;
+ $state->{"null_read_patches"}=[] if(ref($state->{"null_read_patches"}) ne "ARRAY");
+ push @{$state->{"null_read_patches"}},step_read_label($step) if(@{$state->{"null_read_patches"}} < 8);
+}
+
 sub read_step {
  my ($config,$step,$state)=@_;
  my $fixture=fixture_reading_for_step($step,$config);
@@ -2940,9 +3020,34 @@ sub read_step {
  my $insert_error=apply_pattern_insert_before_read($config,$step);
  log_line("pattern insertion failed (continuing to read): ".$insert_error) if(defined($insert_error));
  my $attempts=3;
+ # Bounded budget for readings the meter returns "successfully" but that are
+ # unusable (see invalid_null_reading). Each discard re-enters read_step_once,
+ # which POSTs a FRESH /api/meter/read. The check cannot live inside
+ # read_step_once's result poll: that loop only re-GETs
+ # /api/meter/read/result, which keeps handing back the same completed
+ # reading, so a retry there would spin until "Meter read timed out" instead
+ # of re-measuring. Discards are counted for the whole logical read, not per
+ # attempt, so a dead meter cannot loop forever.
+ my $max_null_discards=3;
+ my $null_discards=0;
  my $last="";
  for(my $i=1;$i<=$attempts;$i++) {
   my ($reading,$error)=read_step_once($config,$step);
+  while(!$error && invalid_null_reading($reading,$step)) {
+   $null_discards++;
+   note_null_reading($state,$step);
+   my $label=step_read_label($step);
+   log_line("Discarding null meter reading for ".$label." (stimulus ".format_percent($step->{"stimulus"}||0)."%, discard ".$null_discards.", re-read limit ".$max_null_discards.")");
+   if($null_discards > $max_null_discards) {
+    return (undef,"Meter returned ".$null_discards." unusable all-zero readings for ".$label." after ".$max_null_discards." re-reads; check the meter is still on the patch and awake");
+   }
+   if(ref($state) eq "HASH") {
+    $state->{"message"}="Discarded null meter reading; re-reading ".$label." (".$null_discards."/".$max_null_discards.")";
+    write_state($state);
+   }
+   sleep(0.4);
+   ($reading,$error)=read_step_once($config,$step);
+  }
   if(!$error) {
    $reading->{"signal_mode"}=$config->{"signal_mode"}||"sdr";
    $reading->{"target_gamut"}=$config->{"target_gamut"}||"bt709";
@@ -5008,6 +5113,15 @@ eval {
   }
  }
 
+ # Surface any null meter reads that had to be discarded during the run. They
+ # were re-measured, so the LUT is sound, but a meter that dropped out once is
+ # likely to do it again and the operator should know it happened.
+ if(($state->{"null_reads"}||0) > 0) {
+  my $patches=join(", ",@{ref($state->{"null_read_patches"}) eq "ARRAY" ? $state->{"null_read_patches"} : []});
+  $state->{"null_read_warning"}="Discarded ".($state->{"null_reads"}+0)." null meter reading(s) and re-measured"
+   .($patches ne "" ? " (".$patches.")" : "")."; check the meter mount and USB connection.";
+  log_line($state->{"null_read_warning"});
+ }
  $state->{"status"}="complete";
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
