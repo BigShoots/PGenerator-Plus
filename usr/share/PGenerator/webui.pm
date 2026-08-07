@@ -12062,9 +12062,6 @@ body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:10
 .meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
 .meter-companion-downloads{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:8px}
 .meter-companion-downloads .btn{font-size:.6rem;padding:2px 6px}
-.meter-companion-downloads-secondary{font-size:.6rem;color:var(--text2);margin-top:4px}
-.meter-companion-downloads-secondary a{color:var(--text2);text-decoration:underline;cursor:pointer}
-.meter-companion-downloads-secondary a:hover{color:var(--text)}
 .meter-companion-pair-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border);font-size:.62rem}
 .meter-companion-pair-meta{flex:1 1 auto;min-width:0;color:var(--text2)}
 .meter-companion-pair-code{font-family:'Courier New',monospace;font-weight:700;font-size:.85rem;letter-spacing:.1em;color:var(--accent)}
@@ -13229,8 +13226,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        </select>
       </div>
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionCorrectionNote">The Companion submits native HDR patches and can explicitly apply the active profile cLUT or matrix/TRC fallback.</div>
-      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Get the Patch Companion</button><span class="meter-companion-downloads-hint" id="meterIccReleaseHint"></span><span class="meter-help-tip" title="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired -- the Companion finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, which the browser flags as an insecure download." aria-label="Patch Companion download help">?</span></div>
-      <div class="meter-companion-downloads-secondary">Already-paired copy from this PGenerator: <a href="#" onclick="meterIccDownloadCompanion('windows-x64');return false;">Windows Installer</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('windows-portable-x64');return false;">Windows Portable</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('linux-x64');return false;">KDE/Linux</a></div>
+      <div class="meter-companion-downloads"><button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Download ICC Tools</button><span class="meter-companion-downloads-hint" id="meterIccReleaseHint"></span><span class="meter-help-tip" title="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired -- the Companion finds this PGenerator+ on the network by itself and asks you to approve it below the first time it connects. The paired copy from this PGenerator (link below) arrives already configured, but is served over this unit's plain http, which the browser flags as an insecure download." aria-label="Patch Companion download help">?</span></div>
      </div></span>
     </div>
     <div id="meterCalibrationCompanionStatus" class="meter-companion-status"></div>

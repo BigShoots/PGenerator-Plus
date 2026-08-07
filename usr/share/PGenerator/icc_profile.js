@@ -1117,9 +1117,6 @@ function meterIccApplyCompanionCorrectionAvailability(){
  });
 }
 
-function meterIccDownloadCompanion(platform){
- window.location.href='/api/icc/companion/download?platform='+encodeURIComponent(platform);
-}
 
 // Asset filenames match what icc_companion_package.py produces, so a release
 // built from that same packager output can be uploaded to GitHub unchanged.

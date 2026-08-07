@@ -88,11 +88,10 @@
         <div class="meter-icc-note" id="meterIccCompanionDisplayModeNote" hidden></div>
         <div class="meter-icc-note" id="meterIccCompanionCorrectionNote" hidden>Profile builds always measure the uncorrected display path. The Companion is switched to no correction for the whole run and submits every patch exactly as sent, so the characterization describes the panel itself rather than the panel plus an existing profile.</div>
         <div class="btn-row" style="margin:0 0 10px">
-         <button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Get the Patch Companion</button>
+         <button type="button" class="btn btn-sm btn-primary" onclick="meterIccOpenGithubRelease()">Download ICC Tools</button>
          <span class="meter-icc-note" id="meterIccReleaseHint" style="margin-left:8px"></span>
          <span class="meter-icc-help" style="margin-left:2px" data-tip="Opens the latest release page on GitHub in a new tab, where you can pick the download for your computer. Those copies are unpaired: the Companion finds this PGenerator+ on the network by itself and asks you to approve it the first time it connects. The paired copy from this PGenerator arrives already configured, but is served over this unit's plain http, which the browser flags as an insecure download.">?</span>
         </div>
-        <div class="meter-icc-note" style="margin:0 0 10px">Already-paired copy from this PGenerator (served over plain http, so the browser may warn it is insecure): <a href="#" onclick="meterIccDownloadCompanion('windows-x64');return false;">Windows Installer</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('windows-portable-x64');return false;">Windows Portable</a> &middot; <a href="#" onclick="meterIccDownloadCompanion('linux-x64');return false;">KDE/Linux</a></div>
         <div id="meterIccCompanionStatus" class="meter-icc-note" style="color:var(--red)"><span style="color:var(--red)">&#9679;</span> Companion not connected</div>
         <div id="meterIccPairRequests"></div>
        </div>
