@@ -11,6 +11,14 @@ let meterIccCompanionClient='';
 let meterIccCompanionOutdated='';
 let meterIccCompanionTimer=null;
 let meterIccCompanionSettingsPending=0;
+// The correction selector is an operator choice, not a live-status widget.
+// A profile run temporarily writes `none` to the Companion settings, and the
+// status poll used to copy that temporary value back into the selector. The
+// next calibration series then faithfully sent `none` again, making every
+// installed profile appear ineffective. Hydrate once on page load, then keep
+// the explicit browser choice until the operator changes it.
+let meterIccCompanionCorrectionInitialized=false;
+let meterIccCompanionProfileRestoreMode='';
 let meterIccPollPending=false;
 let meterIccReuseChoiceResolver=null;
 let meterIccMeasurementClock=null;
@@ -483,8 +491,16 @@ function meterIccCompanionCorrectionChanged(source){
  // Only the calibration workspace still carries a correction selector. The
  // ICC workspace has none: a profile build forces no correction for its whole
  // run, so there was nothing to choose and every choice but one was a trap.
+ meterIccCompanionCorrectionInitialized=true;
  meterIccSyncUi();
  meterIccPushCompanionDisplaySettings(true);
+}
+
+async function meterIccRestoreCompanionCorrectionAfterProfile(){
+ const mode=meterIccCompanionProfileRestoreMode;
+ meterIccCompanionProfileRestoreMode='';
+ if(!mode||meterIccPatternProvider()!=='companion') return;
+ await meterIccPushCompanionDisplaySettings(false,mode);
 }
 
 function meterIccCompanionDisplaySettingsChanged(){
@@ -1472,9 +1488,10 @@ async function meterIccRefreshCompanionStatus(){
    const transformMode=String(state.transform_mode||correctionMode);
    const transformReady=state.transform_ready!==false;
    const selectedDisplay=String(state.selected_display||'');
-   if(!meterIccCompanionSettingsPending&&['system','none','clut','matrix'].includes(correctionMode)){
+   if(!meterIccCompanionCorrectionInitialized&&!meterIccCompanionSettingsPending&&['system','none','clut','matrix'].includes(correctionMode)){
     const calibrationMode=document.getElementById('meterCalibrationCompanionCorrectionMode');
     if(calibrationMode) calibrationMode.value=correctionMode;
+    meterIccCompanionCorrectionInitialized=true;
    }
    const activeProfile=String(state.active_profile||'');
    const platform=String(state.platform||'');
@@ -1894,7 +1911,12 @@ async function meterIccStart(){
   // no-correction mode: on fullscreen HDR the Companion stands in for the
   // MHC2 stage Windows skips, which characterized the display through the
   // previously active profile's curves.
-  if(!await meterIccPushCompanionDisplaySettings(true,'none')) return;
+  meterIccCompanionProfileRestoreMode=meterIccCompanionCorrectionValue();
+  meterIccCompanionCorrectionInitialized=true;
+  if(!await meterIccPushCompanionDisplaySettings(true,'none')){
+   meterIccCompanionProfileRestoreMode='';
+   return;
+  }
  }else{
   if(!await meterIccEnsureLocalOutputMode(type)) return;
  }
@@ -2042,6 +2064,7 @@ async function meterIccStart(){
   meterIccSetRunning(false);
   if(status) status.textContent=error&&error.message?error.message:'Could not start ICC profiling.';
   if(!(error&&error.icc_cancelled)) toast(error&&error.message?error.message:'Could not start ICC profiling',true);
+  await meterIccRestoreCompanionCorrectionAfterProfile();
  }
 }
 
@@ -2134,8 +2157,9 @@ async function meterIccPoll(){
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
    }
-  }else{
+ }else{
    if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
+   await meterIccRestoreCompanionCorrectionAfterProfile();
   }
  }catch(error){
   const status=document.getElementById('meterIccStatus');
@@ -2229,6 +2253,7 @@ async function meterIccBuild(readings){
   if(stopButton) stopButton.style.display='none';
   meterIccSyncUi();
   meterUpdateReadButtons();
+  await meterIccRestoreCompanionCorrectionAfterProfile();
  }
 }
 
@@ -2245,6 +2270,7 @@ async function meterIccStop(){
   if(stop) stop.style.display='none';
   meterIccSyncUi();
   meterUpdateReadButtons();
+  await meterIccRestoreCompanionCorrectionAfterProfile();
   return;
  }
  if(!meterIccRunning) return;
