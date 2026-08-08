@@ -64,6 +64,8 @@ typedef struct {
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <wayland-client.h>
+#include "pgen-color-management-v1-client-protocol.h"
 #define close_socket close
 typedef int socket_handle_t;
 #define INVALID_SOCKET_HANDLE (-1)
@@ -73,12 +75,229 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.4"
+#define APP_VERSION "1.4.5"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
+
+#ifndef _WIN32
+typedef struct {
+    struct wl_display *display;
+    struct wp_color_manager_v1 *manager;
+    struct wp_color_management_surface_v1 *surface;
+    bool parametric;
+    bool luminances;
+    bool pq;
+    bool bt2020;
+    bool absolute_intent;
+    bool description_ready;
+    bool description_failed;
+} PgenWaylandColor;
+
+static PgenWaylandColor wayland_color;
+
+static void pgen_cm_intent(void *data, struct wp_color_manager_v1 *manager,
+                           uint32_t intent)
+{
+    PgenWaylandColor *state = data;
+    (void)manager;
+    if (intent == WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE)
+        state->absolute_intent = true;
+}
+
+static void pgen_cm_feature(void *data, struct wp_color_manager_v1 *manager,
+                            uint32_t feature)
+{
+    PgenWaylandColor *state = data;
+    (void)manager;
+    if (feature == WP_COLOR_MANAGER_V1_FEATURE_PARAMETRIC)
+        state->parametric = true;
+    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_SET_LUMINANCES)
+        state->luminances = true;
+}
+
+static void pgen_cm_tf(void *data, struct wp_color_manager_v1 *manager,
+                       uint32_t transfer)
+{
+    PgenWaylandColor *state = data;
+    (void)manager;
+    if (transfer == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ)
+        state->pq = true;
+}
+
+static void pgen_cm_primaries(void *data, struct wp_color_manager_v1 *manager,
+                              uint32_t primaries)
+{
+    PgenWaylandColor *state = data;
+    (void)manager;
+    if (primaries == WP_COLOR_MANAGER_V1_PRIMARIES_BT2020)
+        state->bt2020 = true;
+}
+
+static void pgen_cm_done(void *data, struct wp_color_manager_v1 *manager)
+{
+    (void)data;
+    (void)manager;
+}
+
+static const struct wp_color_manager_v1_listener pgen_cm_listener = {
+    pgen_cm_intent, pgen_cm_feature, pgen_cm_tf, pgen_cm_primaries, pgen_cm_done
+};
+
+static void pgen_registry_global(void *data, struct wl_registry *registry,
+                                 uint32_t name, const char *interface,
+                                 uint32_t version)
+{
+    PgenWaylandColor *state = data;
+    if (!strcmp(interface, wp_color_manager_v1_interface.name)) {
+        uint32_t bind_version = version < 2 ? version : 2;
+        state->manager = wl_registry_bind(registry, name,
+                                          &wp_color_manager_v1_interface,
+                                          bind_version);
+        wp_color_manager_v1_add_listener(state->manager, &pgen_cm_listener,
+                                         state);
+    }
+}
+
+static void pgen_registry_remove(void *data, struct wl_registry *registry,
+                                 uint32_t name)
+{
+    (void)data;
+    (void)registry;
+    (void)name;
+}
+
+static const struct wl_registry_listener pgen_registry_listener = {
+    pgen_registry_global, pgen_registry_remove
+};
+
+static void pgen_description_failed(void *data,
+                                    struct wp_image_description_v1 *description,
+                                    uint32_t cause, const char *message)
+{
+    PgenWaylandColor *state = data;
+    (void)description;
+    (void)cause;
+    state->description_failed = true;
+    SDL_Log("KWin rejected the HDR surface description: %s",
+            message && message[0] ? message : "unknown reason");
+}
+
+static void pgen_description_ready(void *data,
+                                   struct wp_image_description_v1 *description,
+                                   uint32_t identity)
+{
+    PgenWaylandColor *state = data;
+    (void)description;
+    (void)identity;
+    state->description_ready = true;
+}
+
+static void pgen_description_ready2(void *data,
+                                    struct wp_image_description_v1 *description,
+                                    uint32_t identity_hi, uint32_t identity_lo)
+{
+    PgenWaylandColor *state = data;
+    (void)description;
+    (void)identity_hi;
+    (void)identity_lo;
+    state->description_ready = true;
+}
+
+static const struct wp_image_description_v1_listener pgen_description_listener = {
+    pgen_description_failed, pgen_description_ready, pgen_description_ready2
+};
+
+static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
+                                         uint32_t reference_luminance)
+{
+    SDL_PropertiesID properties;
+    struct wl_surface *wl_surface;
+
+    if (strcmp(SDL_GetCurrentVideoDriver(), "wayland")) return true;
+    if (!hdr && !wayland_color.surface) return true;
+    properties = SDL_GetWindowProperties(window);
+    wayland_color.display = SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+    wl_surface = SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+    if (!wayland_color.display || !wl_surface) {
+        return SDL_SetError("Wayland did not expose the window surface");
+    }
+
+    if (!wayland_color.manager) {
+        struct wl_registry *registry = wl_display_get_registry(wayland_color.display);
+        if (!registry) return SDL_SetError("Could not read Wayland globals");
+        wl_registry_add_listener(registry, &pgen_registry_listener,
+                                 &wayland_color);
+        if (wl_display_roundtrip(wayland_color.display) < 0 ||
+            wl_display_roundtrip(wayland_color.display) < 0) {
+            wl_registry_destroy(registry);
+            return SDL_SetError("Could not query Wayland color management");
+        }
+        wl_registry_destroy(registry);
+        if (!wayland_color.manager)
+            return SDL_SetError("KWin does not expose color-management-v1");
+        SDL_Log("Creating Wayland color-management surface (hdr=%d)", hdr ? 1 : 0);
+        wayland_color.surface = wp_color_manager_v1_get_surface(
+            wayland_color.manager, wl_surface);
+    }
+
+    SDL_Log("Setting Wayland surface color state hdr=%d manager=%p surface=%p",
+            hdr ? 1 : 0, (void *)wayland_color.manager,
+            (void *)wayland_color.surface);
+
+    if (!hdr) {
+        if (wayland_color.surface)
+            wp_color_management_surface_v1_unset_image_description(
+                wayland_color.surface);
+        wl_display_flush(wayland_color.display);
+        return true;
+    }
+
+    if (!wayland_color.parametric || !wayland_color.luminances ||
+        !wayland_color.pq || !wayland_color.bt2020 ||
+        !wayland_color.absolute_intent) {
+        return SDL_SetError("KWin lacks native BT.2020/PQ surface support");
+    }
+
+    {
+        struct wp_image_description_creator_params_v1 *creator =
+            wp_color_manager_v1_create_parametric_creator(
+                wayland_color.manager);
+        struct wp_image_description_v1 *description;
+        if (!creator) return SDL_SetError("Could not create HDR parameters");
+        wp_image_description_creator_params_v1_set_tf_named(
+            creator, WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ);
+        wp_image_description_creator_params_v1_set_primaries_named(
+            creator, WP_COLOR_MANAGER_V1_PRIMARIES_BT2020);
+        wp_image_description_creator_params_v1_set_luminances(
+            creator, 0, 10000,
+            reference_luminance ? reference_luminance : 203);
+        description = wp_image_description_creator_params_v1_create(creator);
+        if (!description) return SDL_SetError("Could not create HDR description");
+        wayland_color.description_ready = false;
+        wayland_color.description_failed = false;
+        wp_image_description_v1_add_listener(description,
+                                             &pgen_description_listener,
+                                             &wayland_color);
+        if (wl_display_roundtrip(wayland_color.display) < 0 ||
+            wayland_color.description_failed ||
+            !wayland_color.description_ready) {
+            wp_image_description_v1_destroy(description);
+            return SDL_SetError("KWin rejected the BT.2020/PQ description");
+        }
+        wp_color_management_surface_v1_set_image_description(
+            wayland_color.surface, description,
+            WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE);
+        wp_image_description_v1_destroy(description);
+        wl_display_flush(wayland_color.display);
+    }
+    return true;
+}
+#endif
 /* PGenerator+ runs its own mDNS responder under this name, independent of
  * whatever mDNS stack the host OS may or may not have configured, so a plain
  * getaddrinfo() for it resolves on both Windows 10+ and Linux with
@@ -1545,7 +1764,7 @@ static bool apply_mhc2_inverse(double rgb[3])
     return true;
 }
 
-static bool apply_vcgt(double rgb[3])
+static PGEN_UNUSED bool apply_vcgt(double rgb[3])
 {
     IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt");
     if(!tag.data||tag.size<18||memcmp(tag.data,"vcgt",4)) return false;
@@ -1714,7 +1933,8 @@ static bool load_correction_lut(uint64_t revision)
 static bool apply_correction_lut(double *red, double *green, double *blue)
 {
     double rgb[3]={*red,*green,*blue},xyz[3],output[3],white_nits=1.0;
-    double media_white[3],adaptation[3][3];
+    static const double d65_white[3]={0.9504559,1.0,1.0890578};
+    double adaptation[3][3];
 
     /* Pure passthrough. Profiling selects this so the characterization
      * measures the panel itself: on Windows "system" is NOT a no-correction
@@ -1742,23 +1962,12 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         return true;
     }
     if(!app.correction_profile_data)return false;
-    /* Neutral HDR patches used to be diverted to MHC2 here, because a
-     * relative-colorimetric BToA maps PCS white onto the uncalibrated media
-     * white and so returned neutrals at the panel's native white. That is a
-     * property of how the PCS target was built, not of the table: adapting the
-     * requested XYZ with the profile's own Bradford transform now lands
-     * neutral on the requested white through the cLUT itself.
-     *
-     * Keeping the diversion actively hurt. It corrected the grey axis with a
-     * different engine than everything around it, so an exactly neutral patch
-     * and a patch one code off neutral took different paths and disagreed at
-     * the boundary, and the grey axis inherited the MHC2 curves' behaviour of
-     * freezing once the measured channel response saturates. In these modes
-     * the Companion is the only correction stage, so one transform handles the
-     * whole space. MHC2 still runs for correction_mode "system", where it
-     * stands in for the calibration stage Windows skips on fullscreen output. */
-    {IccTag wtpt=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");if(!wtpt.data||wtpt.size<20||memcmp(wtpt.data,"XYZ ",4))return false;for(int channel=0;channel<3;channel++){media_white[channel]=read_s15(wtpt.data+8+channel*4);if(media_white[channel]<=0.0)return false;}}
-    if(!companion_adaptation(media_white,adaptation))return false;
+    /* Both sRGB and BT.2020 use D65.  ICC PCS is D50, so source colours must
+     * always be adapted from D65 to D50 before entering BToA.  The profile's
+     * wtpt is the measured display white and is characterization data, not the
+     * source white for this conversion.  Using it here moved even requested
+     * D65 white away from PCS white and produced a severe red/yellow cast. */
+    if(!companion_adaptation(d65_white,adaptation))return false;
     if(!strcmp(app.correction_signal_mode,"hdr10")&&!companion_characterization_white(&white_nits)){
         IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");
         if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;
@@ -1766,21 +1975,11 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
-    /* No vcgt after the cLUT. The cLUT is fitted to raw measurements, so it is
-     * already a complete PCS->device transform and composing a calibration on
-     * top would correct twice. The 1D stage runs on the SOURCE code below,
-     * where it bypasses the cLUT's shadow grid. */
+    /* A 3D cLUT cannot resolve the steep PQ shadow axis at its grid spacing.
+     * Use the profile's own MHC2 calibration for exact and near-neutral HDR
+     * requests, while chromatic requests continue through the selected cLUT
+     * or matrix transform. */
     {
-        /* On the grey axis take the calibration straight from the source code
-         * instead, bypassing the cLUT whose shadow grid cannot resolve the PQ
-         * conversion. Blend by how neutral the request is so there is no seam
-         * one code off neutral.
-         *
-         * MHC2 is preferred over vcgt here: both carry the same measured 1D
-         * response, but MHC2 also carries the 3x3, so it corrects chromaticity
-         * as well as tone. vcgt is per-channel only and can do no more than
-         * scale each channel, which measured a worse white point. vcgt remains
-         * the fallback for profiles built without an MHC2 tag. */
         double direct[3];
         double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
         double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
@@ -2242,7 +2441,10 @@ static uint32_t patch_to_hdr10(double r, double g, double b)
  */
 typedef struct {
     bool found;
+    bool enabled;
     bool hdr;
+    int sdr_brightness;
+    double scale;
     char connector[64];
     long score;               /* Distance from the SDL rectangle */
     char icc_path[1024];      /* SDR slot */
@@ -2290,8 +2492,9 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
     char line[1400];
     SDL_Rect bounds;
     bool current = false;
+    int enabled_count = 0;
     long best_score = -1;
-    KWinOutputState pending, best;
+    KWinOutputState pending, best, sole_enabled;
 
     SDL_zerop(state);
     if (!display || !SDL_GetDisplayBounds(display, &bounds)) return false;
@@ -2299,11 +2502,16 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
     if (!pipe) return false;
     SDL_zero(pending);
     SDL_zero(best);
+    SDL_zero(sole_enabled);
     while (fgets(line, sizeof(line), pipe)) {
         char *cursor = line;
         kwin_strip_ansi(line);
         while (*cursor == ' ' || *cursor == '\t') cursor++;
         if (!strncmp(cursor, "Output:", 7)) {
+            if (current && pending.enabled) {
+                enabled_count++;
+                sole_enabled = pending;
+            }
             if (current && pending.found &&
                 (best_score < 0 || pending.score < best_score)) {
                 best = pending;
@@ -2316,6 +2524,8 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
                     SDL_strlcpy(pending.connector, name, sizeof(pending.connector));
             }
             current = true;
+        } else if (current && !strncmp(cursor, "enabled", 7)) {
+            pending.enabled = true;
         } else if (current && !strncmp(cursor, "Geometry:", 9)) {
             int x = 0, y = 0, w = 0, h = 0;
             if (sscanf(cursor + 9, " %d,%d %dx%d", &x, &y, &w, &h) == 4) {
@@ -2326,6 +2536,8 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
                  * different monitor never wins. */
                 pending.found = (dx <= 4 && dy <= 4 && dw <= 8 && dh <= 8);
             }
+        } else if (current && !strncmp(cursor, "Scale:", 6)) {
+            (void)sscanf(cursor + 6, " %lf", &pending.scale);
         } else if (current && !strncmp(cursor, "HDR ICC profile:", 16)) {
             SDL_strlcpy(pending.hdr_icc_path, cursor + 16, sizeof(pending.hdr_icc_path));
             kwin_trim(pending.hdr_icc_path);
@@ -2336,13 +2548,51 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
             if (!strcmp(pending.icc_path, "none")) pending.icc_path[0] = '\0';
         } else if (current && !strncmp(cursor, "HDR:", 4)) {
             pending.hdr = strstr(cursor, "enabled") != NULL;
+        } else if (current && !strncmp(cursor, "SDR brightness:", 15)) {
+            (void)sscanf(cursor + 15, " %d", &pending.sdr_brightness);
         }
+    }
+    if (current && pending.enabled) {
+        enabled_count++;
+        sole_enabled = pending;
     }
     if (current && pending.found && (best_score < 0 || pending.score < best_score))
         best = pending;
     pclose(pipe);
+    /* Wayland normalizes an application's coordinates to the sole active
+     * output, while kscreen-doctor can retain that output's old multi-monitor
+     * origin. Geometry cannot match in that valid configuration. A sole
+     * enabled output is unambiguous, so use it directly. */
+    if (best_score < 0 && enabled_count == 1) {
+        best = sole_enabled;
+        best.found = true;
+    }
     *state = best;
     return state->found;
+}
+
+static uint32_t kwin_hdr_surface_reference(SDL_DisplayID display)
+{
+    KWinOutputState output;
+    double scale;
+    double reference;
+    if (!kwin_output_state(display, &output) || output.sdr_brightness <= 0)
+        return 203;
+    scale = output.scale;
+    if (!isfinite(scale) || scale <= 0.0)
+        scale = SDL_GetDisplayContentScale(display);
+    if (!isfinite(scale) || scale <= 0.0) scale = 1.0;
+    /* Plasma currently applies the output's SDR-white anchor in logical
+     * surface units. Compensating by the output content scale keeps absolute
+     * PQ patches invariant when either the HDR brightness slider or display
+     * scaling changes. This was verified at both 230 and 417 nit settings on
+     * the same HDR output. */
+    reference = output.sdr_brightness * (double)scale;
+    if (reference < 1.0) reference = 1.0;
+    if (reference > 10000.0) reference = 10000.0;
+    SDL_Log("KWin HDR reference: SDR white %d, content scale %.3f, surface reference %.0f",
+            output.sdr_brightness, (double)scale, reference);
+    return (uint32_t)lround(reference);
 }
 #endif
 
@@ -2486,6 +2736,17 @@ static bool try_create_renderer(bool hdr, const char *driver)
     SDL_DestroyProperties(props);
     if (!app.renderer) return false;
     app.hdr = hdr;
+#ifndef _WIN32
+    /* The Vulkan swapchain uses VK_COLOR_SPACE_PASS_THROUGH_EXT on Wayland,
+     * leaving this application as the sole owner of the surface description.
+     * Attach BT.2020/PQ before the first frame reaches KWin. */
+    if (!pgen_wayland_set_hdr_surface(
+            app.window, hdr,
+            hdr ? kwin_hdr_surface_reference(app.selected_display_id) : 0)) {
+        destroy_renderer();
+        return false;
+    }
+#endif
     {
         SDL_PropertiesID renderer_props = SDL_GetRendererProperties(app.renderer);
         const char *name = SDL_GetStringProperty(renderer_props, SDL_PROP_RENDERER_NAME_STRING, "unknown");
@@ -2587,6 +2848,7 @@ static bool create_renderer(bool hdr)
             SDL_strlcpy(attempt_error, "create failed", sizeof(attempt_error));
         SDL_snprintf(attempt_summary, sizeof(attempt_summary), "%s: %s",
                      driver && driver[0] ? driver : "default", attempt_error);
+        SDL_Log("Native HDR renderer attempt failed: %s", attempt_summary);
         if (last_error[0]) SDL_strlcat(last_error, "; ", sizeof(last_error));
         SDL_strlcat(last_error, attempt_summary, sizeof(last_error));
     }
@@ -3692,6 +3954,10 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
                                  NULL);
         return SDL_APP_FAILURE;
     }
+    /* Calibration patches must not be altered by the desktop's idle dimming
+     * policy during a long series. On Wayland SDL implements this with the
+     * compositor idle-inhibit protocol for the lifetime of this window. */
+    SDL_DisableScreenSaver();
 #ifdef _WIN32
     set_windows_window_icon();
 #else
@@ -3817,6 +4083,13 @@ SDL_AppResult SDL_AppIterate(void *appstate)
      * HDR patch every refresh, as dogegen does, so the desktop compositor can
      * never surface an untouched or stale buffer after a Present rotation. */
     if (state->hdr_swapchain && !render_current_frame()) return SDL_APP_FAILURE;
+#else
+    /* Vulkan swapchains rotate multiple images too. Keep every image filled
+     * with the active patch so KWin cannot present an older frame after a
+     * series advances. Focus and expose events used to hide this by causing an
+     * extra redraw, which is why Alt-Tab appeared to repair the patch. */
+    if (state->hdr && state->renderer && !render_current_frame())
+        return SDL_APP_FAILURE;
 #endif
     SDL_Delay(5);
     return state->quit ? SDL_APP_SUCCESS : SDL_APP_CONTINUE;

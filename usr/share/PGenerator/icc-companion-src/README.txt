@@ -61,11 +61,17 @@ PGenerator+. The Companion also forwards the configured HDR10 mastering and
 content-light metadata to DXGI. It does not add its own PQ encoding or tone-map
 roll-off.
 
+On Plasma, the Companion declares its PQ surface itself instead of relying on
+Mesa's default HDR description. It reads the selected output's HDR brightness
+and scale from KWin so absolute PQ luminance stays unchanged when the Plasma
+SDR brightness slider changes. This requires the bundled SDL library; do not
+replace it with a system SDL build.
+
 For post-profile verification, the WebUI can leave patches unmodified for the
 operating-system profile pipeline, apply the active display profile's BToA cLUT
 inside the Companion, or apply its matrix and tone-curve fallback. The active
-profile is read and evaluated locally on the selected Windows display. It is
-never transferred to PGenerator+. Do not leave the same MHC2 system correction
+profile is read and evaluated locally on the selected Windows or KWin display.
+It is never transferred to PGenerator+. Do not leave the same system correction
 active while using either application-managed mode, because that would apply
 two corrections to the measurement patches.
 

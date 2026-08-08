@@ -1,0 +1,38 @@
+diff --git a/src/render/vulkan/SDL_render_vulkan.c b/src/render/vulkan/SDL_render_vulkan.c
+--- a/src/render/vulkan/SDL_render_vulkan.c
++++ b/src/render/vulkan/SDL_render_vulkan.c
+@@ -2192,7 +2192,10 @@ static VkResult VULKAN_CreateSwapChain(SDL_Renderer *renderer, int w, int h)
+     }
+     else if (renderer->output_colorspace == SDL_COLORSPACE_HDR10) {
+         desiredFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+-        desiredColorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
++        /* The application owns the Wayland color-management surface. Mesa's
++         * HDR10 WSI path would attach another description with fixed
++         * perceptual defaults, so keep WSI out of color management. */
++        desiredColorSpace = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+     }
+ 
+     if ((rendererData->surfaceFormatsCount == 1) &&
+@@ -3467,7 +3467,11 @@ static void VULKAN_SetupShaderConstants(SDL_Renderer *renderer, const SDL_Render
+                 constants->input_type = INPUTTYPE_SCRGB;
+             } else if (SDL_COLORSPACEPRIMARIES(texture->colorspace) == SDL_COLOR_PRIMARIES_BT2020 &&
+                        SDL_COLORSPACETRANSFER(texture->colorspace) == SDL_TRANSFER_CHARACTERISTICS_PQ) {
+-                constants->input_type = INPUTTYPE_HDR10;
++                /* Preserve native BT.2020/PQ codes when the renderer output
++                 * uses the same encoding. The HDR10 advanced shader decodes
++                 * PQ and emits sRGB values, which is wrong for a PQ swapchain. */
++                constants->input_type = renderer->output_colorspace == SDL_COLORSPACE_HDR10
++                    ? INPUTTYPE_UNSPECIFIED : INPUTTYPE_HDR10;
+             } else {
+                 // The sampler will convert from sRGB to linear on load if working in linear colorspace
+                 constants->input_type = INPUTTYPE_UNSPECIFIED;
+@@ -4534,7 +4538,7 @@ static bool VULKAN_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, SD
+     SDL_SetupRendererColorspace(renderer, create_props);
+ 
+     if (renderer->output_colorspace != SDL_COLORSPACE_SRGB &&
+-        renderer->output_colorspace != SDL_COLORSPACE_SRGB_LINEAR
+-        /*&& renderer->output_colorspace != SDL_COLORSPACE_HDR10*/) {
++        renderer->output_colorspace != SDL_COLORSPACE_SRGB_LINEAR &&
++        renderer->output_colorspace != SDL_COLORSPACE_HDR10) {
+         return SDL_SetError("Unsupported output colorspace");
+     }
