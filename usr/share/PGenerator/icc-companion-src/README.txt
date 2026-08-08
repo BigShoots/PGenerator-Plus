@@ -25,14 +25,14 @@ so it pairs itself the first time it runs:
 
 If the name cannot be resolved -- more than one PGenerator+ on the network, a
 routed network, or mDNS blocked -- give the address explicitly instead, either
-as a line reading SERVER=http://<address> in PGenICCCompanion.conf beside the
+as a line reading SERVER=http://<address> in PGenPatchCompanion.conf beside the
 executable, or by starting the companion with --server=http://<address>. A
 SERVER set that way always wins over discovery.
 
 PGenerator+ Patch Companion
 ==========================
 
-1. If a PGenICCCompanion.conf came with this package, keep it beside the
+1. If a PGenPatchCompanion.conf came with this package, keep it beside the
    executable.
 2. Enable HDR in the operating system before starting an HDR profile.
 3. Run PGeneratorPlusPatchCompanion.exe. It initially opens in a movable, resizable window.
@@ -45,7 +45,7 @@ PGenerator+ Patch Companion
 5. Press F11 if you need to override fullscreen locally. Press Escape to exit.
 
 On KDE/Linux, extract the package with the desktop archive manager. If the
-executable bit is not preserved, run `chmod +x PGenICCCompanion` once before
+executable bit is not preserved, run `chmod +x PGenPatchCompanion` once before
 starting it. The Linux build requires a modern x86-64 distribution with
 glibc 2.38 or newer. KDE HDR profiles require Plasma 6.7 or newer, a Wayland
 session, HDR enabled for the display, and an HDR-capable SDL renderer. While an
@@ -85,7 +85,7 @@ The Linux package also contains PGenProfileLoader, the counterpart to the
 Windows profile loader. It installs a finished PGenerator+ profile and applies
 it to a display, for SDR and HDR alike. Run `chmod +x PGenProfileLoader` if the
 executable bit was not preserved, then start it beside the companion; it does
-not need PGenICCCompanion.conf.
+not need PGenPatchCompanion.conf.
 
 Pick the display, pick the profile, and press Apply to display. That single
 action does the whole job: a profile still sitting in a download folder is

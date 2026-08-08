@@ -62,7 +62,7 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   ; Stored without compression so the Pi can replace the fixed-width pairing
   ; slots before download. The resulting EXE remains a single installer.
   SetCompress off
-  File /oname=PGenICCCompanion.conf "PGenICCCompanion.template.conf"
+  File /oname=PGenPatchCompanion.conf "PGenPatchCompanion.template.conf"
   SetCompress auto
 
   CreateDirectory "$SMPROGRAMS\PGenerator+"
@@ -127,6 +127,8 @@ Section "Uninstall"
   Delete "$INSTDIR\PGenICCCompanion.exe"
   Delete "$INSTDIR\PGenProfileLoader.exe"
   Delete "$INSTDIR\SDL3.dll"
+  Delete "$INSTDIR\PGenPatchCompanion.conf"
+  ; Left behind by installs predating the Patch Companion rename.
   Delete "$INSTDIR\PGenICCCompanion.conf"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\PROFILE-LOADER-README.txt"

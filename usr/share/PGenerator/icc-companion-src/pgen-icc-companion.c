@@ -337,7 +337,7 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
  * getaddrinfo() for it resolves on both Windows 10+ and Linux with
  * nss-mdns/avahi installed. */
 #define PGEN_DISCOVERY_HOST "pgenerator.local"
-/* PGenICCCompanion.template.conf ships inside the installer with these
+/* PGenPatchCompanion.template.conf ships inside the installer with these
  * literal slot markers in place of a real SERVER/TOKEN; PGenerator+
  * overwrites the fixed-width slots only when a unit downloads its own
  * personalised copy. A static installer taken straight from a GitHub release
@@ -345,6 +345,12 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
  * personalised and must be treated the same as the field being absent. */
 #define PGEN_SERVER_SLOT_MARKER "__PGEN_SERVER_SLOT__"
 #define PGEN_TOKEN_SLOT_MARKER "__PGEN_TOKEN_SLOT__"
+/* The conf holds the pairing token, and it was named for the Companion when
+ * the Companion was still called the ICC Companion. Both names are read so an
+ * install predating the rename keeps its pairing; only the current name is
+ * ever written, so the retired file stops mattering after the next save. */
+#define PGEN_CONF_NAME "PGenPatchCompanion.conf"
+#define PGEN_CONF_RETIRED_NAME "PGenICCCompanion.conf"
 
 typedef struct {
     char server[256];
@@ -1048,11 +1054,11 @@ static bool token_is_valid(const char *token)
     return true;
 }
 
-/* Reads one PGenICCCompanion.conf and fills in whichever of SERVER/TOKEN/
- * DISPLAY it defines. Fields the file does not mention are left untouched, so
- * a caller can read the beside-the-binary copy and the pref-path copy into
- * separate buffers and merge them itself. Returns false only when the file
- * could not be opened. */
+/* Reads one conf file and fills in whichever of SERVER/TOKEN/DISPLAY it
+ * defines. Fields the file does not mention are left untouched, so a caller
+ * can read the beside-the-binary copy and the pref-path copy into separate
+ * buffers and merge them itself. Returns false only when the file could not be
+ * opened. */
 static bool load_conf_fields(const char *path, char *server, size_t server_size,
                              char *token, size_t token_size,
                              char *display, size_t display_size)
@@ -1077,9 +1083,34 @@ static bool load_conf_fields(const char *path, char *server, size_t server_size,
     return true;
 }
 
+/* Reads both conf names out of one directory, retired name first and current
+ * name over the top, so a field the current file actually defines wins while
+ * anything it leaves out still comes through from before the rename. Each
+ * file's slot markers are cleared before it is overlaid: an installer drops an
+ * unpersonalised template under the current name, and stripping only after the
+ * merge would let that empty template blank a real token underneath it. */
+static void load_conf_dir(const char *dir, char *server, size_t server_size,
+                          char *token, size_t token_size,
+                          char *display, size_t display_size)
+{
+    static const char *const names[] = { PGEN_CONF_RETIRED_NAME, PGEN_CONF_NAME };
+    for (size_t index = 0; index < SDL_arraysize(names); index++) {
+        char path[1024];
+        char file_server[256] = "", file_token[96] = "", file_display[192] = "";
+        SDL_snprintf(path, sizeof(path), "%s%s", dir, names[index]);
+        if (!load_conf_fields(path, file_server, sizeof(file_server),
+                              file_token, sizeof(file_token),
+                              file_display, sizeof(file_display))) continue;
+        if (strstr(file_server, PGEN_SERVER_SLOT_MARKER)) file_server[0] = '\0';
+        if (strstr(file_token, PGEN_TOKEN_SLOT_MARKER)) file_token[0] = '\0';
+        if (file_server[0]) SDL_strlcpy(server, file_server, server_size);
+        if (file_token[0]) SDL_strlcpy(token, file_token, token_size);
+        if (file_display[0]) SDL_strlcpy(display, file_display, display_size);
+    }
+}
+
 static bool load_config(CompanionConfig *config, int argc, char *argv[])
 {
-    char base_path[1024], pref_path[1024];
     char conf_server[256] = "", conf_token[96] = "", conf_display[192] = "";
     char pref_server[256] = "", pref_token[96] = "", pref_display[192] = "";
     const char *arg_server = NULL, *arg_token = NULL, *arg_display = NULL;
@@ -1096,22 +1127,15 @@ static bool load_config(CompanionConfig *config, int argc, char *argv[])
     }
 
     base = SDL_GetBasePath();
-    SDL_snprintf(base_path, sizeof(base_path), "%sPGenICCCompanion.conf", base ? base : "");
-    load_conf_fields(base_path, conf_server, sizeof(conf_server),
-                     conf_token, sizeof(conf_token), conf_display, sizeof(conf_display));
+    load_conf_dir(base ? base : "", conf_server, sizeof(conf_server),
+                  conf_token, sizeof(conf_token), conf_display, sizeof(conf_display));
     /* Learned at run time via companion_pair() and save_config() when the
      * beside-the-binary location is not writable, e.g. under Program Files. */
     pref = SDL_GetPrefPath("PGeneratorPlus", "PatchCompanion");
     if (pref) {
-        SDL_snprintf(pref_path, sizeof(pref_path), "%sPGenICCCompanion.conf", pref);
-        load_conf_fields(pref_path, pref_server, sizeof(pref_server),
-                         pref_token, sizeof(pref_token), pref_display, sizeof(pref_display));
+        load_conf_dir(pref, pref_server, sizeof(pref_server),
+                      pref_token, sizeof(pref_token), pref_display, sizeof(pref_display));
     }
-
-    if (strstr(conf_server, PGEN_SERVER_SLOT_MARKER)) conf_server[0] = '\0';
-    if (strstr(conf_token, PGEN_TOKEN_SLOT_MARKER)) conf_token[0] = '\0';
-    if (strstr(pref_server, PGEN_SERVER_SLOT_MARKER)) pref_server[0] = '\0';
-    if (strstr(pref_token, PGEN_TOKEN_SLOT_MARKER)) pref_token[0] = '\0';
 
     server_value = conf_server[0] ? conf_server : (pref_server[0] ? pref_server : NULL);
     token_value = conf_token[0] ? conf_token : (pref_token[0] ? pref_token : NULL);
@@ -1191,13 +1215,13 @@ static bool save_config(const CompanionConfig *config)
     FILE *file = NULL;
 
     if (base) {
-        SDL_snprintf(path, sizeof(path), "%sPGenICCCompanion.conf", base);
+        SDL_snprintf(path, sizeof(path), "%s" PGEN_CONF_NAME, base);
         file = fopen(path, "wb");
     }
     if (!file) {
         pref = SDL_GetPrefPath("PGeneratorPlus", "PatchCompanion");
         if (pref) {
-            SDL_snprintf(path, sizeof(path), "%sPGenICCCompanion.conf", pref);
+            SDL_snprintf(path, sizeof(path), "%s" PGEN_CONF_NAME, pref);
             file = fopen(path, "wb");
         }
     }
@@ -4067,7 +4091,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
                                  "Could not find a PGenerator+ on this network. PGenerator+ answers to "
                                  "the name " PGEN_DISCOVERY_HOST ". If this computer cannot resolve that "
                                  "name, put a line reading SERVER=http://<address of your PGenerator+> "
-                                 "in PGenICCCompanion.conf beside this program, or start it with "
+                                 "in " PGEN_CONF_NAME " beside this program, or start it with "
                                  "--server=http://<address>.", NULL);
         return SDL_APP_FAILURE;
     }

@@ -42,7 +42,7 @@ PLATFORMS = {
         # loader: it installs a built profile and applies it to the display
         # through KWin, or colord on non-KDE sessions. DejaVu-LICENSE.txt
         # covers the glyphs its interface is drawn with.
-        "files": ("PGenICCCompanion", "PGenProfileLoader", "libSDL3.so.0",
+        "files": ("PGenPatchCompanion", "PGenProfileLoader", "libSDL3.so.0",
                   "colprof", "profcheck", "ArgyllCMS-LICENSE.txt"),
         "paired": True,
         "kind": "archive",
@@ -126,7 +126,7 @@ def build(platform, server, token, output_path, paired=True):
             # the Companion resolves pgenerator.local and asks to be approved,
             # which is the only pairing a static download can do.
             if paired:
-                config_info = zipfile.ZipInfo("PGenICCCompanion.conf")
+                config_info = zipfile.ZipInfo("PGenPatchCompanion.conf")
                 config_info.create_system = 3
                 config_info.external_attr = 0o600 << 16
                 archive.writestr(config_info, config)
@@ -145,7 +145,7 @@ def build(platform, server, token, output_path, paired=True):
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
-            executable = ("PGenICCCompanion", "PGenProfileLoader", "colprof", "profcheck")
+            executable = ("PGenPatchCompanion", "PGenProfileLoader", "colprof", "profcheck")
             mode = 0o755 if package["directory"] == "linux-x64" and name in executable else 0o644
             add_file(archive, path, name, mode)
     return filename
