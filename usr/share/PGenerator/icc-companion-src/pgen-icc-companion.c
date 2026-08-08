@@ -76,7 +76,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.6"
+#define APP_VERSION "1.4.7"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -90,9 +90,11 @@ typedef struct {
     struct wp_color_management_surface_v1 *surface;
     bool parametric;
     bool luminances;
+    bool mastering_metadata;
     bool pq;
     bool bt2020;
     bool absolute_intent;
+    bool absolute_no_adaptation_intent;
     bool description_ready;
     bool description_failed;
 } PgenWaylandColor;
@@ -106,6 +108,8 @@ static void pgen_cm_intent(void *data, struct wp_color_manager_v1 *manager,
     (void)manager;
     if (intent == WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE)
         state->absolute_intent = true;
+    else if (intent == WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION)
+        state->absolute_no_adaptation_intent = true;
 }
 
 static void pgen_cm_feature(void *data, struct wp_color_manager_v1 *manager,
@@ -117,6 +121,8 @@ static void pgen_cm_feature(void *data, struct wp_color_manager_v1 *manager,
         state->parametric = true;
     else if (feature == WP_COLOR_MANAGER_V1_FEATURE_SET_LUMINANCES)
         state->luminances = true;
+    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_SET_MASTERING_DISPLAY_PRIMARIES)
+        state->mastering_metadata = true;
 }
 
 static void pgen_cm_tf(void *data, struct wp_color_manager_v1 *manager,
@@ -212,7 +218,10 @@ static const struct wp_image_description_v1_listener pgen_description_listener =
 };
 
 static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
-                                         uint32_t reference_luminance)
+                                         uint32_t reference_luminance,
+                                         double mastering_min_luminance,
+                                         double mastering_max_luminance,
+                                         double max_cll, double max_fall)
 {
     SDL_PropertiesID properties;
     struct wl_surface *wl_surface;
@@ -260,7 +269,8 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
 
     if (!wayland_color.parametric || !wayland_color.luminances ||
         !wayland_color.pq || !wayland_color.bt2020 ||
-        !wayland_color.absolute_intent) {
+        (!wayland_color.absolute_intent &&
+         !wayland_color.absolute_no_adaptation_intent)) {
         return SDL_SetError("KWin lacks native BT.2020/PQ surface support");
     }
 
@@ -277,6 +287,27 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
         wp_image_description_creator_params_v1_set_luminances(
             creator, 0, 10000,
             reference_luminance ? reference_luminance : 203);
+        /* PQ always has a 10,000-nit primary color volume, but that is not the
+         * same thing as the content's mastering volume. Without this metadata
+         * KWin assumes every calibration patch may contain 10,000-nit content
+         * and tone-maps the whole signal before the output ICC transform. */
+        if (wayland_color.mastering_metadata) {
+            uint32_t mastering_min = (uint32_t)lround(
+                fmax(0.0, fmin(429496.0, mastering_min_luminance)) * 10000.0);
+            uint32_t mastering_max = (uint32_t)lround(
+                fmax(mastering_min_luminance + 0.0001,
+                     fmin(10000.0, mastering_max_luminance)));
+            uint32_t content_max = (uint32_t)lround(
+                fmax(1.0, fmin(10000.0, max_cll)));
+            uint32_t frame_average_max = (uint32_t)lround(
+                fmax(1.0, fmin((double)content_max, max_fall)));
+            wp_image_description_creator_params_v1_set_mastering_luminance(
+                creator, mastering_min, mastering_max);
+            wp_image_description_creator_params_v1_set_max_cll(
+                creator, content_max);
+            wp_image_description_creator_params_v1_set_max_fall(
+                creator, frame_average_max);
+        }
         description = wp_image_description_creator_params_v1_create(creator);
         if (!description) return SDL_SetError("Could not create HDR description");
         wayland_color.description_ready = false;
@@ -292,7 +323,9 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
         }
         wp_color_management_surface_v1_set_image_description(
             wayland_color.surface, description,
-            WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE);
+            wayland_color.absolute_no_adaptation_intent
+                ? WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION
+                : WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE);
         wp_image_description_v1_destroy(description);
         wl_display_flush(wayland_color.display);
     }
@@ -2826,7 +2859,9 @@ static bool try_create_renderer(bool hdr, const char *driver)
      * Attach BT.2020/PQ before the first frame reaches KWin. */
     if (!pgen_wayland_set_hdr_surface(
             app.window, hdr,
-            hdr ? kwin_hdr_surface_reference(app.selected_display_id) : 0)) {
+            hdr ? kwin_hdr_surface_reference(app.selected_display_id) : 0,
+            app.command_min_luma, app.command_max_luma,
+            app.command_max_cll, app.command_max_fall)) {
         destroy_renderer();
         return false;
     }
