@@ -583,19 +583,38 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
 
 
 def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment):
-    """Return identity HDR MHC2 adjustment curves.
+    """Invert the measured neutral response in the post-PQ MHC2 stage.
 
-    MHC2's HDR curves operate after PQ encoding.  Inverting measured HDR
-    primary ramps here is invalid because a display's HDR tone mapping and APL
-    behaviour are not separable per channel.  It produced curves that froze at
-    the panel roll-off point and a peak-white endpoint such as
-    ``[1.0, 0.698, 0.658]``.  Windows and KWin then applied that as a real RGB
-    correction, turning white orange and cutting peak luminance by more than
-    half.  Keep the post-PQ curves neutral and let the MHC2 matrix carry the
-    display-primary correction, matching known-good Advanced Color profiles.
+    The table input is a PQ wire code after the MHC2 matrix. Map its absolute
+    luminance into the measured panel range, then invert the measured channel
+    response. This is the part of the profile that corrects a display's PQ
+    tracking and near-black response; an identity table cannot do that.
     """
-    identity = [index / float(entries - 1) for index in range(entries)]
-    return [list(identity), list(identity), list(identity)]
+    channel_samples = neutral_channel_samples(rows, black, primaries)
+    black_nits = max(0.0, black["xyz"][1])
+    peak_nits = max(white["xyz"][1], black_nits + 0.0001)
+    span = peak_nits - black_nits
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+        fail("HDR MHC2 calibration matrix has an invalid neutral response")
+    luts = []
+    for channel in range(3):
+        values = []
+        previous = 0.0
+        channel_limit = neutral_gains[channel] / maximum_gain
+        for index in range(entries):
+            encoded = index / float(entries - 1)
+            target = max(0.0, min(1.0, (pq_to_nits(encoded) - black_nits) / span))
+            target = min(target, channel_limit)
+            value = invert_channel_response(channel_samples[channel], target)
+            previous = max(previous, max(0.0, min(1.0, value)))
+            values.append(previous)
+        values[0] = 0.0
+        values[-1] = max(values[-2], values[-1])
+        luts.append(values)
+    return luts
 
 
 def mhc2_wire_matrix(profile_type):
