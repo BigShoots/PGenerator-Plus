@@ -12070,6 +12070,7 @@ body.layout-desktop .meter-ccss-profile-control-row > #meterCcssProfile{width:10
 .meter-companion-status{font-size:.64rem;color:var(--text2);min-height:14px;margin-top:2px}
 .meter-companion-downloads{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:8px}
 .meter-companion-downloads .btn{font-size:.6rem;padding:2px 6px}
+.meter-companion-downloads-hint{font-size:.6rem;line-height:1.3;color:var(--text2)}
 .meter-companion-pair-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border);font-size:.62rem}
 .meter-companion-pair-meta{flex:1 1 auto;min-width:0;color:var(--text2)}
 .meter-companion-pair-code{font-family:'Courier New',monospace;font-weight:700;font-size:.85rem;letter-spacing:.1em;color:var(--accent)}
