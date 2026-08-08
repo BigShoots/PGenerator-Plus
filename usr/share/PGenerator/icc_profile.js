@@ -474,7 +474,7 @@ async function meterIccPushCompanionDisplaySettings(showError,correctionOverride
  try{
   const response=await fetchJSON('/api/icc/companion/settings',{
    method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({window_mode:mode,patch_size:meterIccCompanionPatchSizeValue(),correction_mode:correctionMode,correction_signal_mode:activeSignal}),
+   body:JSON.stringify({settings_protocol:2,window_mode:mode,patch_size:meterIccCompanionPatchSizeValue(),correction_mode:correctionMode,correction_signal_mode:activeSignal}),
    _quiet:true,_timeoutMs:5000
   });
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Could not update PGenerator+ Patch Companion');

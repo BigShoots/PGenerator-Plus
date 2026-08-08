@@ -441,6 +441,15 @@ sub webui_icc_companion_settings_fragment () {
 sub webui_icc_companion_settings (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Invalid PGenerator+ Patch Companion display settings"}' unless(defined($body) && length($body)<2048);
+ # Correction handling changed from a status-mirrored value into an explicit
+ # operator preference in protocol 2. An already-open tab running the old
+ # script otherwise keeps posting its stale `none` value every time the live
+ # Companion status changes, undoing cLUT immediately before a series. Refuse
+ # that cached script instead of silently measuring the wrong transform.
+ my $settings_protocol=0;
+ $settings_protocol=int($1) if($body=~/"settings_protocol"\s*:\s*(\d+)/);
+ return '{"status":"error","message":"Refresh the PGenerator+ WebUI before changing Patch Companion profile correction"}'
+  if($settings_protocol<2);
  my $window_mode="";
  my $patch_size=0;
  my $correction_mode="system";
