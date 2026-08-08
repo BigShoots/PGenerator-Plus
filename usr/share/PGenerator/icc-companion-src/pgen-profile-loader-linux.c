@@ -481,14 +481,23 @@ static void refresh_kwin_displays(void)
             current->hdr = strstr(cursor, "enabled") != NULL;
         }
     }
-    /* iccProfilePath is only in the JSON form. The outputs array is the same
-     * array in the same order, so the Nth value belongs to the Nth output. */
+    /* Profile paths are only in the JSON form. Plasma keeps separate SDR and
+     * HDR slots, so read both arrays and expose the one active for this output.
+     * Reading iccProfilePath alone made an HDR display appear to have no
+     * profile even while hdrIccProfilePath was populated. */
     if (run_capture(json_argv, json, COMMAND_CAPACITY) == 0) {
-        const char *cursor = json;
+        const char *sdr_cursor = json;
+        const char *hdr_cursor = json;
         for (int index = 0; index < app.display_count; index++) {
-            char value[1024];
-            if (!json_next_string(&cursor, "iccProfilePath", value, sizeof(value))) break;
-            SDL_strlcpy(app.displays[index].icc_path, value, sizeof(app.displays[index].icc_path));
+            char sdr_value[1024] = "", hdr_value[1024] = "";
+            bool have_sdr = json_next_string(&sdr_cursor, "iccProfilePath",
+                                             sdr_value, sizeof(sdr_value));
+            bool have_hdr = json_next_string(&hdr_cursor, "hdrIccProfilePath",
+                                             hdr_value, sizeof(hdr_value));
+            if (!have_sdr && !have_hdr) break;
+            SDL_strlcpy(app.displays[index].icc_path,
+                        app.displays[index].hdr ? hdr_value : sdr_value,
+                        sizeof(app.displays[index].icc_path));
         }
     }
     SDL_free(text);
@@ -784,16 +793,31 @@ static bool make_directory_tree(const char *path)
 
 /* Apply through KWin, which is the only route that reaches the compositor on a
  * Plasma Wayland session. */
-static bool apply_with_kwin(DisplayEntry *display, const char *path, char *message, size_t message_size)
+static bool apply_with_kwin(DisplayEntry *display, const char *path,
+                            ProfileKind kind, char *message, size_t message_size)
 {
-    char argument[1200];
-    const char *argv[3];
+    char profile_argument[1200], source_argument[256];
+    const char *argv[4];
     char output[4096];
     int status;
-    SDL_snprintf(argument, sizeof(argument), "output.%s.iccprofile.%s", display->name, path);
+    bool hdr_profile = profile_kind_is_hdr(kind);
+    if (hdr_profile) {
+        SDL_snprintf(profile_argument, sizeof(profile_argument),
+                     "output.%s.hdrIccProfile.%s", display->name, path);
+        SDL_snprintf(source_argument, sizeof(source_argument),
+                     "output.%s.hdrColorProfileSource.%s", display->name,
+                     path[0] ? "ICC" : "EDID");
+    } else {
+        SDL_snprintf(profile_argument, sizeof(profile_argument),
+                     "output.%s.iccprofile.%s", display->name, path);
+        SDL_snprintf(source_argument, sizeof(source_argument),
+                     "output.%s.colorProfileSource.%s", display->name,
+                     path[0] ? "ICC" : "sRGB");
+    }
     argv[0] = "kscreen-doctor";
-    argv[1] = argument;
-    argv[2] = NULL;
+    argv[1] = profile_argument;
+    argv[2] = source_argument;
+    argv[3] = NULL;
     status = run_capture(argv, output, sizeof(output));
     if (status == 0) return true;
     SDL_snprintf(message, message_size,
@@ -865,7 +889,9 @@ static void action_apply(void)
         rescan_profiles();
     }
     if (display->from_kwin && app.have_kscreen) {
-        if (!apply_with_kwin(display, app.selected_profile, message, sizeof(message))) {
+        if (!apply_with_kwin(display, app.selected_profile,
+                             entry ? entry->kind : PROFILE_KIND_UNKNOWN,
+                             message, sizeof(message))) {
             set_status(STATUS_BAD, "APPLY FAILED", message);
             return;
         }
@@ -908,7 +934,8 @@ static void action_clear(void)
     char message[768] = "";
     if (!display) return;
     if (display->from_kwin && app.have_kscreen) {
-        if (!apply_with_kwin(display, "", message, sizeof(message))) {
+        ProfileKind active_kind = display->hdr ? PROFILE_KIND_KDE_HDR : PROFILE_KIND_SDR;
+        if (!apply_with_kwin(display, "", active_kind, message, sizeof(message))) {
             set_status(STATUS_BAD, "COULD NOT CLEAR", message);
             return;
         }
