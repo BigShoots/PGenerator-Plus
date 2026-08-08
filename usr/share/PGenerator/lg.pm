@@ -318,98 +318,6 @@ sub lg_cec_status (@) {
  return &lg_decode_json($raw);
 }
 
-###############################################
-#        TV Power Gate (CEC-backed)           #
-###############################################
-# A powered-off LG panel does not refuse TCP connections, it silently drops
-# the SYNs, so a helper spawn against it runs to its outer "timeout Ns"
-# wrapper instead of failing fast. Those spawns are synchronous backticks
-# (lg_helper_run) executed on the daemon's single WebUI request thread, so
-# each one freezes the entire WebUI for the full wrapper. The read-only state
-# polls are the common case -- the AutoCal panels re-sync every ~30s whether
-# or not anyone is calibrating -- so we short-circuit those when CEC already
-# knows the panel is in standby.
-#
-# Everything here FAILS OPEN. A missing, stale, unparseable or "unknown"
-# reading, no CEC on this box, or a calibration in flight all fall through to
-# the normal helper path. A CEC problem must never make a reachable TV look
-# unreachable.
-
-# CEC power state is cached in a file by the WebUI's own /api/cec/status path
-# (webui_cec_power_cache_write). We read the FILE rather than webui.pm's
-# $_cec_cache / $_cec_last_power_query lexicals on purpose: those are plain
-# "my" variables, so under Perl ithreads any handler running on a different
-# thread gets its own private copy and the reading silently vanishes. The
-# file is the only representation shared across threads.
-$LG_CEC_POWER_CACHE_FILE="/tmp/pgenerator-cec-power.json";
-# Oldest reading we will gate on. The CEC status path refreshes the file at
-# most once per $_CEC_POWER_QUERY_THROTTLE (15s) while a browser is polling;
-# beyond this we treat it as stale and let the request through.
-$LG_TV_OFF_GATE_MAX_AGE=90;
-
-sub lg_cec_power_state_cached (@) {
- my $max_age=shift;
- $max_age=$LG_TV_OFF_GATE_MAX_AGE if(!defined($max_age) || $max_age <= 0);
- return "" if(!-f $LG_CEC_POWER_CACHE_FILE);
- my $mtime=(stat($LG_CEC_POWER_CACHE_FILE))[9]||0;
- return "" if(!$mtime);
- return "" if((time() - $mtime) > $max_age);
- my $json="";
- if(open(my $fh,"<",$LG_CEC_POWER_CACHE_FILE)) { local $/; $json=<$fh>; close($fh); }
- return "" if(!defined($json) || $json eq "");
- my ($power)=($json =~ /"tv_power"\s*:\s*"([^"]*)"/);
- return "" if(!defined($power));
- $power=lc($power);
- $power=~s/^\s+//;
- $power=~s/\s+$//;
- return $power;
-}
-
-sub lg_calibration_run_active (@) {
- # Never gate while a calibration or meter run is in flight: those paths
- # drive the TV themselves and may legitimately be mid-wake, and a stale
- # CEC reading must not be allowed to interrupt them.
- foreach my $state_file ("/tmp/meter_lg_autocal.json","/tmp/meter_lg_3d_autocal.json") {
-  next if(!-f $state_file);
-  my $json="";
-  if(open(my $fh,"<",$state_file)) { local $/; $json=<$fh>; close($fh); }
-  next if(!defined($json) || $json eq "");
-  return 1 if($json=~/"status"\s*:\s*"running"/);
- }
- # An open meter session means a read is in progress or imminent.
- return 1 if(-f "/tmp/meter_session.pid");
- return 0;
-}
-
-sub lg_tv_powered_off (@) {
- # True ONLY on a fresh, unambiguous "the panel is in standby" reading.
- # "powering-on"/"powering-off" are transitional -- the TV may answer at any
- # moment -- so they are deliberately not gated.
- my $power=&lg_cec_power_state_cached();
- return 0 if($power eq "");
- return 1 if($power eq "standby" || $power eq "off");
- return 0;
-}
-
-sub lg_tv_off_gate (@) {
- # Returns an error hashref to short-circuit a READ-ONLY state poll, or
- # undef to proceed exactly as before. Callers must only use this for polls
- # that merely observe TV state. Control actions (wake/power, pairing, input
- # switching) and the whole calibration path must never be gated: those are
- # user-initiated and are allowed to spend the time, and some of them are
- # what turns the TV back on.
- my $what=shift;
- $what="read TV state" if(!defined($what) || $what eq "");
- return undef if(&lg_calibration_run_active());
- return undef if(!&lg_tv_powered_off());
- return {
-  status   => "error",
-  message  => "LG TV is powered off (CEC reports standby). Turn the TV on to $what.",
-  tv_off   => &lg_json_true(),
-  tv_power => "standby",
- };
-}
-
 sub lg_detect_from_cec (@) {
  my $cec=shift;
  return 0 if(ref($cec) ne "HASH");
@@ -998,6 +906,12 @@ sub lg_helper_run (@) {
  my $payload=MIME::Base64::encode_base64(&lg_encode_json($request),"");
  my $timeout=&lg_helper_timeout($request);
  my $cmd="timeout ${timeout}s env PGEN_LG_REQUEST_B64=".&lg_shell_quote($payload)." ".&lg_shell_quote($helper)." 2>&1";
+ # Synchronous backtick. Routes that are not concurrent-safe run on the general
+ # WebUI lane, which is a single serialized worker ($WEBUI_WORKER_POOL_SIZE=1
+ # in webui.pm), so on those paths $timeout is not just this request's budget
+ # -- it is how long every other unsafe route waits. Treat the values in
+ # lg_helper_timeout as a WebUI-availability budget, not merely a patience
+ # setting, and prefer an explicit short helper_timeout on read-only polls.
  my $raw=`$cmd`;
  my $exit_status=$? >> 8;
  my $result=&lg_decode_json($raw);
@@ -1015,6 +929,19 @@ sub lg_helper_run (@) {
  return { status => "error", message => $raw };
 }
 
+# Why these budgets are large, and why shrinking them blindly is unsafe:
+# a powered-off LG panel does not refuse TCP connections, it silently drops
+# the SYNs. So an unreachable TV never fails fast on its own -- without the
+# connect bounding in pgenerator-lg (connect_timeout_for/$MAX_CONNECT_TIMEOUT
+# and reap_child_bounded) a spawn parked for the kernel's SYN-retry budget,
+# ~127s, regardless of any "5 second connect timeout" in the helper. With that
+# bounding in place an unreachable panel now costs roughly 20s per spawn as
+# the helper exhausts its wss/ws candidates, and the wrappers below are only
+# reached when TCP completes but the session then stalls mid-handshake.
+#
+# The values are therefore sized for a slow *reachable* TV completing real
+# work, not for detecting an absent one. Callers that cannot afford to wait
+# should pass an explicit helper_timeout rather than lowering these.
 sub lg_helper_timeout (@) {
  my $request=shift;
  $request={} if(ref($request) ne "HASH");
@@ -1633,15 +1560,24 @@ sub webui_lg_picture_settings (@) {
  my $ignore_calibration_picture_mode=$payload->{"ignore_calibration_picture_mode"} ? 1 : 0;
  my $picture_mode=$payload->{"picture_mode"}||"";
  $picture_mode=$clients->{"calibration_picture_mode"}||"" if($picture_mode eq "" && !$ignore_calibration_picture_mode);
-# Read-only poll: if CEC already knows the panel is in standby there is
-# nothing to read, and spawning the helper would burn the full 60s
-# picture_get wrapper on the daemon's single WebUI request thread. The
-# AutoCal panels re-poll this endpoint every ~30s whether or not anyone is
-# calibrating, so with the TV off the WebUI spent most of its life frozen
-# behind this one call. Fails open in every ambiguous case -- and is never
-# applied to the picture_set / calibration paths below. See lg_tv_off_gate.
-my $tv_off_gate=&lg_tv_off_gate("read picture settings");
-return &lg_encode_json($tv_off_gate) if(ref($tv_off_gate) eq "HASH");
+# CEC power is advisory and can be stale or unknown while WebOS is reachable.
+# Let the bounded helper request below determine whether the TV can be read.
+#
+# Bound that request tightly, though. This is a read-only poll and it runs on
+# the general WebUI lane, which is a single serialized worker
+# ($WEBUI_WORKER_POOL_SIZE=1 in webui.pm), and lg_helper_run is a synchronous
+# backtick -- so every second spent here is a second no other unsafe route can
+# be served. A powered-off panel does not refuse TCP, it silently drops the
+# SYNs, so the helper walks its connect candidates to exhaustion (~20s) rather
+# than failing fast, and the default picture_get budget of 60s is worse still.
+# A healthy read answers in well under a second.
+#
+# Every browser caller already abandons the fetch on its own timeout (7-18s),
+# so helper work beyond that budget can never reach anyone -- capping it here
+# discards only results that were guaranteed to be thrown away. Callers that
+# need a longer budget say so explicitly; the AutoCal worker sends 90.
+my $helper_timeout=int($payload->{"helper_timeout"}||0);
+$helper_timeout=8 if($helper_timeout <= 0);
 &lg_calmode_trace("picture_get: force_ddc=".($payload->{"force_ddc_white_balance"}?1:0)." pmode=$picture_mode"); # TEMP DEBUG CALMODE
 my $result=&lg_helper_run({
  action => "picture_get",
@@ -1652,7 +1588,7 @@ my $result=&lg_helper_run({
 	  signal_mode => $payload->{"signal_mode"}||"",
 	  tv_input => &lg_input_from_cec(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
-	  helper_timeout => int($payload->{"helper_timeout"}||0),
+	  helper_timeout => $helper_timeout,
 	  connect_timeout => 5,
 	 });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
@@ -4174,7 +4110,7 @@ async function lgDisplayControlRefresh(force){
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
+   body:JSON.stringify({keys:['pictureMode',...LG_DISPLAY_CONTROL_KEYS],picture_mode:lgDisplayControlPictureMode(),signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true,helper_timeout:16}),
    _quiet:true,
    _timeoutMs:18000
   });

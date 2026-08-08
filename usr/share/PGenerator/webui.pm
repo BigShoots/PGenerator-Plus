@@ -5570,31 +5570,13 @@ sub webui_meter_lg_autocal_start (@) {
   return '{"status":"error","message":"LG Auto Cal is already running"}';
  }
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
- # Final server-side power gate immediately before any meter/session teardown
- # or worker launch. The browser's LG status is only a pairing snapshot and
- # can still say "connected" after the panel has entered standby. Use the
- # fresh CEC-backed LG status here so direct API callers and stale browser
- # tabs cannot launch AutoCal unless the display is definitely on.
- if(defined(&lg_cec_status)) {
-  my $tv_status=eval { &lg_cec_status() };
-  if(ref($tv_status) eq "HASH") {
-   my $power=lc($tv_status->{"tv_power"}||"");
-   $power=~s/^\s+|\s+$//g;
-   if($power eq "standby" || $power eq "off" || $power eq "powering-off") {
-    return '{"status":"error","message":"LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."}';
-   }
-   if($power eq "powering-on") {
-    return '{"status":"error","message":"LG TV is still starting. Wait until it is fully on before Auto Cal."}';
-   }
-   if($power ne "on") {
-    return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
-   }
-  } else {
-   return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
-  }
- } else {
-  return '{"status":"error","message":"Unable to verify LG TV power before Auto Cal."}';
- }
+ # CEC power is advisory: valid WebOS sessions can coexist with unknown or
+ # stale CEC state, so nothing here refuses a launch on a CEC reading.
+ # Consequence worth stating plainly: the teardown below and the worker launch
+ # now happen before anything has established the panel is reachable. The
+ # worker's initial picture-settings read is the reachability authority, so an
+ # unreachable TV costs the meter session first and reports the failure a few
+ # minutes later, rather than failing at this boundary.
  &webui_meter_stop();
  # Drop any stale stop file before launch. A root-owned leftover in sticky
  # /tmp cannot be unlinked by the pgenerator webui user, and the worker
@@ -5934,6 +5916,60 @@ sub webui_meter_lg_3d_autocal_same_run_running (@) {
  return 0;
 }
 
+# A completed Full AutoCal stage is a one-shot operation.  Its start handler
+# calls webui_meter_stop() before launching the worker, so replaying an old
+# greyscale completion is not harmless: it cancels any post-cal report series
+# currently using the meter and can upload another LUT to the TV.  Keep the
+# matching predicates pure so the safety contract is directly testable.
+sub webui_meter_lg_3d_autocal_completed_state_matches (@) {
+ my ($state,$run)=@_;
+ return 0 if(ref($state) ne "HASH" || !defined($run) || $run eq "");
+ return 0 if(lc($state->{"status"}||"") ne "complete" || !$state->{"upload_verified"});
+ my @runs=grep { defined($_) && !ref($_) && $_ ne "" } ($state->{"full_autocal_run_id"},$state->{"run_id"});
+ return scalar(grep { $_ eq $run } @runs) ? 1 : 0;
+}
+
+sub webui_meter_lg_3d_autocal_completed_report_matches (@) {
+ my ($archive,$run)=@_;
+ return 0 if(ref($archive) ne "HASH" || !defined($run) || $run eq "");
+ my $report=(ref($archive->{"report"}) eq "HASH") ? $archive->{"report"} : {};
+ my $archive_run=$archive->{"run_id"} || $report->{"run_id"} || "";
+ return 0 if(ref($archive_run) || $archive_run ne $run);
+ my $completion=(ref($report->{"completion_status"}) eq "HASH") ? $report->{"completion_status"} : {};
+ return 0 if(lc($completion->{"status"}||"") ne "complete");
+ return ($completion->{"full_workflow"} || $completion->{"full_autocal"}) ? 1 : 0;
+}
+
+sub webui_meter_lg_3d_autocal_full_run_already_complete (@) {
+ my ($body)=@_;
+ my $payload=eval { require JSON::PP; JSON::PP::decode_json($body||""); };
+ return 0 if(ref($payload) ne "HASH" || !$payload->{"full_workflow"});
+ my $run=$payload->{"full_autocal_run_id"} || $payload->{"run_id"} || "";
+ return 0 if(ref($run) || $run!~/\A[A-Za-z0-9._-]{1,200}\z/);
+
+ # Before /api/lg/autocal/run/end strips the workflow metadata, the terminal
+ # worker state is the quickest receipt and also protects the touch-up gap.
+ if(-f $_meter_lg_3d_autocal_file) {
+  my $json="";
+  if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
+  my $state=eval { JSON::PP::decode_json($json||""); };
+  return 1 if(&webui_meter_lg_3d_autocal_completed_state_matches($state,$run));
+ }
+
+ # The report archive survives that metadata cleanup and is atomically
+ # replaced throughout the optional post-cal reads.  completion_status stays
+ # present in every later archive stage, making it the durable replay guard.
+ foreach my $dir ("/var/lib/PGenerator/reports/full-autocal","/tmp/PGenerator_full_autocal_reports") {
+  my $file="$dir/$run.json";
+  next if(!-f $file);
+  my $json="";
+  if(open(my $fh,"<",$file)) { local $/; $json=<$fh>; close($fh); }
+  my $archive=eval { JSON::PP::decode_json($json||""); };
+  return 1 if(&webui_meter_lg_3d_autocal_completed_report_matches($archive,$run));
+ }
+ return 0;
+}
+
 sub webui_meter_lg_3d_autocal_mark_cancelled (@) {
  return unless(-f $_meter_lg_3d_autocal_file);
  my $json="";
@@ -5973,6 +6009,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ # Reject a stale browser's same-run replay before webui_meter_stop() can
+ # cancel an active report series or the worker can write the panel again.
+ return '{"status":"error","message":"This Full AutoCal run has already completed its 3D LUT stage","already_complete":true}'
+  if(&webui_meter_lg_3d_autocal_full_run_already_complete($body));
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
@@ -6423,6 +6463,7 @@ sub webui_meter_settings_save (@) {
     low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
+  target_white_use_measured target_white_level target_black_use_measured target_black_level
   target_white_x target_white_y custom_d65_enabled
   hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum simulate_spectro
  );
@@ -12012,7 +12053,12 @@ body.meter-autocal-active .meter-autocal-mask{display:flex}
 .meter-workflow-progress-fill{height:100%;width:0;min-width:0;background:linear-gradient(90deg,#5d6dff 0%,#4d8df7 45%,#39d06f 100%);box-shadow:0 0 12px rgba(76,175,80,.35),inset 0 1px 0 rgba(255,255,255,.24);transition:width .28s ease,min-width .18s ease;position:relative;overflow:hidden;border-radius:3px}
 .meter-workflow-progress-fill.active{min-width:10px}
 .meter-workflow-progress-fill.active::after{content:"";position:absolute;inset:-40% -25%;background:linear-gradient(105deg,transparent 0%,rgba(255,255,255,.06) 34%,rgba(255,255,255,.46) 50%,rgba(255,255,255,.06) 66%,transparent 100%);transform:translateX(-115%);animation:meterProgressShimmer 1.65s ease-in-out infinite}
-@media(max-width:720px){.meter-workflow-progress-wrap{grid-template-columns:minmax(0,1fr) auto}.meter-workflow-progress{grid-column:1 / -1;grid-row:2}}
+.meter-lut-calculation-progress{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(180px,2fr) auto;align-items:center;gap:10px;margin:0 0 8px;color:var(--text2);font-size:.68rem}
+.meter-lut-calculation-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meter-lut-calculation-count{font-variant-numeric:tabular-nums;white-space:nowrap}
+.meter-lut-calculation-bar{height:6px;border-radius:999px;background:#0d0f18;border:1px solid rgba(255,255,255,.12);overflow:hidden}
+.meter-lut-calculation-fill{height:100%;width:0;background:linear-gradient(90deg,#5d6dff,#4d8df7);transition:width .2s ease}
+@media(max-width:720px){.meter-workflow-progress-wrap{grid-template-columns:minmax(0,1fr) auto}.meter-workflow-progress{grid-column:1 / -1;grid-row:2}.meter-lut-calculation-progress{grid-template-columns:minmax(0,1fr) auto}.meter-lut-calculation-bar{grid-column:1 / -1;grid-row:2}}
 .offline-mask-title{font-size:1rem;font-weight:700;margin-bottom:6px}
 .offline-mask-text{font-size:.85rem;line-height:1.45;color:var(--text2)}
 .status-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;font-size:.8rem;color:var(--text2)}
@@ -13591,6 +13637,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    </div>
    <div id="meterWorkflowProgressBar" class="meter-workflow-progress"><div id="meterWorkflowProgressFill" class="meter-workflow-progress-fill"></div></div>
    <span id="meterProgressPercent" class="meter-workflow-progress-percent"></span>
+  </div>
+  <div id="meterLutCalculationProgress" class="meter-lut-calculation-progress" style="display:none">
+   <span id="meterLutCalculationLabel" class="meter-lut-calculation-label">3D LUT calculation</span>
+   <div id="meterLutCalculationBar" class="meter-lut-calculation-bar" role="progressbar" aria-valuemin="0"><div id="meterLutCalculationFill" class="meter-lut-calculation-fill"></div></div>
+   <span id="meterLutCalculationCount" class="meter-lut-calculation-count">0 / 0 nodes</span>
   </div>
 
   <div id="meterGreyProfileModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
@@ -28903,6 +28954,10 @@ function meterSetTargetLevels(){
   black:{useMeasured:bUseMeasured,value:bValue,overridden:bOver}
  };
  try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
+ // Target levels must also be shared by every browser and survive a daemon
+ // restart. The server settings payload is authoritative; localStorage is
+ // retained only as a warm-start fallback while the settings request loads.
+ try{ if(meterSettingsLoaded&&typeof saveMeterSettings==='function') saveMeterSettings(); }catch(e){}
  // Let the checkbox/input state paint before recalculating charts. Rapid
  // toggles coalesce into one refresh instead of stacking expensive canvases.
  try{ meterScheduleTargetCurveRefresh(); }catch(e){}
@@ -29429,6 +29484,45 @@ function meterSetWorkflowProgress(status,options){
  }
 }
 
+function meterFormatNodeCount(value){
+ return Math.round(value).toLocaleString('en-GB');
+}
+
+function meterUpdateLutCalculationProgress(status){
+ const wrap=document.getElementById('meterLutCalculationProgress');
+ const label=document.getElementById('meterLutCalculationLabel');
+ const count=document.getElementById('meterLutCalculationCount');
+ const bar=document.getElementById('meterLutCalculationBar');
+ const fill=document.getElementById('meterLutCalculationFill');
+ const current=Math.max(0,Number(status&&status.lut_calculation_current_nodes)||0);
+ const total=Math.max(0,Number(status&&status.lut_calculation_total_nodes)||0);
+ const active=!!(status&&status.lut_calculation_active&&String(status.status||'').toLowerCase()==='running'&&total>0);
+ if(!active){
+  meterHideLutCalculationProgress();
+  return;
+ }
+ const safeCurrent=Math.min(current,total);
+ const pct=total>0?Math.max(0,Math.min(100,100*safeCurrent/total)):0;
+ if(wrap) wrap.style.display='grid';
+ if(label) label.textContent=String(status.lut_calculation_stage||'3D LUT calculation');
+ if(count) count.textContent=meterFormatNodeCount(safeCurrent)+' / '+meterFormatNodeCount(total)+' nodes';
+ if(fill) fill.style.width=pct+'%';
+ if(bar){
+  bar.setAttribute('aria-valuemax',String(Math.round(total)));
+  bar.setAttribute('aria-valuenow',String(Math.round(safeCurrent)));
+  bar.setAttribute('aria-valuetext',meterFormatNodeCount(safeCurrent)+' of '+meterFormatNodeCount(total)+' nodes');
+ }
+}
+
+function meterHideLutCalculationProgress(){
+ const wrap=document.getElementById('meterLutCalculationProgress');
+ const fill=document.getElementById('meterLutCalculationFill');
+ const bar=document.getElementById('meterLutCalculationBar');
+ if(wrap) wrap.style.display='none';
+ if(fill) fill.style.width='0%';
+ if(bar){ bar.removeAttribute('aria-valuenow'); bar.removeAttribute('aria-valuetext'); }
+}
+
 function meterClearWorkflowProgress(){
  const pctText=document.getElementById('meterProgressPercent');
  const bar=document.getElementById('meterWorkflowProgressBar');
@@ -29445,6 +29539,7 @@ function meterHideWorkflowProgress(){
  const progress=document.getElementById('meterProgress');
  if(progress) progress.style.display='none';
  meterClearWorkflowProgress();
+ meterHideLutCalculationProgress();
 }
 
 function meterHideProgressIfIdle(){
@@ -30480,6 +30575,7 @@ function meterClearInteractiveSelection(keepLiveReading){
  if(!keepLiveReading){
   document.getElementById('meterLiveReading').style.display='none';
   document.getElementById('meterProgress').style.display='none';
+  meterHideLutCalculationProgress();
  }
  meterUpdateReadButtons();
 }
@@ -34395,6 +34491,11 @@ function meterLutSolveProgressUpdate(status){
  const sz=Number(s.cube_lut_size||s.solve_cube_size||0);
  if(sz===17||sz===33||sz===65) bits.push(sz+'³ export');
  if(s.lattice_nodes!=null) bits.push(s.lattice_nodes+' profile nodes');
+ const nodeCurrent=Math.max(0,Number(s.lut_calculation_current_nodes)||0);
+ const nodeTotal=Math.max(0,Number(s.lut_calculation_total_nodes)||0);
+ const nodeProgress=!!(s.lut_calculation_active&&nodeTotal>0);
+ // Bar tracks the monotonic stage bands; per-stage node counts restart at
+ // zero for each stage, so they feed the detail line only.
  const pct=Number(s.solve_progress_pct);
  if(Number.isFinite(pct)&&pct>=0){
   if(fill){
@@ -34402,6 +34503,7 @@ function meterLutSolveProgressUpdate(status){
    fill.style.width=Math.max(8,Math.min(100,pct))+'%';
   }
   bits.push(Math.round(Math.min(100,pct))+'%');
+  if(nodeProgress) bits.push(meterFormatNodeCount(Math.min(nodeCurrent,nodeTotal))+' / '+meterFormatNodeCount(nodeTotal)+' nodes');
  } else if(fill){
   // Indeterminate shimmer while the worker has no percent yet.
   const cur=parseFloat(fill.style.width)||12;
@@ -34457,12 +34559,12 @@ async function meterLutSolvePoll(){
   }
   return;
  }
- if(s.status==='error'){
+ if(s.status==='error'||s.status==='cancelled'){
   if(meterLutSolvePolling){ clearInterval(meterLutSolvePolling); meterLutSolvePolling=null; }
   meterLutSolvePendingDownload='';
   meterBuild3dLutPending=null;
   meterLutSolveProgressHide();
-  toast(s.message||'LUT solve failed',true);
+  toast(s.message||'LUT solve failed',s.status==='error');
  }
 }
 
@@ -38523,7 +38625,7 @@ async function meterAutoCalLoadClipControls(){
  const r=await fetchJSON('/api/lg/picture-settings',{
   method:'POST',
   headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({keys:['pictureMode','brightness','contrast'],picture_mode:meterLgPictureModeValue()}),
+  body:JSON.stringify({keys:['pictureMode','brightness','contrast'],picture_mode:meterLgPictureModeValue(),helper_timeout:8}),
   _quiet:true,
   _timeoutMs:10000
  });
@@ -39438,7 +39540,45 @@ async function meterAutoCalApplyStatus(status){
 	  const completed=new Set(meterReadings.filter(r=>r&&r.luminance!=null).map(r=>meterStepNameKey(r)));
   const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
 	  if(sorted.length) {
-	   drawAllCharts(sorted);
+	   // AutoCal status is polled every 1.5s, but most polls only update the
+	   // current iteration/progress text. Repainting all five canvases and
+	   // serialising the whole series cache on every unchanged poll blocks the
+	   // browser's main thread and makes the rest of the UI visibly judder.
+	   //
+	   // Track only inputs which affect the greyscale charts. During a running
+	   // pass, use the same frame-budgeted painter as an ordinary greyscale
+	   // series. A terminal status always cancels queued work and performs one
+	   // synchronous final paint so the completed charts cannot be left on a
+	   // mixture of two status revisions.
+	   const statusRunning=String(status.status||'').toLowerCase()==='running';
+	   const chartSignature=JSON.stringify([
+	    sorted.map(rd=>[
+	     meterStepNameKey(rd),
+	     rd.luminance,rd.X,rd.Y,rd.Z,
+	     rd.target_x,rd.target_y,rd.target_Yn,rd.target_luminance,
+	     rd.series_target_white_y,rd.lg_target_white_y,rd.autocal_white_y,
+	     rd.series_target_black_y,rd.best_known_delta_e
+	    ]),
+	    Number.isFinite(chartWhiteY)?chartWhiteY:null,
+	    status.target_gamma||meterActiveSeriesTargetGamma||'',
+	    status.signal_mode||meterActiveSeriesSignalMode||'',
+	    status.ddc_layout||''
+	   ]);
+	   const chartChanged=sorted.length!==meterLastChartCount||chartSignature!==meterLastChartSignature;
+	   if(statusRunning){
+	    if(chartChanged){
+	     meterLastChartCount=sorted.length;
+	     meterLastChartSignature=chartSignature;
+	     meterQueueRunningGreyscaleChartRefresh(sorted);
+	     meterCacheSeriesState(status.status||'running');
+	    }
+	   }else{
+	    meterCancelRunningGreyscaleChartRefresh();
+	    meterLastChartCount=sorted.length;
+	    meterLastChartSignature=chartSignature;
+	    drawAllCharts(sorted);
+	    meterCacheSeriesState(status.status||'complete');
+	   }
 	   const currentValid=currentKey?meterReadings.find(rd=>rd&&rd.luminance!=null&&meterStepNameKey(rd)===currentKey):null;
 	   // meterReadings is sorted by IRE (see meterAutoCalStatusChartReadings),
 	   // NOT by measurement order, so reverse().find() returned the HIGHEST-IRE
@@ -39455,7 +39595,6 @@ async function meterAutoCalApplyStatus(status){
 	    });
 	   }
 	   if(lastValid) updateLiveReading(lastValid);
-	   meterCacheSeriesState(status.status||'running');
 	  }
   if(meterSeriesSteps){
    const sortedSteps=meterGreyscaleSeriesSteps(meterSeriesSteps);
@@ -40503,9 +40642,15 @@ function meterFullAutoCalMergeCleanupConfigFromStatus(status){
 }
 
 function meterFullAutoCalEnsureStatusPhase(status,phase){
- if(meterFullAutoCalRunning&&meterFullAutoCalPhase===phase) return true;
- if(status&&status.full_workflow&&!meterFullAutoCalStatusMatchesRun(status)) return false;
+ // A saved browser phase is not authority. A stale tab/device can retain
+ // first-greyscale long after the backend has advanced or cleared the run;
+ // trusting it here replayed that completed result and launched another 3D
+ // LUT while the real session was measuring its post-cal report.
+ const currentPhase=String(meterFullAutoCalPhase||'');
+ if(currentPhase==='precal-report'||currentPhase==='postcal-report') return false;
  if(!(status&&status.full_workflow&&meterFullAutoCalStatusPhase(status)===phase)) return false;
+ if(!meterFullAutoCalStatusMatchesRun(status)) return false;
+ if(meterFullAutoCalRunning&&currentPhase===phase) return true;
  // Never re-adopt a terminal full-workflow status from a fresh browser
  // (Stop + refresh left status=complete + full_workflow on the 3D file and
  // this would open the Generate Post-Cal Report popup). Mid-session
@@ -41270,7 +41415,6 @@ async function meterStartFullAutoCal(){
  if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterFullAutoCalAvailable()){toast('Connect an LG TV before starting Full Auto Cal',true);return;}
- if(!(await meterEnsureLgTvReadyForAutoCal('Full Auto Cal'))) return;
  if(!(await meterEnsureLgAutoCalTransport('Full Auto Cal'))) return;
  if(!meterEnsureLgAutoCalExtendedVideoTransport()) return;
  if(!meterEnsureAppliedGeneratorSettings()) return;
@@ -41423,7 +41567,7 @@ async function meterStartFullAutoCal(){
 }
 
 async function meterFullAutoCalStart3d(firstStatus){
- if(!meterFullAutoCalRunning) return;
+ if(!meterFullAutoCalRunning||meterFullAutoCalPhase!=='first-greyscale') return false;
  meterFullAutoCalResults.first=firstStatus||null;
  const firstRunId=firstStatus&&(firstStatus.full_autocal_run_id||firstStatus.run_id);
  if(firstRunId) meterFullAutoCalRunId=firstRunId;
@@ -41567,7 +41711,7 @@ async function meterFullAutoCalAdvancePastGreyscale(status){
 // meterStartFullAutoCal before greyscale started) and stays Relative through
 // this stage.
 async function meterDvAutoCalStartProfile(firstStatus){
- if(!meterFullAutoCalRunning) return;
+ if(!meterFullAutoCalRunning||meterFullAutoCalPhase!=='first-greyscale') return false;
  meterFullAutoCalResults.first=firstStatus||null;
  const firstRunId=firstStatus&&(firstStatus.full_autocal_run_id||firstStatus.run_id);
  if(firstRunId) meterFullAutoCalRunId=firstRunId;
@@ -41845,6 +41989,11 @@ function meterFullAutoCalTouchupTargetY(){
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
     target_delta_e:target,
+    // Send the target redundantly under the specialised worker keys as well.
+    // New workers inherit target_delta_e directly; these explicit values keep
+    // older HDR/DV and SDR DPG workers from silently falling back to 0.5.
+    lg_autocal_hdr20_dpg_target_de:target,
+    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
@@ -42015,6 +42164,8 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
     target_delta_e:target,
+    lg_autocal_hdr20_dpg_target_de:target,
+    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:targetY,
     setup_luminance_reference:(Number.isFinite(setupY)&&setupY>0)?setupY:undefined,
@@ -42400,38 +42551,6 @@ async function meterAutoCalBackendRecoveryWatchdog(){
  }
 }
 
-// Confirm the display is actually awake before entering the AutoCal wizard or
-// launching its worker. LG's `connected` flag means a saved WebOS pairing is
-// available; it is not a live power check and remains true while the TV is in
-// standby. AutoCal requires a definite CEC `on` state. Retry transient unknown
-// readings briefly, then fail closed; the server and worker repeat the gate at
-// the launch boundary.
-async function meterEnsureLgTvReadyForAutoCal(label){
- let status=null;
- let power='';
- for(let attempt=0;attempt<3;attempt++){
-  try{
-   status=await fetchJSON('/api/cec/status',{_quiet:true,_timeoutMs:5000});
-  }catch(e){ status=null; }
-  power=String((status&&status.tv_power)||'').trim().toLowerCase();
-  if(power==='on'||power==='standby'||power==='off'||power==='powering-off'||power==='powering-on') break;
-  if(attempt<2) await new Promise(resolve=>setTimeout(resolve,1000));
- }
- if(power==='standby'||power==='off'||power==='powering-off'){
-  toast('LG TV is powered off. Turn it on and wait for it to finish starting before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power==='powering-on'){
-  toast('LG TV is still starting. Wait until it is fully on before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power!=='on'){
-  toast('Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try '+(label||'Auto Cal')+' again.',true);
-  return false;
- }
- return true;
-}
-
 async function meterAutoCalInitialRecoveryPoll(){
  if(meterFullAutoCalReportPhaseActive()) return;
  if(meterAutoCalSetupOverlayActive()||meterAutoCalRunning||meterAutoCalPolling||meterActionPending||meterLg3dAutoCalRunning||meterLg3dAutoCalPolling) return;
@@ -42466,7 +42585,14 @@ async function meterStartAutoCal(options){
   meterSetActiveSeriesChartContext();
  }
 	 if(!meterAutoCalAvailable()) return fail(fullWorkflow?'Connect an LG TV before starting Full Auto Cal':'Connect an LG TV and select Greyscale LG 26pt AutoCal first');
-	 if(!(await meterEnsureLgTvReadyForAutoCal(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
+	 // CEC stays available as status and manual control, but no longer gates
+	 // launch. Be clear about what that leaves, because it is easy to misread
+	 // the calls below as checks: meterAutoCalAvailable() above is a pairing
+	 // snapshot rather than a liveness test, and both transport preflights
+	 // below have been unconditional `return true` since 2026-06-13. So the
+	 // browser no longer verifies the panel is awake at all. The worker's
+	 // initial picture-settings read is the only reachability authority, and
+	 // it surfaces failure minutes in -- after the meter session is torn down.
 	 meterAutoCalWizardContextActive=true;
 	 if(!(await meterEnsureLgAutoCalTransport(fullWorkflow?'Full Auto Cal':'LG Greyscale Auto Cal'))) return fail('');
 	 if(!meterEnsureLgAutoCalExtendedVideoTransport()) return fail('');
@@ -43014,7 +43140,9 @@ async function meterAutoCalConfirmAndStart(){
     lg_autocal_26_anchor_predrive:false,
     lg_extended_sdr_16_255:meterLgAutoCalUsesExtendedSdr(),
     ...meterPatternInsertionPayload(),
-    target_delta_e:target,
+	    target_delta_e:target,
+	    lg_autocal_hdr20_dpg_target_de:target,
+	    lg_autocal_sdr26_dpg_target_de:target,
     delta_e_formula:deltaEFormula,
     target_luminance:hdrWorkflow?undefined:targetY,
     setup_luminance_reference:hdrWorkflow?undefined:setupY,
@@ -43953,6 +44081,7 @@ function meterLg3dApplyStatus(status){
  const labelText=(status.current_name||status.message||'LG 3D LUT AutoCal')+(summary?' | '+summary:'');
  if(status.status==='running') meterSetWorkflowProgress(status,{workflow:meterFullAutoCalRunning?'full':'3d-lut',label:labelText});
  else meterHideWorkflowProgress();
+ meterUpdateLutCalculationProgress(status);
  if(status.status==='running'){
   meterLg3dAutoCalRunning=true;
   meterActionPending=false;
@@ -44406,6 +44535,22 @@ refresh_rate:getMeterRefreshRate()||undefined,
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r&&r.message)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
+   }
+   if(r&&r.already_complete){
+    // A stale browser tried to replay a terminal Full AutoCal stage. The
+    // server rejected it before touching the shared meter or TV; retire only
+    // this browser's stale workflow state and do not run the normal retry /
+    // abort path (which would send CAL_END and /autocal/run/end itself).
+    meterLg3dAutoCalRunning=false;
+    meterActionPending=false;
+    meterHideWorkflowProgress();
+    if(meterLg3dAutoCalSpectroSetupActive){
+     meterLg3dAutoCalSpectroSetupActive=false;
+     meterSpectroSetupApply(null);
+    }
+    if(fullWorkflow) meterFullAutoCalResetState(true);
+    toast(r.message||'This Full AutoCal 3D LUT stage is already complete');
+    return 'already-complete';
    }
    if(!r||r.status!=='started'){
     // The start handler always spawns the worker before returning 'started',
@@ -52195,6 +52340,7 @@ function meterApplyClearedState(showToastMsg){
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  document.getElementById('meterProgress').style.display='none';
+ meterHideLutCalculationProgress();
  document.getElementById('meterLiveReading').style.display='none';
  document.getElementById('meterExportRow').style.display='none';
  meterResetLiveReadingDisplay();
@@ -53724,6 +53870,10 @@ function saveMeterSettings(){
   color_de_form:val('meterColorDeltaEForm','de2000'),
     color_incl_lum:chk('meterColorIncludeLumError'),
   target_gamma:val('meterTargetGamma'),
+  target_white_use_measured:chk('meterTargetWhiteUseMeasured'),
+  target_white_level:chk('meterTargetWhiteUseMeasured')?null:(val('meterTargetWhite')||null),
+  target_black_use_measured:chk('meterTargetBlackUseMeasured'),
+  target_black_level:chk('meterTargetBlackUseMeasured')?null:(val('meterTargetBlack')||null),
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
     target_white_y:val('meterTargetWhiteY'),
@@ -53939,6 +54089,13 @@ async function loadMeterSettings(){
  // ST 2084 never survives into SDR.
  try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
  meterSyncTargetGammaControl();
+ if(s.target_white_use_measured!=null||s.target_white_level!=null||s.target_black_use_measured!=null||s.target_black_level!=null){
+  setChk('meterTargetWhiteUseMeasured',s.target_white_use_measured==null?true:s.target_white_use_measured);
+  setVal('meterTargetWhite',s.target_white_level==null?'':String(s.target_white_level));
+  setChk('meterTargetBlackUseMeasured',s.target_black_use_measured==null?!meterDisplayTypeIsOledClass():s.target_black_use_measured);
+  setVal('meterTargetBlack',s.target_black_level==null?'':String(s.target_black_level));
+  meterSetTargetLevels();
+ }
  setChk('meterCustomD65Enabled', s.custom_d65_enabled);
  setVal('meterTargetWhiteX', s.target_white_x);
  setVal('meterTargetWhiteY', s.target_white_y);

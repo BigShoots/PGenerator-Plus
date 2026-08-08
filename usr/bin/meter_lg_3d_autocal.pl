@@ -8,8 +8,11 @@ use IO::Select ();
 use IO::Socket::INET ();
 use JSON::PP ();
 use MIME::Base64 ();
-use POSIX qw(strftime);
+use POSIX qw(strftime WNOHANG);
 use Time::HiRes qw(sleep time);
+use FindBin qw($Bin);
+use lib "$Bin/../share/PGenerator";
+use PGAutoCalSafety qw(profile_reading_plausibility_error profile_primary_monotonicity_error);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -149,6 +152,20 @@ sub write_state {
   $encoded=$json->encode(\%fallback);
  };
  return write_file($state_file,$encoded,0);
+}
+
+sub set_lut_calculation_progress {
+ my ($state,$stage,$current,$total,$active)=@_;
+ return if(ref($state) ne "HASH");
+ $current=int($current||0);
+ $total=int($total||0);
+ $current=0 if($current < 0);
+ $current=$total if($total > 0 && $current > $total);
+ $state->{"lut_calculation_active"}=json_bool($active);
+ $state->{"lut_calculation_stage"}=$stage||"3D LUT calculation";
+ $state->{"lut_calculation_current_nodes"}=$current;
+ $state->{"lut_calculation_total_nodes"}=$total;
+ write_state($state);
 }
 
 sub cancelled {
@@ -1149,7 +1166,7 @@ sub capture_volume_drift_anchor {
   $state->{"current_name"}=($label||"Drift anchor")." ".uc(substr($kind,0,1));
   $state->{"message"}="WRGB drift re-anchor - reading ".$kind;
   write_state($state);
-  my ($reading,$error)=read_step($config,$step,$state);
+  my ($reading,$error)=read_validated_profile_step($config,$step,$state,undef);
   die "Drift anchor $kind failed: $error\n" if($error);
   my $xyz=reading_xyz($reading);
   die "Drift anchor $kind returned no XYZ\n" if(!$xyz);
@@ -1751,11 +1768,12 @@ sub node_output_pct {
 }
 
 sub _generate_lut_cube_serial {
- my ($model,$size)=@_;
+ my ($model,$size,$progress_cb)=@_;
  $size ||= 17;
  my @nodes;
  my @u16;
  for(my $r=0;$r<$size;$r++) {
+  die "cancelled\n" if(cancelled());
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
     my $out=node_output_pct($model,$r,$g,$b,$size);
@@ -1764,6 +1782,7 @@ sub _generate_lut_cube_serial {
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
    }
   }
+  $progress_cb->(($r+1)*$size*$size,$size**3) if(ref($progress_cb) eq "CODE");
  }
  return (\@u16,\@nodes);
 }
@@ -1795,10 +1814,11 @@ sub neutral_identity_output {
 }
 
 sub _generate_lut_lg_payload_serial {
- my ($model,$size)=@_;
+ my ($model,$size,$progress_cb)=@_;
  $size ||= 33;
  my @u16;
  for(my $b=0;$b<$size;$b++) {
+  die "cancelled\n" if(cancelled());
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
     my $out=node_output_pct($model,$r,$g,$b,$size);
@@ -1806,6 +1826,7 @@ sub _generate_lut_lg_payload_serial {
     push @u16,@v;
    }
   }
+  $progress_cb->(($b+1)*$size*$size,$size**3) if(ref($progress_cb) eq "CODE");
  }
  return \@u16;
 }
@@ -1834,58 +1855,115 @@ sub _lut_node_u16 {
  return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
 }
 
+# Parallel LUT generation reports completed outer-axis slabs through one tiny
+# progress file per child. The parent remains the sole writer of the public
+# JSON state, avoiding child races while still exposing real node counts.
+# On cancellation the parent SIGKILLs the children (their compute loops never
+# check the flag) and returns failure; callers die "cancelled" after cleanup.
+sub _lut_wait_workers {
+ my ($jobs,$tmpdir,$plane_nodes,$total_nodes,$progress_cb)=@_;
+ my %pending=map { $_->[1] => $_ } @{$jobs};
+ my %completed;
+ my $last_total=0;
+ my $ok=1;
+ while(%pending) {
+  if(cancelled()) {
+   kill('KILL',keys %pending);
+   waitpid($_,0) foreach(keys %pending);
+   return 0;
+  }
+  foreach my $pid (keys %pending) {
+   my $job=$pending{$pid};
+   my ($w,$slabs)=($job->[0],$job->[2]);
+   my $raw=read_file("$tmpdir/w$w.progress");
+   $completed{$w}=int($1) if($raw =~ /^\s*(\d+)\s*$/);
+   my $result=waitpid($pid,WNOHANG);
+   if($result==$pid) {
+    my $exit_status=$?;
+    $ok=0 if(($exit_status >> 8) != 0 || ($exit_status & 127) != 0);
+    $completed{$w}=$slabs*$plane_nodes if(($exit_status >> 8) == 0 && ($exit_status & 127) == 0);
+    delete($pending{$pid});
+   } elsif($result < 0) {
+    $ok=0;
+    delete($pending{$pid});
+   }
+  }
+  my $done=0;
+  $done+=$_ foreach(values %completed);
+  $done=$total_nodes if($done > $total_nodes);
+  if($done != $last_total) {
+   $progress_cb->($done,$total_nodes) if(ref($progress_cb) eq "CODE");
+   $last_total=$done;
+  }
+  sleep(0.08) if(%pending);
+ }
+ return $ok;
+}
+
 sub generate_lut_cube {
- my ($model,$size)=@_;
+ my ($model,$size,$progress_cb)=@_;
  $size ||= 17;
  my $workers=_lut_gen_workers($size);
- return _generate_lut_cube_serial($model,$size) if($workers <= 1);
+ return _generate_lut_cube_serial($model,$size,$progress_cb) if($workers <= 1);
  my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial cube");
-  return _generate_lut_cube_serial($model,$size);
+  return _generate_lut_cube_serial($model,$size,$progress_cb);
  }
  my $per=int(($size+$workers-1)/$workers);
  my @pids;
+ my $expected_workers=0;
  for(my $w=0;$w<$workers;$w++) {
   my $r0=$w*$per; my $r1=$r0+$per; $r1=$size if($r1 > $size);
   next if($r0 >= $size);
+  $expected_workers++;
   my $pid=fork();
   if(!defined $pid) { log_line("lut generate: fork failed on cube worker $w"); last; }
   if($pid == 0) {
-   my @u16;
-   for(my $r=$r0;$r<$r1;$r++) {
-    for(my $g=0;$g<$size;$g++) {
-     for(my $b=0;$b<$size;$b++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+   $SIG{TERM}='DEFAULT'; $SIG{INT}='DEFAULT';
+   # A die here would unwind into the parent's top-level eval inside the
+   # child's copy of the script (state writes, upload paths) — never escape.
+   eval {
+    my @u16;
+    my $slabs_done=0;
+    for(my $r=$r0;$r<$r1;$r++) {
+     for(my $g=0;$g<$size;$g++) {
+      for(my $b=0;$b<$size;$b++) {
+       push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      }
      }
+     $slabs_done++;
+     write_file("$tmpdir/w$w.progress",$slabs_done*$size*$size,0);
     }
-   }
-   if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+    if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+    1;
+   } or exit 1;
    exit 0;
   }
-  push @pids,[$w,$pid];
+  push @pids,[$w,$pid,$r1-$r0];
  }
- my $ok=1;
- foreach my $job (@pids) {
-  my $cpid=waitpid($job->[1],0);
-  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
- }
+ my $ok=(scalar(@pids)==$expected_workers) ? 1 : 0;
+ kill('KILL',map { $_->[1] } @pids) if(!$ok && @pids);
+ $ok=0 if(!_lut_wait_workers(\@pids,$tmpdir,$size*$size,$size**3,$progress_cb));
  my @u16;
- if($ok) {
-  for(my $w=0;$w<$workers;$w++) {
-   my $path="$tmpdir/w$w.raw";
-   next unless(-f $path);
+ for(my $w=0;$w<$workers;$w++) {
+  my $path="$tmpdir/w$w.raw";
+  if($ok && -f $path) {
    if(open(my $fh,'<',$path)) {
     binmode($fh); local $/; my $blob=<$fh>; close($fh);
     push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
    }
-   unlink($path);
   }
+  unlink($path);
+  unlink("$tmpdir/w$w.progress");
+  unlink("$tmpdir/w$w.progress.tmp");
  }
  rmdir($tmpdir);
  if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  die "cancelled\n" if(cancelled());
   log_line("lut generate: parallel cube failed (ok=$ok n=".scalar(@u16)."), serial fallback");
-  return _generate_lut_cube_serial($model,$size);
+  $progress_cb->(0,$size**3) if(ref($progress_cb) eq "CODE");
+  return _generate_lut_cube_serial($model,$size,$progress_cb);
  }
  log_line("lut generate: cube ${size}^3 via $workers workers");
  # Preview corners only — payload/export do not depend on these nodes.
@@ -1900,57 +1978,69 @@ sub generate_lut_cube {
 }
 
 sub generate_lut_lg_payload {
- my ($model,$size)=@_;
+ my ($model,$size,$progress_cb)=@_;
  $size ||= 33;
  my $workers=_lut_gen_workers($size);
- return _generate_lut_lg_payload_serial($model,$size) if($workers <= 1);
+ return _generate_lut_lg_payload_serial($model,$size,$progress_cb) if($workers <= 1);
  my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial payload");
-  return _generate_lut_lg_payload_serial($model,$size);
+  return _generate_lut_lg_payload_serial($model,$size,$progress_cb);
  }
  my $per=int(($size+$workers-1)/$workers);
  my @pids;
+ my $expected_workers=0;
  for(my $w=0;$w<$workers;$w++) {
   my $b0=$w*$per; my $b1=$b0+$per; $b1=$size if($b1 > $size);
   next if($b0 >= $size);
+  $expected_workers++;
   my $pid=fork();
   if(!defined $pid) { log_line("lut generate: fork failed on payload worker $w"); last; }
   if($pid == 0) {
-   my @u16;
-   for(my $b=$b0;$b<$b1;$b++) {
-    for(my $g=0;$g<$size;$g++) {
-     for(my $r=0;$r<$size;$r++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+   $SIG{TERM}='DEFAULT'; $SIG{INT}='DEFAULT';
+   # A die here would unwind into the parent's top-level eval inside the
+   # child's copy of the script (state writes, upload paths) — never escape.
+   eval {
+    my @u16;
+    my $slabs_done=0;
+    for(my $b=$b0;$b<$b1;$b++) {
+     for(my $g=0;$g<$size;$g++) {
+      for(my $r=0;$r<$size;$r++) {
+       push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      }
      }
+     $slabs_done++;
+     write_file("$tmpdir/w$w.progress",$slabs_done*$size*$size,0);
     }
-   }
-   if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+    if(open(my $fh,'>',"$tmpdir/w$w.raw")) { binmode($fh); print $fh pack('S*',@u16); close($fh); }
+    1;
+   } or exit 1;
    exit 0;
   }
-  push @pids,[$w,$pid];
+  push @pids,[$w,$pid,$b1-$b0];
  }
- my $ok=1;
- foreach my $job (@pids) {
-  my $cpid=waitpid($job->[1],0);
-  $ok=0 if($cpid < 0 || ($? >> 8) != 0);
- }
+ my $ok=(scalar(@pids)==$expected_workers) ? 1 : 0;
+ kill('KILL',map { $_->[1] } @pids) if(!$ok && @pids);
+ $ok=0 if(!_lut_wait_workers(\@pids,$tmpdir,$size*$size,$size**3,$progress_cb));
  my @u16;
- if($ok) {
-  for(my $w=0;$w<$workers;$w++) {
-   my $path="$tmpdir/w$w.raw";
-   next unless(-f $path);
+ for(my $w=0;$w<$workers;$w++) {
+  my $path="$tmpdir/w$w.raw";
+  if($ok && -f $path) {
    if(open(my $fh,'<',$path)) {
     binmode($fh); local $/; my $blob=<$fh>; close($fh);
     push @u16, unpack('S*',$blob) if(defined $blob && length($blob));
    }
-   unlink($path);
   }
+  unlink($path);
+  unlink("$tmpdir/w$w.progress");
+  unlink("$tmpdir/w$w.progress.tmp");
  }
  rmdir($tmpdir);
  if(!$ok || scalar(@u16) != 3*$size*$size*$size) {
+  die "cancelled\n" if(cancelled());
   log_line("lut generate: parallel payload failed (ok=$ok n=".scalar(@u16)."), serial fallback");
-  return _generate_lut_lg_payload_serial($model,$size);
+  $progress_cb->(0,$size**3) if(ref($progress_cb) eq "CODE");
+  return _generate_lut_lg_payload_serial($model,$size,$progress_cb);
  }
  log_line("lut generate: payload ${size}^3 via $workers workers");
  return \@u16;
@@ -2353,7 +2443,12 @@ sub run_solve_only {
  $state->{"current_name"}="Generating ${cube_size}³ cube";
  $state->{"solve_progress_pct"}=45;
  write_state($state);
- my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
+ set_lut_calculation_progress($state,"Export cube calculation",0,$cube_size**3,1);
+ my ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size,sub {
+  my ($current,$total)=@_;
+  set_lut_calculation_progress($state,"Export cube calculation",$current,$total,1);
+ });
+ set_lut_calculation_progress($state,"Export cube calculation",$cube_size**3,$cube_size**3,0);
  $model->{"method"}=$series_method;
  $state->{"message"}="Writing ${cube_size}³ .cube export";
  $state->{"current_name"}="Writing .cube";
@@ -3062,6 +3157,49 @@ sub read_step {
   sleep(1+$i);
  }
  return (undef,$last||"Meter read failed");
+}
+
+# Profile measurements are solver inputs, not ordinary chart samples.  Retry
+# impossible values here so a stale black result can never become a valid
+# colour-model endpoint merely because the meter request itself succeeded.
+sub read_validated_profile_step {
+ my ($config,$step,$state,$previous_entries)=@_;
+ my $attempts=3;
+ my $last="";
+ for(my $attempt=1;$attempt<=$attempts;$attempt++) {
+  my ($reading,$error)=read_step($config,$step,$state);
+  return (undef,$error) if($error);
+  my $reason=profile_reading_plausibility_error($step,$reading);
+  $reason=profile_primary_monotonicity_error($step,$reading,$previous_entries) if(!defined($reason));
+  if(!defined($reason)) {
+   if($attempt > 1 && ref($state) eq "HASH") {
+    $state->{profile_validation_recoveries}=($state->{profile_validation_recoveries}||0)+1;
+    write_state($state);
+   }
+   return ($reading,undef);
+  }
+  $last=$reason;
+  my $name=$step->{name}||"profile patch";
+  log_line("Rejected implausible profile reading for $name ($attempt/$attempts): $reason");
+  if(ref($state) eq "HASH") {
+   $state->{profile_validation_failures}=[] if(ref($state->{profile_validation_failures}) ne "ARRAY");
+   push @{$state->{profile_validation_failures}},{
+    name=>$name,
+    attempt=>$attempt+0,
+    reason=>$reason,
+    X=>defined($reading->{X}) ? ($reading->{X}+0) : undef,
+    Y=>defined($reading->{Y}) ? ($reading->{Y}+0) : undef,
+    Z=>defined($reading->{Z}) ? ($reading->{Z}+0) : undef,
+    r_code=>defined($step->{r}) ? ($step->{r}+0) : undef,
+    g_code=>defined($step->{g}) ? ($step->{g}+0) : undef,
+    b_code=>defined($step->{b}) ? ($step->{b}+0) : undef,
+   };
+   $state->{message}="Rejected implausible $name reading; retrying ($attempt/$attempts)";
+   write_state($state);
+  }
+  sleep(1+$attempt) if($attempt < $attempts);
+ }
+ return (undef,"Invalid profile reading for ".($step->{name}||"patch")." after $attempts attempts: $last");
 }
 
 sub post_check_steps {
@@ -4461,7 +4599,11 @@ if($config->{"solve_only"}) {
  eval { run_solve_only($config); };
  if($@) {
   my $err=$@; $err =~ s/\s+$//;
-  write_state({ status=>"error", solve_only=>json_true(), message=>"LUT solve failed: $err" });
+  if($err =~ /^cancelled$/i) {
+   write_state({ status=>"cancelled", solve_only=>json_true(), message=>"LUT solve cancelled" });
+  } else {
+   write_state({ status=>"error", solve_only=>json_true(), message=>"LUT solve failed: $err" });
+  }
   exit 1;
  }
  exit 0;
@@ -4577,7 +4719,7 @@ eval {
   $state->{"profile_total"}=$profile_total;
   $state->{"message"}=($method eq "matrix" ? "Matrix profile " : "3D LUT profile ").($i+1)."/".$profile_total." - Reading ".($step->{"name"}||"patch");
   write_state($state);
-  my ($reading,$error)=read_step($config,$step,$state);
+  my ($reading,$error)=read_validated_profile_step($config,$step,$state,\@profile_readings);
   die "$error\n" if($error);
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
@@ -4724,12 +4866,22 @@ eval {
  $state->{"current_name"}="Generating ${cube_size}³ cube";
  $state->{"solve_progress_pct"}=40;
  write_state($state);
- ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size);
+ set_lut_calculation_progress($state,"Export cube calculation",0,$cube_size**3,1);
+ ($cube_u16,$preview_nodes)=generate_lut_cube($model,$cube_size,sub {
+  my ($current,$total)=@_;
+  set_lut_calculation_progress($state,"Export cube calculation",$current,$total,1);
+ });
+ set_lut_calculation_progress($state,"Export cube calculation",$cube_size**3,$cube_size**3,0);
  $state->{"message"}="Generating 33-point LG upload payload";
  $state->{"current_name"}="Generating 33³ payload";
  $state->{"solve_progress_pct"}=70;
  write_state($state);
- $payload_u16=generate_lut_lg_payload($model,33);
+ set_lut_calculation_progress($state,"LG 33³ payload calculation",0,33**3,1);
+ $payload_u16=generate_lut_lg_payload($model,33,sub {
+  my ($current,$total)=@_;
+  set_lut_calculation_progress($state,"LG 33³ payload calculation",$current,$total,1);
+ });
+ set_lut_calculation_progress($state,"LG 33³ payload calculation",33**3,33**3,0);
  }
  my $export=export_lut($cube_u16,$payload_u16,$model,$config,$cube_size);
  $state->{"export"}=$export;
@@ -4990,6 +5142,20 @@ eval {
    } else {
     $state->{"postcal_shadow_recommit_mismatch"}=JSON::PP::false;
    }
+   # A failed attempt to rebuild the held calibration session is recoverable:
+   # this explicit final LUT + tone-map re-commit establishes the same panel
+   # state through the normal verified upload path.  Do not leave the terminal
+   # status carrying the earlier "will likely fail" note after both uploads
+   # have demonstrably succeeded.
+   if($sl_status eq "ok" && $st_status eq "ok" && ref($state->{"hdr20_postcal_shadow"}) eq "HASH") {
+    $state->{"hdr20_postcal_shadow"}->{"reestablished"}=JSON::PP::true;
+    $state->{"hdr20_postcal_shadow"}->{"final_recommit_verified"}=JSON::PP::true;
+    my $_shadow_note=$state->{"hdr20_postcal_shadow"}->{"note"}||"";
+    $_shadow_note=~s/re-establish reported failure; 3D profiling will likely fail\.//g;
+    $_shadow_note=~s/^\s+|\s+$//g;
+    $state->{"hdr20_postcal_shadow"}->{"note"}=$_shadow_note;
+    $state->{"postcal_shadow_final_recommit_verified"}=JSON::PP::true;
+   }
    write_state($state);
    1;
   } or do {
@@ -5158,6 +5324,11 @@ eval {
  $state->{"phase"}=$state->{"status"};
  $state->{"current_name"}=$state->{"status"} eq "cancelled" ? "LG 3D LUT Auto Cal cancelled" : "LG 3D LUT Auto Cal error";
  $state->{"message"}=$state->{"status"} eq "cancelled" ? "3D LUT Auto Cal stopped" : $err;
+ if($state->{"lut_calculation_active"}) {
+  $state->{"lut_calculation_active"}=json_false();
+  $state->{"lut_calculation_current_nodes"}=0;
+  $state->{"lut_calculation_total_nodes"}=0;
+ }
  write_state($state);
  log_line($err);
 };

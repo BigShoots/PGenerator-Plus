@@ -8,6 +8,9 @@ use IO::Select ();
 use IO::Socket::INET ();
 use MIME::Base64 ();
 use Time::HiRes qw(sleep time);
+use FindBin qw($Bin);
+use lib "$Bin/../share/PGenerator";
+use PGAutoCalSafety qw(critical_shadow_needs_revisit autocal_solver_target_delta_e autocal_white_residual_stop_allowed autocal_restored_acceptance_needs_retry);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -272,30 +275,6 @@ sub api_json {
  }
  log_line("$method $path returned an invalid response");
  return { status=>"error", message=>"Invalid Web UI API response" };
-}
-
-# Worker-side launch boundary check. The WebUI performs the same check before
-# opening the wizard, but the TV can power off later or a caller can start the
-# endpoint directly. Require a definite CEC `on` result before resets,
-# calibration mode, pattern output, or meter reads begin.
-sub verify_lg_tv_power_for_autocal {
- my ($state)=@_;
- if(ref($state) eq "HASH") {
-  $state->{"phase"}="preparing";
-  $state->{"current_name"}="Verifying LG TV power";
-  $state->{"message"}="Checking that the LG TV is powered on";
-  write_state($state);
- }
- my $status=api_json("GET","/api/lg/status",undef,10);
- my $power=(ref($status) eq "HASH") ? lc($status->{"tv_power"}||"") : "";
- $power=~s/^\s+|\s+$//g;
- return "LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."
-  if($power eq "standby" || $power eq "off" || $power eq "powering-off");
- return "LG TV is still starting. Wait until it is fully on before Auto Cal."
-  if($power eq "powering-on");
- return "Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."
-  if($power ne "on");
- return undef;
 }
 
 sub shell_quote {
@@ -14701,9 +14680,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $low_ire_reescalate_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}+0) : 4.0;
 	$low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
 	$low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
-	# "Close enough that further moves only scatter the reading" band, as a
-	# multiple of the anchor's effective target dE.
-	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.5;
+	# Optional "close enough that further moves only scatter the reading" band.
+	# It defaults to the exact target, so it cannot stop an above-target solve;
+	# expert callers may deliberately widen it for a known noise floor.
+	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.0;
 	$low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
 	$low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
 	# 100% white is calibrated first and gets its own (usually larger)
@@ -14712,24 +14692,19 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 16;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
-	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
-	$target_de=0.05 if($target_de < 0.05);
-	$target_de=5.0 if($target_de > 5.0);
-	# Per-anchor target_de multiplier at low IRE. The panel's PQ EOTF floor
-	# + meter noise at very low stimulus (1.4-2% IRE) make the set target
-	# physically unreachable: e.g. target=0.5 means dE<=0.5, but the best
-	# achievable on the OLED65C2PUA / OLED48C1AUB at 1.4% is ~0.7-0.9 dE.
-	# Without relaxation the best-so-far revert logic catches every
-	# oscillation cycle, but the running best dE never crosses the unrelaxed
-	# threshold, so the worker keeps "trying" after every revert -- the
-	# 2026-06-23 1.4% slot ran 16 iters / 8.6 min for ~4 useless post-best
-	# iterations per cycle. Default 2.0 at very-low IRE matches the operator
-	# directive "double the set target": with set target 0.5 the effective
-	# target at 1.4% is 1.0; a best-so-far dE of 0.72 then converges.
-	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.5;
+	my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_hdr20_dpg_target_de",0.5);
+	my $target_de_source=(defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? "lg_autocal_hdr20_dpg_target_de" : (defined($config->{"target_delta_e"}) ? "target_delta_e" : "fallback"));
+	$state->{"hdr20_1d_dpg_target_de"}=$target_de+0;
+	$state->{"hdr20_1d_dpg_target_de_source"}=$target_de_source;
+	log_line("HDR20 1D DPG greyscale: active target dE=".sprintf("%.3f",$target_de)." source=".$target_de_source);
+	write_state($state);
+	# Honour the operator's target at every anchor by default.  Expert callers
+	# can still opt into a relaxed low-IRE threshold explicitly for a known
+	# meter or panel noise floor.
+	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.0;
 	$target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
 	$target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 1.0;
 	$target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
 	$target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
 	$target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
@@ -15013,6 +14988,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	if($test_mode) {
 		$white_ref=$test_white_ref+0;
 		$state->{"hdr20_1d_dpg_white_converged"}=JSON::PP::true;
+		$state->{"hdr20_1d_dpg_white_usable"}=JSON::PP::true;
 		log_line("HDR20 1D DPG greyscale: TEST MODE using snapshot white_ref=".sprintf("%.4f",$white_ref)." (provisional 100% read + white calibration skipped)");
 	} elsif(ref($white_step) eq "HASH" && !cancelled()) {
 		my $rs=fixed_lg_autocal_step($config,$white_step);
@@ -15102,14 +15078,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire($_anchor_signal_mode,$_anchor_ire);
 		$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
 		$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
-		# Per-anchor effective target_de: the set $target_de is the operator's
-		# intent, but at very-low IRE the panel floor + meter noise make it
-		# unreachable. Apply the IRE-tier multiplier so a best-so-far dE like
-		# 0.72 at 1.4% IRE counts as converged when the operator set 0.5 with
-		# default 2x very-low multiplier (effective 1.0). The skip-acceptance
-		# threshold must scale with the same effective target so the
-		# "instant-skip when already below 60% of target" path stays
-		# consistent with the convergence check.
+		# The effective target equals the operator's target by default. Explicit
+		# expert multiplier overrides also scale the skip-acceptance threshold so
+		# both gates remain internally consistent.
 		my $_effective_target_de=$target_de;
 		my $_effective_skip_de=$acceptance_skip_de;
 		if($_anchor_ire <= $very_low_ire_threshold) {
@@ -15654,6 +15625,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				# fall through: the build below makes the one-more move
 			} elsif($acceptance_pending) {
 				# This read is the result of the one-more move. Decide + move on.
+				my $_acceptance_move_on=1;
 				if(defined($de) && $de+0 < $accepted_best_de+0) {
 					log_line("HDR20 1D DPG greyscale: ".$label." one-more move improved to dE=".sprintf("%.4f",$de+0).", moving on");
 				} else {
@@ -15688,8 +15660,20 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 						}
 					}
 					write_state($state);
+					if(autocal_restored_acceptance_needs_retry($_restored_ok,$de,$_effective_target_de)) {
+						# The restored coefficients once measured below target, but the
+						# verification read is the honest current panel state.  Do not
+						# call that historical sample converged; keep using the remaining
+						# bounded iteration budget from the verified reading.
+						$acceptance_pending=0;
+						$converged=0;
+						$conv_now=0;
+						$prev_de=$de+0;
+						$_acceptance_move_on=0;
+						log_line("HDR20 1D DPG greyscale: ".$label." restoration verify dE=".sprintf("%.4f",$de+0)." still above target ".sprintf("%.4f",$_effective_target_de+0)."; continuing solve");
+					}
 				}
-				last;
+				last if($_acceptance_move_on);
 			}
 			last if($conv_now && !$acceptance_pending);
 			# Reach the target (luminance AND white balance) with per-channel
@@ -15762,14 +15746,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  log_line(sprintf("HDR20 1D DPG greyscale: %s white move R=%.4f G=%.4f B=%.4f (k R=%s G=%s B=%s, lock=%s, residual=%.4f%%)",
 			   $label,($rg//1.0)+0,($gg//1.0)+0,($bg//1.0)+0,$_kn[0],$_kn[1],$_kn[2],($white_lowest_lock->{"name"}//"?"),$white_resid*100));
 			 }
-			 # Genuinely matched in light while dE is still above target: that is
-			 # the physical limit of holding the lock, not a stall. Stop at best
-			 # rather than burning the remaining budget re-reading an unchanged
-			 # panel (the pre-fix code had no such exit and spent 15 iterations
-			 # doing exactly that).
+			 # A small residual can indicate the physical/noise limit of holding
+			 # the white lock, but it must not override an operator's lower dE
+			 # target on the first correction. Require several genuine attempts
+			 # (or repeated reverts) before accepting that bounded give-up path.
 			 my $_white_stop=0;
 			 my $_white_stop_why="";
-			 if($white_resid <= 0.004 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
+			 if(autocal_white_residual_stop_allowed($i,$consecutive_reverts,$white_resid,$de,$_effective_target_de)) {
 			  $_white_stop=1;
 			  $_white_stop_why=sprintf("matched to lock in light (residual=%.4f%%)",$white_resid*100);
 			 } elsif($white_span < 0.002 && $white_resid > 0.004 && defined($de) && ($de+0) > ($_effective_target_de+0)) {
@@ -16020,19 +16003,16 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			}
 			push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
 			$state->{"hdr20_1d_dpg_anchors_done"}=scalar(@done);
-			# White is good enough to proceed if it hit the strict target
-			# ($conv) OR produced a usable reading -- a real calibration whose
-			# dE simply landed just above target (e.g. 0.69 at target 0.5 is an
-			# excellent white). The earlier fail-fast aborted the whole series
-			# whenever white missed the strict target, skipping the entire
-			# greyscale. Only a total read failure (no usable reading -> the
-			# identity 1.0/1.0/1.0 DPG) aborts and suppresses the upload.
+			# A usable above-target white may still seed the remaining greyscale;
+			# only a total read failure aborts the series. Keep usability separate
+			# from convergence so continuing does not falsely claim target success.
 			my $white_usable=0;
 			if(ref($last) eq "HASH") {
 				my $wy=luminance($last);
 				$white_usable=1 if(defined($wy) && $wy+0 > 0);
 			}
-			$state->{"hdr20_1d_dpg_white_converged"}=($conv || $white_usable) ? JSON::PP::true : JSON::PP::false;
+			$state->{"hdr20_1d_dpg_white_usable"}=$white_usable ? JSON::PP::true : JSON::PP::false;
+			$state->{"hdr20_1d_dpg_white_converged"}=$conv ? JSON::PP::true : JSON::PP::false;
 			write_state($state);
 			$exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
 			if(!$white_usable) {
@@ -16101,6 +16081,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		$exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
 	}
 	$exit_reason="cancelled" if(cancelled());
+	if($exit_reason eq "max_inner" && (!defined($state->{"warning"}) || $state->{"warning"} eq "")) {
+		$state->{"warning"}=sprintf("One or more HDR greyscale anchors remained above the requested dE target %.3f after their iteration budgets expired",$target_de+0);
+	}
 
 	# Apply the same post-calibration low-end smoothing to standalone HDR20.
 	# Full workflows defer it until after the 3D LUT, tone-map and measured
@@ -16151,15 +16134,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# operator can see both -- "final_de" is the headline (committed),
 	# "final_de_trajectory" is the diagnostic (includes reverts).
 	$state->{"hdr20_1d_dpg_final_de_trajectory"}=$max_de_overall+0;
-	# Only mark the curve as uploaded to the TV if the white reference actually
-	# converged and the upload didn't fail. A non-converged 100% block leaves
-	# the panel with the identity baseline (or whatever was previously
-	# committed) -- uploading the 1.0/1.0/1.0 no-op DPG would silently wipe the
-	# 1D LUT and break the picture, so the API must report `uploaded: false`.
+	# A usable white permits a best-effort curve to remain uploaded even if it
+	# missed the requested target; the separate convergence flag and terminal
+	# warning report that honestly. Only a read/upload failure suppresses it.
 	$state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::true;
-	if($upload_failed || !$state->{"hdr20_1d_dpg_white_converged"}) {
+	if($upload_failed || !$state->{"hdr20_1d_dpg_white_usable"}) {
 		$state->{"hdr20_1d_dpg_uploaded"}=JSON::PP::false;
-		log_line("HDR20 1D DPG greyscale: skipping wire upload because white did not converge or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_converged=".($state->{"hdr20_1d_dpg_white_converged"} ? "true" : "false").")");
+		log_line("HDR20 1D DPG greyscale: marking upload unavailable because white was unusable or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_usable=".($state->{"hdr20_1d_dpg_white_usable"} ? "true" : "false").")");
 	}
 	# Calibration mode is still held ON; the commit/finalise path ends it once
 	# (end_calibration_mode) before the post-cal series read.
@@ -16428,11 +16409,10 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_reescalate_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}+0) : 4.0;
  $low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
  $low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
- # A very-low-IRE anchor sitting within this multiple of its (relaxed) target
- # is meter-noise-limited (e.g. 0.01 cd/m2 reads scatter dE 1-5): extra
- # reverts only scatter the dE without beating the best, so keep the best and
- # stop early instead of thrashing the whole revert budget.
- my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.5;
+ # Optional meter-noise band around the target. It defaults to the exact
+ # target, so it cannot stop an above-target solve; expert callers may widen
+ # it deliberately for a known meter or panel noise floor.
+ my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.0;
  $low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
  $low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
  # Final-state restore re-read guard (default ON). When ENABLED, a low-IRE
@@ -16441,30 +16421,21 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # DISABLED the re-read is skipped entirely (treat as rejected without
  # bothering to read). Kept as an escape hatch so an operator who wants
  # the raw re-read path (with the noise-clobber risk) can still get it.
-   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
-  $target_de=0.05 if($target_de < 0.05);
-  $target_de=5.0 if($target_de > 5.0);
-  # Per-anchor target_de multiplier at low IRE (HDR pattern). The panel's
-  # 2.2 EOTF + meter noise at very low stimulus (2.3-4% IRE) make the set
-  # target physically unreachable -- a best-so-far dE of 0.6-0.9 is the
-  # best achievable. Without relaxation the worker keeps "trying" after
-  # every revert, wasting the iteration budget fighting back down to a
-  # target the panel can't hit. 1.5x at low IRE (default 5%) and 2.0x at
-  # very-low IRE (default 2.3%) match the operator directive "double the
-  # set target" at the noise floor.
-  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.5;
+  my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_sdr26_dpg_target_de",0.5);
+  # Honour the operator's target at every anchor by default.  Expert callers
+  # can still opt into a relaxed low-IRE threshold explicitly for a known
+  # meter or panel noise floor.
+  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.0;
   $target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
   $target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 1.0;
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
   my $_effective_target_de=$target_de;
-  # Very-low IRE band: 2.5 (was 2.0). The comment above documents the 2.0x
-  # relaxation as applying to "very-low IRE (default 2.3%)", but a strict
-  # < 2.0 excluded the 2.3% anchor (it fell into the 1.5x low band). 2.5
-  # captures 2.3% as intended so the deepest-shadow anchor gets the full
-  # very-low treatment (relaxed target + strongest read averaging below).
+  # Very-low IRE includes the 2.3% anchor. Multipliers are exact (1.0) by
+  # default, but the band still selects an explicit expert override and the
+  # stronger read averaging used below.
   if($_anchor_ire+0 < 2.5) {
    $_effective_target_de=$target_de*$target_de_very_low_multiplier;
   } elsif($_anchor_ire+0 < $low_ire_threshold) {
@@ -16922,6 +16893,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    log_line("SDR26 1D DPG greyscale: ".$label." converged early (dE=".sprintf("%.4f",$de+0)." <= ".sprintf("%.2f",$_effective_target_de+0)." at i".$i."), trying one more refinement move");
    # fall through: the build below makes the one-more move
   } elsif($acceptance_pending) {
+   my $_acceptance_move_on=1;
    if(defined($de) && $de+0 < $accepted_best_de+0) {
     log_line("SDR26 1D DPG greyscale: ".$label." one-more move improved to dE=".sprintf("%.4f",$de+0).", moving on");
    } else {
@@ -16951,8 +16923,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      }
     }
     write_state($state);
+    if(autocal_restored_acceptance_needs_retry($_restored_ok,$de,$_effective_target_de)) {
+     $acceptance_pending=0;
+     $converged=0;
+     $conv_now=0;
+     $prev_de=$de+0;
+     $_acceptance_move_on=0;
+     log_line("SDR26 1D DPG greyscale: ".$label." restoration verify dE=".sprintf("%.4f",$de+0)." still above target ".sprintf("%.4f",$_effective_target_de+0)."; continuing solve");
+    }
    }
-   last;
+   last if($_acceptance_move_on);
   }
   last if($conv_now && !$acceptance_pending);
   # Compute the per-channel gain. Three paths:
@@ -17376,11 +17356,13 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # see the same $config->{ddc_layout} the routing implied.
  $config->{"ddc_layout"}=$_layout;
 
- # Top-level target_dE (operator's set target). Mirrors the HDR top-level
- # config knob lg_autocal_hdr20_dpg_target_de. Default 0.5.
- my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
- $target_de=0.05 if($target_de+0 < 0.05);
- $target_de=5.0 if($target_de+0 > 5.0);
+ # Top-level target_dE (operator's set target). The specialised key remains an
+ # explicit override, matching the HDR DPG worker.
+ my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_sdr26_dpg_target_de",0.5);
+ $state->{"sdr26_1d_dpg_target_de"}=$target_de+0;
+ $state->{"sdr26_1d_dpg_target_de_source"}=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? "lg_autocal_sdr26_dpg_target_de" : (defined($config->{"target_delta_e"}) ? "target_delta_e" : "fallback");
+ log_line("SDR26 1D DPG greyscale: active target dE=".sprintf("%.3f",$target_de)." source=".$state->{"sdr26_1d_dpg_target_de_source"});
+ write_state($state);
 
  # SDR26 anchor tables. Three mutually exclusive models keyed on
  # (transport_range, color_format):
@@ -17877,6 +17859,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  my $max_de_overall=0;
  my $exit_reason="converged";
  my $upload_failed=0;
+ my @critical_shadow_revisits;
 
  my $step_num=0;
  # --- 100% white first: calibrate its white balance, then anchor the peak
@@ -17927,7 +17910,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
     my $wy=luminance($last);
     $white_usable=1 if(defined($wy) && $wy+0 > 0);
    }
-   $state->{"sdr_1d_dpg_white_converged"}=($conv || $white_usable) ? JSON::PP::true : JSON::PP::false;
+   $state->{"sdr_1d_dpg_white_usable"}=$white_usable ? JSON::PP::true : JSON::PP::false;
+   $state->{"sdr_1d_dpg_white_converged"}=$conv ? JSON::PP::true : JSON::PP::false;
    # Flag the calibrated 109 step so the @rest loop skips it (per-anchor
    # loop skip rule: `autocal_step_is_white($step) && $step->{sdr26_white_peak_done}`).
    # 99 and 105 do NOT get this flag and are processed individually below
@@ -17989,7 +17973,26 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
    $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done,$cal_active
   );
   $total_inner_iters+=$inner_iters;
-  $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
+  my $_critical_shadow_best_de=(ref($state) eq "HASH" && defined($state->{current_delta_e}))
+   ? ($state->{current_delta_e}+0) : ($max_de_anchor+0);
+  my $_critical_shadow_revisit=critical_shadow_needs_revisit($rs,$conv);
+  if($_critical_shadow_revisit) {
+   push @critical_shadow_revisits,{
+    step=>clone_picture($step),
+    initial_de=>$_critical_shadow_best_de+0,
+   };
+   if(ref($state) eq "HASH") {
+    $state->{sdr_1d_dpg_shadow_revisit}={
+     status=>"queued",
+     ire=>$_step_ire+0,
+     initial_de=>$_critical_shadow_best_de+0,
+    };
+    write_state($state);
+   }
+   log_line(sprintf("SDR26 1D DPG greyscale: queued %.1f%% critical-shadow revisit after neighbouring dark-detail anchors (initial best dE=%.4f)",$_step_ire,$_critical_shadow_best_de+0));
+  } else {
+   $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
+  }
   $cal_active=1 if($cal_active_inner);
   $upload_failed=1 if($inner_upload_failed);
   # Full 100% recal: refresh white_ref so 95%..2.3% targets track the
@@ -18017,9 +18020,81 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
    $state->{"sdr_1d_dpg_last_anchor_converged"}=$conv ? JSON::PP::true : JSON::PP::false;
    write_state($state);
   }
-  $exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && $exit_reason eq "converged");
+  $exit_reason="max_inner" if(!$upload_failed && !cancelled() && !$conv && !$_critical_shadow_revisit && $exit_reason eq "converged");
+ }
+
+ # A failed 2.3% point can share its low-end curve neighbourhood with the
+ # Dark Detail 2%/2.7% points which run later.  Re-open it once those
+ # neighbours have settled, with a fresh damping/revert history, instead of
+ # silently committing the first exhausted attempt.
+ foreach my $pending (@critical_shadow_revisits) {
+  last if(cancelled() || $upload_failed);
+  my $step=$pending->{step};
+  my $rs=fixed_lg_autocal_step($config,$step);
+  my $idx=$idx_for_sdr->($rs);
+  next if(!defined($idx));
+  my $_step_ire=defined($rs->{ire}) ? ($rs->{ire}+0) : 2.3;
+  my $label=($rs->{name}||(format_percent($_step_ire)."%"));
+  $label.=" (revisit)" if($label !~ /\(revisit\)$/);
+  my $budget=defined($config->{lg_autocal_sdr26_dpg_shadow_revisit_budget})
+   ? int($config->{lg_autocal_sdr26_dpg_shadow_revisit_budget}) : 8;
+  $budget=4 if($budget < 4);
+  $budget=12 if($budget > 12);
+  $total_steps++;
+  $step_num++;
+  if(ref($state) eq "HASH") {
+   $state->{current_name}="SDR26 1D DPG $label";
+   $state->{current_ire}=$_step_ire+0;
+   $state->{current_step}=$step_num+0;
+   $state->{total_steps}=$total_steps+0;
+   $state->{sdr_1d_dpg_shadow_revisit}={
+    status=>"running",
+    ire=>$_step_ire+0,
+    initial_de=>$pending->{initial_de}+0,
+    budget=>$budget+0,
+   };
+   write_state($state);
+  }
+  log_line(sprintf("SDR26 1D DPG greyscale: starting %.1f%% critical-shadow revisit after neighbours (initial best dE=%.4f, budget=%d)",$_step_ire,$pending->{initial_de}+0,$budget));
+  my ($conv,$last,$final_dpg,$inner_iters,$max_de_anchor,$cal_active_inner,$inner_upload_failed)=lg_autocal_26_run_sdr_1d_dpg_greyscale_inner(
+   $config,$state,$rs,$idx,$label,$budget,$white_ref,$target_x,$target_y,$picture_mode,\@{$current_dpg},\@done,$cal_active
+  );
+  $total_inner_iters+=$inner_iters;
+  my $revisit_best_de=(ref($state) eq "HASH" && defined($state->{current_delta_e}))
+   ? ($state->{current_delta_e}+0)
+   : (($max_de_anchor+0) > 0 ? ($max_de_anchor+0) : ($pending->{initial_de}+0));
+  $max_de_overall=$max_de_anchor if($max_de_anchor+0 > $max_de_overall+0);
+  $cal_active=1 if($cal_active_inner);
+  $upload_failed=1 if($inner_upload_failed);
+  push @done,{idx=>$idx,r_gain=>1.0,g_gain=>1.0,b_gain=>1.0};
+  if(ref($state) eq "HASH") {
+   $state->{sdr_1d_dpg_anchors_done}=scalar(@done);
+   $state->{sdr_1d_dpg_last_anchor_converged}=$conv ? JSON::PP::true : JSON::PP::false;
+   $state->{sdr_1d_dpg_shadow_revisit}={
+    status=>$conv ? "converged" : "unresolved",
+    ire=>$_step_ire+0,
+    initial_de=>$pending->{initial_de}+0,
+    final_de=>$revisit_best_de+0,
+    iterations=>$inner_iters+0,
+   };
+   if(!$conv) {
+    $state->{sdr_1d_dpg_unresolved_critical_anchors}=[] if(ref($state->{sdr_1d_dpg_unresolved_critical_anchors}) ne "ARRAY");
+    push @{$state->{sdr_1d_dpg_unresolved_critical_anchors}},{ire=>$_step_ire+0,de=>$revisit_best_de+0};
+    $state->{warning}=sprintf("Critical %.1f%% shadow anchor remained unconverged after automatic revisit (best dE %.3f)",$_step_ire,$revisit_best_de+0);
+   }
+   write_state($state);
+  }
+  if($conv) {
+   log_line(sprintf("SDR26 1D DPG greyscale: %.1f%% critical-shadow revisit converged at dE %.4f",$_step_ire,$revisit_best_de+0));
+  } else {
+   $exit_reason="max_inner" if($exit_reason eq "converged");
+   log_line(sprintf("SDR26 1D DPG greyscale: WARNING %.1f%% critical-shadow revisit unresolved at best dE %.4f",$_step_ire,$revisit_best_de+0));
+  }
  }
  $exit_reason="cancelled" if(cancelled());
+ if($exit_reason eq "max_inner" && (!defined($state->{warning}) || $state->{warning} eq "")) {
+  $state->{warning}=sprintf("One or more SDR greyscale anchors remained above the requested dE target %.3f after their iteration budgets expired",$target_de+0);
+ }
 
  # Post-calibration shadow smoothing, applied ONCE here rather than per
  # iteration: smoothing inside the loop would move the anchor the solver just
@@ -18077,15 +18152,13 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  # the WebUI chart can render the matching 2.2 target line via
  # meterGreyChartTargetGammaSelection rather than the BT.1886 dropdown default.
  $state->{"sdr_1d_dpg_target_gamma"}="2.2";
- # Only mark the curve as uploaded to the TV if the white reference actually
- # converged and the upload didn't fail. A non-converged 100% block leaves
- # the panel with the identity baseline -- uploading the 1.0/1.0/1.0 no-op
- # DPG would silently wipe the 1D LUT and break the picture, so the API must
- # report uploaded: false.
+ # A usable white permits a best-effort curve to remain uploaded even if it
+ # missed the requested target; the separate convergence flag and terminal
+ # warning report that honestly. Only a read/upload failure suppresses it.
  $state->{"sdr_1d_dpg_uploaded"}=JSON::PP::true;
- if($upload_failed || !$state->{"sdr_1d_dpg_white_converged"}) {
+ if($upload_failed || !$state->{"sdr_1d_dpg_white_usable"}) {
   $state->{"sdr_1d_dpg_uploaded"}=JSON::PP::false;
-  log_line("SDR26 1D DPG greyscale: skipping wire upload because white did not converge or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_converged=".($state->{"sdr_1d_dpg_white_converged"} ? "true" : "false").")");
+  log_line("SDR26 1D DPG greyscale: marking upload unavailable because white was unusable or upload_failed=1 (upload_failed=".($upload_failed?1:0).", white_usable=".($state->{"sdr_1d_dpg_white_usable"} ? "true" : "false").")");
  }
  # Calibration mode is still held ON; the commit/finalise path ends it once
  # (single-socket commit) before the post-cal series read.
@@ -22001,8 +22074,9 @@ $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 $LG_AUTOCAL_DARK_DETAIL=$config->{"dark_detail"} ? 1 : 0;
 if($LG_AUTOCAL_DARK_DETAIL) {
  my @dd=ddc_dark_detail_fillers_for_layout($LG_AUTOCAL_DDC_LAYOUT);
+ my @dd_slots=ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT);
  log_line("Dark Detail enabled: layout=$LG_AUTOCAL_DDC_LAYOUT adds ".scalar(@dd)." patches (".join(", ",@dd).") -> "
-  .scalar(ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT))." slots total; spline anchors unchanged");
+  .scalar(@dd_slots)." slots total; spline anchors unchanged");
 }
 my $max_iterations=defined($config->{"max_iterations"}) ? int($config->{"max_iterations"}) : 80;
 my $min_iterations=autocal_config_is_touchup($config) ? 4 : 12;
@@ -22099,8 +22173,12 @@ my $active_picture_mode_for_cleanup="";
 
 eval {
  die "No greyscale steps were supplied" if(!@{$steps});
- my $tv_power_error=verify_lg_tv_power_for_autocal($state);
- die $tv_power_error if(defined($tv_power_error) && $tv_power_error ne "");
+ # CEC can be stale or unknown even when WebOS is reachable, so no CEC reading
+ # gates this run. Reachability is established by read_initial_picture_settings
+ # further down, which is unconditional and dies on failure. The three restore/
+ # reset calls immediately below are NOT that authority -- every UI launcher
+ # posts restore_factory_levels and reset_ddc_baseline as false, so the first
+ # two return without touching the TV, and the third only acts on hdr10.
  my $level_restore_error=restore_factory_levels_for_autocal($config,$state);
  die $level_restore_error if($level_restore_error);
  my $reset_error=reset_ddc_baseline_for_autocal($config,$state);
@@ -26854,8 +26932,13 @@ eval {
 	  $state->{"message"}="Auto Cal stopped";
 	 } else {
 	 $state->{"status"}="complete";
-	 $state->{"current_name"}="Auto Cal complete";
-	 $state->{"message"}="Auto Cal complete";
+	 if(defined($state->{"warning"}) && $state->{"warning"} ne "") {
+	  $state->{"current_name"}="Auto Cal complete with warning";
+	  $state->{"message"}="Auto Cal complete with warning: ".$state->{"warning"};
+	 } else {
+	  $state->{"current_name"}="Auto Cal complete";
+	  $state->{"message"}="Auto Cal complete";
+	 }
 	 $state->{"completed_at"}=int(time()*1000);
 	 $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
 	 $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
