@@ -18858,6 +18858,7 @@ function meterSetSeriesCacheBootId(bootId){
    if(!cache||typeof cache!=='object') return;
    Object.entries(cache).forEach(([key,snap])=>{
     if(!snap||typeof snap!=='object') return;
+    if(meterSeriesKeyIsIccWorkflow(key)||Number(snap.points||0)===990001) return;
     const incoming=[];
     const bare=meterSeriesSnapshotWithoutModeVariants(snap);
     if(bare) incoming.push(bare);
@@ -18882,15 +18883,16 @@ function meterSetSeriesCacheBootId(bootId){
     prev?localStorage.getItem(scopedKey(prev,'lastSeriesKey'))||'':'',
     priorBootId?localStorage.getItem(scopedKey(priorBootId,'lastSeriesKey'))||'':'',
     localStorage.getItem('pgen.meter.lastSeriesKey')||''
-   ].filter(Boolean);
+   ].filter(key=>key&&!meterSeriesKeyIsIccWorkflow(key));
    let keepKey=lastCandidates.find(key=>meterSeriesSnapshotCanRestore(meterSeriesCache[key]));
    if(!keepKey){
     keepKey=Object.entries(meterSeriesCache)
-     .filter(entry=>meterSeriesSnapshotCanRestore(entry[1]))
+     .filter(entry=>!meterSeriesKeyIsIccWorkflow(entry[0])&&meterSeriesSnapshotCanRestore(entry[1]))
      .sort((a,b)=>Number((b[1]&&b[1].updated_at)||0)-Number((a[1]&&a[1].updated_at)||0))
      .map(entry=>entry[0])[0]||'';
    }
    if(keepKey) localStorage.setItem(meterSeriesCacheKey('lastSeriesKey'),keepKey);
+   else localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
   }
  }catch(e){}
 }
@@ -18923,7 +18925,12 @@ function meterLoadSeriesCache(){
   const raw=localStorage.getItem(meterSeriesCacheKey('seriesCache'));
   if(!raw) return;
   const parsed=JSON.parse(raw)||{};
-  if(parsed&&typeof parsed==='object') meterSeriesCache=parsed;
+  if(parsed&&typeof parsed==='object'){
+   Object.keys(parsed).forEach(key=>{
+    if(meterSeriesKeyIsIccWorkflow(key)||Number(parsed[key]&&parsed[key].points||0)===990001) delete parsed[key];
+   });
+   meterSeriesCache=parsed;
+  }
  }catch(e){}
 }
 
@@ -18931,6 +18938,11 @@ function meterParseSeriesKey(key){
  const match=String(key||'').match(/^([a-z]+)-(\d+)$/);
  if(!match) return null;
  return {type:match[1],points:Number(match[2])||0};
+}
+
+function meterSeriesKeyIsIccWorkflow(key){
+ const parsed=meterParseSeriesKey(key);
+ return !!(parsed&&Number(parsed.points)===990001);
 }
 
 function meterSeriesReadingIsImported(reading){
@@ -19565,6 +19577,7 @@ function meterRestoreLatestPersistedSeries(){
  // USER custom series (id >= 1001) are never auto-loaded at boot — they load
  // only through the Custom Series manager's Load button.
  const parsed=meterParseSeriesKey(lastKey)||{};
+ if(Number(parsed.points)===990001) return false;
  const restoredSeries=Number(parsed.points)>=1001&&(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(parsed.points):null;
  const userCustom=!!(restoredSeries&&!restoredSeries.builtin_verification);
  if(userCustom) return false;
@@ -19628,9 +19641,19 @@ function meterSeriesStepsHaveHcfrSaturationMarkers(steps){
  return Array.isArray(steps)&&steps.some(step=>String(step&&step.series_mode||'')==='hcfr-constant-luminance');
 }
 
+// ICC characterization uses the meter-series worker, but its patch list is a
+// private workflow payload rather than a calibration-workspace series. The
+// shared-status poll must never recover it into the normal Series UI: doing so
+// replaces (for example) Greyscale 21pt with ICC White/Black/Grey patches while
+// the preset selector still displays its built-in fallback value.
+function meterSeriesStatusIsIccWorkflow(status){
+ return Number(status&&status.points||0)===990001;
+}
+
 function meterSharedSeriesStatusCanRecover(status){
  const s=String((status&&status.status)||'').toLowerCase();
- return !!(status&&status.series_id&&(s==='running'||s==='setup'||s==='complete'||s==='cancelled'||s==='error'));
+ return !!(status&&!meterSeriesStatusIsIccWorkflow(status)&&status.series_id
+  &&(s==='running'||s==='setup'||s==='complete'||s==='cancelled'||s==='error'));
 }
 
 function meterSharedSeriesStatusKey(status){
@@ -27379,6 +27402,10 @@ async function meterCheckStatus(){
  }
 
 function meterRecoverSeries(s){
+ // ICC profiling owns and consumes its worker result through icc_profile.js.
+ // It is not a chart-series selection and must not replace the calibration
+ // workspace's active preset if another recovery caller sees the same status.
+ if(meterSeriesStatusIsIccWorkflow(s)) return false;
  const recoveredChartRevision=++meterSeriesChartRevision;
  const previousSeriesKey=String(meterActiveSeriesKey||'');
  const previousScrollRatio=Number(meterGreyscaleScrollRatio)||0;
@@ -27777,6 +27804,10 @@ function meterIsWhiteReferenceReading(rd){
 }
 
 function meterCacheSeriesState(status,options){
+ // Never persist an ICC characterization run as a selectable chart snapshot.
+ // This also prevents a completed profile run from becoming the last Series
+ // restored after a browser refresh.
+ if(Number(meterActiveSeriesPoints||0)===990001) return;
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const activeSignalMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const prev=meterSeriesSnapshotForMode(meterSeriesCache[meterActiveSeriesKey],activeSignalMode);
