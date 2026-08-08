@@ -709,12 +709,14 @@ def rebuild_icc(profile, replacements):
     for signature, payload in original:
         if signature in replacements:
             if signature not in replaced:
-                tags.append((signature, replacements[signature]))
+                replacement = replacements[signature]
+                if replacement is not None:
+                    tags.append((signature, replacement))
                 replaced.add(signature)
         else:
             tags.append((signature, payload))
     for signature, payload in replacements.items():
-        if signature not in replaced:
+        if signature not in replaced and payload is not None:
             tags.append((signature, payload))
     header = bytearray(profile[:128])
     header[84:100] = b"\0" * 16
@@ -1296,24 +1298,9 @@ def build(payload, output_dir):
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
-    # Derive the 1D calibration from the measured neutral ramp, then fit the
-    # cLUT in the calibrated domain. MHC2 and the characterization summary keep
-    # using the raw measurements: they describe the panel, not the calibrated
-    # signal, and neutral_channel_samples reads the measured device values.
+    # MHC2 and the characterization summary use the raw measurements: they
+    # describe the panel, not an already calibrated signal.
     _, _, primaries = profile_measurement_summary(profile_rows)
-    measured_black, measured_white, _ = profile_measurement_summary(profile_rows)
-    calibration = None
-    if payload.get("calibration", True) and PROFILE_MODELS[profile_model]["family"] == "clut":
-        try:
-            calibration = calibration_curves(
-                profile_rows, measured_black, measured_white, primaries,
-                profile_type, target_transfer,
-            )
-        except ValueError:
-            # A characterization without a usable black-to-white neutral ramp
-            # cannot produce a calibration. Fall back to the uncalibrated fit
-            # rather than failing the whole build.
-            calibration = None
     # The cLUT is fitted to the RAW measurements. Re-expressing them in a
     # calibrated domain only makes sense when that same calibration is applied
     # downstream, and it is not: the grey axis is taken from MHC2 applied to
@@ -1335,14 +1322,22 @@ def build(payload, output_dir):
     filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)
     output_path = os.path.join(output_dir, filename)
     run_colprof(payload, ti3, output_path, profile_model, patch_set)
-    matrix = None
-    adjustment_luts = None
-    calibrated_white = None
     mhc2_validation = None
-    if profile_type in ("windows-sdr", "windows-hdr"):
-        with open(output_path, "rb") as handle:
-            profile = handle.read()
-        mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(profile_type, black, white, primaries, profile_rows, target_transfer or "srgb")
+    keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
+    mhc2_type = profile_type if keeps_mhc2 else (
+        "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
+    with open(output_path, "rb") as handle:
+        profile = handle.read()
+    # Every output follows one calibration path: generate and insert MHC2,
+    # clone that exact correction's neutral-axis behaviour into vcgt, then
+    # remove MHC2 only from profile types whose consumers do not use it. This
+    # prevents SDR and KDE profiles from silently falling back to a different
+    # grey-axis calibration than their Windows counterparts.
+    mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
+        mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
+    replacements = {b"MHC2": mhc2}
+    luminance = None
+    if keeps_mhc2:
         # SDR uses the measured profiling white. HDR uses a dedicated metadata
         # white measured with the user's selected window or APL patch geometry.
         if metadata_white_rows and profile_type == "windows-hdr":
@@ -1351,47 +1346,19 @@ def build(payload, output_dir):
             luminance = black["xyz"][1] + calibration_scale * (metadata_white_rows[0]["xyz"][1] - black["xyz"][1])
         else:
             luminance = metadata_white_rows[0]["xyz"][1] if metadata_white_rows else calibrated_white
-        profile = rebuild_icc(profile, {b"MHC2": mhc2, b"lumi": xyz_tag((0.0, luminance, 0.0))})
+        replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
+    profile = rebuild_icc(profile, replacements)
+    calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
+    profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration)})
+    if not keeps_mhc2:
+        profile = rebuild_icc(profile, {b"MHC2": None})
+    if keeps_mhc2:
         mhc2_validation = validate_mhc2_profile(
             profile, mhc2, measured_primary_matrix(black, white, primaries),
             mhc2_wire_matrix(profile_type), luminance, profile_type,
         )
-        with open(output_path, "wb") as handle:
-            handle.write(profile)
-    if profile_type not in ("windows-sdr", "windows-hdr"):
-        # Derive the 1D stage from MHC2 even when the profile will not carry
-        # the tag. The MHC2 curves measure closest to target on the grey axis,
-        # so they are the best source for vcgt regardless of whether Windows
-        # will ever see them; the tag itself is simply not embedded below.
-        # SDR and KDE HDR map onto their MHC2 equivalents only to select the
-        # right wire primaries and transfer handling.
-        mhc2_equivalent = "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr"
-        try:
-            _, matrix, adjustment_luts, _ = mhc2_payload(
-                mhc2_equivalent, black, white, primaries, profile_rows, target_transfer or "srgb")
-            wire_source = mhc2_equivalent
-        except ValueError:
-            # No usable neutral ramp for the MHC2 derivation. Fall back to the
-            # calibration curves computed above rather than failing the build.
-            matrix = adjustment_luts = None
-            wire_source = profile_type
-    else:
-        wire_source = profile_type
-    if matrix and adjustment_luts:
-        # Clone the vcgt from MHC2 so the fallback matches the preferred path
-        # on the grey axis, inheriting MHC2's chromatic correction rather than
-        # approximating it per channel.
-        calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(wire_source))
-    if calibration:
-        # The cLUT above was fitted in the calibrated domain, so every consumer
-        # needs this 1D stage in front of it. vcgt is the portable one: OS
-        # profile loaders apply it, and the Companion applies it for HDR where
-        # Windows bypasses the GPU LUT. MHC2 carries the same calibration for
-        # the OS system-correction path.
-        with open(output_path, "rb") as handle:
-            profile = handle.read()
-        with open(output_path, "wb") as handle:
-            handle.write(rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration)}))
+    with open(output_path, "wb") as handle:
+        handle.write(profile)
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     write_text_atomic(ti3_path, ti3)
