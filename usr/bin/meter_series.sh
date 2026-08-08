@@ -1146,8 +1146,16 @@ FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
-ZERO_READ_RETRIES=2
-NO_READING_RETRIES=2
+# A series is a finite, operator-requested set. Do not respawn a timed-out
+# spotread here: that turned one missing result into roughly a minute of delay
+# and made long profiling runs appear hung. Continuous reads own their retry
+# policy separately. Re-check an all-zero non-black result only when the user
+# explicitly enabled Argyll's low-light handler.
+NO_READING_RETRIES=0
+ZERO_READ_RETRIES=0
+if [[ "${LOW_LIGHT_MODE:-off}" != "off" ]]; then
+ ZERO_READ_RETRIES=2
+fi
 
 daemon_elapsed_sec() {
  local pid
