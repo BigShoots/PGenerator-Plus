@@ -2430,6 +2430,19 @@ static SDL_Texture *create_patch_texture(bool hdr)
     return texture;
 }
 
+/* Windows presents HDR through its own swapchain, so the SDL renderer there
+ * keeps the scRGB-linear surface it has always used and the D3D path is
+ * untouched. Everywhere else the SDL renderer IS the HDR output, and it has to
+ * carry PQ because that is what the patch values are. */
+static SDL_Colorspace colorspace_for_hdr(void)
+{
+#ifdef _WIN32
+    return SDL_COLORSPACE_SRGB_LINEAR;
+#else
+    return SDL_COLORSPACE_HDR10;
+#endif
+}
+
 static bool try_create_renderer(bool hdr, const char *driver)
 {
     SDL_PropertiesID props;
@@ -2439,8 +2452,24 @@ static bool try_create_renderer(bool hdr, const char *driver)
     if (!props) return false;
     SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, app.window);
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
+    /* Ask for a real PQ surface, not a linear one.
+     *
+     * Patch values are already PQ/BT.2020 - the Windows path presents them
+     * through an HDR10 swapchain and hands them over untouched. Requesting
+     * SDL_COLORSPACE_SRGB_LINEAR here instead meant PQ codes were written into
+     * a LINEAR surface, so the ladder came out roughly twenty times too bright
+     * and clipped at the panel's peak from about 38% stimulus upward - two
+     * thirds of a greyscale measuring the same luminance.
+     *
+     * SDL_COLORSPACE_HDR10 is the same colorspace the Windows swapchain uses
+     * (DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020), and SDL tags the Wayland
+     * surface with it through the colour-management protocol, so KWin knows
+     * the content is PQ and passes it through rather than reinterpreting it.
+     * Not every backend offers it - SDL's "gpu" renderer refuses it outright -
+     * so the caller's driver preference decides, and create_renderer falls
+     * back to linear only if nothing can present PQ. */
     SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER,
-                          hdr ? SDL_COLORSPACE_SRGB_LINEAR : SDL_COLORSPACE_SRGB);
+                          hdr ? colorspace_for_hdr() : SDL_COLORSPACE_SRGB);
     if (driver) SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, driver);
     app.renderer = SDL_CreateRendererWithProperties(props);
     SDL_DestroyProperties(props);
@@ -3116,7 +3145,9 @@ static void poll_server(void)
                                                     SDL_COLORSPACE_UNKNOWN)
             : SDL_COLORSPACE_UNKNOWN;
         const char *driver = SDL_GetCurrentVideoDriver();
-        if (colorspace == SDL_COLORSPACE_SRGB_LINEAR)
+        if (colorspace == SDL_COLORSPACE_HDR10)
+            SDL_strlcpy(swapchain_color_space, "hdr10-pq", sizeof(swapchain_color_space));
+        else if (colorspace == SDL_COLORSPACE_SRGB_LINEAR)
             SDL_strlcpy(swapchain_color_space, "scrgb-linear", sizeof(swapchain_color_space));
         else if (colorspace == SDL_COLORSPACE_SRGB)
             SDL_strlcpy(swapchain_color_space, "srgb", sizeof(swapchain_color_space));
