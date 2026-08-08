@@ -990,8 +990,12 @@ function meterIccSyncUi(){
    ?'The compositor applies whatever ICC profile is assigned to the display, so patches are measured through that correction. Assign the profile you want to verify, and clear it before profiling so the characterization measures the raw panel.'
    :'The Companion leaves profile handling to Windows, but on fullscreen HDR it applies the active profile MHC2 stage itself because Windows skips it there. This is not a no-correction mode.')
   :(companionCorrectionMode==='clut'
-   ?'The Companion applies the cLUT from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'
-   :'The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display. Disable MHC2 system correction while using this mode to avoid applying the correction twice.'));
+   ?('The Companion applies the cLUT from the profile currently active for its selected display.'+(meterIccCompanionPlatform==='linux'
+     ?' KWin applies an assigned profile itself, so clear it from the display first or the correction lands twice.'
+     :' Disable MHC2 system correction while using this mode to avoid applying the correction twice.'))
+   :('The Companion applies the matrix and tone-curve fallback from the profile currently active for its selected display.'+(meterIccCompanionPlatform==='linux'
+     ?' KWin applies an assigned profile itself, so clear it from the display first or the correction lands twice.'
+     :' Disable MHC2 system correction while using this mode to avoid applying the correction twice.'))));
  // The ICC workspace note is a fixed statement in the markup: a profile build
  // always forces no correction, so it must not track the calibration card's
  // selector. Only the calibration note is dynamic.
@@ -1085,16 +1089,22 @@ function meterCloseIccProfileBuilder(){
 
 // Last platform reported by the connected Companion ('windows', 'linux', '').
 var meterIccCompanionPlatform='';
+// Version of the connected Companion, so capability gating can follow the build
+// rather than the platform. Empty means nothing is connected yet.
+var meterIccCompanionVersion='';
 
 // The cLUT and matrix modes transform the patch inside the Companion using the
-// display's active OS profile. Only the Windows build can read that profile; on
-// KDE the compositor applies the assigned profile to everything it composites,
-// so the correction happens downstream and asking the Companion to do it as
-// well would either fail or double-correct. Offering modes that cannot work is
-// worse than not offering them, so they are removed rather than left to fail at
-// the first patch.
+// display's active OS profile, so they need a build that can read it. Offering
+// a mode that cannot work is worse than not offering it: it fails at the first
+// patch and takes the run down with it.
 function meterIccApplyCompanionCorrectionAvailability(){
- const linux=meterIccCompanionPlatform==='linux';
+ // Applying the active profile itself needs the Companion to be able to read
+ // it. On Linux that arrived with 1.4.2, which asks KWin for the assignment --
+ // including Plasma 6.7's separate HDR slot, where an HDR display routinely
+ // has an HDR profile and no SDR one. Older Linux builds genuinely cannot do
+ // it and would fail at the first patch, so they still hide the modes.
+ const linux=meterIccCompanionPlatform==='linux'&&
+  (!meterIccCompanionVersion||meterIccVersionBelow(meterIccCompanionVersion,'1.4.2'));
  ['meterCalibrationCompanionCorrectionMode','meterIccCompanionCorrectionMode'].forEach(function(id){
   const select=document.getElementById(id);
   if(!select) return;
@@ -1466,8 +1476,9 @@ async function meterIccRefreshCompanionStatus(){
    const activeProfile=String(state.active_profile||'');
    const platform=String(state.platform||'');
    // Remembered so the correction selector can hide the modes this Companion
-   // cannot perform. Only the status response carries the platform.
+   // cannot perform. Only the status response carries the platform and version.
    meterIccCompanionPlatform=platform;
+   meterIccCompanionVersion=String(state.version||'');
    meterIccApplyCompanionCorrectionAvailability();
    const transformNote=String(state.transform_note||'');
    // The Companion only reads the display's active OS profile on Windows, so an
