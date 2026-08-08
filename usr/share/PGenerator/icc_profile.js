@@ -1098,25 +1098,28 @@ var meterIccCompanionVersion='';
 // a mode that cannot work is worse than not offering it: it fails at the first
 // patch and takes the run down with it.
 function meterIccApplyCompanionCorrectionAvailability(){
- // Applying the active profile itself needs the Companion to be able to read
- // it. On Linux that arrived with 1.4.2, which asks KWin for the assignment --
- // including Plasma 6.7's separate HDR slot, where an HDR display routinely
- // has an HDR profile and no SDR one. Older Linux builds genuinely cannot do
- // it and would fail at the first patch, so they still hide the modes.
- const linux=meterIccCompanionPlatform==='linux'&&
+ // Two separate questions. WHICH OS is connected decides what the modes are
+ // called -- naming the compositor "Windows" in front of a Linux user is just
+ // wrong. WHETHER the build can read the display's active profile decides if
+ // the active-profile modes are offered at all: on Linux that arrived with
+ // 1.4.2, which asks KWin for the assignment including Plasma 6.7's separate
+ // HDR slot. Conflating the two made the label revert the moment a capable
+ // Linux Companion connected.
+ const isLinux=meterIccCompanionPlatform==='linux';
+ const cannotReadProfile=isLinux&&
   (!meterIccCompanionVersion||meterIccVersionBelow(meterIccCompanionVersion,'1.4.2'));
  ['meterCalibrationCompanionCorrectionMode','meterIccCompanionCorrectionMode'].forEach(function(id){
   const select=document.getElementById(id);
   if(!select) return;
   let reselect=false;
   Array.prototype.forEach.call(select.options,function(option){
-   const unavailable=linux&&(option.value==='clut'||option.value==='matrix');
+   const unavailable=cannotReadProfile&&(option.value==='clut'||option.value==='matrix');
    option.hidden=unavailable;
    option.disabled=unavailable;
    if(unavailable&&select.value===option.value) reselect=true;
   });
   const system=select.querySelector('option[value="system"]');
-  if(system) system.textContent=linux?'Compositor profile handling (KWin)':'Windows profile handling';
+  if(system) system.textContent=isLinux?'Compositor profile handling (KWin)':'Windows profile handling';
   // A stored selection from a Windows session must not survive onto a Linux
   // Companion as a hidden-but-selected value.
   if(reselect){

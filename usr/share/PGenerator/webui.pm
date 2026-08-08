@@ -5188,10 +5188,18 @@ sub webui_meter_series_status (@) {
 	   # If status is "running", verify the process is still alive
 	   if($json=~/"status"\s*:\s*"running"/) {
 	    if(!&webui_meter_series_alive()) {
-	     # Process died — mark as error so client knows
-	     $json=~s/"status"\s*:\s*"running"/"status":"error"/;
-     $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Process died unexpectedly"/;
-     if(open(my $wf,">",$_meter_series_file)) { print $wf $json; close($wf); }
+	     # setsid/sudo needs a short moment to replace the launcher with the
+	     # meter_series process. The browser polls immediately after POST, so
+	     # treating that launch window as a dead worker made Read Series flash
+	     # "starting" and then silently terminate. Keep the initial state alive
+	     # for three seconds; a real launch failure is still reported after it.
+	     my @state_stat=stat($_meter_series_file);
+	     my $state_age=@state_stat ? time()-($state_stat[9]||0) : 99;
+	     if($state_age>=3) {
+	      $json=~s/"status"\s*:\s*"running"/"status":"error"/;
+      $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"Process died unexpectedly"/;
+      if(open(my $wf,">",$_meter_series_file)) { print $wf $json; close($wf); }
+     }
     }
    }
 	   # Include steps from steps file so any client can reconstruct the UI.
@@ -13218,7 +13226,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <div class="meter-companion-settings-note" id="meterCalibrationCompanionDisplayModeNote">Each patch fills the movable Companion window.</div>
       <div class="field">
        <label for="meterCalibrationCompanionCorrectionMode">Profile correction</label>
-       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose Windows profile handling, no correction at all, application cLUT correction, or matrix/TRC fallback in PGenerator+ Patch Companion">
+       <select id="meterCalibrationCompanionCorrectionMode" class="meter-card-header-select" onchange="meterIccCompanionCorrectionChanged('calibration')" title="Choose how the PGenerator+ Patch Companion handles the display profile: leave it to the operating system or compositor, apply no correction at all, or apply the active profile cLUT or matrix/TRC fallback itself">
         <option value="system">Windows profile handling</option>
         <option value="none">No correction (raw output)</option>
         <option value="clut">Active profile cLUT in Companion</option>
@@ -30259,12 +30267,17 @@ let meterActiveSeriesDvMapMode=null; // DV absolute/relative mode tied to active
 let meterActiveSeriesDvInterface=null; // DV standard/low-latency interface tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterPatternDisplayToken=0; // invalidates queued patch-display requests
+let meterPatternDisplayQueue=Promise.resolve(); // serialize latest-wins display writes
 let meterSeriesRunning=false; // true when Read Series is actively running
 let meterSelectedThumbIndices=new Set(); // visible thumbnail indices selected for a partial series
 let meterThumbSelectionAnchor=null; // shift-range anchor in visible thumbnail order
 let meterThumbSuppressClickUntil=0; // prevents the click following a drag-box selection
 let meterThumbDragState=null;
 let meterSeriesSelectionRunActive=false;
+// Step identities selected by Read Selection. The run temporarily clears the
+// interactive state while the meter owns the patch, then restores these exact
+// patches at completion so the same subset can be read again.
+let meterSelectionRunStepKeys=[];
 // Snapshot of chart readings when Read Selection starts so partial re-reads
 // merge into the existing series instead of wiping the charts first.
 let meterSelectionBaselineReadings=null;
@@ -30367,6 +30380,18 @@ function meterSelectedPatchCount(){
 function meterClearMultiPatchSelection(){
  meterSelectedThumbIndices=new Set();
  meterThumbSelectionAnchor=null;
+}
+
+function meterRestoreSelectionRunPatches(){
+ const wanted=new Set(Array.isArray(meterSelectionRunStepKeys)?meterSelectionRunStepKeys:[]);
+ meterSelectionRunStepKeys=[];
+ if(!wanted.size) return;
+ const next=new Set();
+ meterVisibleSeriesSteps().forEach((step,index)=>{
+  if(wanted.has(meterStepNameKey(step))) next.add(index);
+ });
+ meterSelectedThumbIndices=next;
+ meterThumbSelectionAnchor=next.size?Math.min(...Array.from(next)):null;
 }
 
 function meterThumbStepAt(index){
@@ -36053,7 +36078,10 @@ function meterSelectGreyscaleSeries(value){
   meterSyncGreyscaleSeriesUi(meterActiveSeriesType==='greyscale'?meterActiveSeriesPoints:null);
   return;
  }
- return meterSelectSeries('greyscale',points);
+ // This is an explicit built-in selection. Do not let an imported/custom
+ // series with the same nominal point count intercept it (most visibly an
+ // 11-patch custom series keeping itself loaded when 11pt was selected).
+ return meterSelectSeries('greyscale',points,{ignoreHcfrImport:true,force:true});
 }
 // One selector now covers ColorChecker, saturation and MacLeod-Boynton series.
 // Saturation ids persist through the same preference key the removed checkbox
@@ -36576,9 +36604,18 @@ async function meterDisplayPatch(step,options){
 	 if(options&&options.allowAfterStop) payload.allow_after_stop=true;
 	 if(displayToken!==meterPatternDisplayToken) return;
 	 const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
-	 const result=await fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(payload),_quiet:true,_timeoutMs:10000});
-	 if(result&&result.status==='error') toast(result.message||'Could not display the patch',true);
+	 const send=async()=>{
+	  // A newer click supersedes this one before it reaches the generator.
+	  // Serializing writes also prevents a slow older HTTP request from
+	  // arriving after the current color and replacing it on screen.
+	  if(displayToken!==meterPatternDisplayToken) return null;
+	  const result=await fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(payload),_quiet:true,_timeoutMs:10000});
+	  if(result&&result.status==='error') toast(result.message||'Could not display the patch',true);
+	  return result;
+	 };
+	 meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send);
+	 return meterPatternDisplayQueue;
 }
 
 let meterLgGreyState={status:'idle',picture:null,message:'',needsRepair:false};
@@ -37874,12 +37911,21 @@ function meterAutoCalCloseComplete(){
 // (which calls this via meterAutoCalCloseCompleteAction). Call it the moment a
 // run reaches a terminal state so the panel returns to idle immediately.
 function meterClearDisplayPattern(){
+ const displayToken=++meterPatternDisplayToken;
  const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
- try{ fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}).catch(function(){}); }catch(e){}
+ const send=()=>displayToken===meterPatternDisplayToken
+  ?fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000})
+  :null;
+ try{ meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send); }catch(e){}
 }
 async function meterStopCalibrationPattern(){
+ const displayToken=++meterPatternDisplayToken;
  const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
- return fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000});
+ const send=()=>displayToken===meterPatternDisplayToken
+  ?fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000})
+  :null;
+ meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send);
+ return meterPatternDisplayQueue;
 }
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
@@ -44460,7 +44506,9 @@ function meterClearSeriesRunUiState(){
   meterSeriesPolling=null;
  }
  meterSeriesRunning=false;
+ const wasSelectionRun=meterSeriesSelectionRunActive;
  meterSeriesSelectionRunActive=false;
+ if(wasSelectionRun) meterRestoreSelectionRunPatches();
  meterClearSelectionBaseline();
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
@@ -44705,10 +44753,14 @@ async function meterRunSeries(options){
 	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 }
  const rebuiltVisibleSteps=meterVisibleSeriesSteps();
+ meterSelectionRunStepKeys=requestedSelection.length
+  ?requestedSelection.map(index=>rebuiltVisibleSteps[index]).filter(Boolean).map(step=>meterStepNameKey(step))
+  :[];
  let selectedRunSteps=requestedSelection.length
   ? requestedSelection.map(index=>rebuiltVisibleSteps[index]).filter(Boolean)
   : null;
  if(requestedSelection.length&&(!selectedRunSteps||selectedRunSteps.length<2)){
+  meterSelectionRunStepKeys=[];
   toast('The selected patches are no longer available in this series',true);
   return false;
  }
@@ -44831,6 +44883,7 @@ async function meterRunSeries(options){
   if(!proceed){
    meterSeriesRunning=false;
    meterSeriesSelectionRunActive=false;
+   meterRestoreSelectionRunPatches();
  meterClearSelectionBaseline();
    meterBuild3dLutPending=null;
    document.getElementById('meterReadSeriesBtn').innerHTML=meterReadSeriesButtonLabel();
@@ -44912,6 +44965,7 @@ async function meterRunSeries(options){
 	   toast(r&&r.message?r.message:'Failed to start series',true);
 	   meterSeriesRunning=false;
 	   meterSeriesSelectionRunActive=false;
+   meterRestoreSelectionRunPatches();
  meterClearSelectionBaseline();
 	   meterSeriesAwaitingReady=false;
 	   meterReadySignalPending=false;
@@ -44932,6 +44986,7 @@ async function meterRunSeries(options){
   toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
   meterSeriesRunning=false;
   meterSeriesSelectionRunActive=false;
+  meterRestoreSelectionRunPatches();
   meterSeriesWaitingForWhiteReference=false;
  meterClearSelectionBaseline();
   meterSeriesAwaitingReady=false;
@@ -44995,7 +45050,9 @@ async function meterPollSeries(){
    meterSeriesPolling=null;
   }
   meterSeriesRunning=false;
+  const wasSelectionRun=meterSeriesSelectionRunActive;
   meterSeriesSelectionRunActive=false;
+  if(wasSelectionRun) meterRestoreSelectionRunPatches();
   meterSeriesWaitingForWhiteReference=false;
  meterClearSelectionBaseline();
   meterSeriesAwaitingReady=false;
@@ -45161,7 +45218,9 @@ async function meterPollSeries(){
     drawAllCharts(sortedDone);
    }catch(e){}
   }
+  const wasSelectionRun=meterSeriesSelectionRunActive;
   meterSeriesSelectionRunActive=false;
+  if(wasSelectionRun) meterRestoreSelectionRunPatches();
   meterClearSelectionBaseline();
   meterSeriesAwaitingReady=false;
   meterSeriesSpectroSetupActive=false;
