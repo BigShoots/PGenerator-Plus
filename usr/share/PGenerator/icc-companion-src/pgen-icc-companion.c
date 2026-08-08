@@ -73,7 +73,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.3"
+#define APP_VERSION "1.4.4"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -2349,6 +2349,7 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
 static bool update_renderer_hdr_state(void)
 {
     SDL_PropertiesID renderer_props;
+    SDL_Colorspace output_colorspace;
     float sdr_white_scale = 1.0f;
 
 #ifdef _WIN32
@@ -2361,6 +2362,9 @@ static bool update_renderer_hdr_state(void)
     if (!app.renderer) return false;
     renderer_props = SDL_GetRendererProperties(app.renderer);
     if (!renderer_props) return false;
+    output_colorspace = (SDL_Colorspace)SDL_GetNumberProperty(
+        renderer_props, SDL_PROP_RENDERER_OUTPUT_COLORSPACE_NUMBER,
+        SDL_COLORSPACE_SRGB);
     app.hdr_active = SDL_GetBooleanProperty(renderer_props, SDL_PROP_RENDERER_HDR_ENABLED_BOOLEAN, false);
 #ifdef _WIN32
     /* SDL derives this flag from its dynamic HDR-headroom property. Some
@@ -2375,6 +2379,13 @@ static bool update_renderer_hdr_state(void)
      * false while the panel is genuinely being driven in HDR - the Companion
      * then reported "HDR inactive" for a display KWin lists as HDR: enabled.
      * The compositor's own view of the output settles it. */
+    if (app.hdr && output_colorspace != SDL_COLORSPACE_HDR10) {
+        SDL_SetError("Renderer %s returned colorspace 0x%08x instead of HDR10 PQ",
+                     app.renderer_name[0] ? app.renderer_name : "unknown",
+                     (unsigned int)output_colorspace);
+        app.hdr_active = false;
+        return false;
+    }
     if (app.hdr && !app.hdr_active) {
         KWinOutputState output;
         if (kwin_output_state(app.selected_display_id, &output) && output.hdr)
@@ -2540,7 +2551,7 @@ static bool create_renderer(bool hdr)
     size_t index;
     char attempt_error[256];
 #endif
-    char last_error[512] = "No HDR renderer was available";
+    char last_error[512] = "";
 
     if (!hdr) return try_create_renderer(false, NULL);
 #ifdef _WIN32
@@ -2567,16 +2578,17 @@ static bool create_renderer(bool hdr)
     }
     for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
         const char *driver = hdr_drivers[index];
+        char attempt_summary[320];
         if (try_create_renderer(true, driver)) return true;
         attempt_error[0] = '\0';
         if (SDL_GetError() && SDL_GetError()[0])
             SDL_strlcpy(attempt_error, SDL_GetError(), sizeof(attempt_error));
         else
             SDL_strlcpy(attempt_error, "create failed", sizeof(attempt_error));
-        if (driver && driver[0])
-            SDL_snprintf(last_error, sizeof(last_error), "%s: %s", driver, attempt_error);
-        else
-            SDL_snprintf(last_error, sizeof(last_error), "default: %s", attempt_error);
+        SDL_snprintf(attempt_summary, sizeof(attempt_summary), "%s: %s",
+                     driver && driver[0] ? driver : "default", attempt_error);
+        if (last_error[0]) SDL_strlcat(last_error, "; ", sizeof(last_error));
+        SDL_strlcat(last_error, attempt_summary, sizeof(last_error));
     }
 #endif
 
@@ -2584,7 +2596,8 @@ static bool create_renderer(bool hdr)
      * the failure result so the server does not measure an SDR fallback. */
     try_create_renderer(false, NULL);
     if (app.renderer) render_alignment();
-    SDL_SetError("HDR renderer unavailable: %s", last_error);
+    SDL_SetError("HDR renderer unavailable: %s",
+                 last_error[0] ? last_error : "No HDR renderer was available");
     return false;
 }
 

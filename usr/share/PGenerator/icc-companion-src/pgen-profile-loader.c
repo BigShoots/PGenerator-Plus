@@ -320,8 +320,13 @@ static void load_settings(void) {
     g_auto_reapply = GetPrivateProfileIntW(L"ProfileLoader", L"AutoReapply", 1, g_ini) != 0;
     g_profile_has_mhc2 = GetPrivateProfileIntW(L"ProfileLoader", L"HasMHC2", 0, g_ini) != 0;
     g_associate_advanced = GetPrivateProfileIntW(L"ProfileLoader", L"AdvancedAssociation", 0, g_ini) != 0;
-    if (GetFileAttributesW(g_profile_path) != INVALID_FILE_ATTRIBUTES)
+    if (GetFileAttributesW(g_profile_path) != INVALID_FILE_ATTRIBUTES) {
         g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
+        /* Reclassify saved profiles too. Older loader builds persisted a
+           non-MHC2 HDR selection as STANDARD, so trusting that old INI bit
+           would keep restoring it to Windows' SDR association list. */
+        g_associate_advanced = profile_name_is_hdr(g_profile_path);
+    }
 }
 
 static BOOL startup_enabled(void) {
