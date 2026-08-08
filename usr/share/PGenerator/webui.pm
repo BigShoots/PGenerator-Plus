@@ -475,7 +475,7 @@ my $_dtype_info={
  "projector"    => ["p",""],
  "oled_generic" => ["c","WRGB_OLED_LG.ccss"],
  "qdoled"       => ["c","QD-OLED_Generic.ccss"],
- "amoled"       => ["l",""],
+ "amoled"       => ["l","AMOLED_Generic.ccss"],
  "lcd_wled"     => ["l","WLEDFamily_07Feb11.ccss"],
  "lcd_wled_ips" => ["l","WLEDFamily_07Feb11.ccss"],
  "lcd_wled_pva" => ["l","WLEDFamily_07Feb11.ccss"],
@@ -52673,7 +52673,7 @@ function ccssPrettyTechnology(text){
 }
 
 function ccssDisplayStartsWithType(display){
- return /^(?:white led|w-?led|qd-?oled|wrgb oled|rgb qd-?oled|rgb oled|oled|lcd|plasma|projector|crt|ccfl|rgb led|pfs phosphor|rg phosphor)\b/i.test(String(display||'').trim());
+ return /^(?:white led|w-?led|qd-?oled|wrgb oled|rgb qd-?oled|rgb oled|amoled|oled|lcd|plasma|projector|crt|ccfl|rgb led|pfs phosphor|rg phosphor)\b/i.test(String(display||'').trim());
 }
 
 function ccssDisplayLooksIncomplete(display){
@@ -52693,7 +52693,7 @@ function ccssLabelLooksGeneric(label){
 function ccssIsGenericProfile(entry){
  const name=String((entry&&entry.name)||'');
  const display=String((entry&&entry.display)||'');
- return /^(?:WRGB_OLED_LG|QD-OLED_Generic|WLEDFamily_07Feb11|CCFLFamily_07Feb11|WGCCFLFamily_07Feb11|RGBLEDFamily_07Feb11|PlasmaFamily_20Jul12|ProjectorFamily_07Feb11|CRT)\.ccss$/i.test(name)
+ return /^(?:WRGB_OLED_LG|QD-OLED_Generic|AMOLED_Generic|WLEDFamily_07Feb11|CCFLFamily_07Feb11|WGCCFLFamily_07Feb11|RGBLEDFamily_07Feb11|PlasmaFamily_20Jul12|ProjectorFamily_07Feb11|CRT)\.ccss$/i.test(name)
   || /^(?:White_LED|RGB_LED|CCFL|Wide_Gamut_CCFL|PFS_Phosphor|RG_Phosphor|Plasma|Projector)_/i.test(name)
   || /(?:^|\s)(?:Generic|Family)(?:\s|$)/i.test(display);
 }
@@ -53172,7 +53172,7 @@ function meterTechnologyDefaultCcssLabel(){
  if(tech==='oled') return 'OLED, no built-in correction';
  if(tech==='oled_generic') return 'WOLED family (built-in)';
  if(tech==='qdoled') return 'QD-OLED (built-in)';
- if(tech==='amoled') return 'AMOLED, no built-in correction';
+ if(tech==='amoled') return 'AMOLED (built-in)';
  if(tech==='lcd') return 'LCD, no built-in correction';
  if(tech.startsWith('lcd_wled')) return 'White LED family (built-in)';
  if(tech.startsWith('lcd_ccfl')) return 'CCFL family (built-in)';
