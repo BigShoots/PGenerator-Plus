@@ -150,7 +150,16 @@ try:
 except Exception:
     raise SystemExit(0)
 stype = str(state.get("type", "") or "")
-sys.stdout.write('"type":%s,"points":%d' % (json.dumps(stype), points))
+meta = {"type": stype, "points": points}
+# Keep the chart context seeded by webui.pm on every worker rewrite. Losing
+# these top-level fields made a live series depend on whichever reading or
+# reconstructed step happened to be available during that poll, then caused a
+# second target/Delta-E calculation when the completed snapshot was restored.
+for key in ("signal_mode", "target_gamma", "max_luma", "dv_map_mode", "dv_interface"):
+    if key in state and state[key] is not None:
+        meta[key] = state[key]
+sys.stdout.write(",".join(json.dumps(key) + ":" + json.dumps(value, separators=(",", ":"))
+                          for key, value in meta.items()))
 PY
 )
 }
