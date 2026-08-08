@@ -1170,7 +1170,6 @@ series_requires_final_white_refresh() {
  local first_white_reference final_white_refresh
  first_white_reference=$(get_step_field 0 autocal_white_reference)
  [[ "$first_white_reference" == "True" || "$first_white_reference" == "true" || "$first_white_reference" == "1" ]] && return 1
- [[ "$SIGNAL_MODE" != "dv" ]] && return 0
  final_white_refresh=$(get_step_field 0 final_white_refresh)
  [[ "$final_white_refresh" == "True" || "$final_white_refresh" == "true" || "$final_white_refresh" == "1" ]]
 }
