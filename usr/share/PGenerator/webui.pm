@@ -4312,11 +4312,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		    # from the helper above) so meter_series.sh + pattern_request_body
 		    # dispatch a bit-perfect pattern. Mutually exclusive with the
 		    # autocal-26 / DV / HDR20 stamps above; this branch only fires
-		    # when none of those are active. Skip on the 2pt series to keep
-		    # the two-point helper / insertion-flash path unchanged — those
-		    # helpers call webui_grey_code_for_stimulus directly and read
-		    # the returned input_max there.
-		    if(!$lg_autocal_26_codes && !$dv_series && !$lg_hdr20_codes && $points != 2) {
+		    # when none of those are active. Two-point steps need the same
+		    # explicit input_max: without it the Companion path treated HDR
+		    # codes such as 307 as 8-bit and clamped the low patch to white.
+		    if(!$lg_autocal_26_codes && !$dv_series && !$lg_hdr20_codes) {
 		     $extra.=",\"input_max\":$series_input_max";
 		    }
 		    if($lg_autocal_26_codes) {
@@ -35524,7 +35523,8 @@ function meterBuildStepsJS(type,points){
    ].forEach(entry=>{
     const c=meterCodeFromSignalPercent(entry.value);
     const label=(entry.role==='low'?'Low ':'High ')+meterFormatPercentValue(entry.value)+'%';
-    const step={ire:entry.value,stimulus:entry.value,signal_r_pct:entry.value,signal_g_pct:entry.value,signal_b_pct:entry.value,r:c,g:c,b:c,name:label,point_role:entry.role,series_type:'greyscale'};
+    const inputMax=meterChartIsDv()?4095:(meterPatchBitDepth()===10?1023:255);
+    const step={ire:entry.value,stimulus:entry.value,signal_r_pct:entry.value,signal_g_pct:entry.value,signal_b_pct:entry.value,r:c,g:c,b:c,input_max:inputMax,name:label,point_role:entry.role,series_type:'greyscale'};
     steps.push(step);
    });
 			  } else if(points===26&&meterUseLgAutoCal26(points)){
