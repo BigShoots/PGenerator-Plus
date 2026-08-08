@@ -66,6 +66,10 @@
         <label for="meterIccAvgDeviation">Measurement deviation (%) <span class="meter-icc-help" data-tip="How much noise ArgyllCMS should expect in the meter readings (colprof -r). Lower values fit the measurements more tightly. Higher values smooth over noisier data. Default is 0.50% when left blank.">?</span></label>
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
        </div>
+       <label class="meter-icc-field" style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;color:var(--text);font-size:.75rem;line-height:1.4">
+        <input id="meterIccIncludeVcgt" type="checkbox" onchange="meterIccIncludeVcgtChanged()" style="margin-top:3px">
+        <span>Include VCGT calibration curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. Leave this off for KDE HDR when KWin performs the complete cLUT correction. Enable it only when the profile consumer is expected to apply both the ICC transform and VCGT as one calibrated pipeline.">?</span><span id="meterIccVcgtNote" class="meter-icc-note" style="display:block;margin-top:3px"></span></span>
+       </label>
       </div>
       <div class="meter-icc-panel meter-icc-generator-panel">
        <h3><span class="meter-icc-step">2</span>Patch generator</h3>

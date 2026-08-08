@@ -976,6 +976,16 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
+        average_deviation = payload.get("avg_deviation")
+        if average_deviation not in (None, ""):
+            average_deviation = finite_number(average_deviation, "measurement deviation")
+            if average_deviation < 0.0 or average_deviation > 5.0:
+                fail("Measurement deviation must be between 0 and 5 percent")
+            # The profiling UI has always described this control as colprof
+            # -r, but the builder previously discarded it. Put it before the
+            # output/input operands so both local and Companion-offloaded fits
+            # receive the same explicit noise estimate.
+            command[-2:-2] = ["-r", "{:.6g}".format(average_deviation)]
         # cLUT fitting on the Pi is substantially slower than matrix fitting,
         # and scales with both characterization size and requested quality.
         # The former 90-second floor killed a normal 175-patch Medium XYZ cLUT
@@ -1284,6 +1294,14 @@ def build(payload, output_dir):
     profile_quality = str(payload.get("profile_quality", "")).lower()
     if profile_quality and profile_quality not in ("low", "medium", "high", "ultra"):
         fail("Unsupported ICC profile calculation quality")
+    include_vcgt = payload.get("include_vcgt")
+    if include_vcgt is None:
+        # KWin performs the complete display transform itself. Its ICC path
+        # applies vcgt after BToA when both tags exist, so KDE HDR profiles
+        # must not silently add an independently generated second correction.
+        include_vcgt = profile_type != "kde-hdr"
+    elif not isinstance(include_vcgt, bool):
+        fail("Include VCGT must be true or false")
     rows = normalize_measurements(payload)
     metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
     metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
@@ -1342,7 +1360,7 @@ def build(payload, output_dir):
         replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
     profile = rebuild_icc(profile, replacements)
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
-    profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration)})
+    profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     if keeps_mhc2:
@@ -1389,6 +1407,7 @@ def build(payload, output_dir):
                 "profile_type": profile_type,
                 "profile_model": profile_model,
                 "profile_quality": profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium"),
+                "include_vcgt": include_vcgt,
                 "quality": patch_set,
                 "signal_mode": str(payload.get("signal_mode", "")),
                 "pattern_provider": str(payload.get("pattern_provider", "")),
@@ -1397,6 +1416,7 @@ def build(payload, output_dir):
                 "code_min": payload.get("code_min", 0),
                 "code_max": payload.get("code_max", 255),
                 "patch_settings": payload.get("patch_settings") if isinstance(payload.get("patch_settings"), dict) else None,
+                "avg_deviation": payload.get("avg_deviation"),
                 "patch_count": len(profile_rows),
             },
             "status": "ok",
@@ -1414,6 +1434,7 @@ def build(payload, output_dir):
         "profile_model_label": PROFILE_MODELS[profile_model]["label"],
         "patch_set": patch_set,
         "profile_quality": profile_quality or None,
+        "include_vcgt": include_vcgt,
         "target_transfer": target_transfer,
         "patches": len(rows),
         "white_nits": white["xyz"][1],
