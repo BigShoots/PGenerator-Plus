@@ -63,6 +63,7 @@ typedef struct {
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include "pgen-color-management-v1-client-protocol.h"
@@ -403,6 +404,9 @@ typedef struct {
      * the last poll. The correction stages read the file from here, the way the
      * Windows build reads the path DXGI hands it. */
     char linux_profile_path[1024];
+    char linux_profile_connector[64];
+    bool linux_profile_hdr;
+    bool linux_forced_profile_passthrough;
 #endif
     double source_r, source_g, source_b;
     double submitted_r, submitted_g, submitted_b;
@@ -1872,7 +1876,6 @@ static bool apply_local_mhc2(const double input[3], double output[3])
     return true;
 }
 
-
 static bool load_correction_lut(uint64_t revision)
 {
     FILE *file;
@@ -2569,6 +2572,87 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
     }
     *state = best;
     return state->found;
+}
+
+static bool kwin_safe_connector(const char *connector)
+{
+    const unsigned char *cursor = (const unsigned char *)connector;
+    if (!cursor || !*cursor) return false;
+    for (; *cursor; cursor++)
+        if (!isalnum(*cursor) && *cursor != '-' && *cursor != '_' && *cursor != '.')
+            return false;
+    return true;
+}
+
+/* Keep compositor-managed and application-managed correction mutually
+ * exclusive. KWin uses the MHC2 curves as the output calibration when that
+ * tag exists, and otherwise uses vcgt. Leaving KWin's ICC path active while
+ * the Companion also evaluates MHC2 or BToA therefore corrects greyscale
+ * twice and crushes the first PQ steps.
+ *
+ * The assigned profile path is retained. Only its active source changes, so
+ * the Companion can still read the selected profile while presenting through
+ * EDID, and system mode can restore KWin handling without another file pick.
+ */
+static bool kwin_set_profile_source(const KWinOutputState *output, bool system_mode)
+{
+    char argument[256];
+    const char *source;
+    pid_t child;
+    int status = 0;
+    if (!output || !kwin_safe_connector(output->connector)) return false;
+    if (output->hdr) {
+        if (!output->hdr_icc_path[0]) return system_mode;
+        source = system_mode ? "ICC" : "EDID";
+        SDL_snprintf(argument, sizeof(argument),
+                     "output.%s.hdrColorProfileSource.%s",
+                     output->connector, source);
+    } else {
+        if (!output->icc_path[0]) return system_mode;
+        source = system_mode ? "ICC" : "sRGB";
+        SDL_snprintf(argument, sizeof(argument),
+                     "output.%s.colorProfileSource.%s",
+                     output->connector, source);
+    }
+    child = fork();
+    if (child < 0) return false;
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+        execlp("kscreen-doctor", "kscreen-doctor", argument, (char *)NULL);
+        _exit(127);
+    }
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return false;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return false;
+    SDL_strlcpy(app.linux_profile_connector, output->connector,
+                sizeof(app.linux_profile_connector));
+    app.linux_profile_hdr = output->hdr;
+    app.linux_forced_profile_passthrough = !system_mode;
+    return true;
+}
+
+static void kwin_restore_profile_source(void)
+{
+    KWinOutputState output;
+    if (!app.linux_forced_profile_passthrough) return;
+    if (!kwin_output_state(app.selected_display_id, &output)) {
+        SDL_zero(output);
+        SDL_strlcpy(output.connector, app.linux_profile_connector,
+                    sizeof(output.connector));
+        output.hdr = app.linux_profile_hdr;
+        if (output.hdr)
+            SDL_strlcpy(output.hdr_icc_path, "assigned",
+                        sizeof(output.hdr_icc_path));
+        else
+            SDL_strlcpy(output.icc_path, "assigned", sizeof(output.icc_path));
+    }
+    (void)kwin_set_profile_source(&output, true);
 }
 
 static uint32_t kwin_hdr_surface_reference(SDL_DisplayID display)
@@ -3504,6 +3588,22 @@ static void poll_server(void)
 #ifdef _WIN32
             wcsncpy(app.correction_profile_path,active_profile_path,SDL_arraysize(app.correction_profile_path)-1);
             app.correction_profile_path[SDL_arraysize(app.correction_profile_path)-1]=L'\0';
+#else
+            {
+                KWinOutputState output;
+                bool system_mode = !strcmp(app.correction_mode, "system");
+                if (kwin_output_state(app.selected_display_id, &output) &&
+                    (output.hdr_icc_path[0] || output.icc_path[0]) &&
+                    !kwin_set_profile_source(&output, system_mode)) {
+                    app.correction_ready = false;
+                    SDL_strlcpy(app.correction_error,
+                                "Could not switch KWin to the selected profile correction path",
+                                sizeof(app.correction_error));
+                    app.correction_lut_revision = settings_revision;
+                    app.next_poll_ms = SDL_GetTicks() + 500;
+                    return;
+                }
+            }
 #endif
             load_correction_lut(settings_revision);
         }
@@ -4102,6 +4202,9 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     if (state) {
         SDL_SetAtomicInt(&state->quit_requested, 1);
         if (state->network_thread) SDL_WaitThread(state->network_thread, NULL);
+#ifndef _WIN32
+        kwin_restore_profile_source();
+#endif
         if (state->texture) SDL_DestroyTexture(state->texture);
         if (state->background_texture) SDL_DestroyTexture(state->background_texture);
         if (state->renderer) SDL_DestroyRenderer(state->renderer);
@@ -4109,9 +4212,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         windows_destroy_hdr_output();
 #endif
         SDL_free(state->correction_lut);
-#ifdef _WIN32
         SDL_free(state->correction_profile_data);
-#endif
         if (state->window) SDL_DestroyWindow(state->window);
         if (state->network_mutex) SDL_DestroyMutex(state->network_mutex);
     }
