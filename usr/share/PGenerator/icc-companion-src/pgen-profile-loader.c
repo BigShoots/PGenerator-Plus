@@ -16,7 +16,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.3.1"
+#define APP_VERSION L"1.3.2"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -1040,7 +1040,11 @@ static BOOL apply_profile(BOOL interactive) {
         }
     }
     g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
-    g_associate_advanced = g_profile_has_mhc2 && profile_name_is_hdr(g_profile_path);
+    /* STANDARD versus EXTENDED is a property of the display association, not
+       of the ICC payload. A non-MHC2 HDR profile still belongs in Windows'
+       EXTENDED (HDR) association list; requiring MHC2 here made Windows show
+       every HDR cLUT-only profile as an SDR profile. */
+    g_associate_advanced = profile_name_is_hdr(g_profile_path);
     {
         WCHAR actual[MAX_PATH + 128] = L"";
         if (profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]))) {
@@ -1226,7 +1230,7 @@ static DWORD WINAPI choose_profile_thread(LPVOID unused) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
         g_browse_has_mhc2 = profile_contains_mhc2(g_browse_path);
-        g_browse_advanced = g_browse_has_mhc2 && profile_name_is_hdr(g_browse_path);
+        g_browse_advanced = profile_name_is_hdr(g_browse_path);
         PostMessageW(g_window, WM_BROWSE_DONE, 1, 0);
     } else {
         PostMessageW(g_window, WM_BROWSE_DONE, 0, 0);

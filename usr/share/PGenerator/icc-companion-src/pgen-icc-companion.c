@@ -73,7 +73,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.2"
+#define APP_VERSION "1.4.3"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -3016,7 +3016,16 @@ static void companion_run_build(const char *poll_response)
         }
         cleaned[out] = '\0';
 #ifdef _WIN32
-        SDL_snprintf(command, sizeof(command), "\"\"%s\" %s -O \"%s\" \"%s\"\"",
+        /* A GUI-subsystem process launches system() in a visible console. Use
+           that console as progress UI instead of presenting an unexplained
+           colprof window that looks safe to close. colprof's own progress is
+           left visible below these instructions until the fit completes. */
+        SDL_snprintf(command, sizeof(command),
+                     "title PGenerator+ ICC Profile Build & "
+                     "echo. & echo PGenerator+ is building your ICC profile. & "
+                     "echo This calculation was offloaded from the PGenerator device. & "
+                     "echo Please do not close this window. It will close automatically when the build finishes. & "
+                     "echo. & \"%s\" %s -O \"%s\" \"%s\"",
                      tool, cleaned, icc_path, base_path);
 #else
         SDL_snprintf(command, sizeof(command), "\"%s\" %s -O \"%s\" \"%s\"",
