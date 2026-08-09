@@ -1068,6 +1068,17 @@ def argyll_version():
     return match.group(1) if match else ""
 
 
+def colprof_supports_icc44(colprof):
+    """Return whether colprof provides the PGenerator+ ICC v4.4/CICP path."""
+    try:
+        process = subprocess.Popen([colprof, "-?"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, universal_newlines=True)
+        text = process.communicate()[0] or ""
+    except (OSError, ValueError):
+        return False
+    return "Create ICC v4.4 RGB display profile with CICP" in text
+
+
 def run_colprof(payload, ti3, output_path, profile_model, patch_set):
     colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
     if not os.path.isfile(colprof) or not os.access(colprof, os.X_OK):
@@ -1088,6 +1099,10 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
+        if payload["profile_type"] == "kde-hdr":
+            if not colprof_supports_icc44(colprof):
+                fail("KDE HDR profile creation requires the bundled ICC v4.4/CICP build of ArgyllCMS")
+            command[1:1] = ["-4"]
         if PROFILE_MODELS[profile_model]["family"] == "clut":
             # targen -V controls where the characterization patches are
             # measured. colprof -V separately controls the inverse cLUT grid.
