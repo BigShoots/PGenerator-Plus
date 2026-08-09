@@ -976,14 +976,6 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
-        if PROFILE_MODELS[profile_model]["family"] == "clut":
-            # Patch generation already concentrates measurements in the dark
-            # region, but colprof needs the same 1.0-4.0 emphasis to concentrate
-            # its cLUT grid there. This matters for PQ, whose shadow code values
-            # otherwise occupy very little of a uniformly spaced table.
-            dark = max(0.0, min(1.0, finite_number(
-                payload.get("dark_emphasis", 0.2), "dark-region emphasis")))
-            command[-3:-3] = ["-V{:.3f}".format(1.0 + dark * 3.0)]
         average_deviation = payload.get("avg_deviation")
         if average_deviation not in (None, ""):
             average_deviation = finite_number(average_deviation, "measurement deviation")
