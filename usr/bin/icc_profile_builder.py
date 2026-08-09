@@ -829,15 +829,42 @@ def invert_table(table, value):
     return (low + fraction) / (len(table) - 1.0)
 
 
-def stabilize_hdr_b2a_neutral_cell(profile, calibration, white_y):
-    """Replace the unstable first neutral cell of an HDR mft2 B2A table.
+def _sample_mft2_clut(table, grid, coordinates):
+    """Trilinearly sample an RGB mft2 cLUT."""
+    positions = [max(0.0, min(1.0, value)) * (grid - 1) for value in coordinates]
+    lows = [min(grid - 2, int(value)) for value in positions]
+    fractions = [positions[channel] - lows[channel] for channel in range(3)]
+    result = [0.0, 0.0, 0.0]
+    for red in (0, 1):
+        red_weight = fractions[0] if red else 1.0 - fractions[0]
+        for green in (0, 1):
+            green_weight = fractions[1] if green else 1.0 - fractions[1]
+            for blue in (0, 1):
+                blue_weight = fractions[2] if blue else 1.0 - fractions[2]
+                weight = red_weight * green_weight * blue_weight
+                node = ((lows[0] + red) * grid * grid
+                        + (lows[1] + green) * grid
+                        + lows[2] + blue) * 3
+                for channel in range(3):
+                    result[channel] += table[node + channel] * weight
+    return result
 
-    A 3D cLUT has too little resolution to fit the steep OLED toe reliably.
-    Argyll can consequently create a coloured first cell even with a dense
-    neutral characterization. KWin applies B2A followed by VCGT, so construct
-    only that first cell from the high-resolution VCGT neutral transform. The
-    remaining cLUT, including every chromatic cell, stays exactly as fitted.
+
+def reshape_hdr_b2a_for_pq(profile, white_y):
+    """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
+
+    Argyll's inverse display table is sampled in linear PCS XYZ. Even a 45^3
+    cLUT then places both 5% and 10% PQ inside its first cell, so the OLED toe
+    cannot be represented accurately. Reparameterize the table through PQ
+    input shapers, resample the original chromatic transform, and reserve the
+    one-cell neutral corridor for the VCGT calibration stage that KWin applies
+    after B2A. This preserves the fitted colour transform away from neutral
+    while giving the grey axis enough precision to follow PQ near black.
     """
+    d50 = (0.9642, 1.0, 0.8249)
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+    new_input_entries = 65535
+    new_output_entries = 4096
     replacements = {}
     changed = False
     for signature, payload in read_icc_tags(profile):
@@ -856,6 +883,10 @@ def stabilize_hdr_b2a_neutral_cell(profile, calibration, white_y):
         required = output_start + output_channels * output_entries * 2
         if required > len(payload):
             fail("ICC B2A table is truncated")
+        matrix = [value / 65536.0 for value in struct.unpack_from(">9i", payload, 12)]
+        identity = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        if any(abs(matrix[index] - identity[index]) > 1e-5 for index in range(9)):
+            fail("KDE HDR PQ shaping requires an identity B2A matrix")
         input_tables = []
         output_tables = []
         for channel in range(3):
@@ -868,36 +899,57 @@ def stabilize_hdr_b2a_neutral_cell(profile, calibration, white_y):
         if any(table[index] > table[index + 1]
                for table in input_tables + output_tables
                for index in range(len(table) - 1)):
-            fail("ICC B2A neutral stabilization requires monotonic shaper tables")
+            fail("ICC B2A PQ shaping requires monotonic shaper tables")
+        old_clut = [value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(clut_values), payload, clut_start)]
 
-        updated = bytearray(payload)
-        for red in (0, 1):
-            for green in (0, 1):
-                for blue in (0, 1):
-                    if red == green == blue == 0:
-                        clut_output = (0.0, 0.0, 0.0)
+        def evaluate_original(pcs):
+            coordinates = [
+                sample_table(input_tables[channel], pcs[channel] * xyz_to_mft)
+                for channel in range(3)
+            ]
+            clut_result = _sample_mft2_clut(old_clut, grid, coordinates)
+            return [sample_table(output_tables[channel], clut_result[channel])
+                    for channel in range(3)]
+
+        updated = bytearray(payload[:48])
+        updated.extend(struct.pack(">HH", new_input_entries, new_output_entries))
+        for channel in range(3):
+            for index in range(new_input_entries):
+                encoded_xyz = index / float(new_input_entries - 1)
+                pcs = encoded_xyz / xyz_to_mft
+                relative = max(0.0, pcs / d50[channel])
+                pq_value = nits_to_pq(relative * white_y)
+                updated.extend(struct.pack(">H", max(0, min(65535, int(round(pq_value * 65535.0))))))
+
+        denominator = float(grid - 1)
+        for red in range(grid):
+            for green in range(grid):
+                for blue in range(grid):
+                    pq_coordinates = [red / denominator, green / denominator, blue / denominator]
+                    pcs = [
+                        d50[channel] * pq_to_nits(pq_coordinates[channel]) / white_y
+                        for channel in range(3)
+                    ]
+                    original = evaluate_original(pcs)
+                    spread = max(red, green, blue) - min(red, green, blue)
+                    if spread <= 1:
+                        result = pq_coordinates
+                    elif spread == 2:
+                        result = [(original[channel] + pq_coordinates[channel]) * 0.5
+                                  for channel in range(3)]
                     else:
-                        coordinate = (red + green + blue) / (3.0 * (grid - 1))
-                        relative_y = invert_table(input_tables[1], coordinate)
-                        source_pq = nits_to_pq(relative_y * white_y)
-                        device = [sample_table(calibration[channel], source_pq) for channel in range(3)]
-                        # Rec.2020 luma weights retain calibrated neutral
-                        # luminance while removing the first cell's chroma.
-                        neutral_device = 0.2627 * device[0] + 0.6780 * device[1] + 0.0593 * device[2]
-                        profile_value = [
-                            calibration_to_profile_value(calibration[channel], neutral_device)
-                            for channel in range(3)
-                        ]
-                        clut_output = tuple(
-                            invert_table(output_tables[channel], profile_value[channel])
-                            for channel in range(3)
-                        )
-                    node = (red * grid * grid + green * grid + blue) * output_channels
-                    offset = clut_start + node * 2
-                    struct.pack_into(">3H", updated, offset, *(
+                        result = original
+                    updated.extend(struct.pack(">3H", *(
                         max(0, min(65535, int(round(value * 65535.0))))
-                        for value in clut_output
-                    ))
+                        for value in result
+                    )))
+        identity_output = [
+            max(0, min(65535, int(round(index * 65535.0 / (new_output_entries - 1)))))
+            for index in range(new_output_entries)
+        ]
+        packed_identity = struct.pack(">{}H".format(new_output_entries), *identity_output)
+        updated.extend(packed_identity * 3)
         replacements[signature] = bytes(updated)
         changed = True
     if not changed:
@@ -1560,7 +1612,7 @@ def build(payload, output_dir):
     profile = rebuild_icc(profile, replacements)
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
     if profile_type == "kde-hdr" and include_vcgt and PROFILE_MODELS[profile_model]["family"] == "clut":
-        profile = stabilize_hdr_b2a_neutral_cell(profile, calibration, white["xyz"][1])
+        profile = reshape_hdr_b2a_for_pq(profile, white["xyz"][1])
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
