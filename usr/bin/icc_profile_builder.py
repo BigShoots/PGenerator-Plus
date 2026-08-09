@@ -737,6 +737,110 @@ def rebuild_icc(profile, replacements):
     return bytes(result)
 
 
+def sample_table(table, position):
+    """Linearly sample a normalized monotonic table."""
+    position = max(0.0, min(1.0, position))
+    spot = position * (len(table) - 1)
+    low = min(len(table) - 2, int(spot))
+    fraction = spot - low
+    return table[low] * (1.0 - fraction) + table[low + 1] * fraction
+
+
+def invert_table(table, value):
+    """Invert a normalized monotonic table with linear interpolation."""
+    value = max(0.0, min(1.0, value))
+    if value <= table[0]:
+        return 0.0
+    if value >= table[-1]:
+        return 1.0
+    low, high = 0, len(table) - 1
+    while low < high - 1:
+        middle = (low + high) // 2
+        if table[middle] <= value:
+            low = middle
+        else:
+            high = middle
+    step = table[high] - table[low]
+    fraction = 0.0 if step <= 0 else (value - table[low]) / step
+    return (low + fraction) / (len(table) - 1.0)
+
+
+def stabilize_hdr_b2a_neutral_cell(profile, calibration, white_y):
+    """Replace the unstable first neutral cell of an HDR mft2 B2A table.
+
+    A 3D cLUT has too little resolution to fit the steep OLED toe reliably.
+    Argyll can consequently create a coloured first cell even with a dense
+    neutral characterization. KWin applies B2A followed by VCGT, so construct
+    only that first cell from the high-resolution VCGT neutral transform. The
+    remaining cLUT, including every chromatic cell, stays exactly as fitted.
+    """
+    replacements = {}
+    changed = False
+    for signature, payload in read_icc_tags(profile):
+        if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        if len(payload) < 52 or payload[:4] != b"mft2":
+            continue
+        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_entries, output_entries = struct.unpack(">HH", payload[48:52])
+        if input_channels != 3 or output_channels != 3 or grid < 2 or input_entries < 2 or output_entries < 2:
+            continue
+        input_start = 52
+        clut_start = input_start + input_channels * input_entries * 2
+        clut_values = grid ** input_channels * output_channels
+        output_start = clut_start + clut_values * 2
+        required = output_start + output_channels * output_entries * 2
+        if required > len(payload):
+            fail("ICC B2A table is truncated")
+        input_tables = []
+        output_tables = []
+        for channel in range(3):
+            offset = input_start + channel * input_entries * 2
+            values = struct.unpack_from(">{}H".format(input_entries), payload, offset)
+            input_tables.append([value / 65535.0 for value in values])
+            offset = output_start + channel * output_entries * 2
+            values = struct.unpack_from(">{}H".format(output_entries), payload, offset)
+            output_tables.append([value / 65535.0 for value in values])
+        if any(table[index] > table[index + 1]
+               for table in input_tables + output_tables
+               for index in range(len(table) - 1)):
+            fail("ICC B2A neutral stabilization requires monotonic shaper tables")
+
+        updated = bytearray(payload)
+        for red in (0, 1):
+            for green in (0, 1):
+                for blue in (0, 1):
+                    if red == green == blue == 0:
+                        clut_output = (0.0, 0.0, 0.0)
+                    else:
+                        coordinate = (red + green + blue) / (3.0 * (grid - 1))
+                        relative_y = invert_table(input_tables[1], coordinate)
+                        source_pq = nits_to_pq(relative_y * white_y)
+                        device = [sample_table(calibration[channel], source_pq) for channel in range(3)]
+                        # Rec.2020 luma weights retain calibrated neutral
+                        # luminance while removing the first cell's chroma.
+                        neutral_device = 0.2627 * device[0] + 0.6780 * device[1] + 0.0593 * device[2]
+                        profile_value = [
+                            calibration_to_profile_value(calibration[channel], neutral_device)
+                            for channel in range(3)
+                        ]
+                        clut_output = tuple(
+                            invert_table(output_tables[channel], profile_value[channel])
+                            for channel in range(3)
+                        )
+                    node = (red * grid * grid + green * grid + blue) * output_channels
+                    offset = clut_start + node * 2
+                    struct.pack_into(">3H", updated, offset, *(
+                        max(0, min(65535, int(round(value * 65535.0))))
+                        for value in clut_output
+                    ))
+        replacements[signature] = bytes(updated)
+        changed = True
+    if not changed:
+        fail("KDE HDR VCGT profiles require an mft2 B2A transform")
+    return rebuild_icc(profile, replacements)
+
+
 def read_s15fixed16(data, offset):
     if offset < 0 or offset + 4 > len(data):
         fail("MHC2 fixed-point value is outside the tag")
@@ -1376,6 +1480,8 @@ def build(payload, output_dir):
         replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
     profile = rebuild_icc(profile, replacements)
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
+    if profile_type == "kde-hdr" and include_vcgt and PROFILE_MODELS[profile_model]["family"] == "clut":
+        profile = stabilize_hdr_b2a_neutral_cell(profile, calibration, white["xyz"][1])
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     if keeps_mhc2:
