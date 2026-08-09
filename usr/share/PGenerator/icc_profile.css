@@ -47,6 +47,7 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-dialog-title{display:none}
 [data-theme="light"] .meter-icc-field select option,[data-theme="light"] .meter-icc-field select optgroup{background:var(--surface-field);color:var(--text-primary)}
 #meterIccProfileName{max-width:360px}
 #meterIccProfileType{max-width:300px}
+#meterIccProfileModel{max-width:300px}
 #meterIccTargetTransfer{max-width:320px}
 #meterIccDisplayType,#meterIccMeterProfile{max-width:420px}
 #meterIccQuality{max-width:300px}
