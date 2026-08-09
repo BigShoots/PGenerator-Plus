@@ -68,8 +68,68 @@
        </div>
        <label class="meter-icc-field" style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;color:var(--text);font-size:.75rem;line-height:1.4">
         <input id="meterIccIncludeVcgt" type="checkbox" onchange="meterIccIncludeVcgtChanged()" style="margin-top:3px">
-        <span>Include VCGT calibration curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. Leave this off for KDE HDR when KWin performs the complete cLUT correction. Enable it only when the profile consumer is expected to apply both the ICC transform and VCGT as one calibrated pipeline.">?</span><span id="meterIccVcgtNote" class="meter-icc-note" style="display:block;margin-top:3px"></span></span>
+        <span>Include VCGT calibration curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain so KWin can apply the cLUT and VCGT together without duplicating the neutral correction.">?</span><span id="meterIccVcgtNote" class="meter-icc-note" style="display:block;margin-top:3px"></span></span>
        </label>
+       <details id="meterIccFormatAdvanced" class="meter-icc-advanced" style="margin-top:12px">
+        <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">ICC format and CICP</summary>
+        <div class="meter-icc-field" style="margin-top:10px">
+         <label for="meterIccVersion">ICC profile version <span class="meter-icc-help" data-tip="Automatic uses ICC v4.4 with CICP for KDE HDR and ICC v2.2 for the other profile categories. Select a version explicitly for compatibility testing.">?</span></label>
+         <select id="meterIccVersion" onchange="meterIccFormatChanged()">
+          <option value="auto" selected>Automatic (recommended)</option>
+          <option value="2.2">ICC v2.2</option>
+          <option value="4.4">ICC v4.4 with CICP</option>
+         </select>
+         <div id="meterIccVersionNote" class="meter-icc-note" style="margin-top:4px"></div>
+        </div>
+        <div id="meterIccCicpFields">
+         <div class="meter-icc-note" style="margin:8px 0">CICP describes the encoded signal measured while building the profile. It does not change the measured cLUT.</div>
+         <div style="display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:8px">
+          <div class="meter-icc-field">
+           <label for="meterIccCicpPrimaries">Colour primaries</label>
+           <select id="meterIccCicpPrimaries" onchange="meterIccCicpChanged()">
+            <option value="1">1 - BT.709</option>
+            <option value="5">5 - BT.470 BG</option>
+            <option value="6">6 - SMPTE 170M</option>
+            <option value="9" selected>9 - BT.2020</option>
+            <option value="11">11 - DCI-P3</option>
+            <option value="12">12 - Display P3 D65</option>
+           </select>
+          </div>
+          <div class="meter-icc-field">
+           <label for="meterIccCicpTransfer">Transfer characteristics</label>
+           <select id="meterIccCicpTransfer" onchange="meterIccCicpChanged()">
+            <option value="1">1 - BT.709</option>
+            <option value="4">4 - Gamma 2.2</option>
+            <option value="5">5 - Gamma 2.8</option>
+            <option value="8">8 - Linear</option>
+            <option value="13">13 - sRGB</option>
+            <option value="14">14 - BT.2020 10-bit</option>
+            <option value="15">15 - BT.2020 12-bit</option>
+            <option value="16" selected>16 - ST 2084 PQ</option>
+            <option value="18">18 - HLG</option>
+           </select>
+          </div>
+          <div class="meter-icc-field">
+           <label for="meterIccCicpMatrix">Matrix coefficients</label>
+           <select id="meterIccCicpMatrix" onchange="meterIccCicpChanged()">
+            <option value="0" selected>0 - Identity RGB</option>
+            <option value="1">1 - BT.709 YCbCr</option>
+            <option value="5">5 - BT.470 BG YCbCr</option>
+            <option value="6">6 - SMPTE 170M YCbCr</option>
+            <option value="9">9 - BT.2020 non-constant</option>
+            <option value="10">10 - BT.2020 constant</option>
+           </select>
+          </div>
+          <div class="meter-icc-field">
+           <label for="meterIccCicpRange">Signal range</label>
+           <select id="meterIccCicpRange" onchange="meterIccCicpChanged()">
+            <option value="1" selected>1 - Full range</option>
+            <option value="0">0 - Narrow range</option>
+           </select>
+          </div>
+         </div>
+        </div>
+       </details>
       </div>
       <div class="meter-icc-panel meter-icc-generator-panel">
        <h3><span class="meter-icc-step">2</span>Patch generator</h3>

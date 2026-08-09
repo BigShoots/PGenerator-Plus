@@ -37,6 +37,7 @@ function meterIccStoredRunConfig(config,patchCount){
   profile_type:String(config.profile_type||''),profile_model:String(config.profile_model||''),
   profile_quality:String(config.profile_quality||''),quality:String(config.quality||''),
   include_vcgt:config.include_vcgt!==false,
+  icc_version:String(config.icc_version||'auto'),cicp:config.cicp||null,
   signal_mode:String(config.signal_mode||''),pattern_provider:String(config.pattern_provider||''),
   reuse_signature:String(config.reuse_signature||''),target_transfer:config.target_transfer,
   code_min:Number(config.code_min),code_max:Number(config.code_max),meter_name:String(config.meter_name||''),
@@ -65,6 +66,7 @@ function meterIccUiSettings(){
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
   avg_deviation:value('meterIccAvgDeviation'),
   include_vcgt:!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+  icc_version:value('meterIccVersion')||'auto',cicp:meterIccCicpSettings(),
   patch_settings:meterIccPatchSettings()
  };
 }
@@ -108,6 +110,15 @@ function meterIccRestoreUiSettings(){
   set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
   set('meterIccStartDelay',saved.start_delay);
+  set('meterIccVersion',saved.icc_version,['auto','2.2','4.4']);
+  if(saved.cicp&&typeof saved.cicp==='object'){
+   set('meterIccCicpPrimaries',saved.cicp.colour_primaries,['1','5','6','9','11','12']);
+   set('meterIccCicpTransfer',saved.cicp.transfer_characteristics,['1','4','5','8','13','14','15','16','18']);
+   set('meterIccCicpMatrix',saved.cicp.matrix_coefficients,['0','1','5','6','9','10']);
+   set('meterIccCicpRange',saved.cicp.video_full_range_flag,['0','1']);
+   const fields=document.getElementById('meterIccCicpFields');
+   if(fields) fields.dataset.profileType=String(saved.profile_type||'');
+  }
   if(saved.include_vcgt!==undefined){
    const vcgt=document.getElementById('meterIccIncludeVcgt');
    if(vcgt){ vcgt.checked=!!saved.include_vcgt; vcgt.dataset.profileType=String(saved.profile_type||''); }
@@ -872,8 +883,18 @@ function meterIccProfileTypeChanged(){
  }
  const vcgt=document.getElementById('meterIccIncludeVcgt');
  if(vcgt&&vcgt.dataset.profileType!==type){
-  vcgt.checked=type!=='kde-hdr';
+  vcgt.checked=true;
   vcgt.dataset.profileType=type;
+ }
+ const cicpFields=document.getElementById('meterIccCicpFields');
+ if(cicpFields&&cicpFields.dataset.profileType!==type){
+  const defaults=meterIccDefaultCicp(type);
+  const set=(id,value)=>{ const element=document.getElementById(id); if(element) element.value=String(value); };
+  set('meterIccCicpPrimaries',defaults.colour_primaries);
+  set('meterIccCicpTransfer',defaults.transfer_characteristics);
+  set('meterIccCicpMatrix',defaults.matrix_coefficients);
+  set('meterIccCicpRange',defaults.video_full_range_flag);
+  cicpFields.dataset.profileType=type;
  }
  meterIccSyncUi();
  meterIccRefreshRecoveryAvailability();
@@ -883,6 +904,44 @@ function meterIccIncludeVcgtChanged(){
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
  const vcgt=document.getElementById('meterIccIncludeVcgt');
  if(vcgt) vcgt.dataset.profileType=type;
+ meterIccSyncUi();
+}
+
+function meterIccDefaultCicp(type){
+ const hdr=type==='kde-hdr'||type==='windows-hdr';
+ return hdr
+  ?{colour_primaries:9,transfer_characteristics:16,matrix_coefficients:0,video_full_range_flag:1}
+  :{colour_primaries:1,transfer_characteristics:13,matrix_coefficients:0,video_full_range_flag:1};
+}
+
+function meterIccCicpSettings(){
+ const number=(id,fallback)=>{
+  const value=Number((document.getElementById(id)||{}).value);
+  return Number.isInteger(value)?value:fallback;
+ };
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const defaults=meterIccDefaultCicp(type);
+ return {
+  colour_primaries:number('meterIccCicpPrimaries',defaults.colour_primaries),
+  transfer_characteristics:number('meterIccCicpTransfer',defaults.transfer_characteristics),
+  matrix_coefficients:number('meterIccCicpMatrix',defaults.matrix_coefficients),
+  video_full_range_flag:number('meterIccCicpRange',defaults.video_full_range_flag)
+ };
+}
+
+function meterIccEffectiveVersion(type){
+ const selected=String((document.getElementById('meterIccVersion')||{}).value||'auto');
+ return selected==='auto'?(type==='kde-hdr'?'4.4':'2.2'):selected;
+}
+
+function meterIccFormatChanged(){
+ meterIccSyncUi();
+}
+
+function meterIccCicpChanged(){
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const fields=document.getElementById('meterIccCicpFields');
+ if(fields) fields.dataset.profileType=type;
  meterIccSyncUi();
 }
 
@@ -959,6 +1018,9 @@ function meterIccSyncUi(){
  const profileModelInfo=meterIccProfileModelInfo(profileModel);
  const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
  const includeVcgt=!!((document.getElementById('meterIccIncludeVcgt')||{}).checked);
+ const selectedIccVersion=String((document.getElementById('meterIccVersion')||{}).value||'auto');
+ const effectiveIccVersion=meterIccEffectiveVersion(type);
+ const cicp=meterIccCicpSettings();
  const patchSettings=meterIccPatchSettings();
  const count=patchSettings.patch_count+(type==='windows-hdr'?1:0);
  const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
@@ -969,8 +1031,14 @@ function meterIccSyncUi(){
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
  const vcgtNote=document.getElementById('meterIccVcgtNote');
  if(vcgtNote) vcgtNote.textContent=includeVcgt
-  ?'The profile consumer must apply these curves together with the ICC transform.'
-  :(type==='kde-hdr'?'Recommended for KDE HDR. KWin performs the full profile correction without a separate VCGT stage.':'No video-card calibration curves will be embedded.');
+  ?(type==='kde-hdr'?'Recommended for the patched KWin HDR path. The cLUT fit accounts for the VCGT stage.':'The profile consumer must apply these curves together with the ICC transform.')
+  :'No video-card calibration curves will be embedded.';
+ const cicpFields=document.getElementById('meterIccCicpFields');
+ const versionNote=document.getElementById('meterIccVersionNote');
+ if(cicpFields) cicpFields.style.display=effectiveIccVersion==='4.4'?'':'none';
+ if(versionNote) versionNote.textContent=selectedIccVersion==='auto'
+  ?('Automatic selects ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' with CICP.':'.'))
+  :(effectiveIccVersion==='4.4'?'The profile will use the selected four CICP code points.':'ICC v2.2 does not contain a CICP tag.');
  const setTip=(id,text)=>{ const el=document.getElementById(id); if(el) el.setAttribute('data-tip',String(text||'')); };
  const typeTip=[info.description,info.compatibility,info.install].filter(Boolean).join(' ');
  setTip('meterIccProfileTypeHelp',typeTip);
@@ -1071,7 +1139,7 @@ function meterIccSyncUi(){
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected structured patch coverage.')
-  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. VCGT: '+(includeVcgt?'Included':'Not included')+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. VCGT: '+(includeVcgt?'Included':'Not included')+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
@@ -1824,6 +1892,8 @@ async function meterIccRetryBuild(){
    include_vcgt:saved&&saved.include_vcgt!==undefined
     ?!!saved.include_vcgt
     :!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+   icc_version:String((document.getElementById('meterIccVersion')||{}).value||(saved&&saved.icc_version)||'auto'),
+   cicp:meterIccCicpSettings(),
    pattern_provider:patternProvider,reuse_signature:reuseSignature,
    patch_settings:(saved&&saved.patch_settings)||null,
    target_transfer:type==='windows-sdr'?String((saved&&saved.target_transfer)||meterIccTargetTransferValue()):undefined,
@@ -1967,6 +2037,7 @@ async function meterIccStart(){
   const baseRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:mode,pattern_provider:patternProvider,
    include_vcgt:!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+   icc_version:String((document.getElementById('meterIccVersion')||{}).value||'auto'),cicp:meterIccCicpSettings(),
    patch_settings:patchSettings,start_token:startToken,reuse_signature:reuseSignature,
    target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
    code_min:0,code_max:mode==='sdr'?255:1023,

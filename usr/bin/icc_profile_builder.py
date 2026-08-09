@@ -49,6 +49,10 @@ WINDOWS_SDR_TRANSFER_LABELS = {
     "gamma24": "Gamma 2.4",
     "bt1886": "BT.1886",
 }
+ICC_PROFILE_VERSIONS = ("auto", "2.2", "4.4")
+CICP_COLOUR_PRIMARIES = (1, 5, 6, 9, 11, 12)
+CICP_TRANSFER_CHARACTERISTICS = (1, 4, 5, 8, 13, 14, 15, 16, 18)
+CICP_MATRIX_COEFFICIENTS = (0, 1, 5, 6, 9, 10)
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
@@ -68,6 +72,55 @@ def finite_number(value, name):
     if not math.isfinite(number):
         fail("Missing or invalid " + name)
     return number
+
+
+def profile_icc_settings(payload, profile_type):
+    """Validate the requested ICC container and its optional CICP metadata."""
+    requested = str(payload.get("icc_version", "auto")).lower()
+    if requested not in ICC_PROFILE_VERSIONS:
+        fail("Unsupported ICC profile version")
+    effective = "4.4" if requested == "auto" and profile_type == "kde-hdr" else requested
+    if effective == "auto":
+        effective = "2.2"
+
+    hdr = profile_type in ("kde-hdr", "windows-hdr")
+    defaults = {
+        "colour_primaries": 9 if hdr else 1,
+        "transfer_characteristics": 16 if hdr else 13,
+        "matrix_coefficients": 0,
+        "video_full_range_flag": 1,
+    }
+    supplied = payload.get("cicp")
+    if supplied is None:
+        supplied = {}
+    if not isinstance(supplied, dict):
+        fail("CICP settings must be an object")
+
+    settings = {}
+    allowed = {
+        "colour_primaries": CICP_COLOUR_PRIMARIES,
+        "transfer_characteristics": CICP_TRANSFER_CHARACTERISTICS,
+        "matrix_coefficients": CICP_MATRIX_COEFFICIENTS,
+        "video_full_range_flag": (0, 1),
+    }
+    labels = {
+        "colour_primaries": "CICP colour primaries",
+        "transfer_characteristics": "CICP transfer characteristics",
+        "matrix_coefficients": "CICP matrix coefficients",
+        "video_full_range_flag": "CICP signal range",
+    }
+    for key, choices in allowed.items():
+        raw = supplied.get(key, defaults[key])
+        if isinstance(raw, bool):
+            fail("Unsupported " + labels[key].lower())
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            fail("Unsupported " + labels[key].lower())
+        if str(raw).strip() not in (str(value), "{}.0".format(value)) or value not in choices:
+            fail("Unsupported " + labels[key].lower())
+        settings[key] = value
+    return requested, effective, settings
 
 
 def effective_patch_set(requested, profile_model, payload, measured_count):
@@ -683,6 +736,17 @@ def xyz_tag(xyz):
     return b"XYZ " + b"\0\0\0\0" + b"".join(s15fixed16(value) for value in xyz)
 
 
+def cicp_tag(values):
+    """Build an ICC v4.4 cicpType payload from validated H.273 code points."""
+    return b"cicp" + b"\0\0\0\0" + struct.pack(
+        "BBBB",
+        values["colour_primaries"],
+        values["transfer_characteristics"],
+        values["matrix_coefficients"],
+        values["video_full_range_flag"],
+    )
+
+
 def read_icc_tags(profile):
     if len(profile) < 132 or profile[36:40] != b"acsp":
         fail("ArgyllCMS did not create a valid ICC profile")
@@ -1079,7 +1143,7 @@ def colprof_supports_icc44(colprof):
     return "Create ICC v4.4 RGB display profile with CICP" in text
 
 
-def run_colprof(payload, ti3, output_path, profile_model, patch_set):
+def run_colprof(payload, ti3, output_path, profile_model, patch_set, icc_version="2.2"):
     colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
     if not os.path.isfile(colprof) or not os.access(colprof, os.X_OK):
         fail("The bundled ArgyllCMS colprof executable is unavailable")
@@ -1099,9 +1163,9 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             colprof, "-q" + quality, "-a" + algorithm, "-A", "PGenerator+", "-M", PROFILE_TYPES[payload["profile_type"]],
             "-D", description, "-C", "Created from user measurements by PGenerator+", "-O", temporary_output, base,
         ]
-        if payload["profile_type"] == "kde-hdr":
+        if icc_version == "4.4":
             if not colprof_supports_icc44(colprof):
-                fail("KDE HDR profile creation requires the bundled ICC v4.4/CICP build of ArgyllCMS")
+                fail("ICC v4.4 profile creation requires the bundled ICC v4.4/CICP build of ArgyllCMS")
             command[1:1] = ["-4"]
         if PROFILE_MODELS[profile_model]["family"] == "clut":
             # targen -V controls where the characterization patches are
@@ -1412,6 +1476,7 @@ def build(payload, output_dir):
         fail("SDR profiles require SDR output")
     if profile_type in ("kde-hdr", "windows-hdr") and signal_mode != "hdr10":
         fail("HDR ICC profiles require HDR10 (PQ) output")
+    requested_icc_version, icc_version, cicp = profile_icc_settings(payload, profile_type)
     target_transfer = str(payload.get("target_transfer", "srgb")).lower()
     if profile_type == "windows-sdr" and target_transfer not in WINDOWS_SDR_TRANSFERS:
         fail("Unsupported SDR MHC2 target transfer")
@@ -1430,10 +1495,9 @@ def build(payload, output_dir):
         fail("Unsupported ICC profile calculation quality")
     include_vcgt = payload.get("include_vcgt")
     if include_vcgt is None:
-        # KWin performs the complete display transform itself. Its ICC path
-        # applies vcgt after BToA when both tags exist, so KDE HDR profiles
-        # must not silently add an independently generated second correction.
-        include_vcgt = profile_type != "kde-hdr"
+        # The KDE cLUT path fits BToA in the calibrated device domain below,
+        # so its VCGT stage is already accounted for rather than duplicated.
+        include_vcgt = True
     elif not isinstance(include_vcgt, bool):
         fail("Include VCGT must be true or false")
     rows = normalize_measurements(payload)
@@ -1472,7 +1536,7 @@ def build(payload, output_dir):
     model_suffix = re.sub(r"-+", "-", SAFE_NAME.sub("-", PROFILE_MODELS[profile_model]["label"]).strip("- ").replace(" ", "-"))
     filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)
     output_path = os.path.join(output_dir, filename)
-    run_colprof(payload, ti3, output_path, profile_model, patch_set)
+    run_colprof(payload, ti3, output_path, profile_model, patch_set, icc_version)
     mhc2_validation = None
     with open(output_path, "rb") as handle:
         profile = handle.read()
@@ -1499,6 +1563,7 @@ def build(payload, output_dir):
         profile = stabilize_hdr_b2a_neutral_cell(profile, calibration, white["xyz"][1])
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
+    profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
     if keeps_mhc2:
         mhc2_validation = validate_mhc2_profile(
             profile, mhc2, measured_primary_matrix(black, white, primaries),
@@ -1544,6 +1609,8 @@ def build(payload, output_dir):
                 "profile_model": profile_model,
                 "profile_quality": profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium"),
                 "include_vcgt": include_vcgt,
+                "icc_version": requested_icc_version,
+                "cicp": cicp,
                 "quality": patch_set,
                 "signal_mode": str(payload.get("signal_mode", "")),
                 "pattern_provider": str(payload.get("pattern_provider", "")),
@@ -1571,6 +1638,9 @@ def build(payload, output_dir):
         "patch_set": patch_set,
         "profile_quality": profile_quality or None,
         "include_vcgt": include_vcgt,
+        "icc_version": icc_version,
+        "icc_version_request": requested_icc_version,
+        "cicp": cicp if icc_version == "4.4" else None,
         "target_transfer": target_transfer,
         "patches": len(rows),
         "white_nits": white["xyz"][1],
