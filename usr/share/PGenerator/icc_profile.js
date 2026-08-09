@@ -2230,7 +2230,9 @@ async function meterIccBuild(readings){
   delete payload.reused_readings;
   delete payload.precondition_reused_readings;
   delete payload.reuse_source_readings;
-  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:2710000});
+  // Stay beyond the server's four-hour runaway guard. Ultra cLUT fitting on
+  // the Pi can legitimately exceed two hours when desktop offload is absent.
+  const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15010000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   buildElapsed=meterIccStopBuildClock(buildClock,true);
   if(status){

@@ -52,6 +52,10 @@ WINDOWS_SDR_TRANSFER_LABELS = {
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
+class CompanionBuildTimeout(ValueError):
+    pass
+
+
 def fail(message):
     raise ValueError(message)
 
@@ -851,9 +855,10 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
     all stay here, so there is one implementation of the calibration logic
     regardless of where the fit ran.
 
-    Every failure path returns False and leaves the caller to run colprof
-    locally, because a profile that silently did not get built is worse than a
-    slow one.
+    Recoverable failures return False and leave the caller to run colprof
+    locally. A Companion that consumes the complete deadline raises instead,
+    because repeating the same multi-hour fit on the Pi would only cause the
+    outer request to time out later.
     """
     if os.environ.get("PGEN_ICC_NO_OFFLOAD"):
         return False
@@ -932,7 +937,10 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
             if not companion_seen_recently(read_companion_state(state_path)):
                 return False
             time.sleep(COMPANION_BUILD_POLL_SECONDS)
-        return False
+        raise CompanionBuildTimeout(
+            "Patch Companion profile creation timed out after {} seconds".format(timeout_seconds))
+    except CompanionBuildTimeout:
+        raise
     except (OSError, IOError, ValueError, KeyError):
         return False
     finally:
@@ -995,19 +1003,19 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set):
             command[-3:-3] = ["-r", "{:.6g}".format(average_deviation)]
         # cLUT fitting on the Pi is substantially slower than matrix fitting,
         # and scales with both characterization size and requested quality.
-        # The former 90-second floor killed a normal 175-patch Medium XYZ cLUT
-        # while colprof was still working and left a zero-byte destination.
+        # Ultra is especially expensive: a normal 1000-patch fit computes to
+        # more than 100 minutes with this estimate. Do not clamp that healthy
+        # fit to the former 40-minute ceiling.
         line_count = len(ti3.splitlines())
         quality_factor = {"l": 0.5, "m": 1.0, "h": 2.0, "u": 4.0}.get(quality, 1.0)
         if PROFILE_MODELS[profile_model]["family"] == "clut":
             # colprof's current cLUT optimizer runs one fit on one CPU thread, and a
-            # normal High fit can need more than eight minutes on Pi 4. The
-            # old line-count estimate gave a 425-patch High profile only 508
-            # seconds and killed a healthy process at 100% of one CPU core.
-            # Keep the timeout below the WebUI's 45-minute build deadline, but
-            # give each requested fit quality a realistic floor.
-            quality_floor = {"l": 600, "m": 900, "h": 1200, "u": 2400}.get(quality, 900)
-            timeout_seconds = min(2400, max(quality_floor, int(180 + line_count * quality_factor * 1.5)))
+            # normal High fit can need more than eight minutes on Pi 4. Floors
+            # prevent small but complex data sets from being killed early;
+            # the line-count estimate gives large Ultra fits over two hours.
+            # The four-hour ceiling is a runaway guard, not an expected time.
+            quality_floor = {"l": 900, "m": 1800, "h": 3600, "u": 7200}.get(quality, 1800)
+            timeout_seconds = min(14400, max(quality_floor, int(300 + line_count * quality_factor * 2.0)))
         else:
             timeout_seconds = min(900, max(180, int(90 + line_count * quality_factor * 0.5)))
         if companion_build_offload(ti3, command, temporary_output, timeout_seconds):

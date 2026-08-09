@@ -82,10 +82,10 @@ sub webui_icc_profile_build (@) {
  chmod(0600,$input);
  # Every command component is fixed or generated above. The profile name and
  # all measurement data remain inside the JSON file and never enter the shell.
- # Large/high-quality cLUT fits can legitimately take many minutes on a Pi4.
- # Keep this outer guard longer than colprof plus profcheck so the API does not
- # terminate a healthy build before its validation result is returned.
- my $result=`timeout 2700 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
+ # Large Ultra cLUT fits can legitimately take more than two hours on a Pi4.
+ # Keep this outer guard beyond the builder's four-hour runaway limit so the
+ # API cannot terminate colprof or the following profile validation first.
+ my $result=`timeout 15000 /usr/bin/python3 $_icc_profile_builder $input $_icc_profile_dir 2>/dev/null`;
  my $exit=$?;
  unlink($input);
  $result=~s/^\s+|\s+$//g;
