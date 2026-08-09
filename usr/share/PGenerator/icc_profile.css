@@ -3,11 +3,15 @@ body.layout-desktop #meterIccWorkspaceCard{border-bottom:0}
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal{display:flex!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterIccWorkspaceCard #meterIccProfileModal>.meter-modal-scroll{width:100%!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterIccWorkspaceCard .meter-icc-close{display:none!important}
+body.layout-desktop #meterIccWorkspaceCard .meter-icc-dialog-title{display:none}
 .meter-icc-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:stretch}
 .meter-icc-profile-panel{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(180px,.75fr);column-gap:18px;align-content:start}
 .meter-icc-profile-panel>h3,.meter-icc-profile-panel>.meter-icc-section-intro,.meter-icc-profile-panel>#meterIccTargetTransferField{grid-column:1/-1}
 .meter-icc-profile-name-field,.meter-icc-profile-type-field{grid-column:1/-1}
 .meter-icc-profile-quality-field{margin-top:10px}
+.meter-icc-vcgt-field{grid-column:1/-1;display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:4px;color:var(--text);font-size:.75rem;line-height:1.4}
+.meter-icc-vcgt-field>input[type="checkbox"]{width:auto;flex:0 0 auto;margin:0}
+.meter-icc-profile-panel>#meterIccFormatAdvanced{grid-column:1/-1}
 .meter-icc-help{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-left:5px;border-radius:50%;border:1px solid var(--border);background:rgba(91,127,255,.12);color:var(--text2);font-size:.68rem;font-weight:700;line-height:1;cursor:help;vertical-align:middle;position:relative;flex:0 0 auto;user-select:none}
 .meter-icc-help:hover,.meter-icc-help:focus{color:var(--text);border-color:var(--accent);outline:none}
 .meter-icc-help[data-tip]:not([data-tip=""]):hover::after,.meter-icc-help[data-tip]:not([data-tip=""]):focus::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:10030;width:max-content;max-width:min(360px,80vw);box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:.7rem;font-weight:400;line-height:1.4;white-space:normal;text-transform:none;letter-spacing:0;box-shadow:0 5px 18px rgba(0,0,0,.35);pointer-events:none}

@@ -1029,10 +1029,6 @@ function meterIccSyncUi(){
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
- const vcgtNote=document.getElementById('meterIccVcgtNote');
- if(vcgtNote) vcgtNote.textContent=includeVcgt
-  ?(type==='kde-hdr'?'Recommended for the patched KWin HDR path. The cLUT fit accounts for the VCGT stage.':'The profile consumer must apply these curves together with the ICC transform.')
-  :'No video-card calibration curves will be embedded.';
  const cicpFields=document.getElementById('meterIccCicpFields');
  const versionNote=document.getElementById('meterIccVersionNote');
  if(cicpFields) cicpFields.style.display=effectiveIccVersion==='4.4'?'':'none';

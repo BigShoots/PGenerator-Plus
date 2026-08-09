@@ -12536,6 +12536,7 @@ body.layout-desktop #meterProfileCard[data-desktop-active="true"]{border-bottom:
 body.layout-desktop #meterProfileCard #customCcssEditorModal{display:block!important;position:static!important;inset:auto!important;background:transparent!important;padding:0!important;z-index:auto!important}
 body.layout-desktop #meterProfileCard #customCcssEditorModal>div{width:min(1180px,100%)!important;max-height:none!important;overflow:visible!important;background:transparent!important;border:0!important;border-radius:0!important;padding:0!important;box-shadow:none!important}
 body.layout-desktop #meterProfileCard .ccss-editor-close-btn{display:none}
+body.layout-desktop #meterProfileCard .meter-profile-dialog-title{display:none}
 body.layout-desktop #meterProfileCard .ccss-editor-panel{background:var(--surface-inset)!important;border:0!important;border-radius:8px!important}
 body.layout-desktop #meterProfileCard #ccssPreviewCanvas{height:440px!important}
 body.layout-desktop #meterSeriesTabRow [data-series-tab="3dlut"],
@@ -14008,7 +14009,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:12px;padding:16px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.45)">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
      <div>
-      <div style="font-size:1rem;font-weight:700;color:#eee">Meter Profiler</div>
+      <div class="meter-profile-dialog-title" style="font-size:1rem;font-weight:700;color:#eee">Meter Profiler</div>
        <div style="font-size:.72rem;color:var(--text2);margin-top:4px;max-width:58ch">Import CCSS spectral corrections or meter-specific CCMX matrices. TI3, EDR, and spectral CSV imports are converted to CCSS.</div>
      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">

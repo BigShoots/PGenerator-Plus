@@ -3,7 +3,7 @@
    <div class="meter-modal-scroll" style="width:min(1160px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:16px;box-sizing:border-box">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
      <div>
-      <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">Display Profiler</div>
+      <div class="meter-icc-dialog-title" style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">Display Profiler</div>
       <div class="meter-icc-note">Create a display profile from Patch Companion or PGenerator+ HDMI measurements, then download the finished file.</div>
      </div>
      <button type="button" class="btn btn-sm btn-secondary meter-icc-close" onclick="meterCloseIccProfileBuilder()">Close</button>
@@ -13,7 +13,7 @@
        <h3><span class="meter-icc-step">1</span>Profile</h3>
        <p class="meter-icc-section-intro">Choose where the profile will be used and how it will represent the display.</p>
        <div class="meter-icc-field meter-icc-profile-name-field">
-        <label for="meterIccProfileName">Profile name <span class="meter-icc-help" data-tip="Used as the ICC description tag and as the name the operating system shows for this profile. It is not only the download filename.">?</span></label>
+        <label for="meterIccProfileName">Profile name <span class="meter-icc-help" data-tip="Used as the ICC description tag and as the name the operating system shows for this profile.">?</span></label>
         <input id="meterIccProfileName" type="text" maxlength="80" placeholder="Living Room Display">
        </div>
        <div class="meter-icc-field meter-icc-profile-type-field">
@@ -66,9 +66,9 @@
         <label for="meterIccAvgDeviation">Measurement deviation (%) <span class="meter-icc-help" data-tip="How much noise ArgyllCMS should expect in the meter readings (colprof -r). Lower values fit the measurements more tightly. Higher values smooth over noisier data. Default is 0.50% when left blank.">?</span></label>
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
        </div>
-       <label class="meter-icc-field" style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;color:var(--text);font-size:.75rem;line-height:1.4">
-        <input id="meterIccIncludeVcgt" type="checkbox" onchange="meterIccIncludeVcgtChanged()" style="margin-top:3px">
-        <span>Include VCGT calibration curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain so KWin can apply the cLUT and VCGT together without duplicating the neutral correction.">?</span><span id="meterIccVcgtNote" class="meter-icc-note" style="display:block;margin-top:3px"></span></span>
+       <label class="meter-icc-field meter-icc-vcgt-field">
+        <input id="meterIccIncludeVcgt" type="checkbox" onchange="meterIccIncludeVcgtChanged()">
+        <span>Include VCGT calibration curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. The profile consumer must apply these curves together with the ICC transform. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain so KWin can apply the cLUT and VCGT together without duplicating the neutral correction.">?</span></span>
        </label>
        <details id="meterIccFormatAdvanced" class="meter-icc-advanced" style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">ICC format and CICP</summary>
