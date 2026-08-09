@@ -54167,7 +54167,7 @@ function meterRedrawActiveSeriesCharts(){
  }
 }
 
-function meterRefreshActiveSeriesCharts(){
+function meterRefreshActiveSeriesCharts(options){
 	 // A viewport/layout refresh is presentation-only. Never rebuild the
 	 // active steps while a read owns the displayed patch: the next continuous
 	 // iteration consumes meterCurrentPatchStep and could otherwise send a
@@ -54185,16 +54185,21 @@ function meterRefreshActiveSeriesCharts(){
 	 // RGB codes. Keep its imported steps: rebuilding from the normalized point
 	 // count silently substitutes a native preset and can filter or retarget the
 	 // imported results on any settings/output refresh.
-	 const importedWorkspace=Array.isArray(meterReadings)&&meterReadings.length>0&&meterReadings.every(meterSeriesReadingIsImported);
-	 if(!importedWorkspace) meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	 const hasSavedReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
+	 const importedWorkspace=hasSavedReadings&&meterReadings.every(meterSeriesReadingIsImported);
+	 // A completed measurement owns the exact steps and target metadata that
+	 // were used for that run. Rebuilding them while returning from another
+	 // workspace silently substitutes the current output controls, so changing
+	 // a display-only analysis selector can suddenly grade against another
+	 // target Y curve. Only create fresh steps when there is no measured series.
+	 if(!importedWorkspace&&!hasSavedReadings) meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
 	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
- // The attach step stamps each reading's target_Yn from its matched step,
- // which carries the value baked at series-load time. Override that with
- // the live target-gamma computation so any active gamma change (e.g. the
- // TARGET GAMMA dropdown) is reflected on the charts without a re-read.
- meterRegradeActiveSeriesTargets();
+ // Regrading is an explicit target-definition operation, not part of a
+ // presentation refresh. The Target Gamma handler opts into it; workspace
+ // navigation, chart resizes and Grey ref changes retain the run's targets.
+ if(options&&options.regradeTargets) meterRegradeActiveSeriesTargets();
  const white=meterFindSeriesWhiteReading(meterReadings);
  if(white) meterWhiteReading=white;
  else if(meterWhiteReading&&!meterWhiteReading.synthetic_target) meterNormalizeMeasuredReading(meterWhiteReading);
@@ -54250,7 +54255,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
   meterActiveSeriesTargetGamma=null;
-  meterRefreshActiveSeriesCharts();
+  meterRefreshActiveSeriesCharts({regradeTargets:true});
   return;
  }
  // Re-grade the currently displayed series against the newly selected target
@@ -54293,7 +54298,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
    meterRefreshActiveSeriesCharts();
   }
  } else {
-  meterRefreshActiveSeriesCharts();
+  meterRefreshActiveSeriesCharts({regradeTargets:true});
  }
 });
 
