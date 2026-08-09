@@ -1318,15 +1318,21 @@ def build(payload, output_dir):
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
     # MHC2 and the characterization summary use the raw measurements: they
     # describe the panel, not an already calibrated signal.
-    _, _, primaries = profile_measurement_summary(profile_rows)
-    # The cLUT is fitted to the RAW measurements. Re-expressing them in a
-    # calibrated domain only makes sense when that same calibration is applied
-    # downstream, and it is not: the grey axis is taken from MHC2 applied to
-    # the source code, which bypasses the cLUT entirely, so the cLUT carries
-    # chroma alone. With the vcgt tag now cloned from MHC2 the remap curve was
-    # not even present in the profile any more -- the fit assumed a curve
-    # diverging from the shipped one by up to 0.595.
-    ti3, black, white = make_ti3(payload, profile_rows)
+    black, white, primaries = profile_measurement_summary(profile_rows)
+    keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
+    mhc2_type = profile_type if keeps_mhc2 else (
+        "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
+    mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
+        mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
+    calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
+
+    # KWin applies vcgt after B2A. If the user includes that stage in a KDE
+    # cLUT profile, fit B2A in the calibrated device domain so vcgt is accounted
+    # for instead of correcting an already complete raw-device transform twice.
+    fit_rows = profile_rows
+    if profile_type == "kde-hdr" and include_vcgt and PROFILE_MODELS[profile_model]["family"] == "clut":
+        fit_rows = apply_calibration_to_rows(profile_rows, calibration)
+    ti3, _, _ = make_ti3(payload, fit_rows)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, 0o755)
     stem = safe_basename(payload.get("name", "PGenerator+ display profile"))
@@ -1341,9 +1347,6 @@ def build(payload, output_dir):
     output_path = os.path.join(output_dir, filename)
     run_colprof(payload, ti3, output_path, profile_model, patch_set)
     mhc2_validation = None
-    keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
-    mhc2_type = profile_type if keeps_mhc2 else (
-        "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     with open(output_path, "rb") as handle:
         profile = handle.read()
     # Every output follows one calibration path: generate and insert MHC2,
@@ -1351,8 +1354,6 @@ def build(payload, output_dir):
     # remove MHC2 only from profile types whose consumers do not use it. This
     # prevents SDR and KDE profiles from silently falling back to a different
     # grey-axis calibration than their Windows counterparts.
-    mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
-        mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
     replacements = {b"MHC2": mhc2}
     luminance = None
     if keeps_mhc2:
@@ -1366,7 +1367,6 @@ def build(payload, output_dir):
             luminance = metadata_white_rows[0]["xyz"][1] if metadata_white_rows else calibrated_white
         replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
     profile = rebuild_icc(profile, replacements)
-    calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
@@ -1380,7 +1380,7 @@ def build(payload, output_dir):
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     write_text_atomic(ti3_path, ti3)
-    validation = run_profcheck(ti3_path, output_path, profile_rows, profile_model, patch_set)
+    validation = run_profcheck(ti3_path, output_path, fit_rows, profile_model, patch_set)
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
     if mhc2_validation:
         validation["mhc2"] = mhc2_validation
