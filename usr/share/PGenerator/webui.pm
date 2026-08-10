@@ -16074,8 +16074,8 @@ function getValidFormats(modeIdx,bpc){
  const y444_ok=caps.has_ycbcr444&&((bpc===8)||(bpc===10&&caps.dc_30bit&&caps.dc_y444)||(bpc===12&&caps.dc_36bit&&caps.dc_y444));
  if(y444_ok&&(bpc===8?clock:clock*bpc/8)<=maxTmds) valid.push(1);
 
- // YCbCr 4:2:2 (format 2) — always carries up to 12bpc in 8bpc bandwidth
- if(caps.has_ycbcr422&&clock<=maxTmds) valid.push(2);
+ // The renderer's YCbCr 4:2:2 path is supported at 10-bit only.
+ if(caps.has_ycbcr422&&bpc===10&&clock<=maxTmds) valid.push(2);
 
  return valid;
 }
@@ -16177,9 +16177,16 @@ function updateDropdowns(){
   fmtSel.value=String(validFmts[0]);
  }
 
- // Bit depth filtering based on current mode + format
- const activeFmt=parseInt(getVal('color_format'))||0;
- const validBpc=getValidBpc(modeIdx,activeFmt);
+ // Keep every bit depth that has at least one valid format selectable. If
+ // this were filtered only against the current format, a 4K60 YCbCr 4:2:2
+ // 10-bit state would hide 8-bit while 10-bit hides RGB, leaving the two
+ // dropdowns circularly locked. Selecting 8-bit now lets the format pass
+ // above move to RGB, which also recovers stale SDR configs safely.
+ const validBpc=[8,10,12].filter(function(bpc){
+  return getValidFormats(modeIdx,bpc).some(function(fmt){
+   return getValidBpc(modeIdx,fmt).indexOf(bpc)>=0;
+  });
+ });
  Array.from(bpcSel.options).forEach(function(o){
   const v=parseInt(o.value);
   o.disabled=validBpc.indexOf(v)<0;
@@ -22147,8 +22154,8 @@ function meterColorTargetCodeRange(){
 // Resolve the display peak used to grade HDR color-series luminance. PQ patch
 // codes remain absolute below the roll-off knee, but high-luminance colors
 // must roll toward the same measured/manual Target White as greyscale. The
-// mastering peak is still used when BT.2390 is disabled, matching the EOTF
-// chart's native-PQ mode.
+// mastering peak remains the native-PQ fallback only while Target White is
+// set to Use measured.
 function meterHdrColorTargetPeak(){
  let reference=(typeof meterChartHdrPeak==='function')?meterChartHdrPeak():1000;
  try{
@@ -24635,6 +24642,8 @@ function meterGreySolvePeakFromHeadroomReading(reading,steps,fallbackPeak,Lb){
 
 function meterGreyTargetPeakForReadings(readings,steps,fallbackPeak,Lb){
  if(meterHdrDiffuseWhiteOverride()!=null && meterChartIsPq()) return fallbackPeak;
+ const _tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+ if(_tw&&!_tw.useMeasured&&_tw.value!=null&&Number(_tw.value)>0) return fallbackPeak;
  const list=Array.isArray(readings)?readings:[];
  const referenceList=meterGreyscaleReferenceReadings(list);
  const activeAutoCalReference=meterAutoCalGreyscaleTargetWhiteReferenceActive(list);
@@ -25094,12 +25103,11 @@ function meterGreyTargetGamma(ire,Lw,Lb,code,prevIre,prevCode){
 }
 
 function meterGreyTargetPeak(refWhite){
- // Operator Target White override replaces the measured white reference
- // (the entered value becomes the top of the target EOTF curve). Only
- // applies where the code uses a measured white; authored mastering-peak
- // constants are left intact.
+ // Operator Target White replaces the measured white reference and is the
+ // authoritative top of the displayed target EOTF curve.
  const _tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
- if(_tw&&!_tw.useMeasured&&_tw.value!=null&&_tw.value>0) refWhite=_tw.value;
+ const manualTargetWhite=(_tw&&!_tw.useMeasured&&_tw.value!=null&&Number(_tw.value)>0)?Number(_tw.value):null;
+ if(manualTargetWhite!=null) refWhite=manualTargetWhite;
  // DV absolute and DV relative both anchor the chart target to the measured
  // 100% white so the target curve tracks what the display actually produces
  // rather than the authored mastering-peak label.
@@ -25113,6 +25121,10 @@ function meterGreyTargetPeak(refWhite){
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
  if(usesPqTarget){
   const displayPeak=meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
+  // An explicit Target White must win over mastering Max Luma in native PQ
+  // mode too. Max Luma remains the fallback when Target White follows the
+  // measurement, and remains the BT.2390 source/mastering peak.
+  if(manualTargetWhite!=null) return displayPeak;
   if(typeof meterChartBt2390Enabled==='function'&&!meterChartBt2390Enabled()){
    const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():meterChartHdrPeak();
    return (master>0)?master:displayPeak;
@@ -47980,7 +47992,9 @@ function drawEOTFChart(gs,allSteps,readingMap){
  // implied peak from that reading so the target passes through it; otherwise
  // keep the measured-white target. The Y axis (1.0==200 nits) is just a display
  // reference and does not affect this target calculation.
- const _eotfHeadroom=meterAutoCalGreyscaleTargetWhiteReferenceActive(sorted)?meterGreyHeadroomReferenceReading(sorted):null;
+ const _eotfTw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+ const _eotfManualWhite=!!(_eotfTw&&!_eotfTw.useMeasured&&_eotfTw.value!=null&&Number(_eotfTw.value)>0);
+ const _eotfHeadroom=(!_eotfManualWhite&&meterAutoCalGreyscaleTargetWhiteReferenceActive(sorted))?meterGreyHeadroomReferenceReading(sorted):null;
  if(_eotfHeadroom){
   const _eotfSolved=meterGreySolvePeakFromHeadroomReading(_eotfHeadroom,plotSteps.length?plotSteps:targetSteps,targetPeak,Lb);
   if(_eotfSolved>0&&isFinite(_eotfSolved)) targetPeak=_eotfSolved;
