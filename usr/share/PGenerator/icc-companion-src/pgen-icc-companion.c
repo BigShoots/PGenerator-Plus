@@ -1755,12 +1755,28 @@ static bool apply_local_clut(const double xyz[3], double output[3])
         values[row]=icc_table_sample(tag.data+input_offset+(size_t)row*in_count*2,in_count,mapped/(65535.0/32768.0));
         double position=fmax(0.0,fmin(1.0,values[row]))*(grid-1); base[row]=(int)position; if(base[row]>=grid-1)base[row]=grid-2; fraction[row]=position-base[row];
     }
-    double clut_result[3]={0,0,0};
-    for(int corner=0;corner<8;corner++) {
-        double weight=1.0; int coordinate[3];
-        for(int axis=0;axis<3;axis++){bool upper=(corner&(1<<axis))!=0;coordinate[axis]=base[axis]+(upper?1:0);weight*=upper?fraction[axis]:1.0-fraction[axis];}
-        size_t offset=clut_offset+(size_t)(((coordinate[0]*grid+coordinate[1])*grid+coordinate[2])*3)*2;
-        for(int channel=0;channel<3;channel++) clut_result[channel]+=weight*read_be16(tag.data+offset+channel*2)/65535.0;
+    double clut_result[3];
+    for(int channel=0;channel<3;channel++) {
+#define CLUT_VALUE(dx,dy,dz) (read_be16(tag.data+clut_offset+(size_t)((((base[0]+(dx))*grid+(base[1]+(dy)))*grid+(base[2]+(dz)))*3+channel)*2)/65535.0)
+        double c000=CLUT_VALUE(0,0,0),c001=CLUT_VALUE(0,0,1);
+        double c010=CLUT_VALUE(0,1,0),c011=CLUT_VALUE(0,1,1);
+        double c100=CLUT_VALUE(1,0,0),c101=CLUT_VALUE(1,0,1);
+        double c110=CLUT_VALUE(1,1,0),c111=CLUT_VALUE(1,1,1);
+        double x=fraction[0],y=fraction[1],z=fraction[2];
+        /* ArgyllCMS uses tetrahedral interpolation for mft2 tables. Besides
+         * matching its profile validation, this matters greatly in the first
+         * HDR shadow cube where trilinear interpolation mixes all eight
+         * corners across a steep and chromatically uneven PQ response. */
+        if(x>=y) {
+            if(y>=z) clut_result[channel]=c000+x*(c100-c000)+y*(c110-c100)+z*(c111-c110);
+            else if(x>=z) clut_result[channel]=c000+x*(c100-c000)+z*(c101-c100)+y*(c111-c101);
+            else clut_result[channel]=c000+z*(c001-c000)+x*(c101-c001)+y*(c111-c101);
+        } else {
+            if(x>=z) clut_result[channel]=c000+y*(c010-c000)+x*(c110-c010)+z*(c111-c110);
+            else if(y>=z) clut_result[channel]=c000+y*(c010-c000)+z*(c011-c010)+x*(c111-c011);
+            else clut_result[channel]=c000+z*(c001-c000)+y*(c011-c001)+x*(c111-c011);
+        }
+#undef CLUT_VALUE
     }
     for(int channel=0;channel<3;channel++) output[channel]=icc_table_sample(tag.data+output_offset+(size_t)channel*out_count*2,out_count,clut_result[channel]);
     return true;
