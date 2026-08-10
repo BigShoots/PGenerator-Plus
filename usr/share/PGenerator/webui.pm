@@ -15702,13 +15702,14 @@ function updateModeVisibility(){
 ['max_luma','min_luma','max_cll','max_fall'].forEach(function(id){
  const el=document.getElementById(id);
  if(!el) return;
- const sync=function(){
+ const sync=function(event){
   if((id==='max_luma' || id==='min_luma') && getVal('signal_mode')!=='dv'){
    meterSyncHdrMetadata();
    if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
   }else if(getVal('signal_mode')!=='dv'){
    meterSyncHdrMetadataFieldMirrors();
   }
+  if(id==='max_luma'&&event&&event.type==='change') meterWarnTargetWhiteAboveHdrMax();
   checkSettingsChanged();
  };
  el.addEventListener('input',sync);
@@ -15717,13 +15718,14 @@ function updateModeVisibility(){
 [['dv_max_luma','max_luma'],['dv_min_luma','min_luma'],['dv_max_cll','max_cll'],['dv_max_fall','max_fall']].forEach(function(pair){
  const el=document.getElementById(pair[0]);
  if(!el) return;
- const sync=function(){
+ const sync=function(event){
   if(getVal('signal_mode')==='dv' && (pair[1]==='max_luma' || pair[1]==='min_luma')){
    meterSyncHdrMetadata();
    if(meterReadings&&meterReadings.length) meterOnGreyRefChange();
   }else if(getVal('signal_mode')==='dv'){
    meterSyncHdrMetadataFieldMirrors();
   }
+  if(pair[1]==='max_luma'&&event&&event.type==='change') meterWarnTargetWhiteAboveHdrMax();
   checkSettingsChanged();
  };
  el.addEventListener('input',sync);
@@ -15906,6 +15908,7 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	 applyMeterTargetGammaDefault(true);
 	 meterApplyPatternInsertionDefaults(false);
 	 updateModeVisibility();
+ meterWarnTargetWhiteAboveHdrMax();
  updateDropdowns();
  checkSettingsChanged();
  meterUpdateCardMode();
@@ -25599,6 +25602,10 @@ function meterChartHdrCodeLuminance(v,clipPeak){
  const raw=meterChartPqDecodeNormalized(v)*((diffuseScale>0)?diffuseScale:1);
  if(meterChartBt2390Enabled()){
   const master=meterChartMasterPeak();
+  // A Target White at or above the metadata mastering peak does not need
+  // roll-off. Let the explicit target remain the chart endpoint instead of
+  // pre-clipping it to Max Luma and silently turning 4000 back into 1000.
+  if(peak>=master) return Math.min(raw,peak);
   return bt2390Tonemap(Math.min(raw,master),master,peak);
  }
  return Math.min(raw,peak);
@@ -28946,6 +28953,7 @@ function meterSetTargetLevels(){
   black:{useMeasured:bUseMeasured,value:bValue,overridden:bOver}
  };
  try{ localStorage.setItem(METER_TARGET_LEVELS_KEY,JSON.stringify(state)); }catch(e){}
+ try{ meterWarnTargetWhiteAboveHdrMax(); }catch(e){}
  // Let the checkbox/input state paint before recalculating charts. Rapid
  // toggles coalesce into one refresh instead of stacking expensive canvases.
  try{ meterScheduleTargetCurveRefresh(); }catch(e){}
@@ -29040,6 +29048,21 @@ function meterTargetWhiteLevel(){
  const s=meterReadTargetLevelsState();
  if(s) return {useMeasured:!!s.white.useMeasured,value:s.white.value};
  return {useMeasured:true,value:null};
+}
+
+function meterWarnTargetWhiteAboveHdrMax(){
+ const mode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'sdr').toLowerCase();
+ if(mode==='sdr') return false;
+ const target=meterTargetWhiteLevel();
+ if(!target||target.useMeasured||!(Number(target.value)>0)) return false;
+ const rawMax=(typeof meterHdrMetadataFieldValue==='function')
+  ?meterHdrMetadataFieldValue('max_luma',mode)
+  :((document.getElementById(mode==='dv'?'dv_max_luma':'max_luma')||{}).value);
+ const maxLuma=Number(rawMax);
+ if(!(maxLuma>0)||Number(target.value)<=maxLuma) return false;
+ const fmt=value=>Number(value).toLocaleString(undefined,{maximumFractionDigits:2});
+ toast('Warning: Target White ('+fmt(target.value)+' cd/m\u00B2) is above HDR Max Luma ('+fmt(maxLuma)+' cd/m\u00B2). The target curve will use Target White; output metadata remains '+fmt(maxLuma)+' cd/m\u00B2.',true);
+ return true;
 }
 // Resolve the effective Target Black level. Returns {useMeasured,value}.
 function meterTargetBlackLevel(){
