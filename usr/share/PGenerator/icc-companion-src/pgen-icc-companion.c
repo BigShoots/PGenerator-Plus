@@ -1620,12 +1620,10 @@ static bool inverse_matrix3(const double m[3][3], double out[3][3])
     return true;
 }
 
-/* Bradford adaptation from the profile's media white onto the D50 PCS white.
- * ArgyllCMS adapts display profiles with this transform and bakes it into the
- * cLUT, leaving wtpt holding the unadapted native white and no chad tag to
- * read back. Scaling XYZ channel-wise from wtpt to the PCS white -- the old
- * shortcut -- lands neutral away from where the profile expects it and biases
- * the corrected white point. */
+/* Construct a Bradford adaptation from a source-space white onto D50 PCS.
+ * This is used by the calibrated profile paths below. Ordinary uncalibrated
+ * Argyll display profiles instead use their saved chad matrix for the
+ * absolute-colorimetric conversion. */
 static bool companion_adaptation(const double media_white[3], double out[3][3])
 {
     static const double bradford[3][3]={{0.8951,0.2664,-0.1614},{-0.7502,1.7135,0.0367},{0.0389,-0.0685,1.0296}};
@@ -1664,26 +1662,30 @@ static void companion_source_xyz(const double rgb[3], const char *signal_mode,
 }
 
 /* Feed an uncalibrated HDR display profile through its standard absolute
- * colorimetric PCS conversion. ArgyllCMS B2A tables are media-white-relative:
- * absolute XYZ is converted to that domain by D50 / wtpt scaling. A profile
- * with VCGT uses the source-PQ neutral calibration path below instead. */
+ * colorimetric PCS conversion. ArgyllCMS's B2A table accepts media-relative
+ * D50 PCS values. In a v4 display profile wtpt is already D50; the profile's
+ * chad matrix converts measured absolute XYZ into that relative PCS domain.
+ * Applying chad here matches ArgyllCMS's absolute-colorimetric B2A lookup.
+ * A profile with VCGT uses the source-PQ neutral calibration path below. */
 static bool companion_absolute_hdr_xyz(const double rgb[3], double white_nits,
                                        double xyz[3])
 {
     static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
-    static const double d50[3]={0.9642,1.0,0.8249};
-    IccTag white=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");
-    double linear[3],absolute[3],media_white[3];
-    if(!white.data||white.size<20||memcmp(white.data,"XYZ ",4))return false;
+    IccTag chad=icc_tag(app.correction_profile_data,app.correction_profile_size,"chad");
+    double linear[3],absolute[3],matrix[3][3];
+    if(!chad.data||chad.size<44||memcmp(chad.data,"sf32",4))return false;
     for(int channel=0;channel<3;channel++){
-        media_white[channel]=read_s15(white.data+8+channel*4);
-        if(!isfinite(media_white[channel])||media_white[channel]<=0.0)return false;
         linear[channel]=fmin(1.0,pq_to_nits(rgb[channel])/fmax(white_nits,1e-6));
     }
     for(int row=0;row<3;row++)
+        for(int column=0;column<3;column++){
+            matrix[row][column]=read_s15(chad.data+8+(row*3+column)*4);
+            if(!isfinite(matrix[row][column]))return false;
+        }
+    for(int row=0;row<3;row++)
         absolute[row]=bt2020_xyz[row][0]*linear[0]+bt2020_xyz[row][1]*linear[1]+bt2020_xyz[row][2]*linear[2];
-    for(int channel=0;channel<3;channel++)
-        xyz[channel]=absolute[channel]*d50[channel]/media_white[channel];
+    for(int row=0;row<3;row++)
+        xyz[row]=matrix[row][0]*absolute[0]+matrix[row][1]*absolute[1]+matrix[row][2]*absolute[2];
     return true;
 }
 
