@@ -273,6 +273,10 @@ sub read_patch {
   patch_b => int($patch->{"b"}||0),
   name => $patch->{"name"},
   input_max => $input_max,
+  # Do not make the WebUI infer this from 12-bit wire codes. In particular,
+  # legal black is code 256 rather than zero in standard Dolby Vision.
+  ire => (($patch->{"kind"}||"") eq "white" ? 100 : 0),
+  stimulus => (($patch->{"kind"}||"") eq "white" ? 100 : 0),
   delay_ms => $read_delay_ms,
   signal_range => $config->{"pattern_signal_range"}||$config->{"signal_range"}||"1",
   transport_signal_range => $config->{"transport_signal_range"}||$config->{"signal_range"}||"1",
@@ -309,7 +313,7 @@ sub read_patch {
    # white, black and the three primaries: a zero on anything but black would
    # be written into the uploaded profile as the panel's peak or a primary, so
    # stop rather than record it.
-   if(ref($reading) eq "HASH" && $reading->{"null_read"}) {
+   if(ref($reading) eq "HASH" && $reading->{"null_read"} && ($patch->{"kind"}||"") ne "black") {
     my $label=$patch->{"kind"}||$patch->{"name"}||"patch";
     my $retries=($reading->{"null_read_retries"}||0)+0;
     return (undef,"Meter returned an unusable all-zero reading for the $label patch that survived $retries re-measures; check the meter is aimed at the patch, awake, and still connected");

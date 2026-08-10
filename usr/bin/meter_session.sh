@@ -635,7 +635,10 @@ patch_drives_light() {
   BEGIN {
    m = m + 0
    if (m <= 0) m = 255
-   black_floor = int(16.0 * m / 255.0 + 0.5)
+   # Digital video code scales are based on the number of representable
+   # values, not the largest code. This produces exact limited black at every
+   # supported depth: 16/255, 64/1023 and 256/4095.
+   black_floor = int(16.0 * (m + 1.0) / 256.0 + 0.5)
    hi = r + 0
    if (g + 0 > hi) hi = g + 0
    if (b + 0 > hi) hi = b + 0

@@ -21372,6 +21372,21 @@ sub session_flagged_null_reading {
  return ($reading->{"null_read"}) ? 1 : 0;
 }
 
+# A session-level null flag must never turn a requested 0% black into a fatal
+# read. Keep this separate from autocal_step_is_low_shadow: black is not a DPG
+# shadow-adjustment node, but an all-zero result is still its correct reading.
+sub autocal_step_is_true_black {
+ my ($step)=@_;
+ return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}) || ($step->{"ire"}+0) != 0);
+ my $saw_signal=0;
+ for my $key (qw(signal_r_pct signal_g_pct signal_b_pct)) {
+  next if(!defined($step->{$key}));
+  $saw_signal=1;
+  return 0 if(($step->{$key}+0) > 0);
+ }
+ return $saw_signal ? 1 : 0;
+}
+
 sub invalid_low_shadow_reading {
  my ($reading,$step)=@_;
  return 0 if(!autocal_step_is_low_shadow($step));
@@ -21434,7 +21449,7 @@ sub read_step {
 	   # operator can act on instead of baking the zero into a DPG or a LUT. The
 	   # wording deliberately avoids the transient_read_error vocabulary: this is
 	   # not a retryable hiccup, the session already retried.
-	   if(session_flagged_null_reading($reading) && !autocal_step_is_low_shadow($step)) {
+	   if(session_flagged_null_reading($reading) && !autocal_step_is_low_shadow($step) && !autocal_step_is_true_black($step)) {
 	    my $label=$step->{"name"}||format_percent($step->{"ire"}||0)."%";
 	    my $retries=($reading->{"null_read_retries"}||0)+0;
 	    log_line("Rejecting null meter reading for $label that survived $retries re-measures");

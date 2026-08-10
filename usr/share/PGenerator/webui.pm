@@ -2938,7 +2938,18 @@ sub webui_meter_read (@) {
 	 if($patch_ire_explicit ne "") {
 	  $patch_ire=$patch_ire_explicit+0;
 	 } elsif($patch_r==$patch_g && $patch_g==$patch_b) {
-	  $patch_ire=(int($signal_range)==1) ? int((($patch_r-16)/219)*100+0.5) : int(($patch_r/255)*100+0.5);
+	  # Infer an achromatic patch's stimulus in the same code domain the
+	  # caller supplied. The old fixed 8-bit 16..235 calculation interpreted
+	  # standard-DV 12-bit black (256/4095) as 100% white. That made the meter
+	  # session reject a legitimate all-zero black measurement as a null read.
+	  my $code_scale=($patch_input_max+1)/256;
+	  my $limited_black=int(16*$code_scale+0.5);
+	  my $limited_white=int(235*$code_scale+0.5);
+	  if(int($signal_range)==1 && $limited_white>$limited_black) {
+	   $patch_ire=int((($patch_r-$limited_black)/($limited_white-$limited_black))*100+0.5);
+	  } else {
+	   $patch_ire=int(($patch_r/$patch_input_max)*100+0.5);
+	  }
 	  $patch_ire=0 if($patch_ire < 0);
 	  $patch_ire=100 if($patch_ire > 100);
 	 }
