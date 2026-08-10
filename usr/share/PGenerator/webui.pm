@@ -1532,7 +1532,7 @@ sub webui_handle_request (@) {
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
    elsif($path eq "/api/update/apply" && $method eq "POST") {
-    my $r='{"status":"ok","message":"Update started. PGenerator will restart shortly."}';
+    my $r='{"status":"ok","message":"Update started. PGenerator+ will restart shortly."}';
     my $len=length($r);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
     close($client);
@@ -12923,7 +12923,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 <div class="main-content" id="mainContent">
 <div class="desktop-shell">
 <aside class="desktop-sidebar" aria-label="Desktop workspace navigation">
- <nav class="desktop-nav" aria-label="PGenerator workspaces">
+ <nav class="desktop-nav" aria-label="PGenerator+ workspaces">
   <div class="desktop-nav-head">
    <div class="desktop-nav-title">Workspaces</div>
    <button type="button" class="desktop-sidebar-toggle" id="desktopSidebarToggle" aria-label="Collapse workspace menu" aria-expanded="true" title="Collapse workspace menu" onclick="pgToggleDesktopSidebar()">
@@ -13205,10 +13205,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
    </div>
    <div class="meter-card-header-col meter-card-header-col-generator" id="meterPatternProviderCol">
-    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator output sends calibration patches through the Pi HDMI output. PGenerator+ Patch Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGen+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
+    <label class="meter-header-label">Patch Generator <span class="meter-help-tip" title="PGenerator+ output sends calibration patches through the Pi HDMI output. PGenerator+ Patch Companion sends full-window patches through the target computer so measurements include its operating-system color pipeline and installed ICC profile. Run the paired companion on that computer before reading. PGenerator+ Windows SDR MHC2 profiles default to sRGB but can use another selected target transfer. Choose the matching Target Gamma when validating one." aria-label="Patch generator help">?</span></label>
     <div class="meter-generator-control-row">
      <select id="meterPatternProvider" class="meter-card-header-select" onchange="meterCalibrationPatternProviderChanged()">
-      <option value="local">PGenerator output</option>
+      <option value="local">PGenerator+ output</option>
       <option value="companion" disabled title="Run PGenerator+ Patch Companion on the target computer to enable this option">PGenerator+ Patch Companion</option>
      </select>
      <span id="meterCompanionGearWrap" class="meter-xyz-gear-wrap is-hidden"><button type="button" id="meterCompanionGear" class="meter-xyz-gear" aria-label="PGenerator+ Patch Companion settings" aria-expanded="false" title="PGenerator+ Patch Companion settings">&#9881;</button><div class="meter-xyz-gear-popover" id="meterCompanionGearPopover" role="dialog" aria-label="PGenerator+ Patch Companion settings">
@@ -13381,9 +13381,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </label>
    </div>
   <div class="field field-hdr" id="meterHdrDiffuseConfig" style="display:none">
-    <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator's PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator's encoded 50% PQ patch at the active bit depth and limited/full range. For example, 10-bit Limited resolves to about 92.25 cd/m² while 8-bit Limited resolves to about 94.38 cd/m² because the midpoint is quantized differently. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
+    <label>Diffuse White <span class="meter-help-tip" title="HDR reference white used to scale PGenerator+'s PQ chart targets, including ColorChecker and saturation luminance targets. Auto follows the target luminance of PGenerator+'s encoded 50% PQ patch at the active bit depth and limited/full range. For example, 10-bit Limited resolves to about 92.25 cd/m² while 8-bit Limited resolves to about 94.38 cd/m² because the midpoint is quantized differently. HCFR export receives the same resolved value." aria-label="HDR diffuse white help">?</span></label>
     <div class="meter-inline-value">
-     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="92.2457" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator's encoded 50% PQ target at the active bit depth and range" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
+     <input type="number" id="meterHdrDiffuseWhite" min="1" max="200" step="0.1" value="92.2457" inputmode="decimal" title="HDR diffuse-white target in cd/m²; Auto follows PGenerator+'s encoded 50% PQ target at the active bit depth and range" onchange="meterOnHdrDiffuseWhiteChange()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
      <span class="meter-inline-unit">cd/m&sup2;</span>
      <input type="checkbox" id="meterHdrDiffuseWhiteAuto" onchange="meterOnHdrDiffuseWhiteAutoChange()" checked>
      <label for="meterHdrDiffuseWhiteAuto" class="meter-toggle-label">Auto</label>
@@ -13469,7 +13469,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD preserves its standardized video codes in SDR. In HDR10 and HLG, HCFR GCD uses HCFR's Rec.709-to-BT.2020 conversion, gamma 2.22 source decoding and 8-bit legal-video quantization. Its HDR10 version uses HCFR's 94.37844 cd/m2 reference. ColorChecker SG and SG Skin Tones use PGenerator's normal mode-aware conversion, not the HCFR-specific path. HCFR does not define Dolby Vision versions, so Dolby Vision uses a PGenerator adaptation. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and HCFR legal-video quantization. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD preserves its standardized video codes in SDR. In HDR10 and HLG, HCFR GCD uses HCFR's Rec.709-to-BT.2020 conversion, gamma 2.22 source decoding and 8-bit legal-video quantization. Its HDR10 version uses HCFR's 94.37844 cd/m2 reference. ColorChecker SG and SG Skin Tones use PGenerator+'s normal mode-aware conversion, not the HCFR-specific path. HCFR does not define Dolby Vision versions, so Dolby Vision uses a PGenerator+ adaptation. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and HCFR legal-video quantization. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -13975,7 +13975,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <div id="meterCcssCreateJsonSection" style="display:none;margin-bottom:10px">
       <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">XYZ Correction Matrix JSON</label>
       <input type="file" id="meterCcssCreateJsonInput" accept=".json,.txt,application/json" onchange="meterCcssCreateImportJson(event)" style="width:100%;font-size:.74rem;color:var(--text2)">
-      <div id="meterCcssCreateJsonStatus" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.</div>
+      <div id="meterCcssCreateJsonStatus" style="font-size:.7rem;color:var(--text2);margin-top:6px;line-height:1.45">Choose a JSON file exported by the former PGenerator+ XYZ Correction Matrix tool.</div>
      </div>
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">3x3 XYZ Correction Matrix</label>
      <div class="meter-matrix-grid">
@@ -14445,9 +14445,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
    <span id="cecStatus" style="font-size:.85rem;color:var(--text2)">Checking...</span>
   </div>
   <div class="btn-row" style="margin-bottom:8px">
-   <button class="btn btn-sm btn-success" onclick="cecCmd('on')" title="Wake TV and switch to PGenerator input">&#9654; Power On</button>
+   <button class="btn btn-sm btn-success" onclick="cecCmd('on')" title="Wake TV and switch to PGenerator+ input">&#9654; Power On</button>
    <button class="btn btn-sm btn-danger" onclick="cecCmd('off')" title="Put TV in standby">&#9724; Standby</button>
-   <button class="btn btn-sm btn-secondary" onclick="cecCmd('active')" title="Switch TV to PGenerator HDMI input">&#8594; Switch Input</button>
+   <button class="btn btn-sm btn-secondary" onclick="cecCmd('active')" title="Switch TV to PGenerator+ HDMI input">&#8594; Switch Input</button>
   </div>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="cecCmd('volup')" title="Volume Up">&#128266;+</button>
@@ -14659,7 +14659,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 <div class="offline-mask" id="offlineMask" aria-hidden="true">
  <div class="offline-mask-card">
   <div class="offline-mask-title">Device Offline</div>
-  <div class="offline-mask-text">PGenerator is not responding. Settings are temporarily locked and this page will refresh automatically when the device comes back online.</div>
+  <div class="offline-mask-text">PGenerator+ is not responding. Settings are temporarily locked and this page will refresh automatically when the device comes back online.</div>
  </div>
 </div>
 </div>
@@ -17080,7 +17080,7 @@ function resetDefaults(){
  updateModeVisibility();
  updateDropdowns();
  checkSettingsChanged();
- toast('Defaults loaded \u2014 click Apply to save and restart');
+ toast('Defaults loaded. Click Apply to save and restart.');
 }
 
 async function applySettings(){
@@ -17413,7 +17413,7 @@ async function cecScan(){
    html+='</tr>';
   });
   html+='</table>';
-  html+='<div style="margin-top:4px;color:var(--text2)">PGenerator: '+r.data.self.phys+' (logical '+r.data.self.log+')</div>';
+  html+='<div style="margin-top:4px;color:var(--text2)">PGenerator+: '+r.data.self.phys+' (logical '+r.data.self.log+')</div>';
   el.innerHTML=html;
   loadCecStatus();
  }else{
@@ -18463,12 +18463,12 @@ function showUpdateCard(){
  if(!_updateChecked) checkUpdate();
 }
 async function applyUpdate(){
- if(!confirm('Install update now? PGenerator will restart.'))return;
+ if(!confirm('Install update now? PGenerator+ will restart.'))return;
  document.getElementById('applyUpdateBtn').disabled=true;
  document.getElementById('updateStatus').innerHTML='<span class="spinner"></span> Downloading and installing...';
  const r=await fetchJSON('/api/update/apply',{method:'POST'});
  if(r&&r.status==='ok'){
-  document.getElementById('updateStatus').textContent='Update started. The page will reload when PGenerator restarts...';
+  document.getElementById('updateStatus').textContent='Update started. The page will reload when PGenerator+ restarts...';
   setTimeout(()=>location.reload(),30000);
   let checks=0;
   const poll=setInterval(async()=>{
@@ -26252,7 +26252,7 @@ function meterSpyderXNativeModeHelp(){
  if(mode==='Standard LED') purpose='This is ArgyllCMS display type -y e for white LED backlit LCDs.';
  else if(mode==='Wide Gamut LED') purpose='This is ArgyllCMS display type -y b for RGB LED backlit LCDs.';
  else if(mode==='GB-R LED') purpose='This is ArgyllCMS display type -y i for GB-R phosphor LED backlit LCDs.';
- else purpose='This is ArgyllCMS display type -y l, its default General LCD/CCFL calibration. PGenerator uses General as the fallback when the selected display has no matching SpyderX built-in mode, including OLED, QD-OLED, plasma, projector, and CRT.';
+ else purpose='This is ArgyllCMS display type -y l, its default General LCD/CCFL calibration. PGenerator+ uses General as the fallback when the selected display has no matching SpyderX built-in mode, including OLED, QD-OLED, plasma, projector, and CRT.';
  return 'The Display Type selection chooses the SpyderX built-in calibration. '+purpose+' SpyderX does not support CCSS spectral profiles in ArgyllCMS. For a display without a matching built-in mode, use a CCMX created for this SpyderX and display.';
 }
 
@@ -26526,7 +26526,7 @@ function meterCcssCreateImportJson(evt){
  const status=document.getElementById('meterCcssCreateJsonStatus');
  meterCcssCreateJsonLoaded=false;
  if(!file){
-  if(status) status.textContent='Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.';
+  if(status) status.textContent='Choose a JSON file exported by the former PGenerator+ XYZ Correction Matrix tool.';
   meterCcssCreateUpdateStartState();
   return;
  }
@@ -26611,7 +26611,7 @@ function meterCcssCreateUpdateCopy(){
   ? 'Measures both meters and calculates the correction matrix from their XYZ results.'
   : (method==='json'
     ? 'Imports the JSON format exported by the former software XYZ Correction Matrix tool and converts it into a meter profile.'
-    : 'Enter the matrix values directly. PGenerator will package them as a CCMX that ArgyllCMS applies to the selected meter.');
+    : 'Enter the matrix values directly. PGenerator+ will package them as a CCMX that ArgyllCMS applies to the selected meter.');
  if(methodSection) methodSection.style.display=mode==='ccmx'?'':'none';
  if(referenceSection) referenceSection.style.display=suppliedMatrix?'none':'';
  if(targetSection) targetSection.style.display=mode==='ccmx'?'':'none';
@@ -26872,7 +26872,7 @@ function meterOpenCcssCreateModal(){
  if(jsonInput) jsonInput.value='';
  const jsonStatus=document.getElementById('meterCcssCreateJsonStatus');
  if(jsonStatus){
-  jsonStatus.textContent='Choose a JSON file exported by the former PGenerator XYZ Correction Matrix tool.';
+  jsonStatus.textContent='Choose a JSON file exported by the former PGenerator+ XYZ Correction Matrix tool.';
   jsonStatus.style.color='var(--text2)';
  }
  meterCcssCreateSetMatrix([[1,0,0],[0,1,0],[0,0,1]]);
@@ -27052,7 +27052,7 @@ function meterCcmxTechnologyName(key){
 
 function meterBuildCcmxContent(name,target,matrix,displayType,method){
  const rows=matrix.map(row=>row.map(value=>Number(value).toPrecision(12).replace(/(?:\.0+|(\.\d+?)0+)$/,'$1')).join(' '));
- const reference=method==='json'?'Imported PGenerator XYZ correction matrix':'User entered 3x3 XYZ correction matrix';
+ const reference=method==='json'?'Imported PGenerator+ XYZ correction matrix':'User entered 3x3 XYZ correction matrix';
  const refresh=/^(?:plasma|crt)$/.test(String(displayType||''))?'YES':'NO';
  return [
   'CCMX',
@@ -39794,7 +39794,7 @@ function meterFullAutoCalPromptDefaults(){
 	     'Greyscale AutoCal, 26-point pass.',
 	     'Colour-only 3D LUT AutoCal, with probe-gated upload to the TV.',
 	     'Optional cleanup, after the 3D LUT.'];
-	 const lead='Switches PGenerator to the '+(transport?transport+' ':'')+'AutoCal video transport, then runs the calibration in one pass:';
+	 const lead='Switches PGenerator+ to the '+(transport?transport+' ':'')+'AutoCal video transport, then runs the calibration in one pass:';
  return {
   title:'Full Auto Cal',
 	  lead:lead,
@@ -41127,7 +41127,7 @@ async function meterFullAutoCalDownloadReport(filename){
  const entries=meterFullAutoCalReportEntries();
  const sectionHtml=await meterFullAutoCalBuildSnapshotReportSections(entries);
  if(!sectionHtml){toast('No reportable Full AutoCal data found',true);return false;}
- const html=meterBuildReportDocument(sectionHtml,'PGenerator Full AutoCal Report');
+ const html=meterBuildReportDocument(sectionHtml,'PGenerator+ Full AutoCal Report');
  meterDownloadBlob(new Blob([html],{type:'text/html'}),filename);
  return true;
 }
@@ -41356,7 +41356,7 @@ async function meterStartFullAutoCal(){
 		 );
  const preChoice=await meterFullAutoCalConfirmDialog({
   title:'Pre-Cal Report Measurements',
-  message:'Before calibration, PGenerator will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
+  message:'Before calibration, PGenerator+ will measure '+meterFullAutoCalReportSeries().map(item=>item.label).join(', ')+' and save those readings as the before side of the Full AutoCal report. Make any final pre-cal picture adjustments now, then continue to start the reads.',
   continueText:'\u25B6 Measure Pre-Cal',
   skipText:'Skip Pre-Cal',
   statusText:'Capture the before measurements for the Full AutoCal report.'
@@ -51591,7 +51591,7 @@ function meterBuildCurrentSeriesReportSection(title){
 }
 
 function meterBuildReportDocument(sectionHtml,documentTitle){
- const title=String(documentTitle||'PGenerator Measurement Report');
+ const title=String(documentTitle||'PGenerator+ Measurement Report');
  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+title+'</title>'
  +'<style>'
  +':root{color-scheme:light;} '
@@ -51866,7 +51866,7 @@ function meterBuildHcfrExportModel(){
  const free=[];
  entries.filter(e=>e.snap.source_format==='hcfr-chc'&&e.snap.source_group==='freeMeasurements').forEach(e=>free.push(...valid(e.snap)));
  const now=new Date().toISOString();
- const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator saturation sweep uses variable luminance; use the HCFR Constant Luminance Sat Sweep series for directly comparable intermediate Delta E values.');
+ const warnings=[];if(mode==='dv') warnings.push('Dolby Vision transport is not representable in CHC; analyze this session as PQ.');if(grey.some(rd=>!rd)) warnings.push('Grayscale has '+grey.filter(Boolean).length+' of '+grey.length+' readings; empty stimulus slots are preserved and will appear blank in HCFR.');if(satEntry&&satEntry.snap.source_format!=='hcfr-chc'&&Number(satEntry.snap.points)!==25) warnings.push('This PGenerator+ saturation sweep uses variable luminance; use the HCFR Constant Luminance Sat Sweep series for directly comparable intermediate Delta E values.');
  // HCFR SDR GCD aligns the 18 chromatic patches plus PGenerator's full black
  // and white anchors. The native SDR neutral chips use different stimuli from
  // fixed GCD's named grays, so preserve those as free measurements. HDR-class
