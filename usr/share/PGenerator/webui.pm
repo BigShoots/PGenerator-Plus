@@ -24505,12 +24505,11 @@ function meterApplyHdrDiffuseOverridePeak(peak){
 
 function meterOnHdrDiffuseWhiteChange(){
  try{ meterSaveColorPrefs(); }catch(e){}
- if(meterReadings&&meterReadings.length){
-  meterOnGreyRefChange();
-  return;
- }
- meterRedrawEotfChart();
- meterRedrawLuminanceChart();
+ // Diffuse white changes the authored PQ targets themselves. Use the full
+ // target refresh so EOTF, luminance, gamma and colour-series targets all
+ // rebuild instead of the lightweight grey-reference refresh, which only
+ // redraws RGB balance and Delta E.
+ meterScheduleTargetCurveRefresh();
 }
 
 function meterOnHdrDiffuseWhiteAutoChange(){
