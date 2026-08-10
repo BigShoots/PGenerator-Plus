@@ -18514,6 +18514,35 @@ function systemBackupSetStatus(message,isError){
  status.textContent=String(message||'');
  status.style.color=isError?'var(--red)':'var(--text2)';
 }
+async function systemBackupWaitForReboot(){
+ const started=Date.now();
+ let sawOffline=false;
+ while(Date.now()-started<180000){
+  await new Promise(resolve=>setTimeout(resolve,2000));
+  let online=false;
+  try{
+   const response=await fetch('/api/ping?_reboot_check='+Date.now(),{
+    cache:'no-store',signal:AbortSignal.timeout(2500)
+   });
+   online=response.ok;
+  }catch(e){
+   online=false;
+  }
+  if(!online){
+   sawOffline=true;
+   continue;
+  }
+  // Normally reload only after observing the Pi go offline and return. Some
+  // browsers can miss a short outage, so reload once the normal reboot window
+  // has elapsed even if every individual ping happened to land while online.
+  if(sawOffline||Date.now()-started>=30000){
+   systemBackupSetStatus('PGenerator+ is back online. Reloading...',false);
+   location.reload();
+   return;
+  }
+ }
+ systemBackupSetStatus('Could not confirm that PGenerator+ restarted. Reload this page after the device is back online.',true);
+}
 async function exportSystemSettings(){
  const btn=document.getElementById('exportSystemSettingsBtn');
  if(btn){btn.disabled=true;btn.textContent='Creating Backup...';}
@@ -18578,8 +18607,10 @@ async function importSystemSettingsFile(file){
     systemBackupSetStatus('Import complete. Restored '+count+' files. Reboot to apply all settings.',false);
     toast('System backup imported');
     if(confirm('System backup imported successfully. Reboot PGenerator+ now to apply all restored settings?')){
-     await fetchJSON('/api/reboot',{method:'POST'});
+     const reboot=await fetchJSON('/api/reboot',{method:'POST'});
+     if(!reboot||reboot.status!=='ok')throw new Error(reboot&&reboot.message?reboot.message:'Could not start reboot');
      systemBackupSetStatus('Rebooting PGenerator+...',false);
+     systemBackupWaitForReboot();
     }
    }
   }
