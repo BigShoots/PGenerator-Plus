@@ -850,16 +850,18 @@ def _sample_mft2_clut(table, grid, coordinates):
     return result
 
 
-def reshape_hdr_b2a_for_pq(profile, white_y):
+def reshape_hdr_b2a_for_pq(profile, white_y, baked_calibration=None):
     """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
 
     Argyll's inverse display table is sampled in linear PCS XYZ. Even a 45^3
     cLUT then places both 5% and 10% PQ inside its first cell, so the OLED toe
     cannot be represented accurately. Reparameterize the table through PQ
     input shapers, resample the original chromatic transform, and reserve the
-    one-cell neutral corridor for the VCGT calibration stage that KWin applies
-    after B2A. This preserves the fitted colour transform away from neutral
-    while giving the grey axis enough precision to follow PQ near black.
+    one-cell neutral corridor for the per-channel calibration stage. When VCGT
+    is enabled KWin applies that stage after B2A. When it is disabled, carry
+    the same curves in B2A's output shapers so the neutral correction is not
+    lost. This preserves the fitted colour transform away from neutral while
+    giving the grey axis enough precision to follow PQ near black.
     """
     d50 = (0.9642, 1.0, 0.8249)
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
@@ -947,12 +949,25 @@ def reshape_hdr_b2a_for_pq(profile, white_y):
                         max(0, min(65535, int(round(value * 65535.0))))
                         for value in result
                     )))
-        identity_output = [
-            max(0, min(65535, int(round(index * 65535.0 / (new_output_entries - 1)))))
-            for index in range(new_output_entries)
-        ]
-        packed_identity = struct.pack(">{}H".format(new_output_entries), *identity_output)
-        updated.extend(packed_identity * 3)
+        if baked_calibration is not None:
+            if len(baked_calibration) != 3 or any(len(curve) < 2 for curve in baked_calibration):
+                fail("KDE HDR B2A calibration requires three usable channel curves")
+            for channel in range(3):
+                output_curve = [
+                    max(0, min(65535, int(round(
+                        sample_table(baked_calibration[channel], index / float(new_output_entries - 1))
+                        * 65535.0
+                    ))))
+                    for index in range(new_output_entries)
+                ]
+                updated.extend(struct.pack(">{}H".format(new_output_entries), *output_curve))
+        else:
+            identity_output = [
+                max(0, min(65535, int(round(index * 65535.0 / (new_output_entries - 1)))))
+                for index in range(new_output_entries)
+            ]
+            packed_identity = struct.pack(">{}H".format(new_output_entries), *identity_output)
+            updated.extend(packed_identity * 3)
         replacements[signature] = bytes(updated)
         changed = True
     if not changed:
@@ -1572,11 +1587,11 @@ def build(payload, output_dir):
         mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
 
-    # KWin applies vcgt after B2A. If the user includes that stage in a KDE
-    # cLUT profile, fit B2A in the calibrated device domain so vcgt is accounted
-    # for instead of correcting an already complete raw-device transform twice.
+    # KDE HDR cLUT profiles always model the calibrated device domain. With
+    # VCGT enabled, KWin applies the calibration after B2A. Without VCGT, the
+    # same curves are baked into B2A's output shapers below.
     fit_rows = profile_rows
-    if profile_type == "kde-hdr" and include_vcgt and PROFILE_MODELS[profile_model]["family"] == "clut":
+    if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
         fit_rows = apply_calibration_to_rows(profile_rows, calibration)
     ti3, _, _ = make_ti3(payload, fit_rows)
     if not os.path.isdir(output_dir):
@@ -1614,8 +1629,10 @@ def build(payload, output_dir):
         replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
     profile = rebuild_icc(profile, replacements)
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
-    if profile_type == "kde-hdr" and include_vcgt and PROFILE_MODELS[profile_model]["family"] == "clut":
-        profile = reshape_hdr_b2a_for_pq(profile, white["xyz"][1])
+    if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
+        profile = reshape_hdr_b2a_for_pq(
+            profile, white["xyz"][1], None if include_vcgt else calibration
+        )
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})

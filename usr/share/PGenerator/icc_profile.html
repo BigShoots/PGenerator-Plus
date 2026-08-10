@@ -67,8 +67,8 @@
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
        </div>
        <label class="meter-icc-field meter-icc-vcgt-field">
-        <input id="meterIccIncludeVcgt" type="checkbox" onchange="meterIccIncludeVcgtChanged()">
-        <span>Include VCGT curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. The profile consumer must apply these curves together with the ICC transform. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain so KWin can apply the cLUT and VCGT together without duplicating the neutral correction.">?</span></span>
+        <input id="meterIccIncludeVcgt" type="checkbox" checked onchange="meterIccIncludeVcgtChanged()">
+        <span>Include VCGT curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. The profile consumer must apply these curves together with the ICC transform. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain. When checked, KWin applies the separate VCGT stage after B2A. When unchecked, PGenerator+ bakes the same neutral calibration into the B2A output curves instead.">?</span></span>
        </label>
        <details id="meterIccFormatAdvanced" class="meter-icc-advanced" style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">ICC format and CICP</summary>
