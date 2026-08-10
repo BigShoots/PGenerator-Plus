@@ -724,6 +724,18 @@ sub legacy_external_prepare_dv_template_payload (@) {
  return (join(";",@fields),$source_max);
 }
 
+sub legacy_external_prepare_hcfr_dv_template_payload (@) {
+ my $payload=shift;
+ # HCFR can send 10-bit classic-protocol values even though it has no Dolby
+ # Vision mode of its own. Preserve that declared source precision while the
+ # standard-DV renderer keeps its RGB tunnel at 8-bit. The old ordering first
+ # forced HCFR's bits field to 8, then interpreted 10-bit values as 8-bit;
+ # values at or above 255 consequently collapsed to full white.
+ my ($prepared,$source_max)=&legacy_external_prepare_dv_template_payload($payload);
+ $prepared=&legacy_external_hcfr_template_payload($prepared);
+ return ($prepared,$source_max);
+}
+
 sub legacy_external_hcfr_triplet_quant_range (@) {
  my $triplet=shift;
  my $allow_full=shift;
@@ -2548,13 +2560,16 @@ sub pattern_daemon {
       my $source_range="";
      if($2 eq "HCFR") {
       &legacy_external_mark_hcfr($connection);
-      $payload=&legacy_external_hcfr_template_payload($payload);
       $source_range=&legacy_external_hcfr_source_range($payload);
      } else {
       &legacy_external_set_status($connection,"DeviceControl");
      }
       my $source_max=0;
-      ($payload,$source_max)=&legacy_external_prepare_dv_template_payload($payload);
+      if($2 eq "HCFR") {
+       ($payload,$source_max)=&legacy_external_prepare_hcfr_dv_template_payload($payload);
+      } else {
+       ($payload,$source_max)=&legacy_external_prepare_dv_template_payload($payload);
+      }
       $response=&get_pattern($1,$2,$payload,"TESTTEMPLATE:$2",$source_range,$source_max);
      &send_key_to_client($connection,$response);
      &clean_pattern_files();
