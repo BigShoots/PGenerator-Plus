@@ -850,21 +850,17 @@ def _sample_mft2_clut(table, grid, coordinates):
     return result
 
 
-def reshape_hdr_b2a_for_pq(profile, white_y, baked_calibration=None, calibrated_white=None):
+def reshape_hdr_b2a_for_pq(profile, white_y):
     """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
 
     Argyll's inverse display table is sampled in linear PCS XYZ. Even a 45^3
     cLUT then places both 5% and 10% PQ inside its first cell, so the OLED toe
     cannot be represented accurately. Reparameterize the table through PQ
     input shapers, resample the original chromatic transform, and reserve the
-    one-cell neutral corridor for the per-channel calibration stage. When VCGT
-    is enabled KWin applies that stage directly in source PQ code space. When
-    it is disabled, bake the source-PQ curves into the neutral corridor where
-    they have measured resolution, then transition to the raw three-dimensional
-    absolute inverse through peak rolloff. HDR rolloff is commonly shared
-    across channels, so three independent curves derived from equal-RGB
-    measurements are not a valid substitute for that measured 3D inverse near
-    peak luminance.
+    one-cell neutral corridor for the source-domain VCGT calibration stage.
+    Profiles without VCGT retain ArgyllCMS's original B2A transform unchanged;
+    a color-management consumer must evaluate that standard profile with the
+    requested rendering intent instead of embedding a synthetic calibration.
     """
     d50 = (0.9642, 1.0, 0.8249)
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
@@ -873,40 +869,6 @@ def reshape_hdr_b2a_for_pq(profile, white_y, baked_calibration=None, calibrated_
     # the linear-PCS resolution needed to distinguish 5% PQ near black.
     new_input_entries = 65530
     new_output_entries = 4096
-    bake_absolute = baked_calibration is not None
-    media_white = None
-    source_to_relative = None
-    if bake_absolute:
-        if (len(baked_calibration) != 3
-                or any(len(curve) < 2 for curve in baked_calibration)
-                or calibrated_white is None or calibrated_white <= 0.0):
-            fail("KDE HDR absolute B2A requires usable neutral calibration")
-        for signature, payload in read_icc_tags(profile):
-            if signature == b"wtpt" and len(payload) >= 20 and payload[:4] == b"XYZ ":
-                media_white = [struct.unpack_from(">i", payload, 8 + channel * 4)[0] / 65536.0
-                               for channel in range(3)]
-                break
-        if media_white is None or any(value <= 0.0 for value in media_white):
-            fail("KDE HDR absolute B2A requires a usable media white point")
-        bradford = (
-            (0.8951, 0.2664, -0.1614),
-            (-0.7502, 1.7135, 0.0367),
-            (0.0389, -0.0685, 1.0296),
-        )
-
-        def adaptation(source, destination):
-            source_cone = mat_vec_mul(bradford, source)
-            destination_cone = mat_vec_mul(bradford, destination)
-            scale = [[0.0] * 3 for _channel in range(3)]
-            for channel in range(3):
-                if abs(source_cone[channel]) < 1e-9:
-                    fail("KDE HDR absolute B2A has a degenerate media white point")
-                scale[channel][channel] = destination_cone[channel] / source_cone[channel]
-            return mat_mul(mat_inv(bradford), mat_mul(scale, bradford))
-
-        d65 = (0.9504559, 1.0, 1.0890578)
-        source_to_relative = mat_mul(adaptation(media_white, d50),
-                                     mat_inv(adaptation(d65, d50)))
     replacements = {}
     changed = False
     for signature, payload in read_icc_tags(profile):
@@ -973,57 +935,15 @@ def reshape_hdr_b2a_for_pq(profile, white_y, baked_calibration=None, calibrated_
                         d50[channel] * pq_to_nits(pq_coordinates[channel]) / white_y
                         for channel in range(3)
                     ]
-                    if bake_absolute:
-                        # Convert the D65-to-D50 source PCS used at runtime into
-                        # the raw profile's media-white-relative PCS. Clamp each
-                        # channel at the measured native boundary so the cell
-                        # straddling peak never uses unmeasured extrapolation.
-                        bounded_pcs = [
-                            d50[channel] * min(1.0, pq_to_nits(pq_coordinates[channel]) / white_y)
-                            for channel in range(3)
-                        ]
-                        relative_pcs = mat_vec_mul(source_to_relative, bounded_pcs)
-                        original = evaluate_original(relative_pcs)
-                        spread = max(red, green, blue) - min(red, green, blue)
-                        neutral_coordinate = sum(pq_coordinates) / 3.0
-                        neutral_nits = pq_to_nits(neutral_coordinate)
-                        neutral_pcs = [d50[channel] * min(neutral_nits, calibrated_white) / white_y
-                                       for channel in range(3)]
-                        absolute_neutral = evaluate_original(
-                            mat_vec_mul(source_to_relative, neutral_pcs))
-                        direct_neutral = [sample_table(baked_calibration[channel], neutral_coordinate)
-                                          for channel in range(3)]
-                        # The direct source-PQ curves resolve shadows and the
-                        # normal tracking region. As the request enters the
-                        # calibrated display's peak headroom, transition to the
-                        # measured 3D inverse, which retains coupled rolloff and
-                        # clips at the achievable D65 white rather than native
-                        # white. Smoothstep keeps both value and slope continuous.
-                        peak_fraction = neutral_nits / calibrated_white
-                        transition = max(0.0, min(1.0, (peak_fraction - 0.55) / 0.35))
-                        transition = transition * transition * (3.0 - 2.0 * transition)
-                        neutral = [direct_neutral[channel] * (1.0 - transition)
-                                   + absolute_neutral[channel] * transition
-                                   for channel in range(3)]
-                        if red == 0 and green == 0 and blue == 0:
-                            result = [0.0, 0.0, 0.0]
-                        elif spread <= 1:
-                            result = neutral
-                        elif spread == 2:
-                            result = [(original[channel] + neutral[channel]) * 0.5
-                                      for channel in range(3)]
-                        else:
-                            result = original
+                    original = evaluate_original(pcs)
+                    spread = max(red, green, blue) - min(red, green, blue)
+                    if spread <= 1:
+                        result = pq_coordinates
+                    elif spread == 2:
+                        result = [(original[channel] + pq_coordinates[channel]) * 0.5
+                                  for channel in range(3)]
                     else:
-                        original = evaluate_original(pcs)
-                        spread = max(red, green, blue) - min(red, green, blue)
-                        if spread <= 1:
-                            result = pq_coordinates
-                        elif spread == 2:
-                            result = [(original[channel] + pq_coordinates[channel]) * 0.5
-                                      for channel in range(3)]
-                        else:
-                            result = original
+                        result = original
                     updated.extend(struct.pack(">3H", *(
                         max(0, min(65535, int(round(value * 65535.0))))
                         for value in result
@@ -1631,8 +1551,7 @@ def build(payload, output_dir):
         fail("Unsupported ICC profile calculation quality")
     include_vcgt = payload.get("include_vcgt")
     if include_vcgt is None:
-        # Source-domain VCGT remains the preferred KDE HDR path. The explicit
-        # unchecked path instead builds the self-contained absolute B2A below.
+        # Source-domain VCGT remains the preferred KDE HDR path.
         include_vcgt = True
     elif not isinstance(include_vcgt, bool):
         fail("Include VCGT must be true or false")
@@ -1655,9 +1574,7 @@ def build(payload, output_dir):
 
     # A KDE HDR profile with VCGT models the calibrated device domain because
     # KWin applies that calibration directly in source PQ code space. Without
-    # VCGT, fit the raw device instead; its B2A remains a three-dimensional
-    # inverse through coupled HDR rolloff and carries the absolute white-point
-    # conversion below.
+    # VCGT, give ArgyllCMS the raw measurements and retain its standard B2A.
     fit_rows = profile_rows
     if (profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
             and include_vcgt):
@@ -1698,12 +1615,9 @@ def build(payload, output_dir):
         replacements[b"lumi"] = xyz_tag((0.0, luminance, 0.0))
     profile = rebuild_icc(profile, replacements)
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
-    if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
-        profile = reshape_hdr_b2a_for_pq(
-            profile, white["xyz"][1],
-            None if include_vcgt else calibration,
-            None if include_vcgt else calibrated_white,
-        )
+    if (profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
+            and include_vcgt):
+        profile = reshape_hdr_b2a_for_pq(profile, white["xyz"][1])
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})

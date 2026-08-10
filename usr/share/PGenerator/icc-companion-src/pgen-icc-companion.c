@@ -1663,6 +1663,30 @@ static void companion_source_xyz(const double rgb[3], const char *signal_mode,
         xyz[row]=adaptation[row][0]*intermediate[0]+adaptation[row][1]*intermediate[1]+adaptation[row][2]*intermediate[2];
 }
 
+/* Feed an uncalibrated HDR display profile through its standard absolute
+ * colorimetric PCS conversion. ArgyllCMS B2A tables are media-white-relative:
+ * absolute XYZ is converted to that domain by D50 / wtpt scaling. A profile
+ * with VCGT uses the source-PQ neutral calibration path below instead. */
+static bool companion_absolute_hdr_xyz(const double rgb[3], double white_nits,
+                                       double xyz[3])
+{
+    static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
+    static const double d50[3]={0.9642,1.0,0.8249};
+    IccTag white=icc_tag(app.correction_profile_data,app.correction_profile_size,"wtpt");
+    double linear[3],absolute[3],media_white[3];
+    if(!white.data||white.size<20||memcmp(white.data,"XYZ ",4))return false;
+    for(int channel=0;channel<3;channel++){
+        media_white[channel]=read_s15(white.data+8+channel*4);
+        if(!isfinite(media_white[channel])||media_white[channel]<=0.0)return false;
+        linear[channel]=fmin(1.0,pq_to_nits(rgb[channel])/fmax(white_nits,1e-6));
+    }
+    for(int row=0;row<3;row++)
+        absolute[row]=bt2020_xyz[row][0]*linear[0]+bt2020_xyz[row][1]*linear[1]+bt2020_xyz[row][2]*linear[2];
+    for(int channel=0;channel<3;channel++)
+        xyz[channel]=absolute[channel]*d50[channel]/media_white[channel];
+    return true;
+}
+
 /* Absolute luminance of the profile's PCS white. The measurement set is
  * normalised so PCS Y=1.0 is the profiling white, and ArgyllCMS embeds that
  * value as LUMINANCE_XYZ_CDM2 in the retained characterization tags. The lumi
@@ -2032,7 +2056,16 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");
         if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;
     }
-    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
+    /* Without a calibration tag this is an ordinary ArgyllCMS display
+     * profile. Preserve source absolute colorimetry rather than adapting D65
+     * onto the display's native media white. */
+    if(!strcmp(app.correction_signal_mode,"hdr10")
+       && !icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt").data
+       && !icc_tag(app.correction_profile_data,app.correction_profile_size,"MHC2").data){
+        if(!companion_absolute_hdr_xyz(rgb,white_nits,xyz))return false;
+    }else{
+        companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
+    }
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
     /* A 3D cLUT cannot resolve the steep PQ shadow axis at its grid spacing.
