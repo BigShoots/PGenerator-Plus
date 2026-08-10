@@ -14963,10 +14963,18 @@ const IFACE_NAMES={
  bnep0:'Bluetooth PAN',
 };
 
+let toastHideTimer=0;
 function toast(msg,err){
  const t=document.getElementById('toast');
+ if(!t)return;
+ if(toastHideTimer)clearTimeout(toastHideTimer);
  t.textContent=msg;t.className='toast'+(err?' error':'')+' show';
- setTimeout(()=>t.className='toast',3000);
+ // Success messages stay visible for 8 seconds; warnings and errors get 12.
+ // Resetting the shared timer prevents an older toast from hiding a newer one.
+ toastHideTimer=setTimeout(()=>{
+  toastHideTimer=0;
+  t.className='toast';
+ },err?12000:8000);
 }
 
 // Apply Settings modal: full-screen mask + spinner/check card. The corner
