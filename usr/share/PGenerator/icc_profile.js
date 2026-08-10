@@ -1399,10 +1399,12 @@ function meterIccAppendCompanionVersionWarning(target,connected){
  target.append(warn);
 }
 
-const METER_ICC_GITHUB_VERSION_KEY='pgen.iccGithubVersion.v1';
+const METER_ICC_GITHUB_VERSION_KEY='pgen.iccGithubVersion.v2';
 const METER_ICC_GITHUB_VERSION_TTL_MS=6*60*60*1000;
+const METER_ICC_GITHUB_VERSION_REFRESH_MS=5*60*1000;
 let meterIccGithubVersionCache='';
-let meterIccGithubVersionAttempted=false;
+let meterIccGithubVersionCacheLoaded=false;
+let meterIccGithubVersionLastAttempt=0;
 let meterIccGithubVersionInFlight=false;
 
 // Talks straight to the GitHub API rather than through the Pi: this network's
@@ -1426,25 +1428,32 @@ async function meterIccFetchGithubLatestVersion(){
  finally{ if(timer) clearTimeout(timer); }
 }
 
-// Kicks off (at most once per page load) refreshing the cached latest-release
-// version in the background. Deliberately fire-and-forget: callers read
-// whatever meterIccGithubVersionCache already holds rather than awaiting
-// this, so a slow or hung lookup can never delay the companion status poll.
+// Refresh the latest-release version in the background. A cached value remains
+// useful as an offline fallback, but it must not suppress the network check:
+// otherwise a browser opened shortly before a release can call the previous
+// Companion current for the entire cache lifetime. Recheck periodically so an
+// already-open WebUI notices a newly published release too.
 function meterIccRefreshGithubVersionCache(){
- if(meterIccGithubVersionInFlight||meterIccGithubVersionAttempted) return;
- try{
-  const cached=JSON.parse(localStorage.getItem(METER_ICC_GITHUB_VERSION_KEY)||'null');
-  if(cached&&typeof cached==='object'&&(Date.now()-Number(cached.time||0))<METER_ICC_GITHUB_VERSION_TTL_MS){
-   meterIccGithubVersionCache=String(cached.version||'');
-   meterIccGithubVersionAttempted=true;
-   return;
-  }
- }catch(error){}
- meterIccGithubVersionAttempted=true;
+ const now=Date.now();
+ if(!meterIccGithubVersionCacheLoaded){
+  meterIccGithubVersionCacheLoaded=true;
+  try{
+   const cached=JSON.parse(localStorage.getItem(METER_ICC_GITHUB_VERSION_KEY)||'null');
+   const cachedVersion=String((cached&&cached.version)||'');
+   if(cached&&typeof cached==='object'&&(now-Number(cached.time||0))<METER_ICC_GITHUB_VERSION_TTL_MS&&/^[0-9]+(\.[0-9]+){1,3}$/.test(cachedVersion)){
+    meterIccGithubVersionCache=cachedVersion;
+   }
+  }catch(error){}
+ }
+ if(meterIccGithubVersionInFlight||(now-meterIccGithubVersionLastAttempt)<METER_ICC_GITHUB_VERSION_REFRESH_MS) return;
+ meterIccGithubVersionLastAttempt=now;
  meterIccGithubVersionInFlight=true;
  meterIccFetchGithubLatestVersion().then(version=>{
+  if(!version) return;
+  const changed=version!==meterIccGithubVersionCache;
   meterIccGithubVersionCache=version;
   try{ localStorage.setItem(METER_ICC_GITHUB_VERSION_KEY,JSON.stringify({version:version,time:Date.now()})); }catch(error){}
+  if(changed&&meterIccCompanionConnected) meterIccRefreshCompanionStatus();
  }).finally(()=>{ meterIccGithubVersionInFlight=false; });
 }
 
@@ -1563,7 +1572,7 @@ async function meterIccRefreshCompanionStatus(){
    const shipped=String(state.shipped_version||'');
    const latestKnown=meterIccGithubVersionCache||shipped;
    meterIccCompanionOutdated=meterIccVersionBelow(version,latestKnown)
-    ?('Patch Companion '+version+' is out of date \u2014 a newer version ('+latestKnown+') is available from the GitHub release. Download and install it before profiling or reading.')
+    ?('Patch Companion '+version+' is out of date. A newer version ('+latestKnown+') is available from the GitHub release. Download and install it before profiling or reading.')
     :'';
    const hdr=state.hdr_active?' with native HDR active':'';
    const swapchain=String(state.swapchain_color_space||'');
