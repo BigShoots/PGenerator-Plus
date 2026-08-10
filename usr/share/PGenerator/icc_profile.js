@@ -5,6 +5,7 @@ let meterIccPollTimer=null;
 let meterIccRunConfig=null;
 let meterIccBuildPending=false;
 let meterIccCompanionConnected=false;
+let meterIccCompanionReportedConnected=false;
 let meterIccCompanionLastSeenAt=0;
 let meterIccCompanionDetail='PGenerator+ Patch Companion connected';
 let meterIccCompanionClient='';
@@ -1401,7 +1402,7 @@ function meterIccAppendCompanionVersionWarning(target,connected){
 
 const METER_ICC_GITHUB_VERSION_KEY='pgen.iccGithubVersion.v2';
 const METER_ICC_GITHUB_VERSION_TTL_MS=6*60*60*1000;
-const METER_ICC_GITHUB_VERSION_REFRESH_MS=5*60*1000;
+const METER_ICC_GITHUB_VERSION_REFRESH_MS=30*60*1000;
 let meterIccGithubVersionCache='';
 let meterIccGithubVersionCacheLoaded=false;
 let meterIccGithubVersionLastAttempt=0;
@@ -1433,7 +1434,7 @@ async function meterIccFetchGithubLatestVersion(){
 // otherwise a browser opened shortly before a release can call the previous
 // Companion current for the entire cache lifetime. Recheck periodically so an
 // already-open WebUI notices a newly published release too.
-function meterIccRefreshGithubVersionCache(){
+function meterIccRefreshGithubVersionCache(force){
  const now=Date.now();
  if(!meterIccGithubVersionCacheLoaded){
   meterIccGithubVersionCacheLoaded=true;
@@ -1445,7 +1446,7 @@ function meterIccRefreshGithubVersionCache(){
    }
   }catch(error){}
  }
- if(meterIccGithubVersionInFlight||(now-meterIccGithubVersionLastAttempt)<METER_ICC_GITHUB_VERSION_REFRESH_MS) return;
+ if(meterIccGithubVersionInFlight||(!force&&(now-meterIccGithubVersionLastAttempt)<METER_ICC_GITHUB_VERSION_REFRESH_MS)) return;
  meterIccGithubVersionLastAttempt=now;
  meterIccGithubVersionInFlight=true;
  meterIccFetchGithubLatestVersion().then(version=>{
@@ -1559,6 +1560,9 @@ async function meterIccRefreshCompanionStatus(){
   const windowMode=document.getElementById('meterIccCompanionWindowMode');
   if(windowMode&&state&&['window','fullscreen'].includes(String(state.window_mode||''))) windowMode.value=String(state.window_mode);
   const reportedConnected=!!(state&&state.connected);
+  const companionJustConnected=reportedConnected&&!meterIccCompanionReportedConnected;
+  meterIccCompanionReportedConnected=reportedConnected;
+  if(companionJustConnected) meterIccRefreshGithubVersionCache(true);
   if(reportedConnected) meterIccCompanionLastSeenAt=Date.now();
   meterIccCompanionConnected=reportedConnected||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
   if(reportedConnected){
