@@ -76,7 +76,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.10"
+#define APP_VERSION "1.4.11"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -438,6 +438,9 @@ typedef struct {
     char renderer_name[64];
     char selected_display[192];
     SDL_DisplayID selected_display_id;
+#ifdef _WIN32
+    wchar_t windows_monitor_path[256];
+#endif
 #ifndef _WIN32
     /* Full path of the profile KWin has assigned to the selected output, as of
      * the last poll. The correction stages read the file from here, the way the
@@ -733,7 +736,8 @@ static bool windows_profile_loader_fallback(const wchar_t *monitor_path,
 
 static bool windows_active_profile(SDL_Window *window, char *output, size_t output_size,
                                    wchar_t *profile_path, size_t profile_path_count,
-                                   bool hdr_mode)
+                                   bool hdr_mode, wchar_t *monitor_path,
+                                   size_t monitor_path_count)
 {
     HWND hwnd;
     HMONITOR monitor;
@@ -751,6 +755,7 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
     if (!output || output_size < 2 || !profile_path || profile_path_count < 2) return false;
     output[0] = '\0';
     profile_path[0] = L'\0';
+    if (monitor_path && monitor_path_count) monitor_path[0] = L'\0';
     hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
     monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
@@ -799,6 +804,10 @@ static bool windows_active_profile(SDL_Window *window, char *output, size_t outp
         target.header.adapterId = paths[index].targetInfo.adapterId;
         target.header.id = paths[index].targetInfo.id;
         DisplayConfigGetDeviceInfo(&target.header);
+        if (monitor_path && monitor_path_count && target.monitorDevicePath[0]) {
+            wcsncpy(monitor_path, target.monitorDevicePath, monitor_path_count - 1);
+            monitor_path[monitor_path_count - 1] = L'\0';
+        }
         if (get_scope && FAILED(get_scope(paths[index].sourceInfo.adapterId,
                                           paths[index].sourceInfo.id, &scope)))
             scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
@@ -3523,6 +3532,138 @@ static void companion_run_build(const char *poll_response)
     if (!built) companion_report_build_error("colprof did not produce a profile");
 }
 
+static void companion_report_install(const char *job, bool ok, const char *message)
+{
+    char message_hex[481], path[1200];
+    profile_name_hex(message ? message : "", message_hex, sizeof(message_hex));
+    SDL_snprintf(path, sizeof(path),
+                 "/api/icc/companion/profile-install-result?token=%s&job=%s&ok=%d&message_hex=%s",
+                 app.config.token, job, ok ? 1 : 0, message_hex);
+    http_binary(&app.config, "POST", path, "text/plain",
+                (const unsigned char *)"x", 1, NULL, NULL);
+}
+
+static void companion_run_install(const char *poll_response)
+{
+    char job[96] = "", file[256] = "", request[768], directory[1200], profile_path[1500];
+    unsigned char *profile = NULL;
+    size_t profile_length = 0;
+    FILE *handle;
+    bool accepted = false;
+    if (!json_string(poll_response, "install_job", job, sizeof(job)) ||
+        !json_string(poll_response, "file", file, sizeof(file)) ||
+        !job[0] || !file[0] || strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+        return;
+    }
+    SDL_snprintf(request, sizeof(request),
+                 "/api/icc/companion/profile-install-data?token=%s&job=%s",
+                 app.config.token, job);
+    if (http_binary(&app.config, "GET", request, "text/plain", NULL, 0,
+                    &profile, &profile_length) != 200 || !profile ||
+        profile_length <= 128 || profile_length > 64u * 1024u * 1024u ||
+        memcmp(profile + 36, "acsp", 4)) {
+        if (profile) SDL_free(profile);
+        companion_report_install(job, false, "Patch Companion could not download a valid ICC profile");
+        return;
+    }
+    {
+        const char *base = SDL_GetPrefPath("PGeneratorPlus", "profiles");
+        if (!base) {
+            SDL_free(profile);
+            companion_report_install(job, false, "Patch Companion could not create its profile directory");
+            return;
+        }
+        SDL_strlcpy(directory, base, sizeof(directory));
+    }
+    SDL_snprintf(profile_path, sizeof(profile_path), "%s%s", directory, file);
+    handle = fopen(profile_path, "wb");
+    if (!handle || fwrite(profile, 1, profile_length, handle) != profile_length) {
+        if (handle) fclose(handle);
+        SDL_free(profile);
+        companion_report_install(job, false, "Patch Companion could not stage the ICC profile locally");
+        return;
+    }
+    if (fclose(handle) != 0) {
+        SDL_free(profile);
+        companion_report_install(job, false, "Patch Companion could not finish staging the ICC profile locally");
+        return;
+    }
+    SDL_free(profile);
+    queue_status("PGenerator+ Patch Companion | Installing and applying ICC profile...");
+#ifdef _WIN32
+    {
+        char loader[1200], command[5000], monitor_utf8[1024] = "", result_path[1500];
+        STARTUPINFOA startup;
+        PROCESS_INFORMATION process;
+        if (!companion_tool_path("PGenProfileLoader", loader, sizeof(loader))) {
+            companion_report_install(job, false, "PGenerator+ Profile Loader is not installed beside Patch Companion");
+            return;
+        }
+        WideCharToMultiByte(CP_UTF8, 0, app.windows_monitor_path, -1,
+                            monitor_utf8, sizeof(monitor_utf8), NULL, NULL);
+        SDL_snprintf(result_path, sizeof(result_path), "%sinstall-%s.result", directory, job);
+        remove(result_path);
+        SDL_snprintf(command, sizeof(command),
+                     "\"%s\" --apply-from-companion --profile \"%s\" --monitor \"%s\" --result \"%s\"",
+                     loader, profile_path, monitor_utf8, result_path);
+        ZeroMemory(&startup, sizeof(startup)); startup.cb = sizeof(startup);
+        ZeroMemory(&process, sizeof(process));
+        if (CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL,
+                           &startup, &process)) {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            for (int attempt = 0; attempt < 480; attempt++) {
+                FILE *result = fopen(result_path, "rb");
+                if (result) {
+                    char text[16] = "";
+                    fread(text, 1, sizeof(text) - 1, result);
+                    fclose(result);
+                    accepted = !strncmp(text, "ok", 2);
+                    break;
+                }
+                SDL_Delay(250);
+            }
+            remove(result_path);
+        }
+    }
+#else
+    {
+        char loader[1200], display_argument[256];
+        pid_t child;
+        if (!companion_tool_path("PGenProfileLoader", loader, sizeof(loader))) {
+            companion_report_install(job, false, "PGenerator+ Profile Loader is not installed beside Patch Companion");
+            return;
+        }
+        SDL_snprintf(display_argument, sizeof(display_argument), "--display=%s", app.selected_display);
+        child = fork();
+        if (child == 0) {
+            execl(loader, loader, "--apply", display_argument, profile_path, (char *)NULL);
+            _exit(127);
+        }
+        if (child > 0) {
+            const char *wanted = strrchr(profile_path, '/');
+            wanted = wanted ? wanted + 1 : profile_path;
+            for (int attempt = 0; attempt < 120; attempt++) {
+                KWinOutputState output;
+                const char *active;
+                SDL_Delay(250);
+                if (!kwin_output_state(app.selected_display_id, &output)) continue;
+                active = output.hdr && output.hdr_icc_path[0]
+                       ? output.hdr_icc_path : output.icc_path;
+                if (active && active[0]) {
+                    const char *name = strrchr(active, '/');
+                    name = name ? name + 1 : active;
+                    if (!strcmp(name, wanted)) { accepted = true; break; }
+                }
+            }
+        }
+    }
+#endif
+    companion_report_install(job, accepted,
+                             accepted ? "Profile Loader installed and applied the profile to the selected display"
+                                      : "Profile Loader could not verify the profile on the selected display");
+}
+
 static void acknowledge(uint64_t sequence, bool ok, const char *message,
                         const char *renderer, bool hdr_active)
 {
@@ -3597,7 +3738,8 @@ static void poll_server(void)
                             &output_bits_per_color);
     windows_active_profile(app.window, active_profile, sizeof(active_profile),
                            active_profile_path, SDL_arraysize(active_profile_path),
-                           reported_hdr_active);
+                           reported_hdr_active, app.windows_monitor_path,
+                           SDL_arraysize(app.windows_monitor_path));
 #else
     /* There is no DXGI swapchain and no OS presentation-mode query here, and no
      * portable way to read the display's active ICC profile either. Report what
@@ -3736,6 +3878,11 @@ static void poll_server(void)
      * and no patch is pending while a fit runs. */
     if (strstr(response, "\"status\":\"build\"")) {
         companion_run_build(response);
+        app.next_poll_ms = SDL_GetTicks() + 250;
+        return;
+    }
+    if (strstr(response, "\"status\":\"install\"")) {
+        companion_run_install(response);
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }

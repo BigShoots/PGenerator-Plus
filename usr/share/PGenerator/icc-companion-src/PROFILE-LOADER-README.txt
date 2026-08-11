@@ -16,6 +16,11 @@ selected profile for one active display.
    association after display, HDR, GPU, or Windows setting changes.
 6. Enable Start with Windows if you want verification to begin at sign-in.
 
+The PGenerator+ WebUI can also send a completed profile through a connected
+Patch Companion. Profile Loader targets the display being used for patches,
+installs and applies the ICC through this same controlled path, saves the
+monitor/profile pairing, and opens on the verification result.
+
 A green tray icon means Windows reports the selected file as the display's
 active default. A red icon means the profile is missing, the display is not
 available, or Windows reports another default. Right-click the tray icon to

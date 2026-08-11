@@ -501,6 +501,18 @@ sub webui_icc_companion_text_from_hex_query (@) {
  return $text;
 }
 
+sub webui_icc_meter_busy () {
+ foreach my $state_file ($_meter_series_file,$_meter_read_file) {
+  next unless(-f $state_file);
+  my @state_stat=stat($state_file);
+  next unless(@state_stat && time()-($state_stat[9]||0)<=30);
+  my $state="";
+  if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>||""; close($sf); }
+  return 1 if($state=~/"status"\s*:\s*"(?:running|measuring|setup)"/i);
+ }
+ return 0;
+}
+
 sub webui_icc_companion_poll (@) {
  my ($query)=@_;
  my $token=&webui_icc_companion_query_value($query,"token");
@@ -573,7 +585,7 @@ sub webui_icc_companion_poll (@) {
  # Profile installation is intentionally separate from patch delivery. A
  # queued install waits until the Companion is otherwise idle, so it cannot
  # change the active display profile in the middle of a measurement series.
- if(-f $_icc_companion_install_job) {
+ if(!&webui_icc_meter_busy() && -f $_icc_companion_install_job) {
   my $job="";
   if(open(my $jf,"<",$_icc_companion_install_job)) { local $/; $job=<$jf>||""; close($jf); }
   if($job=~/^\s*\{/ && length($job)<4096) {
@@ -582,14 +594,7 @@ sub webui_icc_companion_poll (@) {
   }
  }
  my $poll_ms=500;
- foreach my $state_file ($_meter_series_file,$_meter_read_file) {
-  next unless(-f $state_file);
-  my @state_stat=stat($state_file);
-  next unless(@state_stat && time()-($state_stat[9]||0)<=30);
-  my $state="";
-  if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>||""; close($sf); }
-  if($state=~/"status"\s*:\s*"(?:running|measuring|setup)"/i) { $poll_ms=50; last; }
- }
+ $poll_ms=50 if(&webui_icc_meter_busy());
  return '{"status":"idle","poll_ms":'.$poll_ms.','.&webui_icc_companion_settings_fragment().'}';
 }
 
@@ -726,6 +731,7 @@ sub webui_icc_companion_profile_install (@) {
  return '{"status":"error","message":"ICC profile is empty or too large"}' unless(defined($bytes) && $bytes>128 && $bytes<=64*1024*1024);
  my $connected=&webui_icc_companion_status();
  return '{"status":"error","message":"PGenerator+ Patch Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
+ return '{"status":"error","message":"Wait for the active meter reading to finish before installing a display profile"}' if(&webui_icc_meter_busy());
  return '{"status":"error","message":"Update PGenerator+ ICC Tools before using Install & Apply"}'
   unless($connected=~/"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/ && ($1*1000000+$2*1000+$3)>=1004011);
  eval { require File::Path; File::Path::make_path($_icc_companion_install_dir,{mode=>0700}); } unless(-d $_icc_companion_install_dir);

@@ -16,7 +16,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.3.2"
+#define APP_VERSION L"1.3.3"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -100,6 +100,10 @@ static BOOL g_auto_reapply = TRUE;
 /* Owner-drawn checkboxes do not maintain check state themselves, so the
  * two toggles are tracked here and drawn from these. */
 static BOOL g_startup_enabled;
+static WCHAR g_companion_result[MAX_PATH];
+static void accept_profile_path(const WCHAR *path);
+static void start_apply_profile(void);
+static void write_companion_result(BOOL ok);
 static HBRUSH g_brush_input;
 static BOOL g_exiting;
 static DWORD g_last_reapply_tick;
@@ -1130,8 +1134,71 @@ static DWORD WINAPI apply_profile_thread(LPVOID unused) {
     BOOL ok;
     (void)unused;
     ok = apply_profile(TRUE);
+    write_companion_result(ok);
     PostMessageW(g_window, WM_APPLY_DONE, ok ? 1 : 0, 0);
     return 0;
+}
+
+static void write_companion_result(BOOL ok) {
+    HANDLE result;
+    DWORD written = 0;
+    const char *text = ok ? "ok" : "error";
+    if (!g_companion_result[0]) return;
+    result = CreateFileW(g_companion_result, GENERIC_WRITE, FILE_SHARE_READ,
+                         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (result != INVALID_HANDLE_VALUE) {
+        WriteFile(result, text, (DWORD)strlen(text), &written, NULL);
+        CloseHandle(result);
+    }
+    g_companion_result[0] = L'\0';
+}
+
+static BOOL command_value(const WCHAR *command, const WCHAR *name,
+                          WCHAR *value, size_t count) {
+    const WCHAR *start;
+    size_t used = 0;
+    if (!command || !name || !value || count < 2) return FALSE;
+    start = wcsstr(command, name);
+    if (!start) return FALSE;
+    start += wcslen(name);
+    while (*start == L' ') start++;
+    if (*start == L'"') {
+        start++;
+        while (*start && *start != L'"' && used + 1 < count) value[used++] = *start++;
+    } else {
+        while (*start && *start != L' ' && used + 1 < count) value[used++] = *start++;
+    }
+    value[used] = L'\0';
+    return used > 0;
+}
+
+static void apply_companion_command(const WCHAR *command) {
+    WCHAR profile[MAX_PATH] = L"";
+    WCHAR monitor[256] = L"";
+    WCHAR result[MAX_PATH] = L"";
+    if (!command || !wcsstr(command, L"--apply-from-companion") ||
+        !command_value(command, L"--profile", profile, MAX_PATH)) return;
+    command_value(command, L"--monitor", monitor, 256);
+    command_value(command, L"--result", result, MAX_PATH);
+    if (monitor[0]) {
+        wcsncpy_s(g_saved_monitor_path, 256, monitor, _TRUNCATE);
+        enumerate_displays();
+        refresh_display_profiles();
+    }
+    if (result[0]) {
+        DeleteFileW(result);
+        wcsncpy_s(g_companion_result, MAX_PATH, result, _TRUNCATE);
+    }
+    if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
+        write_companion_result(FALSE);
+        return;
+    }
+    g_browse_has_mhc2 = profile_contains_mhc2(profile);
+    g_browse_advanced = profile_name_is_hdr(profile);
+    accept_profile_path(profile);
+    ShowWindow(g_window, SW_SHOW);
+    SetForegroundWindow(g_window);
+    start_apply_profile();
 }
 
 static void start_apply_profile(void) {
@@ -1699,6 +1766,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_TRAY_EXIT: g_exiting = TRUE; DestroyWindow(hwnd); break;
         }
         return 0;
+    case WM_COPYDATA: {
+        const COPYDATASTRUCT *copy = (const COPYDATASTRUCT *)lp;
+        if (copy && copy->lpData && copy->cbData >= sizeof(WCHAR))
+            apply_companion_command((const WCHAR *)copy->lpData);
+        return TRUE;
+    }
     case WM_TIMER:
         if (wp == TIMER_VERIFY &&
             InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0 &&
@@ -1774,12 +1847,23 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-static BOOL already_running(void) {
+static BOOL already_running(const WCHAR *command_line) {
     HANDLE mutex = CreateMutexW(NULL, FALSE, L"Local\\PGeneratorPlusProfileLoader");
     if (!mutex || GetLastError() != ERROR_ALREADY_EXISTS) return FALSE;
     {
         HWND other = FindWindowW(L"PGeneratorPlusProfileLoaderWindow", NULL);
-        if (other) { ShowWindow(other, SW_SHOW); SetForegroundWindow(other); }
+        if (other) {
+            if (command_line && wcsstr(command_line, L"--apply-from-companion")) {
+                COPYDATASTRUCT copy;
+                copy.dwData = 1;
+                copy.cbData = (DWORD)((wcslen(command_line) + 1) * sizeof(WCHAR));
+                copy.lpData = (PVOID)command_line;
+                SendMessageW(other, WM_COPYDATA, 0, (LPARAM)&copy);
+            } else {
+                ShowWindow(other, SW_SHOW);
+                SetForegroundWindow(other);
+            }
+        }
     }
     CloseHandle(mutex);
     return TRUE;
@@ -1800,7 +1884,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         if (n && path[n - 1] == L'\"') path[n - 1] = L'\0';
         return InstallColorProfileW(NULL, path) ? 0 : (int)GetLastError();
     }
-    if (already_running()) return 0;
+    if (already_running(command_line)) return 0;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     g_dpi = GetDpiForSystem();
     if (!g_dpi) g_dpi = 96;
@@ -1846,6 +1930,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
                                 CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(714),
                                 NULL, NULL, instance, NULL);
     if (!g_window) return 1;
+    if (wcsstr(command_line, L"--apply-from-companion"))
+        apply_companion_command(command_line);
     {
         DWORD corner = 2; /* DWMWCP_ROUND on Windows 11. */
         DwmSetWindowAttribute(g_window, 33, &corner, sizeof(corner));

@@ -496,7 +496,7 @@ static void refresh_kwin_displays(void)
                                              hdr_value, sizeof(hdr_value));
             if (!have_sdr && !have_hdr) break;
             SDL_strlcpy(app.displays[index].icc_path,
-                        app.displays[index].hdr ? hdr_value : sdr_value,
+                        app.displays[index].hdr && hdr_value[0] ? hdr_value : sdr_value,
                         sizeof(app.displays[index].icc_path));
         }
     }
@@ -2173,16 +2173,31 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
      * applies it at once and then leaves the window open on the result. */
     {
         bool apply_now = false;
+        char requested_display[192] = "";
         for (int index = 1; index < argc; index++) {
             const char *argument = argv[index];
             if (!argument || !argument[0]) continue;
             if (!strcmp(argument, "--apply")) { apply_now = true; continue; }
+            if (!strncmp(argument, "--display=", 10)) {
+                SDL_strlcpy(requested_display, argument + 10, sizeof(requested_display));
+                continue;
+            }
             if (argument[0] == '-') continue;
             SDL_strlcpy(app.selected_profile, argument, sizeof(app.selected_profile));
         }
         set_status(STATUS_PENDING, "STARTING", "Looking for displays and profiles.");
         snapshot_sdl_displays();
         refresh_everything();
+        if (requested_display[0]) {
+            for (int index = 0; index < app.display_count; index++) {
+                if (!strcmp(app.displays[index].name, requested_display) ||
+                    !strcmp(app.displays[index].model, requested_display) ||
+                    !strcmp(display_title(&app.displays[index]), requested_display)) {
+                    app.display_index = index;
+                    break;
+                }
+            }
+        }
         if (!app.selected_profile[0] && app.profile_count > 0)
             SDL_strlcpy(app.selected_profile, app.profiles[0].path, sizeof(app.selected_profile));
         verify_profile();
