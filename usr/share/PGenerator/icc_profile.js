@@ -1519,6 +1519,10 @@ function meterIccVersionBelow(have,want){
  return false;
 }
 
+function meterIccVersionAtLeast(have,want){
+ return !!have&&!meterIccVersionBelow(have,want);
+}
+
 
 function meterIccShowCompanionStatus(connected,text){
  const target=document.getElementById('meterIccCompanionStatus');
@@ -1625,6 +1629,9 @@ async function meterIccRefreshCompanionStatus(){
   if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }
  meterIccUpdateTopCompanionStatus(meterIccCompanionConnected,meterIccCompanionDetail);
+ document.querySelectorAll('.meter-icc-install-profile').forEach(button=>{
+  button.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
+ });
  meterCalibrationApplyCompanionAvailability(meterIccCompanionConnected);
  // Out here rather than in the success branch so the recommendation is still
  // right when the status request itself failed and only the browser guess is
@@ -1689,6 +1696,13 @@ async function meterIccLoadProfiles(){
    download.className='btn btn-sm btn-primary';
    download.textContent='Download';
    download.onclick=()=>{ window.location.href='/api/icc/download?file='+encodeURIComponent(profile.name); };
+   const install=document.createElement('button');
+   install.type='button';
+   install.className='btn btn-sm btn-success meter-icc-install-profile';
+   install.textContent='Install & Apply';
+   install.title='Install this profile on the target computer and apply it to the display used by Patch Companion';
+   install.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
+   install.onclick=()=>meterIccInstallProfile(profile.name,install);
    const validate=document.createElement('button');
    validate.type='button';
    validate.className='btn btn-sm btn-secondary';
@@ -1699,14 +1713,35 @@ async function meterIccLoadProfiles(){
    const remove=document.createElement('button');
    remove.type='button';
    remove.className='btn btn-sm btn-danger';
-   remove.textContent='Delete';
+   remove.textContent='×';
+   remove.title='Delete this profile';
+   remove.setAttribute('aria-label','Delete '+profile.name);
    remove.onclick=()=>meterIccDeleteProfile(profile.name);
-   row.append(name,created,download,validate,remove);
+   row.append(name,created,download,install,validate,remove);
    list.appendChild(row);
   });
  }catch(error){
   list.textContent='Could not load created profiles.';
  }
+}
+
+async function meterIccInstallProfile(file,button){
+ if(!meterIccCompanionConnected){ showToast('Start Patch Companion on the target computer first','error'); return; }
+ const original=button?button.textContent:'Install & Apply';
+ if(button){ button.disabled=true; button.textContent='Installing...'; }
+ try{
+  const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file})});
+  if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
+  const deadline=Date.now()+120000;
+  while(Date.now()<deadline){
+   await new Promise(resolve=>setTimeout(resolve,750));
+   const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
+   if(state&&state.status==='ok'){ showToast(state.message||('Installed and applied '+file),'success'); return; }
+   if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
+  }
+  throw new Error('Patch Companion did not finish the profile installation');
+ }catch(error){ showToast(error&&error.message?error.message:'Profile installation failed','error'); }
+ finally{ if(button){ button.disabled=false; button.textContent=original; } }
 }
 
 function meterIccCloseValidation(){

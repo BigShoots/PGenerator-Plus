@@ -422,6 +422,9 @@ our $_icc_companion_build_result="$_icc_companion_build_dir/result.icc";
 our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
 our $_icc_companion_build_claim="$_icc_companion_build_dir/claim.json";
 our $_icc_companion_build_state="$_icc_companion_build_dir/companion.json";
+our $_icc_companion_install_dir="$_icc_companion_dir/install";
+our $_icc_companion_install_job="$_icc_companion_install_dir/job.json";
+our $_icc_companion_install_status="$_icc_companion_install_dir/status.json";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";
 # Pairing handshake for a Companion that arrived from the public GitHub
@@ -1753,6 +1756,24 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/icc/companion/build-result" && $method eq "POST") {
     my $result=&webui_icc_companion_build_result($request_query,$body);
+    my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
+    print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/profile-install" && $method eq "POST") {
+    my $result=&webui_icc_companion_profile_install($body);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/profile-install-status") {
+    my $result=&webui_icc_companion_profile_install_status($request_query);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/companion/profile-install-data") {
+    my ($ok,$data)=&webui_icc_companion_profile_install_data($request_query);
+    if($ok) { print $client "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.iccprofile\r\nContent-Length: ".length($data)."\r\n$cors\r\n"; print $client $data; }
+    else { print $client "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
+   }
+   elsif($path eq "/api/icc/companion/profile-install-result" && $method eq "POST") {
+    my $result=&webui_icc_companion_profile_install_result($request_query);
     my $code=($result=~/\"status\":\"unauthorized\"/)?403:200;
     print $client "HTTP/1.1 $code ".($code==200?"OK":"Forbidden")."\r\nContent-Type: application/json\r\nContent-Length: ".length($result)."\r\n$cors\r\n$result";
    }

@@ -570,6 +570,17 @@ sub webui_icc_companion_poll (@) {
    return $job.',"status":"build",'.&webui_icc_companion_settings_fragment().'}';
   }
  }
+ # Profile installation is intentionally separate from patch delivery. A
+ # queued install waits until the Companion is otherwise idle, so it cannot
+ # change the active display profile in the middle of a measurement series.
+ if(-f $_icc_companion_install_job) {
+  my $job="";
+  if(open(my $jf,"<",$_icc_companion_install_job)) { local $/; $job=<$jf>||""; close($jf); }
+  if($job=~/^\s*\{/ && length($job)<4096) {
+   $job=~s/\}\s*\z//;
+   return $job.',"status":"install",'.&webui_icc_companion_settings_fragment().'}';
+  }
+ }
  my $poll_ms=500;
  foreach my $state_file ($_meter_series_file,$_meter_read_file) {
   next unless(-f $state_file);
@@ -701,6 +712,85 @@ sub webui_icc_companion_build_result (@) {
  unlink($_icc_companion_build_job);
  unlink($_icc_companion_build_ti3);
  unlink($_icc_companion_build_claim);
+ return '{"status":"ok"}';
+}
+
+sub webui_icc_companion_profile_install (@) {
+ my ($body)=@_;
+ my $file="";
+ $file=$1 if(defined($body) && length($body)<2048 && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file";
+ return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
+ my $bytes=-s $path;
+ return '{"status":"error","message":"ICC profile is empty or too large"}' unless(defined($bytes) && $bytes>128 && $bytes<=64*1024*1024);
+ my $connected=&webui_icc_companion_status();
+ return '{"status":"error","message":"PGenerator+ Patch Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
+ return '{"status":"error","message":"Update PGenerator+ ICC Tools before using Install & Apply"}'
+  unless($connected=~/"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"/ && ($1*1000000+$2*1000+$3)>=1004011);
+ eval { require File::Path; File::Path::make_path($_icc_companion_install_dir,{mode=>0700}); } unless(-d $_icc_companion_install_dir);
+ return '{"status":"error","message":"Could not prepare the profile installation"}' unless(-d $_icc_companion_install_dir);
+ # Once the OS owns the newly installed profile, the Companion must stop
+ # applying an application-side cLUT or matrix. Otherwise its patches would be
+ # corrected once by the Companion and again by the OS profile just selected.
+ my ($window_mode,$patch_size,undef,undef,undef,$signal_mode)=&webui_icc_companion_settings_values();
+ my $settings=&webui_icc_companion_settings('{"settings_protocol":2,"window_mode":"'.$window_mode.'","patch_size":'.$patch_size.',"correction_mode":"system","correction_signal_mode":"'.$signal_mode.'"}');
+ return $settings unless($settings=~/"status"\s*:\s*"ok"/);
+ my $job=int(Time::HiRes::time()*1000)."-".$$;
+ my $payload='{"install_job":"'.$job.'","file":"'.&_webui_json_escape($file).'"}';
+ my $state='{"status":"pending","job":"'.$job.'","file":"'.&_webui_json_escape($file).'","message":"Waiting for Patch Companion"}';
+ return '{"status":"error","message":"Could not queue the profile installation"}'
+  unless(&webui_icc_companion_write_atomic($_icc_companion_install_status,$state,0600) &&
+         &webui_icc_companion_write_atomic($_icc_companion_install_job,$payload,0600));
+ return '{"status":"ok","job":"'.$job.'"}';
+}
+
+sub webui_icc_companion_profile_install_status (@) {
+ my ($query)=@_;
+ my $job=&webui_icc_companion_query_value($query,"job");
+ return '{"status":"error","message":"Invalid installation job"}' unless($job=~/\A\d+-\d+\z/);
+ my $state="";
+ if(open(my $fh,"<",$_icc_companion_install_status)) { local $/; $state=<$fh>||""; close($fh); }
+ return '{"status":"error","message":"Installation status is unavailable"}' unless($state=~/^\s*\{/ && $state=~/"job"\s*:\s*"\Q$job\E"/);
+ return $state;
+}
+
+sub webui_icc_companion_profile_install_data (@) {
+ my ($query)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return (0,'{"status":"unauthorized"}') if($expected eq "" || $token ne $expected);
+ my $job_id=&webui_icc_companion_query_value($query,"job");
+ my $job="";
+ if(open(my $fh,"<",$_icc_companion_install_job)) { local $/; $job=<$fh>||""; close($fh); }
+ return (0,'{"status":"error","message":"No matching installation is pending"}')
+  unless($job_id=~/\A\d+-\d+\z/ && $job=~/"install_job"\s*:\s*"\Q$job_id\E"/);
+ my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ return (0,'{"status":"error","message":"Installation job is invalid"}') if($file eq "" || $file=~/\.\./);
+ my $data="";
+ if(open(my $pf,"<:raw","$_icc_profile_dir/$file")) { local $/; $data=<$pf>||""; close($pf); }
+ return (0,'{"status":"error","message":"ICC profile is unavailable"}') unless(length($data)>128 && length($data)<=64*1024*1024 && substr($data,36,4) eq "acsp");
+ return (1,$data);
+}
+
+sub webui_icc_companion_profile_install_result (@) {
+ my ($query)=@_;
+ my $token=&webui_icc_companion_query_value($query,"token");
+ my $expected=&webui_icc_companion_token();
+ return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
+ my $job_id=&webui_icc_companion_query_value($query,"job");
+ my $job="";
+ if(open(my $fh,"<",$_icc_companion_install_job)) { local $/; $job=<$fh>||""; close($fh); }
+ return '{"status":"error","message":"No matching installation is pending"}'
+  unless($job_id=~/\A\d+-\d+\z/ && $job=~/"install_job"\s*:\s*"\Q$job_id\E"/);
+ my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ my $ok=($query=~/(?:^|&)ok=1(?:&|$)/)?1:0;
+ my $message=&webui_icc_companion_text_from_hex_query($query,"message_hex");
+ $message=$ok ? "Installed and applied by Patch Companion" : "Profile Loader could not install and apply the profile" if($message eq "");
+ my $state='{"status":"'.($ok?'ok':'error').'","job":"'.$job_id.'","file":"'.&_webui_json_escape($file).'","message":"'.&_webui_json_escape($message).'"}';
+ return '{"status":"error","message":"Could not save the installation result"}'
+  unless(&webui_icc_companion_write_atomic($_icc_companion_install_status,$state,0600));
+ unlink($_icc_companion_install_job);
  return '{"status":"ok"}';
 }
 
