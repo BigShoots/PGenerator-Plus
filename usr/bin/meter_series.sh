@@ -1975,6 +1975,7 @@ EOJSON
  READ_START=$SECONDS
  GOT_RESULT=false
  RETRIED_COMM=0
+ COMM_RETRY_SEEN=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
   series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
@@ -1989,6 +1990,7 @@ EOJSON
     echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during read - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
     printf " " >&3
     RETRIED_COMM=1
+    COMM_RETRY_SEEN=1
     READ_TIMEOUT=$((READ_TIMEOUT + 15))
     SCAN_OFFSET=$(output_size)
     continue
@@ -2019,10 +2021,18 @@ EOJSON
 
  if [[ -z "$READING" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
-  for (( no_reading_retry=1; no_reading_retry<=NO_READING_RETRIES; no_reading_retry++ )); do
-   echo "[$(date '+%H:%M:%S.%3N')] no reading retry: step=$STEP_NUM ire=$IRE retry=$no_reading_retry/$NO_READING_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
+  PATCH_NO_READING_RETRIES=$NO_READING_RETRIES
+  # A communication error means spotread rejected the trigger rather than
+  # measuring the patch. Give that patch one clean redisplay/read cycle. Keep
+  # ordinary timeouts at zero retries so an unresponsive meter cannot add a
+  # minute to every patch in a finite series.
+  if (( COMM_RETRY_SEEN == 1 && PATCH_NO_READING_RETRIES < 1 )); then
+   PATCH_NO_READING_RETRIES=1
+  fi
+  for (( no_reading_retry=1; no_reading_retry<=PATCH_NO_READING_RETRIES; no_reading_retry++ )); do
+   echo "[$(date '+%H:%M:%S.%3N')] no reading retry: step=$STEP_NUM ire=$IRE retry=$no_reading_retry/$PATCH_NO_READING_RETRIES name=$NAME" >> /tmp/meter_series_debug.log
    write_state_json << EOJSON
-{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (retry reading $no_reading_retry/$PATCH_NO_READING_RETRIES)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 	   post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
 	   sleep "$PATTERN_DELAY_SEC"
@@ -2168,7 +2178,7 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
-  echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
+  echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$PATCH_NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
 

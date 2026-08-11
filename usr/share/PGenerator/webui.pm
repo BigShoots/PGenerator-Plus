@@ -9380,10 +9380,11 @@ sub webui_create_logs_bundle (@) {
  push @out, "", "--- Recent Solved 3D LUT Files ---";
  my $lut_solve_files=`ls -lt /var/lib/PGenerator/lg/luts/*.cube /var/lib/PGenerator/lg/luts/*.3dl /var/lib/PGenerator/lg/luts/*.json 2>/dev/null | head -n 30`; chomp($lut_solve_files);
  push @out, ($lut_solve_files ne "") ? $lut_solve_files : "(none found)";
- # Inline the last few autocal runs (newest first), each with its full per-
- # session grey/3D logs (run_snapshot saves the whole log, not a tail). Bounded
- # by the KEEP retention; cap at 3 so the bundle stays a manageable size.
- my $_RUN_RECORD_KEEP=3;
+ # Inline every retained AutoCal run (newest first), each with its full per-
+ # session grey/3D logs. PGAutoCalRun retains ten runs; using the same limit
+ # here prevents a later SDR attempt from pushing the HDR10 and DV evidence
+ # out of the built-in diagnostic report.
+ my $_RUN_RECORD_KEEP=10;
  push @out, "", "--- LG Auto Cal Run Records (last $_RUN_RECORD_KEEP) ---";
  my @run_dirs = sort { ((stat($b))[9]||0) <=> ((stat($a))[9]||0) }
   grep { -d $_ } glob("/var/lib/PGenerator/lg/autocal-runs/*");
@@ -9393,7 +9394,7 @@ sub webui_create_logs_bundle (@) {
    last if($shown >= $_RUN_RECORD_KEEP);
    $shown++;
    push @out, "", "=== run dir: $rundir ===";
-   for my $f (qw(manifest.json summary.json stages.ndjson grey-state.json 3d-state.json grey-log.txt 3d-log.txt)) {
+   for my $f (qw(manifest.json summary.json stages.ndjson grey-state.json 3d-state.json dv-profile-measurements.json colour-series.json grey-log.txt 3d-log.txt)) {
     my $path = "$rundir/$f";
     next if(!-f $path);
     my $content = `cat '$path' 2>/dev/null`;
@@ -41642,6 +41643,18 @@ async function meterDvAutoCalSetMapMode(mode){
   if(typeof config==='object'&&config) config.dv_map_mode=value;
   meterActiveSeriesDvMapMode=value;
   if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+  // This value was already persisted and applied by /api/config. Keep the
+  // saved snapshot in step with that one field so the post-cal report does
+  // not mistake our own Relative -> Absolute switch for an unapplied user
+  // edit. Preserve any unrelated dirty controls that may exist.
+  try{
+   const saved=JSON.parse(window._savedConfig||'{}');
+   if(saved&&typeof saved==='object'&&Object.prototype.hasOwnProperty.call(saved,'dv_map_mode')){
+    saved.dv_map_mode=value;
+    window._savedConfig=JSON.stringify(saved);
+    checkSettingsChanged();
+   }
+  }catch(e){}
  }
  return ok;
 }
