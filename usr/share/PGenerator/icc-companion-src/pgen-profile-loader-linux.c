@@ -317,6 +317,39 @@ static bool profile_contains_mhc2(const char *path)
     return false;
 }
 
+static bool profile_contains_hdr_cicp(const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    unsigned char header[132];
+    uint32_t count, index;
+    if (!file) return false;
+    if (fread(header, 1, sizeof(header), file) != sizeof(header)) {
+        fclose(file);
+        return false;
+    }
+    count = read_be32(header + 128);
+    if (count > 4096) {
+        fclose(file);
+        return false;
+    }
+    for (index = 0; index < count; index++) {
+        unsigned char tag[12], payload[12];
+        uint32_t offset, size;
+        if (fseek(file, 132L + (long)index * 12L, SEEK_SET) != 0 ||
+            fread(tag, 1, sizeof(tag), file) != sizeof(tag)) break;
+        if (memcmp(tag, "cicp", 4) != 0) continue;
+        offset = read_be32(tag + 4);
+        size = read_be32(tag + 8);
+        if (size < sizeof(payload) || fseek(file, (long)offset, SEEK_SET) != 0 ||
+            fread(payload, 1, sizeof(payload), file) != sizeof(payload)) break;
+        fclose(file);
+        return memcmp(payload, "cicp", 4) == 0 && payload[8] == 9 &&
+               payload[9] == 16 && payload[10] == 0 && payload[11] == 1;
+    }
+    fclose(file);
+    return false;
+}
+
 /* The builder stamps the profile type into the file name: -SDR-, -SDR-MHC2-,
  * -KDE-HDR- and -HDR-MHC2- (icc_profile_builder.py). Classify from that first
  * and fall back to the tag table, so a renamed file is still described
@@ -335,6 +368,8 @@ static ProfileKind classify_profile(const char *path, bool has_mhc2)
     if (strstr(upper, "-SDR-MHC2-")) return PROFILE_KIND_WINDOWS_SDR;
     if (strstr(upper, "-SDR-")) return PROFILE_KIND_SDR;
     if (strstr(upper, "HDR")) return has_mhc2 ? PROFILE_KIND_WINDOWS_HDR : PROFILE_KIND_KDE_HDR;
+    if (profile_contains_hdr_cicp(path))
+        return has_mhc2 ? PROFILE_KIND_WINDOWS_HDR : PROFILE_KIND_KDE_HDR;
     if (has_mhc2) return PROFILE_KIND_WINDOWS_SDR;
     return PROFILE_KIND_UNKNOWN;
 }

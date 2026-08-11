@@ -288,6 +288,42 @@ static BOOL profile_contains_mhc2(const WCHAR *path) {
     return FALSE;
 }
 
+static BOOL profile_contains_hdr_cicp(const WCHAR *path) {
+    HANDLE file;
+    BYTE header[132];
+    DWORD got = 0, count, i;
+    LARGE_INTEGER size;
+    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return FALSE;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 132 ||
+        !ReadFile(file, header, sizeof(header), &got, NULL) || got != sizeof(header)) {
+        CloseHandle(file);
+        return FALSE;
+    }
+    count = read_be32(header + 128);
+    for (i = 0; i < count && i < 4096; i++) {
+        BYTE tag[12], payload[12];
+        LARGE_INTEGER position;
+        uint32_t offset, tag_size;
+        position.QuadPart = 132ULL + (uint64_t)i * 12ULL;
+        if (!SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, tag, sizeof(tag), &got, NULL) || got != sizeof(tag)) break;
+        if (memcmp(tag, "cicp", 4) != 0) continue;
+        offset = read_be32(tag + 4);
+        tag_size = read_be32(tag + 8);
+        position.QuadPart = offset;
+        if (tag_size < sizeof(payload) || offset + sizeof(payload) > (uint64_t)size.QuadPart ||
+            !SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, payload, sizeof(payload), &got, NULL) || got != sizeof(payload)) break;
+        CloseHandle(file);
+        return memcmp(payload, "cicp", 4) == 0 && payload[8] == 9 &&
+               payload[9] == 16 && payload[10] == 0 && payload[11] == 1;
+    }
+    CloseHandle(file);
+    return FALSE;
+}
+
 static BOOL profile_name_is_hdr(const WCHAR *path) {
     WCHAR upper[MAX_PATH];
     size_t i;
@@ -1070,7 +1106,8 @@ static BOOL apply_profile(BOOL interactive) {
        of the ICC payload. A non-MHC2 HDR profile still belongs in Windows'
        EXTENDED (HDR) association list; requiring MHC2 here made Windows show
        every HDR cLUT-only profile as an SDR profile. */
-    g_associate_advanced = profile_name_is_hdr(g_profile_path);
+    g_associate_advanced = profile_name_is_hdr(g_profile_path) ||
+                           profile_contains_hdr_cicp(g_profile_path);
     /* Do this before the already-active shortcut. A profile may be present in
        the per-user WCS association list even though Color Management is still
        configured to ignore that list. */

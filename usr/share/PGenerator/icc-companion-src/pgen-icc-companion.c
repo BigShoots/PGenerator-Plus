@@ -2716,6 +2716,14 @@ static bool linux_profile_name_is_hdr(const char *path)
     return strstr(upper, "HDR-MHC2") != NULL || strstr(upper, "-HDR-") != NULL;
 }
 
+static bool profile_has_hdr_cicp(const unsigned char *profile, size_t profile_length)
+{
+    IccTag tag = icc_tag(profile, profile_length, "cicp");
+    return tag.data && tag.size >= 12 && !memcmp(tag.data, "cicp", 4) &&
+           tag.data[8] == 9 && tag.data[9] == 16 &&
+           tag.data[10] == 0 && tag.data[11] == 1;
+}
+
 /* Keep compositor-managed and application-managed correction mutually
  * exclusive. KWin uses the MHC2 curves as the output calibration when that
  * tag exists, and otherwise uses vcgt. Leaving KWin's ICC path active while
@@ -3568,7 +3576,7 @@ static void companion_run_install(const char *poll_response)
     unsigned char *profile = NULL;
     size_t profile_length = 0;
     FILE *handle;
-    bool accepted = false;
+    bool accepted = false, profile_is_hdr = false;
     if (!json_string(poll_response, "install_job", job, sizeof(job)) ||
         !json_string(poll_response, "file", file, sizeof(file)) ||
         !job[0] || !file[0] || strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
@@ -3585,6 +3593,8 @@ static void companion_run_install(const char *poll_response)
         companion_report_install(job, false, "Patch Companion could not download a valid ICC profile");
         return;
     }
+    profile_is_hdr = linux_profile_name_is_hdr(file) ||
+                     profile_has_hdr_cicp(profile, profile_length);
     {
         const char *base = SDL_GetPrefPath("PGeneratorPlus", "profiles");
         if (!base) {
@@ -3667,7 +3677,7 @@ static void companion_run_install(const char *poll_response)
                 const char *active;
                 SDL_Delay(250);
                 if (!kwin_output_state(app.selected_display_id, &output)) continue;
-                active = linux_profile_name_is_hdr(file)
+                active = profile_is_hdr
                        ? output.hdr_icc_path : output.icc_path;
                 if (active && active[0]) {
                     const char *name = strrchr(active, '/');
