@@ -67,6 +67,13 @@ brightness from KWin in cd/m2. Desktop scale affects geometry only and is not
 part of the surface luminance description. This requires the bundled SDL
 library; do not replace it with a system SDL build.
 
+The Linux package includes reset-hdr-tonemapping.sh for recovering KWin's HDR
+tone-mapping defaults after using KDE's HDR brightness calibrator. It clears
+only peak, maximum-average and minimum-luminance overrides, restores KDE's
+display-derived SDR reference default, and cycles HDR to rebuild the output
+pipeline. It never changes the selected ICC path or HDR profile source. Run
+`./reset-hdr-tonemapping.sh --dry-run` to preview its actions first.
+
 For post-profile verification, the WebUI can leave patches unmodified for the
 operating-system profile pipeline, apply the active display profile's BToA cLUT
 inside the Companion, or apply its matrix and tone-curve fallback. The active

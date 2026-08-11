@@ -9,7 +9,9 @@ import time
 import zipfile
 
 
-ROOT = "/usr/share/PGenerator"
+# Production uses the installed tree. Release builds can point at a staged
+# repository tree without copying files into /usr/share first.
+ROOT = os.environ.get("PGENERATOR_ROOT", "/usr/share/PGenerator")
 PLATFORMS = {
     "windows-x64": {
         "filename": "PGeneratorPlus-ICC-Tools-Windows-x64.exe",
@@ -42,8 +44,8 @@ PLATFORMS = {
         # loader: it installs a built profile and applies it to the display
         # through KWin, or colord on non-KDE sessions. DejaVu-LICENSE.txt
         # covers the glyphs its interface is drawn with.
-        "files": ("PGenPatchCompanion", "PGenProfileLoader", "libSDL3.so.0",
-                  "colprof", "profcheck", "ArgyllCMS-LICENSE.txt"),
+        "files": ("PGenPatchCompanion", "PGenProfileLoader", "reset-hdr-tonemapping.sh",
+                  "libSDL3.so.0", "colprof", "profcheck", "ArgyllCMS-LICENSE.txt"),
         "paired": True,
         "kind": "archive",
     },
@@ -145,7 +147,8 @@ def build(platform, server, token, output_path, paired=True):
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
-            executable = ("PGenPatchCompanion", "PGenProfileLoader", "colprof", "profcheck")
+            executable = ("PGenPatchCompanion", "PGenProfileLoader", "reset-hdr-tonemapping.sh",
+                          "colprof", "profcheck")
             mode = 0o755 if package["directory"] == "linux-x64" and name in executable else 0o644
             add_file(archive, path, name, mode)
     return filename
