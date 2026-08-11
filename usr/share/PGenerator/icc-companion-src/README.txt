@@ -90,6 +90,12 @@ It is never transferred to PGenerator+. Do not leave the same system correction
 active while using either application-managed mode, because that would apply
 two corrections to the measurement patches.
 
+PGenerator+ offers calibration with VCGT, calibration included in the profile
+without VCGT, and no calibration for a display already calibrated internally.
+KDE HDR cLUT profiles with included calibration store the curves in the B2A
+output shapers. Do not add or remove VCGT after a profile is built; the B2A
+tables are fitted for the calibration mode selected during creation.
+
 Windows may show a SmartScreen warning because this build is not code-signed.
 The application communicates only with the one PGenerator+ it is paired with.
 
