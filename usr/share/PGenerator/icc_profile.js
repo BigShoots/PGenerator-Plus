@@ -39,8 +39,6 @@ function meterIccCalibrationMode(config){
 }
 
 function meterIccCalibrationModeValue(){
- const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
- if(type==='windows-sdr'||type==='windows-hdr') return 'none';
  const mode=String((document.getElementById('meterIccCalibrationMode')||{}).value||'vcgt');
  return ['vcgt','profile','none'].includes(mode)?mode:'vcgt';
 }
@@ -614,7 +612,7 @@ function meterIccProfileInfo(type){
   },
   'windows-sdr':{
    mode:'sdr',
-   description:'SDR ICC with MHC2 / Advanced Color system calibration. A measured 3x3 matrix corrects primaries and white; per-channel 1D curves correct response to the selected target curve. Helps unmanaged apps while ICC-aware apps can still use the standard tags.',
+   description:'SDR ICC for Windows Advanced Color. With calibration enabled, a measured MHC2 matrix corrects primaries and white while per-channel curves correct response to the selected target. No calibration keeps MHC2 identity for a display already calibrated internally.',
    compatibility:'Windows 10 version 2004+ Advanced Color, or KDE Plasma 6.5.3+ on Wayland. Apps that ignore MHC2 still get the standard matrix or cLUT fallback.',
    install:'Windows: Settings > System > Display > Color profile. Plasma 6.5.3+: select the file as the display ICC profile in System Settings.'
   },
@@ -626,7 +624,7 @@ function meterIccProfileInfo(type){
   },
   'windows-hdr':{
    mode:'hdr10',
-   description:'HDR ICC with MHC2 system calibration. Records measured peak, black, HDR metadata white, primaries and white, plus a measured XYZ correction matrix. MHC2 uses a 3x3 matrix and per-channel 1D curves, not a 3D LUT; HDR curves stay at identity so the OS applies PQ only once.',
+   description:'HDR ICC for Windows Advanced Color. With calibration enabled, MHC2 uses a measured 3x3 matrix and per-channel response curves. No calibration keeps the MHC2 transform identity while retaining measured luminance metadata for a TV or display already calibrated internally.',
    compatibility:'Windows Advanced Color or KDE Plasma 6.7+ on Wayland with HDR enabled. Do not use the legacy Color Management dialog for the Windows HDR association.',
    install:'Windows: enable HDR, then Settings > System > Display > Color profile as the HDR display default. Plasma 6.7+: enable HDR and select the file as the display ICC profile.'
   }
@@ -898,7 +896,7 @@ function meterIccProfileTypeChanged(){
  }
  const calibration=document.getElementById('meterIccCalibrationMode');
  if(calibration&&calibration.dataset.profileType!==type){
-  calibration.value=mhc2?'none':'vcgt';
+  calibration.value=mhc2?'profile':'vcgt';
   calibration.dataset.profileType=type;
  }
  const cicpFields=document.getElementById('meterIccCicpFields');
@@ -1044,13 +1042,6 @@ function meterIccSyncUi(){
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
- const calibrationSelect=document.getElementById('meterIccCalibrationMode');
- const mhc2Profile=type==='windows-sdr'||type==='windows-hdr';
- if(calibrationSelect){
-  if(mhc2Profile) calibrationSelect.value='none';
-  calibrationSelect.disabled=mhc2Profile;
-  calibrationSelect.title=mhc2Profile?'This profile type carries its calibration in MHC2.':'';
- }
  const cicpFields=document.getElementById('meterIccCicpFields');
  const versionNote=document.getElementById('meterIccVersionNote');
  if(cicpFields) cicpFields.style.display=effectiveIccVersion==='4.4'?'':'none';

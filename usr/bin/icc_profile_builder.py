@@ -729,14 +729,18 @@ def mhc2_wire_matrix(profile_type):
     return xy_matrix(((0.640, 0.330), (0.300, 0.600), (0.150, 0.060)), (0.3127, 0.3290))
 
 
-def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb"):
+def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb",
+                 apply_calibration=True):
     physical = measured_primary_matrix(black, white, primaries)
     wire = mhc2_wire_matrix(profile_type)
-    adjustment = mat_mul(wire, mat_inv(physical))
+    identity = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
+    adjustment = mat_mul(wire, mat_inv(physical)) if apply_calibration else identity
     calibrated_peak = max(white["xyz"][1], black["xyz"][1] + 0.0001)
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
-    if profile_type == "windows-sdr":
+    if not apply_calibration:
+        pass
+    elif profile_type == "windows-sdr":
         # A white-point correction that asks any channel for more than 1.0
         # clips before reaching the requested chromaticity. Apply a uniform
         # matrix scale so corrected neutral white remains inside RGB range.
@@ -770,7 +774,9 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     # They contain only the measured post-transfer adjustment, never the wire
     # transfer function itself. Both HDR and SDR invert the measured channel
     # ramps while the matrix corrects primaries and white point.
-    if profile_type == "windows-sdr":
+    if not apply_calibration:
+        luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
+    elif profile_type == "windows-sdr":
         luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
     else:
         luts = windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment)
@@ -1019,7 +1025,8 @@ def read_s15fixed16(data, offset):
     return struct.unpack(">i", data[offset:offset + 4])[0] / 65536.0
 
 
-def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_metadata_white, profile_type):
+def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_metadata_white,
+                          profile_type, expect_calibration=True):
     tags = {}
     for signature, payload in read_icc_tags(profile):
         if signature in tags:
@@ -1052,10 +1059,17 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         if offset < 36 or offset + 8 + entries * 4 > len(mhc2) or mhc2[offset:offset + 4] != b"sf32":
             fail("MHC2 curve offset or signature is invalid")
         curves.append([read_s15fixed16(mhc2, offset + 8 + index * 4) for index in range(entries)])
-    residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
-    maximum_residual = max(abs(residual[row][column] - (1.0 if row == column else 0.0)) for row in range(3) for column in range(3))
-    if maximum_residual > 0.002:
-        fail("MHC2 correction matrix failed its round-trip identity check")
+    if expect_calibration:
+        residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
+        maximum_residual = max(abs(residual[row][column] - (1.0 if row == column else 0.0))
+                               for row in range(3) for column in range(3))
+        if maximum_residual > 0.002:
+            fail("MHC2 correction matrix failed its round-trip identity check")
+    else:
+        maximum_residual = max(abs(matrix[row][column] - (1.0 if row == column else 0.0))
+                               for row in range(3) for column in range(3))
+        if maximum_residual > 1.5 / 65536.0:
+            fail("No-calibration MHC2 matrix is not identity")
     minimum_luminance = read_s15fixed16(mhc2, 12)
     peak_luminance = read_s15fixed16(mhc2, 16)
     lumi = tags[b"lumi"]
@@ -1068,10 +1082,13 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         abs(value - index / float(entries - 1)) <= 1.5 / 65536.0
         for curve in curves for index, value in enumerate(curve)
     )
+    if not expect_calibration and not curves_identity:
+        fail("No-calibration MHC2 curves are not identity")
     return {
         "status": "passed",
         "tag_version": "MHC2",
         "matrix_round_trip_max_error": round(maximum_residual, 7),
+        "calibration": "measured correction" if expect_calibration else "none",
         "curve_entries": entries,
         "curves": "identity" if curves_identity else "measured correction",
         "minimum_luminance_nits": round(minimum_luminance, 5),
@@ -1632,12 +1649,11 @@ def build(payload, output_dir):
     # describe the panel, not an already calibrated signal.
     black, white, primaries = profile_measurement_summary(profile_rows)
     keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
-    if keeps_mhc2 and calibration_mode == "profile":
-        fail("Windows MHC2 profiles already carry their calibration in MHC2")
     mhc2_type = profile_type if keeps_mhc2 else (
         "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
-        mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
+        mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb",
+        apply_calibration=calibration_mode != "none")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
 
     # A separate VCGT and calibration incorporated into the ICC both start
@@ -1693,10 +1709,11 @@ def build(payload, output_dir):
         mhc2_validation = validate_mhc2_profile(
             profile, mhc2, measured_primary_matrix(black, white, primaries),
             mhc2_wire_matrix(profile_type), luminance, profile_type,
+            expect_calibration=calibration_mode != "none",
         )
     with open(output_path, "wb") as handle:
         handle.write(profile)
-    if calibration_mode == "profile":
+    if calibration_mode == "profile" and not keeps_mhc2:
         # applycal must run before KDE's extended PQ input shapers are added:
         # Argyll's general ICC writer intentionally rejects mft2 one-dimensional
         # tables above 4096 entries, while KWin's direct parser accepts the
@@ -1713,7 +1730,7 @@ def build(payload, output_dir):
     ti3_path = os.path.join(output_dir, ti3_filename)
     final_ti3 = ti3
     validation_rows = fit_rows
-    if calibration_mode == "profile":
+    if calibration_mode == "profile" and not keeps_mhc2:
         # applycal composes the calibration into both profile directions, so
         # the finished profile once again accepts raw device values. Validate
         # and retain the raw characterization rather than the virtual-device

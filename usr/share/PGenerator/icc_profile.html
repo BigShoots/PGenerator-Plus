@@ -67,7 +67,7 @@
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
        </div>
        <div class="meter-icc-field meter-icc-calibration-field">
-        <label for="meterIccCalibrationMode">Calibration <span class="meter-icc-help" data-tip="Calibration with VCGT is recommended for an uncalibrated desktop monitor when the operating system loads video-card curves. Calibration without VCGT incorporates the curves into the ICC output transform for systems that do not load VCGT separately. No calibration is for a TV or display already calibrated internally, so the profile characterizes that state without applying another calibration. Windows MHC2 profile types already carry their calibration in MHC2.">?</span></label>
+        <label for="meterIccCalibrationMode">Calibration <span class="meter-icc-help" data-tip="Calibration with VCGT is for an uncalibrated display when the operating system loads video-card curves. Calibration without VCGT incorporates the correction into the profile: Windows profiles use MHC2, while other profiles use ArgyllCMS profile curves. No calibration is for a TV or display already calibrated internally. Windows profiles keep an identity MHC2 tag and measured luminance metadata in this mode, without applying another correction.">?</span></label>
         <select id="meterIccCalibrationMode" onchange="meterIccCalibrationModeChanged()">
          <option value="vcgt" selected>Calibration with VCGT</option>
          <option value="profile">Calibration without VCGT</option>
