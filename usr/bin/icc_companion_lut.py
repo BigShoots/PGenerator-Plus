@@ -67,14 +67,7 @@ BRADFORD = (
 
 
 def chromatic_adaptation(source_white, destination_white):
-    """Bradford adaptation from one white point to another.
-
-    ArgyllCMS adapts display profiles to the D50 PCS with this transform and
-    bakes it into the cLUT, leaving wtpt holding the unadapted native white and
-    no chad tag to read back. Scaling XYZ channel-wise by PCS/wtpt instead --
-    the old shortcut -- lands the neutral target away from where the profile
-    expects it, which biases the corrected white point.
-    """
+    """Bradford adaptation from one white point to another."""
     source_cone = mat_vec(BRADFORD, source_white)
     destination_cone = mat_vec(BRADFORD, destination_white)
     if any(abs(value) < 1e-9 for value in source_cone):
@@ -214,6 +207,7 @@ def srgb_linear(value):
 
 
 PCS_WHITE = (0.9642, 1.0, 0.8249)
+SOURCE_WHITE_D65 = (0.9504559, 1.0, 1.0890578)
 SRGB_TO_XYZ = (
     (0.4123908, 0.3575843, 0.1804808),
     (0.2126390, 0.7151687, 0.0721923),
@@ -267,16 +261,6 @@ def profile_luminance(profile_tags):
     return white_nits
 
 
-def profile_media_white(profile_tags):
-    white = profile_tags.get(b"wtpt", b"")
-    if white[:4] != b"XYZ " or len(white) < 20:
-        fail("Companion correction requires an ICC media white point")
-    values = [s15(white, 8 + channel * 4) for channel in range(3)]
-    if any(not math.isfinite(value) or value <= 0.0 for value in values):
-        fail("Companion correction has an invalid ICC media white point")
-    return values
-
-
 def source_xyz(rgb, signal_mode, white_nits, adaptation):
     if signal_mode == "hdr10":
         # ICC display PCS values are relative to the measured display white,
@@ -307,7 +291,9 @@ def build(profile_path, method, signal_mode, output_path):
     profile_tags = tags(profile)
     transform = Lut16Transform(profile_tags.get(b"B2A0", b"")) if method == "clut" else MatrixTransform(profile_tags)
     white_nits = profile_luminance(profile_tags) if signal_mode == "hdr10" else 1.0
-    adaptation = chromatic_adaptation(profile_media_white(profile_tags), PCS_WHITE)
+    # Source RGB is D65 in both supported signal modes. The profile's media
+    # white and chad describe its measured display, not the source colourspace.
+    adaptation = chromatic_adaptation(SOURCE_WHITE_D65, PCS_WHITE)
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")

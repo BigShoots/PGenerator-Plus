@@ -1686,34 +1686,6 @@ static void companion_source_xyz(const double rgb[3], const char *signal_mode,
         xyz[row]=adaptation[row][0]*intermediate[0]+adaptation[row][1]*intermediate[1]+adaptation[row][2]*intermediate[2];
 }
 
-/* Feed an uncalibrated HDR display profile through its standard absolute
- * colorimetric PCS conversion. ArgyllCMS's B2A table accepts media-relative
- * D50 PCS values. In a v4 display profile wtpt is already D50; the profile's
- * chad matrix converts measured absolute XYZ into that relative PCS domain.
- * Applying chad here matches ArgyllCMS's absolute-colorimetric B2A lookup.
- * A profile with VCGT uses the source-PQ neutral calibration path below. */
-static bool companion_absolute_hdr_xyz(const double rgb[3], double white_nits,
-                                       double xyz[3])
-{
-    static const double bt2020_xyz[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
-    IccTag chad=icc_tag(app.correction_profile_data,app.correction_profile_size,"chad");
-    double linear[3],absolute[3],matrix[3][3];
-    if(!chad.data||chad.size<44||memcmp(chad.data,"sf32",4))return false;
-    for(int channel=0;channel<3;channel++){
-        linear[channel]=fmin(1.0,pq_to_nits(rgb[channel])/fmax(white_nits,1e-6));
-    }
-    for(int row=0;row<3;row++)
-        for(int column=0;column<3;column++){
-            matrix[row][column]=read_s15(chad.data+8+(row*3+column)*4);
-            if(!isfinite(matrix[row][column]))return false;
-        }
-    for(int row=0;row<3;row++)
-        absolute[row]=bt2020_xyz[row][0]*linear[0]+bt2020_xyz[row][1]*linear[1]+bt2020_xyz[row][2]*linear[2];
-    for(int row=0;row<3;row++)
-        xyz[row]=matrix[row][0]*absolute[0]+matrix[row][1]*absolute[1]+matrix[row][2]*absolute[2];
-    return true;
-}
-
 /* Absolute luminance of the profile's PCS white. The measurement set is
  * normalised so PCS Y=1.0 is the profiling white, and ArgyllCMS embeds that
  * value as LUMINANCE_XYZ_CDM2 in the retained characterization tags. The lumi
@@ -2099,16 +2071,12 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
         IccTag lumi=icc_tag(app.correction_profile_data,app.correction_profile_size,"lumi");
         if(!lumi.data||lumi.size<20||memcmp(lumi.data,"XYZ ",4)||(white_nits=read_s15(lumi.data+12))<=0.0)return false;
     }
-    /* Without a calibration tag this is an ordinary ArgyllCMS display
-     * profile. Preserve source absolute colorimetry rather than adapting D65
-     * onto the display's native media white. */
-    if(!strcmp(app.correction_signal_mode,"hdr10")
-       && !icc_tag(app.correction_profile_data,app.correction_profile_size,"vcgt").data
-       && !icc_tag(app.correction_profile_data,app.correction_profile_size,"MHC2").data){
-        if(!companion_absolute_hdr_xyz(rgb,white_nits,xyz))return false;
-    }else{
-        companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
-    }
+    /* B2A accepts D50 PCS coordinates. chad describes adaptation of the
+     * measured display into PCS for the profile's forward direction; it must
+     * not be applied to the D65 source here. Doing that also misclassified
+     * calibration-incorporated profiles, which intentionally have no vcgt or
+     * MHC2 tag, and pushed their neutral axis blue. */
+    companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
     /* A 3D cLUT cannot resolve the steep PQ shadow axis at its grid spacing.
