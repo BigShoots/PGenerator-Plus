@@ -869,6 +869,13 @@ static void action_apply(void)
 {
     DisplayEntry *display = selected_display();
     ProfileEntry *entry = selected_profile();
+    /* rescan_profiles() rebuilds app.profiles in place after a downloaded
+     * profile is copied into ~/.local/share/icc. Keep the classification now;
+     * retaining an entry pointer across that rescan can make an HDR profile
+     * inherit the kind of whichever file later occupies the same array slot. */
+    ProfileKind kind = entry ? entry->kind
+                             : classify_profile(app.selected_profile,
+                                                profile_contains_mhc2(app.selected_profile));
     char message[768] = "";
     char detail[768];
     if (!display || !app.selected_profile[0]) {
@@ -892,7 +899,7 @@ static void action_apply(void)
     }
     if (display->from_kwin && app.have_kscreen) {
         if (!apply_with_kwin(display, app.selected_profile,
-                             entry ? entry->kind : PROFILE_KIND_UNKNOWN,
+                             kind,
                              message, sizeof(message))) {
             set_status(STATUS_BAD, "APPLY FAILED", message);
             return;
@@ -910,7 +917,7 @@ static void action_apply(void)
     }
     refresh_everything();
     display = selected_display();
-    if (display && entry && profile_kind_is_hdr(entry->kind) && !display->hdr) {
+    if (display && profile_kind_is_hdr(kind) && !display->hdr) {
         SDL_snprintf(detail, sizeof(detail),
                      "Applied to %s, but HDR is switched off for this display. An HDR "
                      "profile only describes the display in HDR mode - enable HDR in "
@@ -918,8 +925,8 @@ static void action_apply(void)
         set_status(STATUS_BAD, "HDR IS NOT ENABLED", detail);
         return;
     }
-    if (display && entry && !profile_kind_is_hdr(entry->kind) && display->hdr &&
-        entry->kind != PROFILE_KIND_UNKNOWN) {
+    if (display && !profile_kind_is_hdr(kind) && display->hdr &&
+        kind != PROFILE_KIND_UNKNOWN) {
         SDL_snprintf(detail, sizeof(detail),
                      "Applied to %s, but this display is in HDR mode and the profile "
                      "describes SDR output. Use an HDR profile, or turn HDR off.",

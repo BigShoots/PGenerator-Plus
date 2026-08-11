@@ -2704,6 +2704,18 @@ static bool kwin_safe_connector(const char *connector)
     return true;
 }
 
+static bool linux_profile_name_is_hdr(const char *path)
+{
+    char upper[1024];
+    size_t index;
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    for (index = 0; index + 1 < sizeof(upper) && name[index]; index++)
+        upper[index] = (char)toupper((unsigned char)name[index]);
+    upper[index] = '\0';
+    return strstr(upper, "HDR-MHC2") != NULL || strstr(upper, "-HDR-") != NULL;
+}
+
 /* Keep compositor-managed and application-managed correction mutually
  * exclusive. KWin uses the MHC2 curves as the output calibration when that
  * tag exists, and otherwise uses vcgt. Leaving KWin's ICC path active while
@@ -3655,7 +3667,7 @@ static void companion_run_install(const char *poll_response)
                 const char *active;
                 SDL_Delay(250);
                 if (!kwin_output_state(app.selected_display_id, &output)) continue;
-                active = output.hdr && output.hdr_icc_path[0]
+                active = linux_profile_name_is_hdr(file)
                        ? output.hdr_icc_path : output.icc_path;
                 if (active && active[0]) {
                     const char *name = strrchr(active, '/');
