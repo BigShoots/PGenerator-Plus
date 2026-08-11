@@ -163,10 +163,8 @@ sub patch_insert_resolve {
 # Grey flash -> black -> settle, before the caller measures. Unlike the
 # greyscale worker there is no "restore the measurement patch" step: read_patch
 # measures through /api/meter/read, which posts the measurement pattern itself.
-# The 15s time-frequency cap the greyscale worker applies to its inner loops is
-# deliberately NOT applied here -- this is a five-patch one-shot run, so the
-# operator's own frequency setting is the right granularity, and patch-mode
-# insertion (default: every patch) is what actually conditions the panel.
+# This five-patch one-shot run honors the operator's frequency setting, while
+# patch-mode insertion (default: every patch) conditions the panel.
 sub apply_pattern_insert_before_read {
  my ($config,$patch)=@_;
  return undef if(ref($config) ne "HASH" || !$config->{"patch_insert"});

@@ -13305,7 +13305,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	        <div class="meter-pattern-insert-popover" id="meterPatternInsertPopover" role="dialog" aria-label="Pattern insertion options">
 	         <div class="meter-pattern-insert-grid">
 	          <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertTimeEnabled" checked> Time</label>
-	          <label>Frequency <input id="meterPatchInsertTimeFrequency" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
+	          <label>Frequency <input id="meterPatchInsertTimeFrequency" type="text" value="45" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,meterPatternInsertionDefaultsForMode().timeFrequency))"><span>sec</span></label>
 	          <label>Duration <input id="meterPatchInsertTimeDuration" type="text" value="5" inputmode="decimal" oninput="meterSecondsSyncInput(this)" onblur="this.value=meterDelayFormatSeconds(meterDelayParseSeconds(this.value,5))"><span>sec</span></label>
 	          <label>Level <input id="meterPatchInsertTimeLevel" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
 	          <label class="meter-toggle"><input type="checkbox" id="meterPatchInsertPatchEnabled" checked> Patch</label>
@@ -15834,7 +15834,7 @@ function applyMeterTargetGamutDefault(force){
 }
 
 function meterPatternInsertionDefaultsForMode(){
- const sm=(document.getElementById('signal_mode')||{}).value||'sdr';
+ const sm=String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase();
  const hdrLike=sm==='hdr10'||sm==='hlg'||sm==='dv';
  return {
   timeEnabled:true,
@@ -42927,8 +42927,9 @@ function meterAutoCalDisplayTypeUpdateSummary(){
  if(!dst||!out) return;
  const opt=dst.options[dst.selectedIndex];
  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
+ const insertion=meterPatternInsertionDefaultsForMode();
  let summary=oled
-  ? 'OLED profile: patch size 10% Window, pattern insertion enabled (level 25%, 5s).'
+  ? 'OLED profile: patch size 10% Window, pattern insertion enabled ('+insertion.timeFrequency+' s frequency, '+insertion.timeDuration+' s duration, '+insertion.timeLevel+'% level).'
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
  if(meterSelectedMeasurementIsSpyderX()){
   let nativeMode='General';
@@ -42972,6 +42973,10 @@ function meterAutoCalDisplayTypeContinue(){
    ins.checked=oled;
    try{ ins.dispatchEvent(new Event('change')); }catch(e){}
   }
+  // The OLED AutoCal profile owns these recommended conditioning values.
+  // Apply them at the wizard boundary so an old HDR 5-second value cannot
+  // leak into an SDR run (or an SDR 45-second value into HDR10/DV).
+  if(oled) meterApplyPatternInsertionDefaults(true);
   // Stamp BOTH fields onto the run config. Without ccss_override here the
   // start payload would lose the operator's chosen CCSS as soon as the main
   // settings got re-saved before the run, because the snapshot below reads
@@ -53832,6 +53837,7 @@ function meterNumberInput(id,fallback,min,max){
 
 function meterPatternInsertionPayload(masterOverride){
  const master=masterOverride||document.getElementById('meterPatchInsert');
+ const defaults=meterPatternInsertionDefaultsForMode();
  return {
   pattern_delay_ms:meterSecondsInputMs('meterPatternDelay',0),
   patch_insert:!!(master&&master.checked),
@@ -53840,7 +53846,7 @@ function meterPatternInsertionPayload(masterOverride){
   patch_insert_patch_duration_ms:meterSecondsInputMs('meterPatchInsertPatchDuration',1),
   patch_insert_patch_level:meterNumberInput('meterPatchInsertPatchLevel',10,0,100),
   patch_insert_time_enabled:!!(master&&master.checked&&document.getElementById('meterPatchInsertTimeEnabled')&&document.getElementById('meterPatchInsertTimeEnabled').checked),
-  patch_insert_time_frequency_ms:meterSecondsInputMs('meterPatchInsertTimeFrequency',5),
+  patch_insert_time_frequency_ms:meterSecondsInputMs('meterPatchInsertTimeFrequency',defaults.timeFrequency),
   patch_insert_time_duration_ms:meterSecondsInputMs('meterPatchInsertTimeDuration',5),
   patch_insert_time_level:meterNumberInput('meterPatchInsertTimeLevel',25,0,100)
  };
@@ -53931,7 +53937,7 @@ function saveMeterSettings(){
 	  patch_insert_patch_duration:String(meterSecondsInputMs('meterPatchInsertPatchDuration',1)),
 	  patch_insert_patch_level:val('meterPatchInsertPatchLevel','10')||'10',
 	  patch_insert_time_enabled:chk('meterPatchInsertTimeEnabled'),
-	  patch_insert_time_frequency:String(meterSecondsInputMs('meterPatchInsertTimeFrequency',5)),
+	  patch_insert_time_frequency:String(meterSecondsInputMs('meterPatchInsertTimeFrequency',meterPatternInsertionDefaultsForMode().timeFrequency)),
 	  patch_insert_time_duration:String(meterSecondsInputMs('meterPatchInsertTimeDuration',5)),
 	  patch_insert_time_level:val('meterPatchInsertTimeLevel','25')||'25',
 	  refresh_rate:val('meterRefreshRate'),
@@ -54147,7 +54153,7 @@ async function loadMeterSettings(attempt){
 		 if(s.patch_insert_patch_duration!=null) meterSecondsLoadValue('meterPatchInsertPatchDuration',s.patch_insert_patch_duration,1);
 		 setVal('meterPatchInsertPatchLevel', s.patch_insert_patch_level, '10');
 		 setChk('meterPatchInsertTimeEnabled', s.patch_insert_time_enabled);
-		 if(s.patch_insert_time_frequency!=null) meterSecondsLoadValue('meterPatchInsertTimeFrequency',s.patch_insert_time_frequency,5);
+		 if(s.patch_insert_time_frequency!=null) meterSecondsLoadValue('meterPatchInsertTimeFrequency',s.patch_insert_time_frequency,meterPatternInsertionDefaultsForMode().timeFrequency);
 		 if(s.patch_insert_time_duration!=null) meterSecondsLoadValue('meterPatchInsertTimeDuration',s.patch_insert_time_duration,5);
 		 setVal('meterPatchInsertTimeLevel', s.patch_insert_time_level, '25');
 	 if(s.patch_insert_patch_enabled!=null||s.patch_insert_patch_every!=null||s.patch_insert_patch_duration!=null||s.patch_insert_patch_level!=null||

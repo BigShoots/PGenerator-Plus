@@ -5091,20 +5091,12 @@ sub apply_pattern_insert_before_read {
  my $patch_duration_ms=sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
  my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
   my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
-  # Cap the time-insertion frequency at 15s for autocal inner loops. The
-  # user-side knob (default 45-120s) is tuned for the wizard's spotread
-  # progress display, where 1 insertion per anchor is plenty. The SDR26
-  # 1D-DPG inner loop runs 10-15 iters inside 60-90 seconds and needs
-  # insertions between iters to reset OLED ABL / pixel charge -- without
-  # those, the panel's ABL hysteresis accumulates across iters and the
-  # chromaticity trajectory drifts by 0.01-0.02 per skipped insertion.
-  # 15s gives 4-6 insertions per inner loop, which matches the HDR path's
-  # insertion frequency. Cap is bypassed when the user sets
-  # patch_insert_time_frequency_max_ms to 0 (explicit "no cap").
-  my $_time_freq_max=15000;
-  $_time_freq_max=int($config->{"patch_insert_time_frequency_max_ms"}) if(defined($config->{"patch_insert_time_frequency_max_ms"}) && $config->{"patch_insert_time_frequency_max_ms"}+0 == 0);
-  my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
-  $time_frequency_ms=$_time_freq_max if($time_frequency_ms+0 > $_time_freq_max+0 && $_time_freq_max+0 > 0);
+  # Honor the configured threshold inside AutoCal loops. SDR OLED defaults
+  # to 45 seconds; HDR10 and Dolby Vision default to 5 seconds. A read that
+  # runs past the threshold naturally delays the insertion until the next
+  # read boundary.
+  my $time_frequency_default_ms=(lc($config->{"signal_mode"}||"sdr") eq "sdr") ? 45000 : 5000;
+  my $time_frequency_ms=sanitize_ms($config->{"patch_insert_time_frequency_ms"},$time_frequency_default_ms,120000);
   my $time_duration_ms=sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
   my $time_level=($config->{"patch_insert_time_level"}//25)+0;
  # Decide whether to fire. Either or both insertion types may fire.

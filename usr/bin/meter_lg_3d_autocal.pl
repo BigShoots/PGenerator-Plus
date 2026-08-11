@@ -2710,13 +2710,10 @@ sub apply_pattern_insert_before_read {
  my $patch_duration_ms=_pi_sanitize_ms($config->{"patch_insert_patch_duration_ms"},1000,30000);
  my $patch_level=($config->{"patch_insert_patch_level"}//10)+0;
  my $time_enabled=$config->{"patch_insert_time_enabled"} ? 1 : 0;
- # Same 15s frequency cap as the 1D worker's inner loops: the shadow
- # fix reads 6 anchors back-to-back per pass and needs insertions
- # BETWEEN anchors, not once per wizard step.
- my $_time_freq_max=15000;
- $_time_freq_max=int($config->{"patch_insert_time_frequency_max_ms"}) if(defined($config->{"patch_insert_time_frequency_max_ms"}) && $config->{"patch_insert_time_frequency_max_ms"}+0 == 0);
- my $time_frequency_ms=_pi_sanitize_ms($config->{"patch_insert_time_frequency_ms"},5000,120000);
- $time_frequency_ms=$_time_freq_max if($time_frequency_ms+0 > $_time_freq_max+0 && $_time_freq_max+0 > 0);
+ # Keep the 3D/shadow-fix worker on the same operator-selected schedule as
+ # the 1D worker instead of silently shortening SDR's 45-second interval.
+ my $time_frequency_default_ms=(lc($config->{"signal_mode"}||"sdr") eq "sdr") ? 45000 : 5000;
+ my $time_frequency_ms=_pi_sanitize_ms($config->{"patch_insert_time_frequency_ms"},$time_frequency_default_ms,120000);
  my $time_duration_ms=_pi_sanitize_ms($config->{"patch_insert_time_duration_ms"},5000,30000);
  my $time_level=($config->{"patch_insert_time_level"}//25)+0;
  my @inserts;
