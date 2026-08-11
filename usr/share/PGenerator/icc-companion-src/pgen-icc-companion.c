@@ -76,7 +76,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.9"
+#define APP_VERSION "1.4.10"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -2555,7 +2555,6 @@ typedef struct {
     bool enabled;
     bool hdr;
     int sdr_brightness;
-    double scale;
     char connector[64];
     long score;               /* Distance from the SDL rectangle */
     char icc_path[1024];      /* SDR slot */
@@ -2647,8 +2646,6 @@ static bool kwin_output_state(SDL_DisplayID display, KWinOutputState *state)
                  * different monitor never wins. */
                 pending.found = (dx <= 4 && dy <= 4 && dw <= 8 && dh <= 8);
             }
-        } else if (current && !strncmp(cursor, "Scale:", 6)) {
-            (void)sscanf(cursor + 6, " %lf", &pending.scale);
         } else if (current && !strncmp(cursor, "HDR ICC profile:", 16)) {
             SDL_strlcpy(pending.hdr_icc_path, cursor + 16, sizeof(pending.hdr_icc_path));
             kwin_trim(pending.hdr_icc_path);
@@ -2766,24 +2763,17 @@ static void kwin_restore_profile_source(void)
 static uint32_t kwin_hdr_surface_reference(SDL_DisplayID display)
 {
     KWinOutputState output;
-    double scale;
     double reference;
     if (!kwin_output_state(display, &output) || output.sdr_brightness <= 0)
         return 203;
-    scale = output.scale;
-    if (!isfinite(scale) || scale <= 0.0)
-        scale = SDL_GetDisplayContentScale(display);
-    if (!isfinite(scale) || scale <= 0.0) scale = 1.0;
-    /* Plasma currently applies the output's SDR-white anchor in logical
-     * surface units. Compensating by the output content scale keeps absolute
-     * PQ patches invariant when either the HDR brightness slider or display
-     * scaling changes. This was verified at both 230 and 417 nit settings on
-     * the same HDR output. */
-    reference = output.sdr_brightness * (double)scale;
+    /* The Wayland image description specifies reference luminance in cd/m2.
+     * Desktop scale changes logical geometry only and must never alter the
+     * absolute luminance represented by a PQ surface. */
+    reference = output.sdr_brightness;
     if (reference < 1.0) reference = 1.0;
     if (reference > 10000.0) reference = 10000.0;
-    SDL_Log("KWin HDR reference: SDR white %d, content scale %.3f, surface reference %.0f",
-            output.sdr_brightness, (double)scale, reference);
+    SDL_Log("KWin HDR reference: SDR white %d, surface reference %.0f",
+            output.sdr_brightness, reference);
     return (uint32_t)lround(reference);
 }
 #endif
