@@ -134,13 +134,15 @@ def build(platform, server, token, output_path, paired=True):
                 archive.writestr(config_info, config)
             add_file(archive, os.path.join(source_dir, "README.txt"), "README.txt")
             add_file(archive, os.path.join(ROOT, "icc-companion", "SDL3-LICENSE.txt"), "SDL3-LICENSE.txt")
-            if package["directory"] == "linux-x64":
-                add_file(archive, os.path.join(ROOT, "icc-companion", "DejaVu-LICENSE.txt"),
-                         "DejaVu-LICENSE.txt")
+            # Both desktop packages now use the embedded DejaVu atlas: the
+            # Linux Profile Loader uses it throughout and Patch Companion uses
+            # it for the cross-platform pairing screen.
+            add_file(archive, os.path.join(ROOT, "icc-companion", "DejaVu-LICENSE.txt"),
+                     "DejaVu-LICENSE.txt")
             # AGPLv3 has to travel with colprof/profcheck. The Linux archive
             # already carries its copy out of the binary directory; the Windows
             # one has no copy there, so it comes from the shared location.
-            elif any(name.startswith(("colprof", "profcheck")) for name in files):
+            if package["directory"] != "linux-x64" and any(name.startswith(("colprof", "profcheck")) for name in files):
                 add_file(archive, os.path.join(ROOT, "icc-companion", "ArgyllCMS-LICENSE.txt"),
                          "ArgyllCMS-LICENSE.txt")
         for name in files:

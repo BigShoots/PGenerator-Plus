@@ -20,6 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Use the same embedded proportional UI faces as the Linux Profile Loader.
+ * This keeps the pairing screen self-contained while giving both tools the
+ * same application typography instead of SDL's terminal-style debug font. */
+#include "pgen-ui-font.h"
+
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -76,7 +81,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.11"
+#define APP_VERSION "1.4.12"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -372,6 +377,7 @@ typedef struct {
     SDL_Renderer *renderer;
     SDL_Texture *texture;
     SDL_Texture *background_texture;
+    SDL_Texture *font_texture[PGEN_FACE_COUNT];
     CompanionConfig config;
     uint64_t sequence;
     bool hdr;
@@ -2851,6 +2857,7 @@ static void destroy_renderer(void)
 #endif
     if (app.texture) { SDL_DestroyTexture(app.texture); app.texture = NULL; }
     if (app.background_texture) { SDL_DestroyTexture(app.background_texture); app.background_texture = NULL; }
+    for (int face = 0; face < PGEN_FACE_COUNT; face++) app.font_texture[face] = NULL;
     if (app.renderer) { SDL_DestroyRenderer(app.renderer); app.renderer = NULL; }
 }
 
@@ -4092,66 +4099,165 @@ static void process_network_updates(void)
     }
 }
 
-/* Draws one line of SDL_RenderDebugText and returns the device-pixel y
- * position for the line after it. SDL_SetRenderScale multiplies whatever
- * coordinates a render call is given by the active scale, so this converts
- * the caller's desired pixel position into that scale's local coordinate
- * space rather than making every call site do the division itself. */
-static float pairing_draw_line(float pixel_x, float pixel_y, float scale, const char *text)
+static bool pairing_build_font_textures(void)
 {
-    SDL_SetRenderScale(app.renderer, scale, scale);
-    SDL_RenderDebugText(app.renderer, pixel_x / scale, pixel_y / scale, text);
-    return pixel_y + 10.0f * scale * 1.6f;
+    if (app.font_texture[0]) return true;
+    for (int face = 0; face < PGEN_FACE_COUNT; face++) {
+        const PgenFace *info = &pgen_font_faces[face];
+        size_t count = (size_t)info->atlas_width * (size_t)info->atlas_height;
+        SDL_Surface *surface = SDL_CreateSurface(info->atlas_width, info->atlas_height,
+                                                 SDL_PIXELFORMAT_RGBA32);
+        uint32_t *pixels;
+        if (!surface) return false;
+        pixels = (uint32_t *)surface->pixels;
+        for (size_t index = 0; index < count; index++) {
+            unsigned value = 0;
+            const char *hex = info->alpha_hex + index * 2;
+            for (int digit = 0; digit < 2; digit++) {
+                char c = hex[digit];
+                value = (value << 4) |
+                        (unsigned)(c >= 'a' ? c - 'a' + 10 :
+                                   (c >= 'A' ? c - 'A' + 10 : c - '0'));
+            }
+            pixels[(index / (size_t)info->atlas_width) * (size_t)(surface->pitch / 4) +
+                   (index % (size_t)info->atlas_width)] =
+                0x00ffffffu | ((uint32_t)value << 24);
+        }
+        app.font_texture[face] = SDL_CreateTextureFromSurface(app.renderer, surface);
+        SDL_DestroySurface(surface);
+        if (!app.font_texture[face]) return false;
+        SDL_SetTextureScaleMode(app.font_texture[face], SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(app.font_texture[face], SDL_BLENDMODE_BLEND);
+    }
+    return true;
+}
+
+static float pairing_text_width(PgenFaceId face, float points, const char *text)
+{
+    const PgenFace *info = &pgen_font_faces[face];
+    float scale = points / info->design_size;
+    float width = 0.0f;
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor; cursor++) {
+        int code = *cursor;
+        if (code < PGEN_FONT_FIRST_CHAR || code > PGEN_FONT_LAST_CHAR) code = '?';
+        width += info->glyphs[code - PGEN_FONT_FIRST_CHAR].advance;
+    }
+    return width * scale;
+}
+
+static void pairing_draw_text(float x, float y, PgenFaceId face, float points,
+                              SDL_Color color, const char *text)
+{
+    const PgenFace *info = &pgen_font_faces[face];
+    float scale = points / info->design_size;
+    float baseline = y + info->ascent * scale;
+    float pen = x;
+    SDL_SetTextureColorMod(app.font_texture[face], color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(app.font_texture[face], color.a);
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor; cursor++) {
+        int code = *cursor;
+        const PgenGlyph *glyph;
+        if (code < PGEN_FONT_FIRST_CHAR || code > PGEN_FONT_LAST_CHAR) code = '?';
+        glyph = &info->glyphs[code - PGEN_FONT_FIRST_CHAR];
+        if (glyph->width > 0 && glyph->height > 0) {
+            SDL_FRect source = {(float)glyph->x, 0.0f,
+                                (float)glyph->width, (float)glyph->height};
+            SDL_FRect target = {pen + (float)glyph->bearing_x * scale,
+                                baseline - (float)glyph->bearing_y * scale,
+                                (float)glyph->width * scale,
+                                (float)glyph->height * scale};
+            SDL_RenderTexture(app.renderer, app.font_texture[face], &source, &target);
+        }
+        pen += glyph->advance * scale;
+    }
+}
+
+static void pairing_fill_rect(float x, float y, float w, float h, SDL_Color color)
+{
+    SDL_FRect rect = {x, y, w, h};
+    SDL_SetRenderDrawColor(app.renderer, color.r, color.g, color.b, color.a);
+    SDL_RenderFillRect(app.renderer, &rect);
+}
+
+static void pairing_frame_rect(float x, float y, float w, float h, SDL_Color color)
+{
+    SDL_FRect rect = {x, y, w, h};
+    SDL_SetRenderDrawColor(app.renderer, color.r, color.g, color.b, color.a);
+    SDL_RenderRect(app.renderer, &rect);
 }
 
 /* Drawn before any patch has ever been shown, on the plain SDL renderer
- * create_renderer(false) made at startup - never the Windows HDR swapchain
- * path, so there is no PQ scaling to account for here. SDL_RenderDebugText is
- * SDL3's built-in 8x8 bitmap font: the Companion ships as a small zip and
- * must not gain a font file dependency just to ask for a pairing code. */
+ * create_renderer(false) made at startup, never the Windows HDR swapchain. */
 static bool render_pairing(const char *code, const char *server, int seconds_left, const char *note)
 {
     int width, height;
-    float body_scale, code_scale, margin, y;
+    float density, margin, card_x, card_y, card_w, card_h, y;
     char line[256];
+    const SDL_Color background = {32, 32, 32, 255};
+    const SDL_Color card = {43, 43, 43, 255};
+    const SDL_Color inset = {24, 24, 24, 255};
+    const SDL_Color border = {64, 64, 64, 255};
+    const SDL_Color text = {244, 244, 244, 255};
+    const SDL_Color muted = {168, 172, 180, 255};
+    const SDL_Color accent = {76, 148, 255, 255};
 
     if (!app.renderer) return false;
     if (!SDL_GetCurrentRenderOutputSize(app.renderer, &width, &height)) return false;
-    (void)width;
+    if (!pairing_build_font_textures()) return false;
 
-    /* Small enough that the surrounding sentences stay readable at arm's
-     * length; the code below gets a much larger multiple of it so it can be
-     * read back across a room while approving the pairing in the WebUI. */
-    body_scale = fmaxf(2.0f, (float)height / 360.0f);
-    code_scale = body_scale * 5.0f;
-    margin = 24.0f * body_scale;
+    density = fmaxf(1.0f, fminf((float)width / 900.0f, (float)height / 560.0f));
+    margin = 32.0f * density;
+    card_x = margin;
+    card_y = margin;
+    card_w = (float)width - margin * 2.0f;
+    card_h = fminf((float)height - margin * 2.0f, 465.0f * density);
 
     SDL_SetRenderScale(app.renderer, 1.0f, 1.0f);
-    SDL_SetRenderDrawColorFloat(app.renderer, 0.0f, 0.0f, 0.0f, 1.0f);
+    SDL_SetRenderDrawColor(app.renderer, background.r, background.g, background.b, 255);
     if (!SDL_RenderClear(app.renderer)) return false;
-    SDL_SetRenderDrawColorFloat(app.renderer, 1.0f, 1.0f, 1.0f, 1.0f);
+    pairing_fill_rect(card_x, card_y, card_w, card_h, card);
+    pairing_frame_rect(card_x, card_y, card_w, card_h, border);
 
-    y = margin;
-    y = pairing_draw_line(margin, y, body_scale, "PGenerator+ Patch Companion");
+    y = card_y + 28.0f * density;
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_TITLE,
+                      22.0f * density, text, "PGenerator+ Patch Companion");
+    y += 38.0f * density;
     SDL_snprintf(line, sizeof(line), "Server: %s", server ? server : "");
-    y = pairing_draw_line(margin, y, body_scale, line);
-    y += 10.0f * body_scale;
-    y = pairing_draw_line(margin, y, body_scale,
-                          "Approve this computer in the PGenerator+ WebUI to finish pairing.");
-    y = pairing_draw_line(margin, y, body_scale, "Check the code shown there matches:");
-    y += 6.0f * body_scale;
-    y = pairing_draw_line(margin, y, code_scale, code && code[0] ? code : "------");
-    y += 10.0f * body_scale;
-    SDL_snprintf(line, sizeof(line), "Time remaining: %d seconds", seconds_left > 0 ? seconds_left : 0);
-    y = pairing_draw_line(margin, y, body_scale, line);
-    y = pairing_draw_line(margin, y, body_scale, "Press Escape to cancel.");
-    if (note && note[0]) {
-        y += 10.0f * body_scale;
-        y = pairing_draw_line(margin, y, body_scale, note);
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_REGULAR,
+                      11.0f * density, muted, line);
+    y += 34.0f * density;
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_REGULAR,
+                      13.0f * density, text,
+                      "Approve this computer in the PGenerator+ WebUI to finish pairing.");
+    y += 24.0f * density;
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_REGULAR,
+                      13.0f * density, text, "Check the code shown there matches:");
+    y += 31.0f * density;
+    {
+        const char *shown_code = code && code[0] ? code : "------";
+        float code_h = 92.0f * density;
+        pairing_fill_rect(card_x + 28.0f * density, y,
+                          card_w - 56.0f * density, code_h, inset);
+        pairing_frame_rect(card_x + 28.0f * density, y,
+                           card_w - 56.0f * density, code_h, border);
+        pairing_draw_text(card_x + (card_w - pairing_text_width(PGEN_FACE_MONO,
+                          46.0f * density, shown_code)) * 0.5f,
+                          y + 17.0f * density, PGEN_FACE_MONO,
+                          46.0f * density, accent, shown_code);
+        y += code_h + 27.0f * density;
     }
-    (void)y;
+    SDL_snprintf(line, sizeof(line), "Time remaining: %d seconds", seconds_left > 0 ? seconds_left : 0);
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_BOLD,
+                      12.0f * density, text, line);
+    y += 24.0f * density;
+    pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_REGULAR,
+                      11.0f * density, muted, "Press Escape to cancel.");
+    if (note && note[0]) {
+        y += 24.0f * density;
+        pairing_draw_text(card_x + 28.0f * density, y, PGEN_FACE_REGULAR,
+                          11.0f * density, accent, note);
+    }
 
-    SDL_SetRenderScale(app.renderer, 1.0f, 1.0f);
     return SDL_RenderPresent(app.renderer);
 }
 

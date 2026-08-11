@@ -1,7 +1,7 @@
-The PGenerator+ Profile Loader draws its interface with glyph bitmaps
-rendered from the DejaVu fonts. No font file is shipped; only the
-rendered glyphs are compiled into the executable. The DejaVu licence
-(the Bitstream Vera licence) follows.
+The PGenerator+ Profile Loader and Patch Companion pairing screen draw their
+interfaces with glyph bitmaps rendered from the DejaVu fonts. No font file is
+shipped; only the rendered glyphs are compiled into the executables. The
+DejaVu licence (the Bitstream Vera licence) follows.
 
 Fonts: DejaVu Sans, DejaVu Sans Bold, DejaVu Sans Mono
 Upstream: https://dejavu-fonts.github.io/

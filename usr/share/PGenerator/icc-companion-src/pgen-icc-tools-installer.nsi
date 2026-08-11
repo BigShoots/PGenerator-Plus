@@ -16,10 +16,10 @@ BrandingText "PGenerator+"
 Icon "..\favicon.ico"
 UninstallIcon "..\favicon.ico"
 
-VIProductVersion "1.4.11.0"
+VIProductVersion "1.4.12.0"
 VIAddVersionKey "ProductName" "PGenerator+ ICC Tools"
 VIAddVersionKey "FileDescription" "PGenerator+ Patch Companion and Profile Loader installer"
-VIAddVersionKey "FileVersion" "1.4.11"
+VIAddVersionKey "FileVersion" "1.4.12"
 VIAddVersionKey "LegalCopyright" "GNU GPL"
 
 !define MUI_ABORTWARNING
@@ -51,6 +51,7 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   File /oname=README.txt "README.txt"
   File "PROFILE-LOADER-README.txt"
   File "..\icc-companion\SDL3-LICENSE.txt"
+  File "..\icc-companion\DejaVu-LICENSE.txt"
   ; ArgyllCMS colprof/profcheck let the Companion run the profile fit locally.
   ; A high-quality cLUT fit takes about ten minutes on a Pi 4 and under a
   ; minute here. Version-matched to the Pi's ArgyllCMS: the same measurements
@@ -79,7 +80,7 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "DisplayName" "PGenerator+ ICC Tools"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
-              "DisplayVersion" "1.4.11"
+              "DisplayVersion" "1.4.12"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "Publisher" "PGenerator+"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
@@ -133,6 +134,7 @@ Section "Uninstall"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\PROFILE-LOADER-README.txt"
   Delete "$INSTDIR\SDL3-LICENSE.txt"
+  Delete "$INSTDIR\DejaVu-LICENSE.txt"
   Delete "$INSTDIR\ArgyllCMS-LICENSE.txt"
   Delete "$INSTDIR\colprof.exe"
   Delete "$INSTDIR\profcheck.exe"
