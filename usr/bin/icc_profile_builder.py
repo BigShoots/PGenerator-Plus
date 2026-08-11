@@ -1764,13 +1764,24 @@ def build(payload, output_dir):
         handle.write(profile)
     if calibration_mode == "profile" and not keeps_mhc2:
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
-            # The profile describes the calibrated virtual device. Include its
-            # calibration in the B2A output curves, where the full shaper
-            # resolution is retained without exposing a VCGT loader tag.
+            # applycal updates both profile directions. Keep its forward A2B
+            # tables for measurement and CMM use, but replace B2A with the HDR
+            # version whose calibration is held in high-resolution output
+            # shapers instead of the coarse 3D grid.
             with open(output_path, "rb") as handle:
-                profile = handle.read()
-            profile = reshape_hdr_b2a_for_pq(
-                profile, white["xyz"][1], incorporated_calibration=calibration)
+                virtual_profile = handle.read()
+            apply_profile_calibration(output_path, calibration)
+            with open(output_path, "rb") as handle:
+                calibrated_profile = handle.read()
+            reshaped_profile = reshape_hdr_b2a_for_pq(
+                virtual_profile, white["xyz"][1], incorporated_calibration=calibration)
+            reshaped_tags = dict(read_icc_tags(reshaped_profile))
+            replacements = {
+                signature: reshaped_tags[signature]
+                for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
+                if signature in reshaped_tags
+            }
+            profile = rebuild_icc(calibrated_profile, replacements)
             with open(output_path, "wb") as handle:
                 handle.write(profile)
         else:
