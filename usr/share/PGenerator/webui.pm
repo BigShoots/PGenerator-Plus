@@ -14712,7 +14712,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	  </div>
 	  <div id="meterAutoCalDisplayTypeBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Select the display type</div>
-	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. OLED panels measure with a 10% window and pattern insertion; QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
+	   <div style="font-size:.78rem;color:var(--text2);line-height:1.45;margin-bottom:10px">Pick the panel technology (drives WRGB white-subpixel compensation + the spotread refresh flag) and an optional Meter profile (CCSS). Leave the profile on "Auto" to use the technology's built-in CCSS, or pick any system/custom profile. QD-OLED panels measure with a 2% window, other OLED panels use a 10% window, and both use pattern insertion. QNED/LCD panels use a 10% APL pattern without insertion. The patch size and insertion settings are set automatically from the technology choice.</div>
 	   <div class="field">
 	    <label>Panel technology</label>
 	    <select id="meterAutoCalDisplayTypeSelect"></select>
@@ -42796,8 +42796,8 @@ async function meterAutoCalUseCaseContinue(){
  meterAutoCalPhase='displaytype';
  meterAutoCalSetOverlay(true,{phase:'displaytype',current_name:'Display Type',message:'Select the panel type / meter profile.'});
 }
-// OLED vs LCD classification for the LG AutoCal guide mappings (OLED: 10%
-// window + pattern insertion; QNED/LCD: 10% APL, no insertion).
+// OLED vs LCD classification for the LG AutoCal guide mappings. QD-OLED uses
+// a 2% window, other OLED panels use a 10% window, and QNED/LCD uses 10% APL.
 function meterAutoCalDisplayTypeIsOled(value,label){
  const s=(String(value||'')+' '+String(label||'')).toLowerCase();
  return /oled|wrgb/.test(s);
@@ -42850,7 +42850,10 @@ function meterAutoCalDisplayTypeUpdateSummary(){
  if(!dst||!out) return;
  const opt=dst.options[dst.selectedIndex];
  const oled=meterAutoCalDisplayTypeIsOled(dst.value,opt?opt.textContent:'');
- let summary=oled
+ const qdoled=String(dst.value||'').toLowerCase().startsWith('qdoled');
+ let summary=qdoled
+  ? 'QD-OLED profile: patch size 2% Window, pattern insertion enabled (level 25%, 5s).'
+  : oled
   ? 'OLED profile: patch size 10% Window, pattern insertion enabled (level 25%, 5s).'
   : 'LCD/QNED profile: patch size 10% APL (window on black), pattern insertion disabled.';
  if(meterSelectedMeasurementIsSpyderX()){
@@ -42883,9 +42886,11 @@ function meterAutoCalDisplayTypeContinue(){
   // not the CCSS override. The CCSS is independent of patch geometry.
   const opt=techSel.options[techSel.selectedIndex];
   const oled=meterAutoCalDisplayTypeIsOled(techSel.value,opt?opt.textContent:'');
+  const qdoled=String(techSel.value||'').toLowerCase().startsWith('qdoled');
+  const defaultPatchSize=qdoled?'2':(oled?'10':'apl_10');
   const ps=document.getElementById('meterPatchSize');
-  if(ps&&ps.value!==(oled?'10':'apl_10')){
-   ps.value=oled?'10':'apl_10';
+  if(ps&&ps.value!==defaultPatchSize){
+   ps.value=defaultPatchSize;
    // meterPatchSize has a 'change' auto-save listener; dispatching it makes
    // the new value persist immediately so a reload doesn't revert it.
    try{ ps.dispatchEvent(new Event('change')); }catch(e){}
@@ -52417,7 +52422,8 @@ function meterDisplayTypeMetaText(value){
 
 function meterDisplayTypePatchSizeDefault(value){
  const current=String(value||'').toLowerCase();
- if(current.startsWith('oled')||current.startsWith('qdoled')||current==='amoled') return '10';
+ if(current.startsWith('qdoled')) return '2';
+ if(current.startsWith('oled')||current==='amoled') return '10';
  if(current==='non_refresh'||current==='refresh'||current==='lcd'||current.startsWith('lcd_')||current==='projector'||current.startsWith('projector_')) return '100';
  if(current.startsWith('ccss_')||current.startsWith('custom_')){
   const meta=meterDisplayTypeMetaText(value);
