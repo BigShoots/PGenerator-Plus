@@ -1112,7 +1112,8 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
         job_id = "%d-%d" % (int(time.time()), os.getpid())
         result_path = os.path.join(COMPANION_BUILD_DIR, "result.icc")
         error_path = os.path.join(COMPANION_BUILD_DIR, "error.txt")
-        for stale in (result_path, error_path):
+        claim_path = os.path.join(COMPANION_BUILD_DIR, "claim.json")
+        for stale in (result_path, error_path, claim_path):
             if os.path.exists(stale):
                 os.remove(stale)
         # Hand over only the arguments that describe the fit. The Companion
@@ -1156,10 +1157,14 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
             if os.path.isfile(error_path):
                 os.remove(error_path)
                 return False
-            # A Companion closed mid-fit stops polling. Give up as soon as that
-            # shows rather than holding the build until the colprof timeout.
+            # The Companion runs colprof synchronously and cannot poll during
+            # the fit. Once it has fetched the TI3, claim.json proves that this
+            # exact job was accepted and the build deadline becomes its
+            # liveness bound. Poll freshness still rejects an unclaimed job.
             if not companion_seen_recently(read_companion_state(state_path)):
-                return False
+                claim = read_companion_state(claim_path)
+                if str(claim.get("job", "")) != job_id:
+                    return False
             time.sleep(COMPANION_BUILD_POLL_SECONDS)
         raise CompanionBuildTimeout(
             "Patch Companion profile creation timed out after {} seconds".format(timeout_seconds))
@@ -1168,7 +1173,7 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
     except (OSError, IOError, ValueError, KeyError):
         return False
     finally:
-        for leftover in ("job.json", "job.ti3"):
+        for leftover in ("job.json", "job.ti3", "claim.json"):
             try:
                 os.remove(os.path.join(COMPANION_BUILD_DIR, leftover))
             except OSError:

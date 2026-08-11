@@ -76,7 +76,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#define APP_VERSION "1.4.8"
+#define APP_VERSION "1.4.9"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -3519,7 +3519,8 @@ static void companion_run_build(const char *poll_response)
                 size_t reply_length = 0;
                 SDL_snprintf(path, sizeof(path), "/api/icc/companion/build-result?token=%s", app.config.token);
                 if (http_binary(&app.config, "POST", path, "application/octet-stream",
-                                icc, (size_t)size, &reply, &reply_length) == 200)
+                                icc, (size_t)size, &reply, &reply_length) == 200 &&
+                    reply && strstr((const char *)reply, "\"status\":\"ok\""))
                     built = true;
                 if (reply) SDL_free(reply);
             }

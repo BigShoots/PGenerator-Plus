@@ -420,6 +420,7 @@ our $_icc_companion_build_job="$_icc_companion_build_dir/job.json";
 our $_icc_companion_build_ti3="$_icc_companion_build_dir/job.ti3";
 our $_icc_companion_build_result="$_icc_companion_build_dir/result.icc";
 our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
+our $_icc_companion_build_claim="$_icc_companion_build_dir/claim.json";
 our $_icc_companion_build_state="$_icc_companion_build_dir/companion.json";
 our $_icc_companion_ack_file="/tmp/pgen_icc_companion.ack.json";
 our $_icc_companion_status_file="/tmp/pgen_icc_companion.status.json";

@@ -647,6 +647,17 @@ sub webui_icc_companion_build_ti3 (@) {
  my $data="";
  if(open(my $fh,"<",$_icc_companion_build_ti3)) { local $/; $data=<$fh>||""; close($fh); }
  return (0,'{"status":"error","message":"Characterization is unavailable"}') if($data eq "");
+ my $job="";
+ if(open(my $jh,"<",$_icc_companion_build_job)) { local $/; $job=<$jh>||""; close($jh); }
+ my $job_id="";
+ $job_id=$1 if($job=~/"job"\s*:\s*"([0-9]+-[0-9]+)"/);
+ return (0,'{"status":"error","message":"Build job is invalid"}') if($job_id eq "");
+ # Fetching the TI3 acknowledges that the Companion started this build. Its
+ # poll loop is blocked while synchronous colprof runs, which can exceed the
+ # ordinary liveness window without indicating a disconnect.
+ my $claim='{"job":"'.$job_id.'","seen":'.time().'}';
+ return (0,'{"status":"error","message":"Could not claim the build"}')
+  unless(&webui_icc_companion_write_atomic($_icc_companion_build_claim,$claim,0600));
  return (1,$data);
 }
 
