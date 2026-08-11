@@ -966,9 +966,9 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     d50 = (0.9642, 1.0, 0.8249)
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
     # KWin's HDR ICC path accepts the full mft2 range through its direct parser.
-    # LittleCMS tone curves allow at most 65,530 entries, which still provides
-    # the linear-PCS resolution needed to distinguish 5% PQ near black.
-    new_input_entries = 65530
+    # Stay within LittleCMS' signed 16-bit stage limit while retaining enough
+    # linear-PCS resolution to distinguish 5% PQ near black.
+    new_input_entries = 32767
     new_output_entries = 4096
     replacements = {}
     changed = False
