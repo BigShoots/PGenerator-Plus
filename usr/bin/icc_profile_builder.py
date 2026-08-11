@@ -959,8 +959,9 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     input shapers, resample the original chromatic transform, and reserve the
     one-cell neutral corridor for the calibration stage. With VCGT, that
     corridor stays in source PQ and KWin applies the separate curves. When
-    applycal has already incorporated calibration into the profile, preserve
-    the same curve values directly in the reshaped B2A instead.
+    When calibration is included without VCGT, keep the neutral cLUT in its
+    virtual-device domain and put the calibration in the high-resolution B2A
+    output shapers. This preserves sharp HDR rolloffs that a 3D grid cannot.
     """
     d50 = (0.9642, 1.0, 0.8249)
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
@@ -1037,19 +1038,10 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
                     ]
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
-                    # The calibrated inverse table needs one extra cell around
-                    # the neutral axis. Small per-channel shaper differences
-                    # otherwise escape the corridor in the HDR rolloff and
-                    # pull nominal greys toward nearby chromatic cLUT nodes.
-                    neutral_width = 2 if incorporated_calibration is not None else 1
-                    neutral_result = (pq_coordinates if incorporated_calibration is None else [
-                        sample_table(incorporated_calibration[channel], pq_coordinates[channel])
-                        for channel in range(3)
-                    ])
-                    if spread <= neutral_width:
-                        result = neutral_result
-                    elif spread == neutral_width + 1:
-                        result = [(original[channel] + neutral_result[channel]) * 0.5
+                    if spread <= 1:
+                        result = pq_coordinates
+                    elif spread == 2:
+                        result = [(original[channel] + pq_coordinates[channel]) * 0.5
                                   for channel in range(3)]
                     else:
                         result = original
@@ -1057,12 +1049,18 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
                         max(0, min(65535, int(round(value * 65535.0))))
                         for value in result
                     )))
-        identity_output = [
-            max(0, min(65535, int(round(index * 65535.0 / (new_output_entries - 1)))))
-            for index in range(new_output_entries)
-        ]
-        packed_identity = struct.pack(">{}H".format(new_output_entries), *identity_output)
-        updated.extend(packed_identity * 3)
+        for channel in range(3):
+            output_curve = [
+                sample_table(incorporated_calibration[channel],
+                             index / float(new_output_entries - 1))
+                if incorporated_calibration is not None
+                else index / float(new_output_entries - 1)
+                for index in range(new_output_entries)
+            ]
+            updated.extend(struct.pack(">{}H".format(new_output_entries), *(
+                max(0, min(65535, int(round(value * 65535.0))))
+                for value in output_curve
+            )))
         replacements[signature] = bytes(updated)
         changed = True
     if not changed:
@@ -1765,18 +1763,18 @@ def build(payload, output_dir):
     with open(output_path, "wb") as handle:
         handle.write(profile)
     if calibration_mode == "profile" and not keeps_mhc2:
-        # applycal must run before KDE's extended PQ input shapers are added:
-        # Argyll's general ICC writer intentionally rejects mft2 one-dimensional
-        # tables above 4096 entries, while KWin's direct parser accepts the
-        # 65,530-entry precision used by reshape_hdr_b2a_for_pq().
-        apply_profile_calibration(output_path, calibration)
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
+            # The profile describes the calibrated virtual device. Include its
+            # calibration in the B2A output curves, where the full shaper
+            # resolution is retained without exposing a VCGT loader tag.
             with open(output_path, "rb") as handle:
                 profile = handle.read()
             profile = reshape_hdr_b2a_for_pq(
                 profile, white["xyz"][1], incorporated_calibration=calibration)
             with open(output_path, "wb") as handle:
                 handle.write(profile)
+        else:
+            apply_profile_calibration(output_path, calibration)
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     final_ti3 = ti3
