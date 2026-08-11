@@ -15970,7 +15970,11 @@ document.getElementById('signal_mode').addEventListener('change',function(){
 	 }
 	 applyMeterTargetGamutDefault(true);
 	 applyMeterTargetGammaDefault(true);
-	 meterApplyPatternInsertionDefaults(false);
+	 // Output-mode changes establish a new conditioning profile. Force the
+	 // mode defaults here because settings restored from disk are marked as
+	 // user-set and would otherwise carry HDR's 5-second interval into SDR.
+	 meterApplyPatternInsertionDefaults(true);
+	 if(typeof saveMeterSettings==='function') saveMeterSettings();
 	 updateModeVisibility();
  meterWarnTargetWhiteAboveHdrMax();
  updateDropdowns();
