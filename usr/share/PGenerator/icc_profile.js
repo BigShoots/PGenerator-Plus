@@ -32,12 +32,26 @@ let meterIccUiSettingsRestored=false;
 let meterIccUiSettingsJson='';
 let meterIccHadStoredUiSettings=false;
 
+function meterIccCalibrationMode(config){
+ const mode=String(config&&config.calibration_mode||'');
+ if(['vcgt','profile','none'].includes(mode)) return mode;
+ return config&&config.include_vcgt===false?'none':'vcgt';
+}
+
+function meterIccCalibrationModeValue(){
+ const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ if(type==='windows-sdr'||type==='windows-hdr') return 'none';
+ const mode=String((document.getElementById('meterIccCalibrationMode')||{}).value||'vcgt');
+ return ['vcgt','profile','none'].includes(mode)?mode:'vcgt';
+}
+
 function meterIccStoredRunConfig(config,patchCount){
  if(!config) return null;
+ const calibrationMode=meterIccCalibrationMode(config);
  return {
   profile_type:String(config.profile_type||''),profile_model:String(config.profile_model||''),
   profile_quality:String(config.profile_quality||''),quality:String(config.quality||''),
-  include_vcgt:config.include_vcgt!==false,
+  calibration_mode:calibrationMode,include_vcgt:calibrationMode==='vcgt',
   icc_version:String(config.icc_version||'auto'),cicp:config.cicp||null,
   signal_mode:String(config.signal_mode||''),pattern_provider:String(config.pattern_provider||''),
   reuse_signature:String(config.reuse_signature||''),target_transfer:config.target_transfer,
@@ -66,7 +80,7 @@ function meterIccUiSettings(){
   profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
   avg_deviation:value('meterIccAvgDeviation'),
-  include_vcgt:!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+  calibration_mode:meterIccCalibrationModeValue(),
   icc_version:value('meterIccVersion')||'auto',cicp:meterIccCicpSettings(),
   patch_settings:meterIccPatchSettings()
  };
@@ -120,9 +134,9 @@ function meterIccRestoreUiSettings(){
    const fields=document.getElementById('meterIccCicpFields');
    if(fields) fields.dataset.profileType=String(saved.profile_type||'');
   }
-  if(saved.include_vcgt!==undefined){
-   const vcgt=document.getElementById('meterIccIncludeVcgt');
-   if(vcgt){ vcgt.checked=!!saved.include_vcgt; vcgt.dataset.profileType=String(saved.profile_type||''); }
+  if(saved.calibration_mode!==undefined||saved.include_vcgt!==undefined){
+   const calibration=document.getElementById('meterIccCalibrationMode');
+   if(calibration){ calibration.value=meterIccCalibrationMode(saved); calibration.dataset.profileType=String(saved.profile_type||''); }
   }
   if(saved.avg_deviation!==undefined&&saved.avg_deviation!==null&&saved.avg_deviation!==''){
    const number=Number(saved.avg_deviation);
@@ -882,10 +896,10 @@ function meterIccProfileTypeChanged(){
    meterIccApplyPatchPreset(String((document.getElementById('meterIccQuality')||{}).value||'medium'));
   }
  }
- const vcgt=document.getElementById('meterIccIncludeVcgt');
- if(vcgt&&vcgt.dataset.profileType!==type){
-  vcgt.checked=true;
-  vcgt.dataset.profileType=type;
+ const calibration=document.getElementById('meterIccCalibrationMode');
+ if(calibration&&calibration.dataset.profileType!==type){
+  calibration.value=mhc2?'none':'vcgt';
+  calibration.dataset.profileType=type;
  }
  const cicpFields=document.getElementById('meterIccCicpFields');
  if(cicpFields&&cicpFields.dataset.profileType!==type){
@@ -901,10 +915,10 @@ function meterIccProfileTypeChanged(){
  meterIccRefreshRecoveryAvailability();
 }
 
-function meterIccIncludeVcgtChanged(){
+function meterIccCalibrationModeChanged(){
  const type=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
- const vcgt=document.getElementById('meterIccIncludeVcgt');
- if(vcgt) vcgt.dataset.profileType=type;
+ const calibration=document.getElementById('meterIccCalibrationMode');
+ if(calibration) calibration.dataset.profileType=type;
  meterIccSyncUi();
 }
 
@@ -1018,7 +1032,7 @@ function meterIccSyncUi(){
  const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
  const profileModelInfo=meterIccProfileModelInfo(profileModel);
  const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
- const includeVcgt=!!((document.getElementById('meterIccIncludeVcgt')||{}).checked);
+ const calibrationMode=meterIccCalibrationModeValue();
  const selectedIccVersion=String((document.getElementById('meterIccVersion')||{}).value||'auto');
  const effectiveIccVersion=meterIccEffectiveVersion(type);
  const cicp=meterIccCicpSettings();
@@ -1030,6 +1044,13 @@ function meterIccSyncUi(){
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
  if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
+ const calibrationSelect=document.getElementById('meterIccCalibrationMode');
+ const mhc2Profile=type==='windows-sdr'||type==='windows-hdr';
+ if(calibrationSelect){
+  if(mhc2Profile) calibrationSelect.value='none';
+  calibrationSelect.disabled=mhc2Profile;
+  calibrationSelect.title=mhc2Profile?'This profile type carries its calibration in MHC2.':'';
+ }
  const cicpFields=document.getElementById('meterIccCicpFields');
  const versionNote=document.getElementById('meterIccVersionNote');
  if(cicpFields) cicpFields.style.display=effectiveIccVersion==='4.4'?'':'none';
@@ -1136,7 +1157,7 @@ function meterIccSyncUi(){
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected structured patch coverage.')
-  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. VCGT: '+(includeVcgt?'Included':'Not included')+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. Calibration: '+({vcgt:'With VCGT',profile:'Without VCGT',none:'None'}[calibrationMode])+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
@@ -1933,9 +1954,7 @@ async function meterIccRetryBuild(){
   const profileQuality=['low','medium','high','ultra'].includes(selectedProfileQuality)?selectedProfileQuality:String((saved&&saved.profile_quality)||preset.profile_quality||'medium');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
-   include_vcgt:saved&&saved.include_vcgt!==undefined
-    ?!!saved.include_vcgt
-    :!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+   calibration_mode:saved?meterIccCalibrationMode(saved):meterIccCalibrationModeValue(),
    icc_version:String((document.getElementById('meterIccVersion')||{}).value||(saved&&saved.icc_version)||'auto'),
    cicp:meterIccCicpSettings(),
    pattern_provider:patternProvider,reuse_signature:reuseSignature,
@@ -2080,7 +2099,7 @@ async function meterIccStart(){
   const usePreRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
   const baseRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:mode,pattern_provider:patternProvider,
-   include_vcgt:!!((document.getElementById('meterIccIncludeVcgt')||{}).checked),
+   calibration_mode:meterIccCalibrationModeValue(),
    icc_version:String((document.getElementById('meterIccVersion')||{}).value||'auto'),cicp:meterIccCicpSettings(),
    patch_settings:patchSettings,start_token:startToken,reuse_signature:reuseSignature,
    target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,

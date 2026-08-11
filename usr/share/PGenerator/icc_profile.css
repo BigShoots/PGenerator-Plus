@@ -11,8 +11,7 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-dialog-title{display:none}
 .meter-icc-profile-quality-field{margin-top:10px}
 .meter-icc-avg-deviation-field{grid-column:1}
 #meterIccAvgDeviation{max-width:180px}
-.meter-icc-field.meter-icc-vcgt-field{grid-column:2;display:flex;flex-direction:row;align-items:center;justify-content:flex-start;align-self:end;gap:8px;min-height:34px;margin:0 0 10px;color:var(--text);font-size:.75rem;line-height:1.4}
-.meter-icc-vcgt-field>input[type="checkbox"]{width:auto;flex:0 0 auto;margin:0}
+.meter-icc-calibration-field{grid-column:2}
 .meter-icc-profile-panel>#meterIccFormatAdvanced{grid-column:1/-1}
 .meter-icc-help{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-left:5px;border-radius:50%;border:1px solid var(--border);background:rgba(91,127,255,.12);color:var(--text2);font-size:.68rem;font-weight:700;line-height:1;cursor:help;vertical-align:middle;position:relative;flex:0 0 auto;user-select:none}
 .meter-icc-help:hover,.meter-icc-help:focus{color:var(--text);border-color:var(--accent);outline:none}
@@ -65,6 +64,6 @@ body.layout-desktop #meterIccWorkspaceCard .meter-icc-dialog-title{display:none}
    than the name because it is a qualifier, not the identifier. */
 .meter-icc-profile-date{flex:0 0 auto;white-space:nowrap;color:var(--text-muted,#8b95a5);font-size:.85em}
 .meter-icc-validation-stats{display:grid;grid-template-columns:repeat(5,minmax(100px,1fr));gap:8px;margin-bottom:12px}
-@media(max-width:900px){.meter-icc-grid,.meter-icc-profile-panel{grid-template-columns:1fr}.meter-icc-profile-panel,.meter-icc-profile-panel>h3,.meter-icc-profile-panel>.meter-icc-section-intro,.meter-icc-profile-panel>#meterIccTargetTransferField,.meter-icc-avg-deviation-field,.meter-icc-vcgt-field{grid-column:auto}}
+@media(max-width:900px){.meter-icc-grid,.meter-icc-profile-panel{grid-template-columns:1fr}.meter-icc-profile-panel,.meter-icc-profile-panel>h3,.meter-icc-profile-panel>.meter-icc-section-intro,.meter-icc-profile-panel>#meterIccTargetTransferField,.meter-icc-avg-deviation-field,.meter-icc-calibration-field{grid-column:auto}}
 @media(max-width:700px){.meter-icc-validation-stats{grid-template-columns:repeat(2,minmax(100px,1fr))}}
-@media(max-width:1180px){body.layout-desktop #meterIccWorkspaceCard .meter-icc-grid{grid-template-columns:1fr}body.layout-desktop #meterIccWorkspaceCard .meter-icc-profile-panel{grid-template-columns:minmax(0,1fr) minmax(180px,.75fr)}body.layout-desktop #meterIccWorkspaceCard .meter-icc-avg-deviation-field{grid-column:1}body.layout-desktop #meterIccWorkspaceCard .meter-icc-vcgt-field{grid-column:2}}
+@media(max-width:1180px){body.layout-desktop #meterIccWorkspaceCard .meter-icc-grid{grid-template-columns:1fr}body.layout-desktop #meterIccWorkspaceCard .meter-icc-profile-panel{grid-template-columns:minmax(0,1fr) minmax(180px,.75fr)}body.layout-desktop #meterIccWorkspaceCard .meter-icc-avg-deviation-field{grid-column:1}body.layout-desktop #meterIccWorkspaceCard .meter-icc-calibration-field{grid-column:2}}

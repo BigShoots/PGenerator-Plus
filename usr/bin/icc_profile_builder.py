@@ -492,6 +492,55 @@ def vcgt_tag(curves):
     return bytes(data)
 
 
+def calibration_file_text(curves):
+    """Create an Argyll CAL file for calibration incorporated into an ICC."""
+    if len(curves) != 3 or any(len(curve) < 2 for curve in curves):
+        fail("Profile calibration requires three usable channel curves")
+    entries = min(len(curve) for curve in curves)
+    lines = [
+        "CAL", "", 'DESCRIPTOR "Argyll Device Calibration Curves"',
+        'ORIGINATOR "PGenerator+"',
+        'CREATED "{}"'.format(datetime.datetime.now().strftime("%a %b %d %H:%M:%S %Y")),
+        'DEVICE_CLASS "DISPLAY"', 'COLOR_REP "RGB"', "",
+        "NUMBER_OF_FIELDS 4", "BEGIN_DATA_FORMAT", "RGB_I RGB_R RGB_G RGB_B",
+        "END_DATA_FORMAT", "", "NUMBER_OF_SETS {}".format(entries), "BEGIN_DATA",
+    ]
+    for index in range(entries):
+        position = index / float(entries - 1)
+        lines.append("{:.10f} {:.10f} {:.10f} {:.10f}".format(
+            position, curves[0][index], curves[1][index], curves[2][index]))
+    lines.extend(("END_DATA", ""))
+    return "\n".join(lines)
+
+
+def apply_profile_calibration(profile_path, curves):
+    """Use Argyll applycal to incorporate calibration without adding VCGT."""
+    applycal = os.environ.get("PGEN_APPLYCAL", "/usr/bin/applycal")
+    if not os.path.isfile(applycal) or not os.access(applycal, os.X_OK):
+        fail("ArgyllCMS applycal is unavailable for calibration without VCGT")
+    temp_dir = tempfile.mkdtemp(prefix="pgen_applycal_")
+    output_path = profile_path + ".applycal.tmp"
+    try:
+        cal_path = os.path.join(temp_dir, "profile.cal")
+        write_text_atomic(cal_path, calibration_file_text(curves))
+        completed = subprocess.Popen(
+            [applycal, "-a", cal_path, profile_path, output_path],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        output = completed.communicate()[0]
+        if (completed.returncode != 0 or not os.path.isfile(output_path)
+                or os.path.getsize(output_path) <= 0):
+            detail = (output or "").strip().splitlines()
+            fail("ArgyllCMS could not incorporate the calibration into the ICC"
+                 + (": " + detail[-1][:240] if detail else ""))
+        os.rename(output_path, profile_path)
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def target_transfer_to_linear(value, transfer, black_ratio=0.0):
     value = max(0.0, min(1.0, value))
     black_ratio = max(0.0, min(0.999, black_ratio))
@@ -850,17 +899,17 @@ def _sample_mft2_clut(table, grid, coordinates):
     return result
 
 
-def reshape_hdr_b2a_for_pq(profile, white_y):
+def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
 
     Argyll's inverse display table is sampled in linear PCS XYZ. Even a 45^3
     cLUT then places both 5% and 10% PQ inside its first cell, so the OLED toe
     cannot be represented accurately. Reparameterize the table through PQ
     input shapers, resample the original chromatic transform, and reserve the
-    one-cell neutral corridor for the source-domain VCGT calibration stage.
-    Profiles without VCGT retain ArgyllCMS's original B2A transform unchanged;
-    a color-management consumer must evaluate that standard profile with the
-    requested rendering intent instead of embedding a synthetic calibration.
+    one-cell neutral corridor for the calibration stage. With VCGT, that
+    corridor stays in source PQ and KWin applies the separate curves. When
+    applycal has already incorporated calibration into the profile, preserve
+    the same curve values directly in the reshaped B2A instead.
     """
     d50 = (0.9642, 1.0, 0.8249)
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
@@ -938,7 +987,10 @@ def reshape_hdr_b2a_for_pq(profile, white_y):
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
                     if spread <= 1:
-                        result = pq_coordinates
+                        result = (pq_coordinates if incorporated_calibration is None else [
+                            sample_table(incorporated_calibration[channel], pq_coordinates[channel])
+                            for channel in range(3)
+                        ])
                     elif spread == 2:
                         result = [(original[channel] + pq_coordinates[channel]) * 0.5
                                   for channel in range(3)]
@@ -957,7 +1009,7 @@ def reshape_hdr_b2a_for_pq(profile, white_y):
         replacements[signature] = bytes(updated)
         changed = True
     if not changed:
-        fail("KDE HDR VCGT profiles require an mft2 B2A transform")
+        fail("KDE HDR calibrated profiles require an mft2 B2A transform")
     return rebuild_icc(profile, replacements)
 
 
@@ -1554,12 +1606,21 @@ def build(payload, output_dir):
     profile_quality = str(payload.get("profile_quality", "")).lower()
     if profile_quality and profile_quality not in ("low", "medium", "high", "ultra"):
         fail("Unsupported ICC profile calculation quality")
-    include_vcgt = payload.get("include_vcgt")
-    if include_vcgt is None:
-        # Source-domain VCGT remains the preferred KDE HDR path.
-        include_vcgt = True
-    elif not isinstance(include_vcgt, bool):
-        fail("Include VCGT must be true or false")
+    calibration_mode = str(payload.get("calibration_mode", "")).lower()
+    if not calibration_mode:
+        # Older saved runs only recorded the VCGT checkbox. Preserve their
+        # exact meaning when they are rebuilt after this three-mode selector
+        # is introduced.
+        legacy_vcgt = payload.get("include_vcgt")
+        if legacy_vcgt is None:
+            calibration_mode = "vcgt"
+        elif isinstance(legacy_vcgt, bool):
+            calibration_mode = "vcgt" if legacy_vcgt else "none"
+        else:
+            fail("Include VCGT must be true or false")
+    if calibration_mode not in ("vcgt", "profile", "none"):
+        fail("Unsupported calibration mode")
+    include_vcgt = calibration_mode == "vcgt"
     rows = normalize_measurements(payload)
     metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
     metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
@@ -1571,18 +1632,20 @@ def build(payload, output_dir):
     # describe the panel, not an already calibrated signal.
     black, white, primaries = profile_measurement_summary(profile_rows)
     keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
+    if keeps_mhc2 and calibration_mode == "profile":
+        fail("Windows MHC2 profiles already carry their calibration in MHC2")
     mhc2_type = profile_type if keeps_mhc2 else (
         "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
         mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
 
-    # A KDE HDR profile with VCGT models the calibrated device domain because
-    # KWin applies that calibration directly in source PQ code space. Without
-    # VCGT, give ArgyllCMS the raw measurements and retain its standard B2A.
+    # A separate VCGT and calibration incorporated into the ICC both start
+    # with a profile of the calibrated virtual device. With no calibration,
+    # profile the display exactly as measured. Windows MHC2 remains its own
+    # calibration path and continues to characterize the raw display.
     fit_rows = profile_rows
-    if (profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
-            and include_vcgt):
+    if not keeps_mhc2 and calibration_mode in ("vcgt", "profile"):
         fit_rows = apply_calibration_to_rows(profile_rows, calibration)
     ti3, _, _ = make_ti3(payload, fit_rows)
     if not os.path.isdir(output_dir):
@@ -1621,7 +1684,7 @@ def build(payload, output_dir):
     profile = rebuild_icc(profile, replacements)
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
     if (profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
-            and include_vcgt):
+            and calibration_mode == "vcgt"):
         profile = reshape_hdr_b2a_for_pq(profile, white["xyz"][1])
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
@@ -1633,10 +1696,32 @@ def build(payload, output_dir):
         )
     with open(output_path, "wb") as handle:
         handle.write(profile)
+    if calibration_mode == "profile":
+        # applycal must run before KDE's extended PQ input shapers are added:
+        # Argyll's general ICC writer intentionally rejects mft2 one-dimensional
+        # tables above 4096 entries, while KWin's direct parser accepts the
+        # 65,530-entry precision used by reshape_hdr_b2a_for_pq().
+        apply_profile_calibration(output_path, calibration)
+        if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
+            with open(output_path, "rb") as handle:
+                profile = handle.read()
+            profile = reshape_hdr_b2a_for_pq(
+                profile, white["xyz"][1], incorporated_calibration=calibration)
+            with open(output_path, "wb") as handle:
+                handle.write(profile)
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
-    write_text_atomic(ti3_path, ti3)
-    validation = run_profcheck(ti3_path, output_path, fit_rows, profile_model, patch_set)
+    final_ti3 = ti3
+    validation_rows = fit_rows
+    if calibration_mode == "profile":
+        # applycal composes the calibration into both profile directions, so
+        # the finished profile once again accepts raw device values. Validate
+        # and retain the raw characterization rather than the virtual-device
+        # data used for the intermediate colprof fit.
+        final_ti3, _, _ = make_ti3(payload, profile_rows)
+        validation_rows = profile_rows
+    write_text_atomic(ti3_path, final_ti3)
+    validation = run_profcheck(ti3_path, output_path, validation_rows, profile_model, patch_set)
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
     if mhc2_validation:
         validation["mhc2"] = mhc2_validation
@@ -1670,6 +1755,7 @@ def build(payload, output_dir):
                 "profile_type": profile_type,
                 "profile_model": profile_model,
                 "profile_quality": profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium"),
+                "calibration_mode": calibration_mode,
                 "include_vcgt": include_vcgt,
                 "icc_version": requested_icc_version,
                 "cicp": cicp,
@@ -1699,6 +1785,7 @@ def build(payload, output_dir):
         "profile_model_label": PROFILE_MODELS[profile_model]["label"],
         "patch_set": patch_set,
         "profile_quality": profile_quality or None,
+        "calibration_mode": calibration_mode,
         "include_vcgt": include_vcgt,
         "icc_version": icc_version,
         "icc_version_request": requested_icc_version,

@@ -66,10 +66,14 @@
         <label for="meterIccAvgDeviation">Measurement deviation (%) <span class="meter-icc-help" data-tip="How much noise ArgyllCMS should expect in the meter readings (colprof -r). Lower values fit the measurements more tightly. Higher values smooth over noisier data. Default is 0.50% when left blank.">?</span></label>
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
        </div>
-       <label class="meter-icc-field meter-icc-vcgt-field">
-        <input id="meterIccIncludeVcgt" type="checkbox" checked onchange="meterIccIncludeVcgtChanged()">
-        <span>Include VCGT curves <span class="meter-icc-help" data-tip="Adds per-channel video-card calibration curves to the ICC profile. The profile consumer must apply these curves together with the ICC transform. For KDE HDR, PGenerator+ fits the cLUT in the calibrated device domain. When checked, KWin applies the separate VCGT stage after B2A. When unchecked, PGenerator+ bakes the same neutral calibration into the B2A output curves instead.">?</span></span>
-       </label>
+       <div class="meter-icc-field meter-icc-calibration-field">
+        <label for="meterIccCalibrationMode">Calibration <span class="meter-icc-help" data-tip="Calibration with VCGT is recommended for an uncalibrated desktop monitor when the operating system loads video-card curves. Calibration without VCGT incorporates the curves into the ICC output transform for systems that do not load VCGT separately. No calibration is for a TV or display already calibrated internally, so the profile characterizes that state without applying another calibration. Windows MHC2 profile types already carry their calibration in MHC2.">?</span></label>
+        <select id="meterIccCalibrationMode" onchange="meterIccCalibrationModeChanged()">
+         <option value="vcgt" selected>Calibration with VCGT</option>
+         <option value="profile">Calibration without VCGT</option>
+         <option value="none">No calibration</option>
+        </select>
+       </div>
        <details id="meterIccFormatAdvanced" class="meter-icc-advanced" style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--text);font-size:.76rem;font-weight:600">ICC format and CICP</summary>
         <div class="meter-icc-field" style="margin-top:10px">
