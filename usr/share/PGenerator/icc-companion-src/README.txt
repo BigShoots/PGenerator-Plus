@@ -48,8 +48,9 @@ After a profile build completes, the PGenerator+ Profile History shows a green
 Install & Apply button while this Companion is connected. It downloads the
 selected ICC to this computer and hands it to Profile Loader for the same
 display that is showing patches. On Windows, Profile Loader keeps the saved
-monitor/profile mapping and its normal automatic reapply behavior. Profile
-Loader does not need to be open before the button is used.
+monitor/profile mapping, enables "Use my settings for this device", and keeps
+its normal automatic reapply behavior. Profile Loader does not need to be open
+before the button is used.
 
 On KDE/Linux, extract the package with the desktop archive manager. If the
 executable bit is not preserved, run `chmod +x PGenPatchCompanion` once before
