@@ -860,7 +860,10 @@ int ofApp::dv_color_space=0;
 void ofApp::dovi_metadata_update() {
 
 	int crc;
-	int dv_metadata_map_mode = (dv_map_mode == 1) ? 2 : dv_map_mode;
+	// Classic clients such as HCFR do not select a Dolby Vision mapping mode.
+	// Preserve the mode loaded from PGenerator.conf instead of silently
+	// converting the user's Absolute selection to Relative on the wire.
+	int dv_metadata_map_mode = dv_map_mode;
 	if (dv_metadata_map_mode < 0 || dv_metadata_map_mode > 2) dv_metadata_map_mode = 2;
 	
 	if (dv_map_mode != dv_metadata.dv_map_mode || 
