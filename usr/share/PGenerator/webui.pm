@@ -3925,6 +3925,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # HDR10 10-bit Full table 100%->1023). 12-bit links are coerced to
  # 10-bit here, matching meterPatchBitDepth().
  my $_chroma_max_bpc=(defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "" && int($pgenerator_conf{"max_bpc"}) >= 10) ? 10 : 8;
+ # A paired Companion renders in the target computer's HDR swapchain. Its
+ # source-code precision must not follow the unrelated Pi HDMI max_bpc setting.
+ # Doing so made otherwise identical HDR series alternate between 8-bit and
+ # 10-bit codes whenever the Pi output configuration changed.
+ $_chroma_max_bpc=10 if($pattern_provider eq "companion" && $signal_mode eq "hdr10");
  my $chroma_min_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 64 : 16) : 0;
  my $chroma_span_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 876 : 219) : ($_chroma_max_bpc==10 ? 1023 : 255);
  my $chroma_max_code=$chroma_min_code + $chroma_span_code;
@@ -4234,7 +4239,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     # operator has the link at 8-bit (1.6 WORKING A/B test).
     my %_opts_for_grey=(
      hdr20_codes => ($lg_hdr20_codes ? 1 : 0),
-     max_bpc => (defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : "",
+     max_bpc => ($pattern_provider eq "companion" && $signal_mode eq "hdr10") ? 10
+      : ((defined $pgenerator_conf{"max_bpc"} && $pgenerator_conf{"max_bpc"} ne "") ? $pgenerator_conf{"max_bpc"} : ""),
      autocal_26 => (($points==26 && $lg_autocal_26) ? 1 : 0),
      autocal_26_codes => ($lg_autocal_26_codes ? 1 : 0),
      extended_sdr_codes => ($lg_extended_sdr_codes ? 1 : 0),
