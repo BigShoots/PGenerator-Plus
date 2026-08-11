@@ -519,12 +519,46 @@ def apply_profile_calibration(profile_path, curves):
     if not os.path.isfile(applycal) or not os.access(applycal, os.X_OK):
         fail("ArgyllCMS applycal is unavailable for calibration without VCGT")
     temp_dir = tempfile.mkdtemp(prefix="pgen_applycal_")
+    input_path = os.path.join(temp_dir, "profile.icc")
     output_path = profile_path + ".applycal.tmp"
     try:
         cal_path = os.path.join(temp_dir, "profile.cal")
         write_text_atomic(cal_path, calibration_file_text(curves))
+        with open(profile_path, "rb") as handle:
+            source_profile = handle.read()
+        # ArgyllCMS 3.5 applycal cannot copy ICC v4 mluc text tags. They do
+        # not participate in either transform, so preserve them byte-for-byte
+        # around applycal while it updates only the color and calibration tags.
+        mluc_tags = {
+            signature: payload for signature, payload in read_icc_tags(source_profile)
+            if payload[:4] == b"mluc"
+        }
+        replacements = {signature: None for signature in mluc_tags}
+        if b"desc" in mluc_tags:
+            # applycal requires a profile description even though it cannot
+            # parse the v4 multi-localized form. Supply a disposable v2 desc
+            # tag and restore the original mluc payload after calibration.
+            description = b"PGenerator+ display profile\0"
+            replacements[b"desc"] = (
+                b"desc\0\0\0\0" + struct.pack(">I", len(description)) + description
+                + struct.pack(">IIHB", 0, 0, 0, 0) + b"\0" * 67
+            )
+        if b"cprt" in mluc_tags:
+            replacements[b"cprt"] = b"text\0\0\0\0PGenerator+\0"
+        applycal_profile = rebuild_icc(source_profile, replacements) if mluc_tags else source_profile
+        source_version = source_profile[8:12]
+        if source_version[0] >= 4:
+            # applycal's calibration metadata writer is also limited to the
+            # ICC v2 tag registry. The transform representation is identical
+            # here, so present a v2 header during composition and restore the
+            # requested v4 header on the finished profile.
+            applycal_profile = bytearray(applycal_profile)
+            applycal_profile[8:12] = b"\x02\x10\0\0"
+            applycal_profile = bytes(applycal_profile)
+        with open(input_path, "wb") as handle:
+            handle.write(applycal_profile)
         completed = subprocess.Popen(
-            [applycal, "-a", cal_path, profile_path, output_path],
+            [applycal, "-a", cal_path, input_path, output_path],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
         if (completed.returncode != 0 or not os.path.isfile(output_path)
@@ -532,6 +566,17 @@ def apply_profile_calibration(profile_path, curves):
             detail = (output or "").strip().splitlines()
             fail("ArgyllCMS could not incorporate the calibration into the ICC"
                  + (": " + detail[-1][:240] if detail else ""))
+        if mluc_tags or source_version[0] >= 4:
+            with open(output_path, "rb") as handle:
+                calibrated_profile = handle.read()
+            if source_version[0] >= 4:
+                calibrated_profile = bytearray(calibrated_profile)
+                calibrated_profile[8:12] = source_version
+                calibrated_profile = bytes(calibrated_profile)
+            if mluc_tags:
+                calibrated_profile = rebuild_icc(calibrated_profile, mluc_tags)
+            with open(output_path, "wb") as handle:
+                handle.write(calibrated_profile)
         os.rename(output_path, profile_path)
     finally:
         try:
