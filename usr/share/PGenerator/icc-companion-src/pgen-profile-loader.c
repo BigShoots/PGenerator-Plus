@@ -938,10 +938,27 @@ static void refresh_display_profiles(void) {
     EnableWindow(g_set_default, preferred >= 0);
 }
 
+static BOOL enable_per_user_profiles(DISPLAY_ENTRY *display, BOOL interactive) {
+    BOOL enabled = FALSE;
+    /* The modern association APIs do not enable the legacy per-user profile
+       list shown as "Use my settings for this device" in Color Management.
+       Without this, Windows can report our WCS default while the classic UI
+       and older color-managed applications continue using the system list. */
+    if (display && display->driver_key[0] &&
+        WcsGetUsePerUserProfiles(display->driver_key, CLASS_MONITOR, &enabled) && enabled)
+        return TRUE;
+    if (display && display->driver_key[0] &&
+        WcsSetUsePerUserProfiles(display->driver_key, CLASS_MONITOR, TRUE)) return TRUE;
+    if (interactive)
+        message_error(g_window, L"Enabling per-user display profiles", GetLastError());
+    return FALSE;
+}
+
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
-    if (!display || !g_profile_name[0] || !p_add_association || !p_set_default) return FALSE;
+    if (!display || !g_profile_name[0] || !p_add_association || !p_set_default ||
+        !enable_per_user_profiles(display, interactive)) return FALSE;
     associated = display_profile_is_associated(display, g_profile_name);
     if (!associated || g_associate_advanced) {
         /* For a normal profile, add it without changing the active transform;
@@ -1054,6 +1071,10 @@ static BOOL apply_profile(BOOL interactive) {
        EXTENDED (HDR) association list; requiring MHC2 here made Windows show
        every HDR cLUT-only profile as an SDR profile. */
     g_associate_advanced = profile_name_is_hdr(g_profile_path);
+    /* Do this before the already-active shortcut. A profile may be present in
+       the per-user WCS association list even though Color Management is still
+       configured to ignore that list. */
+    if (!enable_per_user_profiles(display, interactive)) return FALSE;
     {
         WCHAR actual[MAX_PATH + 128] = L"";
         if (profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]))) {
