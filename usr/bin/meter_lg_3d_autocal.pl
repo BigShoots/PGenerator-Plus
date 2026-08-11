@@ -2969,6 +2969,32 @@ sub step_drives_light {
  return ($max > 0.1) ? 1 : 0;
 }
 
+# A deep single-channel lattice node can legitimately produce no measurable
+# light after the TV's active 1D calibration has shaped that channel. Keep the
+# strict null guard for every normal patch, but allow these lowest nodes to be
+# confirmed against a visible neutral reference before treating zero as real.
+sub step_may_measure_zero {
+ my ($step)=@_;
+ return 0 if(!step_drives_light($step));
+ my $max=0;
+ my $have_drives=0;
+ foreach my $key (qw(signal_r_pct signal_g_pct signal_b_pct)) {
+  next if(!defined($step->{$key}));
+  $have_drives=1;
+  my $v=$step->{$key}+0;
+  $max=$v if($v > $max);
+ }
+ return 0 if(!$have_drives);
+ return ($max <= 5.1) ? 1 : 0;
+}
+
+sub zero_read_health_step {
+ my ($config)=@_;
+ my $step=patch_step("white",25,"zero_read_health",$config);
+ $step->{"name"}="Zero-read meter health check 25% neutral";
+ return $step;
+}
+
 # Returns 1 when a reading that the meter reported as successful is in fact an
 # unusable null read and must be thrown away and re-measured.
 sub invalid_null_reading {
@@ -3001,6 +3027,15 @@ sub note_null_reading {
  $state->{"null_reads"}=($state->{"null_reads"}||0)+1;
  $state->{"null_read_patches"}=[] if(ref($state->{"null_read_patches"}) ne "ARRAY");
  push @{$state->{"null_read_patches"}},step_read_label($step) if(@{$state->{"null_read_patches"}} < 8);
+}
+
+sub note_confirmed_zero_reading {
+ my ($state,$step)=@_;
+ return if(ref($state) ne "HASH");
+ $state->{"confirmed_zero_reads"}=($state->{"confirmed_zero_reads"}||0)+1;
+ $state->{"confirmed_zero_patches"}=[] if(ref($state->{"confirmed_zero_patches"}) ne "ARRAY");
+ push @{$state->{"confirmed_zero_patches"}},step_read_label($step)
+  if(@{$state->{"confirmed_zero_patches"}} < 8);
 }
 
 sub read_step {
@@ -3036,6 +3071,35 @@ sub read_step {
    my $label=step_read_label($step);
    log_line("Discarding null meter reading for ".$label." (stimulus ".format_percent($step->{"stimulus"}||0)."%, discard ".$null_discards.", re-read limit ".$max_null_discards.")");
    if($null_discards > $max_null_discards) {
+    if(step_may_measure_zero($step)) {
+     my $health_step=zero_read_health_step($config);
+     if(ref($state) eq "HASH") {
+      $state->{"message"}="Checking meter response before accepting measured zero for ".$label;
+      write_state($state);
+     }
+     log_line("Persistent zero for deep patch ".$label."; measuring 25% neutral health check");
+     my ($health_reading,$health_error)=read_step_once($config,$health_step);
+     if($health_error || invalid_null_reading($health_reading,$health_step)) {
+      my $detail=$health_error ? ": ".$health_error : "";
+      return (undef,"Meter/display health check failed after repeated all-zero readings for ".$label.$detail);
+     }
+     log_line("Meter health check passed for ".$label."; restoring and confirming the target patch");
+     my ($confirmed,$confirm_error)=read_step_once($config,$step);
+     return (undef,$confirm_error) if($confirm_error);
+     if(invalid_null_reading($confirmed,$step)) {
+      $confirmed->{"measured_zero"}=json_true();
+      $confirmed->{"zero_confirmed_by_reference"}=json_true();
+      $confirmed->{"zero_reference_luminance"}=defined($health_reading->{"luminance"})
+       ? $health_reading->{"luminance"}+0 : ($health_reading->{"Y"}||0)+0;
+      note_confirmed_zero_reading($state,$step);
+      log_line("Accepted confirmed physical zero for deep patch ".$label." after successful 25% neutral health check");
+      $reading=$confirmed;
+      last;
+     }
+     log_line("Recovered non-zero reading for ".$label." after the meter health check");
+     $reading=$confirmed;
+     last;
+    }
     return (undef,"Meter returned ".$null_discards." unusable all-zero readings for ".$label." after ".$max_null_discards." re-reads; check the meter is still on the patch and awake");
    }
    if(ref($state) eq "HASH") {
