@@ -18948,6 +18948,12 @@ function meterSeriesSnapshotCanRestore(snap){
  return Object.values(variants).some(variant=>variant&&!meterSeriesSnapshotIsCleared(variant)&&meterSeriesSnapshotHasReadings(variant));
 }
 
+function meterSeriesSnapshotContainsIccWorkflow(snapshot){
+ if(meterSeriesStatusIsIccWorkflow(snapshot)) return true;
+ const variants=(snapshot&&snapshot.mode_snapshots&&typeof snapshot.mode_snapshots==='object')?snapshot.mode_snapshots:{};
+ return Object.values(variants).some(variant=>meterSeriesStatusIsIccWorkflow(variant));
+}
+
 function meterSetSeriesCacheBootId(bootId){
  bootId=(bootId==null?'':String(bootId)).replace(/[^A-Za-z0-9_-]/g,'');
  if(!bootId){
@@ -18974,7 +18980,7 @@ function meterSetSeriesCacheBootId(bootId){
    if(!cache||typeof cache!=='object') return;
    Object.entries(cache).forEach(([key,snap])=>{
     if(!snap||typeof snap!=='object') return;
-    if(meterSeriesKeyIsIccWorkflow(key)||Number(snap.points||0)===990001) return;
+    if(meterSeriesKeyIsIccWorkflow(key)||meterSeriesSnapshotContainsIccWorkflow(snap)) return;
     const incoming=[];
     const bare=meterSeriesSnapshotWithoutModeVariants(snap);
     if(bare) incoming.push(bare);
@@ -19043,7 +19049,7 @@ function meterLoadSeriesCache(){
   const parsed=JSON.parse(raw)||{};
   if(parsed&&typeof parsed==='object'){
    Object.keys(parsed).forEach(key=>{
-    if(meterSeriesKeyIsIccWorkflow(key)||Number(parsed[key]&&parsed[key].points||0)===990001) delete parsed[key];
+    if(meterSeriesKeyIsIccWorkflow(key)||meterSeriesSnapshotContainsIccWorkflow(parsed[key])) delete parsed[key];
    });
    meterSeriesCache=parsed;
   }
@@ -19576,7 +19582,12 @@ function meterResolveSeriesSnapshotFromCache(key,options){
   return out;
  };
  const opts=options||{};
- const rawExact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ let rawExact=(meterSeriesCache&&meterSeriesCache[key])?meterSeriesCache[key]:null;
+ if(rawExact&&meterSeriesSnapshotContainsIccWorkflow(rawExact)){
+  delete meterSeriesCache[key];
+  rawExact=null;
+  meterScheduleSeriesCachePersist();
+ }
  const requestedMode=String((opts.signalMode!=null)?opts.signalMode:(meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase()||'sdr';
  let exact=meterSeriesSnapshotForMode(rawExact,requestedMode);
  // CHC imports are measurement-only workspaces. Older builds allowed their
@@ -19626,6 +19637,7 @@ function meterResolveSeriesSnapshotFromCache(key,options){
  if(meterSeriesCache&&typeof meterSeriesCache==='object'){
   Object.entries(meterSeriesCache).forEach(([cacheKey,rootSnap])=>{
    if(cacheKey===key) return;
+   if(meterSeriesSnapshotContainsIccWorkflow(rootSnap)) return;
    const meta=meterParseSeriesKey(cacheKey);
    if(!meta||meta.type!=='greyscale') return;
    const snap=meterSeriesSnapshotForMode(rootSnap,signalMode);
@@ -19763,7 +19775,25 @@ function meterSeriesStepsHaveHcfrSaturationMarkers(steps){
 // replaces (for example) Greyscale 21pt with ICC White/Black/Grey patches while
 // the preset selector still displays its built-in fallback value.
 function meterSeriesStatusIsIccWorkflow(status){
- return Number(status&&status.points||0)===990001;
+ if(Number(status&&status.points||0)===990001) return true;
+ if(!status) return false;
+ const steps=Array.isArray(status.steps)?status.steps:[];
+ const readings=Array.isArray(status.readings)?status.readings:[];
+ const items=steps.length?steps:readings;
+ // Older/in-flight state payloads did not always retain the reserved points
+ // value, and contaminated browser caches can carry the preset's type instead
+ // of the worker's. ICC characterization patch names are private and
+ // deliberately use the ICC prefix, so identify that payload by shape too.
+ return items.length>=2&&items.every(item=>/^ICC(?:\s|$)/i.test(String(item&&item.name||'')));
+}
+
+function meterActiveSeriesIsIccWorkflow(){
+ return meterSeriesStatusIsIccWorkflow({
+  type:meterActiveSeriesType,
+  points:meterActiveSeriesPoints,
+  steps:Array.isArray(meterSeriesSteps)?meterSeriesSteps:[],
+  readings:Array.isArray(meterReadings)?meterReadings:[]
+ });
 }
 
 function meterSharedSeriesStatusCanRecover(status){
@@ -27949,7 +27979,7 @@ function meterCacheSeriesState(status,options){
  // Never persist an ICC characterization run as a selectable chart snapshot.
  // This also prevents a completed profile run from becoming the last Series
  // restored after a browser refresh.
- if(Number(meterActiveSeriesPoints||0)===990001) return;
+ if(meterActiveSeriesIsIccWorkflow()) return;
  if(!meterActiveSeriesKey||!meterSeriesSteps||meterSeriesSteps.length===0) return;
  const activeSignalMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const prev=meterSeriesSnapshotForMode(meterSeriesCache[meterActiveSeriesKey],activeSignalMode);
@@ -31685,7 +31715,9 @@ function meterSetSeriesTab(tab,skipAutoSelect){
   else setTimeout(selectImportedDefault,0);
   return;
  }
- if(previousTab===meterSeriesTab&&meterActiveSeriesType&&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab) return;
+ if(previousTab===meterSeriesTab&&meterActiveSeriesType
+  &&meterSeriesTabForType(meterActiveSeriesType)===meterSeriesTab
+  &&!meterActiveSeriesIsIccWorkflow()) return;
  if(meterSeriesTab==='color'){
   meterSelectBuiltinColorChecker();
   return;
@@ -36382,7 +36414,7 @@ async function meterSelectSeries(type,points,opts){
  else if(meterContinuousActive||meterContinuousSuspendedForLgWrite||meterContinuousTimer) meterStopContinuous();
  meterLatticeDefault3dView(points);
  meterDefaultTargetsForColorSeries(type,points);
- if(meterActiveSeriesKey===key){
+ if(meterActiveSeriesKey===key&&!meterActiveSeriesIsIccWorkflow()){
   // Same-key early return ONLY when the active context matches the LIVE
   // signal mode. A stale restore (e.g. the boot restore racing the config
   // load) can leave an SDR-cached series active while the generator is in
