@@ -1037,13 +1037,19 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
                     ]
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
-                    if spread <= 1:
-                        result = (pq_coordinates if incorporated_calibration is None else [
-                            sample_table(incorporated_calibration[channel], pq_coordinates[channel])
-                            for channel in range(3)
-                        ])
-                    elif spread == 2:
-                        result = [(original[channel] + pq_coordinates[channel]) * 0.5
+                    # The calibrated inverse table needs one extra cell around
+                    # the neutral axis. Small per-channel shaper differences
+                    # otherwise escape the corridor in the HDR rolloff and
+                    # pull nominal greys toward nearby chromatic cLUT nodes.
+                    neutral_width = 2 if incorporated_calibration is not None else 1
+                    neutral_result = (pq_coordinates if incorporated_calibration is None else [
+                        sample_table(incorporated_calibration[channel], pq_coordinates[channel])
+                        for channel in range(3)
+                    ])
+                    if spread <= neutral_width:
+                        result = neutral_result
+                    elif spread == neutral_width + 1:
+                        result = [(original[channel] + neutral_result[channel]) * 0.5
                                   for channel in range(3)]
                     else:
                         result = original
