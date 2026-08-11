@@ -149,6 +149,14 @@ def build(platform, server, token, output_path, paired=True):
             path = os.path.join(binary_dir, name)
             if not os.path.isfile(path):
                 fail("Companion package is not installed")
+            if package["directory"] == "linux-x64" and name == "PGenPatchCompanion":
+                # The Linux HDR renderer depends on the patched SDL shipped in
+                # this archive. A plain executable otherwise prefers a distro's
+                # libSDL3 with the same SONAME, which may reject HDR10 output.
+                add_file(archive, os.path.join(source_dir, "PGenPatchCompanion.sh"),
+                         "PGenPatchCompanion", 0o755)
+                add_file(archive, path, "PGenPatchCompanion.bin", 0o755)
+                continue
             executable = ("PGenPatchCompanion", "PGenProfileLoader", "reset-hdr-tonemapping.sh",
                           "colprof", "profcheck")
             mode = 0o755 if package["directory"] == "linux-x64" and name in executable else 0o644
