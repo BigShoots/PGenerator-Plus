@@ -6457,7 +6457,7 @@ sub webui_meter_settings_save (@) {
   grey_two_point_low grey_two_point_high
   grey_ref_mode gray_world rgb_formula de_form color_de_form target_gamma
   target_white_x target_white_y custom_d65_enabled
-  hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum simulate_spectro
+  hdr_bt2390 hdr_diffuse_white hdr_diffuse_white_auto incl_lum sep_lum color_incl_lum color_sep_lum simulate_spectro
  );
  my @parts;
  while($body=~/"(\w+)"\s*:\s*("[^"\\]*(?:\\.[^"\\]*)*"|-?\d+(?:\.\d+)?|true|false|null)/g) {
@@ -6679,7 +6679,10 @@ sub webui_meter_settings_load (@) {
   close($cs);
   $custom_series_value="" unless($custom_series_value=~/^".*"\s*$/s);
  }
- foreach my $path ($_meter_settings_runtime, $_meter_settings_file, $_meter_settings_persist, $_meter_settings_persist_legacy) {
+ # Current saves update the runtime and persistent files, not the historical
+ # /tmp copy. Keep /tmp last so stale pre-migration settings cannot override
+ # the durable copy after a daemon restart or OTA reboot.
+ foreach my $path ($_meter_settings_runtime, $_meter_settings_persist, $_meter_settings_persist_legacy, $_meter_settings_file) {
   next unless(-f $path);
   my $json="";
   if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
@@ -14116,7 +14119,19 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:#0d0d15;border-radius:6px;padding:10px 12px">
     <div style="font-size:.72rem;color:var(--text2)">High Luminance: <strong id="meterTwoPointHighLuminance" style="color:#eee;font-size:.9rem">--</strong> cd/m&sup2;</div>
-    <div style="font-size:.72rem;color:var(--text2)">Two-point greyscale shows only the low and high RGB balance results.</div>
+    <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="Changes the Delta E calculation shown as the fourth bar in each two-point result.">
+     Grey &Delta;E
+     <select id="meterTwoPointDeltaEForm" class="inline-select" onchange="meterOnTwoPointDeltaEFormChange()">
+      <option value="deitp" selected>&Delta;E ITP (default)</option>
+      <option value="deluv76">&Delta;E76 (Luv)</option>
+      <option value="de2000">&Delta;E2000</option>
+      <option value="de94">&Delta;E94</option>
+      <option value="de76lab">&Delta;E76 (Lab)</option>
+      <option value="decmc">&Delta;E CMC(1:1)</option>
+      <option value="de2000_jnd">&Delta;E2000 JND</option>
+     </select>
+    </label>
+    <div style="font-size:.72rem;color:var(--text2)">Each result shows RGB balance and Delta E.</div>
     </div>
 	   </div>
 	   <div id="chartsGreyscaleFullWrap">
@@ -14292,6 +14307,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto">
        <input type="checkbox" id="meterColorIncludeLumError" onchange="meterOnColorIncludeLumChange()" style="vertical-align:middle"> Include luminance error
        <span class="meter-help-tip" title="Off = chroma-only ΔE and 3D (target Y matched to measured). On = full ΔE including luminance; 2D/3D CIE show cyan/orange ΔY% rings (cyan = brighter, orange = dimmer) and 3D adds vertical ΔY stems. Small filled dots are always measured xy, not luminance rings." aria-label="Include luminance error help">?</span>
+      </label>
+      <label id="meterColorSeparateLumErrorWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="Split each color Delta E bar into its chroma-only portion and the added luminance-error portion.">
+       <input type="checkbox" id="meterColorSeparateLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Separate Luminance Error
       </label>
       <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
        Color ΔE
@@ -15509,13 +15527,17 @@ function applyConfigState(nextConfig){
  try{ uiEnforceQuantRangeForColorFormat(); }catch(e){}
  setVal('eotf',config.eotf||'0');
  setVal('primaries',config.primaries||'0');
- applyMeterTargetGamutDefault(false);
+ // The static HTML defaults are SDR values. Before durable meter settings
+ // arrive, seed the calibration targets from the restored output mode so a
+ // cold HDR start cannot get stuck on BT.709 and BT.1886.
+ applyMeterTargetGamutDefault(!meterSettingsLoaded);
  document.getElementById('max_luma').value=config.max_luma||'1000';
  document.getElementById('min_luma').value=config.min_luma||'0.005';
  document.getElementById('max_cll').value=config.max_cll||'1000';
  document.getElementById('max_fall').value=config.max_fall||'400';
  meterSyncHdrMetadata();
  try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
+ if(!meterSettingsLoaded) applyMeterTargetGammaDefault(true);
  // Restore the calibration-card low-light handler from localStorage so
  // the operator's last selection (e.g. 3-read averaging for 1.4% IRE)
  // persists across page loads.
@@ -22656,10 +22678,25 @@ function meterColorIncludeLum(){
  return !!(el&&el.checked);
 }
 
+function meterColorSeparateLumEnabled(){
+ const el=document.getElementById('meterColorSeparateLumError');
+ return !!(el&&el.checked&&meterColorIncludeLum());
+}
+
+function meterUpdateColorSeparateLumVisibility(){
+ const cb=document.getElementById('meterColorSeparateLumError');
+ const wrap=document.getElementById('meterColorSeparateLumErrorWrap');
+ if(!cb||!wrap) return;
+ const show=meterColorIncludeLum();
+ wrap.style.display=show?'':'none';
+ if(!show&&cb.checked) cb.checked=false;
+}
+
 // Color-series "Include luminance error" toggle: updates ΔE mode, CIE ΔY%
 // halo rings, tables, and prefs. Dedicated handler so the CIE canvas always
 // fully redraws when the rings should appear/disappear.
 function meterOnColorIncludeLumChange(){
+ meterUpdateColorSeparateLumVisibility();
  try{ meterSaveColorPrefs(); }catch(e){}
  if(meterReadings && meterReadings.length){
   meterReadings.forEach(r=>{
@@ -25938,6 +25975,7 @@ function meterSaveColorPrefs(){
    de_form:       v('meterDeltaEForm'),
    color_de_form: v('meterColorDeltaEForm'),
   color_incl_lum:cb('meterColorIncludeLumError'),
+  color_sep_lum: cb('meterColorSeparateLumError'),
    sep_lum:       cb('meterSeparateLumError'),
    target_gamma:  v('meterTargetGamma'),
     hdr_bt2390:    cb('meterHdrApplyBT2390'),
@@ -25989,6 +26027,8 @@ function meterLoadColorPrefs(){
   setVal('meterDeltaEForm',  meterNormalizeSavedGreyDeltaEForm(p.de_form));
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
+  setChk('meterColorSeparateLumError', p.color_sep_lum);
+  meterUpdateColorSeparateLumVisibility();
     setChk('meterSeparateLumError', greyMode==='eotf' ? p.sep_lum : '0');
     meterUpdateSeparateLumVisibility();
   setVal('meterTargetGamma', p.target_gamma);
@@ -28400,7 +28440,7 @@ function drawGammaContrastLabel(ctx,chart,readings){
 // shape for the vertical live bar chart. Target is always the center line
 // (0) regardless of whether the source was balance (100-based) or color
 // delta (already 0-based).
-function meterRgbDeltasForLive(reading,bal){
+function meterRgbDeltasForLive(reading,bal,includeDeltaE){
  if(!bal) return null;
  const isDelta=(bal.mode==='delta');
  const center=isDelta?0:100;
@@ -28409,6 +28449,12 @@ function meterRgbDeltasForLive(reading,bal){
   {key:'G',label:'G',color:'#4caf50',v:(bal.G!=null)?bal.G-center:null,labelV:(bal.G!=null)?(isDelta?(bal.G-center):bal.G):null,showPlus:isDelta},
   {key:'B',label:'B',color:'#42a5f5',v:(bal.B!=null)?bal.B-center:null,labelV:(bal.B!=null)?(isDelta?(bal.B-center):bal.B):null,showPlus:isDelta}
  ];
+ if(includeDeltaE&&reading){
+  let de=null;
+  try{ de=meterGreyDeltaResult(reading,meterGreyRefMode(),meterDeltaEForm(),meterGrayWorldWeight()).value; }catch(e){}
+  if(Number.isFinite(de)) entries.push({key:'DE',label:'ΔE',color:de<1?'#4caf50':de<3?'#ff9800':'#ff4444',v:de,labelV:de,showPlus:false,unit:'',decimals:2});
+  else entries.push({key:'DE',label:'ΔE',color:'#888',v:null,labelV:null,showPlus:false,unit:'',decimals:2});
+ }
  return {title:'RGB Δ',unit:'%',entries,decimals:1,minHalfRange:5,scaleHeadroom:1.6};
 }
 
@@ -28548,7 +28594,7 @@ function drawDeltaBarsVertical(canvasId,spec){
    ctx.fillRect(left,Math.round(cy-barH/2),width,Math.round(barH));
    ctx.globalAlpha=1;
    ctx.beginPath();ctx.arc(Math.round(xV),Math.round(cy),3,0,Math.PI*2);ctx.fillStyle=e.color;ctx.fill();
-   const dec=(spec.decimals!=null)?spec.decimals:1;
+   const dec=(e.decimals!=null)?e.decimals:((spec.decimals!=null)?spec.decimals:1);
    const labelVal=(e.labelV!=null)?e.labelV:e.v;
    const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
    ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='right';
@@ -28605,7 +28651,7 @@ function drawDeltaBarsVertical(canvasId,spec){
   // as greyscale RGB balance instead of following the moving bar endpoint.
   if(!themedColorBars){ctx.fillStyle=labelColor;ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(e.label,Math.round(cx),H-padBot+15);}
   ctx.fillStyle=rgbPercentageBars?'#fff':labelColor;ctx.font=(rgbPercentageBars?'bold 12px':'10px')+' sans-serif';ctx.textAlign='center';
-  const dec=(spec.decimals!=null)?spec.decimals:1;
+  const dec=(e.decimals!=null)?e.decimals:((spec.decimals!=null)?spec.decimals:1);
   const labelVal=(e.labelV!=null)?e.labelV:e.v;
   const prefix=(e.showPlus===false)?'':(labelVal>0?'+':(labelVal<0?'':''));
   let labelY=themedColorBars?H-6:(e.v<0 ? (yVPx+16) : (yVPx-8));
@@ -28614,7 +28660,7 @@ function drawDeltaBarsVertical(canvasId,spec){
   } else if(!themedColorBars&&labelY<padTop) {
    labelY=padTop;
   }
-  const unit=themedColorBars?(e.unit||spec.unit||''):'';
+  const unit=themedColorBars?((e.unit!=null)?e.unit:(spec.unit||'')):'';
   ctx.fillText(prefix+labelVal.toFixed(dec)+unit,Math.round(cx),labelY);
  });
 }
@@ -30583,6 +30629,7 @@ function meterApplyThumbSelection(indices,opts){
 }
 function meterUpdateDeltaEFormControl(){
  const greySel=document.getElementById('meterDeltaEForm');
+ const twoPointSel=document.getElementById('meterTwoPointDeltaEForm');
  const colorSel=document.getElementById('meterColorDeltaEForm');
  const colorWrap=document.getElementById('meterColorDeltaEFormWrap');
  const colorMode=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
@@ -30590,11 +30637,20 @@ function meterUpdateDeltaEFormControl(){
   greySel.disabled=false;
   greySel.title=colorMode?'Changes the greyscale ΔE calculation used when greyscale charts are shown':'Changes the greyscale ΔE calculation';
  }
+ if(twoPointSel&&greySel&&twoPointSel.value!==greySel.value) twoPointSel.value=greySel.value;
  if(colorWrap) colorWrap.style.display=colorMode?'flex':'none';
  if(colorSel){
   colorSel.disabled=false;
   colorSel.title='Changes the color and saturation-sweep ΔE calculation';
  }
+}
+
+function meterOnTwoPointDeltaEFormChange(){
+ const twoPointSel=document.getElementById('meterTwoPointDeltaEForm');
+ const greySel=document.getElementById('meterDeltaEForm');
+ if(twoPointSel&&greySel) greySel.value=twoPointSel.value;
+ meterOnGreyRefChange();
+ try{ saveMeterSettings(); }catch(e){}
 }
 
 function meterClearInteractiveSelection(keepLiveReading){
@@ -46742,6 +46798,7 @@ function drawTwoPointPreset(gsSteps){
  if(lowMeta) lowMeta.innerHTML=meterTwoPointMetaHtml('low',state.lowStep,null);
  if(highMeta) highMeta.innerHTML=meterTwoPointMetaHtml('high',state.highStep,null);
  if(highLum) highLum.textContent='--';
+ meterUpdateDeltaEFormControl();
  drawDeltaBarsVertical('meterTwoPointLowCanvas',null);
  drawDeltaBarsVertical('meterTwoPointHighCanvas',null);
 }
@@ -46756,8 +46813,9 @@ function drawTwoPointCharts(gs,allSteps){
  const highLum=document.getElementById('meterTwoPointHighLuminance');
  if(lowLabel) lowLabel.textContent=state.lowStep?meterGreyscaleStepLabel(state.lowStep):'Low';
  if(highLabel) highLabel.textContent=state.highStep?meterGreyscaleStepLabel(state.highStep):'High';
- drawDeltaBarsVertical('meterTwoPointLowCanvas',state.lowReading?meterRgbDeltasForLive(state.lowReading,meterLiveRgbData(state.lowReading)):null);
- drawDeltaBarsVertical('meterTwoPointHighCanvas',state.highReading?meterRgbDeltasForLive(state.highReading,meterLiveRgbData(state.highReading)):null);
+ meterUpdateDeltaEFormControl();
+ drawDeltaBarsVertical('meterTwoPointLowCanvas',state.lowReading?meterRgbDeltasForLive(state.lowReading,meterLiveRgbData(state.lowReading),true):null);
+ drawDeltaBarsVertical('meterTwoPointHighCanvas',state.highReading?meterRgbDeltasForLive(state.highReading,meterLiveRgbData(state.highReading),true):null);
  if(lowMeta) lowMeta.innerHTML=meterTwoPointMetaHtml('low',state.lowStep,state.lowReading);
  if(highMeta) highMeta.innerHTML=meterTwoPointMetaHtml('high',state.highStep,state.highReading);
  if(highLum){
@@ -51188,16 +51246,18 @@ function drawColorDeltaE2000Chart(readings){
  const colorRefMode=meterColorRefMode();
  const colorInclLum=(colorRefMode==='eotf');
  const colorForm=meterColorDeltaEForm();
+ const sepLum=meterColorSeparateLumEnabled();
  const deLabel=meterDeltaEFormLabel(colorForm);
  const lbl=document.getElementById('chartColorDELabel');
- if(lbl) lbl.textContent = colorInclLum ? (deLabel+' (Color Accuracy + Luminance)') : (deLabel+' (Color Accuracy, Chroma Only)');
+ if(lbl) lbl.textContent = colorInclLum ? (deLabel+' (Color Accuracy + Luminance'+(sepLum?', separated':'')+')') : (deLabel+' (Color Accuracy, Chroma Only)');
  const deData=[];
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
   const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
   if(!Number.isFinite(de)) return;
-  deData.push({name:rd.name||'',de,color:meterPreviewColorForReading(rd,'target')});
+  const chroma=sepLum?Math.min(meterColorDeltaE2000(rd,'absolute',colorForm),de):null;
+  deData.push({name:rd.name||'',de,chroma,color:meterPreviewColorForReading(rd,'target')});
  });
  if(deData.length===0) return;
  const deValues=deData.map(d=>d.de);
@@ -51238,8 +51298,22 @@ function drawColorDeltaE2000Chart(readings){
   const cx=chart.toX(n>1?pos/(n-1):0.5);
   const barH=Math.max(0.005,Math.min(d.de/yMaxDE,1));
   const y=chart.pad.t+chart.h-barH*chart.h;
-  ctx.fillStyle=d.de<1?'#4caf50':d.de<3?'#ff9800':'#f44';
-  ctx.fillRect(cx-barW/2,y,barW,Math.max(2,barH*chart.h));
+  const totalColor=d.de<1?'#4caf50':d.de<3?'#ff9800':'#f44';
+  if(sepLum&&Number.isFinite(d.chroma)&&d.de>0){
+   const chromaColor=d.chroma<1?'#4caf50':d.chroma<3?'#ff9800':'#f44';
+   const chromaH=Math.min(Math.max(d.chroma,0)/yMaxDE,barH);
+   const yChroma=chart.toY(chromaH);
+   ctx.fillStyle=chromaColor;
+   ctx.fillRect(cx-barW/2,yChroma,barW,Math.max(0,chart.toY(0)-yChroma));
+   if(yChroma-y>0.5){
+    ctx.save();ctx.shadowColor=totalColor;ctx.shadowBlur=6;ctx.fillStyle=totalColor;
+    ctx.fillRect(cx-barW/2,y,barW,yChroma-y);ctx.restore();
+   }
+   ctx.fillStyle='#ffffffd0';ctx.fillRect(cx-barW/2,Math.max(y,yChroma-1),barW,1);
+  }else{
+   ctx.fillStyle=totalColor;
+   ctx.fillRect(cx-barW/2,y,barW,Math.max(2,barH*chart.h));
+  }
   ctx.fillStyle=pgThemeColor('--chart-annotation','#ccc');ctx.font='11px sans-serif';ctx.textAlign='center';
   ctx.fillText(d.de.toFixed(2),cx,y-4);
  });
@@ -53877,6 +53951,7 @@ function saveMeterSettings(){
   de_form:val('meterDeltaEForm'),
   color_de_form:val('meterColorDeltaEForm','de2000'),
     color_incl_lum:chk('meterColorIncludeLumError'),
+    color_sep_lum:chk('meterColorSeparateLumError'),
   target_gamma:val('meterTargetGamma'),
     custom_d65_enabled:chk('meterCustomD65Enabled'),
     target_white_x:val('meterTargetWhiteX'),
@@ -53913,13 +53988,21 @@ async function flushMeterSettings(timeoutMs){
   ]);
  }catch(e){}
 }
-async function loadMeterSettings(){
+async function loadMeterSettings(attempt){
+ attempt=Number(attempt)||0;
  if(meterCcssOptionsPromise) await meterCcssOptionsPromise;
  const requests=await Promise.all([
   fetchJSON('/api/meter/settings?custom_series=0&_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'}),
   meterFetchCustomSeriesSnapshot()
  ]);
- const s=requests[0]||{};
+ if(!requests[0]){
+  // Keep the browser-local color settings visible during a cold start, then
+  // retry instead of treating a transient daemon outage as an empty config.
+  try{ meterLoadColorPrefs(); }catch(e){}
+  if(attempt<3) setTimeout(()=>loadMeterSettings(attempt+1),[1500,3000,6000][attempt]||6000);
+  return false;
+ }
+ const s=requests[0];
  const customSeriesPayload=requests[1];
  try{ meterSetSeriesCacheBootId(s.boot_id||''); }catch(e){}
  // Apply any locally-cached color prefs first — server values below will
@@ -54080,6 +54163,8 @@ async function loadMeterSettings(){
  setVal('meterDeltaEForm',  meterNormalizeSavedGreyDeltaEForm(s.de_form));
  setVal('meterColorDeltaEForm', s.color_de_form||'de2000');
  setChk('meterColorIncludeLumError', s.color_incl_lum);
+ setChk('meterColorSeparateLumError', s.color_sep_lum);
+ meterUpdateColorSeparateLumVisibility();
  const savedTargetGamma=(s.target_gamma!=null)?String(s.target_gamma):'';
  if(savedTargetGamma!==''){
   setVal('meterTargetGamma', savedTargetGamma);
@@ -54137,6 +54222,7 @@ async function loadMeterSettings(){
  }
  meterSettingsLoaded=true;
  meterSetSeriesTab(meterSeriesTab,true);
+ return true;
 }
 // Add change listeners for auto-save
 ['meterDisplayType','meterMeasurementPort','meterTargetGamut','meterDelay','meterPatternDelay','meterPatchSize','meterRefreshRate',
@@ -54215,7 +54301,7 @@ if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',asyn
  await saveMeterSettings();
  await meterCheckStatus();
 });
-['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterHdrApplyBT2390','meterHdrDiffuseWhite','meterHdrDiffuseWhiteAuto'].forEach(id=>{
+['meterPatchInsert','meterPatchInsertPatchEnabled','meterPatchInsertTimeEnabled','meterCustomD65Enabled','meterSeparateLumError','meterColorIncludeLumError','meterColorSeparateLumError','meterHdrApplyBT2390','meterHdrDiffuseWhite','meterHdrDiffuseWhiteAuto'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',saveMeterSettings);
 });
