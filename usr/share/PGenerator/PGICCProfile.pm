@@ -678,7 +678,15 @@ sub webui_icc_companion_build_result (@) {
  $error=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
  if($error ne "") {
   $error=~s/[^A-Za-z0-9 ._:\/()\[\]-]+/?/g;
-  &webui_icc_companion_write_atomic($_icc_companion_build_error,substr($error,0,240),0600);
+  return '{"status":"error","message":"Could not store the build error"}'
+   unless(&webui_icc_companion_write_atomic($_icc_companion_build_error,substr($error,0,240),0600));
+  # The durable result/error file is the builder's completion signal. Remove
+  # the advertised job before replying so the Companion's next poll cannot
+  # claim and run the same synchronous colprof job a second time while the
+  # builder is still waking up and consuming that signal.
+  unlink($_icc_companion_build_job);
+  unlink($_icc_companion_build_ti3);
+  unlink($_icc_companion_build_claim);
   return '{"status":"ok"}';
  }
  return '{"status":"error","message":"Empty profile payload"}' unless(defined($body) && length($body)>128);
@@ -688,8 +696,12 @@ sub webui_icc_companion_build_result (@) {
  # that will only fail later.
  my $declared=unpack("N",substr($body,0,4));
  return '{"status":"error","message":"Payload is not an ICC profile"}' if($declared!=length($body) || substr($body,36,4) ne "acsp");
- return &webui_icc_companion_write_atomic($_icc_companion_build_result,$body,0600)
-  ? '{"status":"ok"}' : '{"status":"error","message":"Could not store the built profile"}';
+ return '{"status":"error","message":"Could not store the built profile"}'
+  unless(&webui_icc_companion_write_atomic($_icc_companion_build_result,$body,0600));
+ unlink($_icc_companion_build_job);
+ unlink($_icc_companion_build_ti3);
+ unlink($_icc_companion_build_claim);
+ return '{"status":"ok"}';
 }
 
 sub webui_icc_companion_status (@) {
