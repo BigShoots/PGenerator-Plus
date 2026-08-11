@@ -3576,7 +3576,10 @@ static void companion_run_install(const char *poll_response)
     unsigned char *profile = NULL;
     size_t profile_length = 0;
     FILE *handle;
-    bool accepted = false, profile_is_hdr = false;
+    bool accepted = false;
+#ifndef _WIN32
+    bool profile_is_hdr = false;
+#endif
     if (!json_string(poll_response, "install_job", job, sizeof(job)) ||
         !json_string(poll_response, "file", file, sizeof(file)) ||
         !job[0] || !file[0] || strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
@@ -3593,8 +3596,10 @@ static void companion_run_install(const char *poll_response)
         companion_report_install(job, false, "Patch Companion could not download a valid ICC profile");
         return;
     }
+#ifndef _WIN32
     profile_is_hdr = linux_profile_name_is_hdr(file) ||
                      profile_has_hdr_cicp(profile, profile_length);
+#endif
     {
         const char *base = SDL_GetPrefPath("PGeneratorPlus", "profiles");
         if (!base) {
