@@ -19,7 +19,8 @@ selected profile for one active display.
 The PGenerator+ WebUI can also send a completed profile through a connected
 Patch Companion. Profile Loader targets the display being used for patches,
 installs and applies the ICC through this same controlled path, saves the
-monitor/profile pairing, and opens on the verification result.
+monitor/profile pairing, and reports the verification result from the tray
+without forcing the Profile Loader window open.
 
 A green tray icon means Windows reports the selected file as the display's
 active default. A red icon means the profile is missing, the display is not

@@ -3637,7 +3637,7 @@ static void companion_run_install(const char *poll_response)
         SDL_snprintf(display_argument, sizeof(display_argument), "--display=%s", app.selected_display);
         child = fork();
         if (child == 0) {
-            execl(loader, loader, "--apply", display_argument, profile_path, (char *)NULL);
+            execl(loader, loader, "--apply-silent", display_argument, profile_path, (char *)NULL);
             _exit(127);
         }
         if (child > 0) {

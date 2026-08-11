@@ -1196,8 +1196,6 @@ static void apply_companion_command(const WCHAR *command) {
     g_browse_has_mhc2 = profile_contains_mhc2(profile);
     g_browse_advanced = profile_name_is_hdr(profile);
     accept_profile_path(profile);
-    ShowWindow(g_window, SW_SHOW);
-    SetForegroundWindow(g_window);
     start_apply_profile();
 }
 
@@ -1874,6 +1872,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     MSG msg;
     INITCOMMONCONTROLSEX controls;
     BOOL tray_only = wcsstr(command_line, L"--tray") != NULL;
+    BOOL companion_apply = wcsstr(command_line, L"--apply-from-companion") != NULL;
     WCHAR *install_arg = wcsstr(command_line, L"--install-only ");
     (void)previous;
     if (install_arg) {
@@ -1948,7 +1947,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     g_tray.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_tray);
     verify_profile(FALSE);
-    if (!tray_only || !g_profile_name[0]) ShowWindow(g_window, show);
+    if ((!tray_only && !companion_apply) || (!g_profile_name[0] && !companion_apply))
+        ShowWindow(g_window, show);
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

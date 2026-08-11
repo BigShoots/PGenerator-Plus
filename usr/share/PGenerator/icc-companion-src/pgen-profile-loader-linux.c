@@ -142,6 +142,8 @@ typedef struct {
     bool in_modal;             /* Set only while the prompt's own controls draw */
     bool kwin_driving;         /* KWin reported displays, so colord is not used */
     bool auto_sized;           /* The one-shot fit-to-content pass has happened */
+    bool silent_apply;         /* Companion one-shot: apply, verify externally, exit */
+    bool silent_started;
     /* SDL's video functions belong to the main thread, but the enumeration
      * that needs display names runs on the worker. The main thread snapshots
      * them here and the worker only reads the snapshot. */
@@ -2178,6 +2180,11 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
             const char *argument = argv[index];
             if (!argument || !argument[0]) continue;
             if (!strcmp(argument, "--apply")) { apply_now = true; continue; }
+            if (!strcmp(argument, "--apply-silent")) {
+                apply_now = true;
+                app.silent_apply = true;
+                continue;
+            }
             if (!strncmp(argument, "--display=", 10)) {
                 SDL_strlcpy(requested_display, argument + 10, sizeof(requested_display));
                 continue;
@@ -2201,9 +2208,14 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         if (!app.selected_profile[0] && app.profile_count > 0)
             SDL_strlcpy(app.selected_profile, app.profiles[0].path, sizeof(app.selected_profile));
         verify_profile();
-        if (apply_now && app.selected_profile[0]) start_action(ACTION_APPLY);
+        if (apply_now && app.selected_profile[0]) {
+            app.silent_started = true;
+            if (app.silent_apply) SDL_HideWindow(app.window);
+            start_action(ACTION_APPLY);
+        }
     }
     /* Checked once here, not per frame, and never raised again once answered. */
+    if (app.silent_apply) app.colord_prompt_done = true;
     if (!app.colord_prompt_done) app.prompt = colour_system_prompt();
     app.next_verify_ms = SDL_GetTicks() + VERIFY_INTERVAL_MS;
     *appstate = &app;
@@ -2309,6 +2321,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 SDL_AppResult SDL_AppIterate(void *appstate)
 {
     (void)appstate;
+    if (app.silent_apply && app.silent_started &&
+        !SDL_GetAtomicInt(&app.worker_busy)) return SDL_APP_SUCCESS;
     SDL_SetRenderDrawColor(app.renderer, pal.background.r, pal.background.g,
                            pal.background.b, 255);
     SDL_RenderClear(app.renderer);
