@@ -66,6 +66,7 @@ typedef struct {
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -79,6 +80,15 @@ typedef int socket_handle_t;
  * artwork is compiled in, because the Companion ships as a small zip that must
  * not gain a runtime file dependency. */
 #include "pgen-icc-companion-icon.h"
+#endif
+
+#ifndef _WIN32
+static int reap_profile_loader(void *opaque)
+{
+    pid_t child = (pid_t)(intptr_t)opaque;
+    while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+    return 0;
+}
 #endif
 
 #define APP_VERSION "1.4.14"
@@ -3675,6 +3685,10 @@ static void companion_run_install(const char *poll_response)
             _exit(127);
         }
         if (child > 0) {
+            SDL_Thread *reaper = SDL_CreateThread(reap_profile_loader,
+                                                  "profile-loader-reaper",
+                                                  (void *)(intptr_t)child);
+            if (reaper) SDL_DetachThread(reaper);
             const char *wanted = strrchr(profile_path, '/');
             wanted = wanted ? wanted + 1 : profile_path;
             for (int attempt = 0; attempt < 120; attempt++) {
@@ -3690,6 +3704,9 @@ static void companion_run_install(const char *poll_response)
                     if (!strcmp(name, wanted)) { accepted = true; break; }
                 }
             }
+            /* If thread creation failed, at least reap an already-finished
+             * loader here. The normal detached reaper handles later exits. */
+            if (!reaper) waitpid(child, NULL, WNOHANG);
         }
     }
 #endif
