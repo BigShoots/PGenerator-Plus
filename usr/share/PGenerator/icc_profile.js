@@ -656,7 +656,7 @@ const METER_ICC_PATCH_PRESETS={
  clut:{
   small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:38,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
   medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:101,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
-  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:244,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
+  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:300,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
  }
 };
 
