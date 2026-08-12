@@ -24354,6 +24354,28 @@ function rgbBalance(reading,whiteRef,modeOrIncl,blackLevel){
   : rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel);
 }
 
+// RGB agreement for a colour-series patch. Greyscale RGB balance compares a
+// neutral reading with D65, but applying that formula to a red/green/blue
+// target reports the intentional colour channels as enormous balance errors.
+// Compare measured and target RGB component-by-component instead, with the
+// target rescaled to measured Y so these columns remain chroma-only. A patch
+// that lands exactly on target is 100/100/100 regardless of its hue.
+function meterColorPatchRgbBalance(reading,whiteRef){
+ const measured=meterReadingXYZ(reading);
+ const target=meterColorDeltaTargetXYZ(reading,false);
+ const white=meterReadingXYZ(whiteRef);
+ if(!measured||!target||!white||!(white.Y>0)||!(measured.Y>0)) return {R:null,G:null,B:null,noChroma:true};
+ const gamut=meterAnalysisGamut();
+ const m=xyzToLinRgb(measured.X/white.Y,measured.Y/white.Y,measured.Z/white.Y,gamut.xyzToRgb);
+ const t=xyzToLinRgb(target.X/white.Y,target.Y/white.Y,target.Z/white.Y,gamut.xyzToRgb);
+ // Normalize every component difference by the patch's dominant target
+ // channel. Per-channel ratios are undefined when a target channel is zero
+ // (pure red's target G/B), while L* magnifies tiny negative matrix residue.
+ // A common patch scale stays finite and makes 100 mean exact agreement.
+ const scale=Math.max(Math.abs(t[0]),Math.abs(t[1]),Math.abs(t[2]),1e-9);
+ return {R:100+(m[0]-t[0])*100/scale,G:100+(m[1]-t[1])*100/scale,B:100+(m[2]-t[2])*100/scale};
+}
+
 function meterLiveRgbData(reading){
  if(!reading) return {mode:'balance',R:100,G:100,B:100};
  const measured=meterReadingXYZ(reading);
@@ -52358,6 +52380,7 @@ function meterExportCSV(){
  const modeWithY='eotf';
  const colorModeNoY='absolute';
  const colorModeWithY='eotf';
+ const colorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  let csv='Step,Name,IRE,R_code,G_code,B_code,X,Y,Z,x,y,Luminance,CCT,Gamma,R_bal,G_bal,B_bal,dEuv,dEuv_wY,dE2000,dE2000_wY,dEITP,dEITP_wY\n';
  // Helper: is this reading a neutral-grey patch (greyscale sweep) vs a chroma
  // patch (colors / saturations)? Greyscale uses the hcfr greyRef path; chroma
@@ -52371,6 +52394,14 @@ function meterExportCSV(){
  const fmtBal=(v)=>{
   const n=Number(v);
   return Number.isFinite(n)?n.toFixed(1):'';
+ };
+ const csvIre=rd=>{
+  if(!colorSeries) return meterReadingAnalysisIre(rd);
+  const r=Number(rd.r_code),g=Number(rd.g_code),b=Number(rd.b_code);
+  if(![r,g,b].every(Number.isFinite)||r!==g||g!==b) return '';
+  const range=meterLiveCodeRangeForStep(rd);
+  if(!range||!(range.span>0)) return '';
+  return Number(Math.max(0,Math.min(100,(r-range.min)*100/range.span)).toFixed(2));
  };
  // Greyscale dEuv / dE2000 via HCFR grey-ref at a forced mode.
  const greyHcfrPair=(rd,mode)=>{
@@ -52391,7 +52422,7 @@ function meterExportCSV(){
  sorted.forEach((rd,i)=>{
   let dEuvNoY=0,dEuvWY=0,dE2kNoY=0,dE2kWY=0,dEitpNoY=0,dEitpWY=0;
   if((rd.Y||0)>0){
-   if(isGrey(rd)){
+   if(isGrey(rd)&&!colorSeries){
     const noY=greyHcfrPair(rd,modeNoY);
     const wY=greyHcfrPair(rd,modeWithY);
     dEuvNoY=noY.duv; dEuvWY=wY.duv;
@@ -52403,13 +52434,15 @@ function meterExportCSV(){
      if(b&&Number.isFinite(b.value)) dEitpWY=b.value;
     }catch(e){}
    } else {
-    // Color / sat-sweep: chromatic u'v' has no luminance term, so both
-    // dEuv columns share the same value; dE2000/ITP use include-lum modes.
-    const tgt=meterTargetChromaticityForReading(rd);
-    const du=4*(rd.x||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-4*tgt.x/(-2*tgt.x+12*tgt.y+3);
-    const dv=9*(rd.y||0)/(-2*(rd.x||0)+12*(rd.y||0)+3)-9*tgt.y/(-2*tgt.x+12*tgt.y+3);
-    const duv=Math.sqrt(du*du+dv*dv)*1000; // scaled u'v' distance
-    dEuvNoY=duv; dEuvWY=duv;
+    // Color / sat-sweep: use the same target and Delta-E implementation as
+    // the live color chart for every metric. The old dEuv export was merely
+    // u'v' distance multiplied by 1000, which is not CIE L*u*v* Delta E.
+    try{
+     const v0=meterColorDeltaE2000(rd,colorModeNoY,'deluv76');
+     const v1=meterColorDeltaE2000(rd,colorModeWithY,'deluv76');
+     if(Number.isFinite(v0)) dEuvNoY=v0;
+     if(Number.isFinite(v1)) dEuvWY=v1;
+    }catch(e){}
     try{
      const v0=meterColorDeltaE2000(rd,colorModeNoY,'de2000');
      const v1=meterColorDeltaE2000(rd,colorModeWithY,'de2000');
@@ -52424,9 +52457,10 @@ function meterExportCSV(){
     }catch(e){}
    }
   }
-  const g=effectiveGamma(rd.luminance,Lw,rd.ire);
-  const bal=whiteR?rgbBalance(rd,whiteR,greyMode,Lb):{R:100,G:100,B:100};
-  csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
+  const ire=csvIre(rd);
+  const g=colorSeries?null:effectiveGamma(rd.luminance,Lw,ire);
+  const bal=whiteR?(colorSeries?meterColorPatchRgbBalance(rd,whiteR):rgbBalance(rd,whiteR,greyMode,Lb)):{R:100,G:100,B:100};
+  csv+=[i+1,rd.name||'',ire==null?'':ire,rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
    rd.cct||'',g!==null?g.toFixed(2):'',fmtBal(bal.R),fmtBal(bal.G),fmtBal(bal.B),
