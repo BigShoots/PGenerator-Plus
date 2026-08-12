@@ -699,11 +699,13 @@ function meterIccPatchSettings(){
   const value=Number((document.getElementById(id)||{}).value);
   return Number.isFinite(value)?value:fallback;
  };
+ const profileType=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const grayLimit=meterIccProfileInfo(profileType).mode==='hdr10'?1025:257;
  return {
   patch_count:Math.max(34,Math.min(11106,Math.round(number('meterIccPatchCount',95)))),
   white_patches:Math.max(1,Math.min(32,Math.round(number('meterIccWhitePatches',2)))),
   black_patches:Math.max(1,Math.min(32,Math.round(number('meterIccBlackPatches',2)))),
-  gray_steps:Math.max(2,Math.min(257,Math.round(number('meterIccGraySteps',25)))),
+  gray_steps:Math.max(2,Math.min(grayLimit,Math.round(number('meterIccGraySteps',25)))),
   single_channel_steps:Math.max(0,Math.min(129,Math.round(number('meterIccSingleSteps',13)))),
   cube_steps:Math.max(0,Math.min(21,Math.round(number('meterIccCubeSteps',0)))),
   cube_surface_steps:Math.max(0,Math.min(21,Math.round(number('meterIccCubeSurfaceSteps',0)))),
@@ -725,7 +727,9 @@ function meterIccApplyPatchPreset(presetName){
  set('meterIccPatchCountRange',preset.patch_count);
  set('meterIccWhitePatches',preset.white_patches);
  set('meterIccBlackPatches',preset.black_patches);
- set('meterIccGraySteps',preset.gray_steps);
+ const profileType=String((document.getElementById('meterIccProfileType')||{}).value||'sdr');
+ const grayLimit=meterIccProfileInfo(profileType).mode==='hdr10'?1025:257;
+ set('meterIccGraySteps',Math.min(grayLimit,preset.gray_steps));
  set('meterIccSingleSteps',preset.single_channel_steps);
  set('meterIccCubeSteps',preset.cube_steps!=null?preset.cube_steps:0);
  set('meterIccCubeSurfaceSteps',preset.cube_surface_steps!=null?preset.cube_surface_steps:0);
