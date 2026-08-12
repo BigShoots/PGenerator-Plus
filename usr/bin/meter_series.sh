@@ -1634,6 +1634,67 @@ nonblack_zero_reading() {
   }'
 }
 
+# Catch a successful-looking measurement that cannot plausibly belong to the
+# displayed HDR profiling patch.  A renderer/update transient can return finite
+# XYZ from a much darker frame, so the all-zero guard cannot identify it.  For
+# patches whose three channels are all at least 65% drive, compare against the
+# repeated white measurements at the start of the same series.  Falling below
+# 20% of that white is intentionally a very wide gate: normal tone mapping,
+# gamut differences and OLED power limiting remain valid, while a stale/dark
+# frame such as 86 cd/m2 between 1000 cd/m2 neighbours is re-displayed once.
+implausibly_dim_hdr_profile_reading() {
+ local reading="$1" r="$2" g="$3" b="$4" input_max="$5" name="$6"
+ [[ "$SIGNAL_MODE" == "hdr10" ]] || return 1
+ [[ "$SERIES_ID" == colors_* && "$name" == ICC\ * ]] || return 1
+ READING_JSON="$reading" R_CODE="$r" G_CODE="$g" B_CODE="$b" INPUT_MAX_VALUE="$input_max" \
+ STATE_FILE_VALUE="$STATE_FILE" "${PYTHON_BIN:-python}" - <<'PY' 2>/dev/null
+import json, math, os, sys
+
+def number(value):
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    return value if math.isfinite(value) else None
+
+try:
+    maximum = float(os.environ.get("INPUT_MAX_VALUE", "0"))
+    channels = [float(os.environ.get(key, "0")) for key in ("R_CODE", "G_CODE", "B_CODE")]
+    reading = json.loads(os.environ.get("READING_JSON", "") or "{}")
+except Exception:
+    raise SystemExit(1)
+if maximum <= 0 or min(channels) / maximum < 0.65:
+    raise SystemExit(1)
+measured_y = number(reading.get("luminance", reading.get("Y")))
+if measured_y is None or measured_y < 0:
+    raise SystemExit(1)
+
+try:
+    with open(os.environ.get("STATE_FILE_VALUE", "")) as fh:
+        state = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+
+white_values = []
+for row in state.get("readings", []) if isinstance(state, dict) else []:
+    try:
+        row_max = float(row.get("input_max", maximum) or maximum)
+        rc, gc, bc = (float(row.get(key)) for key in ("r_code", "g_code", "b_code"))
+    except Exception:
+        continue
+    if row_max <= 0 or min(rc, gc, bc) / row_max < 0.95:
+        continue
+    y = number(row.get("luminance", row.get("Y")))
+    if y is not None and y > 0:
+        white_values.append(y)
+if not white_values:
+    raise SystemExit(1)
+white_values.sort()
+white_y = white_values[len(white_values) // 2]
+raise SystemExit(0 if measured_y < white_y * 0.20 else 1)
+PY
+}
+
 # Convert a persistent all-zero parsed reading into an explicit measured-zero
 # result. nonblack_zero_reading only fires on a SUCCESSFULLY PARSED all-zero
 # XYZ: an instrument that failed to read produces no parsed result at all and
@@ -2017,6 +2078,15 @@ EOJSON
   if [[ -n "$PARSED" ]]; then
    READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
   fi
+ fi
+
+ if [[ -n "$READING" ]] && implausibly_dim_hdr_profile_reading "$READING" "$R" "$G" "$B" "$INPUT_MAX" "$NAME"; then
+  echo "[$(date '+%H:%M:%S.%3N')] implausibly dim HDR profile read: step=$STEP_NUM rgb=$R/$G/$B name=$NAME; redisplaying once" >> /tmp/meter_series_debug.log
+  # Reuse the established no-reading recovery path below.  Marking this as a
+  # communication-style transient guarantees one redisplay/read attempt even
+  # when ordinary no-reading retries are disabled.
+  READING=""
+  COMM_RETRY_SEEN=1
  fi
 
  if [[ -z "$READING" ]]; then
