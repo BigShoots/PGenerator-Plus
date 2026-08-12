@@ -2328,7 +2328,9 @@ EOJSON
 # 8b-vs-10b-YCbCr-Ltd panel-side divergence).
 BLACK_CACHE_DIR="/var/lib/PGenerator/cache"
 BLACK_CACHE="$BLACK_CACHE_DIR/last_black_${SIGNAL_MODE}_${INPUT_MAX}_${COLOR_FORMAT}_${TRANSPORT_SIGNAL_RANGE}.json"
-if [[ "$SIGNAL_MODE" == "hdr10" || "$SIGNAL_MODE" == "sdr" || "$SIGNAL_MODE" == "hlg" ]] && command -v python >/dev/null 2>&1; then
+if [[ "$SERIES_ID" == greyscale_* ]] \
+ && [[ "$SIGNAL_MODE" == "hdr10" || "$SIGNAL_MODE" == "sdr" || "$SIGNAL_MODE" == "hlg" ]] \
+ && command -v python >/dev/null 2>&1; then
  mkdir -p "$BLACK_CACHE_DIR" 2>/dev/null || true
  python -c "
 import json, os, sys, time
@@ -2344,17 +2346,21 @@ try:
 except Exception:
     sys.exit(0)
 readings = state.get('readings') or []
-# Find the 0% IRE greyscale reading (some series have multiple 0% entries
-# from patch_insert; take the minimum).
+# Only a real 0% greyscale result may seed this cache. Profiling steps often
+# omit IRE and historically defaulted to zero, which allowed an ICC white read
+# to overwrite the black cache. Accept zero luminance too; that is the normal
+# result for an OLED and must replace a stale nonzero cache.
 black_candidates = []
 for r in readings:
-    if not r.get('luminance') or r.get('luminance') <= 0:
+    luminance = r.get('luminance')
+    if luminance is None or luminance < 0:
         continue
     name = (r.get('name') or '').strip()
-    if name.startswith('0%') or r.get('ire') == 0:
-        black_candidates.append(r['luminance'])
+    if name == '0%' or r.get('ire') == 0:
+        black_candidates.append(luminance)
 if black_candidates:
     payload = {
+        'source': 'greyscale-0-percent',
         'signal_mode': signal_mode,
         'input_max': input_max,
         'color_format': color_format,

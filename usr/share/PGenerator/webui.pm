@@ -3702,7 +3702,9 @@ $target_gamut="" unless($target_gamut eq "bt709" || $target_gamut eq "bt2020" ||
    if(open(my $_lb_fh,"<",$_lb_path)) { local $/; $_lb_json=<$_lb_fh>; close($_lb_fh); }
    if($_lb_json ne "") {
     my $_lb_d=eval { require JSON::PP; JSON::PP::decode_json($_lb_json); };
-    if(ref($_lb_d) eq "HASH" && defined $_lb_d->{"luminance"}) {
+    if(ref($_lb_d) eq "HASH"
+       && ($_lb_d->{"source"} || "") eq "greyscale-0-percent"
+       && defined $_lb_d->{"luminance"}) {
      my $_lb_y=$_lb_d->{"luminance"}+0;
      if($_lb_y>=0) {
       $series_target_black_y_num=$_lb_y;
