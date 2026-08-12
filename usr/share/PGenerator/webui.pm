@@ -5040,10 +5040,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
 	 # Colour, saturation, and profiling series do not necessarily contain
 	 # neutral endpoints. When "Use measured" is enabled, prepend reference-only
-	 # white/black reads before any scored patch. A valid black cache already
-	 # supplies the black floor, so do not needlessly re-read it.
+	 # white/black reads before any scored patch. The cached black luminance is
+	 # useful for target math while a run starts, but it is not a measurement in
+	 # this series and cannot be exported. Always acquire a real black reference
+	 # unless the client supplied an actual saved reading.
 	 if($type ne "greyscale") {
-	  my $cached_black=($series_target_black_y_source=~/^cached_measured:/) ? 1 : 0;
 	  my($white_index,$black_index)=(-1,-1);
 	  for(my $index=0;$index<scalar(@steps);$index++) {
 	   my $step=$steps[$index];
@@ -5078,7 +5079,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     .',"input_max":'.$series_reference_input_max.',"name":"White Ref","series_type":"reference","series_white_reference":true}';
 	   }
 	  }
-	  if($target_black_use_measured && !$series_has_saved_black_reference && !$cached_black) {
+	  if($target_black_use_measured && !$series_has_saved_black_reference) {
 	   if($black_index>=0) {
 	    push @reference_steps,splice(@steps,$black_index,1);
 	   } else {
@@ -27736,6 +27737,18 @@ function meterRecoverSeries(s){
  meterReadings=[];
  meterWhiteReading=null;
  meterSeriesBaselineBlack=s.black_reading?JSON.parse(JSON.stringify(s.black_reading)):null;
+	 if(!meterSeriesBaselineBlack&&Array.isArray(s.readings)){
+	  const recoveredBlack=[...s.readings].reverse().find(rd=>{
+	   if(!rd||rd.error) return false;
+	   const name=String(rd.name||'').trim().toLowerCase();
+	   if(name==='black ref') return meterReadingHasLuminance(rd);
+	   const r=Number(rd.r_code!=null?rd.r_code:rd.r);
+	   const g=Number(rd.g_code!=null?rd.g_code:rd.g);
+	   const b=Number(rd.b_code!=null?rd.b_code:rd.b);
+	   return Math.abs(Number(rd.ire||0))<0.05&&r===g&&g===b&&meterReadingHasLuminance(rd);
+	  });
+	  if(recoveredBlack) meterSeriesBaselineBlack=JSON.parse(JSON.stringify(recoveredBlack));
+	 }
 	 if(meterSeriesBaselineBlack){
 	  try{ meterNormalizeMeasuredReading(meterSeriesBaselineBlack); }catch(e){}
 	 }
@@ -35026,6 +35039,12 @@ function meterHasSavedMeasuredWhite(){
 // we only skip the black endpoint when a real black sample is already in hand.
 function meterHasSavedMeasuredBlack(){
  try{
+  if(meterSeriesBaselineBlack
+     &&typeof meterReadingHasLuminance==='function'
+     &&meterReadingHasLuminance(meterSeriesBaselineBlack)
+     &&!meterSeriesBaselineBlack.error&&!meterSeriesBaselineBlack.synthetic_target){
+   return true;
+  }
   const list=Array.isArray(meterReadings)?meterReadings:[];
   return list.some(r=>r&&Math.abs(Number(r.ire||0))<0.05
    &&(r.luminance!=null||r.Y!=null)&&!r.error);
@@ -35035,6 +35054,11 @@ function meterHasSavedMeasuredBlack(){
 
 function meterSavedMeasuredBlackReading(){
  try{
+  if(meterSeriesBaselineBlack
+     &&(meterSeriesBaselineBlack.luminance!=null||meterSeriesBaselineBlack.Y!=null)
+     &&!meterSeriesBaselineBlack.error&&!meterSeriesBaselineBlack.synthetic_target){
+   return meterSeriesBaselineBlack;
+  }
   const list=Array.isArray(meterReadings)?meterReadings:[];
   return list.find(r=>r&&Math.abs(Number(r.ire||0))<0.05
    &&(r.luminance!=null||r.Y!=null)&&!r.error&&!r.synthetic_target)||null;
