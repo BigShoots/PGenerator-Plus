@@ -520,6 +520,8 @@ sub webui_icc_companion_poll (@) {
  return '{"status":"unauthorized"}' if($expected eq "" || $token ne $expected);
  my $client=&webui_icc_companion_query_value($query,"client")||"companion";
  my $version=&webui_icc_companion_query_value($query,"version")||"unknown";
+ my $build=&webui_icc_companion_query_value($query,"build")||"";
+ $build="" unless($build=~/\A[A-Za-z0-9._-]{1,32}\z/);
  my $renderer=&webui_icc_companion_query_value($query,"renderer")||"unknown";
  # Which Companion build this is. Reading a display's active ICC profile, and
  # the active-profile transforms built on it, exist only in the Windows build,
@@ -557,7 +559,7 @@ sub webui_icc_companion_poll (@) {
  my $build_argyll="";
  $build_argyll=$1 if($query=~/(?:^|&)build_argyll=([0-9]+(?:\.[0-9]+){1,3})(?:&|$)/);
  &webui_icc_companion_build_state($build_argyll);
- my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"platform\":\"".&_webui_json_escape($platform)."\",\"selected_display\":\"".&_webui_json_escape($selected_display)."\",\"swapchain_color_space\":\"".&_webui_json_escape($swapchain_cs)."\",\"presentation_mode\":\"".&_webui_json_escape($presentation)."\",\"output_max_luminance\":".($output_max+0).",\"output_full_frame_luminance\":".($output_full+0).",\"output_bits_per_color\":".($output_bits+0).",\"active_profile\":\"".&_webui_json_escape($active_profile)."\",\"transform_mode\":\"$transform\",\"transform_ready\":".($transform_ready?"true":"false").",\"transform_note\":\"".&_webui_json_escape($transform_note)."\",\"source_rgb\":[".join(",",@patch_values[0..2])."],\"submitted_rgb\":[".join(",",@patch_values[3..5])."],\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
+ my $status="{\"client\":\"".&_webui_json_escape($client)."\",\"version\":\"".&_webui_json_escape($version)."\",\"build\":\"".&_webui_json_escape($build)."\",\"renderer\":\"".&_webui_json_escape($renderer)."\",\"platform\":\"".&_webui_json_escape($platform)."\",\"selected_display\":\"".&_webui_json_escape($selected_display)."\",\"swapchain_color_space\":\"".&_webui_json_escape($swapchain_cs)."\",\"presentation_mode\":\"".&_webui_json_escape($presentation)."\",\"output_max_luminance\":".($output_max+0).",\"output_full_frame_luminance\":".($output_full+0).",\"output_bits_per_color\":".($output_bits+0).",\"active_profile\":\"".&_webui_json_escape($active_profile)."\",\"transform_mode\":\"$transform\",\"transform_ready\":".($transform_ready?"true":"false").",\"transform_note\":\"".&_webui_json_escape($transform_note)."\",\"source_rgb\":[".join(",",@patch_values[0..2])."],\"submitted_rgb\":[".join(",",@patch_values[3..5])."],\"hdr_active\":".($hdr?"true":"false").",\"last_seen\":$seen}";
  &webui_icc_companion_write_atomic($_icc_companion_status_file,$status,0600);
  my $command="";
  if(open(my $fh,"<",$_icc_companion_command_file)) { local $/; $command=<$fh>||""; close($fh); }

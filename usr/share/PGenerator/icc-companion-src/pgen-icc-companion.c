@@ -92,6 +92,8 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.14"
+#define APP_BUILD "1"
+#define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
 #define PGEN_NEUTRAL_BLEND 0.06
@@ -1007,7 +1009,7 @@ display_selected:
             SDL_Window *moved = NULL;
             if (props) {
                 SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
-                                      "PGenerator+ Patch Companion");
+                                      APP_TITLE);
                 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER,
                                       SDL_WINDOWPOS_CENTERED_DISPLAY(target));
                 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER,
@@ -3505,7 +3507,7 @@ static void companion_run_build(const char *poll_response)
                      tool, cleaned, icc_path, base_path);
 #endif
     }
-    queue_status("PGenerator+ Patch Companion | Building ICC profile...");
+    queue_status(APP_TITLE " | Building ICC profile...");
     status = system(command);
     (void)status;
 
@@ -3601,7 +3603,7 @@ static void companion_run_install(const char *poll_response)
         return;
     }
     SDL_free(profile);
-    queue_status("PGenerator+ Patch Companion | Installing and applying ICC profile...");
+    queue_status(APP_TITLE " | Installing and applying ICC profile...");
 #ifdef _WIN32
     {
         char loader[1200], command[5000], monitor_utf8[1024] = "", result_path[1500];
@@ -3816,8 +3818,8 @@ static void poll_server(void)
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     profile_name_hex(app.selected_display, display_hex, sizeof(display_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&platform=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&transform_note_hex=%s&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
-                 app.config.token, app.config.client, APP_VERSION,
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&build=%s&platform=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&transform_note_hex=%s&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
+                 app.config.token, app.config.client, APP_VERSION, APP_BUILD,
                  companion_platform(),
                  reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
                  display_hex,
@@ -3882,15 +3884,15 @@ static void poll_server(void)
     {
         char title[512];
         if (!strcmp(app.correction_mode, "clut"))
-            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | Active profile cLUT: %s%s",
+            SDL_snprintf(title, sizeof(title), APP_TITLE " | Active profile cLUT: %s%s",
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else if (!strcmp(app.correction_mode, "matrix"))
-            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | Active profile matrix/TRC: %s%s",
+            SDL_snprintf(title, sizeof(title), APP_TITLE " | Active profile matrix/TRC: %s%s",
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
         else
-            SDL_snprintf(title, sizeof(title), "PGenerator+ Patch Companion | No application profile correction");
+            SDL_snprintf(title, sizeof(title), APP_TITLE " | No application profile correction");
         queue_status(title);
     }
     /* A build job pre-empts the patch path: the generator's builder is blocked
@@ -4411,7 +4413,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     }
     app.network_mutex = SDL_CreateMutex();
     if (!app.network_mutex) return SDL_APP_FAILURE;
-    app.window = SDL_CreateWindow("PGenerator+ Patch Companion", 1280, 720,
+    app.window = SDL_CreateWindow(APP_TITLE, 1280, 720,
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     if (!app.window) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
