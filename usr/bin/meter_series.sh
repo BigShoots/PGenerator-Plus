@@ -1052,7 +1052,13 @@ if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
 
 read_timeout_seconds() {
  local ire="${1:-0}"
- if float_le "$ire" 1; then
+ # Large ICC sets can enter a slower adaptive integration after hundreds of
+ # readings even when their synthetic IRE field is high.  Ten seconds then
+ # expires just before a valid result and needlessly starts a second trigger.
+ # Keep the longer bound scoped to profile-sized colour series.
+ if [[ "$SERIES_ID" == colors_* ]] && (( ${TOTAL:-0} >= 100 )); then
+  echo 20
+ elif float_le "$ire" 1; then
   echo 90
  elif float_le "$ire" 5; then
   echo 70
