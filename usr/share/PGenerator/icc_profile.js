@@ -651,12 +651,12 @@ const METER_ICC_PATCH_PRESETS={
  matrix:{
   small:{patch_count:55,white_patches:1,black_patches:1,gray_steps:17,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:0,good_optimization:true,auto_precondition:false,profile_quality:'medium'},
   medium:{patch_count:95,white_patches:2,black_patches:2,gray_steps:25,single_channel_steps:13,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:10,good_optimization:true,auto_precondition:false,profile_quality:'high'},
-  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
+  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:51,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
  },
  clut:{
-  small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:33,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
-  medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:49,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
-  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:73,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
+  small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:38,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
+  medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:101,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
+  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:244,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
  }
 };
 
