@@ -19639,6 +19639,7 @@ function meterResolveSeriesSnapshotFromCache(key,options){
 	   steps:steps,
 	   readings:clone((exactEligible.readings||[]).filter(rd=>meterReadingHasLuminance(rd))),
 	   white_reading:exactEligible.white_reading?clone(exactEligible.white_reading):null,
+	   black_reading:exactEligible.black_reading?clone(exactEligible.black_reading):null,
 	   status:exactEligible.status||'complete'
 	  };
  }
@@ -19704,6 +19705,7 @@ function meterResolveSeriesSnapshotFromCache(key,options){
 	  steps:steps,
 	  readings:mergedReadings,
 	  white_reading:white,
+	  black_reading:contextSnap.black_reading?clone(contextSnap.black_reading):null,
 	  status:(exactEligible&&exactEligible.status)||'complete'
  };
 }
@@ -23804,6 +23806,7 @@ function meterCacheActiveChromaticityReadings(){
  map[observer]={
   readings:JSON.parse(JSON.stringify(meterReadings)),
   white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+  black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
   updated_at:Date.now()
  };
  snap.observer_readings=map;
@@ -23816,16 +23819,19 @@ function meterRestoreActiveChromaticityReadings(observer){
  const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const snap=meterSeriesSnapshotForMode(meterSeriesCache&&meterSeriesCache[meterActiveSeriesKey],mode);
  const entry=snap&&snap.observer_readings&&snap.observer_readings[observer];
- let readings=null,white=null;
+ let readings=null,white=null,black=null;
  if(entry&&Array.isArray(entry.readings)){
   readings=entry.readings;
   white=entry.white_reading||null;
+  black=entry.black_reading||null;
  }else if(snap&&Array.isArray(snap.readings)&&meterObserverForReadings(snap.readings)===observer){
   readings=snap.readings;
   white=snap.white_reading||null;
+  black=snap.black_reading||null;
  }
  meterReadings=readings?JSON.parse(JSON.stringify(readings)):[];
  meterWhiteReading=white?JSON.parse(JSON.stringify(white)):null;
+ meterSeriesBaselineBlack=black?JSON.parse(JSON.stringify(black)):null;
  meterLastChartCount=0;
  meterLastChartSignature='';
  _selectedColorReadingName=null;
@@ -24357,61 +24363,62 @@ function rgbBalance(reading,whiteRef,modeOrIncl,blackLevel){
 // RGB agreement for a colour-series patch. Greyscale RGB balance compares a
 // neutral reading with D65, but applying that formula to a red/green/blue
 // target reports the intentional colour channels as enormous balance errors.
-// Compare measured and target RGB component-by-component instead, with the
-// target rescaled to measured Y so these columns remain chroma-only. A patch
-// that lands exactly on target is 100/100/100 regardless of its hue.
-function meterColorPatchRgbBalance(reading,whiteRef){
+// Compare measured and target RGB component-by-component after removing the
+// measured black floor and normalizing the usable span to measured white.
+function meterColorPatchRgbBalance(reading,whiteRef,blackRef){
  const measured=meterReadingXYZ(reading);
  const target=meterColorDeltaTargetXYZ(reading,false);
  const white=meterReadingXYZ(whiteRef);
  if(!measured||!target||!white||!(white.Y>0)||!(measured.Y>0)) return {R:null,G:null,B:null,noChroma:true};
+ const black=meterReadingXYZ(blackRef)||{X:0,Y:0,Z:0};
+ const spanY=white.Y-black.Y;
+ if(!(spanY>0)) return {R:null,G:null,B:null,noChroma:true};
  const gamut=meterAnalysisGamut();
- const m=xyzToLinRgb(measured.X/white.Y,measured.Y/white.Y,measured.Z/white.Y,gamut.xyzToRgb);
- const t=xyzToLinRgb(target.X/white.Y,target.Y/white.Y,target.Z/white.Y,gamut.xyzToRgb);
- // Normalize every component difference by the patch's dominant target
- // channel. Per-channel ratios are undefined when a target channel is zero
- // (pure red's target G/B), while L* magnifies tiny negative matrix residue.
- // A common patch scale stays finite and makes 100 mean exact agreement.
- const scale=Math.max(Math.abs(t[0]),Math.abs(t[1]),Math.abs(t[2]),1e-9);
- return {R:100+(m[0]-t[0])*100/scale,G:100+(m[1]-t[1])*100/scale,B:100+(m[2]-t[2])*100/scale};
+ const subtractBlack=xyz=>({X:xyz.X-black.X,Y:xyz.Y-black.Y,Z:xyz.Z-black.Z});
+ const measuredSpan=subtractBlack(measured);
+ const whiteSpan=subtractBlack(white);
+ const m=xyzToLinRgb(measuredSpan.X/spanY,measuredSpan.Y/spanY,measuredSpan.Z/spanY,gamut.xyzToRgb);
+ const w=xyzToLinRgb(whiteSpan.X/spanY,whiteSpan.Y/spanY,whiteSpan.Z/spanY,gamut.xyzToRgb);
+ const t=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
+ const dominant=t.reduce((best,value,index)=>Math.abs(value)>Math.abs(t[best])?index:best,0);
+ const targetDominant=t[dominant];
+ const measuredDominant=m[dominant];
+ if(!(Math.abs(targetDominant)>1e-9)||!(Math.abs(measuredDominant)>1e-9)) return {R:null,G:null,B:null,noChroma:true};
+ // RGB balance is a chroma error around 100, not the absolute amount of the
+ // intentionally driven colour channel. Scale the target ray to the measured
+ // dominant channel first. For a primary this leaves that channel at the
+ // measured-white balance and reports only unwanted energy in the other two
+ // channels instead of treating the intended saturated channel as an error.
+ const targetScale=measuredDominant/targetDominant;
+ const scaledTarget=t.map(value=>value*targetScale);
+ const whiteScale=Math.max(Math.abs(w[0]),Math.abs(w[1]),Math.abs(w[2]),1e-9);
+ const whiteBalance=w.map(value=>value*100/whiteScale);
+ const componentScale=Math.max(Math.abs(measuredDominant),1e-9);
+ const out=m.map((value,index)=>{
+  const active=Math.abs(scaledTarget[index])>Math.abs(measuredDominant)*1e-6;
+  const baseline=active?whiteBalance[index]:100;
+  return baseline+(value-scaledTarget[index])*100/componentScale;
+ });
+ return {R:out[0],G:out[1],B:out[2]};
 }
 
 function meterLiveRgbData(reading){
  if(!reading) return {mode:'balance',R:100,G:100,B:100};
  const measured=meterReadingXYZ(reading);
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
- if(!isColorSeries||!measured||!(measured.Y>0)){
+ if(!isColorSeries){
   const whiteRef=meterEffectiveGreyscaleWhiteReference(Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading]);
   const blackReadings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
   const blackLevel=meterChartBlackLevel(blackReadings);
   return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode(),blackLevel)}:{mode:'balance',R:100,G:100,B:100};
  }
- const gamut=meterAnalysisGamut();
- const target=meterColorDeltaTargetXYZ(reading,meterColorIncludeLum());
- const mRgb=xyzToLinRgb(measured.X,measured.Y,measured.Z,gamut.xyzToRgb);
- const tRgb=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
- // Use the patch's dominant target channel as the percent reference. For
- // many color / sat targets one channel is intentionally zero, so dividing
- // by each channel independently pins contamination to ±50 and stops being
- // informative. A shared patch-level reference keeps the deltas meaningful.
- const refScale=Math.max(
-  0.01,
-  Math.abs(tRgb[0]||0),
-  Math.abs(tRgb[1]||0),
-  Math.abs(tRgb[2]||0)
- );
- const channelDelta=(meas,ref)=>{
-  meas=meas||0; ref=ref||0;
-  let pct=((meas-ref)/refScale)*100;
-  if(!isFinite(pct)) pct=0;
-  return Math.max(-200,Math.min(200,pct));
- };
- return {
-  mode:'delta',
-  R:channelDelta(mRgb[0],tRgb[0]),
-  G:channelDelta(mRgb[1],tRgb[1]),
-  B:channelDelta(mRgb[2],tRgb[2])
- };
+ if(!measured||!(measured.Y>0)) return {mode:'balance',R:null,G:null,B:null,noChroma:true};
+ const readings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
+ const whiteRef=meterFindSeriesWhiteReading(readings)
+  ||(meterWhiteReading&&!meterWhiteReading.synthetic_target?meterWhiteReading:null);
+ const blackRef=(typeof meterSeriesBaselineBlack!=='undefined')?meterSeriesBaselineBlack:null;
+ const balance=whiteRef?meterColorPatchRgbBalance(reading,whiteRef,blackRef):null;
+ return balance?{mode:'balance',...balance}:{mode:'balance',R:null,G:null,B:null,noChroma:true};
 }
 
 // Shared IRE->signal-fraction convention for every per-point gamma metric, so
@@ -27728,6 +27735,10 @@ function meterRecoverSeries(s){
  // empty Sat Sweep can never leave the old Colors CIE plot on screen.
  meterReadings=[];
  meterWhiteReading=null;
+ meterSeriesBaselineBlack=s.black_reading?JSON.parse(JSON.stringify(s.black_reading)):null;
+	 if(meterSeriesBaselineBlack){
+	  try{ meterNormalizeMeasuredReading(meterSeriesBaselineBlack); }catch(e){}
+	 }
 	 if(s.readings&&s.readings.length>0){
 	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(s.readings,type));
   // Invalidate any carried-over per-reading analysis caches (ΔE/gamma)
@@ -28066,6 +28077,7 @@ function meterCacheSeriesState(status,options){
   observerReadings[readingObserver]={
    readings:readings,
    white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+   black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
    updated_at:Date.now()
   };
  }
@@ -28107,6 +28119,7 @@ function meterCacheSeriesState(status,options){
 	  dv_interface:meterActiveSeriesDvInterface||null,
 	  observer_readings:observerReadings,
 	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
+	  black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
   steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
   readings:readings,
   status:status||(meterSeriesRunning?'running':'complete'),
@@ -28125,12 +28138,14 @@ function meterRestoreSeriesFromCache(key){
  if(sourceSnap&&sourceSnap.source_format==='hcfr-chc'&&sourceSnap.source_session_id) meterActiveHcfrSessionId=sourceSnap.source_session_id;
  let restoredReadings=JSON.parse(JSON.stringify(cached.readings||[]));
  let restoredWhite=cached.white_reading?JSON.parse(JSON.stringify(cached.white_reading)):null;
+ let restoredBlack=cached.black_reading?JSON.parse(JSON.stringify(cached.black_reading)):null;
  if(cached.type==='colors'||cached.type==='saturations'){
   const observer=meterChromaticityObserver();
   const observerEntry=cached.observer_readings&&cached.observer_readings[observer];
   if(observerEntry&&Array.isArray(observerEntry.readings)){
    restoredReadings=JSON.parse(JSON.stringify(observerEntry.readings));
    restoredWhite=observerEntry.white_reading?JSON.parse(JSON.stringify(observerEntry.white_reading)):null;
+   restoredBlack=observerEntry.black_reading?JSON.parse(JSON.stringify(observerEntry.black_reading)):restoredBlack;
   }else if(meterObserverForReadings(restoredReadings)!==observer){
    restoredReadings=[];
    restoredWhite=null;
@@ -28151,6 +28166,7 @@ function meterRestoreSeriesFromCache(key){
 	  steps:JSON.parse(JSON.stringify(cached.steps)),
   readings:restoredReadings,
   white_reading:restoredWhite,
+  black_reading:restoredBlack,
   _defer_cache_persist:true
  });
  meterSharedSeriesId=null;
@@ -41349,7 +41365,8 @@ async function meterFullAutoCalBuildSnapshotReportSections(entries){
 	    dv_map_mode:snap.dv_map_mode,
 	    steps:meterFullAutoCalCloneValue(snap.steps||[]),
 	    readings:meterFullAutoCalCloneValue(snap.readings||[]),
-	    white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null
+	    white_reading:snap.white_reading?meterFullAutoCalCloneValue(snap.white_reading):null,
+	    black_reading:snap.black_reading?meterFullAutoCalCloneValue(snap.black_reading):null
    });
    await meterPrepareCurrentSeriesForReport();
    sectionHtml+=meterBuildCurrentSeriesReportSection(title);
@@ -52357,11 +52374,31 @@ function meterExportCSV(){
   // default timestamped name so the export still produces a file.
   filename=meterDefaultExportFilename('csv','pgenerator_measurements','csv');
  }
- const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
+ const measuredRows=[...meterReadings];
+ const sameReading=(a,b)=>{
+  if(!a||!b) return false;
+  if(a===b) return true;
+  if(a.timestamp!=null&&b.timestamp!=null&&Number(a.timestamp)===Number(b.timestamp)) return true;
+  const ac=[a.r_code!=null?a.r_code:a.r,a.g_code!=null?a.g_code:a.g,a.b_code!=null?a.b_code:a.b].map(Number);
+  const bc=[b.r_code!=null?b.r_code:b.r,b.g_code!=null?b.g_code:b.g,b.b_code!=null?b.b_code:b.b].map(Number);
+  return ac.every((value,index)=>Number.isFinite(value)&&value===bc[index])
+   &&Math.abs(Number(a.Y!=null?a.Y:a.luminance)-Number(b.Y!=null?b.Y:b.luminance))<1e-7;
+ };
+ const blackR=(meterSeriesBaselineBlack&&meterReadingHasLuminance(meterSeriesBaselineBlack))
+  ?meterSeriesBaselineBlack
+  :measuredRows.find(rd=>meterIsWhiteReferenceReading(rd)&&String(rd.name||'').trim().toLowerCase()==='black ref')
+   ||measuredRows.find(rd=>meterReadingIsBlackStep(rd)&&meterReadingHasLuminance(rd))
+   ||null;
+ const sorted=[...measuredRows].sort((a,b)=>(a.ire||0)-(b.ire||0));
  const whiteR=meterFindSeriesWhiteReading(sorted)
   ||(meterWhiteReading&&!meterWhiteReading.synthetic_target&&meterReadingHasLuminance(meterWhiteReading)?meterWhiteReading:null)
   ||sorted.find(r=>Math.abs(Number(r.ire)-100)<0.05&&meterReadingHasLuminance(r));
  if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
+ // Reference pre-reads are deliberately hidden from charts, but an exported
+ // result must be self-contained. Put the measured black first and retain a
+ // separate measured white reference when it is not already a series row.
+ if(blackR&&!sorted.some(rd=>sameReading(rd,blackR))) sorted.unshift(blackR);
+ if(whiteR&&!sorted.some(rd=>sameReading(rd,whiteR))) sorted.push(whiteR);
  const Lw=whiteR.luminance||whiteR.Y;
  // Measured-white adaptation for grey tracking (matching chart)
  const wp=meterTargetWhitePoint();
@@ -52395,13 +52432,39 @@ function meterExportCSV(){
   const n=Number(v);
   return Number.isFinite(n)?n.toFixed(1):'';
  };
+ const exportCodeRange=(()=>{
+  const refs=[blackR,whiteR].filter(Boolean);
+  const all=[...refs,...sorted];
+  let inputMax=all.reduce((max,rd)=>Math.max(max,Number(rd&&rd.input_max)||0),0);
+  const rawCodes=all.flatMap(rd=>[rd&&(rd.r_code!=null?rd.r_code:rd.r),rd&&(rd.g_code!=null?rd.g_code:rd.g),rd&&(rd.b_code!=null?rd.b_code:rd.b)]).map(Number).filter(Number.isFinite);
+  const rawMax=rawCodes.length?Math.max(...rawCodes):255;
+  if(!(inputMax>0)) inputMax=rawMax>1023?4095:(rawMax>255?1023:255);
+  const shift=inputMax>1023?4:(inputMax>255?2:0);
+  const candidates=[
+   {min:0,max:inputMax,span:inputMax,kind:'full'},
+   {min:16*Math.pow(2,shift),max:235*Math.pow(2,shift),span:219*Math.pow(2,shift),kind:'limited'}
+  ];
+  const neutralCode=rd=>{
+   if(!rd) return null;
+   const values=[rd.r_code!=null?rd.r_code:rd.r,rd.g_code!=null?rd.g_code:rd.g,rd.b_code!=null?rd.b_code:rd.b].map(Number);
+   return values.every(Number.isFinite)&&values[0]===values[1]&&values[1]===values[2]?values[0]:null;
+  };
+  const blackCode=neutralCode(blackR);
+  const whiteCode=neutralCode(whiteR);
+  if(Number.isFinite(blackCode)&&Number.isFinite(whiteCode)&&whiteCode>blackCode){
+   return {min:blackCode,max:whiteCode,span:whiteCode-blackCode,kind:'measured'};
+  }
+  const score=range=>(Number.isFinite(blackCode)?Math.abs(blackCode-range.min):0)
+   +(Number.isFinite(whiteCode)?Math.abs(whiteCode-range.max):0);
+  candidates.sort((a,b)=>score(a)-score(b));
+  return candidates[0];
+ })();
  const csvIre=rd=>{
   if(!colorSeries) return meterReadingAnalysisIre(rd);
   const r=Number(rd.r_code),g=Number(rd.g_code),b=Number(rd.b_code);
   if(![r,g,b].every(Number.isFinite)||r!==g||g!==b) return '';
-  const range=meterLiveCodeRangeForStep(rd);
-  if(!range||!(range.span>0)) return '';
-  return Number(Math.max(0,Math.min(100,(r-range.min)*100/range.span)).toFixed(2));
+  if(!(exportCodeRange.span>0)) return '';
+  return Number(((r-exportCodeRange.min)*100/exportCodeRange.span).toFixed(2));
  };
  // Greyscale dEuv / dE2000 via HCFR grey-ref at a forced mode.
  const greyHcfrPair=(rd,mode)=>{
@@ -52459,7 +52522,9 @@ function meterExportCSV(){
   }
   const ire=csvIre(rd);
   const g=colorSeries?null:effectiveGamma(rd.luminance,Lw,ire);
-  const bal=whiteR?(colorSeries?meterColorPatchRgbBalance(rd,whiteR):rgbBalance(rd,whiteR,greyMode,Lb)):{R:100,G:100,B:100};
+  // Reuse the exact RGB analysis shown by the live WebUI. CSV must be a
+  // serialization of the displayed result, not an independent calculator.
+  const bal=whiteR?(colorSeries?meterLiveRgbData(rd):rgbBalance(rd,whiteR,greyMode,Lb)):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',ire==null?'':ire,rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
@@ -52523,6 +52588,7 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
 	   dv_map_mode:resolved.dv_map_mode||((current&&current.dv_map_mode)?current.dv_map_mode:null),
 	   dv_interface:resolved.dv_interface||((current&&current.dv_interface)?current.dv_interface:null),
 	   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
+	   black_reading:resolved.black_reading?JSON.parse(JSON.stringify(resolved.black_reading)):null,
 	   steps:JSON.parse(JSON.stringify(steps)),
 	   readings:JSON.parse(JSON.stringify(resolved.readings||[])),
    status:(resolved.status||((current&&current.status)||'complete')),
@@ -52548,6 +52614,7 @@ function meterApplyClearedState(showToastMsg){
 	   dv_map_mode:meterActiveSeriesDvMapMode||null,
 	   dv_interface:meterActiveSeriesDvInterface||null,
 	   white_reading:null,
+	   black_reading:null,
 	   steps:clearedSteps,
    readings:[],
    status:'cleared',
@@ -52560,6 +52627,7 @@ function meterApplyClearedState(showToastMsg){
  meterSeriesChartRevision++;
  meterReadings=[];
  meterWhiteReading=null;
+ meterSeriesBaselineBlack=null;
  meterSeriesAwaitingReady=false;
  meterReadySignalPending=false;
  meterLastChartCount=0;
