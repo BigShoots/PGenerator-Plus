@@ -5062,12 +5062,20 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	  my @reference_steps;
 	  if($target_white_use_measured && !$series_has_saved_white_reference) {
 	   if($white_index>=0) {
-	    push @reference_steps,splice(@steps,$white_index,1);
+	    my $white_step=splice(@steps,$white_index,1);
+	    # Custom series often name full-scale neutral by source code (for
+	    # example "255"). Mark the endpoint so the worker publishes the same
+	    # measurement as white_reading instead of using a synthetic target.
+	    if($white_step!~/"series_white_reference"\s*:/) {
+	     $white_step=~s/\}\s*$//;
+	     $white_step.=',"series_white_reference":true}';
+	    }
+	    push @reference_steps,$white_step;
 	    $black_index-- if($black_index>$white_index);
 	   } else {
 	    push @reference_steps,'{"ire":100,"stimulus":100,"signal_r_pct":100,"signal_g_pct":100,"signal_b_pct":100'
 	     .',"r":'.$series_reference_white_code.',"g":'.$series_reference_white_code.',"b":'.$series_reference_white_code
-	     .',"input_max":'.$series_reference_input_max.',"name":"White Ref","series_type":"reference"}';
+	     .',"input_max":'.$series_reference_input_max.',"name":"White Ref","series_type":"reference","series_white_reference":true}';
 	   }
 	  }
 	  if($target_black_use_measured && !$series_has_saved_black_reference && !$cached_black) {
@@ -21143,6 +21151,7 @@ function meterFindMeasuredWhiteReading(){
   if(!readingMatchesMode(rd)) return false;
   const lum=((rd.luminance!=null && rd.luminance>0)?rd.luminance:rd.Y);
   if(!(lum>0)) return false;
+  if(meterReadingIsSeriesWhite(rd)) return true;
   const name=String(rd.name||'').toLowerCase();
   const r=(rd.r_code!=null)?rd.r_code:rd.r;
   const g=(rd.g_code!=null)?rd.g_code:rd.g;
@@ -27554,12 +27563,17 @@ async function meterCheckStatus(){
   if(s){
    // Trust the server as the source of truth: if it says the series is
    // not running, clear the local flag and hide the stop button. This
-   // handles the case where the renderer was restarted and the in-flight
-   // series was implicitly cancelled by the stop+start.
+    // handles the case where the renderer was restarted and the in-flight
+    // series was implicitly cancelled by the stop+start.
     const serverRunning=(s.status==='running' || s.status==='setup' || s.status==='started');
-    if(!serverRunning && (meterSeriesRunning || meterSeriesPolling)){
+    // Between the local click and the POST response, the status endpoint can
+    // still contain the previous completed series. Do not let that stale
+    // terminal snapshot finish the new run before it has acquired an id.
+    const localStartPending=!!(meterSeriesRunning&&meterActionPending&&!meterSharedSeriesId);
+    if(!serverRunning && !localStartPending && (meterSeriesRunning || meterSeriesPolling)){
+     if(meterSeriesPolling) clearInterval(meterSeriesPolling);
      meterSeriesRunning=false;
-     meterSeriesPolling=false;
+     meterSeriesPolling=null;
      if(typeof meterApplyClearedState==='function'){
       meterApplyClearedState(false);
      }
@@ -27569,7 +27583,7 @@ async function meterCheckStatus(){
      meterSharedSeriesId=null;
      meterApplyClearedState(false);
     }
-   } else if(meterSharedSeriesShouldRecover(s,{restoredLocal:restoredLocal})){
+   } else if(!localStartPending&&meterSharedSeriesShouldRecover(s,{restoredLocal:restoredLocal})){
     meterRecoverSeries(s);
    }
   }
@@ -27583,6 +27597,14 @@ function meterRecoverSeries(s){
  const recoveredChartRevision=++meterSeriesChartRevision;
  const previousSeriesKey=String(meterActiveSeriesKey||'');
  const previousScrollRatio=Number(meterGreyscaleScrollRatio)||0;
+ const recoveredState=String((s&&s.status)||'').toLowerCase();
+ const preserveSelection=!!(recoveredState==='complete'
+  &&s&&s.series_id&&meterSharedSeriesId
+  &&String(s.series_id)===String(meterSharedSeriesId)
+  &&meterCurrentPatchStep);
+ const previousSelectedKey=preserveSelection?meterStepNameKey(meterCurrentPatchStep):'';
+ const previousSelectedName=preserveSelection?String((meterCurrentPatchStep&&meterCurrentPatchStep.name)||_selectedColorReadingName||''):'';
+ const previousColorPinned=preserveSelection&&!!_colorDetailPinned;
  // Determine series type and points from series_id or the recovered steps.
  let type=String((s&&s.type)||'').toLowerCase();
  let points=Number((s&&s.points)||0)||0;
@@ -27666,10 +27688,15 @@ function meterRecoverSeries(s){
  meterActiveSeriesKey=(s&&s.cache_key)?String(s.cache_key):(type+'-'+points);
  meterSharedSeriesId=s.series_id||null;
  if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
-   meterCurrentPatchStep=null;
-   meterSelectedThumbIre=null;
-   _selectedColorReadingName=null;
-   _colorDetailPinned=false;
+   const recoveredSelectedStep=preserveSelection&&Array.isArray(steps)
+    ?(steps.find(step=>previousSelectedKey&&meterStepNameKey(step)===previousSelectedKey)
+      ||steps.find(step=>previousSelectedName&&String(step&&step.name||'')===previousSelectedName)
+      ||null)
+    :null;
+   meterCurrentPatchStep=recoveredSelectedStep;
+   meterSelectedThumbIre=recoveredSelectedStep?meterStepNameKey(recoveredSelectedStep):null;
+   _selectedColorReadingName=recoveredSelectedStep&&previousSelectedName?previousSelectedName:null;
+   _colorDetailPinned=!!(recoveredSelectedStep&&previousColorPinned);
  // The 10-second shared-status poll may refresh the series currently on
  // screen. Preserve the operator's scroll position when its key is unchanged;
  // only a genuinely different recovered series starts at patch zero.
@@ -27685,7 +27712,7 @@ function meterRecoverSeries(s){
   // so charts recompute against the restored chart context rather than a
   // value cached under a prior white reference / target black / gamma.
   if(Array.isArray(meterReadings)) meterReadings.forEach(rd=>{ if(rd){ delete rd._dE_raw; delete rd._dE_lc; delete rd._dE_cache_key; delete rd._gamma_rgb; } });
-  const white=meterReadings.find(rd=>rd.ire===100&&rd.r_code===rd.g_code&&rd.g_code===rd.b_code&&rd.luminance!=null);
+  const white=meterReadings.find(rd=>meterReadingIsSeriesWhite(rd));
   if(white) meterWhiteReading=white;
  }
 	 if(s.white_reading&&s.white_reading.luminance!=null&&meterReadingMatchesStepList(s.white_reading,type,meterSeriesSteps)){
@@ -27756,8 +27783,10 @@ function meterRecoverSeries(s){
      if(meterActiveSeriesKey===recoveredChartKey&&meterSeriesChartRevision===recoveredChartRevision&&meterReadings&&meterReadings.length) drawAllCharts([...meterReadings]);
     },delay));
    }
+   const selectedNow=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
    const lastValid=[...recoveredReadings].reverse().find(rd=>rd.luminance!=null);
-   if(lastValid) updateLiveReading(lastValid);
+   if(selectedNow&&meterReadingHasLuminance(selectedNow)) updateLiveReading(selectedNow);
+   else if(!meterCurrentPatchStep&&lastValid) updateLiveReading(lastValid);
   } else drawAllChartsPreset(sortedSteps);
  };
  if(s&&s._defer_cache_persist&&typeof window.requestAnimationFrame==='function'){
@@ -27813,6 +27842,7 @@ function meterStampReadingStepMeta(reading,step){
   if(step.b!=null) reading.b_code=step.b;
  }
  if(step.series_type!=null) reading.series_type=step.series_type;
+ if(step.series_white_reference!=null) reading.series_white_reference=step.series_white_reference;
  if(!alternateStimulus&&step.stimulus!=null) reading.stimulus=step.stimulus;
  if(!alternateStimulus&&step.input_max!=null) reading.input_max=step.input_max;
 	 if(!alternateStimulus&&step.signal_r_pct!=null) reading.signal_r_pct=step.signal_r_pct;
@@ -27870,6 +27900,28 @@ function meterAttachSeriesMeta(readings){
  });
 }
 
+// Custom colour/profile series commonly label neutral endpoints by source
+// code (for example "255") rather than IRE. Recognize those endpoints without
+// requiring a special display label.
+function meterReadingIsSeriesWhite(rd){
+ if(!rd||rd.synthetic_target||rd.error) return false;
+ if(!meterReadingHasLuminance(rd)) return false;
+ if(rd.series_white_reference) return true;
+ const name=String(rd.name||'').trim().toLowerCase();
+ const ire=Number(rd.ire);
+ const r=Number(rd.r_code!=null?rd.r_code:rd.r);
+ const g=Number(rd.g_code!=null?rd.g_code:rd.g);
+ const b=Number(rd.b_code!=null?rd.b_code:rd.b);
+ const neutral=Number.isFinite(r)&&r===g&&g===b;
+ if(!neutral) return false;
+ if(name==='white'||name==='white ref'||name==='100% white') return true;
+ if(Number.isFinite(ire)&&Math.abs(ire-100)<0.05) return true;
+ const targetYn=Number(rd.target_Yn);
+ if(Number.isFinite(targetYn)&&targetYn>=0.9995) return true;
+ const inputMax=Number(rd.input_max);
+ return Number.isFinite(inputMax)&&inputMax>0&&r===inputMax;
+}
+
 function meterFindSeriesWhiteReading(readings){
  const list=Array.isArray(readings)?readings:[];
  // Prefer live SDR26 peak (Limited 109 / Full 100 latest measured Y).
@@ -27897,7 +27949,7 @@ function meterFindSeriesWhiteReading(readings){
   if(!meterReadingIsGreyscale(rd)) return;
   const name=String(rd.name||'').toLowerCase();
   const _rdIre=Number(rd.ire);
-  const is100=(_rdIre===100)||Math.abs(_rdIre-100)<0.05||name==='white'
+  const is100=meterReadingIsSeriesWhite(rd)||(_rdIre===100)||Math.abs(_rdIre-100)<0.05||name==='white'
    ||rd.autocal_legal_white_anchor||rd.autocal_white_reference
    ||(Number.isFinite(_rdIre)&&Math.abs(_rdIre-109)<0.05);
   if(!is100) return;
@@ -34924,7 +34976,7 @@ function meterHasSavedMeasuredWhite(){
  }catch(e){}
  try{
   const list=Array.isArray(meterReadings)?meterReadings:[];
-  return list.some(r=>r&&Math.abs(Number(r.ire)-100)<0.05
+  return list.some(r=>r&&(meterReadingIsSeriesWhite(r)||Math.abs(Number(r.ire)-100)<0.05)
    &&typeof meterReadingHasLuminance==='function'&&meterReadingHasLuminance(r)
    &&!r.error&&!r.synthetic_target&&!r.autocal_reference_only);
  }catch(e){}
@@ -45266,6 +45318,11 @@ async function meterPollSeries(){
  try{
  const r=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:5000});
  if(!r) return;
+ // Ignore the previous run's terminal snapshot during the short POST/start
+ // handoff, and never let a delayed/orphan poll consume another series id.
+ if(meterSharedSeriesId&&r.series_id&&String(r.series_id)!==String(meterSharedSeriesId)) return;
+ if(!meterSharedSeriesId&&meterActionPending
+    &&(r.status==='complete'||r.status==='cancelled'||r.status==='error')) return;
  if(!meterSeriesRunning&&r.status!=='cleared'){
   if(meterSeriesPolling){
    clearInterval(meterSeriesPolling);
@@ -52279,7 +52336,9 @@ function meterExportCSV(){
   filename=meterDefaultExportFilename('csv','pgenerator_measurements','csv');
  }
  const sorted=[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
- const whiteR=meterWhiteReading||sorted.find(r=>r.ire===100);
+ const whiteR=meterFindSeriesWhiteReading(sorted)
+  ||(meterWhiteReading&&!meterWhiteReading.synthetic_target&&meterReadingHasLuminance(meterWhiteReading)?meterWhiteReading:null)
+  ||sorted.find(r=>Math.abs(Number(r.ire)-100)<0.05&&meterReadingHasLuminance(r));
  if(!whiteR){toast('No 100% white reading \u2014 run a full series first',true);return;}
  const Lw=whiteR.luminance||whiteR.Y;
  // Measured-white adaptation for grey tracking (matching chart)
@@ -52308,6 +52367,10 @@ function meterExportCSV(){
  const fmtDe=(v)=>{
   const n=Number(v);
   return Number.isFinite(n)?n.toFixed(2):'0.00';
+ };
+ const fmtBal=(v)=>{
+  const n=Number(v);
+  return Number.isFinite(n)?n.toFixed(1):'';
  };
  // Greyscale dEuv / dE2000 via HCFR grey-ref at a forced mode.
  const greyHcfrPair=(rd,mode)=>{
@@ -52366,7 +52429,7 @@ function meterExportCSV(){
   csv+=[i+1,rd.name||'',rd.ire||'',rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
    (rd.x||0).toFixed(4),(rd.y||0).toFixed(4),(rd.luminance||0).toFixed(4),
-   rd.cct||'',g!==null?g.toFixed(2):'',bal.R.toFixed(1),bal.G.toFixed(1),bal.B.toFixed(1),
+   rd.cct||'',g!==null?g.toFixed(2):'',fmtBal(bal.R),fmtBal(bal.G),fmtBal(bal.B),
    fmtDe(dEuvNoY),fmtDe(dEuvWY),fmtDe(dE2kNoY),fmtDe(dE2kWY),fmtDe(dEitpNoY),fmtDe(dEitpWY)
   ].join(',')+'\n';
  });

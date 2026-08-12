@@ -734,6 +734,7 @@ for field in (
 	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
     "series_target_white_y", "lg_target_white_y", "series_target_black_y",
 	"series_type", "series_color", "sat_pct", "point_role", "series_mode",
+	"series_white_reference",
 	"icc_reuse_signature",
     "autocal_code", "autocal_white_reference", "autocal_reference_only",
     "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",
@@ -1896,6 +1897,7 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 READ_DELAY_MS=$(get_step_field $i read_delay_ms)
 	 IRE=$(get_step_field $i ire)
 	 NAME=$(get_step_field $i name)
+	 SERIES_WHITE_REFERENCE=$(get_step_field $i series_white_reference)
 	 STEP_NUM=$((i + 1))
  if ! [[ "$R" =~ ^[0-9]+$ && "$G" =~ ^[0-9]+$ && "$B" =~ ^[0-9]+$ && "$INPUT_MAX" =~ ^[0-9]+$ ]] || ! is_number "$IRE" || [[ -z "$NAME" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] invalid series step: index=$i r=$R g=$G b=$B ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2183,7 +2185,8 @@ EOJSON
  # Generic colour/profile series can carry a leading reference-only white
  # patch. Publish it through white_reading immediately so target luminance is
  # fixed before the first scored series patch is drawn.
- if [[ "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
+ if [[ "$SERIES_WHITE_REFERENCE" == "True" || "$SERIES_WHITE_REFERENCE" == "true" || "$SERIES_WHITE_REFERENCE" == "1"
+       || "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
   WHITE_READING="$READING"
  fi
 
