@@ -203,13 +203,39 @@ def closest_row(rows, target):
     return row
 
 
+def robust_xyz(rows):
+    """Return a robust average XYZ for repeated measurements of one patch."""
+    if not rows:
+        fail("Cannot average an empty measurement set")
+    result = []
+    for axis in range(3):
+        values = sorted(row["xyz"][axis] for row in rows)
+        if len(values) >= 4:
+            values = values[1:-1]
+        result.append(sum(values) / len(values))
+    return tuple(result)
+
+
+def repeated_target_row(rows, target):
+    """Use every repeated exact anchor instead of whichever row came first."""
+    exact = [
+        row for row in rows
+        if max(abs(row["rgb"][axis] - target[axis]) for axis in range(3)) < 1e-9
+    ]
+    if not exact:
+        return closest_row(rows, target)
+    combined = dict(exact[0])
+    combined["xyz"] = robust_xyz(exact)
+    return combined
+
+
 def profile_measurement_summary(rows):
-    black = closest_row(rows, (0, 0, 0))
-    white = closest_row(rows, (1, 1, 1))
+    black = repeated_target_row(rows, (0, 0, 0))
+    white = repeated_target_row(rows, (1, 1, 1))
     primaries = [
-        closest_row(rows, (1, 0, 0)),
-        closest_row(rows, (0, 1, 0)),
-        closest_row(rows, (0, 0, 1)),
+        repeated_target_row(rows, (1, 0, 0)),
+        repeated_target_row(rows, (0, 1, 0)),
+        repeated_target_row(rows, (0, 0, 1)),
     ]
     if white["xyz"][1] <= black["xyz"][1]:
         fail("Measured white must be brighter than measured black")
@@ -950,6 +976,428 @@ def _sample_mft2_clut(table, grid, coordinates):
     return result
 
 
+def _sample_mft2_clut_tetrahedral(table, grid, coordinates):
+    """Tetrahedrally sample an RGB mft2 cLUT, matching ArgyllCMS."""
+    positions = [max(0.0, min(1.0, value)) * (grid - 1) for value in coordinates]
+    lows = [min(grid - 2, int(value)) for value in positions]
+    fractions = [positions[channel] - lows[channel] for channel in range(3)]
+
+    def node(red, green, blue):
+        offset = (((lows[0] + red) * grid * grid
+                   + (lows[1] + green) * grid
+                   + lows[2] + blue) * 3)
+        return table[offset:offset + 3]
+
+    red, green, blue = fractions
+    first = node(0, 0, 0)
+    last = node(1, 1, 1)
+    if red >= green:
+        if green >= blue:
+            middle = (node(1, 0, 0), node(1, 1, 0))
+            weights = (red, green, blue)
+        elif red >= blue:
+            middle = (node(1, 0, 0), node(1, 0, 1))
+            weights = (red, blue, green)
+        else:
+            middle = (node(0, 0, 1), node(1, 0, 1))
+            weights = (blue, red, green)
+    else:
+        if red >= blue:
+            middle = (node(0, 1, 0), node(1, 1, 0))
+            weights = (green, red, blue)
+        elif green >= blue:
+            middle = (node(0, 1, 0), node(0, 1, 1))
+            weights = (green, blue, red)
+        else:
+            middle = (node(0, 0, 1), node(0, 1, 1))
+            weights = (blue, green, red)
+    return [
+        first[channel]
+        + weights[0] * (middle[0][channel] - first[channel])
+        + weights[1] * (middle[1][channel] - middle[0][channel])
+        + weights[2] * (last[channel] - middle[1][channel])
+        for channel in range(3)
+    ]
+
+
+def mft2_a2b_evaluator(profile):
+    """Return a raw-device RGB to relative-PCS evaluator for A2B0."""
+    payload = dict(read_icc_tags(profile)).get(b"A2B0")
+    if not payload or len(payload) < 52 or payload[:4] != b"mft2":
+        fail("Measured HDR calibration requires an mft2 A2B0 transform")
+    input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+    input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+    if input_channels != 3 or output_channels != 3 or grid < 2:
+        fail("Measured HDR calibration requires a three-channel A2B0 transform")
+    input_start = 52
+    clut_start = input_start + input_channels * input_entries * 2
+    clut_values = grid ** input_channels * output_channels
+    output_start = clut_start + clut_values * 2
+    required = output_start + output_channels * output_entries * 2
+    if required > len(payload):
+        fail("ICC A2B0 table is truncated")
+    matrix = [value / 65536.0 for value in struct.unpack_from(">9i", payload, 12)]
+    input_tables = []
+    output_tables = []
+    for channel in range(3):
+        offset = input_start + channel * input_entries * 2
+        input_tables.append([value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(input_entries), payload, offset)])
+        offset = output_start + channel * output_entries * 2
+        output_tables.append([value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(output_entries), payload, offset)])
+    clut = [value / 65535.0 for value in struct.unpack_from(
+        ">{}H".format(clut_values), payload, clut_start)]
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+
+    def evaluate(rgb):
+        shaped = [sample_table(input_tables[channel], rgb[channel]) for channel in range(3)]
+        transformed = [
+            sum(matrix[row * 3 + column] * shaped[column] for column in range(3))
+            for row in range(3)
+        ]
+        encoded = _sample_mft2_clut_tetrahedral(clut, grid, transformed)
+        return [sample_table(output_tables[channel], encoded[channel]) / xyz_to_mft
+                for channel in range(3)]
+
+    return evaluate
+
+
+def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
+    """Build neutral B2A output curves from the raw measured forward model.
+
+    Dense neutral measurements anchor luminance and the first OLED plateau.
+    Argyll's A2B fit supplies only the local, level-dependent RGB-to-XYZ
+    Jacobian used for white-point correction. This consumes the original
+    characterization set and never requires a post-profile measurement pass.
+    """
+    neutral = []
+    for row in rows:
+        if max(row["rgb"]) - min(row["rgb"]) <= 0.002:
+            neutral.append((sum(row["rgb"]) / 3.0, tuple(row["xyz"])))
+    neutral.sort(key=lambda item: item[0])
+    if len(neutral) < 9 or neutral[0][0] > 0.002 or neutral[-1][0] < 0.998:
+        fail("HDR calibration requires dense black-to-white neutral measurements")
+
+    # Collapse repeated black/white anchors before interpolating chromaticity.
+    # The dense neutral measurements contain the physical XYZ information we
+    # are trying to correct; using only their Y values and taking chromaticity
+    # from the fitted A2B model throws that information away.
+    grouped_neutral = []
+    for code, xyz in neutral:
+        if grouped_neutral and abs(grouped_neutral[-1][0] - code) < 1e-9:
+            grouped_neutral[-1][1].append({"xyz": xyz})
+        else:
+            grouped_neutral.append([code, [{"xyz": xyz}]])
+    measured_neutral = [
+        (code, robust_xyz(samples)) for code, samples in grouped_neutral
+    ]
+
+    def measured_xyz_at_code(code):
+        if code <= measured_neutral[0][0]:
+            return measured_neutral[0][1]
+        for anchor in range(1, len(measured_neutral)):
+            x0, xyz0 = measured_neutral[anchor - 1]
+            x1, xyz1 = measured_neutral[anchor]
+            if code <= x1:
+                fraction = 0.0 if x1 <= x0 else (code - x0) / (x1 - x0)
+                return tuple(xyz0[channel] * (1.0 - fraction)
+                             + xyz1[channel] * fraction for channel in range(3))
+        return measured_neutral[-1][1]
+
+    response_neutral = [(code, xyz[1]) for code, xyz in measured_neutral]
+
+    blocks = []
+    for index, (_code, response) in enumerate(response_neutral):
+        blocks.append([index, index, response, 1.0])
+        while (len(blocks) >= 2
+               and blocks[-2][2] / blocks[-2][3] > blocks[-1][2] / blocks[-1][3]):
+            right = blocks.pop()
+            left = blocks.pop()
+            blocks.append([left[0], right[1], left[2] + right[2], left[3] + right[3]])
+    fitted = [0.0] * len(response_neutral)
+    for start, end, total, weight in blocks:
+        for index in range(start, end + 1):
+            fitted[index] = total / weight
+    response_neutral = [(response_neutral[index][0], fitted[index])
+                        for index in range(len(response_neutral))]
+    peak = max(response for _code, response in response_neutral)
+    plateau_code = next(code for code, response in response_neutral
+                        if response >= peak * 0.998)
+
+    def invert_luminance(target):
+        if target <= response_neutral[0][1]:
+            return response_neutral[0][0]
+        for index in range(1, len(response_neutral)):
+            x0, y0 = response_neutral[index - 1]
+            x1, y1 = response_neutral[index]
+            if target <= y1:
+                if y1 <= y0 + 1e-12:
+                    return min(x1, plateau_code)
+                fraction = (target - y0) / (y1 - y0)
+                return min(x0 + fraction * (x1 - x0), plateau_code)
+        return plateau_code
+
+    evaluate = mft2_a2b_evaluator(profile)
+    d50 = (0.9642, 1.0, 0.8249)
+    d65 = (0.3127 / 0.329, 1.0, (1.0 - 0.3127 - 0.329) / 0.329)
+    chad_payload = dict(read_icc_tags(profile)).get(b"chad")
+    if not chad_payload or len(chad_payload) < 44 or chad_payload[:4] != b"sf32":
+        fail("Measured HDR calibration requires the profile chromatic-adaptation matrix")
+    chad = [value / 65536.0 for value in struct.unpack_from(">9i", chad_payload, 8)]
+    white_y = max(xyz[1] for code, xyz in measured_neutral if code >= 0.998)
+    first_nonzero_y = min(xyz[1] for _code, xyz in measured_neutral if xyz[1] > 0)
+    full_model_floor = max(first_nonzero_y * 3.0, 0.03)
+    channel_measurements = [[], [], []]
+    black_xyz = measured_neutral[0][1]
+    for channel in range(3):
+        channel_measurements[channel].append((0.0, black_xyz))
+    for row in rows:
+        for channel in range(3):
+            if (row["rgb"][channel] > 0
+                    and all(row["rgb"][other] <= 1e-9
+                            for other in range(3) if other != channel)):
+                channel_measurements[channel].append(
+                    (row["rgb"][channel], tuple(row["xyz"])))
+    for channel in range(3):
+        channel_measurements[channel].sort(key=lambda item: item[0])
+        if len(channel_measurements[channel]) < 6:
+            fail("HDR low-light calibration requires measured single-channel ramps")
+
+    color_measurements = []
+    for row in rows:
+        rgb = tuple(row["rgb"])
+        if max(rgb) - min(rgb) > 0.002:
+            color_measurements.append((rgb, tuple(row["xyz"])))
+
+    def measured_channel_xyz(channel, code):
+        anchors = channel_measurements[channel]
+        if code <= anchors[0][0]:
+            return anchors[0][1]
+        upper = 1
+        while upper < len(anchors) - 1 and anchors[upper][0] < code:
+            upper += 1
+        lower = max(0, upper - 1)
+        x0, xyz0 = anchors[lower]
+        x1, xyz1 = anchors[upper]
+        if x1 <= x0:
+            return xyz0
+        fraction = max(0.0, min(1.0, (code - x0) / (x1 - x0)))
+        return tuple(xyz0[axis] * (1.0 - fraction) + xyz1[axis] * fraction
+                     for axis in range(3))
+
+    def measured_channel_derivative(channel, code):
+        anchors = channel_measurements[channel]
+        upper = 1
+        while upper < len(anchors) - 1 and anchors[upper][0] < code:
+            upper += 1
+        lower = max(0, upper - 1)
+        x0, xyz0 = anchors[lower]
+        x1, xyz1 = anchors[upper]
+        if x1 <= x0:
+            return (0.0, 0.0, 0.0)
+        return tuple((xyz1[axis] - xyz0[axis]) / (x1 - x0)
+                     for axis in range(3))
+
+    def additive_xyz(rgb):
+        # Each primary ramp includes the measured black offset. Count that
+        # offset once when combining the three independently measured ramps.
+        return tuple(
+            sum(measured_channel_xyz(channel, rgb[channel])[axis]
+                for channel in range(3)) - 2.0 * black_xyz[axis]
+            for axis in range(3)
+        )
+
+    def measured_local_jacobian(code):
+        """Fit a local physical RGB-to-XYZ derivative around neutral."""
+        center_xyz = measured_xyz_at_code(code)
+        nearby = sorted(
+            color_measurements,
+            key=lambda item: sum((item[0][channel] - code) ** 2
+                                 for channel in range(3)),
+        )[:32]
+        if len(nearby) < 12:
+            return None, 0.0
+        bandwidth2 = max(1e-8, sum(
+            (nearby[-1][0][channel] - code) ** 2 for channel in range(3)))
+        normal = [[0.0] * 3 for _axis in range(3)]
+        cross = [[0.0] * 3 for _axis in range(3)]
+        weighted_actual = 0.0
+        samples = []
+        for rgb, xyz in nearby:
+            distance2 = sum((rgb[channel] - code) ** 2 for channel in range(3))
+            weight = math.exp(-2.0 * distance2 / bandwidth2)
+            device_delta = [rgb[channel] - code for channel in range(3)]
+            xyz_delta = [xyz[axis] - center_xyz[axis] for axis in range(3)]
+            samples.append((weight, device_delta, xyz_delta))
+            for first in range(3):
+                for second in range(3):
+                    normal[first][second] += (weight * device_delta[first]
+                                              * device_delta[second])
+                for axis in range(3):
+                    cross[axis][first] += weight * device_delta[first] * xyz_delta[axis]
+            weighted_actual += weight * sum(value * value for value in xyz_delta)
+        ridge = max(1e-12, sum(normal[index][index] for index in range(3)) * 1e-7)
+        for index in range(3):
+            normal[index][index] += ridge
+        try:
+            inverse = mat_inv(normal)
+        except Exception:
+            return None, 0.0
+        jacobian = [
+            [sum(cross[axis][index] * inverse[index][channel]
+                 for index in range(3)) for channel in range(3)]
+            for axis in range(3)
+        ]
+        weighted_error = 0.0
+        for weight, device_delta, xyz_delta in samples:
+            predicted = mat_vec_mul(jacobian, device_delta)
+            weighted_error += weight * sum(
+                (xyz_delta[axis] - predicted[axis]) ** 2 for axis in range(3))
+        fit = max(0.0, 1.0 - weighted_error / max(weighted_actual, 1e-12))
+        radius = math.sqrt(bandwidth2)
+        coverage = max(0.0, min(1.0, (0.24 - radius) / 0.12))
+        confidence = coverage * max(0.0, min(1.0, (fit - 0.35) / 0.55))
+        return jacobian, confidence
+
+    step = 2.0 / 1023.0
+    curves = [[], [], []]
+    for index in range(entries):
+        encoded = index / float(entries - 1)
+        target_nits = min(pq_to_nits(encoded), peak)
+        base = invert_luminance(target_nits)
+        rgb = [base, base, base]
+        actual = evaluate(rgb)
+        jacobian = [[0.0] * 3 for _axis in range(3)]
+        for channel in range(3):
+            probe = list(rgb)
+            probe[channel] = min(1.0, base + step)
+            if probe[channel] == base:
+                probe[channel] = max(0.0, base - step)
+            result = evaluate(probe)
+            denominator = probe[channel] - base
+            for axis in range(3):
+                jacobian[axis][channel] = (result[axis] - actual[axis]) / denominator
+        measured_xyz = measured_xyz_at_code(base)
+        target_xyz = [target_nits * component for component in d65]
+        measured_pcs = [
+            sum(chad[axis * 3 + channel] * measured_xyz[channel] / white_y
+                for channel in range(3))
+            for axis in range(3)
+        ]
+        target = [
+            sum(chad[axis * 3 + channel] * target_xyz[channel] / white_y
+                for channel in range(3))
+            for axis in range(3)
+        ]
+        try:
+            delta = mat_vec_mul(mat_inv(jacobian),
+                                [target[axis] - measured_pcs[axis] for axis in range(3)])
+        except Exception:
+            delta = [0.0, 0.0, 0.0]
+        # Near black, isolated primary ramps have useful channel directions
+        # but their sum does not necessarily equal the display's measured
+        # neutral response. Normalize each XYZ row of their Jacobian so equal
+        # drive matches the dense neutral measurement at this code, then solve
+        # the white-point residual around that physical neutral anchor.
+        additive_at_neutral = additive_xyz([base, base, base])
+        normalized_jacobian = [
+            [measured_channel_derivative(channel, base)[axis]
+             * max(0.1, min(10.0, measured_xyz[axis]
+                            / max(additive_at_neutral[axis], 1e-12)))
+             for channel in range(3)]
+            for axis in range(3)
+        ]
+        try:
+            normalized_primary_delta = mat_vec_mul(
+                mat_inv(normalized_jacobian),
+                [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
+            )
+        except Exception:
+            normalized_primary_delta = delta
+
+        # For the shoulder and peak, use the derivative fitted from nearby
+        # measured mixed-color patches; isolated primaries do not model OLED
+        # power limiting at white.
+        local_jacobian, local_confidence = measured_local_jacobian(base)
+        if local_jacobian is not None and local_confidence > 0:
+            try:
+                local_delta = mat_vec_mul(
+                    mat_inv(local_jacobian),
+                    [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
+                )
+                delta = [local_delta[channel] * local_confidence
+                         + delta[channel] * (1.0 - local_confidence)
+                         for channel in range(3)]
+            except Exception:
+                pass
+        additive_full = peak * 0.005
+        additive_end = peak * 0.0125
+        target_fraction = target_nits / peak
+        if target_nits <= additive_full:
+            additive_weight = 1.0
+        elif target_nits < additive_end:
+            additive_weight = (1.0 - (target_nits - additive_full)
+                               / (additive_end - additive_full))
+        else:
+            additive_weight = 0.0
+        delta = [normalized_primary_delta[channel] * additive_weight
+                 + delta[channel] * (1.0 - additive_weight) for channel in range(3)]
+        delta = [max(-0.04, min(0.04, value)) for value in delta]
+
+        # Below 5 cd/m2, the 3D color fit has too little signal to estimate a
+        # stable Jacobian. In the shoulder, multiple device codes produce the
+        # same light output. Retain the measured-primary calibration in those
+        # regions and use the A2B correction only where its inverse is unique.
+        if target_nits <= first_nonzero_y:
+            model_weight = 0.0
+        elif target_nits < full_model_floor:
+            model_weight = ((target_nits - first_nonzero_y)
+                            / (full_model_floor - first_nonzero_y))
+        else:
+            if target_fraction <= 0.40:
+                model_weight = 1.0
+            elif target_fraction < 0.75:
+                model_weight = 1.0 - (target_fraction - 0.40) / 0.35
+            else:
+                # Mixed-color neighborhoods explicitly measure the OLED
+                # shoulder. Fade that local solve back in above 75% instead of
+                # reverting the peak to the matrix-only fallback.
+                model_weight = min(1.0, (target_fraction - 0.75) / 0.15)
+        for channel in range(3):
+            model_value = max(0.0, min(1.0, base + delta[channel]))
+            fallback_value = sample_table(fallback[channel], encoded)
+            curves[channel].append(model_weight * model_value
+                                   + (1.0 - model_weight) * fallback_value)
+
+    for channel in range(3):
+        previous = 0.0
+        for index in range(entries):
+            previous = max(previous, curves[channel][index])
+            curves[channel][index] = previous
+        curves[channel][0] = 0.0
+
+        # The display's neutral white response can plateau well before full
+        # device drive, but this is a global B2A output shaper: parking it at
+        # the white-plateau code through table endpoint 1.0 would also make
+        # saturated primary drive above that code unreachable. Neutral HDR
+        # never traverses positions above PQ(peak), because its PCS luminance
+        # is capped at the measured peak. Reserve that unused tail for a
+        # monotonic continuation to full device range so the cLUT can still
+        # reproduce the measured gamut.
+        neutral_limit = nits_to_pq(peak)
+        neutral_value = sample_table(curves[channel], neutral_limit)
+        for index in range(entries):
+            position = index / float(entries - 1)
+            if position <= neutral_limit:
+                continue
+            fraction = (position - neutral_limit) / (1.0 - neutral_limit)
+            continuation = neutral_value + (1.0 - neutral_value) * fraction
+            curves[channel][index] = max(curves[channel][index], continuation)
+        curves[channel][-1] = 1.0
+    return curves
+
+
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
 
@@ -959,7 +1407,7 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     input shapers, resample the original chromatic transform, and reserve the
     one-cell neutral corridor for the calibration stage. With VCGT, that
     corridor stays in source PQ and KWin applies the separate curves. When
-    When calibration is included without VCGT, keep the neutral cLUT in its
+    calibration is included without VCGT, keep the neutral cLUT in its
     virtual-device domain and put the calibration in the high-resolution B2A
     output shapers. This preserves sharp HDR rolloffs that a 3D grid cannot.
     """
@@ -977,13 +1425,20 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
             continue
         if len(payload) < 52 or payload[:4] != b"mft2":
             continue
-        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_channels, output_channels, source_grid = payload[8], payload[9], payload[10]
+        # A one-cell neutral corridor is required for trilinear GPU sampling:
+        # every corner of a cube crossed by the neutral axis must agree with
+        # the calibrated grey transform. On a 33-point cLUT that corridor is
+        # over 3% wide per channel and visibly distorts low-saturation colors.
+        # Resampling to 65 points keeps the same fitted transform but confines
+        # the mandatory corridor to roughly 1.5%.
+        grid = max(source_grid, 65)
         input_entries, output_entries = struct.unpack(">HH", payload[48:52])
-        if input_channels != 3 or output_channels != 3 or grid < 2 or input_entries < 2 or output_entries < 2:
+        if input_channels != 3 or output_channels != 3 or source_grid < 2 or input_entries < 2 or output_entries < 2:
             continue
         input_start = 52
         clut_start = input_start + input_channels * input_entries * 2
-        clut_values = grid ** input_channels * output_channels
+        clut_values = source_grid ** input_channels * output_channels
         output_start = clut_start + clut_values * 2
         required = output_start + output_channels * output_entries * 2
         if required > len(payload):
@@ -1013,11 +1468,12 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
                 sample_table(input_tables[channel], pcs[channel] * xyz_to_mft)
                 for channel in range(3)
             ]
-            clut_result = _sample_mft2_clut(old_clut, grid, coordinates)
+            clut_result = _sample_mft2_clut(old_clut, source_grid, coordinates)
             return [sample_table(output_tables[channel], clut_result[channel])
                     for channel in range(3)]
 
         updated = bytearray(payload[:48])
+        updated[10] = grid
         updated.extend(struct.pack(">HH", new_input_entries, new_output_entries))
         for channel in range(3):
             for index in range(new_input_entries):
@@ -1614,8 +2070,8 @@ def run_profcheck(ti3_path, profile_path, rows, profile_model, patch_set):
             "size_bytes": size_bytes,
             "size_label": "{:.1f} KiB".format(size_bytes / 1024.0),
         }
-    black_row = closest_row(rows, (0, 0, 0))
-    white_row = closest_row(rows, (1, 1, 1))
+    black_row = repeated_target_row(rows, (0, 0, 0))
+    white_row = repeated_target_row(rows, (1, 1, 1))
     white_total = sum(white_row["xyz"])
     black_y = black_row["xyz"][1]
     characterization = {
@@ -1705,12 +2161,14 @@ def build(payload, output_dir):
         apply_calibration=calibration_mode != "none")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
 
-    # A separate VCGT and calibration incorporated into the ICC both start
-    # with a profile of the calibrated virtual device. With no calibration,
-    # profile the display exactly as measured. Windows MHC2 remains its own
-    # calibration path and continues to characterize the raw display.
+    # A separate VCGT starts with a profile of the calibrated virtual device.
+    # KDE HDR calibration incorporated into B2A needs two models from the same
+    # measurements: a raw High-quality forward model to derive the calibration,
+    # followed by a calibrated virtual-device model for the actual ICC color
+    # transforms. Windows MHC2 remains its own calibration path and continues
+    # to characterize the raw display.
     fit_rows = profile_rows
-    if not keeps_mhc2 and calibration_mode in ("vcgt", "profile"):
+    if not keeps_mhc2 and calibration_mode == "vcgt":
         fit_rows = apply_calibration_to_rows(profile_rows, calibration)
     ti3, _, _ = make_ti3(payload, fit_rows)
     if not os.path.isdir(output_dir):
@@ -1725,7 +2183,16 @@ def build(payload, output_dir):
     model_suffix = re.sub(r"-+", "-", SAFE_NAME.sub("-", PROFILE_MODELS[profile_model]["label"]).strip("- ").replace(" ", "-"))
     filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)
     output_path = os.path.join(output_dir, filename)
-    run_colprof(payload, ti3, output_path, profile_model, patch_set, icc_version)
+    raw_hdr_calibration_fit = (
+        calibration_mode == "profile" and not keeps_mhc2
+        and profile_type == "kde-hdr"
+        and PROFILE_MODELS[profile_model]["family"] == "clut"
+    )
+    initial_colprof_payload = payload
+    if raw_hdr_calibration_fit:
+        initial_colprof_payload = dict(payload)
+        initial_colprof_payload["profile_quality"] = "high"
+    run_colprof(initial_colprof_payload, ti3, output_path, profile_model, patch_set, icc_version)
     mhc2_validation = None
     with open(output_path, "rb") as handle:
         profile = handle.read()
@@ -1764,24 +2231,50 @@ def build(payload, output_dir):
         handle.write(profile)
     if calibration_mode == "profile" and not keeps_mhc2:
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
-            # applycal updates both profile directions. Keep its forward A2B
-            # tables for measurement and CMM use, but replace B2A with the HDR
-            # version whose calibration is held in high-resolution output
-            # shapers instead of the coarse 3D grid.
+            # The dense original neutral series anchors luminance, while the
+            # raw A2B local Jacobian supplies level-dependent white correction.
+            # Re-express those same measurements through the resulting curves
+            # and let colprof fit the calibrated virtual display. Its B2A cLUT
+            # therefore describes the domain that KWin actually sends to the
+            # output shapers. No validation or second measurement pass is used.
             with open(output_path, "rb") as handle:
-                virtual_profile = handle.read()
-            apply_profile_calibration(output_path, calibration)
-            with open(output_path, "rb") as handle:
-                calibrated_profile = handle.read()
-            reshaped_profile = reshape_hdr_b2a_for_pq(
-                virtual_profile, white["xyz"][1], incorporated_calibration=calibration)
-            reshaped_tags = dict(read_icc_tags(reshaped_profile))
-            replacements = {
-                signature: reshaped_tags[signature]
-                for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
-                if signature in reshaped_tags
-            }
-            profile = rebuild_icc(calibrated_profile, replacements)
+                raw_profile = handle.read()
+            incorporated = hdr_profile_calibration_from_a2b(
+                raw_profile, profile_rows, calibration)
+            fit_rows = apply_calibration_to_rows(profile_rows, incorporated)
+            virtual_ti3, _, _ = make_ti3(payload, fit_rows)
+            virtual_dir = tempfile.mkdtemp(prefix="pgen_hdr_virtual_")
+            try:
+                virtual_path = os.path.join(virtual_dir, filename)
+                run_colprof(payload, virtual_ti3, virtual_path, profile_model,
+                            patch_set, icc_version)
+                with open(virtual_path, "rb") as handle:
+                    virtual_profile = handle.read()
+
+                # applycal owns the forward-transform composition. Preserve
+                # its calibrated A2B, but use the pre-applycal virtual B2A for
+                # PQ reshaping so calibration appears exactly once in the
+                # high-resolution output tables.
+                with open(output_path, "wb") as handle:
+                    handle.write(virtual_profile)
+                apply_profile_calibration(output_path, incorporated)
+                with open(output_path, "rb") as handle:
+                    calibrated_profile = handle.read()
+                reshaped_profile = reshape_hdr_b2a_for_pq(
+                    virtual_profile, white["xyz"][1],
+                    incorporated_calibration=incorporated)
+                reshaped_tags = dict(read_icc_tags(reshaped_profile))
+                replacements = {
+                    signature: reshaped_tags[signature]
+                    for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
+                    if signature in reshaped_tags
+                }
+                profile = rebuild_icc(calibrated_profile, replacements)
+                profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
+                profile = rebuild_icc(
+                    profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+            finally:
+                shutil.rmtree(virtual_dir, ignore_errors=True)
             with open(output_path, "wb") as handle:
                 handle.write(profile)
         else:
