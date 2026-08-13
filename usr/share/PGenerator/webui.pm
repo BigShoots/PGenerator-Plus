@@ -4484,10 +4484,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
-    # BT.2408 HDR Reference White for chromatic ColorChecker patches in HDR10
-    # and DV-Absolute. Greys keep tracking the measured white; chromatic
-    # patches are anchored to 203 cd/m^2 so the chart stimulus is the
-    # recognized HDR reference rather than the panel's measured white.
+    # BT.2408 HDR Reference White for ColorChecker patches in HDR10 and
+    # DV-Absolute. Both neutral and chromatic reflectance samples are anchored
+    # to the same 203 cd/m^2 diffuse white. The separate White patch remains
+    # full code so it can establish the display peak.
     my $bt2408_ref_white_nits=203;
     my $encode_linear=sub {
      my ($linear,$ref_nits_override)=@_;
@@ -4499,13 +4499,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      }
       my $encoded=0;
       if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
-       # Reference ColorChecker patch luminance to the MEASURED white (passed
-       # by the client as series_target_white_y) instead of a fixed 100-nit
-       # diffuse, so the displayed patch matches the measured-white chart
-       # target and samples the cube at the correct (not dim) drive. Falls
-       # back to the mastering peak, then 100. Yn<=1 so nothing clips.
-       # Chromatic HDR10 patches pass an explicit $ref_nits_override (BT.2408
-       # 203 cd/m^2); greys leave it undef and use the measured-white cascade.
+       # Callers for HDR10 and DV-Absolute ColorChecker reflectance patches
+       # pass the BT.2408 203 cd/m^2 reference explicitly. Other PQ callers
+       # retain the measured-white/mastering-peak fallback below.
        my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
        my $ref=(defined $ref_nits_override && $ref_nits_override>0)?$ref_nits_override:$cc_ref;
        $encoded=&webui_pattern_pq_encode_normalized($linear*$ref);
@@ -4675,10 +4671,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     }
 	     if($kind eq "gray") {
 	      my $level=$vals[0];
-	      my $code=$encode_linear->($level);
+	      my $absolute_hdr_colorchecker=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 1 : 0;
+	      my $code=$absolute_hdr_colorchecker
+	       ? $encode_linear->($level,$bt2408_ref_white_nits)
+	       : $encode_linear->($level);
 	      my $ire=int($level*100 + .5);
 	      my $target_Yn_for_step=$level;
-	      if($signal_mode eq "dv" && $span_code>0) {
+	      if($absolute_hdr_colorchecker) {
+	       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+	       $target_Yn_for_step=$cc_white>0 ? $level*$bt2408_ref_white_nits/$cc_white : 0;
+	      } elsif($signal_mode eq "dv" && $span_code>0) {
 	       my $norm=($code-$min_code)/$span_code;
 	       $norm=0 if($norm < 0); $norm=1 if($norm > 1);
 	       $target_Yn_for_step=$decode_linear->($norm);
@@ -4703,9 +4705,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
      if($mx>1){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-      # BT.2408 HDR ColorChecker: greys track the measured-white cascade
-      # (unchanged) and chromatic patches anchor to 203 cd/m^2 in HDR10 and
-      # DV-Absolute. SDR / DV-Relative / HLG keep the original behavior.
+      # BT.2408 HDR ColorChecker: all reflectance patches, including the four
+      # neutrals above, anchor to 203 cd/m^2 in HDR10 and DV-Absolute.
+      # SDR / DV-Relative / HLG keep the original behavior.
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
       my $dv_peak=(($max_luma+0)>0)?($max_luma+0):10000;
       my $r;
@@ -23347,6 +23349,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
 	 const wp=meterTargetWhitePoint();
 	 const dvAbsolute=meterChartIsDv()&&meterDvMapModeValue()==='1';
+	 const absoluteHdrColorChecker=(meterChartIsPq()&&!meterChartIsDv())||dvAbsolute;
 	 // Absolute DV is PQ RGB in a BT.2020 container. Solve target xy into that
 	 // container; P3 coefficients interpreted as BT.2020 produce oversaturation.
 	 // Relative DV keeps its established target-gamut tunnel behavior.
@@ -23358,8 +23361,8 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
-	   const code=meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
-	   let targetYn=src.gray;
+	   const code=meterEncodeColorCheckerLinear(src.gray,absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined);
+	   let targetYn=absoluteHdrColorChecker?(src.gray*hdrColorCheckerRefNits/seriesWhite):src.gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
@@ -23383,11 +23386,11 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
   rl=Math.max(0,rl);
   gl=Math.max(0,gl);
   bl=Math.max(0,bl);
-	  const colorRef=dvAbsolute?hdrColorCheckerRefNits:undefined;
+	  const colorRef=absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined;
 	  const rCode=meterEncodeColorCheckerLinear(rl,colorRef);
 	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
 	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
-	  let targetYn=dvAbsolute?(src.Yn*hdrColorCheckerRefNits/seriesWhite):src.Yn;
+	  let targetYn=absoluteHdrColorChecker?(src.Yn*hdrColorCheckerRefNits/seriesWhite):src.Yn;
 	  if(meterChartIsDv()&&!dvAbsolute){
     const min=meterChromaPatchRangeMin();
     const span=meterChromaPatchRangeSpan();
