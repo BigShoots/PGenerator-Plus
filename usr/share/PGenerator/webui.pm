@@ -4467,17 +4467,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       $auto_target_key="p3dci" if($primaries_idx == 3);
     }
     my $target_key=$target_gamut ne "" ? $target_gamut : $auto_target_key;
-    # DV ColorChecker patches are target-gamut driven even though the signal
-    # rides in a BT.2020 tunnel. Solving them in the container makes DV
-    # relative read undersaturated and DV absolute read oversaturated.
-    # HDR10 likewise solves in the target gamut so wide-gamut patches are not
-    # desaturated; only HLG stays anchored to the container here.
-    # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV
-    # is told): express the P3 target chromaticities as BT.2020 RGB so the TV
-    # decodes BT.2020 and the cube (also BT.2020) reproduces them. Solving in
-    # P3 emitted P3 RGB onto a BT.2020 wire -> wrong saturation. target_key
-    # stays the scoring/sweep gamut.
-    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+    # Relative DV retains its established target-gamut solve. Absolute DV uses
+    # PQ RGB carried in the BT.2020 container, so its target chromaticity must
+    # be solved into BT.2020 RGB just like HDR10. Sending P3 RGB coefficients
+    # in that container expands the measured chromaticity beyond the P3 target.
+    # HDR10 uses the same container solve. target_key remains the scoring gamut
+    # and the mastering metadata may still advertise P3 primaries.
+    my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? $container_key : $target_key;
     my @target_white=@{$primaries{$target_key}{WHITE}};
     @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
     my ($target_wx,$target_wy)=@target_white;
@@ -23068,7 +23064,13 @@ function meterNeutralColorGreyscaleReading(reading){
 function meterSeriesDeltaEForDisplay(reading,modeOrIncl,form,gwWeight){
  if(!meterColorSeriesNeutralUsesGreyscaleAnalysis(reading)) return meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight);
  const grey=meterNeutralColorGreyscaleReading(reading);
- return meterGreyDeltaResult(grey,meterGreyRefMode(),meterDeltaEForm(),meterGrayWorldWeight()).value;
+ // Neutral rows use greyscale target/formula math, but the color chart's own
+ // luminance toggle still controls whether EOTF/gamma error is included.
+ // Ignoring modeOrIncl made both raw and compensated cache entries identical,
+ // so neutral ColorChecker rows could never report their luminance error.
+ const mode=(modeOrIncl==null)?meterColorRefMode():modeOrIncl;
+ const weight=(gwWeight==null)?meterGrayWorldWeight():gwWeight;
+ return meterGreyDeltaResult(grey,mode,meterDeltaEForm(),weight).value;
 }
 
 // Caches {raw, lc} ΔE pair on each reading under a key that encodes the
@@ -23343,9 +23345,12 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const min=meterChromaPatchRangeMin();
 	 const max=min+meterChromaPatchRangeSpan();
 	 const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
-	 const solveGamut=meterChartIsDv()?meterAnalysisGamut():meterStimulusSolveGamut();
 	 const wp=meterTargetWhitePoint();
 	 const dvAbsolute=meterChartIsDv()&&meterDvMapModeValue()==='1';
+	 // Absolute DV is PQ RGB in a BT.2020 container. Solve target xy into that
+	 // container; P3 coefficients interpreted as BT.2020 produce oversaturation.
+	 // Relative DV keeps its established target-gamut tunnel behavior.
+	 const solveGamut=dvAbsolute?meterContainerGamut():meterAnalysisGamut();
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
 	 const hdrColorCheckerRefNits=203;
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
