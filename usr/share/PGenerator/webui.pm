@@ -50462,6 +50462,10 @@ function drawCIEChart3DLegacy(readings,opts){
  const hitZones=[];
  items.forEach(rd=>{
   if(!rd||meterIsWhiteReferenceReading(rd)) return;
+  // True black has no defined chromaticity. Do not manufacture a point at
+  // the CIE origin in 3D; a raised black with non-zero XYZ remains visible.
+  if((isPreset||rd._presetStep)&&meterReadingTargetsBlack(rd)) return;
+  if(!(isPreset||rd._presetStep)&&meterReadingTargetsBlack(rd)&&meterXyzIsBlack(meterReadingXYZ(rd))) return;
   let tx=null,ty=null,tY=null,mx=null,my=null,mY=null,deltaPct=null;
   if(isPreset||rd._presetStep){
    const tgt=!meterCieViewOpts.targets?null:(((rd.target_x!=null&&rd.target_y!=null)||(rd.series_color&&rd.sat_pct!=null))
@@ -51136,7 +51140,9 @@ function drawCIEChart(readings){
     &&(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')){
   const readNames=new Set(readings.map(r=>(r&&r.name!=null)?String(r.name):''));
   meterSeriesSteps.forEach(s=>{
-   if(!s||s.name==null||meterIsWhiteReferenceReading(s)||readNames.has(String(s.name))) return;
+   // A zero-light target has no chromaticity, so an unread Black target does
+   // not belong on a 2D CIE diagram either.
+   if(!s||s.name==null||meterIsWhiteReferenceReading(s)||meterReadingTargetsBlack(s)||readNames.has(String(s.name))) return;
    let tgt=null;
    try{
     tgt=((s.target_x!=null&&s.target_y!=null)||(s.series_color&&s.sat_pct!=null))
@@ -51155,6 +51161,10 @@ function drawCIEChart(readings){
  // Plot target and measured points
  (Array.isArray(readings)?readings:[]).forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
+  // Preserve raised-black chromaticity, but suppress true 0/0/0 black. The
+  // previous path used stale meter x/y to admit the point, then converted
+  // zero XYZ to (0,0), drawing a meaningless line across the entire chart.
+  if(meterReadingTargetsBlack(rd)&&meterXyzIsBlack(meterReadingXYZ(rd))) return;
   const hasMeasuredXY=!!(rd.x&&rd.y&&rd.x>0&&rd.y>0);
   const targetXYZ=meterTargetXYZForReading(rd);
   const hasTarget=!!(targetXYZ&&(targetXYZ.Y>0||meterXyzIsBlack(targetXYZ)));
