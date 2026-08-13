@@ -2350,7 +2350,7 @@ async function meterIccBuild(readings){
  const buildClock=meterIccStartBuildClock(status,meterIccRunConfig,profileReadings.length);
  let buildElapsed=0;
  try{
-  const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings});
+  const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings,client_time:Math.floor(Date.now()/1000)});
   delete payload.steps;
   delete payload.reused_readings;
   delete payload.precondition_reused_readings;

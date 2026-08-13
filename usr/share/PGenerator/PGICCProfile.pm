@@ -3,12 +3,26 @@ package main;
 # ICC profile backend extracted from webui.pm. It deliberately remains in
 # package main so the existing route API and shared WebUI helpers stay stable.
 
+sub webui_icc_sync_clock_from_build (@) {
+ my ($body)=@_;
+ my $client_time=0;
+ $client_time=int($1) if(defined($body) && $body=~/"client_time"\s*:\s*(\d{10})/);
+ # A Pi has no RTC and may be on an isolated calibration network. The browser
+ # is still a useful forward-only clock source. Never let a client move time
+ # backwards, and reject dates outside a deliberately broad sane range.
+ return 0 if($client_time<1767225600 || $client_time>4102444800);
+ return 0 if($client_time<=time()+60);
+ return 0 if(system("/bin/date","-u","-s","\@$client_time")!=0);
+ system("/usr/sbin/fake-hwclock","save") if(-x "/usr/sbin/fake-hwclock");
+ return 1;
+}
+
 sub webui_icc_profile_list (@) {
  my @out;
  my @profiles;
  if(opendir(my $dh,$_icc_profile_dir)) {
   foreach my $file (readdir($dh)) {
-   next unless($file=~/^[A-Za-z0-9._-]+\.icc$/i);
+   next unless($file=~/^[A-Za-z0-9._()-]+\.icc$/i);
    my @st=stat("$_icc_profile_dir/$file");
    # An interrupted colprof run can leave an empty destination behind. It is
    # not an installable profile and should not appear in profile history.
@@ -35,7 +49,7 @@ sub webui_icc_reusable_measurements (@) {
  my @candidates;
  if(opendir(my $dh,$_icc_profile_dir)) {
   foreach my $file (readdir($dh)) {
-   next unless($file=~/^[A-Za-z0-9._-]+\.icc\.measurements\.json$/i);
+   next unless($file=~/^[A-Za-z0-9._()-]+\.icc\.measurements\.json$/i);
    my $profile=$file;
    $profile=~s/\.measurements\.json$//i;
    next unless(-f "$_icc_profile_dir/$profile");
@@ -63,6 +77,7 @@ sub webui_icc_profile_build (@) {
  return '{"status":"error","message":"Profile request is empty"}' if(!defined($body) || $body eq "");
  return '{"status":"error","message":"Profile request is too large"}' if(length($body)>16*1024*1024);
  return '{"status":"error","message":"ICC profile builder is unavailable"}' unless(-f $_icc_profile_builder);
+ &webui_icc_sync_clock_from_build($body);
  if(!-d $_icc_profile_dir) {
   eval { require File::Path; File::Path::make_path($_icc_profile_dir,{mode=>0755}); };
  }
@@ -146,7 +161,7 @@ sub webui_icc_precondition_patch_generate (@) {
 sub webui_icc_profile_validation (@) {
  my ($query)=@_;
  my $file="";
- $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.icc)(?:&|$)/i);
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._()-]+\.icc)(?:&|$)/i);
  return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
  my $path="$_icc_profile_dir/$file.validation.json";
  my $bytes=-s $path;
@@ -178,7 +193,7 @@ sub webui_icc_profile_validation (@) {
 sub webui_icc_profile_download (@) {
  my ($query)=@_;
  my $file="";
- $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._-]+\.icc)(?:&|$)/i);
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._()-]+\.icc)(?:&|$)/i);
  return ("","") if($file eq "" || $file=~m{/} || $file=~/\.\./);
  my $path="$_icc_profile_dir/$file";
  return ("","") unless(-f $path);
@@ -190,7 +205,7 @@ sub webui_icc_profile_download (@) {
 sub webui_icc_profile_delete (@) {
  my ($body)=@_;
  my $file="";
- $file=$1 if(defined($body) && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ $file=$1 if(defined($body) && $body=~/"file"\s*:\s*"([A-Za-z0-9._()-]+\.icc)"/i);
  return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
  my $path="$_icc_profile_dir/$file";
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
@@ -725,7 +740,7 @@ sub webui_icc_companion_build_result (@) {
 sub webui_icc_companion_profile_install (@) {
  my ($body)=@_;
  my $file="";
- $file=$1 if(defined($body) && length($body)<2048 && $body=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ $file=$1 if(defined($body) && length($body)<2048 && $body=~/"file"\s*:\s*"([A-Za-z0-9._()-]+\.icc)"/i);
  return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~/\.\./);
  my $path="$_icc_profile_dir/$file";
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
@@ -773,7 +788,7 @@ sub webui_icc_companion_profile_install_data (@) {
  if(open(my $fh,"<",$_icc_companion_install_job)) { local $/; $job=<$fh>||""; close($fh); }
  return (0,'{"status":"error","message":"No matching installation is pending"}')
   unless($job_id=~/\A\d+-\d+\z/ && $job=~/"install_job"\s*:\s*"\Q$job_id\E"/);
- my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._()-]+\.icc)"/i);
  return (0,'{"status":"error","message":"Installation job is invalid"}') if($file eq "" || $file=~/\.\./);
  my $data="";
  if(open(my $pf,"<:raw","$_icc_profile_dir/$file")) { local $/; $data=<$pf>||""; close($pf); }
@@ -791,7 +806,7 @@ sub webui_icc_companion_profile_install_result (@) {
  if(open(my $fh,"<",$_icc_companion_install_job)) { local $/; $job=<$fh>||""; close($fh); }
  return '{"status":"error","message":"No matching installation is pending"}'
   unless($job_id=~/\A\d+-\d+\z/ && $job=~/"install_job"\s*:\s*"\Q$job_id\E"/);
- my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._-]+\.icc)"/i);
+ my $file=""; $file=$1 if($job=~/"file"\s*:\s*"([A-Za-z0-9._()-]+\.icc)"/i);
  my $ok=($query=~/(?:^|&)ok=1(?:&|$)/)?1:0;
  my $message=&webui_icc_companion_text_from_hex_query($query,"message_hex");
  $message=$ok ? "Installed and applied by Patch Companion" : "Profile Loader could not install and apply the profile" if($message eq "");

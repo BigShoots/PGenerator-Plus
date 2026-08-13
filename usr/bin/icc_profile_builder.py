@@ -1927,6 +1927,17 @@ def safe_basename(name):
     return cleaned[:80]
 
 
+def unique_profile_filename(output_dir, filename):
+    """Choose a numbered filename instead of replacing profile history."""
+    candidate = filename
+    stem, extension = os.path.splitext(filename)
+    sequence = 1
+    while os.path.exists(os.path.join(output_dir, candidate)):
+        candidate = "{}_({}){}".format(stem, sequence, extension)
+        sequence += 1
+    return candidate
+
+
 # Offload directory shared with the WebUI. The builder writes a job here, the
 # Companion collects it through the existing poll channel, and the finished
 # profile is written back by the result endpoint.
@@ -2500,6 +2511,7 @@ def build(payload, output_dir):
     }[profile_type]
     model_suffix = re.sub(r"-+", "-", SAFE_NAME.sub("-", PROFILE_MODELS[profile_model]["label"]).strip("- ").replace(" ", "-"))
     filename = "{}-{}-{}.icc".format(stem, suffix, model_suffix)
+    filename = unique_profile_filename(output_dir, filename)
     output_path = os.path.join(output_dir, filename)
     raw_hdr_calibration_fit = (
         calibration_mode == "profile" and not keeps_mhc2
