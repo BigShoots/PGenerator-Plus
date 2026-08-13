@@ -14744,12 +14744,12 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
 	my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_hdr20_dpg_target_de",0.5);
-	# Honour the operator's target at every anchor by default. Expert callers
-	# may explicitly relax low-IRE thresholds for a known noise floor.
-	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.0;
+	# Preserve the established shadow-noise allowance: low IRE defaults to 1.5x
+	# and very low IRE to 2x the operator target. Expert callers may override it.
+	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.5;
 	$target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
 	$target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 1.0;
+	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 2.0;
 	$target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
 	$target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
 	$target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
@@ -16458,12 +16458,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  $low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
  $low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
   my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_sdr26_dpg_target_de",0.5);
-  # Honour the operator's target at every anchor by default. Expert callers
-  # may explicitly relax low-IRE thresholds for a known noise floor.
-  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.0;
+  # Preserve the established shadow-noise allowance: low IRE defaults to 1.5x
+  # and very low IRE to 2x the operator target. Expert callers may override it.
+  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.5;
   $target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
   $target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 1.0;
+  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 2.0;
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);

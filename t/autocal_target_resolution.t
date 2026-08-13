@@ -43,8 +43,10 @@ my $source;
 
 # Positive counted pins: these FAIL (count drops) on any refactor of the
 # declarations, instead of passing vacuously the way a negative match would.
-my $mult_defaults=()=$source=~/lg_autocal_(?:hdr20|sdr26)_dpg_target_de_(?:low|very_low)_multiplier"\}\)\s*\?\s*\([^\n]+\)\s*:\s*1\.0/g;
-is($mult_defaults,4,'all four low-IRE target multipliers default to exactly 1.0');
+my $low_mult_defaults=()=$source=~/lg_autocal_(?:hdr20|sdr26)_dpg_target_de_low_multiplier"\}\)\s*\?\s*\([^\n]+\)\s*:\s*1\.5/g;
+is($low_mult_defaults,2,'both low-IRE target multipliers retain the 1.5x default');
+my $very_low_mult_defaults=()=$source=~/lg_autocal_(?:hdr20|sdr26)_dpg_target_de_very_low_multiplier"\}\)\s*\?\s*\([^\n]+\)\s*:\s*2\.0/g;
+is($very_low_mult_defaults,2,'both very-low-IRE target multipliers retain the 2x default');
 my $close_defaults=()=$source=~/lg_autocal_(?:hdr20|sdr26)_dpg_low_ire_close_factor"\}\)\s*\?\s*\([^\n]+\)\s*:\s*1\.0/g;
 is($close_defaults,2,'both near-target shortcut bands default to exactly 1.0');
 my $sdr_uses=()=$source=~/autocal_solver_target_delta_e\(\$config,"lg_autocal_sdr26_dpg_target_de",0\.5\)/g;
