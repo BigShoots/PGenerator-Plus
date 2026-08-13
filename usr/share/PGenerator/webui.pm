@@ -28067,7 +28067,14 @@ function meterReadingIsSeriesWhite(rd){
  if(name==='white'||name==='white ref'||name==='100% white') return true;
  if(Number.isFinite(ire)&&Math.abs(ire-100)<0.05) return true;
  const targetYn=Number(rd.target_Yn);
- if(Number.isFinite(targetYn)&&targetYn>=0.9995) return true;
+ // target_Yn is not bounded to 1 for absolute PQ patches. For example, the
+ // DV ColorChecker neutral ramp stores absolute luminance in 100-nit units,
+ // so Gray 50/65/80 legitimately carry values above 1. Treating every one of
+ // those as white replaced the series reference as each reading arrived and
+ // retroactively changed Delta E for every earlier patch. Only an actual
+ // unit-relative target is a white candidate here; name, IRE, and full-scale
+ // code checks above/below remain the authoritative endpoint detection.
+ if(Number.isFinite(targetYn)&&Math.abs(targetYn-1)<0.0005) return true;
  const inputMax=Number(rd.input_max);
  return Number.isFinite(inputMax)&&inputMax>0&&r===inputMax;
 }
