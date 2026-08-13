@@ -1164,6 +1164,75 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
     plateau_code = next(code for code, response in response_neutral
                         if response >= peak * 0.998)
 
+    # Recover the absolute contribution of each channel from every measured
+    # neutral patch.  Unlike the independent primary ramps, these samples were
+    # measured at the same OLED loading as the grey axis we need to reproduce.
+    # Keep the responses absolute: normalising each channel independently
+    # would discard the measured white balance that this solve must correct.
+    black, _white, primaries = profile_measurement_summary(rows)
+    black_xyz = tuple(black["xyz"])
+    primary_axes = [
+        [primaries[column]["xyz"][axis] - black_xyz[axis]
+         for column in range(3)]
+        for axis in range(3)
+    ]
+    inverse_primary_axes = mat_inv(primary_axes)
+    absolute_channel_samples = [[] for _channel in range(3)]
+    for code, xyz in measured_neutral:
+        response = mat_vec_mul(
+            inverse_primary_axes,
+            [xyz[axis] - black_xyz[axis] for axis in range(3)],
+        )
+        for channel in range(3):
+            absolute_channel_samples[channel].append(
+                (code, max(0.0, response[channel])))
+
+    def isotonic_absolute(samples):
+        blocks = []
+        for sample_index, (_code, response) in enumerate(samples):
+            blocks.append([sample_index, sample_index, response, 1.0])
+            while (len(blocks) >= 2
+                   and blocks[-2][2] / blocks[-2][3]
+                   > blocks[-1][2] / blocks[-1][3]):
+                right = blocks.pop()
+                left = blocks.pop()
+                blocks.append([left[0], right[1], left[2] + right[2],
+                               left[3] + right[3]])
+        fitted_samples = []
+        for start, end, total, weight in blocks:
+            value = max(0.0, total / weight)
+            for sample_index in range(start, end + 1):
+                fitted_samples.append((samples[sample_index][0], value))
+        return fitted_samples
+
+    absolute_channel_samples = [
+        isotonic_absolute(samples) for samples in absolute_channel_samples
+    ]
+
+    def invert_absolute_response(samples, target):
+        if target <= samples[0][1]:
+            return samples[0][0]
+        for sample_index in range(1, len(samples)):
+            x0, y0 = samples[sample_index - 1]
+            x1, y1 = samples[sample_index]
+            if target <= y1:
+                if y1 <= y0 + 1e-12:
+                    return min(x1, plateau_code)
+                fraction = (target - y0) / (y1 - y0)
+                return min(x0 + fraction * (x1 - x0), plateau_code)
+        return plateau_code
+
+    def measured_axis_rgb(target_xyz):
+        target_response = mat_vec_mul(
+            inverse_primary_axes,
+            [target_xyz[axis] - black_xyz[axis] for axis in range(3)],
+        )
+        return [
+            invert_absolute_response(absolute_channel_samples[channel],
+                                     max(0.0, target_response[channel]))
+            for channel in range(3)
+        ]
+
     def invert_luminance(target):
         if target <= response_neutral[0][1]:
             return response_neutral[0][0]
@@ -1319,6 +1388,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                 jacobian[axis][channel] = (result[axis] - actual[axis]) / denominator
         measured_xyz = measured_xyz_at_code(base)
         target_xyz = [target_nits * component for component in d65]
+        axis_rgb = measured_axis_rgb(target_xyz)
         measured_pcs = [
             sum(chad[axis * 3 + channel] * measured_xyz[channel] / white_y
                 for channel in range(3))
@@ -1384,28 +1454,31 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                  + delta[channel] * (1.0 - additive_weight) for channel in range(3)]
         delta = [max(-0.04, min(0.04, value)) for value in delta]
 
-        # Below 5 cd/m2, the 3D color fit has too little signal to estimate a
-        # stable Jacobian. In the shoulder, multiple device codes produce the
-        # same light output. Retain the measured-primary calibration in those
-        # regions and use the A2B correction only where its inverse is unique.
+        # Argyll's fitted Jacobian is useful through the uniquely invertible
+        # body of the response.  In the shadows it has too little meter signal,
+        # and in the OLED shoulder many device codes describe the same light
+        # output.  Use the absolute response recovered from the dense measured
+        # neutral series in those regions.  This is still a fully offline
+        # characterization solve; no post-profile readings are involved.
         if target_nits <= first_nonzero_y:
             model_weight = 0.0
         elif target_nits < full_model_floor:
             model_weight = ((target_nits - first_nonzero_y)
                             / (full_model_floor - first_nonzero_y))
         else:
-            if target_fraction <= 0.40:
+            if target_fraction <= 0.0125:
+                model_weight = 0.0
+            elif target_fraction < 0.025:
+                model_weight = (target_fraction - 0.0125) / 0.0125
+            elif target_fraction <= 0.40:
                 model_weight = 1.0
             elif target_fraction < 0.75:
                 model_weight = 1.0 - (target_fraction - 0.40) / 0.35
             else:
-                # Mixed-color neighborhoods explicitly measure the OLED
-                # shoulder. Fade that local solve back in above 75% instead of
-                # reverting the peak to the matrix-only fallback.
                 model_weight = min(1.0, (target_fraction - 0.75) / 0.15)
         for channel in range(3):
             model_value = max(0.0, min(1.0, base + delta[channel]))
-            fallback_value = sample_table(fallback[channel], encoded)
+            fallback_value = max(0.0, min(1.0, axis_rgb[channel]))
             curves[channel].append(model_weight * model_value
                                    + (1.0 - model_weight) * fallback_value)
 
@@ -1514,21 +1587,46 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
         updated = bytearray(payload[:48])
         updated[10] = grid
         updated.extend(struct.pack(">HH", new_input_entries, new_output_entries))
+        new_input_tables = []
         for channel in range(3):
+            table = []
             for index in range(new_input_entries):
                 encoded_xyz = index / float(new_input_entries - 1)
                 pcs = encoded_xyz / xyz_to_mft
                 relative = max(0.0, pcs / d50[channel])
                 pq_value = nits_to_pq(relative * white_y)
-                updated.extend(struct.pack(">H", max(0, min(65535, int(round(pq_value * 65535.0))))))
+                quantized = max(0, min(65535, int(round(pq_value * 65535.0))))
+                updated.extend(struct.pack(">H", quantized))
+                table.append(quantized / 65535.0)
+            new_input_tables.append(table)
+
+        def pq_from_clut_coordinates(coordinates):
+            # A uniform XYZ input table has fewer than two samples below 5%
+            # PQ even at the 32767-entry limit accepted by KWin.  Its linear
+            # interpolation therefore produces different PQ coordinates for
+            # D50 X, Y and Z.  Recover the PCS represented by each sampled
+            # coordinate and normalise it by the corresponding D50 component.
+            # A true neutral reconstructs to three equal PQ values, while a
+            # nearby chromatic coordinate retains its channel separation.
+            # Collapsing these estimates to one median value would fix gray at
+            # the cost of desaturating every color inside the corridor.
+            estimates = []
+            for channel in range(3):
+                encoded_xyz = invert_table(new_input_tables[channel],
+                                           coordinates[channel])
+                pcs = encoded_xyz / xyz_to_mft
+                relative = max(0.0, pcs / d50[channel])
+                estimates.append(nits_to_pq(relative * white_y))
+            return estimates
 
         denominator = float(grid - 1)
         for red in range(grid):
             for green in range(grid):
                 for blue in range(grid):
                     pq_coordinates = [red / denominator, green / denominator, blue / denominator]
+                    corrected = pq_from_clut_coordinates(pq_coordinates)
                     pcs = [
-                        d50[channel] * pq_to_nits(pq_coordinates[channel]) / white_y
+                        d50[channel] * pq_to_nits(corrected[channel]) / white_y
                         for channel in range(3)
                     ]
                     original = evaluate_original(pcs)
