@@ -1575,10 +1575,19 @@ def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
     forward = mft2_a2b_evaluator(forward_profile)
     d50 = (0.9642, 1.0, 0.8249)
     replacements = {}
+    refined_payloads = {}
     changed = False
 
     for signature, payload in read_icc_tags(profile):
         if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        # Perceptual and relative-colorimetric B2A tags are normally linked
+        # copies of the same mft2 payload. A 65-cube numerical inversion is
+        # expensive, so calculate identical transforms once and reuse the
+        # result rather than repeating every forward-model solve.
+        if payload in refined_payloads:
+            replacements[signature] = refined_payloads[payload]
+            changed = True
             continue
         if len(payload) < 52 or payload[:4] != b"mft2":
             continue
@@ -1704,6 +1713,7 @@ def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
         )))
         updated.extend(payload[output_start:])
         replacements[signature] = bytes(updated)
+        refined_payloads[payload] = replacements[signature]
         changed = True
 
     if not changed:
@@ -2105,6 +2115,56 @@ def parse_ti1_patches(path):
     return patches
 
 
+def interleave_profile_patches(patches):
+    """Distribute dense neutral measurements through the color chart.
+
+    Argyll groups its generated grey-axis steps together. On OLED displays a
+    long, steadily rising dark ramp can change the panel's temporal response,
+    so those measurements no longer describe the response seen by ordinary
+    mixed content or a validation series. Keep the repeated white/black
+    anchors at the start, deterministically shuffle both remaining groups,
+    then spread neutrals evenly through the chromatic patches.
+    """
+    anchor_count = 0
+    for patch in patches:
+        rgb = (patch["r"], patch["g"], patch["b"])
+        if max(rgb) - min(rgb) > 1e-7 or rgb[0] not in (0.0, 1.0):
+            break
+        anchor_count += 1
+    anchors = list(patches[:anchor_count])
+    neutral = []
+    chromatic = []
+    for patch in patches[anchor_count:]:
+        rgb = (patch["r"], patch["g"], patch["b"])
+        (neutral if max(rgb) - min(rgb) <= 1e-7 else chromatic).append(patch)
+
+    def deterministic_shuffle(values, seed):
+        values = list(values)
+        state = (seed ^ len(values)) & 0xffffffff
+        for index in range(len(values) - 1, 0, -1):
+            state = (1664525 * state + 1013904223) & 0xffffffff
+            other = state % (index + 1)
+            values[index], values[other] = values[other], values[index]
+        return values
+
+    neutral = deterministic_shuffle(neutral, 0x4e455554)
+    chromatic = deterministic_shuffle(chromatic, 0x434f4c52)
+    if not neutral or not chromatic:
+        return anchors + chromatic + neutral
+    ordered = list(anchors)
+    accumulator = 0
+    neutral_index = 0
+    for patch in chromatic:
+        ordered.append(patch)
+        accumulator += len(neutral)
+        while accumulator >= len(chromatic) and neutral_index < len(neutral):
+            ordered.append(neutral[neutral_index])
+            neutral_index += 1
+            accumulator -= len(chromatic)
+    ordered.extend(neutral[neutral_index:])
+    return ordered
+
+
 def generate_patches(payload, output_dir):
     targen = os.environ.get("PGEN_TARGEN", "/usr/bin/targen")
     if not os.path.isfile(targen) or not os.access(targen, os.X_OK):
@@ -2145,7 +2205,7 @@ def generate_patches(payload, output_dir):
         if completed.returncode != 0 or not os.path.isfile(ti1_path):
             detail = (output or "").strip().splitlines()
             fail("ArgyllCMS patch generation failed" + (": " + detail[-1][:240] if detail else ""))
-        patches = parse_ti1_patches(ti1_path)
+        patches = interleave_profile_patches(parse_ti1_patches(ti1_path))
         return {"status": "ok", "patches": patches, "count": len(patches)}
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2457,7 +2517,13 @@ def build(payload, output_dir):
                 # high-resolution output tables.
                 with open(output_path, "wb") as handle:
                     handle.write(virtual_profile)
-                apply_profile_calibration(output_path, incorporated)
+                # The forward A2B must describe the same virtual device that
+                # colprof fitted above. Compose its input shapers with the fit
+                # calibration, which deliberately excludes D65 headroom.
+                # Headroom belongs only in the final B2A output shapers below;
+                # putting it into A2B as well moves KWin's derived shadow
+                # colorimetry even when the active B2A table is unchanged.
+                apply_profile_calibration(output_path, fit_calibration)
                 with open(output_path, "rb") as handle:
                     calibrated_profile = handle.read()
                 reshaped_profile = reshape_hdr_b2a_for_pq(
