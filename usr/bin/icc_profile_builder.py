@@ -2438,19 +2438,14 @@ def build(payload, output_dir):
                 raw_profile = handle.read()
             modeled_calibration = hdr_profile_calibration_from_a2b(
                 raw_profile, profile_rows, calibration)
-            direct_calibration = calibration_curves(
-                profile_rows, black, white, primaries, profile_type,
-                target_transfer, entries=4096)
-            fit_direct_calibration = calibration_curves(
-                profile_rows, black, white, primaries, profile_type,
-                target_transfer, entries=4096, balance_white=False)
-            incorporated = blend_hdr_profile_calibration(
-                direct_calibration, modeled_calibration)
-            # D65 headroom belongs in the final B2A output shapers. Feeding it
-            # back into the virtual characterization fit shifts the shadow
-            # cLUT in the opposite direction and restores the low-level tint.
-            fit_calibration = blend_hdr_profile_calibration(
-                fit_direct_calibration, modeled_calibration)
+            # The measured/modelled curve already contains the dense neutral
+            # inversion and the level-dependent D65 correction. Do not splice
+            # the older independent-primary curve into its lower 30%. That
+            # curve can be far below the measured neutral response on an HDR
+            # OLED, and the fixed 30-35% blend then creates a visible and
+            # measurable luminance jump at exactly that boundary.
+            incorporated = modeled_calibration
+            fit_calibration = modeled_calibration
             fit_rows = apply_calibration_to_rows(profile_rows, fit_calibration)
             virtual_ti3, _, _ = make_ti3(payload, fit_rows)
             virtual_dir = tempfile.mkdtemp(prefix="pgen_hdr_virtual_")
