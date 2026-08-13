@@ -2023,11 +2023,23 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         fail("MHC2 correction curve contains an implausible single-step jump")
     if expect_calibration:
         residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
-        maximum_residual = max(abs(residual[row][column] - (1.0 if row == column else 0.0))
-                               for row in range(3) for column in range(3))
+        # SDR white-point correction may need uniform headroom so no corrected
+        # channel exceeds 1.0. In that case the valid physical round trip is a
+        # positive scalar identity, not identity itself. HDR keeps its matrix
+        # unscaled and must still round-trip to exact identity here.
+        matrix_scale = (sum(residual[index][index] for index in range(3)) / 3.0
+                        if profile_type == "windows-sdr" else 1.0)
+        if matrix_scale <= 0.0 or matrix_scale > 1.002:
+            fail("MHC2 correction matrix has an invalid round-trip scale")
+        maximum_residual = max(
+            abs(residual[row][column]
+                - (matrix_scale if row == column else 0.0))
+            for row in range(3) for column in range(3)
+        )
         if maximum_residual > 0.002:
             fail("MHC2 correction matrix failed its round-trip identity check")
     else:
+        matrix_scale = 1.0
         maximum_residual = max(abs(matrix[row][column] - (1.0 if row == column else 0.0))
                                for row in range(3) for column in range(3))
         if maximum_residual > 1.5 / 65536.0:
@@ -2050,6 +2062,7 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         "status": "passed",
         "tag_version": "MHC2",
         "matrix_round_trip_max_error": round(maximum_residual, 7),
+        "matrix_scale": round(matrix_scale, 7),
         "calibration": "measured correction" if expect_calibration else "none",
         "curve_entries": entries,
         "curves": "identity" if curves_identity else "measured correction",
