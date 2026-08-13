@@ -694,6 +694,15 @@ function meterIccStructuredPatchEstimate(settings){
  return total;
 }
 
+function meterIccNeutralPatchCount(settings){
+ const white=Math.max(0,Math.round(Number(settings.white_patches)||0));
+ const black=Math.max(0,Math.round(Number(settings.black_patches)||0));
+ const gray=Math.max(2,Math.round(Number(settings.gray_steps)||2));
+ // Argyll's -g count includes the black and white endpoints. The separately
+ // requested -B/-e repeats replace those two endpoints in the final chart.
+ return Math.max(0,gray-2)+black+white;
+}
+
 function meterIccPatchSettings(){
  const number=(id,fallback)=>{
   const value=Number((document.getElementById(id)||{}).value);
@@ -1127,12 +1136,16 @@ function meterIccSyncUi(){
  if(qualitySelect) Array.from(qualitySelect.options).forEach(option=>{
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
   const preset=(METER_ICC_PATCH_PRESETS[profileModelInfo.family]||{})[String(option.value)];
-  option.textContent=preset?(label+', '+(preset.patch_count+(type==='windows-hdr'?1:0))+' patches'):(label+', '+count+' patches');
+  option.textContent=preset
+   ?(label+', '+(preset.patch_count+(type==='windows-hdr'?1:0))+' patches, '+meterIccNeutralPatchCount(preset)+' neutral')
+   :(label+', '+count+' patches');
  });
  const patchCountLabel=document.getElementById('meterIccPatchCountLabel');
+ const neutralPatchCount=document.getElementById('meterIccNeutralPatchCount');
  const neutralLabel=document.getElementById('meterIccNeutralEmphasisLabel');
  const darkLabel=document.getElementById('meterIccDarkEmphasisLabel');
  if(patchCountLabel) patchCountLabel.textContent=String(patchSettings.patch_count);
+ if(neutralPatchCount) neutralPatchCount.textContent='('+meterIccNeutralPatchCount(patchSettings)+' final patches)';
  if(neutralLabel) neutralLabel.textContent=Math.round(patchSettings.neutral_emphasis*100)+'%';
  if(darkLabel) darkLabel.textContent=Math.round(patchSettings.dark_emphasis*100)+'%';
  const meterLabel=typeof meterSelectedMeasurementLabel==='function'?meterSelectedMeasurementLabel(null):'Meter';
