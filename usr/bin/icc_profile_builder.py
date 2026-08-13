@@ -1533,10 +1533,33 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
                     ]
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
-                    if spread <= 1:
-                        result = pq_coordinates
-                    elif spread == 2:
-                        result = [(original[channel] + pq_coordinates[channel]) * 0.5
+                    if spread <= 2:
+                        ordered = sorted(pq_coordinates)
+                        neutral_pq = ordered[1]
+                        neutral_pcs = [
+                            d50[channel] * pq_to_nits(neutral_pq) / white_y
+                            for channel in range(3)
+                        ]
+                        original_neutral = evaluate_original(neutral_pcs)
+                        result = [
+                            max(0.0, min(1.0, neutral_pq + original[channel]
+                                              - original_neutral[channel]))
+                            for channel in range(3)
+                        ]
+                    elif spread == 3:
+                        ordered = sorted(pq_coordinates)
+                        neutral_pq = ordered[1]
+                        neutral_pcs = [
+                            d50[channel] * pq_to_nits(neutral_pq) / white_y
+                            for channel in range(3)
+                        ]
+                        original_neutral = evaluate_original(neutral_pcs)
+                        anchored = [
+                            max(0.0, min(1.0, neutral_pq + original[channel]
+                                              - original_neutral[channel]))
+                            for channel in range(3)
+                        ]
+                        result = [(anchored[channel] + original[channel]) * 0.5
                                   for channel in range(3)]
                     else:
                         result = original
