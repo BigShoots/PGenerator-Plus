@@ -1804,13 +1804,23 @@ function meterIccRenderValidation(file,result){
   download.disabled=!file;
   download.onclick=()=>{ if(file) window.location.href='/api/icc/download?file='+encodeURIComponent(file); };
  }
+ const install=document.getElementById('meterIccValidationInstallBtn');
+ if(install){
+  install.disabled=!file;
+  install.style.display=file&&meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
+  install.onclick=()=>{ if(file) meterIccInstallProfile(file,install); };
+ }
  const mhc2Panel=document.getElementById('meterIccValidationMhc2');
  const mhc2=result&&result.mhc2&&result.mhc2.status==='passed'?result.mhc2:null;
  if(mhc2Panel){
   mhc2Panel.style.display=mhc2?'':'none';
-  mhc2Panel.textContent=mhc2
-   ?('MHC2 check passed. Matrix round-trip maximum error: '+Number(mhc2.matrix_round_trip_max_error||0).toFixed(7)+'. Curves: '+Number(mhc2.curve_entries||0)+' points, '+String(mhc2.curves||'verified')+'. Metadata white: '+Number(mhc2.metadata_white_luminance_nits||0).toFixed(1)+' cd/m²; measured peak: '+Number(mhc2.peak_luminance_nits||0).toFixed(1)+' cd/m².')
-   :'';
+  if(mhc2){
+   const matrixScale=Number(mhc2.matrix_scale);
+   const scaleText=Number.isFinite(matrixScale)&&Math.abs(matrixScale-1)>0.0001
+    ?(' Matrix headroom scale: '+(matrixScale*100).toFixed(1)+'%.')
+    :'';
+   mhc2Panel.textContent='MHC2 check passed. Matrix round-trip maximum error: '+Number(mhc2.matrix_round_trip_max_error||0).toFixed(7)+'.'+scaleText+' Curves: '+Number(mhc2.curve_entries||0)+' points, '+String(mhc2.curves||'verified')+'. Metadata white: '+Number(mhc2.metadata_white_luminance_nits||0).toFixed(1)+' cd/m²; measured peak: '+Number(mhc2.peak_luminance_nits||0).toFixed(1)+' cd/m².';
+  }else mhc2Panel.textContent='';
  }
  const rating=document.getElementById('meterIccValidationRating');
  if(rating){
