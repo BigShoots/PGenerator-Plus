@@ -22497,7 +22497,12 @@ function meterGreyChartTargetXYZForReading(reading){
  const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
  const black=meterBlackReadingY();
  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
- const ire=meterGreyscaleTargetSlotIre(reading)||(step?meterGreyscaleTargetSlotIre(step):null);
+ let ire=meterGreyscaleTargetSlotIre(reading);
+ // Zero is a real target slot, not a missing value. In particular, a black
+ // neutral inside a color series has a category/index IRE on its canonical
+ // color step; falling through on numeric zero would target that index instead
+ // of black.
+ if(ire==null&&step) ire=meterGreyscaleTargetSlotIre(step);
  const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
  const measuredDvTargetY=meterDvAbsoluteReadingTargetY(reading);
  const Y=measuredDvTargetY!=null?measuredDvTargetY:meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
@@ -22715,8 +22720,21 @@ function meterColorDeltaTargetXYZ(reading,inclLum){
 }
 
 function meterGreyDeltaTargetXYZ(reading,inclLum){
- if(!(meterChartIsDv()&&meterReadingIsGreyscale(reading))) return meterColorDeltaTargetXYZ(reading,inclLum);
- const target=meterGreyChartTargetXYZForReading(reading);
+ // Neutral patches in a color/saturation series are deliberately analysed as
+ // greyscale.  Force them through the greyscale target as well as the
+ // greyscale Delta-E formula; otherwise their authored color target_Yn leaks
+ // back in here and the result still differs from the identical patch in a
+ // greyscale series.
+ if(!(reading&&reading._neutral_color_greyscale_analysis)
+    &&!(meterChartIsDv()&&meterReadingIsGreyscale(reading))) return meterColorDeltaTargetXYZ(reading,inclLum);
+ let target=null;
+ const customNits=Number(reading&&reading.custom_target_nits);
+ if(reading&&reading._neutral_color_greyscale_analysis&&Number.isFinite(customNits)&&customNits>0){
+  const wp=meterTargetWhitePoint();
+  target={X:wp.X*customNits,Y:customNits,Z:wp.Z*customNits};
+ }else{
+  target=meterGreyChartTargetXYZForReading(reading);
+ }
  const measured=meterReadingXYZ(reading);
  if(inclLum||!measured||!(measured.Y>0)) return target;
  if(!(target.Y>0)){
@@ -22986,6 +23004,59 @@ function meterColorDeltaE2000Pair(reading,form,gwWeight){
  };
 }
 
+// Color-series patches are classified by their emitted code triplet, not by
+// their name or series category. Exact R=G=B is a neutral patch and must use
+// the same target, Delta-E formula and RGB-balance math as the identical patch
+// in a greyscale series. Reports and CSV use this same dispatch so exported
+// errors agree with the charts.
+
+function meterColorSeriesNeutralUsesGreyscaleAnalysis(reading){
+ if(!reading) return false;
+ if(meterActiveSeriesType!=='colors'&&meterActiveSeriesType!=='saturations') return false;
+ const r=Number(reading.r_code!=null?reading.r_code:reading.r);
+ const g=Number(reading.g_code!=null?reading.g_code:reading.g);
+ const b=Number(reading.b_code!=null?reading.b_code:reading.b);
+ return Number.isFinite(r)&&Number.isFinite(g)&&Number.isFinite(b)&&r===g&&g===b;
+}
+
+function meterNeutralColorGreyscaleReading(reading){
+ if(!reading) return reading;
+ const clone={...reading};
+ const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
+ const source=step||reading;
+ const code=Number(reading.r_code!=null?reading.r_code:(source.r_code!=null?source.r_code:source.r));
+ let ire=null;
+ const pctFields=['signal_r_pct','signal_g_pct','signal_b_pct'];
+ const pcts=pctFields.map(key=>Number(source[key]));
+ if(pcts.every(Number.isFinite)&&pcts[0]===pcts[1]&&pcts[1]===pcts[2]) ire=pcts[0];
+ if(!Number.isFinite(ire)){
+  const range=meterColorTargetCodeRange();
+  if(Number.isFinite(code)&&range&&range.span>0) ire=Math.max(0,Math.min(1,(code-range.min)/range.span))*100;
+ }
+ if(!Number.isFinite(ire)) ire=Number(meterReadingAnalysisIre(reading));
+ if(!Number.isFinite(ire)) ire=0;
+ clone.ire=ire;
+ clone.analysis_ire=ire;
+ clone.target_ire=ire;
+ clone.stimulus=ire;
+ clone.signal_r_pct=ire;
+ clone.signal_g_pct=ire;
+ clone.signal_b_pct=ire;
+ clone.series_type='greyscale';
+ clone._neutral_color_greyscale_analysis=true;
+ // Color-series targets are not greyscale targets. The marker above makes the
+ // target resolver rebuild D65 + EOTF Y from this patch's actual neutral code.
+ delete clone.target_X; delete clone.target_Y; delete clone.target_Z;
+ delete clone.target_x; delete clone.target_y; delete clone.target_Yn;
+ return clone;
+}
+
+function meterSeriesDeltaEForDisplay(reading,modeOrIncl,form,gwWeight){
+ if(!meterColorSeriesNeutralUsesGreyscaleAnalysis(reading)) return meterColorDeltaE2000(reading,modeOrIncl,form,gwWeight);
+ const grey=meterNeutralColorGreyscaleReading(reading);
+ return meterGreyDeltaResult(grey,meterGreyRefMode(),meterDeltaEForm(),meterGrayWorldWeight()).value;
+}
+
 // Caches {raw, lc} ΔE pair on each reading under a key that encodes the
 // currently-selected form + gw weight. If the key matches a previous
 // compute the cached values are returned; otherwise the pair is
@@ -23034,12 +23105,15 @@ function meterEnsureDeltaECache(readings){
 		 levelStamp(typeof meterTargetBlackLevel!=='undefined'?meterTargetBlackLevel:null),
 		 levelStamp(typeof meterTargetWhiteLevel!=='undefined'?meterTargetWhiteLevel:null)
 		].join('/');
-		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp+':'+targetLevels;
+		const key=greyForm+':'+colorForm+':'+greyMode+':'+gw+':'+colorInclLum+':live-neutral-grey:'+meterAnalysisGamutKey()+':'+targetContext+':'+greyWhiteStamp+':'+targetLevels;
 	readings.forEach(rd=>{
 	 if(!rd) return;
 	 if(rd._dE_cache_key===key) return;
-  const formForReading=meterReadingUsesColorDeltaForm(rd)?colorForm:greyForm;
-  const pair=meterColorDeltaE2000Pair(rd,formForReading,gw);
+	 const neutral=meterColorSeriesNeutralUsesGreyscaleAnalysis(rd);
+	 const formForReading=neutral?greyForm:(meterReadingUsesColorDeltaForm(rd)?colorForm:greyForm);
+	 const pair=neutral
+	  ? {raw:meterSeriesDeltaEForDisplay(rd,greyMode,formForReading,gw),lc:meterSeriesDeltaEForDisplay(rd,greyMode,formForReading,gw)}
+	  : meterColorDeltaE2000Pair(rd,formForReading,gw);
   rd._dE_raw=pair.raw;
   rd._dE_lc=pair.lc;
   rd._dE_cache_key=key;
@@ -24412,6 +24486,18 @@ function meterLiveRgbData(reading){
   const blackReadings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
   const blackLevel=meterChartBlackLevel(blackReadings);
   return whiteRef?{mode:'balance',...rgbBalance(reading,whiteRef,meterGreyRefMode(),blackLevel)}:{mode:'balance',R:100,G:100,B:100};
+ }
+ // A neutral color-series patch uses the exact greyscale RGB-balance path.
+ // This keeps the result centered on 100 (a +1% channel error is 101%) and
+ // avoids the exaggerated dominant-channel color-patch normalization.
+ if(meterColorSeriesNeutralUsesGreyscaleAnalysis(reading)){
+  const neutralReadings=(Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading])
+   .filter(rd=>rd&&meterReadingIsGreyscale(rd))
+   .map(meterNeutralColorGreyscaleReading);
+  const grey=meterNeutralColorGreyscaleReading(reading);
+  const whiteRef=meterGreyscaleRgbBalanceReference(neutralReadings);
+  const blackLevel=meterChartBlackLevel(neutralReadings);
+  return whiteRef?{mode:'balance',...rgbBalance(grey,whiteRef,meterGreyRefMode(),blackLevel)}:{mode:'balance',R:100,G:100,B:100};
  }
  if(!measured||!(measured.Y>0)) return {mode:'balance',R:null,G:null,B:null,noChroma:true};
  const readings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
@@ -28475,7 +28561,7 @@ function meterUpdateLiveReadingDetails(src,isMeasured){
   set('meterLiveUvMeasured',denominator>0?((4*measured.X/denominator).toFixed(4)+' / '+(9*measured.Y/denominator).toFixed(4)):'--');
  }else set('meterLiveUvMeasured','--');
  let deltaE=null;
- if(measured){ try{ deltaE=meterColorDeltaE2000(src,meterGreyRefMode()); }catch(e){} }
+ if(measured){ try{ deltaE=meterSeriesDeltaEForDisplay(src,meterGreyRefMode()); }catch(e){} }
  set('meterLiveDeltaE',Number.isFinite(deltaE)?deltaE.toFixed(2):'--');
 }
 
@@ -48781,7 +48867,7 @@ function drawColorReadingsTable(readings){
   const dx=(measured&&tgt)?(measured.x-tgt.x):null;
   const dy=(measured&&tgt)?(measured.y-tgt.y):null;
   const pc=meterPreviewColorForReading(rd,'target');
-  const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
+  const de=meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm);
    const hasDe=Number.isFinite(de);
    if(hasDe){deSum+=de;deCount++;}
    const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
@@ -48839,7 +48925,7 @@ function drawColorSeriesAverages(readings,colorRefMode){
   const targetXYZ=meterTargetXYZForReading(rd);
   const tgt=meterReadingHasChromaticity(rd)?meterCieChartCoordFromXYZ(targetXYZ):null;
   const measured=meterReadingHasChromaticity(rd)?meterCieChartCoordFromXYZ(meterReadingXYZ(rd)):null;
-  const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
+  const de=meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm);
   if(Number.isFinite(de)) groups[key].de.push(de);
   if(tgt&&measured){
    groups[key].dx.push(Math.abs(measured.x-tgt.x));
@@ -49027,7 +49113,7 @@ function showColorReadingDetail(rd,opts){
  const dx=(mx!=null&&tgt)?(mx-tgt.x):null;
  const dy=(my!=null&&tgt)?(my-tgt.y):null;
  const dYCol=lumInfo.deltaPct==null?'#888':(Math.abs(lumInfo.deltaPct)<2?'#4caf50':Math.abs(lumInfo.deltaPct)<5?'#ff9800':'#f44');
- const de=(!isUnread&&hasMeasuredXYZ)?meterColorDeltaE2000(view,meterColorRefMode()):NaN;
+ const de=(!isUnread&&hasMeasuredXYZ)?meterSeriesDeltaEForDisplay(view,meterColorRefMode()):NaN;
  const hasDe=Number.isFinite(de);
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
@@ -51423,9 +51509,9 @@ function drawColorDeltaE2000Chart(readings){
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
-  const de=meterColorDeltaE2000(rd,colorRefMode,colorForm);
+  const de=meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm);
   if(!Number.isFinite(de)) return;
-  const chroma=sepLum?Math.min(meterColorDeltaE2000(rd,'absolute',colorForm),de):null;
+  const chroma=sepLum?Math.min(meterSeriesDeltaEForDisplay(rd,'absolute',colorForm),de):null;
   deData.push({name:rd.name||'',de,chroma,color:meterPreviewColorForReading(rd,'target')});
  });
  if(deData.length===0) return;
@@ -51795,7 +51881,7 @@ function meterBuildReportSummaryCards(){
  } else {
     const colorRefMode=meterColorRefMode();
   const colorForm=meterColorDeltaEForm();
-    const deVals=valid.map(rd=>meterColorDeltaE2000(rd,colorRefMode,colorForm)).filter(v=>isFinite(v));
+    const deVals=valid.map(rd=>meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm)).filter(v=>isFinite(v));
   const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
   const peak=Math.max(...valid.map(r=>r.Y!=null?r.Y:(r.luminance||0)),0);
   const avgY=valid.length?(valid.reduce((s,r)=>s+(r.Y!=null?r.Y:(r.luminance||0)),0)/valid.length):0;
@@ -52509,14 +52595,15 @@ function meterExportCSV(){
  sorted.forEach((rd,i)=>{
   let dEuvNoY=0,dEuvWY=0,dE2kNoY=0,dE2kWY=0,dEitpNoY=0,dEitpWY=0;
   if((rd.Y||0)>0){
-   if(isGrey(rd)&&!colorSeries){
-    const noY=greyHcfrPair(rd,modeNoY);
-    const wY=greyHcfrPair(rd,modeWithY);
+   if(isGrey(rd)){
+    const greyRd=meterColorSeriesNeutralUsesGreyscaleAnalysis(rd)?meterNeutralColorGreyscaleReading(rd):rd;
+    const noY=greyHcfrPair(greyRd,modeNoY);
+    const wY=greyHcfrPair(greyRd,modeWithY);
     dEuvNoY=noY.duv; dEuvWY=wY.duv;
     dE2kNoY=noY.d2k; dE2kWY=wY.d2k;
     try{
-     const a=meterGreyDeltaResult(rd,modeNoY,'deitp');
-     const b=meterGreyDeltaResult(rd,modeWithY,'deitp');
+     const a=meterGreyDeltaResult(greyRd,modeNoY,'deitp');
+     const b=meterGreyDeltaResult(greyRd,modeWithY,'deitp');
      if(a&&Number.isFinite(a.value)) dEitpNoY=a.value;
      if(b&&Number.isFinite(b.value)) dEitpWY=b.value;
     }catch(e){}
@@ -52546,8 +52633,8 @@ function meterExportCSV(){
   }
   const ire=csvIre(rd);
   const g=colorSeries?null:effectiveGamma(rd.luminance,Lw,ire);
-  // Reuse the exact RGB analysis shown by the live WebUI. CSV must be a
-  // serialization of the displayed result, not an independent calculator.
+  // Reuse the exact RGB analysis shown by the live WebUI so neutral color
+  // patches export the same 100-centered greyscale balance as the chart.
   const bal=whiteR?(colorSeries?meterLiveRgbData(rd):rgbBalance(rd,whiteR,greyMode,Lb)):{R:100,G:100,B:100};
   csv+=[i+1,rd.name||'',ire==null?'':ire,rd.r_code||0,rd.g_code||0,rd.b_code||0,
    (rd.X||0).toFixed(4),(rd.Y||0).toFixed(4),(rd.Z||0).toFixed(4),
