@@ -551,7 +551,7 @@ sub webui_icc_companion_poll (@) {
  my $active_profile=&webui_icc_companion_profile_from_query($query);
  my $selected_display=&webui_icc_companion_text_from_hex_query($query,"display_hex");
  my $transform=&webui_icc_companion_query_value($query,"transform")||"system";
- $transform="system" unless($transform=~/\A(?:system|clut|matrix)\z/);
+ $transform="system" unless($transform=~/\A(?:system|none|clut|matrix)\z/);
  my $transform_ready=($query=~/(?:^|&)transform_ready=1(?:&|$)/)?1:0;
  my $hdr=($query=~/(?:^|&)hdr=1(?:&|$)/)?1:0;
  my $output_max=0;

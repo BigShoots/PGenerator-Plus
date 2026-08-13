@@ -752,14 +752,21 @@ def neutral_channel_samples(rows, black, primaries):
 
 
 def invert_channel_response(samples, target):
+    # The isotonic fit often represents a display's HDR shoulder as a flat
+    # block. Its values are calculated independently from the caller's target,
+    # so the nominal peak can differ by a few ulps. Clamp to the fitted range
+    # before searching. Otherwise a target of 1.0 can miss a fitted peak of
+    # 0.9999999999999999 and fall through to the final device code, creating a
+    # large one-channel jump at the start of the plateau.
+    target = min(target, samples[-1][1])
     if target <= samples[0][1]:
         return samples[0][0]
     for index in range(1, len(samples)):
         x0, y0 = samples[index - 1]
         x1, y1 = samples[index]
-        if target <= y1:
+        if target <= y1 + 1e-12:
             if y1 <= y0 + 1e-12:
-                return x1
+                return x0
             fraction = (target - y0) / (y1 - y0)
             return x0 + fraction * (x1 - x0)
     return samples[-1][0]
@@ -840,7 +847,7 @@ def mhc2_wire_matrix(profile_type):
 
 
 def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb",
-                 apply_calibration=True):
+                 apply_calibration=True, adjustment_luts_override=None):
     physical = measured_primary_matrix(black, white, primaries)
     wire = mhc2_wire_matrix(profile_type)
     identity = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
@@ -884,7 +891,12 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
     # They contain only the measured post-transfer adjustment, never the wire
     # transfer function itself. Both HDR and SDR invert the measured channel
     # ramps while the matrix corrects primaries and white point.
-    if not apply_calibration:
+    if adjustment_luts_override is not None:
+        if (len(adjustment_luts_override) != 3
+                or any(len(curve) != entries for curve in adjustment_luts_override)):
+            fail("MHC2 adjustment curve override has an invalid size")
+        luts = adjustment_luts_override
+    elif not apply_calibration:
         luts = [[index / float(entries - 1) for index in range(entries)] for _channel in range(3)]
     elif profile_type == "windows-sdr":
         luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
@@ -1323,7 +1335,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
             color_measurements,
             key=lambda item: sum((item[0][channel] - code) ** 2
                                  for channel in range(3)),
-        )[:32]
+        )[:12]
         if len(nearby) < 12:
             return None, 0.0
         bandwidth2 = max(1e-8, sum(
@@ -1364,7 +1376,13 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                 (xyz_delta[axis] - predicted[axis]) ** 2 for axis in range(3))
         fit = max(0.0, 1.0 - weighted_error / max(weighted_actual, 1e-12))
         radius = math.sqrt(bandwidth2)
-        coverage = max(0.0, min(1.0, (0.24 - radius) / 0.12))
+        # Requiring 32 neighbours made a 425-patch set reach far outside the
+        # local HDR shoulder. Its radius then zeroed confidence completely and
+        # silently fell back to Argyll's smoothed plateau, even though the 12
+        # closest mixed patches form a well-conditioned, high-quality local
+        # fit. Fade that fit only once its closest useful neighbourhood grows
+        # beyond 0.30 device units.
+        coverage = max(0.0, min(1.0, (0.30 - radius) / 0.12))
         confidence = coverage * max(0.0, min(1.0, (fit - 0.35) / 0.55))
         return jacobian, confidence
 
@@ -1477,7 +1495,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
             else:
                 model_weight = min(1.0, (target_fraction - 0.75) / 0.15)
         for channel in range(3):
-            model_value = max(0.0, min(1.0, base + delta[channel]))
+            model_value = max(0.0, min(plateau_code, base + delta[channel]))
             fallback_value = max(0.0, min(1.0, axis_rgb[channel]))
             curves[channel].append(model_weight * model_value
                                    + (1.0 - model_weight) * fallback_value)
@@ -1508,6 +1526,121 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
             curves[channel][index] = max(curves[channel][index], continuation)
         curves[channel][-1] = 1.0
     return curves
+
+
+def bradford_adaptation(source_white, destination_white):
+    """Return a Bradford XYZ chromatic-adaptation matrix."""
+    bradford = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ]
+    source_cone = mat_vec_mul(bradford, source_white)
+    destination_cone = mat_vec_mul(bradford, destination_white)
+    if min(abs(value) for value in source_cone) <= 1e-12:
+        fail("Measured profile white cannot be chromatically adapted")
+    scale = [
+        [destination_cone[row] / source_cone[row] if row == column else 0.0
+         for column in range(3)]
+        for row in range(3)
+    ]
+    return mat_mul(mat_inv(bradford), mat_mul(scale, bradford))
+
+
+def profile_with_measured_chad(profile, black, white):
+    """Supply the v2 display white adaptation needed by the HDR solver.
+
+    Argyll v2 display profiles adapt their PCS internally but do not have to
+    publish a chad tag. The measured-neutral solver needs the same explicit
+    matrix to compare physical XYZ with A2B PCS values. This temporary model
+    profile is used only while deriving calibration from the original reads;
+    the generated Windows profile remains otherwise untouched.
+    """
+    tags = dict(read_icc_tags(profile))
+    if b"chad" in tags:
+        return profile
+    black_xyz = black["xyz"]
+    span = max(white["xyz"][1] - black_xyz[1], 1e-9)
+    source_white = [
+        (white["xyz"][axis] - black_xyz[axis]) / span for axis in range(3)
+    ]
+    adaptation = bradford_adaptation(source_white, (0.9642, 1.0, 0.8249))
+    payload = b"sf32" + b"\0\0\0\0" + b"".join(
+        s15fixed16(adaptation[row][column])
+        for row in range(3) for column in range(3)
+    )
+    return rebuild_icc(profile, {b"chad": payload})
+
+
+def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
+                                        matrix, entries=256):
+    """Derive Windows' post-PQ MHC2 curves from the fitted forward model.
+
+    The dense neutral measurements determine luminance and the first stable
+    HDR plateau. The A2B local model supplies level-dependent white balance.
+    MHC2 receives each channel after its matrix gain and PQ encoding, so the
+    source-domain calibration is resampled into that coordinate. Values above
+    the calibrated neutral peak are held at the first plateau instead of
+    jumping to full device drive on one channel.
+    """
+    model_profile = profile_with_measured_chad(profile, black, white)
+    source_curves = hdr_profile_calibration_from_a2b(
+        model_profile, rows, fallback, entries=4096)
+    wire = mhc2_wire_matrix("windows-hdr")
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+        fail("HDR MHC2 calibration matrix has an invalid neutral response")
+    black_nits = max(0.0, black["xyz"][1])
+    raw_peak = max(white["xyz"][1], black_nits + 0.0001)
+    calibrated_peak = black_nits + (raw_peak - black_nits) / maximum_gain
+    source_limit = nits_to_pq(calibrated_peak)
+
+    # Once the neutral response enters its HDR shoulder, nearby mixed-colour
+    # characterization points no longer constrain a unique three-channel
+    # inverse. Continuing to increase the fitted channel separation there can
+    # turn a small native-white error into a large warm or cool plateau. Keep
+    # the chromatic offset measured at the last well-conditioned part of the
+    # response, while retaining the common neutral curve's luminance rise.
+    # This is derived entirely from the original characterization set; it does
+    # not require a post-calibration measurement pass.
+    stable_position = nits_to_pq(
+        black_nits + 0.60 * (calibrated_peak - black_nits))
+    stable_values = [sample_table(curve, stable_position)
+                     for curve in source_curves]
+    stable_mean = sum(stable_values) / 3.0
+    stable_offsets = [value - stable_mean for value in stable_values]
+    for index in range(len(source_curves[0])):
+        position = index / float(len(source_curves[0]) - 1)
+        if position <= stable_position or position > source_limit:
+            continue
+        mean = sum(source_curves[channel][index]
+                   for channel in range(3)) / 3.0
+        for channel in range(3):
+            source_curves[channel][index] = max(
+                0.0, min(1.0, mean + stable_offsets[channel]))
+    for channel in range(3):
+        previous = 0.0
+        for index in range(len(source_curves[channel])):
+            previous = max(previous, source_curves[channel][index])
+            source_curves[channel][index] = previous
+
+    luts = []
+    for channel in range(3):
+        gain = neutral_gains[channel]
+        values = []
+        previous = 0.0
+        for index in range(entries):
+            mhc_input = index / float(entries - 1)
+            source_nits = pq_to_nits(mhc_input) / gain
+            source_position = min(source_limit, nits_to_pq(source_nits))
+            value = sample_table(source_curves[channel], source_position)
+            previous = max(previous, max(0.0, min(1.0, value)))
+            values.append(previous)
+        values[0] = 0.0
+        luts.append(values)
+    return luts
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
@@ -1882,6 +2015,12 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         if offset < 36 or offset + 8 + entries * 4 > len(mhc2) or mhc2[offset:offset + 4] != b"sf32":
             fail("MHC2 curve offset or signature is invalid")
         curves.append([read_s15fixed16(mhc2, offset + 8 + index * 4) for index in range(entries)])
+    if any(curve[index] > curve[index + 1] + 1.5 / 65536.0
+           for curve in curves for index in range(entries - 1)):
+        fail("MHC2 correction curve is not monotonic")
+    if any(curve[index + 1] - curve[index] > 0.125
+           for curve in curves for index in range(entries - 1)):
+        fail("MHC2 correction curve contains an implausible single-step jump")
     if expect_calibration:
         residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
         maximum_residual = max(abs(residual[row][column] - (1.0 if row == column else 0.0))
@@ -2526,6 +2665,21 @@ def build(payload, output_dir):
     mhc2_validation = None
     with open(output_path, "rb") as handle:
         profile = handle.read()
+    if (profile_type == "windows-hdr" and calibration_mode != "none"
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        # The first-pass MHC2 curves use only a primary-axis decomposition and
+        # are sufficient while no forward model exists. Replace them now with
+        # curves derived from the fitted A2B plus every original neutral and
+        # mixed-color characterization row. This prevents non-additive HDR
+        # plateaus from producing a one-channel jump at peak white.
+        adjustment_luts = windows_hdr_profile_adjustment_luts(
+            profile, profile_rows, calibration, black, white, matrix)
+        mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
+            mhc2_type, black, white, primaries, profile_rows,
+            target_transfer or "srgb", apply_calibration=True,
+            adjustment_luts_override=adjustment_luts)
+        calibration = vcgt_from_mhc2(
+            matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
     # Every output follows one calibration path: generate and insert MHC2,
     # clone that exact correction's neutral-axis behaviour into vcgt, then
     # remove MHC2 only from profile types whose consumers do not use it. This
