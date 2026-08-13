@@ -425,7 +425,7 @@ def vcgt_from_mhc2(matrix, adjustment_luts, wire, entries=VCGT_ENTRIES):
 
 
 def calibration_curves(rows, black, white, primaries, profile_type, target_transfer,
-                       entries=VCGT_ENTRIES):
+                       entries=VCGT_ENTRIES, balance_white=True):
     """Per-channel 1D calibration: profile value -> panel device value.
 
     This is the stage ArgyllCMS produces with dispcal and stores in vcgt, and
@@ -444,6 +444,16 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
     span = peak_nits - black_nits
     peak_pq = nits_to_pq(peak_nits) if profile_type in ("kde-hdr", "windows-hdr") else 0.0
     black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
+    channel_targets = [1.0, 1.0, 1.0]
+    if peak_pq > 0.0 and balance_white:
+        physical = measured_primary_matrix(black, white, primaries)
+        wire = mhc2_wire_matrix("windows-hdr")
+        channel_targets = mat_vec_mul(mat_mul(mat_inv(physical), wire),
+                                      (1.0, 1.0, 1.0))
+        maximum_target = max(channel_targets)
+        if min(channel_targets) <= 1e-6 or maximum_target <= 1e-6:
+            fail("HDR calibration has an invalid neutral white target")
+        channel_targets = [value / maximum_target for value in channel_targets]
     curves = []
     for channel in range(3):
         values = []
@@ -454,7 +464,7 @@ def calibration_curves(rows, black, white, primaries, profile_type, target_trans
                 target = (pq_to_nits(position * peak_pq) - black_nits) / span
             else:
                 target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
-            target = max(0.0, min(1.0, target))
+            target = max(0.0, min(1.0, target * channel_targets[channel]))
             device = invert_channel_response(channel_samples[channel], target)
             previous = max(previous, max(0.0, min(1.0, device)))
             values.append(previous)
@@ -481,6 +491,35 @@ def calibration_to_profile_value(curve, device):
     step = curve[high] - curve[low]
     fraction = 0.0 if step <= 0 else (device - curve[low]) / step
     return (low + fraction) / (entries - 1.0)
+
+
+def blend_hdr_profile_calibration(direct, modeled, start=0.30, end=0.35):
+    """Join measured shadow calibration to the full-range HDR model."""
+    if len(direct) != 3 or len(modeled) != 3:
+        fail("HDR profile calibration requires three output curves")
+    entries = min(min(len(curve) for curve in direct),
+                  min(len(curve) for curve in modeled))
+    if entries < 2 or not (0.0 <= start < end <= 1.0):
+        fail("HDR profile calibration blend is invalid")
+    result = [[], [], []]
+    for channel in range(3):
+        previous = 0.0
+        for index in range(entries):
+            position = index / float(entries - 1)
+            if position <= start:
+                weight = 0.0
+            elif position >= end:
+                weight = 1.0
+            else:
+                weight = (position - start) / (end - start)
+                weight = weight * weight * (3.0 - 2.0 * weight)
+            value = (sample_table(direct[channel], position) * (1.0 - weight)
+                     + sample_table(modeled[channel], position) * weight)
+            previous = max(previous, max(0.0, min(1.0, value)))
+            result[channel].append(previous)
+        result[channel][0] = 0.0
+        result[channel][-1] = 1.0
+    return result
 
 
 def apply_calibration_to_rows(rows, curves):
@@ -1524,6 +1563,154 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
     return rebuild_icc(profile, replacements)
 
 
+def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
+    """Numerically invert the measured A2B model into the PQ B2A cLUT.
+
+    Argyll's independently fitted B2A can diverge from its better-constrained
+    forward model on non-additive HDR displays. Solve chromatic cLUT nodes
+    against the raw High-quality A2B while retaining the PQ neutral corridor,
+    output shapers and unreachable plateau region from the reshaped profile.
+    Only the original characterization model is consumed.
+    """
+    forward = mft2_a2b_evaluator(forward_profile)
+    d50 = (0.9642, 1.0, 0.8249)
+    replacements = {}
+    changed = False
+
+    for signature, payload in read_icc_tags(profile):
+        if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        if len(payload) < 52 or payload[:4] != b"mft2":
+            continue
+        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+        if input_channels != 3 or output_channels != 3 or grid < 2:
+            continue
+        input_start = 52
+        clut_start = input_start + input_channels * input_entries * 2
+        clut_values = grid ** input_channels * output_channels
+        output_start = clut_start + clut_values * 2
+        required = output_start + output_channels * output_entries * 2
+        if required > len(payload):
+            fail("ICC B2A forward-model refinement table is truncated")
+
+        input_tables = []
+        output_tables = []
+        for channel in range(3):
+            offset = input_start + channel * input_entries * 2
+            input_tables.append([value / 65535.0 for value in struct.unpack_from(
+                ">{}H".format(input_entries), payload, offset)])
+            offset = output_start + channel * output_entries * 2
+            output_tables.append([value / 65535.0 for value in struct.unpack_from(
+                ">{}H".format(output_entries), payload, offset)])
+        original_clut = [value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(clut_values), payload, clut_start)]
+
+        def base_device(target):
+            coordinates = [
+                sample_table(input_tables[channel],
+                             target[channel] / (65535.0 / 32768.0))
+                for channel in range(3)
+            ]
+            pre_output = _sample_mft2_clut(original_clut, grid, coordinates)
+            return [sample_table(output_tables[channel], pre_output[channel])
+                    for channel in range(3)]
+
+        def model_error(device, target):
+            actual = forward(device)
+            return sum((actual[channel] - target[channel]) ** 2
+                       for channel in range(3))
+
+        def solve_node(target, initial):
+            device = list(initial)
+            previous_error = model_error(device, target)
+            for unused in range(14):
+                actual = forward(device)
+                residual = [target[channel] - actual[channel] for channel in range(3)]
+                step = 0.002
+                columns = []
+                for axis in range(3):
+                    probe = list(device)
+                    probe[axis] = (min(1.0, device[axis] + step)
+                                   if device[axis] < 0.998
+                                   else max(0.0, device[axis] - step))
+                    measured = forward(probe)
+                    denominator = probe[axis] - device[axis]
+                    columns.append([
+                        (measured[channel] - actual[channel]) / denominator
+                        for channel in range(3)
+                    ])
+                jacobian = [[columns[column][row] for column in range(3)]
+                            for row in range(3)]
+                try:
+                    delta = mat_vec_mul(mat_inv(jacobian), residual)
+                except ValueError:
+                    break
+                scale = 1.0
+                accepted = False
+                while scale >= 1.0 / 128.0:
+                    probe = [max(0.0, min(1.0,
+                                 device[channel] + scale * delta[channel]))
+                             for channel in range(3)]
+                    current_error = model_error(probe, target)
+                    if current_error < previous_error:
+                        device = probe
+                        previous_error = current_error
+                        accepted = True
+                        break
+                    scale /= 2.0
+                if (not accepted
+                        or max(abs(scale * value) for value in delta) < 0.000002):
+                    break
+            return device
+
+        refined_clut = []
+        denominator = float(grid - 1)
+        for red in range(grid):
+            for green in range(grid):
+                for blue in range(grid):
+                    pq_coordinates = [red / denominator, green / denominator,
+                                      blue / denominator]
+                    target = [
+                        d50[channel] * pq_to_nits(pq_coordinates[channel]) / white_y
+                        for channel in range(3)
+                    ]
+                    initial = base_device(target)
+                    spread = max(red, green, blue) - min(red, green, blue)
+                    node = ((red * grid + green) * grid + blue) * 3
+                    original = original_clut[node:node + 3]
+                    if spread <= 2 or max(pq_coordinates) > 0.82:
+                        pre_output = original
+                    else:
+                        device = solve_node(target, initial)
+                        pre_output = [
+                            calibration_to_profile_value(output_tables[channel],
+                                                         device[channel])
+                            for channel in range(3)
+                        ]
+                    if spread in (3, 4):
+                        weight = (spread - 2) / 3.0
+                        pre_output = [
+                            original[channel] * (1.0 - weight)
+                            + pre_output[channel] * weight
+                            for channel in range(3)
+                        ]
+                    refined_clut.extend(pre_output)
+
+        updated = bytearray(payload[:clut_start])
+        updated.extend(struct.pack(">{}H".format(len(refined_clut)), *(
+            max(0, min(65535, int(round(value * 65535.0))))
+            for value in refined_clut
+        )))
+        updated.extend(payload[output_start:])
+        replacements[signature] = bytes(updated)
+        changed = True
+
+    if not changed:
+        fail("KDE HDR forward-model refinement requires an mft2 B2A transform")
+    return rebuild_icc(profile, replacements)
+
+
 def read_s15fixed16(data, offset):
     if offset < 0 or offset + 4 > len(data):
         fail("MHC2 fixed-point value is outside the tag")
@@ -2239,9 +2426,22 @@ def build(payload, output_dir):
             # output shapers. No validation or second measurement pass is used.
             with open(output_path, "rb") as handle:
                 raw_profile = handle.read()
-            incorporated = hdr_profile_calibration_from_a2b(
+            modeled_calibration = hdr_profile_calibration_from_a2b(
                 raw_profile, profile_rows, calibration)
-            fit_rows = apply_calibration_to_rows(profile_rows, incorporated)
+            direct_calibration = calibration_curves(
+                profile_rows, black, white, primaries, profile_type,
+                target_transfer, entries=4096)
+            fit_direct_calibration = calibration_curves(
+                profile_rows, black, white, primaries, profile_type,
+                target_transfer, entries=4096, balance_white=False)
+            incorporated = blend_hdr_profile_calibration(
+                direct_calibration, modeled_calibration)
+            # D65 headroom belongs in the final B2A output shapers. Feeding it
+            # back into the virtual characterization fit shifts the shadow
+            # cLUT in the opposite direction and restores the low-level tint.
+            fit_calibration = blend_hdr_profile_calibration(
+                fit_direct_calibration, modeled_calibration)
+            fit_rows = apply_calibration_to_rows(profile_rows, fit_calibration)
             virtual_ti3, _, _ = make_ti3(payload, fit_rows)
             virtual_dir = tempfile.mkdtemp(prefix="pgen_hdr_virtual_")
             try:
@@ -2273,6 +2473,8 @@ def build(payload, output_dir):
                 profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
                 profile = rebuild_icc(
                     profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+                profile = refine_hdr_b2a_from_forward_model(
+                    profile, raw_profile, white["xyz"][1])
             finally:
                 shutil.rmtree(virtual_dir, ignore_errors=True)
             with open(output_path, "wb") as handle:
