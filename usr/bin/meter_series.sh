@@ -1017,6 +1017,14 @@ post_insert_patch() {
  echo "[$(date '+%H:%M:%S.%3N')] pattern insertion: reason=$reason level=${level}% code=$code input_max=$input_max duration=${duration_sec}s" >> /tmp/meter_series_debug.log
  post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max"
  sleep "$duration_sec"
+ # Clear the insertion flash before restoring the measurement patch. Without
+ # this transition, a near-black read starts while the panel and meter still
+ # carry the bright insertion state, producing repeatable but false XYZ.
+ local black_code=0
+ if [[ "${SIGNAL_MODE,,}" == "dv" ]]; then black_code=256; fi
+ post_patch "$black_code" "$black_code" "$black_code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max"
+ sleep 0.5
+ PATCH_INSERT_FIRED=1
 }
 
 current_millis() {
@@ -1982,10 +1990,18 @@ EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
+	 PATCH_INSERT_FIRED=0
 	 maybe_pattern_insert_before_step "$i" "$IRE"
 
 	 # Display pattern
 		 post_patch "$R" "$G" "$B" "$STEP_PATCH_SIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"
+	 if (( PATCH_INSERT_FIRED == 1 )); then
+	  # The pattern endpoint acknowledges notification, not presentation. Give
+	  # the renderer and panel a few frames to leave black before meter timing
+	  # begins, matching the guarded AutoCal insertion path.
+	  sleep 0.4
+	  PATCH_INSERT_FIRED=0
+	 fi
 
  # DV greyscale derives chart/patch targets from the first 100% read. Warm
  # that first white in place and do not replace it with a different final
