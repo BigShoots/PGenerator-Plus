@@ -405,8 +405,10 @@ typedef struct {
     bool quit;
     uint64_t next_poll_ms;
     SDL_Thread *network_thread;
+    SDL_Thread *install_thread;
     SDL_Mutex *network_mutex;
     SDL_AtomicInt quit_requested;
+    SDL_AtomicInt install_in_progress;
     bool command_pending;
     uint64_t command_sequence;
     bool command_alignment;
@@ -3685,6 +3687,34 @@ static void companion_run_install(const char *poll_response)
                                       : "Profile Loader could not verify the profile on the selected display");
 }
 
+static int SDLCALL companion_install_thread_main(void *data)
+{
+    char *response = (char *)data;
+    companion_run_install(response);
+    SDL_free(response);
+    SDL_SetAtomicInt(&app.install_in_progress, 0);
+    return 0;
+}
+
+static void companion_start_install(const char *poll_response)
+{
+    char *response;
+    if (SDL_GetAtomicInt(&app.install_in_progress)) return;
+    if (app.install_thread) {
+        SDL_WaitThread(app.install_thread, NULL);
+        app.install_thread = NULL;
+    }
+    response = SDL_strdup(poll_response);
+    if (!response) return;
+    SDL_SetAtomicInt(&app.install_in_progress, 1);
+    app.install_thread = SDL_CreateThread(companion_install_thread_main,
+                                          "PGen profile install", response);
+    if (!app.install_thread) {
+        SDL_SetAtomicInt(&app.install_in_progress, 0);
+        SDL_free(response);
+    }
+}
+
 static void acknowledge(uint64_t sequence, bool ok, const char *message,
                         const char *renderer, bool hdr_active)
 {
@@ -3883,7 +3913,10 @@ static void poll_server(void)
     }
     {
         char title[512];
-        if (!strcmp(app.correction_mode, "clut"))
+        if (SDL_GetAtomicInt(&app.install_in_progress))
+            SDL_strlcpy(title, APP_TITLE " | Installing and applying ICC profile...",
+                        sizeof(title));
+        else if (!strcmp(app.correction_mode, "clut"))
             SDL_snprintf(title, sizeof(title), APP_TITLE " | Active profile cLUT: %s%s",
                          app.correction_profile[0] ? app.correction_profile : "not detected",
                          app.correction_error[0] ? " (not ready)" : "");
@@ -3903,7 +3936,7 @@ static void poll_server(void)
         return;
     }
     if (strstr(response, "\"status\":\"install\"")) {
-        companion_run_install(response);
+        companion_start_install(response);
         app.next_poll_ms = SDL_GetTicks() + 250;
         return;
     }
@@ -4483,6 +4516,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     SDL_strlcpy(app.ack_renderer, app.renderer_name, sizeof(app.ack_renderer));
     app.ack_hdr_active = app.hdr_active;
     SDL_SetAtomicInt(&app.quit_requested, 0);
+    SDL_SetAtomicInt(&app.install_in_progress, 0);
     app.network_thread = SDL_CreateThread(network_thread_main, "PGen ICC network", NULL);
     if (!app.network_thread) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PGenerator+ Patch Companion",
@@ -4570,6 +4604,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     if (state) {
         SDL_SetAtomicInt(&state->quit_requested, 1);
         if (state->network_thread) SDL_WaitThread(state->network_thread, NULL);
+        if (state->install_thread) SDL_WaitThread(state->install_thread, NULL);
 #ifndef _WIN32
         kwin_restore_profile_source();
 #endif

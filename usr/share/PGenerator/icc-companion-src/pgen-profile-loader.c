@@ -1021,15 +1021,24 @@ static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
             message_error(g_window, L"Setting the profile as the display default", (DWORD)hr);
         return FALSE;
     }
-    /* Keep the legacy association in sync for ordinary profiles so older
-       color-managed applications see the same default. */
-    if (!g_associate_advanced &&
-        !WcsSetDefaultColorProfile(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
-                                   display->source_name, CPT_ICC, CPST_NONE, 0,
-                                   g_profile_name)) {
-        if (interactive)
-            message_error(g_window, L"Updating the legacy display profile default", GetLastError());
-        return FALSE;
+    /* ColorProfileSetDisplayDefaultAssociation normally updates the legacy
+       per-user list as well. Calling WcsSetDefaultColorProfile again can block
+       for more than a minute while Windows refreshes the same association.
+       Keep it only as a fallback for systems where the modern API did not
+       synchronize the standard profile list. */
+    if (!g_associate_advanced) {
+        WCHAR standard[MAX_PATH] = L"", advanced[MAX_PATH] = L"";
+        BOOL synchronized = registry_profile_defaults(display, standard, MAX_PATH,
+                                                       advanced, MAX_PATH) &&
+                            _wcsicmp(profile_basename(standard), g_profile_name) == 0;
+        if (!synchronized &&
+            !WcsSetDefaultColorProfile(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                                       display->source_name, CPT_ICC, CPST_NONE, 0,
+                                       g_profile_name)) {
+            if (interactive)
+                message_error(g_window, L"Updating the legacy display profile default", GetLastError());
+            return FALSE;
+        }
     }
     g_last_reapply_tick = GetTickCount();
     g_mismatch_count = 0;
@@ -1209,6 +1218,26 @@ static void write_companion_result(BOOL ok) {
         CloseHandle(result);
     }
     g_companion_result[0] = L'\0';
+}
+
+static BOOL finish_companion_apply_if_active(void) {
+    DISPLAY_ENTRY *display;
+    WCHAR standard[MAX_PATH] = L"", advanced[MAX_PATH] = L"";
+    const WCHAR *current;
+    if (!g_companion_result[0] || !g_profile_name[0]) return FALSE;
+    display = selected_display();
+    if (!display || !registry_profile_defaults(display, standard, MAX_PATH,
+                                                advanced, MAX_PATH)) return FALSE;
+    current = g_associate_advanced ? advanced : standard;
+    if (!current[0] || _wcsicmp(profile_basename(current), g_profile_name) != 0)
+        return FALSE;
+    wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
+    g_profile_pending_selection = FALSE;
+    save_settings();
+    write_companion_result(TRUE);
+    SetWindowTextW(g_apply, L"Finalizing...");
+    verify_profile(FALSE);
+    return TRUE;
 }
 
 static BOOL command_value(const WCHAR *command, const WCHAR *name,
@@ -1829,10 +1858,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
     case WM_TIMER:
-        if (wp == TIMER_VERIFY &&
-            InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0 &&
-            InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0)
-            verify_profile(TRUE);
+        if (wp == TIMER_VERIFY) {
+            if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0)
+                finish_companion_apply_if_active();
+            else if (InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0)
+                verify_profile(TRUE);
+        }
         return 0;
     case WM_APPLY_DONE:
         InterlockedExchange(&g_apply_in_progress, 0);
@@ -1852,8 +1883,16 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp) accept_profile_path(g_browse_path);
         return 0;
     case WM_DISPLAYCHANGE: case WM_DEVICECHANGE:
-        g_reapply_attempted_for_mismatch = FALSE;
-        enumerate_displays(); refresh_display_profiles(); verify_profile(TRUE); return 0;
+        if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
+            finish_companion_apply_if_active();
+        } else if (
+            InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0) {
+            g_reapply_attempted_for_mismatch = FALSE;
+            enumerate_displays();
+            refresh_display_profiles();
+            verify_profile(TRUE);
+        }
+        return 0;
     case WM_SETTINGCHANGE:
         /* Windows broadcasts ImmersiveColorSet when the light/dark preference
          * or the accent changes; rebuild the palette-derived GDI objects so the
@@ -1878,7 +1917,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             apply_control_theme(g_display_profiles);
             InvalidateRect(hwnd, NULL, TRUE);
         }
-        refresh_display_profiles(); verify_profile(TRUE); return 0;
+        if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
+            finish_companion_apply_if_active();
+        } else if (
+            InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0) {
+            refresh_display_profiles();
+            verify_profile(TRUE);
+        }
+        return 0;
     case WM_TRAYICON:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) show_window();
         else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_tray_menu();
@@ -2004,7 +2050,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     Shell_NotifyIconW(NIM_ADD, &g_tray);
     g_tray.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_tray);
-    verify_profile(FALSE);
+    if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0)
+        verify_profile(FALSE);
     if ((!tray_only && !companion_apply) || (!g_profile_name[0] && !companion_apply))
         ShowWindow(g_window, show);
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
