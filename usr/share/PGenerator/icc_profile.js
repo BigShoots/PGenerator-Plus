@@ -800,7 +800,7 @@ function meterIccPatchFractions(quality,profileType,profileModel){
  // until about 6.25%. That is too sparse to solve the shaper curves which
  // Windows loads from an SDR MHC2 profile. Add exact low-end 8-bit codes while
  // retaining the evenly spaced ramp across the rest of the range.
- if(profileType==='windows-sdr'){
+ if(profileType==='windows-sdr'||profileType==='sdr'){
   [3,5,8,10,13,19,26].forEach(code=>rampValues.push(code/255));
  }
  rampValues.sort((a,b)=>a-b);
@@ -1050,7 +1050,8 @@ function meterIccSyncUi(){
  const invalidPatchSet=patchSettings.patch_count<patchMinimum;
  const transferField=document.getElementById('meterIccTargetTransferField');
  const transfer=meterIccTargetTransferInfo(meterIccTargetTransferValue());
- if(transferField) transferField.style.display=type==='windows-sdr'?'':'none';
+ const selectsSdrTarget=(type==='windows-sdr'||type==='sdr')&&calibrationMode!=='none';
+ if(transferField) transferField.style.display=selectsSdrTarget?'':'none';
  const cicpFields=document.getElementById('meterIccCicpFields');
  const versionNote=document.getElementById('meterIccVersionNote');
  if(cicpFields) cicpFields.style.display=effectiveIccVersion==='4.4'?'':'none';
@@ -1161,7 +1162,7 @@ function meterIccSyncUi(){
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected structured patch coverage.')
-  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. Calibration: '+({vcgt:'With VCGT',profile:'Without VCGT',none:'None'}[calibrationMode])+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(type==='windows-sdr'?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. Calibration: '+({vcgt:'With VCGT',profile:'Without VCGT',none:'None'}[calibrationMode])+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(selectsSdrTarget?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
@@ -1973,7 +1974,7 @@ async function meterIccRetryBuild(){
    cicp:meterIccCicpSettings(),
    pattern_provider:patternProvider,reuse_signature:reuseSignature,
    patch_settings:(saved&&saved.patch_settings)||null,
-   target_transfer:type==='windows-sdr'?String((saved&&saved.target_transfer)||meterIccTargetTransferValue()):undefined,
+   target_transfer:(type==='windows-sdr'||type==='sdr')?String((saved&&saved.target_transfer)||meterIccTargetTransferValue()):undefined,
    code_min:0,code_max:info.mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };
@@ -2116,7 +2117,7 @@ async function meterIccStart(){
    calibration_mode:meterIccCalibrationModeValue(),
    icc_version:String((document.getElementById('meterIccVersion')||{}).value||'auto'),cicp:meterIccCicpSettings(),
    patch_settings:patchSettings,start_token:startToken,reuse_signature:reuseSignature,
-   target_transfer:type==='windows-sdr'?meterIccTargetTransferValue():undefined,
+   target_transfer:(type==='windows-sdr'||type==='sdr')?meterIccTargetTransferValue():undefined,
    code_min:0,code_max:mode==='sdr'?255:1023,
    meter_name:meterSelectedMeasurementLabel(null)
   };

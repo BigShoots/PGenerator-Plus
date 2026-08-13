@@ -251,9 +251,11 @@ def cgats_quote(value):
 
 def profile_description(payload):
     description = str(payload.get("name", "PGenerator+ display profile"))
-    if payload.get("profile_type") == "windows-sdr":
+    if payload.get("profile_type") in ("sdr", "windows-sdr") and str(payload.get("calibration_mode", "vcgt")).lower() != "none":
         transfer = str(payload.get("target_transfer", "srgb")).lower()
-        description += " (SDR MHC2, {})".format(WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB"))
+        label = WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB")
+        description += (" (SDR MHC2, {})" if payload.get("profile_type") == "windows-sdr"
+                        else " (SDR, {})").format(label)
     return description[:120]
 
 
@@ -2594,9 +2596,9 @@ def build(payload, output_dir):
         fail("HDR ICC profiles require HDR10 (PQ) output")
     requested_icc_version, icc_version, cicp = profile_icc_settings(payload, profile_type)
     target_transfer = str(payload.get("target_transfer", "srgb")).lower()
-    if profile_type == "windows-sdr" and target_transfer not in WINDOWS_SDR_TRANSFERS:
-        fail("Unsupported SDR MHC2 target transfer")
-    if profile_type != "windows-sdr":
+    if profile_type in ("sdr", "windows-sdr") and target_transfer not in WINDOWS_SDR_TRANSFERS:
+        fail("Unsupported SDR target transfer")
+    if profile_type not in ("sdr", "windows-sdr"):
         target_transfer = None
     profile_model = str(payload.get("profile_model", "clut")).lower()
     if profile_model not in PROFILE_MODELS:
