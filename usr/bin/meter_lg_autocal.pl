@@ -2726,6 +2726,45 @@ sub autocal_delta_e_formula {
  return normalize_autocal_delta_e_formula($LG_AUTOCAL_DELTA_E_FORMULA);
 }
 
+# Resolve the operator's requested Delta E target once for every AutoCal
+# solver. A worker-specific value remains an explicit expert override, while
+# normal runs inherit target_delta_e. Keep this range aligned with the Web UI:
+# [0.1, 10.0] with a 0.5 fallback. Malformed and non-positive values are
+# treated as unset (an invalid override still falls through to
+# target_delta_e), while tiny positives clamp up to 0.1. Ignored and clamped
+# values are logged once per key/value so a typo'd config is visible in the
+# run log rather than silently calibrating to a different target.
+my %_autocal_target_de_warned;
+my $_autocal_target_de_numeric=qr/^\+?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+sub autocal_solver_target_delta_e {
+ my ($config,$override_key,$fallback)=@_;
+ my $numeric=$_autocal_target_de_numeric;
+ $fallback=0.5 if(!defined($fallback) || $fallback !~ $numeric || ($fallback+0) <= 0);
+ my $target=$fallback+0;
+ my $source=undef;
+ if(ref($config) eq "HASH") {
+  foreach my $key (grep { defined($_) && $_ ne "" } ($override_key,"target_delta_e")) {
+   next if(!defined($config->{$key}));
+   my $value=$config->{$key};
+   $value =~ s/^\s+|\s+$//g;
+   if($value !~ $numeric || ($value+0) <= 0) {
+    log_line("AutoCal target: ignoring unusable ".$key."=\"".$config->{$key}."\", treating as unset") if(!$_autocal_target_de_warned{$key."\0".$config->{$key}}++);
+    next;
+   }
+   $target=$value+0;
+   $source=$key;
+   last;
+  }
+ }
+ my $clamped=$target;
+ $clamped=0.1 if($clamped < 0.1);
+ $clamped=10.0 if($clamped > 10.0);
+ if(defined($source) && $clamped != $target) {
+  log_line("AutoCal target: clamping ".$source."=".$target." to ".$clamped) if(!$_autocal_target_de_warned{$source."\0clamp\0".$target}++);
+ }
+ return $clamped+0;
+}
+
 sub autocal_uses_itp {
 	 return $LG_AUTOCAL_DELTA_E_FORMULA eq "deitp" ? 1 : 0;
 }
@@ -14688,14 +14727,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $low_ire_max_escalations=defined($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) ? int($config->{"lg_autocal_hdr20_dpg_low_ire_max_escalations"}) : 2;
 	$low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
 	$low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
-	# Only re-escalate when best dE is still this many times the (relaxed)
+	# Only re-escalate when best dE is still this many times the effective
 	# target -- i.e. genuinely stuck, not just noise-limited near the goal.
 	my $low_ire_reescalate_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_reescalate_factor"}+0) : 4.0;
 	$low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
 	$low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
-	# "Close enough that further moves only scatter the reading" band, as a
-	# multiple of the anchor's effective target dE.
-	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.5;
+	# Optional meter-noise band around the target. It defaults to the exact
+	# target; expert callers may widen it for a known panel or meter noise floor.
+	my $low_ire_close_factor=defined($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_hdr20_dpg_low_ire_close_factor"}+0) : 1.0;
 	$low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
 	$low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
 	# 100% white is calibrated first and gets its own (usually larger)
@@ -14704,24 +14743,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $max_inner_white=defined($config->{"lg_autocal_hdr20_dpg_white_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_white_iters"}) : 16;
 	$max_inner_white=1 if($max_inner_white < 1);
 	$max_inner_white=16 if($max_inner_white > 16);
-	my $target_de=defined($config->{"lg_autocal_hdr20_dpg_target_de"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de"}+0) : 0.5;
-	$target_de=0.05 if($target_de < 0.05);
-	$target_de=5.0 if($target_de > 5.0);
-	# Per-anchor target_de multiplier at low IRE. The panel's PQ EOTF floor
-	# + meter noise at very low stimulus (1.4-2% IRE) make the set target
-	# physically unreachable: e.g. target=0.5 means dE<=0.5, but the best
-	# achievable on the OLED65C2PUA / OLED48C1AUB at 1.4% is ~0.7-0.9 dE.
-	# Without relaxation the best-so-far revert logic catches every
-	# oscillation cycle, but the running best dE never crosses the unrelaxed
-	# threshold, so the worker keeps "trying" after every revert -- the
-	# 2026-06-23 1.4% slot ran 16 iters / 8.6 min for ~4 useless post-best
-	# iterations per cycle. Default 2.0 at very-low IRE matches the operator
-	# directive "double the set target": with set target 0.5 the effective
-	# target at 1.4% is 1.0; a best-so-far dE of 0.72 then converges.
-	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.5;
+	my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_hdr20_dpg_target_de",0.5);
+	# Honour the operator's target at every anchor by default. Expert callers
+	# may explicitly relax low-IRE thresholds for a known noise floor.
+	my $target_de_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_low_multiplier"}+0) : 1.0;
 	$target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
 	$target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+	my $target_de_very_low_multiplier=defined($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_hdr20_dpg_target_de_very_low_multiplier"}+0) : 1.0;
 	$target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
 	$target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
 	$target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
@@ -15094,14 +15122,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		my $gamma_effective=lg_autocal_expected_gamma_for_signal_mode_and_ire($_anchor_signal_mode,$_anchor_ire);
 		$gamma_effective=1.5 if($gamma_effective+0 < 1.5);
 		$gamma_effective=3.0 if($gamma_effective+0 > 3.0);
-		# Per-anchor effective target_de: the set $target_de is the operator's
-		# intent, but at very-low IRE the panel floor + meter noise make it
-		# unreachable. Apply the IRE-tier multiplier so a best-so-far dE like
-		# 0.72 at 1.4% IRE counts as converged when the operator set 0.5 with
-		# default 2x very-low multiplier (effective 1.0). The skip-acceptance
-		# threshold must scale with the same effective target so the
-		# "instant-skip when already below 60% of target" path stays
-		# consistent with the convergence check.
+		# Per-anchor effective target_de. The IRE-tier multipliers default to
+		# 1.0, so the operator's set target applies exactly at every anchor;
+		# an expert override can relax the low/very-low tiers for a known
+		# panel or meter noise floor. The skip-acceptance threshold must
+		# scale with the same effective target so the "instant-skip when
+		# already below 60% of target" path stays consistent with the
+		# convergence check.
 		my $_effective_target_de=$target_de;
 		my $_effective_skip_de=$acceptance_skip_de;
 		if($_anchor_ire <= $very_low_ire_threshold) {
@@ -15535,12 +15562,14 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					log_line("HDR20 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".($_anchor_ire+0 >= $high_ire_threshold?"high-IRE":"low-IRE").")");
 					my $_revert_budget=($_anchor_ire < $very_low_ire_threshold) ? $very_low_revert_budget : (($_anchor_ire+0 >= $high_ire_threshold) ? $high_ire_revert_budget : 3);
 					# Noise-limited early stop (SDR26 port). A low-IRE anchor already
-					# inside the noise band around its relaxed target gains nothing
+					# inside the noise band around its effective target gains nothing
 					# from more moves -- they only scatter the reading, and the
-					# final-state restore re-reads the best anyway. Keep the best and
+					# final-state restore charts the committed best anyway. Keep the best and
 					# move on rather than spending the rest of the budget on moves
-					# that cannot beat it. This is most of the speed-up: the 1% anchor
-					# spent 14 iterations of pass 1 oscillating well inside this band.
+					# that cannot beat it. With the default close factor of 1.0 the
+					# band is the exact target, so this only fires when an expert
+					# override widens the band or relaxes a tier (the historical
+					# 1.5x band saved ~14 iterations at the 1% anchor).
 					if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de)
 					   && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor
 					   && $consecutive_reverts >= 2) {
@@ -15561,6 +15590,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 							log_line("HDR20 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$_revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
 						} else {
 							log_line("HDR20 1D DPG greyscale: ".$_revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de).($_anchor_ire < $very_low_ire_threshold ? " (very-low IRE, kept trying longer)" : ($_anchor_ire+0 >= $high_ire_threshold ? " (high-IRE)" : "")));
+							# Advisory only: a low-IRE anchor that exhausted its budget above
+							# target is usually sitting at the panel/meter noise floor.
+							log_line("HDR20 1D DPG greyscale: advisory: low-IRE anchor plateaued above target ".sprintf("%.2f",$_effective_target_de+0)." -- likely panel/meter noise floor; lg_autocal_hdr20_dpg_target_de_low_multiplier / _very_low_multiplier can relax it") if($_anchor_ire+0 <= $low_ire_threshold+0 && defined($best_de) && $best_de+0 > $_effective_target_de+0);
 							last;
 						}
 					}
@@ -16413,50 +16445,32 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  $low_ire_max_escalations=0 if($low_ire_max_escalations < 0);
  $low_ire_max_escalations=4 if($low_ire_max_escalations > 4);
  # Re-escalation (full-step retry) must fire ONLY when the anchor is still
- # FAR from its (relaxed) target -- a genuinely crushed/black anchor. When it
+ # FAR from its effective target -- a genuinely crushed/black anchor. When it
  # is already close, a full-step re-escalation just scatters a noise-limited
  # anchor with large bad moves (dE jumping 5-10) instead of settling. Gate it
  # behind best_de > effective_target * this factor.
  my $low_ire_reescalate_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_reescalate_factor"}+0) : 4.0;
  $low_ire_reescalate_factor=1.0 if($low_ire_reescalate_factor < 1.0);
  $low_ire_reescalate_factor=20.0 if($low_ire_reescalate_factor > 20.0);
- # A very-low-IRE anchor sitting within this multiple of its (relaxed) target
- # is meter-noise-limited (e.g. 0.01 cd/m2 reads scatter dE 1-5): extra
- # reverts only scatter the dE without beating the best, so keep the best and
- # stop early instead of thrashing the whole revert budget.
- my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.5;
+ # Optional meter-noise band around the target. It defaults to the exact
+ # target; expert callers may widen it for a known panel or meter noise floor.
+ my $low_ire_close_factor=defined($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_close_factor"}+0) : 1.0;
  $low_ire_close_factor=1.0 if($low_ire_close_factor < 1.0);
  $low_ire_close_factor=5.0 if($low_ire_close_factor > 5.0);
- # Final-state restore re-read guard (default ON). When ENABLED, a low-IRE
- # re-read that lands ABOVE the confirmation tolerance is treated as
- # rejected and the chart keeps the last committed-best reading. When
- # DISABLED the re-read is skipped entirely (treat as rejected without
- # bothering to read). Kept as an escape hatch so an operator who wants
- # the raw re-read path (with the noise-clobber risk) can still get it.
-   my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
-  $target_de=0.05 if($target_de < 0.05);
-  $target_de=5.0 if($target_de > 5.0);
-  # Per-anchor target_de multiplier at low IRE (HDR pattern). The panel's
-  # 2.2 EOTF + meter noise at very low stimulus (2.3-4% IRE) make the set
-  # target physically unreachable -- a best-so-far dE of 0.6-0.9 is the
-  # best achievable. Without relaxation the worker keeps "trying" after
-  # every revert, wasting the iteration budget fighting back down to a
-  # target the panel can't hit. 1.5x at low IRE (default 5%) and 2.0x at
-  # very-low IRE (default 2.3%) match the operator directive "double the
-  # set target" at the noise floor.
-  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.5;
+  my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_sdr26_dpg_target_de",0.5);
+  # Honour the operator's target at every anchor by default. Expert callers
+  # may explicitly relax low-IRE thresholds for a known noise floor.
+  my $target_de_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_low_multiplier"}+0) : 1.0;
   $target_de_low_multiplier=1.0 if($target_de_low_multiplier < 1.0);
   $target_de_low_multiplier=5.0 if($target_de_low_multiplier > 5.0);
-  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 2.0;
+  my $target_de_very_low_multiplier=defined($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de_very_low_multiplier"}+0) : 1.0;
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
   my $_effective_target_de=$target_de;
-  # Very-low IRE band: 2.5 (was 2.0). The comment above documents the 2.0x
-  # relaxation as applying to "very-low IRE (default 2.3%)", but a strict
-  # < 2.0 excluded the 2.3% anchor (it fell into the 1.5x low band). 2.5
-  # captures 2.3% as intended so the deepest-shadow anchor gets the full
-  # very-low treatment (relaxed target + strongest read averaging below).
+  # The very-low boundary is 2.5 (not 2.0) so the 2.3% anchor lands in the
+  # very-low band. With the default 1.0 multipliers this branch changes
+  # nothing; it only takes effect when an expert override relaxes a tier.
   if($_anchor_ire+0 < 2.5) {
    $_effective_target_de=$target_de*$target_de_very_low_multiplier;
   } elsif($_anchor_ire+0 < $low_ire_threshold) {
@@ -16816,11 +16830,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $consecutive_reverts++;
     $move_scaling*=0.5 if($move_scaling+0 > 0.001);
     log_line("SDR26 1D DPG greyscale: iter ".$i." reverted to best dE=".sprintf("%.4f",$best_de)." (this dE=".sprintf("%.4f",$de+0)." > prev dE=".sprintf("%.4f",$prev_de+0).", move_scaling=".sprintf("%.4f",$move_scaling).", tier=".(($_anchor_ire+0 >= $high_ire_threshold+0)?"high-IRE":"low-IRE").")");
-    # Noise-limited early stop: a very-low-IRE anchor already near its
-    # (relaxed) target is meter-noise-limited -- once a move has failed to
+    # Noise-limited early stop: a low-IRE anchor already near its
+    # effective target is meter-noise-limited -- once a move has failed to
     # beat the best twice, further reverts only scatter the dE (and the
-    # final restore re-reads the best anyway). Keep the best and move on
-    # instead of burning the whole revert budget on large bad moves.
+    # final restore charts the committed best anyway). Keep the best and
+    # move on instead of burning the whole revert budget on large bad moves.
     if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 <= ($_effective_target_de+0)*$low_ire_close_factor && $consecutive_reverts >= 2) {
      log_line("SDR26 1D DPG greyscale: low-IRE anchor noise-limited near target (best dE=".sprintf("%.4f",$best_de).", ".$consecutive_reverts." reverts), keeping best and moving on");
      last;
@@ -16834,6 +16848,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
       log_line("SDR26 1D DPG greyscale: low-IRE anchor stuck at best dE=".sprintf("%.4f",$best_de)." after ".$revert_budget." reverts; re-escalating step (escalation ".$low_ire_escalations."/".$low_ire_max_escalations.", move_scaling reset to ".sprintf("%.4f",$move_scaling+0).")");
      } else {
       log_line("SDR26 1D DPG greyscale: ".$revert_budget." consecutive reverts, breaking at best dE=".sprintf("%.4f",$best_de));
+      # Advisory only: a low-IRE anchor that exhausted its budget above
+      # target is usually sitting at the panel/meter noise floor.
+      log_line("SDR26 1D DPG greyscale: advisory: low-IRE anchor plateaued above target ".sprintf("%.2f",$_effective_target_de+0)." -- likely panel/meter noise floor; lg_autocal_sdr26_dpg_target_de_low_multiplier / _very_low_multiplier can relax it") if($_anchor_ire+0 < $low_ire_threshold+0 && defined($best_de) && $best_de+0 > $_effective_target_de+0);
       last;
      }
     }
@@ -17269,12 +17286,11 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  # Final-state restore: leave the TV at the best-measured DPG. The last
  # iter may have been an improve+build, so $current_dpg is then the
  # unmeasured new build -- restore the full best snapshot AND re-upload it
- # so the wire state matches. Then re-read so the chart shows the actual
- # measured dE at the panel's CURRENT state, not the last iter's dE
- # (which may be the overshoot that triggered the restore). Mirror of the
- # HDR20 final-state restore re-read at line ~14921 -- same chart-fidelity
- # bug existed here (the operator saw the bad iter's dE on the chart while
- # the panel was sitting at best_de).
+ # so the wire state matches, then chart the reading that PRODUCED best_de
+ # (no fresh re-read; see the block comment below). Mirror of the HDR20
+ # final-state restore -- the same chart-fidelity bug existed here (the
+ # operator saw the bad iter's dE on the chart while the panel was sitting
+ # at best_de).
  if(defined($best_de) && !$acceptance_pending) {
   my $_differs=0;
   for(my $j=0;$j<@{$current_dpg_ref};$j++) {
@@ -17368,11 +17384,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
  # see the same $config->{ddc_layout} the routing implied.
  $config->{"ddc_layout"}=$_layout;
 
- # Top-level target_dE (operator's set target). Mirrors the HDR top-level
- # config knob lg_autocal_hdr20_dpg_target_de. Default 0.5.
- my $target_de=defined($config->{"lg_autocal_sdr26_dpg_target_de"}) ? ($config->{"lg_autocal_sdr26_dpg_target_de"}+0) : 0.5;
- $target_de=0.05 if($target_de+0 < 0.05);
- $target_de=5.0 if($target_de+0 > 5.0);
+ # Top-level target_dE uses the same resolver as the per-anchor SDR worker.
+ my $target_de=autocal_solver_target_delta_e($config,"lg_autocal_sdr26_dpg_target_de",0.5);
 
  # SDR26 anchor tables. Three mutually exclusive models keyed on
  # (transport_range, color_format):
@@ -21988,8 +22001,7 @@ if(ref($config) eq "HASH") {
 my $steps=(ref($config->{"steps"}) eq "ARRAY") ? $config->{"steps"} : [];
 unlink($trace_109_file) if(ref($config) eq "HASH" && $config->{"lg_autocal_26"});
 $LG_AUTOCAL_DELTA_E_FORMULA=autocal_delta_e_formula($config);
-my $target_delta=defined($config->{"target_delta_e"}) ? ($config->{"target_delta_e"}+0) : 0.5;
-$target_delta=0.1 if($target_delta < 0.1);
+my $target_delta=autocal_solver_target_delta_e($config,undef,0.5);
 my $target_luminance=defined($config->{"target_luminance"}) ? ($config->{"target_luminance"}+0) : 0;
 $target_luminance=0 if($target_luminance < 1);
 my $setup_luminance_reference=defined($config->{"setup_luminance_reference"}) ? ($config->{"setup_luminance_reference"}+0) : 0;
