@@ -19881,6 +19881,12 @@ function meterSharedSeriesShouldRecover(status,opts){
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&!opts.restoredLocal) return false;
   if(serverKey&&meterActiveSeriesKey&&serverKey!==meterActiveSeriesKey&&opts.restoredLocal) return serverTs>0&&(!localTs||serverTs>=localTs);
   if(isActive) return true;
+  // A completed Read Selection remains the server's latest status and contains
+  // only that subset. The browser cache already holds the full series with the
+  // selected patches merged into it. After switching away, localId is empty;
+  // do not let the periodic shared-status poll replace that larger snapshot
+  // with the terminal subset merely because its last timestamp is equal/newer.
+  if(serverKey&&serverKey===meterActiveSeriesKey&&localCount>serverCount&&localCount>0) return false;
   if(serverCount>0&&localCount===0) return true;
   if(serverTs>0&&(!localTs||serverTs>=localTs)) return true;
   if(serverCount>localCount&&(!localTs||serverTs+300>=localTs)) return true;
@@ -22148,6 +22154,35 @@ function meterBuildSaturationStepRgb(colorName,satPercent){
  return rgb.map(v=>meterEncodeSaturationLinear(v,colorName));
 }
 
+// ColorChecker's appended 100% primaries/secondaries are gamut endpoints at
+// the ColorChecker endpoint drive (HDR10 full PQ, DV 50%, SDR/HLG 75%). They
+// deliberately do not use the native saturation sweep's fixed 50% HDR drive.
+// Keep this client builder aligned with webui_meter_series_start so Read
+// Selection and a full series send the same patch for the same thumbnail.
+function meterBuildColorCheckerEndpointStepRgb(colorName){
+ const solveGamut=meterSaturationSolveGamut();
+ const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
+ const x=endpoint.x,y=endpoint.y;
+ if(!(y>0)) return [0,0,0];
+ const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
+ const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ const level=meterGamutStimulusLinearLevel();
+ return coeffs.map(v=>meterEncodeSaturationLinear(Math.max(0,v/maxCoeff)*level,colorName));
+}
+
+function meterBuildColorCheckerEndpointTargetStepMeta(colorName){
+ const level=meterGamutStimulusLinearLevel();
+ const rgb=meterBuildFullGamutTargetLinearRgb(colorName).map(v=>v*level);
+ const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+ const sum=xyz.X+xyz.Y+xyz.Z;
+ const wp=meterTargetWhitePoint();
+ return {
+  target_x:sum>0?xyz.X/sum:wp.x,
+  target_y:sum>0?xyz.Y/sum:wp.y,
+  target_Yn:Math.max(0,xyz.Y||0)
+ };
+}
+
 function meterGamutColorEndpointRgb(colorName){
  switch(String(colorName||'').toLowerCase()){
   case 'red': return [1,0,0];
@@ -23427,8 +23462,8 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
   ['100% Magenta','Magenta'],
   ['100% Yellow','Yellow']
  ].forEach(([name,colorName])=>{
-  const rgb=meterBuildSaturationStepRgb(colorName,100);
-  const target=meterBuildSaturationTargetStepMeta(colorName,100);
+  const rgb=meterBuildColorCheckerEndpointStepRgb(colorName);
+  const target=meterBuildColorCheckerEndpointTargetStepMeta(colorName);
   steps.push({
    ire:100,
    r:rgb[0],
@@ -28727,6 +28762,8 @@ function meterRgbDeltasForLive(reading,bal,includeDeltaE){
 // read the same way: bar above target = over, below = under. Δx and Δy are
 // scaled ×1000 for visibility; ΔY is normalized to target Y for color/sat
 // patches and to white Y for greyscale, matching HCFR-style interpretation.
+// The bar geometry remains centered on zero error, while footer labels use the
+// same base-100 presentation as RGB balance (for example -6.33 -> 93.67%).
 // Falls back to null when no target is known (manual read with no series loaded).
 function meterXYYDeltasForLive(reading){
  if(!reading) return null;
@@ -28777,11 +28814,11 @@ function meterXYYDeltasForLive(reading){
  }
  if(dx==null&&dy==null&&dY==null) return null;
  const entries=[
-  {key:'x',label:'x',color:'#f4b',v:dx,unit:'‰'},
-  {key:'y',label:'y',color:'#fd4',v:dy,unit:'‰'},
-  {key:'Y',label:'Y',color:'#8df',v:dY,unit:'%'}
+  {key:'x',label:'x',color:'#f4b',v:dx,labelV:dx==null?null:100+dx,unit:'%',showPlus:false},
+  {key:'y',label:'y',color:'#fd4',v:dy,labelV:dy==null?null:100+dy,unit:'%',showPlus:false},
+  {key:'Y',label:'Y',color:'#8df',v:dY,labelV:dY==null?null:100+dY,unit:'%',showPlus:false}
  ];
- return {title:'XyY Δ',unit:'',entries,decimals:2,minHalfRange:5,scaleHeadroom:1.6};
+ return {title:'xyY',unit:'',entries,decimals:2,minHalfRange:5,scaleHeadroom:1.6};
 }
 
 // Generic vertical delta-bar chart. Every bar extends up/down from a
@@ -28810,7 +28847,7 @@ function drawDeltaBarsVertical(canvasId,spec){
  // The color-series RGB companion remains the same vertical three-bar chart
  // in every layout; its phone wrapper receives enough height in responsive CSS.
  const useHorizontal=canvasId==='meterRGBCanvasGrey'&&window.matchMedia&&window.matchMedia('(max-width:700px)').matches;
- const rgbPercentageBars=canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor'
+ const rgbPercentageBars=canvasId==='meterRGBCanvasGrey'||canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor'
   ||canvasId==='meterTwoPointLowCanvas'||canvasId==='meterTwoPointHighCanvas';
  const themedColorBars=canvasId==='meterRGBCanvasColor'||canvasId==='meterXYYCanvasColor'
   ||canvasId==='meterTwoPointLowCanvas'||canvasId==='meterTwoPointHighCanvas';
@@ -36623,7 +36660,6 @@ async function meterSelectSeries(type,points,opts){
   return false;
  }
  const key=type+'-'+points;
- if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  if(meterSeriesRunning){
   if(meterActiveSeriesKey===key){
    toast('Series scan is running — stop it before reloading this chart',true);
@@ -36633,6 +36669,9 @@ async function meterSelectSeries(type,points,opts){
  const ok=await meterShowChoiceModal({title:'Switch series?',body:'Leave the current series and cancel the running series read?',acceptLabel:'Switch',cancelLabel:'Stay'});
  if(!ok){meterRestoreActiveSeriesControls();return false;}
  }
+ // Do not mutate tab-owned chart state until the running-series choice is
+ // accepted. The select element fires before this async prompt resolves.
+ if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
  // Chart changes are committed only after the running-series prompt accepts.
  // This also selects the dedicated opponent chart for Hue Circle after, not
  // before, the operator decides whether to leave the current series.
