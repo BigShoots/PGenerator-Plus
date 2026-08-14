@@ -18747,6 +18747,8 @@ let meterDvProfileStandaloneRunning=false;
 let meterDvAutoCalProfilePolling=null;
 let meterDvAutoCalProfilePollInFlight=false;
 let meterDvAutoCalProfilePollErrors=0;
+let meterDvMapModeTransitionPromise=null;
+let meterDvMapModeTransitionTarget='';
 let meterAutoCalWatchdogInFlight=false;
 let meterFullAutoCalRunning=false;
 let meterFullAutoCalPhase='';
@@ -42034,24 +42036,12 @@ async function meterFullAutoCalStart3d(firstStatus){
 // greyscale + the profile-upload stage). dv_map_mode is an ordinary conf key
 // (usr/share/PGenerator/command.pm lists it as a restart key -- writing it
 // bounces the renderer), so mirror meterAutoCalUseCaseContinue's output-
-// format switch: POST /api/config, then wait for /api/ping if a restart
-// was triggered.
-async function meterDvAutoCalSetMapMode(mode){
- const value=(String(mode)==='1')?'1':'2';
- let r=null;
- try{
-  r=await fetchJSON('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dv_map_mode:value})});
- }catch(e){ r=null; }
- const ok=!!(r&&r.status==='ok');
- if(ok&&r.restart){
-  const t0=Date.now();
-  while(Date.now()-t0<25000){
-   await new Promise(res=>setTimeout(res,1500));
-   const ping=await fetchJSON('/api/ping',{_quiet:true,_timeoutMs:3000}).catch(()=>null);
-   if(ping&&ping.ok&&(Date.now()-t0)>=8000) break;
-  }
- }
- if(ok){
+// format switch. The completion path starts this transition in the
+// background, while Generate Post-Cal may request the same transition before
+// the renderer restart has finished. Keep one transition in flight and verify
+// the persisted value after the daemon is reachable; a lost POST response is
+// not proof that the config write failed.
+function meterDvAutoCalApplyMapMode(value){
   // /api/config updates the renderer and persisted conf, but it does not
   // mutate this page's controls or active-series metadata. Leaving the prior
   // Relative series context here made the following Absolute pre/post report
@@ -42072,8 +42062,77 @@ async function meterDvAutoCalSetMapMode(mode){
     checkSettingsChanged();
    }
   }catch(e){}
+}
+
+async function meterDvAutoCalReadMapMode(){
+ try{
+  const current=await fetchJSON('/api/config',{_quiet:true,_timeoutMs:4000});
+  if(current&&current.dv_map_mode!==undefined) return String(current.dv_map_mode);
+ }catch(e){}
+ return '';
+}
+
+async function meterDvAutoCalSetMapModeTransition(value){
+ const before=await meterDvAutoCalReadMapMode();
+ if(before===value){
+  const ping=await fetchJSON('/api/ping',{_quiet:true,_timeoutMs:3000}).catch(()=>null);
+  if(ping&&(ping.ok||ping.status==='ok')){
+   meterDvAutoCalApplyMapMode(value);
+   return true;
+  }
  }
- return ok;
+
+ let response=null;
+ const started=Date.now();
+ try{
+  response=await fetchJSON('/api/config',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({dv_map_mode:value}),
+   _quiet:true,
+   _timeoutMs:15000
+  });
+ }catch(e){ response=null; }
+
+ // dv_map_mode is a renderer restart key whenever it changes. Even when the
+ // POST response disappears during that restart, wait for both the daemon and
+ // the persisted config rather than issuing a competing write.
+ const needsRestartSettle=before!==value||!!(response&&response.restart);
+ while(Date.now()-started<25000){
+  await new Promise(res=>setTimeout(res,1500));
+  const ping=await fetchJSON('/api/ping',{_quiet:true,_timeoutMs:3000}).catch(()=>null);
+  const applied=await meterDvAutoCalReadMapMode();
+  const settled=!needsRestartSettle||(Date.now()-started)>=8000;
+  if(ping&&(ping.ok||ping.status==='ok')&&applied===value&&settled){
+   meterDvAutoCalApplyMapMode(value);
+   return true;
+  }
+ }
+ return false;
+}
+
+async function meterDvAutoCalSetMapMode(mode){
+ const value=(String(mode)==='1')?'1':'2';
+ // A same-mode caller joins the active transition. An opposite-mode caller
+ // waits for it, then rechecks the shared slot before starting its own write.
+ while(meterDvMapModeTransitionPromise){
+  const pending=meterDvMapModeTransitionPromise;
+  const pendingTarget=meterDvMapModeTransitionTarget;
+  const result=await pending.catch(()=>false);
+  if(pendingTarget===value) return result;
+ }
+
+ const transition=meterDvAutoCalSetMapModeTransition(value);
+ meterDvMapModeTransitionTarget=value;
+ meterDvMapModeTransitionPromise=transition;
+ try{
+  return await transition;
+ }finally{
+  if(meterDvMapModeTransitionPromise===transition){
+   meterDvMapModeTransitionPromise=null;
+   meterDvMapModeTransitionTarget='';
+  }
+ }
 }
 
 // Dolby Vision never lets the operator's Target Gamma dropdown decide the
