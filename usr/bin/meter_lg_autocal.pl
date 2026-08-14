@@ -13374,9 +13374,8 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 # $strength (0..1). A quadratic fit preserves the smooth gamma convexity
 # while removing higher-frequency wiggle. Endpoints are left untouched;
 # monotonic non-decreasing is re-enforced. $strength<=0 returns the input
-# unchanged. Returns a new arrayref. Retained for offline/final curve work,
-# but it must not run inside the live HDR20 rebuild: moving a measured control
-# point after its anchor has converged invalidates that reading.
+# unchanged. Returns a new arrayref. Used by lg_autocal_26_build_dpg_core
+# for the HDR20 path (baked at a fixed 0.15 strength; not user-tunable).
 sub lg_autocal_26_smooth_control_points {
  my ($idx_ref,$ys_ref,$strength)= @_;
  return [ @{$ys_ref} ] if(!defined($strength) || $strength <= 0 || ref($idx_ref) ne "ARRAY" || ref($ys_ref) ne "ARRAY" || @{$idx_ref} < 3 || @{$idx_ref} != @{$ys_ref});
@@ -13465,11 +13464,17 @@ sub lg_autocal_26_build_dpg_core {
 	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
 	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
 	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
-	  # Keep every measured control point exact. A previous live-path smoother
-	  # moved all existing knots again on every anchor rebuild. With the sparse
-	  # HDR20 ladder, calibrating a later point could shift an already-converged
-	  # midrange point by several percent without re-reading it, so the final
-	  # DPG no longer represented the measurements used to accept the anchors.
+	  # HDR-only control-point (curvature) smoothing, baked at a FIXED 0.15.
+	  # Reduces per-anchor over-fit wiggle that the panel's 2.2->PQ
+	  # reconstruction amplifies at low/mid IRE. Intentionally NOT user-tunable:
+	  # the strength is hardcoded here and no conf key is consulted, so no
+	  # PGenerator.conf edit or request field can change it. This is the
+	  # curvature smoother (quadratic control-point fit), NOT the per-iter
+	  # move-damp (the gain**(1/gamma_effective) closure), which is untouched.
+	  my $_dpg_smooth=0.15;
+	  if($_dpg_smooth > 0) {
+	   @ctrl_ys=@{ lg_autocal_26_smooth_control_points(\@ctrl_idx,\@ctrl_ys,$_dpg_smooth) };
+	  }
 	  # Akima cubic spline interpolation across the 1024 indices.
 	  # Falls back to linear when the Akima sub returns empty (the
 	  # degenerate case of < 4 anchors; in practice the autocal
@@ -14633,7 +14638,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
 
-	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 6;
+	# Give mid-body anchors enough passes to settle after neighbouring spline
+	# updates. The loop still exits immediately when the selected dE target is
+	# reached, so already-converged patches do not pay the full budget.
+	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 8;
 	$max_inner=1 if($max_inner < 1);
 	$max_inner=12 if($max_inner > 12);
 	# 1.4-5% IRE need a larger iteration budget: the panel's PQ EOTF floor
@@ -16077,10 +16085,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		next if(!defined($idx));
 		my $label=$_recal ? "100% (recal)" : ($rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%")));
 		# Use the larger low-IRE iteration budget for anchors below the
-		# low-IRE threshold (default 5%). Mid/high anchors (5-100%) keep
-		# the default 6-iter budget which converges in 1-2 iters
-		# (the Akima spline is correct, mid/high errors are 99-100% of
-		# target on the deployed state).
+		# low-IRE threshold (default 5%). Mid-body anchors use the default
+		# 8-iteration ceiling, while high anchors retain their separately tuned
+		# budget. All ranges still exit as soon as they meet the dE target.
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 <= $very_low_ire_threshold) ? $max_inner_very_low : ((defined($step_ire_loop) && $step_ire_loop+0 <= $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner)));
 		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
