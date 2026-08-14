@@ -4836,12 +4836,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my ($chart_tx,$chart_ty)=($target_x,$target_y);
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
-  # The endpoint names describe the selected target gamut (normally P3-D65
-  # for DV/HDR), not the wider HDMI container primaries. Derive their xy from
-  # the target matrix, then reverse-solve that xy through $MI into BT.2020 RGB.
-  # Using the container matrix here made a "P3 Red" target emit pure BT.2020
-  # red while the chart still graded it against P3.
-  my @STIM_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
+  # Absolute DV endpoints describe the selected target gamut (normally P3-D65)
+  # inside a BT.2020 container, so derive their xy from the target matrix and
+  # reverse-solve through $MI. HDR10 keeps its established pure-container
+  # endpoints: the calibrated TV pipeline maps those wire axes to the scoring
+  # gamut. Applying the DV conversion to HDR10 produced mixed full-drive codes
+  # such as 794/940/565 for Green and badly desaturated post-cal measurements.
+  my $stim_axis_key=($signal_mode eq "dv" && $dv_map_mode eq "1") ? $target_key : $solve_key;
+  my @STIM_RGB_TO_XYZ=@{$primaries{$stim_axis_key}{RGB_TO_XYZ}};
   my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
@@ -22276,7 +22278,13 @@ function meterBuildSaturationStepRgb(colorName,satPercent){
 // Selection and a full series send the same patch for the same thumbnail.
 function meterBuildColorCheckerEndpointStepRgb(colorName){
  const solveGamut=meterSaturationSolveGamut();
- const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
+ // HDR10 ColorChecker endpoints are the pure BT.2020-container axes consumed
+ // by the calibrated TV pipeline. Absolute DV alone expresses its target-gamut
+ // endpoint inside that container. Keep this aligned with the server builder
+ // so a thumbnail reread cannot silently replace a pure HDR10 endpoint with a
+ // mixed P3-in-BT.2020 stimulus.
+ const hdr10=meterChartIsPq()&&!meterChartIsDv();
+ const endpoint=meterGamutColorEndpointXY(colorName,hdr10?solveGamut:meterSaturationAxisGamut());
  const x=endpoint.x,y=endpoint.y;
  if(!(y>0)) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
