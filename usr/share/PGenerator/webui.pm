@@ -36730,7 +36730,13 @@ async function meterSelectSeries(type,points,opts){
  // Drop any leftover readings that do not belong to this series (e.g. ColorChecker
  // samples still in memory after loading a custom grid).
  try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
- if(meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
+ // Automated pre/post-cal reports are fresh verification reads. They must not
+ // restore cached steps because the DV cache is grouped by signal mode, while
+ // Relative and Absolute use different patch encoders inside that same mode.
+ // Restoring a Relative ColorChecker snapshot after switching the renderer to
+ // Absolute sends gamma-2.2 codes through the PQ viewing path and produces the
+ // severely distorted readings the report is intended to diagnose.
+ if(!opts.bypassCache&&meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
   try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
   // Lattice cache snapshots can carry server-shaped steps (the server
   // expansion computes no chart targets). The freshly built client steps are
@@ -41442,9 +41448,14 @@ async function meterFullAutoCalCaptureReportSet(stage){
    // a 100ms sleep covered it let meterRunSeries start mid-switch, so the
    // series-cache write for the OUTGOING series could land after the next
    // series had begun accumulating readings.
-   await meterSelectSeries(item.type,item.points);
+   const selected=await meterSelectSeries(item.type,item.points,{force:true,bypassCache:true});
+   if(!selected) throw new Error('Unable to prepare fresh '+prefix+' '+item.label+' measurement steps');
    await meterFullAutoCalSleep(100);
-   const started=await meterRunSeries({observer:METER_AUTOCAL_STANDARD_OBSERVER});
+   const reportDvAbsolute=meterFullAutoCalRunSignalMode()==='dv';
+   const started=await meterRunSeries({
+    observer:METER_AUTOCAL_STANDARD_OBSERVER,
+    dvMapModeOverride:reportDvAbsolute?'1':undefined
+   });
    if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
    status=await meterFullAutoCalWaitForSeriesComplete(item.label);
   }finally{
@@ -45223,6 +45234,7 @@ async function meterRunSelectedPatches(){
 // Run a full automated series, or a thumbnail subset from Read Selection.
 async function meterRunSeries(options){
  options=options||{};
+ const requestedDvMapModeOverride=(String(options.dvMapModeOverride||'')==='1')?'1':((String(options.dvMapModeOverride||'')==='2')?'2':'');
  const requestedSelection=Array.isArray(options.selectionIndices)
   ? options.selectionIndices.filter(index=>Number.isInteger(index)&&index>=0).sort((a,b)=>a-b)
   : [];
@@ -45240,7 +45252,12 @@ async function meterRunSeries(options){
 	 if(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()){
 	  meterSeriesSteps=meterMatrixProfileSteps();
 	 } else {
+	  // A Full AutoCal DV verification report owns its map mode. Pin the
+	  // active build context before rebuilding so a cached Relative chart or
+	  // delayed UI refresh cannot author gamma-2.2 steps for an Absolute read.
+	  if(requestedDvMapModeOverride) meterActiveSeriesDvMapMode=requestedDvMapModeOverride;
 	  meterSetActiveSeriesChartContext();
+	  if(requestedDvMapModeOverride) meterActiveSeriesDvMapMode=requestedDvMapModeOverride;
 	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 }
  const rebuiltVisibleSteps=meterVisibleSeriesSteps();
@@ -45409,6 +45426,10 @@ async function meterRunSeries(options){
  };
  try{
 	  const _seriesBody=meterMeasurementSignalContext({type:meterActiveSeriesType,points:meterActiveSeriesPoints,display_type:dtype,target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',target_gamma:meterAutoCalTargetGammaValue(),picture_mode:meterLgPictureModeValue(),delay_ms:delay,patch_size:psize,signal_range:getVal('rgb_quant_range'),pattern_signal_range:patternSignalRange||undefined,pattern_provider:meterCalibrationReadPatternProvider(),ccss_override:(typeof getCcssOverride==='function')?getCcssOverride():undefined,...meterPatternInsertionPayload(),refresh_rate:getMeterRefreshRate()||undefined,series_has_saved_white_reference:selectionHasSavedWhite,series_has_saved_black_reference:selectionHasSavedBlack,series_reference_white_code:meterCodeFromSignalPercent(100),series_reference_black_code:meterCodeFromSignalPercent(0),series_reference_input_max:meterPatchInputMax(),series_target_white_y:((()=>{try{const tw=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;if(tw&&!tw.useMeasured&&tw.value!=null&&Number(tw.value)>0)return Number(tw.value);}catch(e){}const lg=meterColorSeriesTargetWhiteForRun(meterActiveSeriesType,meterActiveSeriesPoints);return (lg!=null&&Number(lg)>0)?Number(lg):undefined;})()),grey_custom_enabled:meterGreyCustomEnabled(),lg_greyscale_21:meterUseLgGreyscale21(meterActiveSeriesPoints),lg_autocal_26:meterUseLgAutoCal26(meterActiveSeriesPoints),lg_extended_sdr_16_255:meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints),grey_steps_11:meterGreyStimulusCsv(11),grey_steps_21:meterGreyStimulusCsv(21),grey_steps_30:meterGreyStimulusCsv(30),grey_steps_100:meterGreyStimulusCsv(100),grey_steps_11_r:meterGreyChannelCsv(11,'r'),grey_steps_11_g:meterGreyChannelCsv(11,'g'),grey_steps_11_b:meterGreyChannelCsv(11,'b'),grey_steps_21_r:meterGreyChannelCsv(21,'r'),grey_steps_21_g:meterGreyChannelCsv(21,'g'),grey_steps_21_b:meterGreyChannelCsv(21,'b'),grey_steps_30_r:meterGreyChannelCsv(30,'r'),grey_steps_30_g:meterGreyChannelCsv(30,'g'),grey_steps_30_b:meterGreyChannelCsv(30,'b'),grey_steps_100_r:meterGreyChannelCsv(100,'r'),grey_steps_100_g:meterGreyChannelCsv(100,'g'),grey_steps_100_b:meterGreyChannelCsv(100,'b'),grey_two_point_low:meterTwoPointValues().low,grey_two_point_high:meterTwoPointValues().high,require_device_ready:requireDeviceReady});
+	  if(requestedDvMapModeOverride&&_seriesBody.signal_mode==='dv'){
+	   _seriesBody.dv_map_mode=requestedDvMapModeOverride;
+	   _seriesBody.target_gamma=requestedDvMapModeOverride==='1'?'st2084':'2.2';
+	  }
 	  if(options.observer===METER_AUTOCAL_STANDARD_OBSERVER){
 	   _seriesBody.observer=METER_AUTOCAL_STANDARD_OBSERVER;
 	  }
