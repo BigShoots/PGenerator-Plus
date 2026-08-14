@@ -14638,12 +14638,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing state" unless(ref($state) eq "HASH");
 	return "lg_autocal_26_run_hdr20_dpg_greyscale: missing target chromaticity" unless(defined($target_x) && defined($target_y) && $target_y+0 > 0);
 
-	# The full-DDC spine and its anchor revisits can leave a neighbouring
-	# mid-body anchor several dE away even when its RGB balance is already
-	# neutral. Those luminance-only corrections converge steadily but can need
-	# more than the historical six passes. Match the SDR body budget; the loop
-	# still exits immediately when the selected dE target is reached.
-	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 10;
+	my $max_inner=defined($config->{"lg_autocal_hdr20_dpg_inner_iters"}) ? int($config->{"lg_autocal_hdr20_dpg_inner_iters"}) : 6;
 	$max_inner=1 if($max_inner < 1);
 	$max_inner=12 if($max_inner > 12);
 	# 1.4-5% IRE need a larger iteration budget: the panel's PQ EOTF floor
@@ -16087,9 +16082,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		next if(!defined($idx));
 		my $label=$_recal ? "100% (recal)" : ($rs->{"name"}||($target->{"label"}||(format_percent($rs->{"ire"})."%")));
 		# Use the larger low-IRE iteration budget for anchors below the
-		# low-IRE threshold (default 5%). Mid-body anchors use the default
-		# 10-iter ceiling, while high anchors retain their separately tuned
-		# budget. All ranges still exit as soon as they meet the dE target.
+		# low-IRE threshold (default 5%). Mid/high anchors (5-100%) keep
+		# the default 6-iter budget which converges in 1-2 iters
+		# (the Akima spline is correct, mid/high errors are 99-100% of
+		# target on the deployed state).
 		my $step_ire_loop=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
 		my $step_budget=$_recal ? $max_inner_white : ((defined($step_ire_loop) && $step_ire_loop+0 <= $very_low_ire_threshold) ? $max_inner_very_low : ((defined($step_ire_loop) && $step_ire_loop+0 <= $low_ire_threshold) ? $max_inner_low : ((defined($step_ire_loop) && $step_ire_loop+0 >= $high_ire_threshold) ? $high_ire_iters : $max_inner)));
 		my ($conv,$last)=$calibrate_anchor->($rs,$target,$idx,$label,$step_num,$step_budget,$_recal);
