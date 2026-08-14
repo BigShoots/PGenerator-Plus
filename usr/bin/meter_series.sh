@@ -777,7 +777,7 @@ raise SystemExit(1)
 PY
 }
 
-apply_dv_absolute_greyscale_codes() {
+apply_dv_absolute_greyscale_targets() {
  local white_y="$1"
  [[ -f "$STEPS_FILE" ]] || return 1
  is_number "$white_y" || return 1
@@ -808,8 +808,6 @@ m2 = 2523.0 / 32.0
 c1 = 3424.0 / 4096.0
 c2 = 2413.0 / 128.0
 c3 = 2392.0 / 128.0
-dv_tunnel_gamma = 2.2
-
 def pq_decode_normalized(code):
     code = max(0.0, min(1.0, float(code)))
     if code <= 0:
@@ -839,40 +837,28 @@ def percent_from_step(step, channel):
             return value
     return 0.0
 
-def code_range_for_step(step):
-    return 256, 3504
-
-def code_for_absolute_percent(step, percent):
+def target_for_absolute_percent(percent):
     stim = max(0.0, min(1.0, float(percent) / 100.0))
-    min_code, span_code = code_range_for_step(step)
     if stim <= 0:
-        return min_code, 0.0
-    target_y = min(white_y, pq_decode_normalized(stim))
-    encoded = 0.0 if target_y <= 0 else (target_y / white_y) ** (1 / dv_tunnel_gamma)
-    code = int(round(min_code + max(0.0, min(1.0, encoded)) * span_code))
-    return max(min_code, min(min_code + span_code, code)), target_y
+        return 0.0
+    return min(white_y, pq_decode_normalized(stim))
 
-changed = False
 for step in steps:
     if not isinstance(step, dict):
         continue
     if str(step.get("series_type", "")).lower() != "greyscale":
         continue
-    for channel in ("r", "g", "b"):
-        code, target_y = code_for_absolute_percent(step, percent_from_step(step, channel))
-        if step.get(channel) != code:
-            changed = True
-        step[channel] = code
+    # Absolute Dolby Vision uses a PQ base layer. Keep the direct 12-bit
+    # legal-range codes built by the client (256..3760); converting the PQ
+    # target through a measured-white 2.2 carrier makes the TV decode PQ
+    # twice and produces a severely crushed verification ramp.
     step["input_max"] = 4095
-    _, target_y = code_for_absolute_percent(step, percent_from_step(step, "g"))
+    target_y = target_for_absolute_percent(percent_from_step(step, "g"))
     step["dv_absolute_white_y"] = white_y
-    step["dv_absolute_st2084_precomp"] = True
     step["dv_absolute_target_y"] = target_y
     step["dv_absolute_rolloff_pct"] = pq_encode_normalized(white_y) * 100
-    step["dv_absolute_tunnel_gamma"] = dv_tunnel_gamma
-
-if not changed:
-    raise SystemExit(0)
+    step.pop("dv_absolute_st2084_precomp", None)
+    step.pop("dv_absolute_tunnel_gamma", None)
 
 directory = os.path.dirname(steps_file) or "."
 fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(steps_file) + ".", suffix=".tmp", dir=directory)
@@ -1939,7 +1925,7 @@ fi
 READINGS=""
 READING_COUNT=0
 START_INDEX=0
-DV_ABSOLUTE_CODES_APPLIED=0
+DV_ABSOLUTE_TARGETS_APPLIED=0
 
 # The DV pre-read above is the actual White chart reference. Reuse it as the
 # first series reading so DV Colors/Sat Sweep do not immediately measure the
@@ -2290,12 +2276,12 @@ EOJSON
  fi
  READING_COUNT=$((READING_COUNT + 1))
 
- if [[ "$DV_ABSOLUTE_CODES_APPLIED" == "0" ]] && dv_absolute_greyscale_series_active && is_number "$IRE" && float_le 99.999 "$IRE"; then
+ if [[ "$DV_ABSOLUTE_TARGETS_APPLIED" == "0" ]] && dv_absolute_greyscale_series_active && is_number "$IRE" && float_le 99.999 "$IRE"; then
   WHITE_Y=$(reading_luminance_json "$READING" 2>/dev/null || true)
-  if [[ -n "$WHITE_Y" ]] && apply_dv_absolute_greyscale_codes "$WHITE_Y"; then
-   DV_ABSOLUTE_CODES_APPLIED=1
+  if [[ -n "$WHITE_Y" ]] && apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
+   DV_ABSOLUTE_TARGETS_APPLIED=1
    WHITE_READING="$READING"
-   echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale codes applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log
+   echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log
   fi
  fi
 
