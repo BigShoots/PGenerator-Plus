@@ -36402,7 +36402,13 @@ function meterLatticeDefault3dView(points){
   // Profiling: targets off by default (no meaningful grading reference).
   const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
   const view3d=document.getElementById('meterCie3dView');
-  if(view3d&&view3d.checked!==want3d){ view3d.checked=want3d; meterOnCie3dViewChange(); }
+  if(view3d&&view3d.checked!==want3d){
+   view3d.checked=want3d;
+   // Applying a profiling default is not an operator preference change. In
+   // particular, do not overwrite the ordinary ColorChecker view preference
+   // with the lattice default of 3D.
+   meterOnCie3dViewChange({transient:true});
+  }
   const targets=document.getElementById('meterCieOptTargets');
   if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
   else if(targets&&!wantTargets&&meterCieViewOpts){
@@ -41468,6 +41474,18 @@ function meterFullAutoCalRestoreSeriesSelection(){
  }catch(e){}
 }
 
+// Full AutoCal verification reads are grading charts, not 3D LUT profiling
+// views. The preceding LUT stage normally leaves 3D View enabled, so switch
+// the ColorChecker and saturation report charts back to their readable 2D
+// presentation without overwriting the operator's saved manual preference.
+function meterFullAutoCalDefaultReportCie2d(type){
+ if(type!=='colors'&&type!=='saturations') return;
+ const view3d=document.getElementById('meterCie3dView');
+ if(!view3d||!view3d.checked) return;
+ view3d.checked=false;
+ meterOnCie3dViewChange({transient:true});
+}
+
 async function meterFullAutoCalCaptureReportSet(stage){
  const isPre=stage==='pre';
  const phase=isPre?'precal-report':'postcal-report';
@@ -41503,6 +41521,7 @@ async function meterFullAutoCalCaptureReportSet(stage){
    // series had begun accumulating readings.
    const selected=await meterSelectSeries(item.type,item.points,{force:true,bypassCache:true});
    if(!selected) throw new Error('Unable to prepare fresh '+prefix+' '+item.label+' measurement steps');
+   meterFullAutoCalDefaultReportCie2d(item.type);
    await meterFullAutoCalSleep(100);
    const reportDvAbsolute=meterFullAutoCalRunSignalMode()==='dv';
    const started=await meterRunSeries({
@@ -50126,9 +50145,18 @@ function meterApplyCie3dLayout(){
  }
  void canvas.offsetWidth; // reflow before getChartCtx measures the box
 }
-function meterOnCie3dViewChange(){
- try{ meterSaveColorPrefs(); }catch(e){}
- try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('cie_3d',meterCie3dViewEnabled()); }catch(e){}
+function meterOnCie3dViewChange(opts){
+ opts=opts||{};
+ if(!opts.transient){
+  // Profiling and verification views have independent preferences. A manual
+  // lattice toggle belongs only to the lattice preference; an ordinary color
+  // chart toggle belongs to the general color-science preferences.
+  if(typeof meterIs3dLutProfilingChartActive==='function'&&meterIs3dLutProfilingChartActive()){
+   try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('cie_3d',meterCie3dViewEnabled()); }catch(e){}
+  }else{
+   try{ meterSaveColorPrefs(); }catch(e){}
+  }
+ }
  meterUpdateCie3dLabel();
  meterApplyCie3dLayout();
  const canvas=document.getElementById('chartCIE');
