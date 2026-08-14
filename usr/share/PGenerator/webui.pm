@@ -21602,7 +21602,19 @@ function meterWrgbTargetCompensationSelected(){
    ?String(getDisplayTechnology()||'').toLowerCase()
    :String(((document.getElementById('meterDisplayType')||{}).value)||'').toLowerCase();
  }catch(e){ tech=''; }
- return tech==='oled_generic'||/\b(?:wrgb|woled)\b/.test(tech);
+ if(tech==='oled_generic'||/\b(?:wrgb|woled)\b/.test(tech)) return true;
+ // The paired LG model is a stronger panel-architecture signal than the
+ // generic Argyll "OLED" measurement mode. LG OLED televisions use the
+ // white-subpixel color-volume response this endpoint model describes, while
+ // QD-OLED / RGB OLED selections must retain the unbounded additive target.
+ // This also keeps a C-series AutoCal correctly graded when the operator chose
+ // OLED for meter refresh behavior and supplied a separate display CCSS.
+ if(tech==='oled'){
+  const state=window.lgStatusState||{};
+  const model=String(state.modelName||state.model_name||state.productName||state.product_name||'').toLowerCase();
+  if(model.indexOf('oled')!==-1&&!/qd[-_\s]*oled/.test(model)) return true;
+ }
+ return false;
 }
 
 // Per-primary HDR luminance ceilings derived from the current ColorChecker
