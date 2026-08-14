@@ -4751,7 +4751,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my ($chart_tx,$chart_ty)=($target_x,$target_y);
        push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
      }
-  my @STIM_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
+  # The endpoint names describe the selected target gamut (normally P3-D65
+  # for DV/HDR), not the wider HDMI container primaries. Derive their xy from
+  # the target matrix, then reverse-solve that xy through $MI into BT.2020 RGB.
+  # Using the container matrix here made a "P3 Red" target emit pure BT.2020
+  # red while the chart still graded it against P3.
+  my @STIM_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
   my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
     my ($linear)=@_;
@@ -4874,13 +4879,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my @target_white=@{$primaries{$target_key}{WHITE}};
   @target_white=@$custom_target_white if($custom_target_white && ($target_key eq "bt709" || $target_key eq "bt2020" || $target_key eq "p3d65"));
   my ($target_wx,$target_wy)=@target_white;
-  # DV and HDR10 saturation sweeps solve the emitted patch in the selected
-  # target gamut; only HLG stays anchored to the BT.2020 container here.
-  # HDR10 also encodes in the BT.2020 CONTAINER (the wire colorimetry the TV is
-  # told): express the P3 target chromaticities as BT.2020 RGB so the TV decodes
-  # BT.2020 and the cube (also BT.2020) reproduces them. Solving in P3 emitted
-  # P3 RGB onto a BT.2020 wire -> wrong saturation. target_key stays scoring.
-  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10") ? $container_key : $target_key;
+  # HDR10 and DV Absolute both carry PQ RGB in the BT.2020 container. Express
+  # the selected target chromaticities (normally P3-D65) as BT.2020 RGB so the
+  # wire stimulus and the P3 scoring target describe the same colour. Relative
+  # DV retains its established target-gamut tunnel behavior; HLG stays on the
+  # BT.2020 container too.
+  my $solve_key=($signal_mode eq "hlg" || $signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? $container_key : $target_key;
   my @solve_white=@{$primaries{$solve_key}{WHITE}};
   @solve_white=@target_white if($custom_target_white && ($solve_key eq "bt709" || $solve_key eq "bt2020" || $solve_key eq "p3d65"));
   my ($solve_wx,$solve_wy)=@solve_white;
@@ -20243,11 +20247,12 @@ function meterAnalysisGamut(){
 }
 
 function meterStimulusSolveGamut(){
- // DV Absolute color-series patches must solve in the active target gamut.
- // Solving them in the BT.2020 tunnel widens chromaticities and makes
- // ColorChecker patches read oversaturated against the selected target.
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
- if(meterChartIsDv()) return meterContainerGamut();
+ // DV Absolute is PQ RGB in a BT.2020 container. Target xy (normally P3-D65)
+ // must be reverse-solved into that container. Emitting target-gamut RGB
+ // coefficients directly makes a P3 endpoint become a BT.2020 endpoint on
+ // the wire. Relative DV retains its established target-gamut tunnel path.
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterContainerGamut();
+ if(meterChartIsDv()) return meterAnalysisGamut();
  return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
 }
 
@@ -21700,7 +21705,7 @@ function meterWrgbStimulusTargetY(reading){
  let dr=_dvLum?meterDvStimulusLinearChannel(r):meterDecodeColorTargetChannel(r);
  let dg=_dvLum?meterDvStimulusLinearChannel(g):meterDecodeColorTargetChannel(g);
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
- const gamut=meterAnalysisGamut();
+ const gamut=(_dvLum&&meterDvMapModeValue()==='1')?meterContainerGamut():meterAnalysisGamut();
  // A full-drive HDR ColorChecker endpoint on a WRGB OLED cannot reach the
  // decoded PQ peak through its filtered color subpixels. Grade those six
  // endpoint patches against the additive output established by the measured
@@ -22154,7 +22159,7 @@ function meterRemapRelativeDvChromaticityToSolveGamut(x,y,gamut){
 }
 
 function meterSaturationSolveGamut(){
- if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterAnalysisGamut();
+ if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterContainerGamut();
  if(meterChartIsDv()) return meterAnalysisGamut();
  return meterStimulusSolveGamut();
 }
@@ -41526,7 +41531,8 @@ async function meterFullAutoCalCaptureReportSet(stage){
    const reportDvAbsolute=meterFullAutoCalRunSignalMode()==='dv';
    const started=await meterRunSeries({
     observer:METER_AUTOCAL_STANDARD_OBSERVER,
-    dvMapModeOverride:reportDvAbsolute?'1':undefined
+    dvMapModeOverride:reportDvAbsolute?'1':undefined,
+    targetGamutOverride:reportDvAbsolute?'p3d65':undefined
    });
    if(!started) throw new Error('Unable to start '+prefix+' '+item.label+' measurement');
    status=await meterFullAutoCalWaitForSeriesComplete(item.label);
@@ -45364,6 +45370,8 @@ async function meterRunSelectedPatches(){
 async function meterRunSeries(options){
  options=options||{};
  const requestedDvMapModeOverride=(String(options.dvMapModeOverride||'')==='1')?'1':((String(options.dvMapModeOverride||'')==='2')?'2':'');
+ const requestedTargetGamutOverride=/^(?:bt709|bt2020|p3d65|p3dci)$/.test(String(options.targetGamutOverride||'').toLowerCase())
+  ?String(options.targetGamutOverride).toLowerCase():'';
  const requestedSelection=Array.isArray(options.selectionIndices)
   ? options.selectionIndices.filter(index=>Number.isInteger(index)&&index>=0).sort((a,b)=>a-b)
   : [];
@@ -45559,6 +45567,7 @@ async function meterRunSeries(options){
 	   _seriesBody.dv_map_mode=requestedDvMapModeOverride;
 	   _seriesBody.target_gamma=requestedDvMapModeOverride==='1'?'st2084':'2.2';
 	  }
+	  if(requestedTargetGamutOverride) _seriesBody.target_gamut=requestedTargetGamutOverride;
 	  if(options.observer===METER_AUTOCAL_STANDARD_OBSERVER){
 	   _seriesBody.observer=METER_AUTOCAL_STANDARD_OBSERVER;
 	  }
