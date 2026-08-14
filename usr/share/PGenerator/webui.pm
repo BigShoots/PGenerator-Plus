@@ -775,7 +775,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Liveness probe: returns a literal. This is the one that matters most --
  # it is what the browser uses to decide the WebUI is up, so it must answer
  # even while the serialized device lane or compute lane is busy.
- return 1 if($path eq "/api/ping");
+ return 1 if($path eq "/api/ping" || $path eq "/api/restart/status");
  # Static assets: read a fixed file from disk and stream it.
  return 1 if($path eq "/favicon.ico" || $path eq "/pgen-logo-light.png" || $path eq "/assets/hcfr_chc.js"
   || $path eq "/assets/icc_profile.js" || $path eq "/assets/icc_profile.css");
@@ -800,6 +800,88 @@ sub webui_route_is_compute (@) {
  return 0 if(!defined($method) || $method ne "POST");
  $path="" if(!defined($path));
  return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches");
+ return 0;
+}
+
+sub webui_renderer_restart_status_path (@) {
+ my $restart_id=shift;
+ return "" if(!defined($restart_id) || $restart_id !~ /^[a-f0-9-]{8,80}$/);
+ return "/tmp/pgenerator-renderer-restart-$restart_id.status";
+}
+
+sub webui_renderer_restart_status_write (@) {
+ my ($restart_id,$state,$message)=@_;
+ my $path=&webui_renderer_restart_status_path($restart_id);
+ return 0 if($path eq "");
+ $state="error" if(!defined($state) || $state !~ /^(?:pending|starting|ready|error)$/);
+ $message="" if(!defined($message));
+ $message=~s/[\r\n]+/ /g;
+ $message=substr($message,0,300);
+ my $tmp=$path.".".$$ .".".threads->tid().".tmp";
+ return 0 if(!open(my $fh,">",$tmp));
+ print $fh "state=$state\nmessage=$message\n";
+ close($fh);
+ if(!rename($tmp,$path)) { unlink($tmp); return 0; }
+ return 1;
+}
+
+sub webui_renderer_restart_begin (@) {
+ # A per-apply token lets the browser follow the worker it started even when
+ # another browser submits a later apply. Remove only stale status files.
+ foreach my $old (glob("/tmp/pgenerator-renderer-restart-*.status")) {
+  unlink($old) if(-f $old && -M $old > (1/24));
+ }
+ my $restart_id=sprintf("%x-%x-%x-%x",int(Time::HiRes::time()*1000),$$,threads->tid(),int(rand(0x7fffffff)));
+ &webui_renderer_restart_status_write($restart_id,"pending","Waiting for the renderer restart worker.");
+ return $restart_id;
+}
+
+sub webui_renderer_restart_status_json (@) {
+ my $query=shift;
+ my $restart_id="";
+ $restart_id=$1 if(defined($query) && $query=~/(?:^|&)id=([a-f0-9-]{8,80})(?:&|$)/);
+ my $path=&webui_renderer_restart_status_path($restart_id);
+ return '{"status":"error","state":"error","message":"Invalid restart identifier."}' if($path eq "");
+ return '{"status":"error","state":"error","message":"Restart status is no longer available."}' if(!-f $path);
+ my ($state,$message)=("error","Restart status could not be read.");
+ if(open(my $fh,"<",$path)) {
+  while(<$fh>) {
+   s/[\r\n]+$//;
+   $state=$1 if(/^state=(pending|starting|ready|error)$/);
+   $message=$1 if(/^message=(.*)$/);
+  }
+  close($fh);
+ }
+ $message=~s/\\/\\\\/g; $message=~s/"/\\"/g;
+ return '{"status":"ok","state":"'.$state.'","message":"'.$message.'"}';
+}
+
+sub webui_wait_for_renderer_ready (@) {
+ my $timeout=shift;
+ $timeout=12 if(!defined($timeout) || $timeout <= 0);
+ my $deadline=Time::HiRes::time()+$timeout;
+ while(Time::HiRes::time() < $deadline) {
+  if(&pattern_generator_is_running()) {
+   return 1 if(!$is_kms);
+   return 1 if(&pattern_generator_has_drm_master());
+  }
+  Time::HiRes::sleep(0.1);
+ }
+ return 0;
+}
+
+sub webui_complete_renderer_restart (@) {
+ my $restart_id=shift;
+ &webui_renderer_restart_status_write($restart_id,"starting","Restarting the renderer and waiting for DRM readiness.");
+ &pattern_generator_stop();
+ &load_new_pattern_file("webui apply");
+ if(&webui_wait_for_renderer_ready(12)) {
+  &webui_renderer_restart_status_write($restart_id,"ready","The renderer is running and owns DRM master.");
+  &log("WebUI: renderer restart $restart_id is ready");
+  return 1;
+ }
+ &webui_renderer_restart_status_write($restart_id,"error","The renderer did not become ready after restarting.");
+ &log("WebUI: renderer restart $restart_id failed readiness verification");
  return 0;
 }
 
@@ -1183,7 +1265,7 @@ sub webui_handle_request (@) {
     }
      elsif($method eq "POST") {
       # Apply config changes
-      my ($result,$need_restart)=&webui_apply_config($body);
+      my ($result,$need_restart,$restart_id)=&webui_apply_config($body);
       my $len=length($result);
       print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
       if($need_restart) {
@@ -1205,8 +1287,7 @@ sub webui_handle_request (@) {
         # last resort. The HTTP client is already closed below.
         close($client);
         undef $client;
-        &pattern_generator_stop();
-        &pattern_generator_start();
+        &webui_complete_renderer_restart($restart_id);
        } elsif($pid == 0) {
         # Intermediate child: double-fork so the actual worker is
         # reparented to init and reaped there. A $SIG{CHLD} reaper
@@ -1252,8 +1333,7 @@ sub webui_handle_request (@) {
          # is NOT already running. Without the stop the worker is a
          # no-op whenever the renderer survived — alive but stuck in
          # the previous mode with a stale/empty HDR blob.
-         &pattern_generator_stop();
-         &load_new_pattern_file("webui apply");
+         &webui_complete_renderer_restart($restart_id);
         }
         exit(0);
        } else {
@@ -1266,6 +1346,11 @@ sub webui_handle_request (@) {
        }
       }
      }
+   }
+   elsif($path eq "/api/restart/status" && $method eq "GET") {
+    my $r=&webui_renderer_restart_status_json($request_query);
+    my $len=length($r);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$r";
    }
    elsif($path eq "/api/ping") {
     my $r='{"ok":1}';
@@ -8983,8 +9068,11 @@ sub webui_apply_config (@) {
   $_caps_cache=""; $_caps_cache_time=0;
  }
  &sync_pattern_bits_default() if(%changes);
- my $result='{"status":"ok","restart":'.($need_restart ? 'true' : 'false').'}';
- return wantarray ? ($result,$need_restart) : $result;
+ my $restart_id=$need_restart ? &webui_renderer_restart_begin() : "";
+ my $result='{"status":"ok","restart":'.($need_restart ? 'true' : 'false');
+ $result.=',"restart_id":"'.$restart_id.'"' if($restart_id ne "");
+ $result.='}';
+ return wantarray ? ($result,$need_restart,$restart_id) : $result;
 }
 
 sub webui_hdmi_connected (@) {
@@ -15104,6 +15192,20 @@ function applySettingsModalHide(){
  document.body.classList.remove('apply-settings-active','apply-settings-success','apply-settings-error');
 }
 
+async function waitForRendererRestart(restartId,timeoutMs){
+ if(!restartId) throw new Error('The server did not return a renderer restart identifier.');
+ const deadline=Date.now()+(Number(timeoutMs)||60000);
+ while(Date.now()<deadline){
+  const status=await fetchJSON('/api/restart/status?id='+encodeURIComponent(restartId),{_quiet:true,_timeoutMs:5000});
+  if(status&&status.state==='ready') return status;
+  if(status&&status.state==='error') throw new Error(status.message||'The renderer restart failed.');
+  const statusEl=document.getElementById('applySettingsStatus');
+  if(statusEl&&status&&status.message) statusEl.textContent=status.message;
+  await new Promise(resolve=>setTimeout(resolve,250));
+ }
+ throw new Error('Timed out waiting for the renderer to become ready.');
+}
+
 // Meter Stop modal: blocks the dashboard while Stop waits on the
 // backend (series kill, meter session teardown, autocal pkill). Show
 // at the click frame so the operator never sees a "stopped but frozen"
@@ -17228,23 +17330,17 @@ async function applySettings(){
  }
  clearActive();
  var di=document.getElementById('diagInfo');if(di)di.style.display='none';
- // Pop the spinner modal IMMEDIATELY (synchronously, before the blocking
- // POST). The POST takes ~3-5s because the daemon restarts the renderer
- // mid-request, so if we waited for it the operator would see a dead
- // "Apply & Restart" button for that whole window. Showing the modal up
- // front (and the .apply-settings-active body class that greys out the
- // rest of the dashboard) means the click reads as a click at the
- // frame the user lets go of the mouse -- the long POST just keeps the
- // spinner spinning. If the POST rejects, applySettingsModalError()
- // below transitions the already-visible modal to the red error state
- // instead of popping a new one.
+ // Pop the spinner modal synchronously before submitting the config. The
+ // POST returns a restart token, then the browser follows that specific
+ // worker until the renderer is running and owns DRM master. This keeps the
+ // click responsive without guessing how long the mode switch will take.
  applySettingsModalShow();
  document.getElementById('applyBar').style.display='none';
  const r=await fetchJSON('/api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(changes),_timeoutMs:30000});
  if(r&&r.status==='ok'){
   try{
-   await new Promise(resolve=>setTimeout(resolve,3000));
+   if(r.restart) await waitForRendererRestart(r.restart_id,60000);
    await loadConfig();
    updateDropdowns();
    await loadInfo();

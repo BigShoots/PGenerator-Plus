@@ -142,6 +142,7 @@ sub normalize_dv_transport_conf(@) {
  my $dv_metadata=&dv_metadata_for_map_mode($dv_map_mode);
  my $dv_transport=&pg_dv_transport_mode();
  my %wanted=(
+  signal_mode=>"dv",
   is_sdr=>"0",
   is_hdr=>"1",
   eotf=>"2",
@@ -163,6 +164,30 @@ sub normalize_dv_transport_conf(@) {
   next if(($pgenerator_conf{$key} || "") eq $wanted{$key});
   &set_pgenerator_conf_runtime($key,$wanted{$key});
  }
+}
+
+# Reconcile the legacy, independently-written signal flags at the renderer
+# restart boundary. HCFR 4.1 writes IS_HDR, IS_LL_DOVI, IS_STD_DOVI,
+# DV_STATUS, and DV_INTERFACE as separate classic-protocol commands. Its DV
+# bundle deliberately sets both DV transport flags and does not write the
+# newer signal_mode key. normalize_dv_transport_conf() resolves the transport
+# conflict from the operator's saved dv_transport preference; this helper also
+# keeps signal_mode coherent when entering or leaving DV before the renderer
+# binary is selected.
+sub normalize_signal_mode_conf(@) {
+ if(int($pgenerator_conf{"dv_status"} || 0) == 1 ||
+    int($pgenerator_conf{"is_ll_dovi"} || 0) == 1 ||
+    int($pgenerator_conf{"is_std_dovi"} || 0) == 1) {
+  &normalize_dv_transport_conf();
+  return;
+ }
+
+ my $signal_mode="sdr";
+ if(int($pgenerator_conf{"is_hdr"} || 0) == 1) {
+  $signal_mode=(int($pgenerator_conf{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
+ }
+ &set_pgenerator_conf_runtime("signal_mode",$signal_mode)
+  if(($pgenerator_conf{"signal_mode"} || "") ne $signal_mode);
 }
 
 ###############################################
@@ -670,7 +695,11 @@ sub pattern_generator_start(@) {
   open(OPS,">$command_file");
   close(OPS);
  }
- &normalize_dv_transport_conf();
+ # Treat restart as the transaction boundary for classic clients which write
+ # mode flags one command at a time. In particular this turns HCFR 4.1's
+ # contradictory DV flag bundle into one coherent Standard- or Low-Latency-DV
+ # configuration before choosing PGeneratord vs PGeneratord.dv.
+ &normalize_signal_mode_conf();
  &auto_select_4k_mode();
  &apply_drm_properties();
  # apply_drm_properties() above issued up to 6 modetest -w writes; wait for
