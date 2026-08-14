@@ -23500,10 +23500,11 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const wp=meterTargetWhitePoint();
 	 const dvAbsolute=meterChartIsDv()&&meterDvMapModeValue()==='1';
 	 const absoluteHdrColorChecker=(meterChartIsPq()&&!meterChartIsDv())||dvAbsolute;
-	 // Absolute DV is PQ RGB in a BT.2020 container. Solve target xy into that
-	 // container; P3 coefficients interpreted as BT.2020 produce oversaturation.
-	 // Relative DV keeps its established target-gamut tunnel behavior.
-	 const solveGamut=dvAbsolute?meterContainerGamut():meterAnalysisGamut();
+	 // HDR10 and Absolute DV carry PQ RGB in the BT.2020 container, while
+	 // Relative DV retains its target-gamut tunnel. Keep this routed through
+	 // the shared stimulus solver so fixing the Absolute-DV path cannot make
+	 // HDR10 fall back to target-gamut coefficients on a BT.2020 wire.
+	 const solveGamut=meterStimulusSolveGamut();
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
 	 const hdrColorCheckerRefNits=203;
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
