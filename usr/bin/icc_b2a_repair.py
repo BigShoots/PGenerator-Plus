@@ -81,7 +81,9 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
     def code_for_fraction(ch, frac):
         ramp = ramps[ch]
         peak = max(y for _, y in ramp)
-        want = frac*peak
+        # Aim just under the plateau so measurement jitter between plateau
+        # rows resolves to the EARLIEST code that reaches it.
+        want = min(frac, 0.995)*peak
         for i in range(1, len(ramp)):
             if ramp[i][1] >= want - 1e-9:
                 c0, y0 = ramp[i-1]; c1, y1 = ramp[i]
@@ -96,7 +98,7 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
     return curve, ymax, plateau_pct, balanced
 
 ENC = 32768.0/65535.0
-KNEE = 0.85
+KNEE = 0.70
 D50 = (0.9642, 1.0, 0.8249)
 
 def repair(d, tags, curve, ymax, plateau_pct, balanced):
@@ -117,7 +119,7 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced):
     def code_for_y(yrel, ch):
         target = min(yrel, 1.0)*ymax
         if target >= 0.995*ymax:
-            return balanced[ch] if balanced else plateau_pct/100.0
+            return (balanced[ch] if ch is not None and balanced else plateau_pct/100.0)
         for i in range(1, len(curve)):
             if curve[i][1] >= target:
                 p0, y0 = curve[i-1]; p1, y1 = curve[i]
@@ -130,16 +132,39 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced):
         grid = d[o+10]; ine, oute = struct.unpack('>HH', bytes(d[o+48:o+52]))
         inoff = o+52; clutoff = inoff+3*ine*2; outoff = clutoff+grid**3*3*2
         replaced = 0
+        plateau_dev = plateau_pct/100.0
         for j in range(grid):
             y_rel = tinvert(inoff+1*ine*2, ine, j/(grid-1))/ENC
             if y_rel < KNEE: continue
-            wnode = [tinvert(outoff+ch*oute*2, oute, code_for_y(y_rel, ch)) for ch in range(3)]
-            for i in range(grid):
-                x_rel = tinvert(inoff+0*ine*2, ine, i/(grid-1))/ENC
-                if abs(x_rel - D50[0]*y_rel) > 0.25*y_rel: continue
-                for k in range(grid):
-                    z_rel = tinvert(inoff+2*ine*2, ine, k/(grid-1))/ENC
-                    if abs(z_rel - D50[2]*y_rel) > 0.40*y_rel: continue
+            # Phase the balanced per-channel offsets in across the corridor so
+            # luminance follows the measured neutral curve while the channel
+            # ratio approaches the balanced peak.
+            w = max(0.0, min(1.0, (y_rel - KNEE)/(0.95 - KNEE)))
+            def corridor_code(ch):
+                base = code_for_y(min(y_rel, 1.0), None) if y_rel < 1.0 else plateau_dev
+                if balanced:
+                    return base + (balanced[ch] - plateau_dev)*w
+                return base
+            wnode = [tinvert(outoff+ch*oute*2, oute, corridor_code(ch)) for ch in range(3)]
+            # Select corridor nodes in NODE space: every interpolation cell a
+            # neutral query can touch must have all its corners owned by the
+            # corridor, regardless of how wide the shaper-domain node spacing
+            # becomes near white.
+            def axis_node(ch, rel):
+                table_pos = 0.0
+                lo, hi = 0.0, 1.0
+                enc = min(1.0, max(0.0, rel*ENC))
+                # forward through the input table, then to node coordinate
+                v = enc*(ine-1)
+                lo_i = min(int(v), ine-2); fr = v-lo_i
+                base = inoff+ch*ine*2
+                t = (be16(base+lo_i*2)*(1-fr)+be16(base+(lo_i+1)*2)*fr)/65535.0
+                return t*(grid-1)
+            fx = axis_node(0, D50[0]*min(y_rel, 1.9))
+            fz = axis_node(2, D50[2]*min(y_rel, 1.9))
+            SPAN = 2
+            for i in range(max(0, int(fx)-SPAN), min(grid, int(fx)+SPAN+2)):
+                for k in range(max(0, int(fz)-SPAN), min(grid, int(fz)+SPAN+2)):
                     base = clutoff + (((i*grid+j)*grid+k)*3)*2
                     for ch in range(3):
                         wbe16(base+ch*2, wnode[ch]*65535.0)

@@ -2728,6 +2728,10 @@ def build(payload, output_dir):
         )
     with open(output_path, "wb") as handle:
         handle.write(profile)
+    # Stage switches for controlled pipeline experiments. Every switch keeps
+    # the same measurements and the same surrounding stages so a hardware
+    # comparison isolates exactly one construction difference.
+    experiment = payload.get("hdr_experiment") if isinstance(payload.get("hdr_experiment"), dict) else {}
     if calibration_mode == "profile" and not keeps_mhc2:
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
             # The dense original neutral series anchors luminance, while the
@@ -2740,6 +2744,10 @@ def build(payload, output_dir):
                 raw_profile = handle.read()
             modeled_calibration = hdr_profile_calibration_from_a2b(
                 raw_profile, profile_rows, calibration)
+            if experiment.get("calibration_source") == "mhc2":
+                # Use the direct MHC2-equivalent curves instead of the
+                # A2B-modeled calibration.
+                modeled_calibration = calibration
             # The measured/modelled curve already contains the dense neutral
             # inversion and the level-dependent D65 correction. Do not splice
             # the older independent-primary curve into its lower 30%. That
@@ -2773,25 +2781,57 @@ def build(payload, output_dir):
                 apply_profile_calibration(output_path, fit_calibration)
                 with open(output_path, "rb") as handle:
                     calibrated_profile = handle.read()
-                reshaped_profile = reshape_hdr_b2a_for_pq(
-                    virtual_profile, white["xyz"][1],
-                    incorporated_calibration=incorporated)
-                reshaped_tags = dict(read_icc_tags(reshaped_profile))
-                replacements = {
-                    signature: reshaped_tags[signature]
-                    for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
-                    if signature in reshaped_tags
-                }
-                profile = rebuild_icc(calibrated_profile, replacements)
-                profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
-                profile = rebuild_icc(
-                    profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
-                profile = refine_hdr_b2a_from_forward_model(
-                    profile, raw_profile, white["xyz"][1])
+                if experiment.get("skip_reshape"):
+                    # Keep applycal's stock composed B2A untouched.
+                    profile = rebuild_icc(calibrated_profile, {b"MHC2": None, b"vcgt": None})
+                    profile = rebuild_icc(
+                        profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+                else:
+                    reshaped_profile = reshape_hdr_b2a_for_pq(
+                        virtual_profile, white["xyz"][1],
+                        incorporated_calibration=incorporated)
+                    reshaped_tags = dict(read_icc_tags(reshaped_profile))
+                    replacements = {
+                        signature: reshaped_tags[signature]
+                        for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
+                        if signature in reshaped_tags
+                    }
+                    profile = rebuild_icc(calibrated_profile, replacements)
+                    profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
+                    profile = rebuild_icc(
+                        profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+                    if not experiment.get("skip_refine"):
+                        profile = refine_hdr_b2a_from_forward_model(
+                            profile, raw_profile, white["xyz"][1])
             finally:
                 shutil.rmtree(virtual_dir, ignore_errors=True)
             with open(output_path, "wb") as handle:
                 handle.write(profile)
+            if experiment.get("balanced_peak"):
+                # Rebuild the neutral corridor and the region above measured
+                # white from the raw characterization: measured neutral codes
+                # through the rolloff and a balanced peak at the top, so the
+                # display renders the calibration white point at full drive
+                # instead of its native white.
+                raw_ti3_text, _, _ = make_ti3(payload, profile_rows)
+                repair_tool = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "icc_b2a_repair.py")
+                repair_dir = tempfile.mkdtemp(prefix="pgen_b2a_repair_")
+                try:
+                    raw_ti3_path = os.path.join(repair_dir, "raw.ti3")
+                    with io.open(raw_ti3_path, "w", encoding="ascii", errors="replace") as handle:
+                        handle.write(raw_ti3_text)
+                    repaired_path = os.path.join(repair_dir, "repaired.icc")
+                    completed = subprocess.run(
+                        [sys.executable, repair_tool, output_path, repaired_path, raw_ti3_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        universal_newlines=True, timeout=600)
+                    if completed.returncode != 0 or not os.path.isfile(repaired_path):
+                        fail("BToA corridor repair failed: "
+                             + (completed.stdout or "").strip().splitlines()[-1][:200])
+                    shutil.move(repaired_path, output_path)
+                finally:
+                    shutil.rmtree(repair_dir, ignore_errors=True)
         else:
             apply_profile_calibration(output_path, calibration)
     ti3_filename = filename[:-4] + ".ti3"
