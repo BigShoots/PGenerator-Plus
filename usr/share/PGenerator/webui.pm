@@ -4881,6 +4881,19 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     $series_level_linear=1 if($signal_mode eq "sdr" || $signal_mode eq "hlg");
     $series_level_linear=.5 if($signal_mode eq "dv");
    }
+   # 100% colour endpoints must stay inside the measured display range. In
+   # HDR10 the full-drive container level is 10,000 cd/m2: encoding endpoints
+   # there sends codes the characterization never measured, so every corrected
+   # path (compositor or application cLUT) grades them against inverse-table
+   # extrapolation and the reads collapse toward white. Anchor the wire
+   # stimulus to the measured series white instead. Target math is unchanged:
+   # target_Yn stays relative to the same measured white, and WRGB displays
+   # keep their separate endpoint grading.
+   my $series_stimulus_linear=$series_level_linear;
+   if($signal_mode eq "hdr10" && $points!=29) {
+    my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):1000);
+    $series_stimulus_linear=$white_ref/10000 if($white_ref>0 && $white_ref<=10000);
+   }
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
     my $mix_X=$STIM_RGB_TO_XYZ[0][0]*$r_mix+$STIM_RGB_TO_XYZ[0][1]*$g_mix+$STIM_RGB_TO_XYZ[0][2]*$b_mix;
@@ -4898,7 +4911,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
      if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
      $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-     $rl*=$series_level_linear;$gl*=$series_level_linear;$bl*=$series_level_linear;
+     $rl*=$series_stimulus_linear;$gl*=$series_stimulus_linear;$bl*=$series_stimulus_linear;
      $r=$encode_saturation_linear->($rl);
      $g=$encode_saturation_linear->($gl);
      $b=$encode_saturation_linear->($bl);
