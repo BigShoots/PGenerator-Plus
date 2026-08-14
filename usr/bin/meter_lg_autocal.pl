@@ -13374,8 +13374,9 @@ sub lg_autocal_26_build_hdr20_1d_dpg {
 # $strength (0..1). A quadratic fit preserves the smooth gamma convexity
 # while removing higher-frequency wiggle. Endpoints are left untouched;
 # monotonic non-decreasing is re-enforced. $strength<=0 returns the input
-# unchanged. Returns a new arrayref. Used by lg_autocal_26_build_dpg_core
-# for the HDR20 path (baked at a fixed 0.15 strength; not user-tunable).
+# unchanged. Returns a new arrayref. Retained for offline/final curve work,
+# but it must not run inside the live HDR20 rebuild: moving a measured control
+# point after its anchor has converged invalidates that reading.
 sub lg_autocal_26_smooth_control_points {
  my ($idx_ref,$ys_ref,$strength)= @_;
  return [ @{$ys_ref} ] if(!defined($strength) || $strength <= 0 || ref($idx_ref) ne "ARRAY" || ref($ys_ref) ne "ARRAY" || @{$idx_ref} < 3 || @{$idx_ref} != @{$ys_ref});
@@ -13464,17 +13465,11 @@ sub lg_autocal_26_build_dpg_core {
 	  $ctrl_val{1023}=$ctrl_val{1023} // $cur[$ch*1024 + 1023];
 	  @ctrl_idx=sort { $a <=> $b } @ctrl_idx;
 	  my @ctrl_ys=map { $ctrl_val{$_} } @ctrl_idx;
-	  # HDR-only control-point (curvature) smoothing, baked at a FIXED 0.15.
-	  # Reduces per-anchor over-fit wiggle that the panel's 2.2->PQ
-	  # reconstruction amplifies at low/mid IRE. Intentionally NOT user-tunable:
-	  # the strength is hardcoded here and no conf key is consulted, so no
-	  # PGenerator.conf edit or request field can change it. This is the
-	  # curvature smoother (quadratic control-point fit), NOT the per-iter
-	  # move-damp (the gain**(1/gamma_effective) closure), which is untouched.
-	  my $_dpg_smooth=0.15;
-	  if($_dpg_smooth > 0) {
-	   @ctrl_ys=@{ lg_autocal_26_smooth_control_points(\@ctrl_idx,\@ctrl_ys,$_dpg_smooth) };
-	  }
+	  # Keep every measured control point exact. A previous live-path smoother
+	  # moved all existing knots again on every anchor rebuild. With the sparse
+	  # HDR20 ladder, calibrating a later point could shift an already-converged
+	  # midrange point by several percent without re-reading it, so the final
+	  # DPG no longer represented the measurements used to accept the anchors.
 	  # Akima cubic spline interpolation across the 1024 indices.
 	  # Falls back to linear when the Akima sub returns empty (the
 	  # degenerate case of < 4 anchors; in practice the autocal
