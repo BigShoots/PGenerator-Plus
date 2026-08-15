@@ -870,12 +870,48 @@ sub webui_wait_for_renderer_ready (@) {
  return 0;
 }
 
+sub webui_wait_for_dovi_wire (@) {
+ my $timeout=shift;
+ $timeout=15 if(!defined($timeout) || $timeout <= 0);
+ # Only meaningful on the DV-patched kernels that expose the property; on
+ # anything else pattern_generator_start already fell back to the non-DV
+ # renderer and there is nothing to wait for.
+ return 0 if(!&kms_connector_has_property("DOVI_OUTPUT_METADATA"));
+ my $deadline=Time::HiRes::time()+$timeout;
+ while(Time::HiRes::time() < $deadline) {
+  return 1 if(&kms_connector_blob_active("DOVI_OUTPUT_METADATA"));
+  Time::HiRes::sleep(0.5);
+ }
+ return 0;
+}
+
 sub webui_complete_renderer_restart (@) {
  my $restart_id=shift;
  &webui_renderer_restart_status_write($restart_id,"starting","Restarting the renderer and waiting for DRM readiness.");
  &pattern_generator_stop();
  &load_new_pattern_file("webui apply");
  if(&webui_wait_for_renderer_ready(12)) {
+  # DRM-master handoff completes several seconds before the renderer's
+  # first page flip, and in Dolby Vision mode only that flip commits the
+  # DOVI_OUTPUT_METADATA blob (the Dolby VSIF) to the connector: the DV
+  # shader/FBO init at 4K keeps the wire in an intermediate BT.2020-
+  # without-VSIF state for ~5s after master acquisition. Reporting
+  # "ready" at master-acquisition made the WebUI claim DV was active
+  # while the wire was still SDR; on sinks that evaluate the VSIF lazily
+  # (reported on an XGIMI Titan projector) the picture then stays SDR
+  # until the next pattern write forces a flip. Hold the apply modal
+  # until the blob is actually staged so "applied" means "on the wire".
+  if($pgenerator_conf{"dv_status"} eq "1" && $is_kms) {
+   &webui_renderer_restart_status_write($restart_id,"starting","Waiting for the Dolby Vision infoframe to reach the display.");
+   if(&webui_wait_for_dovi_wire(15)) {
+    &webui_renderer_restart_status_write($restart_id,"ready","The renderer is running and the Dolby Vision infoframe is on the wire.");
+    &log("WebUI: renderer restart $restart_id is ready (DV infoframe verified on the connector)");
+   } else {
+    &webui_renderer_restart_status_write($restart_id,"ready","The renderer is running, but the Dolby Vision infoframe was not confirmed on the connector. If the display stays in SDR, select any pattern to force it.");
+    &log("WebUI: renderer restart $restart_id ready, but DOVI_OUTPUT_METADATA never became active on the connector");
+   }
+   return 1;
+  }
   &webui_renderer_restart_status_write($restart_id,"ready","The renderer is running and owns DRM master.");
   &log("WebUI: renderer restart $restart_id is ready");
   return 1;
@@ -9420,14 +9456,39 @@ sub webui_create_logs_bundle (@) {
  # Infoframes
  push @out, "", "--- HDMI Infoframes (dmesg) ---";
  my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
- my ($avi_hex,$drm_hex)=("","");
+ my ($avi_hex,$drm_hex,$hvs_hex)=("","","");
  foreach my $line (split(/\n/,$dmesg)) {
   if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; }
   if($line=~/DRM IF:\s*(.+)/) { $drm_hex=$1; }
+  if($line=~/HVS IF:\s*(.+)/) { $hvs_hex=$1; }
  }
  push @out, "AVI: $avi_hex" if($avi_hex);
  push @out, "DRM: $drm_hex" if($drm_hex);
- push @out, "(none found)" if(!$avi_hex && !$drm_hex);
+ push @out, "HVS (vendor/DV): $hvs_hex" if($hvs_hex);
+ push @out, "(none found)" if(!$avi_hex && !$drm_hex && !$hvs_hex);
+
+ # DV / HDR wire state: the connector blob properties are past the head -80
+ # cut of the HDMI Mode section above, so dump them explicitly. This is the
+ # ground truth for "the WebUI says DV but the display shows SDR" reports:
+ # an empty DOVI_OUTPUT_METADATA value here means the Dolby VSIF is NOT
+ # being transmitted, whatever the conf says.
+ push @out, "", "--- DV / HDR wire state (connector blobs) ---";
+ my $wire_props=`timeout 5 $modetest -a -c 2>/dev/null`;
+ $wire_props=`timeout 5 $modetest -c 2>/dev/null` if($wire_props!~/\S/);
+ my $wire_report="";
+ my $wire_current="";
+ foreach my $line (split(/\n/,$wire_props)) {
+  if($line=~/^[ \t]*[0-9]+[ \t]+(\S+):/) {
+   $wire_current=($1 eq "DOVI_OUTPUT_METADATA" || $1 eq "HDR_OUTPUT_METADATA") ? $1 : "";
+   $wire_report.="$line\n" if($wire_current ne "");
+   next;
+  }
+  $wire_report.="$line\n" if($wire_current ne "");
+ }
+ push @out, ($wire_report ne "" ? $wire_report : "(no DOVI/HDR blob properties on this kernel)");
+ my $ram_packet=`grep RAM_PACKET_CONFIG /sys/kernel/debug/dri/*/hdmi*_regs 2>/dev/null`;
+ chomp($ram_packet);
+ push @out, "RAM_PACKET_CONFIG (bit1=vendor/DV VSIF, bit2=AVI, bit7=DRM/HDR):", ($ram_packet ne "" ? $ram_packet : "(debugfs unavailable)");
 
 	 # Operations file
 	 push @out, "", "--- operations.txt ---";
@@ -26692,9 +26753,11 @@ function meterOptionLabel(meter){
  if(!meter) return 'Meter';
  const name=String(meter.name||'Meter').trim()||'Meter';
  const physical=String(meter.physical_port||'').trim();
- if(physical) return `${name} (USB ${physical})`;
+ // Square brackets: the TV and Patch Companion status lines write their
+ // address/host suffix as [ ... ], so the meter's port suffix matches.
+ if(physical) return `${name} [USB ${physical}]`;
  const port=meterNormalizePortValue(meter.port_num);
- return port ? `${name} (Meter ${port})` : name;
+ return port ? `${name} [Meter ${port}]` : name;
 }
 
 function meterFindByPort(port){

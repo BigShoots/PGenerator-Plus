@@ -827,6 +827,17 @@ sub apply_bootloader () {
 sub reboot(@) {
  &persist_meter_settings_legacy();
  &process_pid("$pattern_generator.pl","kill");
+ # The renderer holds DRM master and an in-flight spotread holds the
+ # meter's USB claim. Leaving them for init's blanket sendsigs lets a
+ # process stuck in an uninterruptible DRM/USB ioctl wedge the late
+ # shutdown (observed as a WebUI reboot that never completes, with the
+ # console showing the stale boot splash once fbcon takes the
+ # framebuffer back). There is no K-script on this image, so tear them
+ # down here the way the init script's stop) case does. The pattern
+ # "PGeneratord" also matches PGeneratord.dv and its sh wrapper but not
+ # this process or PGenerator_serial.pl.
+ system("/usr/bin/pkill -9 -f PGeneratord 2>/dev/null");
+ system("/usr/bin/pkill -9 -f spotread 2>/dev/null");
  system("$reboot");
 }
 
@@ -835,6 +846,10 @@ sub reboot(@) {
 ###############################################
 sub halt(@) {
  &persist_meter_settings_legacy();
+ # Same teardown as reboot(): see the comment there.
+ &process_pid("$pattern_generator.pl","kill");
+ system("/usr/bin/pkill -9 -f PGeneratord 2>/dev/null");
+ system("/usr/bin/pkill -9 -f spotread 2>/dev/null");
  system("$halt");
 }
 

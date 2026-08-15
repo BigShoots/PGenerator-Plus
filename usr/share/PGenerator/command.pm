@@ -216,6 +216,43 @@ sub kms_connector_has_property(@) {
  return 0;
 }
 
+sub kms_connector_blob_active(@) {
+ my $prop_name=shift;
+ return 0 if(!$is_kms || $prop_name eq "");
+ # Reports whether a connector blob property currently carries a payload
+ # (e.g. DOVI_OUTPUT_METADATA after the renderer's first page flip). Same
+ # listing strategy as kms_connector_has_property: atomic cap first so
+ # DRM_MODE_PROP_ATOMIC properties are visible, then the legacy listing.
+ for my $mt_flags ("-a","") {
+  open(MT_BLOB,"timeout 3 $modetest $mt_flags -c 2>/dev/null|");
+  my $seen_any=0;
+  my $in_prop=0;
+  my $in_value=0;
+  my $active=0;
+  while(<MT_BLOB>) {
+   $seen_any=1;
+   if(/^[ \t]*[0-9]+[ \t]+(\S+):/) {
+    # Next property header: if we just left the target property without
+    # seeing a value payload, the blob is unset on this connector.
+    last if($in_prop);
+    $in_prop=($1 eq $prop_name) ? 1 : 0;
+    $in_value=0;
+    next;
+   }
+   next if(!$in_prop);
+   if(/^[ \t]*value:\s*$/) { $in_value=1; next; }
+   if($in_value && /^[ \t]*[0-9a-fA-F]{8,}\s*$/) {
+    $active=1;
+    last;
+   }
+  }
+  close(MT_BLOB);
+  return 1 if($active);
+  last if($seen_any);
+ }
+ return 0;
+}
+
 my $modetest_atomic_writes;
 sub modetest_connector_write(@) {
  my ($connector_id,$prop_name,$value)=@_;
