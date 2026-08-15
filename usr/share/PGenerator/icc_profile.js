@@ -1822,13 +1822,55 @@ async function meterIccFineTuneProfile(file,button){
   if(button) button.textContent='Tuning...';
   const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file,readings,damping:0.5}),_timeoutMs:1800000});
   if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
-  showToast('Created '+result.file+' (mean correction '+(result.mean_correction_pct||0)+'%)');
+  meterIccShowFineTuneReport(file,result);
   meterIccRefreshProfiles();
  }catch(error){
   showToast(error&&error.message?error.message:'Fine-tuning failed',true);
  }finally{
   if(button){ button.disabled=false; button.textContent=original; }
  }
+}
+
+function meterIccShowFineTuneReport(parent,result){
+ const previous=document.getElementById('meterIccFineTuneReport');
+ if(previous) previous.remove();
+ const overlay=document.createElement('div');
+ overlay.id='meterIccFineTuneReport';
+ overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+ const card=document.createElement('div');
+ card.style.cssText='background:var(--bs-body-bg,#fff);color:var(--bs-body-color,#111);border-radius:10px;max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.4);';
+ const fixed=value=>Number.isFinite(Number(value))?Number(value).toFixed(2):'--';
+ let html='<h5 style="margin:0 0 4px">Fine-tune complete</h5>'
+  +'<div style="opacity:.75;margin-bottom:12px">'+String(result.file||'')+' created from '+String(parent||'')+'</div>'
+  +'<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
+ if(result.selfcheck){
+  html+='<div style="margin-bottom:4px;font-weight:600">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'
+   +'<table style="width:100%;border-collapse:collapse;margin-bottom:6px"><tr style="opacity:.7"><td></td><td style="text-align:right">Average</td><td style="text-align:right">Peak</td></tr>'
+   +'<tr><td>Before</td><td style="text-align:right">'+fixed(result.selfcheck.before_avg)+'</td><td style="text-align:right">'+fixed(result.selfcheck.before_peak)+'</td></tr>'
+   +'<tr><td>After</td><td style="text-align:right">'+fixed(result.selfcheck.after_avg)+'</td><td style="text-align:right">'+fixed(result.selfcheck.after_peak)+'</td></tr></table>'
+   +'<div style="opacity:.7;font-size:.85em;margin-bottom:12px">'+String(result.selfcheck.note||'')+'</div>';
+ }
+ if(Array.isArray(result.levels)&&result.levels.length){
+  html+='<div style="margin-bottom:4px;font-weight:600">Measured grey error, before → predicted after</div>'
+   +'<table style="width:100%;border-collapse:collapse"><tr style="opacity:.7"><td>Level</td><td style="text-align:right">Target cd/m²</td><td style="text-align:right">Before</td><td style="text-align:right">After</td></tr>';
+  result.levels.forEach(level=>{
+   html+='<tr><td>'+fixed(level.pct)+'%</td><td style="text-align:right">'+fixed(level.target_nits)+'</td>'
+    +'<td style="text-align:right">'+fixed(level.before_err_pct)+'%</td>'
+    +'<td style="text-align:right">'+fixed(level.predicted_err_pct)+'%</td></tr>';
+  });
+  html+='</table><div style="opacity:.7;font-size:.85em;margin-top:6px">Predicted values assume the damped, bounded corrections land as computed; run a verification read of the new profile to confirm.</div>';
+ }
+ card.innerHTML=html;
+ const close=document.createElement('button');
+ close.type='button';
+ close.className='btn btn-sm btn-primary';
+ close.textContent='Close';
+ close.style.marginTop='14px';
+ close.onclick=()=>overlay.remove();
+ card.appendChild(close);
+ overlay.appendChild(card);
+ overlay.onclick=event=>{ if(event.target===overlay) overlay.remove(); };
+ document.body.appendChild(overlay);
 }
 
 async function meterIccInstallProfile(file,button){

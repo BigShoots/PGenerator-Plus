@@ -243,8 +243,19 @@ def finetune(payload, output_dir):
     # saturated rolloff region is untouched, so a second fine-tune pass
     # composes cleanly with the first.
     keyed = []
+    levels = []
     for code, target, y in residuals:
-        keyed.append((min(pq_to_nits(code), 0.995 * ymax), target / y))
+        ratio = target / y
+        effective = 1.0 + damping * (ratio - 1.0)
+        # The per-node bound limits how much of the correction can land.
+        levels.append({
+            "pct": round(code * 100.0, 1),
+            "target_nits": round(target, 3),
+            "measured_nits": round(y, 3),
+            "before_err_pct": round((y / target - 1.0) * 100.0, 2),
+            "predicted_err_pct": round((y * effective / target - 1.0) * 100.0, 2),
+        })
+        keyed.append((min(pq_to_nits(code), 0.995 * ymax), ratio))
     keyed.sort()
 
     def residual_ratio(nits):
@@ -341,6 +352,55 @@ def finetune(payload, output_dir):
     with open(out_path, "wb") as handle:
         handle.write(bytes(data))
 
+    profcheck = os.environ.get("PGEN_PROFCHECK", "/usr/bin/profcheck")
+    selfcheck = None
+    if os.path.isfile(profcheck) and os.access(profcheck, os.X_OK):
+        work = tempfile.mkdtemp(prefix="pgen_ftcheck_")
+        try:
+            ti3_path = os.path.join(work, "check.ti3")
+            with io.open(ti3_path, "w", encoding="ascii", errors="replace") as handle:
+                handle.write(targ_text)
+
+            def run_check(profile_path):
+                process = subprocess.Popen(
+                    ["timeout", "600", profcheck, "-k", ti3_path, profile_path],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    universal_newlines=True)
+                text = process.communicate()[0] or ""
+                average = peak = None
+                for line in text.splitlines():
+                    low = line.lower()
+                    if "avg. err" in low or "avg err" in low:
+                        for token in line.replace(",", " ").split():
+                            try:
+                                average = float(token)
+                                break
+                            except ValueError:
+                                continue
+                    if "max. err" in low or "max err" in low:
+                        for token in line.replace(",", " ").split():
+                            try:
+                                peak = float(token)
+                                break
+                            except ValueError:
+                                continue
+                return average, peak
+
+            before_avg, before_peak = run_check(parent_path)
+            after_avg, after_peak = run_check(out_path)
+            if before_avg is not None and after_avg is not None:
+                selfcheck = {
+                    "before_avg": before_avg, "before_peak": before_peak,
+                    "after_avg": after_avg, "after_peak": after_peak,
+                    "note": ("The self-check compares against the original "
+                             "characterization. A fine-tuned profile matches "
+                             "the display as read today, so a small self-check "
+                             "increase is expected and not a regression."),
+                }
+        finally:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
+
     summary = {
         "status": "ok",
         "file": out_name,
@@ -349,6 +409,8 @@ def finetune(payload, output_dir):
         "damping": damping,
         "max_correction_pct": round(max(applied) * 100.0, 2),
         "mean_correction_pct": round(sum(applied) / len(applied) * 100.0, 2),
+        "levels": sorted(levels, key=lambda item: item["pct"]),
+        "selfcheck": selfcheck,
     }
     with io.open(out_path + ".finetune.json", "w", encoding="ascii") as handle:
         handle.write(json.dumps(summary))
