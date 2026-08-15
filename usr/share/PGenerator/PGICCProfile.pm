@@ -48,7 +48,7 @@ sub webui_icc_profile_list (@) {
       for my $i (0..$tag_count-1) {
        $tags{substr($head,132+$i*12,4)}=1;
       }
-      $tunable="true" if($tags{"cicp"} && $tags{"B2A0"} && $tags{"targ"} && !$tags{"MHC2"} && !$tags{"vcgt"});
+      $tunable="true" if($tags{"cicp"} && $tags{"B2A0"} && $tags{"targ"} && !$tags{"MHC2"});
      }
     }
    }
