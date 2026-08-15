@@ -22285,8 +22285,9 @@ function meterBuildSaturationStepRgb(colorName,satPercent){
 }
 
 // ColorChecker's appended 100% primaries/secondaries are gamut endpoints at
-// the ColorChecker endpoint drive (HDR10 full PQ, DV 50%, SDR/HLG 75%). They
-// deliberately do not use the native saturation sweep's fixed 50% HDR drive.
+// the ColorChecker endpoint drive (HDR10 measured white, DV 50%, SDR/HLG 75%).
+// They deliberately do not use the native saturation sweep's fixed 50% HDR
+// drive.
 // Keep this client builder aligned with webui_meter_series_start so Read
 // Selection and a full series send the same patch for the same thumbnail.
 function meterBuildColorCheckerEndpointStepRgb(colorName){
@@ -22302,7 +22303,14 @@ function meterBuildColorCheckerEndpointStepRgb(colorName){
  if(!(y>0)) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
- const level=meterGamutStimulusLinearLevel();
+ // The full-series server anchors HDR10 endpoint codes to the measured series
+ // white so they stay inside the characterized range. Apply the same level to
+ // browser-built Read Selection steps; meterGamutStimulusLinearLevel() is 1.0
+ // for HDR10 and would otherwise restore the old 10,000-nit code path.
+ const endpointReferenceNits=hdr10?Number(meterColorSeriesReferenceNits()):0;
+ const level=hdr10
+  ? Math.max(0,Math.min(1,(endpointReferenceNits>0?endpointReferenceNits:1000)/10000))
+  : meterGamutStimulusLinearLevel();
  return coeffs.map(v=>meterEncodeSaturationLinear(Math.max(0,v/maxCoeff)*level,colorName));
 }
 
