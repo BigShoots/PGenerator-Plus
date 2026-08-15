@@ -2800,19 +2800,25 @@ def build(payload, output_dir):
                     profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
                     profile = rebuild_icc(
                         profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
-                    if not experiment.get("skip_refine"):
+                    if experiment.get("refine"):
+                        # Off by default: on the MSI 321URX acceptance runs the
+                        # forward-model refinement worsened ColorChecker dE2000
+                        # from 1.58 to 2.72 average and added a -3 dx mid-band
+                        # grey cast. Kept as an opt-in for comparisons.
                         profile = refine_hdr_b2a_from_forward_model(
                             profile, raw_profile, white["xyz"][1])
             finally:
                 shutil.rmtree(virtual_dir, ignore_errors=True)
             with open(output_path, "wb") as handle:
                 handle.write(profile)
-            if experiment.get("balanced_peak"):
+            if not experiment.get("skip_corridor"):
                 # Rebuild the neutral corridor and the region above measured
                 # white from the raw characterization: measured neutral codes
-                # through the rolloff and a balanced peak at the top, so the
-                # display renders the calibration white point at full drive
-                # instead of its native white.
+                # through the rolloff and the earliest-plateau continuation at
+                # the top, so highlight requests never leave the measured
+                # range. The balanced-peak white solve stays opt-in until the
+                # profiling patch sets carry knee-band samples dense enough
+                # for a reliable one-shot solve.
                 raw_ti3_text, _, _ = make_ti3(payload, profile_rows)
                 repair_tool = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), "icc_b2a_repair.py")
@@ -2822,10 +2828,12 @@ def build(payload, output_dir):
                     with io.open(raw_ti3_path, "w", encoding="ascii", errors="replace") as handle:
                         handle.write(raw_ti3_text)
                     repaired_path = os.path.join(repair_dir, "repaired.icc")
+                    repair_env = dict(os.environ)
+                    repair_env["PGEN_BALANCE"] = "1" if experiment.get("balanced_peak") else "0"
                     completed = subprocess.run(
                         [sys.executable, repair_tool, output_path, repaired_path, raw_ti3_path],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        universal_newlines=True, timeout=600)
+                        universal_newlines=True, timeout=600, env=repair_env)
                     if completed.returncode != 0 or not os.path.isfile(repaired_path):
                         fail("BToA corridor repair failed: "
                              + (completed.stdout or "").strip().splitlines()[-1][:200])
