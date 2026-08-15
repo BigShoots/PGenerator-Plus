@@ -2637,6 +2637,10 @@ def build(payload, output_dir):
     # describe the panel, not an already calibrated signal.
     black, white, primaries = profile_measurement_summary(profile_rows)
     keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
+    # Stage switches for controlled pipeline experiments. Every switch keeps
+    # the same measurements and the same surrounding stages so a hardware
+    # comparison isolates exactly one construction difference.
+    experiment = payload.get("hdr_experiment") if isinstance(payload.get("hdr_experiment"), dict) else {}
     mhc2_type = profile_type if keeps_mhc2 else (
         "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
@@ -2728,10 +2732,35 @@ def build(payload, output_dir):
         )
     with open(output_path, "wb") as handle:
         handle.write(profile)
-    # Stage switches for controlled pipeline experiments. Every switch keeps
-    # the same measurements and the same surrounding stages so a hardware
-    # comparison isolates exactly one construction difference.
-    experiment = payload.get("hdr_experiment") if isinstance(payload.get("hdr_experiment"), dict) else {}
+    if (profile_type == "windows-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
+            and not experiment.get("skip_corridor")):
+        # Backport of the KDE corridor in its raw flavor: rebuild the BToA
+        # neutral corridor from the embedded characterization and continue
+        # everything at or above measured white at the earliest measured
+        # plateau. The BToA of an MHC2 profile must keep emitting raw device
+        # codes because the MHC2 stage applies the calibration downstream,
+        # so no calibration curves are composed here. This removes the
+        # inverse-extrapolation region that read collapsed-to-white through
+        # every corrected path, without touching the fitted color transform.
+        repair_tool = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "icc_b2a_repair.py")
+        repair_dir = tempfile.mkdtemp(prefix="pgen_b2a_repair_")
+        try:
+            repaired_path = os.path.join(repair_dir, "repaired.icc")
+            repair_env = dict(os.environ)
+            repair_env["PGEN_BALANCE"] = "0"
+            repair_env.pop("PGEN_CAL_JSON", None)
+            completed = subprocess.run(
+                [sys.executable, repair_tool, output_path, repaired_path],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True, timeout=600, env=repair_env)
+            if completed.returncode != 0 or not os.path.isfile(repaired_path):
+                detail = (completed.stdout or "").strip().splitlines()
+                fail("BToA corridor repair failed"
+                     + (": " + detail[-1][:200] if detail else ""))
+            shutil.move(repaired_path, output_path)
+        finally:
+            shutil.rmtree(repair_dir, ignore_errors=True)
     if calibration_mode == "profile" and not keeps_mhc2:
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
             # The dense original neutral series anchors luminance, while the
