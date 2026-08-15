@@ -1751,7 +1751,7 @@ async function meterIccLoadProfiles(){
    // button rather than offer a trap.
    const finetuneEligible=!!profile.tunable;
    finetune.style.display=finetuneEligible&&meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
-   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune);
+   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10');
    const validate=document.createElement('button');
    validate.type='button';
    validate.className='btn btn-sm btn-secondary';
@@ -1774,7 +1774,7 @@ async function meterIccLoadProfiles(){
  }
 }
 
-async function meterIccFineTuneProfile(file,button){
+async function meterIccFineTuneProfile(file,button,tuneMode){
  if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
  if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
  const original=button?button.textContent:'Fine tune';
@@ -1792,7 +1792,7 @@ async function meterIccFineTuneProfile(file,button){
   }
   // 2. Grey series through the applied profile, repeats at the noisy levels.
   if(button) button.textContent='Reading...';
-  const percents=[0,5,5,5,10,10,10,20,30,40,50,55,60,63,65,67,70,72,74,74,74,75,80,90,100];
+  const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
   const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
   const body=meterMeasurementSignalContext({
    type:'colors',points:990001,custom_series:true,custom_steps:steps,
@@ -1810,7 +1810,7 @@ async function meterIccFineTuneProfile(file,button){
   body.target_black_use_measured=false;
   body.series_has_saved_white_reference=true;
   body.series_has_saved_black_reference=true;
-  body.signal_mode=meterChartSignalMode()==='hdr10'?'hdr10':'sdr';
+  body.signal_mode=(tuneMode||'hdr10')==='hdr10'?'hdr10':'sdr';
   if(body.signal_mode==='hdr10'){ body.signal_range='2'; body.pattern_signal_range='2'; body.transport_signal_range='2'; body.max_luma='1000'; }
   const started=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
   if(!started||started.status!=='started') throw new Error(started&&started.message||'Could not start the fine-tune reads');

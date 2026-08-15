@@ -32,32 +32,56 @@ sub webui_icc_profile_list (@) {
    # helpers to call here.
    my $validation=(-f "$_icc_profile_dir/$file.validation.json")?"true":"false";
    my $finetune=(-f "$_icc_profile_dir/$file.finetune.json")?"true":"false";
-   # Fine-tuning edits the BToA corridor, so it only applies to profiles the
-   # compositor consumes through BToA: CICP-tagged cLUT profiles without MHC2
-   # that carry their characterization. Decide from the tag table, not the
-   # file name.
+   # Fine-tuning needs the embedded characterization plus a stage it can
+   # edit: the BToA corridor for cLUT profiles or the MHC2 adjustment curves
+   # for Windows-class profiles. Decide from the tag table, not the file
+   # name. tune_mode tells the browser which signal to measure the ladder
+   # in: cicp marks HDR authoritatively; an MHC2 profile without cicp is HDR
+   # when its adjustment curves top out well below full drive, which is the
+   # PQ request-to-achievable mapping shape.
    my $tunable="false";
+   my $tune_mode="sdr";
    if(open(my $ph,"<:raw","$_icc_profile_dir/$file")) {
     my $head="";
     read($ph,$head,4096);
-    close($ph);
     if(length($head)>132) {
      my $tag_count=unpack("N",substr($head,128,4));
      if($tag_count>0 && $tag_count<200 && length($head)>=132+$tag_count*12) {
       my %tags;
+      my ($mhc2_off,$mhc2_size)=(0,0);
       for my $i (0..$tag_count-1) {
-       $tags{substr($head,132+$i*12,4)}=1;
+       my $sig=substr($head,132+$i*12,4);
+       $tags{$sig}=1;
+       if($sig eq "MHC2") {
+        $mhc2_off=unpack("N",substr($head,132+$i*12+4,4));
+        $mhc2_size=unpack("N",substr($head,132+$i*12+8,4));
+       }
       }
-      $tunable="true" if($tags{"cicp"} && $tags{"B2A0"} && $tags{"targ"} && !$tags{"MHC2"});
+      $tunable="true" if($tags{"targ"} && ($tags{"B2A0"} || $tags{"MHC2"}));
+      if($tags{"cicp"}) {
+       $tune_mode="hdr10";
+      } elsif($tags{"MHC2"} && $mhc2_off>0 && $mhc2_size>44) {
+       my $mhc2="";
+       if(seek($ph,$mhc2_off,0) && read($ph,$mhc2,$mhc2_size)==$mhc2_size) {
+        my $entries=unpack("N",substr($mhc2,8,4));
+        my $lut0=unpack("N",substr($mhc2,24,4));
+        if($entries>1 && $lut0+8+$entries*4<=$mhc2_size) {
+         my $raw=unpack("N",substr($mhc2,$lut0+8+($entries-1)*4,4));
+         $raw-=4294967296 if($raw>=2147483648);
+         $tune_mode="hdr10" if($raw/65536.0<0.90);
+        }
+       }
+      }
      }
     }
+    close($ph);
    }
-   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable];
+   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode];
   }
   closedir($dh);
  }
  foreach my $profile (sort { $b->[2] <=> $a->[2] || $a->[0] cmp $b->[0] } @profiles) {
-  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5]."}";
+  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\"}";
  }
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
 }

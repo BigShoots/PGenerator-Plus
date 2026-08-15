@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
-"""Fine-tune an existing KDE HDR profile from reads taken through it.
+"""Fine-tune an existing display profile from reads taken through it.
 
 The parent profile stays untouched. Reads of the applied profile give
-per-level residuals along the grey axis; those residuals adjust the
-profile's effective calibration curves (sampled from its own BToA along the
-neutral axis), and the measured-corridor repair then rebuilds the neutral
-corridor with the adjusted curves. Corrections are damped and bounded so a
-noisy read cannot damage a profile, and repeated passes converge the same
-way AutoCal iterations do.
+per-level residuals along the grey axis. Each residual is decomposed into
+per-channel gains through the panel's measured primaries, so the tune
+corrects chromatic drift as well as luminance. Three profile classes are
+supported, selected from the parent's own tags:
+
+- HDR cLUT profiles (cicp + B2A0): corridor nodes in the BToA tables move
+  by damped, bounded per-channel deltas. Below the display's rolloff the
+  target is absolute PQ; inside the rolloff the luminance is pinned by the
+  panel, so gains are normalised to drops and only the white balance of
+  the plateau is corrected.
+- MHC2 profiles: the corrections land in the MHC2 per-channel adjustment
+  curves (and the cloned vcgt when present) in the wire signal domain,
+  which is the stage Windows and the patched KWin actually apply.
+- SDR cLUT profiles (no cicp): identical corridor treatment with targets
+  from the profile white and the requested transfer (gamma22, srgb or
+  bt1886) instead of PQ.
+
+Corrections are damped and bounded so a noisy read cannot damage a
+profile, and repeated passes converge the same way AutoCal iterations do.
 
 Usage: icc_finetune.py input.json output_dir
 input.json: {"parent_path": ..., "readings": [{r_code,g_code,b_code,
-             input_max,X,Y,Z,name}...], "name": ..., "damping": 0.5}
+             input_max,X,Y,Z,name}...], "name": ..., "damping": 0.5,
+             "target_transfer": "gamma22"}
 """
 import io
 import json
+import math
 import os
 import struct
 import subprocess
@@ -27,6 +42,9 @@ C1 = 3424.0 / 4096.0
 C2 = 2413.0 / 128.0
 C3 = 2392.0 / 128.0
 
+D65_X = 0.3127
+D65_Y = 0.3290
+
 
 def pq_to_nits(value):
     value = max(0.0, value)
@@ -36,6 +54,11 @@ def pq_to_nits(value):
     if denominator <= 0:
         return 10000.0
     return 10000.0 * (numerator / denominator) ** (1.0 / M1)
+
+
+def nits_to_pq(nits):
+    y = max(0.0, min(1.0, nits / 10000.0)) ** M1
+    return ((C1 + C2 * y) / (1.0 + C3 * y)) ** M2
 
 
 def read_profile(path):
@@ -53,79 +76,22 @@ def be16(data, position):
     return (data[position] << 8) | data[position + 1]
 
 
+def s15(data, position):
+    return struct.unpack(">i", bytes(data[position:position + 4]))[0] / 65536.0
+
+
+def put_s15(data, position, value):
+    raw = int(round(value * 65536.0))
+    raw = max(-(1 << 31), min((1 << 31) - 1, raw))
+    data[position:position + 4] = struct.pack(">i", raw)
+
+
 def table_sample(data, base, count, value):
     value = max(0.0, min(1.0, value)) * (count - 1)
     low = min(int(value), count - 2)
     fraction = value - low
     return (be16(data, base + low * 2) * (1.0 - fraction)
             + be16(data, base + (low + 1) * 2) * fraction) / 65535.0
-
-
-def b2a_neutral(data, tags, lumi, nits):
-    """Evaluate the parent BToA for a neutral patch of the given luminance."""
-    off, _ = tags["B2A0"]
-    grid = data[off + 10]
-    in_entries, out_entries = struct.unpack(">HH", bytes(data[off + 48:off + 52]))
-    in_off = off + 52
-    clut_off = in_off + 3 * in_entries * 2
-    out_off = clut_off + grid ** 3 * 3 * 2
-    encode = 32768.0 / 65535.0
-    bt2020 = ((0.6369580, 0.1446169, 0.1688810),
-              (0.2627002, 0.6779981, 0.0593017),
-              (0.0, 0.0280727, 1.0609851))
-    bradford = ((0.8951, 0.2664, -0.1614),
-                (-0.7502, 1.7135, 0.0367),
-                (0.0389, -0.0685, 1.0296))
-    d65 = (0.9504559, 1.0, 1.0890578)
-    d50 = (0.9642, 1.0, 0.8249)
-
-    def mat_vec(matrix, vector):
-        return [sum(matrix[row][k] * vector[k] for k in range(3)) for row in range(3)]
-
-    def mat_inv(m):
-        a, b, c = m[0]
-        d, e, f = m[1]
-        g, h, i = m[2]
-        det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-        return [[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
-                [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
-                [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det]]
-
-    cone_src = mat_vec(bradford, d65)
-    cone_dst = mat_vec(bradford, d50)
-    scaled = [[cone_dst[r] / cone_src[r] * bradford[r][k] for k in range(3)] for r in range(3)]
-    inverse = mat_inv([list(row) for row in bradford])
-    adapt = [[sum(inverse[r][k] * scaled[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
-
-    relative = nits / lumi
-    xyz = mat_vec(adapt, mat_vec([list(row) for row in bt2020], [relative] * 3))
-    coords = [table_sample(data, in_off + ch * in_entries * 2, in_entries, xyz[ch] * encode)
-              for ch in range(3)]
-    base_idx = [0, 0, 0]
-    fraction = [0.0, 0.0, 0.0]
-    for ch in range(3):
-        position = max(0.0, min(1.0, coords[ch])) * (grid - 1)
-        base_idx[ch] = min(int(position), grid - 2)
-        fraction[ch] = position - base_idx[ch]
-    result = [0.0, 0.0, 0.0]
-    for ch in range(3):
-        accumulated = 0.0
-        for rr in range(2):
-            for gg in range(2):
-                for bb in range(2):
-                    weight = ((fraction[0] if rr else 1.0 - fraction[0])
-                              * (fraction[1] if gg else 1.0 - fraction[1])
-                              * (fraction[2] if bb else 1.0 - fraction[2]))
-                    index = (((base_idx[0] + rr) * grid + (base_idx[1] + gg)) * grid
-                             + (base_idx[2] + bb)) * 3 + ch
-                    accumulated += be16(data, clut_off + index * 2) / 65535.0 * weight
-        result[ch] = accumulated
-    return [table_sample(data, out_off + ch * out_entries * 2, out_entries, result[ch])
-            for ch in range(3)]
-
-
-def s15(data, position):
-    return struct.unpack(">i", bytes(data[position:position + 4]))[0] / 65536.0
 
 
 def parse_targ(data, tags):
@@ -151,11 +117,36 @@ def parse_targ(data, tags):
     return fmt, rows, text
 
 
+def mat_inv(m):
+    a, b, c = m[0]
+    d, e, f = m[1]
+    g, h, i = m[2]
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if abs(det) < 1e-12:
+        return None
+    return [[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
+            [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
+            [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det]]
 
-def measured_lum_guard(nits, ymax):
-    """Skip levels where the response is saturated; the corridor's plateau
-    logic owns that region and the luminance inverse is ill-conditioned."""
-    return nits >= 0.90 * ymax
+
+def mat_vec(m, v):
+    return [sum(m[r][k] * v[k] for k in range(3)) for r in range(3)]
+
+
+def d65_xyz(nits):
+    return [nits * D65_X / D65_Y, nits, nits * (1.0 - D65_X - D65_Y) / D65_Y]
+
+
+def srgb_eotf(v):
+    if v <= 0.04045:
+        return v / 12.92
+    return ((v + 0.055) / 1.055) ** 2.4
+
+
+def srgb_inverse(v):
+    if v <= 0.0031308:
+        return v * 12.92
+    return 1.055 * v ** (1.0 / 2.4) - 0.055
 
 
 def finetune(payload, output_dir):
@@ -163,8 +154,12 @@ def finetune(payload, output_dir):
     damping = float(payload.get("damping", 0.5))
     damping = max(0.1, min(1.0, damping))
     data, tags = read_profile(parent_path)
+    if "targ" not in tags or "lumi" not in tags:
+        raise ValueError("The profile lacks the embedded characterization fine-tune needs")
     lumi = s15(data, tags["lumi"][0] + 12)
     fmt, rows, targ_text = parse_targ(data, tags)
+    has_mhc2 = "MHC2" in tags
+    transfer = str(payload.get("target_transfer", "gamma22")).lower()
 
     # Grey residuals from the fine-tune reads
     reads = []
@@ -182,37 +177,153 @@ def finetune(payload, output_dir):
         raise ValueError("Fine tuning needs at least 8 valid neutral reads")
     reads.sort()
 
-    # Collapse repeats to medians
+    # Collapse repeats to medians (by luminance; X and Z travel with it)
     grouped = []
     for code, y, x, z in reads:
         if grouped and abs(code - grouped[-1][0]) < 1e-6:
             grouped[-1][1].append((y, x, z))
         else:
             grouped.append([code, [(y, x, z)]])
-    residuals = []
-    for code, samples in grouped:
-        samples.sort()
-        y, x, z = samples[len(samples) // 2]
-        target = min(pq_to_nits(code), lumi)
-        if target < 0.02 or y <= 0.0:
-            continue
-        residuals.append((code, target, y))
-    if len(residuals) < 6:
-        raise ValueError("Too few usable neutral reads above the meter floor")
 
-    # Measured neutral response from the embedded characterization: the
-    # corridor repair's calibration domain is the raw neutral code axis with
-    # luminance following this curve, so everything below must be sampled and
-    # keyed in that domain, not the PQ target domain (they diverge through
-    # the display rolloff).
+    # Measured neutral response and native primaries from the embedded
+    # characterization. The corridor's calibration domain is the raw neutral
+    # code axis with luminance following this curve.
     ri = fmt.index("RGB_R")
+    gi = fmt.index("RGB_G")
+    bi = fmt.index("RGB_B")
+    xi = fmt.index("XYZ_X")
     yi = fmt.index("XYZ_Y")
+    zi = fmt.index("XYZ_Z")
     neutral = sorted((float(r[ri]) / 100.0,
                       float(r[yi]) * lumi / 100.0)
                      for r in rows
-                     if abs(float(r[ri]) - float(r[fmt.index("RGB_G")])) < 0.3
-                     and abs(float(r[fmt.index("RGB_G")]) - float(r[fmt.index("RGB_B")])) < 0.3)
+                     if abs(float(r[ri]) - float(r[gi])) < 0.3
+                     and abs(float(r[gi]) - float(r[bi])) < 0.3)
+    if len(neutral) < 4:
+        raise ValueError("The embedded characterization has no neutral axis")
     ymax = max(y for _, y in neutral)
+    ymin = min(y for _, y in neutral)
+
+    # HDR or SDR device model? cicp is authoritative when present, but many
+    # profile classes (MHC2, pre-4.4 KDE builds) carry none. The embedded
+    # neutral response settles it: at half drive a PQ-driven panel sits near
+    # pq(0.5) = 92 nits regardless of peak, while an SDR panel sits near
+    # white * 0.5^2.2. Compare in log space against the measured curve.
+    def neutral_at(code_value):
+        prev_code, prev_y = neutral[0]
+        for code_i, y_i in neutral[1:]:
+            if code_i >= code_value:
+                span = code_i - prev_code
+                t = 0.0 if span <= 0 else (code_value - prev_code) / span
+                return prev_y + t * (y_i - prev_y)
+            prev_code, prev_y = code_i, y_i
+        return neutral[-1][1]
+
+    if "cicp" in tags:
+        is_hdr = True
+    else:
+        measured_half = max(neutral_at(0.5), 1e-6)
+        pq_err = abs(math.log(measured_half / max(pq_to_nits(0.5), 1e-6)))
+        sdr_half = max(ymin + (lumi - ymin) * 0.5 ** 2.2, 1e-6)
+        sdr_err = abs(math.log(measured_half / sdr_half))
+        is_hdr = pq_err < sdr_err
+
+    primaries = {}
+    for r in rows:
+        drive = [float(r[ri]), float(r[gi]), float(r[bi])]
+        for ch in range(3):
+            others = [drive[k] for k in range(3) if k != ch]
+            if drive[ch] >= 99.0 and max(others) <= 0.5:
+                current = primaries.get(ch)
+                if current is None or drive[ch] > current[0]:
+                    primaries[ch] = (drive[ch],
+                                     [float(r[xi]) * lumi / 100.0,
+                                      float(r[yi]) * lumi / 100.0,
+                                      float(r[zi]) * lumi / 100.0])
+    primary_matrix = None
+    if len(primaries) == 3:
+        cols = [primaries[ch][1] for ch in range(3)]
+        primary_matrix = [[cols[c][r] for c in range(3)] for r in range(3)]
+        primary_inverse = mat_inv(primary_matrix)
+        if primary_inverse is None:
+            primary_matrix = None
+
+    def channel_gains(measured_xyz, target_xyz):
+        """Per-channel gains that move the measured colour to the target,
+        through the panel's native primaries. Falls back to a pure
+        luminance ratio when the decomposition is unavailable."""
+        if primary_matrix is not None:
+            rgb_m = mat_vec(primary_inverse, measured_xyz)
+            rgb_t = mat_vec(primary_inverse, target_xyz)
+            if min(rgb_m) > 1e-6:
+                return [max(0.5, min(2.0, rgb_t[k] / rgb_m[k])) for k in range(3)]
+        ratio = max(0.5, min(2.0, target_xyz[1] / max(measured_xyz[1], 1e-9)))
+        return [ratio, ratio, ratio]
+
+    def sdr_target(code):
+        if transfer == "srgb":
+            linear = srgb_eotf(code)
+        elif transfer == "bt1886":
+            gamma = 2.4
+            lw, lb = lumi, max(0.0, ymin)
+            a = (lw ** (1.0 / gamma) - lb ** (1.0 / gamma)) ** gamma
+            b = lb ** (1.0 / gamma) / max(lw ** (1.0 / gamma) - lb ** (1.0 / gamma), 1e-9)
+            return a * max(code + b, 0.0) ** gamma
+        else:
+            linear = code ** 2.2
+        return ymin + (lumi - ymin) * linear
+
+    def level_target_nits(code):
+        if is_hdr:
+            return min(pq_to_nits(code), 0.995 * ymax)
+        return min(sdr_target(code), 0.995 * ymax)
+
+    rolloff_start = 0.90 * ymax
+    keyed = []
+    levels = []
+    for code, samples in grouped:
+        samples.sort()
+        y, x, z = samples[len(samples) // 2]
+        if y <= 0.0:
+            continue
+        request = pq_to_nits(code) if is_hdr else sdr_target(code)
+        target = level_target_nits(code)
+        if target < 0.02:
+            continue
+        in_rolloff = is_hdr and request >= rolloff_start
+        if in_rolloff:
+            # The panel pins the luminance here; correct only the balance.
+            gains = channel_gains([x, y, z], d65_xyz(y))
+            top = max(gains)
+            gains = [g / top for g in gains]
+        else:
+            gains = channel_gains([x, y, z], d65_xyz(target))
+        effective = [1.0 + damping * (g - 1.0) for g in gains]
+        levels.append({
+            "pct": round(code * 100.0, 1),
+            "target_nits": round(target, 3),
+            "measured_nits": round(y, 3),
+            "rolloff": in_rolloff,
+            "gains": [round(g, 4) for g in gains],
+            "before_err_pct": round((y / target - 1.0) * 100.0, 2),
+            "predicted_err_pct": round((y * ((effective[0] + effective[1] + effective[2]) / 3.0)
+                                        / target - 1.0) * 100.0, 2),
+        })
+        keyed.append((min(request, 0.995 * ymax), effective))
+    if len(keyed) < 6:
+        raise ValueError("Too few usable neutral reads above the meter floor")
+    keyed.sort()
+
+    def residual_gains(nits):
+        if nits <= keyed[0][0]:
+            return keyed[0][1]
+        for i in range(1, len(keyed)):
+            if keyed[i][0] >= nits:
+                n0, g0 = keyed[i - 1]
+                n1, g1 = keyed[i]
+                t = 0.0 if n1 == n0 else (nits - n0) / (n1 - n0)
+                return [g0[k] + t * (g1[k] - g0[k]) for k in range(3)]
+        return keyed[-1][1]
 
     def measured_lum(code):
         if code <= neutral[0][0]:
@@ -236,113 +347,151 @@ def finetune(payload, output_dir):
                 return c0 + t * (c1 - c0)
         return neutral[-1][0]
 
-    # Directly adjust the corridor nodes in a copy of the parent. No curve
-    # extraction or corridor rebuild: each near-neutral node's current wire
-    # triple moves by a damped, bounded delta keyed to the luminance level
-    # that node serves. Everything outside the corridor tube and the
-    # saturated rolloff region is untouched, so a second fine-tune pass
-    # composes cleanly with the first.
-    keyed = []
-    levels = []
-    for code, target, y in residuals:
-        ratio = target / y
-        effective = 1.0 + damping * (ratio - 1.0)
-        # The per-node bound limits how much of the correction can land.
-        levels.append({
-            "pct": round(code * 100.0, 1),
-            "target_nits": round(target, 3),
-            "measured_nits": round(y, 3),
-            "before_err_pct": round((y / target - 1.0) * 100.0, 2),
-            "predicted_err_pct": round((y * effective / target - 1.0) * 100.0, 2),
-        })
-        keyed.append((min(pq_to_nits(code), 0.995 * ymax), ratio))
-    keyed.sort()
+    # Local slope of the neutral response just below the knee, in wire code
+    # per unit log-luminance. Inside the plateau the luminance inverse is
+    # degenerate, so balance corrections there move codes along this slope.
+    knee_c1 = code_for_lum(0.85 * ymax)
+    knee_c2 = code_for_lum(0.60 * ymax)
+    knee_slope = (knee_c1 - knee_c2) / max(math.log(0.85) - math.log(0.60), 1e-9)
 
-    def residual_ratio(nits):
-        if nits <= keyed[0][0]:
-            return keyed[0][1]
-        for i in range(1, len(keyed)):
-            if keyed[i][0] >= nits:
-                n0, r0 = keyed[i - 1]
-                n1, r1 = keyed[i]
-                t = 0.0 if n1 == n0 else (nits - n0) / (n1 - n0)
-                return r0 + t * (r1 - r0)
-        return keyed[-1][1]
-
-    bound = 2.5 / 1023.0
-    encode = 32768.0 / 65535.0
-    d50 = (0.9642, 1.0, 0.8249)
     applied = []
-    for tag in ("B2A0", "B2A1"):
-        if tag not in tags:
-            continue
-        off, _ = tags[tag]
-        grid = data[off + 10]
-        in_entries, out_entries = struct.unpack(">HH", bytes(data[off + 48:off + 52]))
-        in_off = off + 52
-        clut_off = in_off + 3 * in_entries * 2
-        out_off = clut_off + grid ** 3 * 3 * 2
+    bound = 2.5 / 1023.0
+    plateau_bound = 3.0 / 1023.0
 
-        def table_invert(base, count, target):
-            low_i, high_i = 0, count - 1
-            low_v = be16(data, base) / 65535.0
-            high_v = be16(data, base + (count - 1) * 2) / 65535.0
-            if target <= low_v:
-                return 0.0
-            if target >= high_v:
-                return 1.0
-            while high_i - low_i > 1:
-                mid = (low_i + high_i) // 2
-                mid_v = be16(data, base + mid * 2) / 65535.0
-                if mid_v <= target:
-                    low_i, low_v = mid, mid_v
+    if has_mhc2:
+        # The operative correction of an MHC2 profile is its per-channel
+        # adjustment curve set, applied in the wire signal domain by Windows
+        # and by the patched KWin. Edit those curves, and mirror the same
+        # change into the cloned vcgt so both consumers stay in step.
+        off, _ = tags["MHC2"]
+        entries = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
+        lut_offsets = struct.unpack(">III", bytes(data[off + 24:off + 36]))
+        for ch in range(3):
+            base = off + lut_offsets[ch] + 8
+            for index in range(entries):
+                position = index / (entries - 1.0)
+                request = pq_to_nits(position) if is_hdr else sdr_target(position)
+                if request < 0.02:
+                    continue
+                eff = residual_gains(min(request, 0.995 * ymax))[ch]
+                if abs(eff - 1.0) < 0.0005:
+                    continue
+                old = s15(data, base + index * 4)
+                clipped = max(0.0, min(1.0, old))
+                if is_hdr:
+                    new = nits_to_pq(pq_to_nits(clipped) * eff)
                 else:
-                    high_i, high_v = mid, mid_v
-            step = high_v - low_v
-            fraction = 0.0 if step <= 0 else (target - low_v) / step
-            return (low_i + fraction) / (count - 1.0)
-
-        def axis_node(ch, relative):
-            enc = min(1.0, max(0.0, relative * encode))
-            position = enc * (in_entries - 1)
-            low = min(int(position), in_entries - 2)
-            fraction = position - low
-            base = in_off + ch * in_entries * 2
-            t = (be16(data, base + low * 2) * (1.0 - fraction)
-                 + be16(data, base + (low + 1) * 2) * fraction) / 65535.0
-            return t * (grid - 1)
-
-        span = 2
-        for j in range(grid):
-            y_rel = table_invert(in_off + 1 * in_entries * 2, in_entries,
-                                 j / (grid - 1.0)) / encode
-            nits = min(y_rel, 1.0) * lumi
-            if nits < 0.02 or measured_lum_guard(nits, ymax):
-                continue
-            ratio = residual_ratio(min(nits, 0.995 * ymax))
-            correction = 1.0 + damping * (ratio - 1.0)
-            if abs(correction - 1.0) < 0.0005:
-                continue
-            fx = axis_node(0, d50[0] * min(y_rel, 1.9))
-            fz = axis_node(2, d50[2] * min(y_rel, 1.9))
-            for i in range(max(0, int(fx) - span), min(grid, int(fx) + span + 2)):
-                for k in range(max(0, int(fz) - span), min(grid, int(fz) + span + 2)):
-                    base_pos = clut_off + (((i * grid + j) * grid + k) * 3) * 2
-                    for ch in range(3):
-                        node = be16(data, base_pos + ch * 2) / 65535.0
-                        wire = table_sample(data, out_off + ch * out_entries * 2,
-                                            out_entries, node)
-                        current = measured_lum(wire)
-                        if current >= 0.90 * ymax:
+                    linear = clipped ** 2.2 if transfer != "srgb" else srgb_eotf(clipped)
+                    linear = max(0.0, min(1.0, linear * eff))
+                    new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
+                delta = max(-bound, min(bound, new - clipped))
+                put_s15(data, base + index * 4, old + delta)
+                applied.append(abs(eff - 1.0))
+        if "vcgt" in tags:
+            voff, _ = tags["vcgt"]
+            vchannels, ventries, vwidth = struct.unpack(">HHH", bytes(data[voff + 12:voff + 18]))
+            if vwidth == 2 and vchannels == 3:
+                vbase = voff + 18
+                for ch in range(3):
+                    for index in range(ventries):
+                        position = index / (ventries - 1.0)
+                        request = pq_to_nits(position) if is_hdr else sdr_target(position)
+                        if request < 0.02:
                             continue
-                        wanted = code_for_lum(current * correction)
-                        delta = max(-bound, min(bound, wanted - wire))
-                        new_node = table_invert(out_off + ch * out_entries * 2,
-                                                out_entries, wire + delta)
-                        value = max(0, min(65535, int(round(new_node * 65535.0))))
-                        data[base_pos + ch * 2] = value >> 8
-                        data[base_pos + ch * 2 + 1] = value & 0xFF
-            applied.append(abs(correction - 1.0))
+                        eff = residual_gains(min(request, 0.995 * ymax))[ch]
+                        if abs(eff - 1.0) < 0.0005:
+                            continue
+                        pos = vbase + (ch * ventries + index) * 2
+                        old = be16(data, pos) / 65535.0
+                        if is_hdr:
+                            new = nits_to_pq(pq_to_nits(old) * eff)
+                        else:
+                            linear = old ** 2.2 if transfer != "srgb" else srgb_eotf(old)
+                            linear = max(0.0, min(1.0, linear * eff))
+                            new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
+                        delta = max(-bound, min(bound, new - old))
+                        value = max(0, min(65535, int(round((old + delta) * 65535.0))))
+                        data[pos] = value >> 8
+                        data[pos + 1] = value & 0xFF
+    else:
+        encode = 32768.0 / 65535.0
+        d50 = (0.9642, 1.0, 0.8249)
+        for tag in ("B2A0", "B2A1"):
+            if tag not in tags:
+                continue
+            off, _ = tags[tag]
+            grid = data[off + 10]
+            in_entries, out_entries = struct.unpack(">HH", bytes(data[off + 48:off + 52]))
+            in_off = off + 52
+            clut_off = in_off + 3 * in_entries * 2
+            out_off = clut_off + grid ** 3 * 3 * 2
+
+            def table_invert(base, count, target):
+                low_i, high_i = 0, count - 1
+                low_v = be16(data, base) / 65535.0
+                high_v = be16(data, base + (count - 1) * 2) / 65535.0
+                if target <= low_v:
+                    return 0.0
+                if target >= high_v:
+                    return 1.0
+                while high_i - low_i > 1:
+                    mid = (low_i + high_i) // 2
+                    mid_v = be16(data, base + mid * 2) / 65535.0
+                    if mid_v <= target:
+                        low_i, low_v = mid, mid_v
+                    else:
+                        high_i, high_v = mid, mid_v
+                step = high_v - low_v
+                fraction = 0.0 if step <= 0 else (target - low_v) / step
+                return (low_i + fraction) / (count - 1.0)
+
+            def axis_node(ch, relative):
+                enc = min(1.0, max(0.0, relative * encode))
+                position = enc * (in_entries - 1)
+                low = min(int(position), in_entries - 2)
+                fraction = position - low
+                base = in_off + ch * in_entries * 2
+                t = (be16(data, base + low * 2) * (1.0 - fraction)
+                     + be16(data, base + (low + 1) * 2) * fraction) / 65535.0
+                return t * (grid - 1)
+
+            span = 2
+            for j in range(grid):
+                y_rel = table_invert(in_off + 1 * in_entries * 2, in_entries,
+                                     j / (grid - 1.0)) / encode
+                nits = min(y_rel, 1.9) * lumi
+                if nits < 0.02:
+                    continue
+                gains = residual_gains(min(nits, 0.995 * ymax))
+                if max(abs(g - 1.0) for g in gains) < 0.0005:
+                    continue
+                fx = axis_node(0, d50[0] * min(y_rel, 1.9))
+                fz = axis_node(2, d50[2] * min(y_rel, 1.9))
+                for i in range(max(0, int(fx) - span), min(grid, int(fx) + span + 2)):
+                    for k in range(max(0, int(fz) - span), min(grid, int(fz) + span + 2)):
+                        base_pos = clut_off + (((i * grid + j) * grid + k) * 3) * 2
+                        for ch in range(3):
+                            node = be16(data, base_pos + ch * 2) / 65535.0
+                            wire = table_sample(data, out_off + ch * out_entries * 2,
+                                                out_entries, node)
+                            current = measured_lum(wire)
+                            eff = gains[ch]
+                            if current >= rolloff_start:
+                                # Plateau: the luminance inverse is flat, so
+                                # move the code along the knee slope instead.
+                                delta = math.log(max(eff, 1e-6)) * knee_slope
+                                delta = max(-plateau_bound, min(plateau_bound, delta))
+                            else:
+                                wanted = code_for_lum(current * eff)
+                                delta = max(-bound, min(bound, wanted - wire))
+                            if abs(delta) < 0.25 / 1023.0:
+                                continue
+                            new_node = table_invert(out_off + ch * out_entries * 2,
+                                                    out_entries, wire + delta)
+                            value = max(0, min(65535, int(round(new_node * 65535.0))))
+                            data[base_pos + ch * 2] = value >> 8
+                            data[base_pos + ch * 2 + 1] = value & 0xFF
+                applied.append(max(abs(g - 1.0) for g in gains))
     if not applied:
         raise ValueError("No corrections were applicable")
 
@@ -402,7 +551,9 @@ def finetune(payload, output_dir):
         "status": "ok",
         "file": out_name,
         "parent": os.path.basename(parent_path),
-        "reads_used": len(residuals),
+        "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+        "chroma_capable": primary_matrix is not None,
+        "reads_used": len(keyed),
         "damping": damping,
         "max_correction_pct": round(max(applied) * 100.0, 2),
         "mean_correction_pct": round(sum(applied) / len(applied) * 100.0, 2),
