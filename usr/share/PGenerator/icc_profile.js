@@ -1749,7 +1749,7 @@ async function meterIccLoadProfiles(){
    // compositor uses for KDE HDR cLUT profiles. On MHC2 or SDR profiles the
    // reads would go through a different path than the edit, so hide the
    // button rather than offer a trap.
-   const finetuneEligible=/-KDE-HDR-/.test(profile.name)||profile.finetune;
+   const finetuneEligible=!!profile.tunable;
    finetune.style.display=finetuneEligible&&meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
    finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune);
    const validate=document.createElement('button');

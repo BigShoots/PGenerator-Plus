@@ -32,12 +32,32 @@ sub webui_icc_profile_list (@) {
    # helpers to call here.
    my $validation=(-f "$_icc_profile_dir/$file.validation.json")?"true":"false";
    my $finetune=(-f "$_icc_profile_dir/$file.finetune.json")?"true":"false";
-   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune];
+   # Fine-tuning edits the BToA corridor, so it only applies to profiles the
+   # compositor consumes through BToA: CICP-tagged cLUT profiles without MHC2
+   # that carry their characterization. Decide from the tag table, not the
+   # file name.
+   my $tunable="false";
+   if(open(my $ph,"<:raw","$_icc_profile_dir/$file")) {
+    my $head="";
+    read($ph,$head,4096);
+    close($ph);
+    if(length($head)>132) {
+     my $tag_count=unpack("N",substr($head,128,4));
+     if($tag_count>0 && $tag_count<200 && length($head)>=132+$tag_count*12) {
+      my %tags;
+      for my $i (0..$tag_count-1) {
+       $tags{substr($head,132+$i*12,4)}=1;
+      }
+      $tunable="true" if($tags{"cicp"} && $tags{"B2A0"} && $tags{"targ"} && !$tags{"MHC2"} && !$tags{"vcgt"});
+     }
+    }
+   }
+   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable];
   }
   closedir($dh);
  }
  foreach my $profile (sort { $b->[2] <=> $a->[2] || $a->[0] cmp $b->[0] } @profiles) {
-  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4]."}";
+  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5]."}";
  }
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
 }
