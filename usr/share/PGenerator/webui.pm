@@ -37024,11 +37024,14 @@ async function meterSelectSeries(type,points,opts){
     }
    }
   }catch(e){}
+  // No else: preserveTab callers are not all Auto Cal entry points. The
+  // Auto Cal entries (meterSelectAutoCalGreyscale/3dLut) set meterSeriesTab
+  // to 'autocal' themselves before calling in, so they take this branch.
+  // Forcing 'autocal' for every other preserveTab caller made a plain
+  // greyscale tab click that restored a cached series (the remembered-
+  // series path in meterSetSeriesTab) repaint the Auto Cal tab and its
+  // sub-buttons as active while the greyscale charts were on screen.
   if(opts.preserveTab&&meterSeriesTab==='autocal'){
-   meterUpdateSeriesTabUi();
-   meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
-  } else if(opts.preserveTab){
-   meterSeriesTab='autocal';
    meterUpdateSeriesTabUi();
    meterSetAutoCalSeriesChoice(type==='greyscale'?'greyscale':'3d-lut');
   }
@@ -54963,7 +54966,15 @@ async function loadMeterSettings(attempt){
   if(live) updateLiveReading(live);
  }
  meterSettingsLoaded=true;
- meterSetSeriesTab(meterSeriesTab,true);
+ // skipAutoSelect only when a series is already active (restored from the
+ // per-boot cache above). On a fresh boot/update nothing is restorable, so
+ // an unconditional skip left meterActiveSeriesType null: the greyscale
+ // dropdown read "21pt" purely from its static markup while every
+ // chart/thumb refresh guard early-returned, and the operator saw an empty
+ // Calibration tab until manually re-selecting a series. Letting the
+ // auto-select run builds the default series exactly as a manual
+ // selection would.
+ meterSetSeriesTab(meterSeriesTab,!!meterActiveSeriesType);
  return true;
 }
 // Add change listeners for auto-save
