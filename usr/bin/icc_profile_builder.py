@@ -2654,8 +2654,23 @@ def build(payload, output_dir):
     # followed by a calibrated virtual-device model for the actual ICC color
     # transforms. Windows MHC2 remains its own calibration path and continues
     # to characterize the raw display.
+    applied_calibration = None
+    if (not keeps_mhc2 and calibration_mode == "vcgt"
+            and isinstance(experiment.get("applied_calibration"), list)):
+        # The characterization was measured with these exact curves already
+        # applied on the display (each patch drawn at curve[code]), so the
+        # rows describe the calibrated device directly. Fit them as-is and
+        # carry the same curves in vcgt so the profile reproduces the state
+        # the display was measured in. Deriving fresh curves from these rows
+        # would find a near-identity correction and lose the calibration.
+        applied_calibration = experiment["applied_calibration"]
+        if (len(applied_calibration) != 3
+                or any(not curve or len(curve) != len(applied_calibration[0])
+                       for curve in applied_calibration)):
+            fail("applied_calibration must hold three equal-length curves")
+        calibration = applied_calibration
     fit_rows = profile_rows
-    if not keeps_mhc2 and calibration_mode == "vcgt":
+    if not keeps_mhc2 and calibration_mode == "vcgt" and applied_calibration is None:
         fit_rows = apply_calibration_to_rows(profile_rows, calibration)
     ti3, _, _ = make_ti3(payload, fit_rows)
     if not os.path.isdir(output_dir):
@@ -2761,6 +2776,33 @@ def build(payload, output_dir):
             shutil.move(repaired_path, output_path)
         finally:
             shutil.rmtree(repair_dir, ignore_errors=True)
+    if (profile_type == "kde-hdr" and calibration_mode == "vcgt"
+            and PROFILE_MODELS[profile_model]["family"] == "clut"
+            and applied_calibration is not None
+            and not experiment.get("skip_corridor")):
+        # Raw corridor on the calibrated-device model: the embedded targ
+        # already describes the display with the applied curves active, and
+        # the calibration itself travels in vcgt, so composing it here as
+        # well would apply it twice.
+        repair_tool = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "icc_b2a_repair.py")
+        repair_dir = tempfile.mkdtemp(prefix="pgen_b2a_repair_")
+        try:
+            repaired_path = os.path.join(repair_dir, "repaired.icc")
+            repair_env = dict(os.environ)
+            repair_env["PGEN_BALANCE"] = "0"
+            repair_env.pop("PGEN_CAL_JSON", None)
+            completed = subprocess.run(
+                [sys.executable, repair_tool, output_path, repaired_path],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True, timeout=600, env=repair_env)
+            if completed.returncode != 0 or not os.path.isfile(repaired_path):
+                detail = (completed.stdout or "").strip().splitlines()
+                fail("BToA corridor repair failed"
+                     + (": " + detail[-1][:200] if detail else ""))
+            shutil.move(repaired_path, output_path)
+        finally:
+            shutil.rmtree(repair_dir, ignore_errors=True)
     if calibration_mode == "profile" and not keeps_mhc2:
         if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
             # The dense original neutral series anchors luminance, while the
@@ -2803,6 +2845,14 @@ def build(payload, output_dir):
             # measurable luminance jump at exactly that boundary.
             incorporated = modeled_calibration
             fit_calibration = modeled_calibration
+            if experiment.get("emit_calibration"):
+                # Persist the exact curves this build composes into the
+                # profile, in wire domain, so a physically-calibrated
+                # re-characterization can apply and later embed the same
+                # correction (vcgt + applied_calibration flow).
+                with io.open(output_path + ".calibration.json", "w",
+                             encoding="ascii") as handle:
+                    handle.write(json.dumps(fit_calibration))
             fit_rows = apply_calibration_to_rows(profile_rows, fit_calibration)
             virtual_ti3, _, _ = make_ti3(payload, fit_rows)
             virtual_dir = tempfile.mkdtemp(prefix="pgen_hdr_virtual_")
