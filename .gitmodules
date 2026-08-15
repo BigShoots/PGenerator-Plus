@@ -1,0 +1,4 @@
+[submodule "vendor/ArgyllCMS_ICC4.4"]
+	path = vendor/ArgyllCMS_ICC4.4
+	url = https://github.com/BigShoots/ArgyllCMS_ICC4.4.git
+	branch = feature/icc44-cicp
