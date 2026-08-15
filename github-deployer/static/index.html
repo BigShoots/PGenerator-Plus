@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>PGenerator GitHub Deploy Console</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <p class="eyebrow">GitHub utility</p>
+          <h1>PGenerator <span>GitHub Deploy Console</span></h1>
+        </div>
+      </div>
+      <div id="connectionState" class="connection-state offline">
+        <span></span>
+        <strong>Not connected</strong>
+      </div>
+    </header>
+
+    <section class="source-card">
+      <form id="connectionForm">
+        <div class="section-heading">
+          <div>
+            <p class="step">01 / Source</p>
+            <h2>Choose a GitHub snapshot</h2>
+          </div>
+          <p>Each scan pins one exact commit. Tokens are optional and are never saved.</p>
+        </div>
+        <div class="source-grid">
+          <label>
+            <span>GitHub repository</span>
+            <input id="repository" value="BigShoots/PGenerator-Plus" placeholder="owner/repository" autocomplete="off" required>
+          </label>
+          <label>
+            <span>Branch, tag, or commit</span>
+            <input id="ref" value="main" placeholder="main" autocomplete="off" required>
+          </label>
+          <label>
+            <span>GitHub token <small>optional</small></span>
+            <input id="githubToken" type="password" placeholder="For private repos or rate limits" autocomplete="off">
+          </label>
+        </div>
+        <div class="divider"></div>
+
+        <div class="section-heading target-heading">
+          <div>
+            <p class="step">02 / Target</p>
+            <h2>Connect to your Pi</h2>
+          </div>
+          <p>The Pi address is remembered in this browser. Credentials are not.</p>
+        </div>
+        <div class="target-grid">
+          <label>
+            <span>Pi address</span>
+            <input id="host" placeholder="Pi IP address or pgenerator.local" autocomplete="off" required>
+          </label>
+          <label>
+            <span>SSH user</span>
+            <input id="user" value="root" autocomplete="username" required>
+          </label>
+          <label>
+            <span>SSH password <small>optional for keys</small></span>
+            <input id="password" type="password" value="PGenerator!!$" placeholder="Pi root password" autocomplete="current-password">
+          </label>
+          <button id="scanButton" class="button primary" type="submit">
+            <span class="button-icon">⌁</span>
+            Fetch and scan
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section id="snapshotBar" class="snapshot-bar" hidden>
+      <div class="snapshot-icon">⑂</div>
+      <div>
+        <span>Pinned GitHub snapshot</span>
+        <strong id="snapshotTitle"></strong>
+        <small id="snapshotMessage"></small>
+      </div>
+      <code id="snapshotCommit"></code>
+    </section>
+
+    <section class="workspace">
+      <div class="section-heading compact">
+        <div>
+          <p class="step">03 / Compare</p>
+          <h2>GitHub differences</h2>
+        </div>
+        <div class="summary" aria-live="polite">
+          <span><b id="differentCount">-</b> different</span>
+          <span><b id="missingCount">-</b> missing</span>
+          <span><b id="expectedCount">-</b> expected</span>
+          <span><b id="sameCount">-</b> matched</span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="File filters">
+          <button type="button" class="filter active" data-filter="changes">Changes</button>
+          <button type="button" class="filter" data-filter="expected">Expected</button>
+          <button type="button" class="filter" data-filter="different">Different</button>
+          <button type="button" class="filter" data-filter="missing">Missing</button>
+          <button type="button" class="filter" data-filter="same">Matched</button>
+          <button type="button" class="filter" data-filter="all">All</button>
+        </div>
+        <div class="toolbar-right">
+          <label class="toolbar-toggle">
+            <input id="hideExpected" type="checkbox" disabled>
+            <span>Hide expected</span>
+          </label>
+          <label class="search">
+            <span aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" placeholder="Filter files..." disabled>
+          </label>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="check-cell"><input id="selectAll" type="checkbox" aria-label="Select visible updates" disabled></th>
+              <th>Source path</th>
+              <th>Status</th>
+              <th>GitHub</th>
+              <th>On Pi</th>
+            </tr>
+          </thead>
+          <tbody id="fileRows">
+            <tr class="empty-row">
+              <td colspan="5">
+                <div class="empty-state">
+                  <span>⑂</span>
+                  <strong>No snapshot loaded</strong>
+                  <p>Fetch GitHub and connect to a Pi to compare deployable files.</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="actionbar">
+        <div>
+          <strong id="selectedCount">0 files selected</strong>
+          <span id="selectionSize">Choose unexpected changes to deploy</span>
+        </div>
+        <button id="uploadButton" class="button primary" type="button" disabled>
+          Upload selected
+          <span>→</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="services-card">
+      <div>
+        <p class="step">04 / Services</p>
+        <h2>Restart</h2>
+        <p id="serviceStatus">Scan a Pi to check service status.</p>
+      </div>
+      <div class="restart-actions">
+        <button id="restartDaemonButton" class="button danger" type="button" disabled>
+          <span class="restart-icon">↻</span>
+          Restart daemon
+        </button>
+        <button id="restartButton" class="button danger" type="button" disabled>
+          <span class="restart-icon">↻</span>
+          Restart renderer
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <span class="dialog-icon">↑</span>
+      <h2 id="dialogTitle">Deploy selected files?</h2>
+      <p id="dialogText"></p>
+      <div id="dialogWarning" class="dialog-warning" hidden>
+        <strong>Sensitive files selected</strong>
+        Review device-specific files carefully before continuing.
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="dialogConfirm" value="confirm" class="button primary">Continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

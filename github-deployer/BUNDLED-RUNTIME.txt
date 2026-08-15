@@ -1,0 +1,19 @@
+PGenerator GitHub Deployer bundled runtime
+
+Platform: Windows x64
+Python: CPython 3.13.13 embeddable distribution
+Source: https://www.python.org/ftp/python/3.13.13/python-3.13.13-embed-amd64.zip
+
+Bundled Python packages:
+
+- Paramiko 5.0.0
+- bcrypt 5.0.0
+- cffi 2.1.0
+- cryptography 49.0.0
+- Invoke 3.0.3
+- pycparser 3.0
+- PyNaCl 1.6.2
+
+Python's LICENSE.txt is included in the runtime directory. Third-party package
+license files are included in their corresponding .dist-info directories under
+runtime/Lib/site-packages.
