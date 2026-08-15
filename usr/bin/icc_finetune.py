@@ -368,22 +368,17 @@ def finetune(payload, output_dir):
                     universal_newlines=True)
                 text = process.communicate()[0] or ""
                 average = peak = None
+                import re as _re
                 for line in text.splitlines():
                     low = line.lower()
-                    if "avg. err" in low or "avg err" in low:
-                        for token in line.replace(",", " ").split():
-                            try:
-                                average = float(token)
-                                break
-                            except ValueError:
-                                continue
-                    if "max. err" in low or "max err" in low:
-                        for token in line.replace(",", " ").split():
-                            try:
-                                peak = float(token)
-                                break
-                            except ValueError:
-                                continue
+                    if "avg" not in low or "=" not in low:
+                        continue
+                    found_avg = _re.search(r"avg\.?\s*=\s*([0-9.]+)", low)
+                    found_max = _re.search(r"max\.?\s*=\s*([0-9.]+)", low)
+                    if found_avg:
+                        average = float(found_avg.group(1))
+                    if found_max:
+                        peak = float(found_max.group(1))
                 return average, peak
 
             before_avg, before_peak = run_check(parent_path)
