@@ -2744,10 +2744,28 @@ def build(payload, output_dir):
                 raw_profile = handle.read()
             modeled_calibration = hdr_profile_calibration_from_a2b(
                 raw_profile, profile_rows, calibration)
-            if experiment.get("calibration_source") == "mhc2":
+            if experiment.get("calibration_source", "windows") == "windows":
+                # Default: derive the calibration exactly the way windows-hdr
+                # builds refine their MHC2 curves, from the fitted A2B plus
+                # every original neutral and mixed characterization row. On
+                # the MSI 321URX acceptance runs this closed the rolloff band
+                # from 3.35 to 2.20 average dE-ITP and made the finished KDE
+                # profile beat the small MHC2 reference on both greyscale and
+                # ColorChecker metrics.
+                win_luts = windows_hdr_profile_adjustment_luts(
+                    raw_profile, profile_rows, calibration, black, white, matrix)
+                _, win_matrix, win_luts, _ = mhc2_payload(
+                    mhc2_type, black, white, primaries, profile_rows,
+                    target_transfer or "srgb", apply_calibration=True,
+                    adjustment_luts_override=win_luts)
+                modeled_calibration = vcgt_from_mhc2(
+                    win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
+            elif experiment.get("calibration_source") == "mhc2":
                 # Use the direct MHC2-equivalent curves instead of the
                 # A2B-modeled calibration.
                 modeled_calibration = calibration
+            elif experiment.get("calibration_source") == "modeled":
+                pass  # keep hdr_profile_calibration_from_a2b's curves
             # The measured/modelled curve already contains the dense neutral
             # inversion and the level-dependent D65 correction. Do not splice
             # the older independent-primary curve into its lower 30%. That

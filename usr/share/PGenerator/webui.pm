@@ -21735,7 +21735,7 @@ function meterWrgbTargetCompensationSelected(){
 }
 
 // Per-primary HDR luminance ceilings derived from the current ColorChecker
-// run's full-drive R/G/B endpoint reads. This is deliberately not a general
+// run's R/G/B endpoint reads. This is deliberately not a general
 // chart reference: ordinary ColorChecker patches and saturation sweeps retain
 // their authored, measurement-independent target. The ceilings are consumed
 // only by the HDR ColorChecker 100% primary/secondary endpoint path below.
@@ -21746,8 +21746,6 @@ function meterWrgbPrimaryCeilings(){
  const gamut=meterAnalysisGamut();
  const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
  const idx={red:0,green:1,blue:2};
- const rng=meterColorTargetCodeRange();
- const fullDrive=rng.min+rng.span*0.9;
  const curMode=(typeof meterActiveChartSignalMode==='function')
   ?String(meterActiveChartSignalMode()||'').toLowerCase():'';
  (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
@@ -21761,7 +21759,10 @@ function meterWrgbPrimaryCeilings(){
    (rd.g_code!=null)?rd.g_code:rd.g,
    (rd.b_code!=null)?rd.b_code:rd.b
   ];
-  if(codes.some(v=>v==null)||Math.max(...codes)<fullDrive) return;
+  // series_color + sat_pct identifies the dedicated ColorChecker endpoint.
+  // Do not require a near-full code: HDR10 endpoints are now encoded at the
+  // measured-white PQ level (typically about 75% signal), not at 10,000 nits.
+  if(codes.some(v=>v==null)) return;
   const i=idx[color];
   const measuredY=meterReadingLuminanceNits(rd);
   if(measuredY>0&&Yrow[i]>0&&!(out[i]>0)) out[i]=measuredY/Yrow[i];
@@ -21815,8 +21816,9 @@ function meterWrgbStimulusTargetY(reading){
  let dr=_dvLum?meterDvStimulusLinearChannel(r):meterDecodeColorTargetChannel(r);
  let dg=_dvLum?meterDvStimulusLinearChannel(g):meterDecodeColorTargetChannel(g);
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
- const gamut=(_dvLum&&meterDvMapModeValue()==='1')?meterContainerGamut():meterAnalysisGamut();
- // A full-drive HDR ColorChecker endpoint on a WRGB OLED cannot reach the
+ const gamut=(_dvLum&&meterDvMapModeValue()==='1')||(!_dvLum&&meterChartIsHdr())
+  ?meterContainerGamut():meterAnalysisGamut();
+ // An HDR ColorChecker endpoint on a WRGB OLED cannot reach the
  // decoded PQ peak through its filtered color subpixels. Grade those six
  // endpoint patches against the additive output established by the measured
  // R/G/B endpoints. Keep this narrowly scoped: DV has its stable authored
@@ -21829,9 +21831,20 @@ function meterWrgbStimulusTargetY(reading){
   && reading.series_color!=null&&Number(reading.sat_pct)>=99.5;
  if(_hdrColorEndpoint){
   const ceil=meterWrgbPrimaryCeilings();
+  // dr/dg/db are BT.2020 container channels. Apply WRGB primary ceilings in
+  // the selected target-gamut basis instead, otherwise mixed P3-in-BT.2020
+  // codes are mistaken for desaturated P3 channels during target grading.
+  const endpointRgb=meterGamutColorEndpointRgb(String(reading.series_color));
+  const endpointNits=Math.max(dr,dg,db);
+  dr=Math.max(0,Number(endpointRgb[0])||0)*endpointNits;
+  dg=Math.max(0,Number(endpointRgb[1])||0)*endpointNits;
+  db=Math.max(0,Number(endpointRgb[2])||0)*endpointNits;
   if(ceil[0]>0) dr=Math.min(dr,ceil[0]);
   if(ceil[1]>0) dg=Math.min(dg,ceil[1]);
   if(ceil[2]>0) db=Math.min(db,ceil[2]);
+  const targetGamut=meterAnalysisGamut();
+  const targetXyz=linRgbToXyz(dr,dg,db,targetGamut.rgbToXyz);
+  return (targetXyz&&Number.isFinite(targetXyz.Y)&&targetXyz.Y>=0)?targetXyz.Y:null;
  }
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
