@@ -799,7 +799,7 @@ sub webui_route_is_compute (@) {
  my ($method,$path)=@_;
  return 0 if(!defined($method) || $method ne "POST");
  $path="" if(!defined($path));
- return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches");
+ return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches" || $path eq "/api/icc/finetune");
  return 0;
 }
 
@@ -1778,6 +1778,11 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/icc/reusable") {
     my $result=&webui_icc_reusable_measurements($request_query);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/finetune" && $method eq "POST") {
+    my $result=&webui_icc_profile_finetune($body);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }

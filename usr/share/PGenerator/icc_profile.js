@@ -1686,10 +1686,13 @@ async function meterIccLoadProfiles(){
    none.value='';
    none.textContent='None';
    precondition.appendChild(none);
-   profiles.forEach(profile=>{
+   // Fine-tuned profiles are results of post-correction, not characterization
+   // aids: keep them selectable but clearly labeled and listed after the base
+   // profiles so a pre-conditioning pick defaults to an original build.
+   profiles.filter(p=>!p.finetune).concat(profiles.filter(p=>p.finetune)).forEach(profile=>{
     const option=document.createElement('option');
     option.value=profile.name;
-    option.textContent=profile.name;
+    option.textContent=profile.name+(profile.finetune?' — fine-tuned':'');
     precondition.appendChild(option);
    });
    if(profiles.some(profile=>profile.name===previous)) precondition.value=previous;
@@ -1729,6 +1732,21 @@ async function meterIccLoadProfiles(){
    install.title='Install this profile on the target computer and apply it to the display used by Patch Companion';
    install.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
    install.onclick=()=>meterIccInstallProfile(profile.name,install);
+   if(profile.finetune){
+    const badge=document.createElement('span');
+    badge.className='meter-icc-profile-date';
+    badge.textContent='fine-tuned';
+    badge.title='Created by a post-correction fine-tune pass from measured reads of the applied parent profile';
+    name.appendChild(document.createTextNode(' '));
+    name.appendChild(badge);
+   }
+   const finetune=document.createElement('button');
+   finetune.type='button';
+   finetune.className='btn btn-sm btn-secondary';
+   finetune.textContent='Fine tune';
+   finetune.title='Apply this profile, read a grey series through it and create a corrected fine-tuned copy in the history';
+   finetune.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
+   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune);
    const validate=document.createElement('button');
    validate.type='button';
    validate.className='btn btn-sm btn-secondary';
@@ -1743,11 +1761,73 @@ async function meterIccLoadProfiles(){
    remove.title='Delete this profile';
    remove.setAttribute('aria-label','Delete '+profile.name);
    remove.onclick=()=>meterIccDeleteProfile(profile.name);
-   row.append(name,created,download,install,validate,remove);
+   row.append(name,created,download,install,finetune,validate,remove);
    list.appendChild(row);
   });
  }catch(error){
   list.textContent='Could not load created profiles.';
+ }
+}
+
+async function meterIccFineTuneProfile(file,button){
+ if(!meterIccCompanionConnected){ showToast('Start Patch Companion on the target computer first','error'); return; }
+ if(meterIccRunning||meterSeriesRunning){ showToast('Wait for the active meter work to finish first','error'); return; }
+ const original=button?button.textContent:'Fine tune';
+ if(button){ button.disabled=true; button.textContent='Applying...'; }
+ try{
+  // 1. Install and apply the parent so the reads go through it.
+  const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file})});
+  if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
+  for(let i=0;i<40;i++){
+   await new Promise(resolve=>setTimeout(resolve,1500));
+   const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
+   if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) break;
+   if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
+   if(i===39) throw new Error('Profile installation timed out');
+  }
+  // 2. Grey series through the applied profile, repeats at the noisy levels.
+  if(button) button.textContent='Reading...';
+  const percents=[0,5,5,5,10,10,10,20,30,40,50,55,60,63,65,67,70,72,74,74,74,75,80,90,100];
+  const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
+  const body=meterMeasurementSignalContext({
+   type:'colors',points:990001,custom_series:true,custom_steps:steps,
+   display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
+   ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
+   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
+   target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
+   patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined,
+   require_device_ready:meterSelectedMeasurementRequiresReady(),
+   pattern_provider:'companion',
+   ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
+  });
+  body.observer='1931_2';
+  body.target_white_use_measured=false;
+  body.target_black_use_measured=false;
+  body.series_has_saved_white_reference=true;
+  body.series_has_saved_black_reference=true;
+  body.signal_mode=meterChartSignalMode()==='hdr10'?'hdr10':'sdr';
+  if(body.signal_mode==='hdr10'){ body.signal_range='2'; body.pattern_signal_range='2'; body.transport_signal_range='2'; body.max_luma='1000'; }
+  const started=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
+  if(!started||started.status!=='started') throw new Error(started&&started.message||'Could not start the fine-tune reads');
+  let readings=null;
+  for(let i=0;i<600;i++){
+   await new Promise(resolve=>setTimeout(resolve,2000));
+   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+   if(button) button.textContent='Reading '+(state&&state.current_step||0)+'/'+steps.length;
+   if(state&&state.status==='complete'){ readings=state.readings||[]; break; }
+   if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
+  }
+  if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
+  // 3. Build the fine-tuned copy.
+  if(button) button.textContent='Tuning...';
+  const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file,readings,damping:0.5}),_timeoutMs:1800000});
+  if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
+  showToast('Created '+result.file+' (mean correction '+(result.mean_correction_pct||0)+'%)');
+  meterIccRefreshProfiles();
+ }catch(error){
+  showToast(error&&error.message?error.message:'Fine-tuning failed',true);
+ }finally{
+  if(button){ button.disabled=false; button.textContent=original; }
  }
 }
 
