@@ -1645,7 +1645,7 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
     return luts
 
 
-def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
+def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
     """Give a KDE HDR B2A table a PQ-domain shaper and neutral corridor.
 
     Argyll's inverse display table is sampled in linear PCS XYZ. Even a 45^3
@@ -1673,13 +1673,13 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None):
         if len(payload) < 52 or payload[:4] != b"mft2":
             continue
         input_channels, output_channels, source_grid = payload[8], payload[9], payload[10]
-        # A one-cell neutral corridor is required for trilinear GPU sampling:
-        # every corner of a cube crossed by the neutral axis must agree with
-        # the calibrated grey transform. On a 33-point cLUT that corridor is
-        # over 3% wide per channel and visibly distorts low-saturation colors.
-        # Resampling to 65 points keeps the same fitted transform but confines
-        # the mandatory corridor to roughly 1.5%.
-        grid = max(source_grid, 65)
+        # 65 remains the measured default: at 33 the corridor/cLUT interaction
+        # broke a single mid-rolloff patch by 13 dE on hardware (70% stimulus)
+        # with two different corridor anchors, while 65 measured 1.25 dE at the
+        # same patch. A 33-point grid stays selectable for experiments until
+        # that cell interaction is solved; the build-time answer is vectorizing
+        # this resample, not shrinking the grid.
+        grid = max(source_grid, grid_size)
         input_entries, output_entries = struct.unpack(">HH", payload[48:52])
         if input_channels != 3 or output_channels != 3 or source_grid < 2 or input_entries < 2 or output_entries < 2:
             continue
@@ -2789,7 +2789,8 @@ def build(payload, output_dir):
                 else:
                     reshaped_profile = reshape_hdr_b2a_for_pq(
                         virtual_profile, white["xyz"][1],
-                        incorporated_calibration=incorporated)
+                        incorporated_calibration=incorporated,
+                        grid_size=33 if experiment.get("grid") == 33 else 65)
                     reshaped_tags = dict(read_icc_tags(reshaped_profile))
                     replacements = {
                         signature: reshaped_tags[signature]
@@ -2828,8 +2829,12 @@ def build(payload, output_dir):
                     with io.open(raw_ti3_path, "w", encoding="ascii", errors="replace") as handle:
                         handle.write(raw_ti3_text)
                     repaired_path = os.path.join(repair_dir, "repaired.icc")
+                    cal_json_path = os.path.join(repair_dir, "calibration.json")
+                    with io.open(cal_json_path, "w", encoding="ascii") as handle:
+                        handle.write(json.dumps(fit_calibration))
                     repair_env = dict(os.environ)
                     repair_env["PGEN_BALANCE"] = "1" if experiment.get("balanced_peak") else "0"
+                    repair_env["PGEN_CAL_JSON"] = cal_json_path
                     completed = subprocess.run(
                         [sys.executable, repair_tool, output_path, repaired_path, raw_ti3_path],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

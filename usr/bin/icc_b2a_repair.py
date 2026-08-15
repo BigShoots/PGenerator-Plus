@@ -71,7 +71,7 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
         pure = sorted([r for r in rows if f(r,idx) > 0.5 and all(f(r,o) < 0.01 for o in others)],
                       key=lambda r: f(r,idx))
         if not pure:
-            return curve, ymax, plateau_pct, None
+            return curve, ymax, plateau_pct, None, None
         prim[name] = [f(pure[-1], xi), f(pure[-1], yi), f(pure[-1], zi)]
         ramps[name] = [(f(r,idx), f(r,yi)) for r in pure]
     M = [[prim[c][row] for c in 'RGB'] for row in range(3)]
@@ -95,10 +95,11 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
         return ramp[-1][0]
     balanced = [code_for_fraction(c, s['RGB'.index(c)])/100.0 for c in 'RGB']
     ybal = sum(M[1][k]*s[k] for k in range(3))
-    print(f"balanced peak: scales R={s[0]:.4f} G={s[1]:.4f} B={s[2]:.4f}, "
-          f"Y={ybal:.2f}% of native white, codes "
-          f"R={balanced[0]*100:.2f}% G={balanced[1]*100:.2f}% B={balanced[2]*100:.2f}%")
-    return curve, ymax, plateau_pct, balanced
+    prim_sum = M[1][0]+M[1][1]+M[1][2]
+    luma_w = (M[1][0]/prim_sum, M[1][1]/prim_sum, M[1][2]/prim_sum)
+    print("balanced peak: scales R={:.4f} G={:.4f} B={:.4f}, Y={:.2f}% of native white, codes R={:.2f}% G={:.2f}% B={:.2f}%".format(
+        s[0], s[1], s[2], ybal, balanced[0]*100, balanced[1]*100, balanced[2]*100))
+    return curve, ymax, plateau_pct, balanced, luma_w
 
 ENC = 32768.0/65535.0
 KNEE = 0.70
@@ -157,7 +158,7 @@ def refine_balance_with_a2b(d, tags, balanced, plateau_dev, native_white_xy, tar
     txyz = mmul_b(AD, d65)
     ts_ = sum(txyz)
     tx, ty = txyz[0]/ts_, txyz[1]/ts_
-    print(f"PCS target for absolute D65: xy ({tx:.4f},{ty:.4f}) [native white {nx:.4f},{ny:.4f}]")
+    print("PCS target for absolute D65: xy ({:.4f},{:.4f}) [native white {:.4f},{:.4f}]".format(tx, ty, nx, ny))
     lock = balanced.index(max(balanced))
     free = [ch for ch in range(3) if ch != lock]
     codes = list(balanced)
@@ -180,11 +181,50 @@ def refine_balance_with_a2b(d, tags, balanced, plateau_dev, native_white_xy, tar
         d1 = (-ey*jac[0][0] + ex*jac[0][1])/det
         codes[free[0]] = min(plateau_dev, max(0.5, codes[free[0]] + max(-0.01, min(0.01, d0))))
         codes[free[1]] = min(plateau_dev, max(0.5, codes[free[1]] + max(-0.01, min(0.01, d1))))
-    print(f"A2B-refined balance: R={codes[0]*100:.2f}% G={codes[1]*100:.2f}% B={codes[2]*100:.2f}% "
-          f"(model xy {xyz[0]/s:.4f},{xyz[1]/s:.4f})")
+    print("A2B-refined balance: R={:.2f}% G={:.2f}% B={:.2f}% (model xy {:.4f},{:.4f})".format(
+        codes[0]*100, codes[1]*100, codes[2]*100, xyz[0]/s, xyz[1]/s))
     return codes
 
-def repair(d, tags, curve, ymax, plateau_pct, balanced):
+def load_calibration_curves():
+    """Optional per-channel calibration curves (profile value -> wire code).
+
+    When the builder supplies them, the corridor emits the calibrated wire
+    triple for every neutral level: the same level-dependent white correction
+    the calibration derived from the forward model, applied over the full
+    luminance range. This is the ICC-native equivalent of evaluating a 1D
+    calibration curve at source codes, which is how MHC2 tracks a grey axis.
+    """
+    import os
+    path = os.environ.get('PGEN_CAL_JSON', '')
+    if not path:
+        return None
+    import json as _json
+    with open(path) as handle:
+        curves = _json.load(handle)
+    if not (isinstance(curves, list) and len(curves) == 3 and
+            all(len(c) >= 2 for c in curves)):
+        return None
+    return curves
+
+def sample_curve(curve, position):
+    position = max(0.0, min(1.0, position))*(len(curve)-1)
+    low = min(int(position), len(curve)-2)
+    fraction = position-low
+    return curve[low]*(1.0-fraction)+curve[low+1]*fraction
+
+def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
+    if luma_w is None:
+        luma_w = (0.2627, 0.6780, 0.0593)
+    def measured_lum(code_pct):
+        if code_pct <= curve[0][0]:
+            return curve[0][1]
+        for i in range(1, len(curve)):
+            if curve[i][0] >= code_pct:
+                p0, y0 = curve[i-1]
+                p1, y1 = curve[i]
+                t = 0.0 if p1 == p0 else (code_pct-p0)/(p1-p0)
+                return y0 + t*(y1-y0)
+        return curve[-1][1]
     def be16(p): return (d[p]<<8)|d[p+1]
     def wbe16(p, v):
         v = max(0, min(65535, int(round(v)))); d[p] = v>>8; d[p+1] = v & 0xFF
@@ -223,8 +263,37 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced):
             # luminance follows the measured neutral curve while the channel
             # ratio approaches the balanced peak.
             w = max(0.0, min(1.0, (y_rel - KNEE)/(0.95 - KNEE)))
+            v_cal = None
+            import os as _os
+            simple_anchor = _os.environ.get('PGEN_CAL_ANCHOR', 'simple') == 'simple'
+            if cal is not None and simple_anchor:
+                v_cal = code_for_y(min(y_rel, 1.0), None) if y_rel < 1.0 else plateau_pct/100.0
+            elif cal is not None:
+                # The calibration shifts each channel differently, so anchor
+                # the corridor's profile value against the luma-weighted sum
+                # of all three calibrated channels evaluated through the
+                # measured neutral response. Anchoring on green alone leaves
+                # the red and blue calibration deltas unaccounted and the
+                # corridor luminance drifts through the rolloff.
+                # Aim just under the plateau: the composite only reaches the
+                # exact maximum at full drive, far beyond the real plateau.
+                target_y = min(min(y_rel, 1.0)*ymax, 0.995*ymax)
+                lo, hi = 0.0, 1.0
+                for _ in range(28):
+                    mid = 0.5*(lo+hi)
+                    lum = 0.0
+                    for ch in range(3):
+                        code_pct = sample_curve(cal[ch], mid)*100.0
+                        lum += luma_w[ch]*measured_lum(code_pct)
+                    if lum < target_y:
+                        lo = mid
+                    else:
+                        hi = mid
+                v_cal = 0.5*(lo+hi)
             def corridor_code(ch):
                 base = code_for_y(min(y_rel, 1.0), None) if y_rel < 1.0 else plateau_dev
+                if cal is not None:
+                    return sample_curve(cal[ch], v_cal)
                 if balanced:
                     return base + (balanced[ch] - plateau_dev)*w
                 return base
@@ -252,7 +321,7 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced):
                     for ch in range(3):
                         wbe16(base+ch*2, wnode[ch]*65535.0)
                     replaced += 1
-        print(f"{tag}: corridor nodes replaced={replaced}")
+        print("{}: corridor nodes replaced={}".format(tag, replaced))
 
 def main():
     src, dst = sys.argv[1], sys.argv[2]
@@ -263,8 +332,8 @@ def main():
         off, size = tags['targ']
         text = d[off+8:off+size].decode('latin1', 'replace')
     fmt, rows = parse_ti3(text)
-    curve, ymax, plateau_pct, balanced = analyse_measurements(fmt, rows)
-    print(f"neutral rows={len(curve)} plateau={plateau_pct:.2f}%")
+    curve, ymax, plateau_pct, balanced, luma_w = analyse_measurements(fmt, rows)
+    print("neutral rows={} plateau={:.2f}%".format(len(curve), plateau_pct))
     ri2, gi2, bi2 = fmt.index('RGB_R'), fmt.index('RGB_G'), fmt.index('RGB_B')
     xi2, yi2, zi2 = fmt.index('XYZ_X'), fmt.index('XYZ_Y'), fmt.index('XYZ_Z')
     wr = [r for r in rows if float(r[ri2]) == 100 and float(r[gi2]) == 100 and float(r[bi2]) == 100]
@@ -274,7 +343,7 @@ def main():
     override = os.environ.get('PGEN_BALANCE_OVERRIDE', '')
     if override:
         balanced = [float(v)/100.0 for v in override.split(',')]
-        print(f"balance override: R={balanced[0]*100:.2f}% G={balanced[1]*100:.2f}% B={balanced[2]*100:.2f}%")
+        print("balance override: R={:.2f}% G={:.2f}% B={:.2f}%".format(balanced[0]*100, balanced[1]*100, balanced[2]*100))
     elif os.environ.get('PGEN_BALANCE') == '1':
         balanced = refine_balance_with_a2b(d, tags, balanced, plateau_pct/100.0, (wx/ws, wy/ws))
     else:
@@ -282,9 +351,12 @@ def main():
         # equal channels. Peak white balancing needs knee-band characterization
         # samples; without them the solve overshoots on cliff-type panels.
         balanced = None
-    repair(d, tags, curve, ymax, plateau_pct, balanced)
+    cal = load_calibration_curves()
+    if cal is not None:
+        print("calibrated corridor: full-range, curves x{}".format(len(cal[0])))
+    repair(d, tags, curve, ymax, plateau_pct, balanced, cal, luma_w)
     open(dst, 'wb').write(bytes(d))
-    print(f"wrote {dst}")
+    print("wrote {}".format(dst))
 
 if __name__ == '__main__':
     main()
