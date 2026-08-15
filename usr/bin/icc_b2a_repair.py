@@ -46,6 +46,9 @@ def minv3(m):
             [(g*h-e*j)/det,(a*j-c*h)/det,(c*e-a*g)/det],
             [(e*i-f*h)/det,(b*h-a*i)/det,(a*f-b*e)/det]]
 
+BRAD_M = [[0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]]
+def mmul_b(m, v): return [sum(m[r][k]*v[k] for k in range(3)) for r in range(3)]
+
 def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
     ri, gi, bi = fmt.index('RGB_R'), fmt.index('RGB_G'), fmt.index('RGB_B')
     xi, yi, zi = fmt.index('XYZ_X'), fmt.index('XYZ_Y'), fmt.index('XYZ_Z')
@@ -100,6 +103,86 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
 ENC = 32768.0/65535.0
 KNEE = 0.70
 D50 = (0.9642, 1.0, 0.8249)
+
+def a2b_evaluator(d, tags):
+    if 'A2B0' not in tags:
+        return None
+    o,_ = tags['A2B0']
+    grid = d[o+10]; ine, oute = struct.unpack('>HH', bytes(d[o+48:o+52]))
+    inoff = o+52; clutoff = inoff+3*ine*2; outoff = clutoff+grid**3*3*2
+    def be16(p): return (d[p]<<8)|d[p+1]
+    def ts(base, count, v):
+        v = max(0.0, min(1.0, v))*(count-1); lo = min(int(v), count-2); fr = v-lo
+        return (be16(base+lo*2)*(1-fr)+be16(base+(lo+1)*2)*fr)/65535.0
+    def ev(rgb):
+        co = [ts(inoff+ch*ine*2, ine, rgb[ch]) for ch in range(3)]
+        b=[0]*3; f=[0.0]*3
+        for r in range(3):
+            p=max(0.0,min(1.0,co[r]))*(grid-1); b[r]=min(int(p),grid-2); f[r]=p-b[r]
+        out=[0.0]*3
+        for ch in range(3):
+            a=0.0
+            for rr in range(2):
+                for gg in range(2):
+                    for bb in range(2):
+                        w=(f[0] if rr else 1-f[0])*(f[1] if gg else 1-f[1])*(f[2] if bb else 1-f[2])
+                        a+=be16(clutoff+((((b[0]+rr)*grid+(b[1]+gg))*grid+(b[2]+bb))*3+ch)*2)/65535.0*w
+            out[ch]=a
+        return [ts(outoff+ch*oute*2, oute, out[ch])*2.0 for ch in range(3)]
+    return ev
+
+def refine_balance_with_a2b(d, tags, balanced, plateau_dev, native_white_xy, target=(0.3127, 0.3290)):
+    """Newton-refine the balanced peak through the profile's forward model.
+
+    The additive primary solve over-corrects when channels interact near full
+    drive. The fitted A2B saw every near-white mixture row, so solving the
+    white point through it captures that non-additivity. The lightest channel
+    stays at the plateau code; the other two adjust until the modelled
+    chromaticity meets the calibration target.
+    """
+    ev = a2b_evaluator(d, tags)
+    if ev is None or not balanced:
+        return balanced
+    # The A2B output is media-relative PCS: the display's native white maps to
+    # D50. A stimulus that MEASURES absolute D65 therefore maps to D65 pushed
+    # through the profile's native-to-D50 adaptation, not to raw D65.
+    nx, ny = native_white_xy
+    nat = [nx/ny, 1.0, (1-nx-ny)/ny]
+    d50 = [0.9642, 1.0, 0.8249]
+    d65 = [target[0]/target[1], 1.0, (1-target[0]-target[1])/target[1]]
+    cs, cd = mmul_b(BRAD_M, nat), mmul_b(BRAD_M, d50)
+    sc = [[cd[r]/cs[r]*BRAD_M[r][k] for k in range(3)] for r in range(3)]
+    ib = minv3(BRAD_M)
+    AD = [[sum(ib[r][k]*sc[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
+    txyz = mmul_b(AD, d65)
+    ts_ = sum(txyz)
+    tx, ty = txyz[0]/ts_, txyz[1]/ts_
+    print(f"PCS target for absolute D65: xy ({tx:.4f},{ty:.4f}) [native white {nx:.4f},{ny:.4f}]")
+    lock = balanced.index(max(balanced))
+    free = [ch for ch in range(3) if ch != lock]
+    codes = list(balanced)
+    codes[lock] = plateau_dev
+    for _ in range(24):
+        xyz = ev(codes)
+        s = sum(xyz)
+        if s <= 0: break
+        ex, ey = xyz[0]/s - tx, xyz[1]/s - ty
+        if abs(ex) < 2e-5 and abs(ey) < 2e-5: break
+        step = 0.004
+        jac = []
+        for ch in free:
+            probe = list(codes); probe[ch] = min(1.0, probe[ch] + step)
+            pxyz = ev(probe); ps = sum(pxyz)
+            jac.append(((pxyz[0]/ps - xyz[0]/s)/step, (pxyz[1]/ps - xyz[1]/s)/step))
+        det = jac[0][0]*jac[1][1] - jac[1][0]*jac[0][1]
+        if abs(det) < 1e-9: break
+        d0 = (-ex*jac[1][1] + ey*jac[1][0])/det
+        d1 = (-ey*jac[0][0] + ex*jac[0][1])/det
+        codes[free[0]] = min(plateau_dev, max(0.5, codes[free[0]] + max(-0.01, min(0.01, d0))))
+        codes[free[1]] = min(plateau_dev, max(0.5, codes[free[1]] + max(-0.01, min(0.01, d1))))
+    print(f"A2B-refined balance: R={codes[0]*100:.2f}% G={codes[1]*100:.2f}% B={codes[2]*100:.2f}% "
+          f"(model xy {xyz[0]/s:.4f},{xyz[1]/s:.4f})")
+    return codes
 
 def repair(d, tags, curve, ymax, plateau_pct, balanced):
     def be16(p): return (d[p]<<8)|d[p+1]
@@ -182,6 +265,23 @@ def main():
     fmt, rows = parse_ti3(text)
     curve, ymax, plateau_pct, balanced = analyse_measurements(fmt, rows)
     print(f"neutral rows={len(curve)} plateau={plateau_pct:.2f}%")
+    ri2, gi2, bi2 = fmt.index('RGB_R'), fmt.index('RGB_G'), fmt.index('RGB_B')
+    xi2, yi2, zi2 = fmt.index('XYZ_X'), fmt.index('XYZ_Y'), fmt.index('XYZ_Z')
+    wr = [r for r in rows if float(r[ri2]) == 100 and float(r[gi2]) == 100 and float(r[bi2]) == 100]
+    wx = sum(float(r[xi2]) for r in wr)/len(wr); wy = sum(float(r[yi2]) for r in wr)/len(wr)
+    wz = sum(float(r[zi2]) for r in wr)/len(wr); ws = wx+wy+wz
+    import os
+    override = os.environ.get('PGEN_BALANCE_OVERRIDE', '')
+    if override:
+        balanced = [float(v)/100.0 for v in override.split(',')]
+        print(f"balance override: R={balanced[0]*100:.2f}% G={balanced[1]*100:.2f}% B={balanced[2]*100:.2f}%")
+    elif os.environ.get('PGEN_BALANCE') == '1':
+        balanced = refine_balance_with_a2b(d, tags, balanced, plateau_pct/100.0, (wx/ws, wy/ws))
+    else:
+        # Default: continue the corridor to the earliest measured plateau with
+        # equal channels. Peak white balancing needs knee-band characterization
+        # samples; without them the solve overshoots on cliff-type panels.
+        balanced = None
     repair(d, tags, curve, ymax, plateau_pct, balanced)
     open(dst, 'wb').write(bytes(d))
     print(f"wrote {dst}")
