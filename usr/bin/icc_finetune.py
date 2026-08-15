@@ -387,10 +387,12 @@ def finetune(payload, output_dir):
                 selfcheck = {
                     "before_avg": before_avg, "before_peak": before_peak,
                     "after_avg": after_avg, "after_peak": after_peak,
-                    "note": ("The self-check compares against the original "
-                             "characterization. A fine-tuned profile matches "
-                             "the display as read today, so a small self-check "
-                             "increase is expected and not a regression."),
+                    "note": ("profcheck validates the forward (AtoB) "
+                             "characterization fit, which fine-tuning leaves "
+                             "untouched by design; identical numbers confirm "
+                             "the tune did not disturb the fitted model. The "
+                             "output-side change is shown by the measured "
+                             "grey comparison below."),
                 }
         finally:
             import shutil
