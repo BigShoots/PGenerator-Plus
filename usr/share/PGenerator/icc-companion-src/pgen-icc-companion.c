@@ -106,7 +106,7 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.19"
+#define APP_VERSION "1.4.20"
 #define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
@@ -120,6 +120,11 @@ typedef struct {
     struct wl_display *display;
     struct wp_color_manager_v1 *manager;
     struct wp_color_management_surface_v1 *surface;
+    /* The wl_surface the color surface above was created for. SDL recreates
+     * the window surface on renderer fallback, and a request on a color
+     * surface whose wl_surface is gone is a protocol error that fatally
+     * closes the display connection. */
+    struct wl_surface *bound_surface;
     bool parametric;
     bool set_primaries;
     bool luminances;
@@ -345,9 +350,22 @@ static bool pgen_wayland_set_hdr_surface(SDL_Window *window, bool hdr,
         wl_registry_destroy(registry);
         if (!wayland_color.manager)
             return SDL_SetError("KWin does not expose color-management-v1");
+    }
+    if (wayland_color.surface && wayland_color.bound_surface != wl_surface) {
+        /* SDL recreated the window surface (renderer fallback, display
+         * move). The color surface still references the destroyed
+         * wl_surface, and any request on it makes KWin close the whole
+         * display connection. Drop it and bind the current surface. */
+        wp_color_management_surface_v1_destroy(wayland_color.surface);
+        wayland_color.surface = NULL;
+        wayland_color.bound_surface = NULL;
+    }
+    if (!wayland_color.surface) {
+        if (!hdr) return true;
         SDL_Log("Creating Wayland color-management surface (hdr=%d)", hdr ? 1 : 0);
         wayland_color.surface = wp_color_manager_v1_get_surface(
             wayland_color.manager, wl_surface);
+        wayland_color.bound_surface = wl_surface;
     }
 
     SDL_Log("Setting Wayland surface color state hdr=%d manager=%p surface=%p",
@@ -3247,6 +3265,16 @@ static bool try_create_renderer(bool hdr, const char *driver)
     return true;
 }
 
+/* A failed HDR attempt is expensive: forced fullscreen, per-driver probes
+ * with multi-second waits, swapchain creation and teardown. The server keeps
+ * requesting patches while the condition persists (HDR disabled in the
+ * desktop, dead GPU stack), and retrying the whole gauntlet for every
+ * request pegs a core and can leak per attempt. Fail fast from the cached
+ * error during a cooldown; an HDR state change event clears it so enabling
+ * HDR in the desktop settings retries immediately. */
+static Uint64 hdr_attempt_cooldown_until;
+static char hdr_attempt_cached_error[512];
+
 static bool create_renderer(bool hdr)
 {
 #ifndef _WIN32
@@ -3265,9 +3293,18 @@ static bool create_renderer(bool hdr)
     char last_error[512] = "";
 
     if (!hdr) return try_create_renderer(false, NULL);
+    if (hdr_attempt_cooldown_until &&
+        SDL_GetTicks() < hdr_attempt_cooldown_until) {
+        return SDL_SetError("%s", hdr_attempt_cached_error[0]
+                            ? hdr_attempt_cached_error
+                            : "HDR renderer unavailable");
+    }
 #ifdef _WIN32
     destroy_renderer();
-    if (windows_create_hdr_output()) return true;
+    if (windows_create_hdr_output()) {
+        hdr_attempt_cooldown_until = 0;
+        return true;
+    }
     SDL_strlcpy(last_error, SDL_GetError(), sizeof(last_error));
 #else
 #ifndef __APPLE__
@@ -3294,7 +3331,10 @@ static bool create_renderer(bool hdr)
     for (index = 0; index < SDL_arraysize(hdr_drivers); index++) {
         const char *driver = hdr_drivers[index];
         char attempt_summary[320];
-        if (try_create_renderer(true, driver)) return true;
+        if (try_create_renderer(true, driver)) {
+            hdr_attempt_cooldown_until = 0;
+            return true;
+        }
         attempt_error[0] = '\0';
         if (SDL_GetError() && SDL_GetError()[0])
             SDL_strlcpy(attempt_error, SDL_GetError(), sizeof(attempt_error));
@@ -3314,6 +3354,9 @@ static bool create_renderer(bool hdr)
     if (app.renderer) render_alignment();
     SDL_SetError("HDR renderer unavailable: %s",
                  last_error[0] ? last_error : "No HDR renderer was available");
+    SDL_strlcpy(hdr_attempt_cached_error, SDL_GetError(),
+                sizeof(hdr_attempt_cached_error));
+    hdr_attempt_cooldown_until = SDL_GetTicks() + 5000;
     return false;
 }
 
@@ -4829,6 +4872,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     AppState *state = (AppState *)appstate;
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
+    if (event->type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED) {
+        /* The desktop's HDR state changed (for example the user just enabled
+         * HDR for the display), so a cooled-down HDR failure is stale. */
+        hdr_attempt_cooldown_until = 0;
+    }
     if (event->type == SDL_EVENT_WINDOW_HDR_STATE_CHANGED &&
         (state->renderer
 #ifdef _WIN32
