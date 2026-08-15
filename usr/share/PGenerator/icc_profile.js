@@ -1775,8 +1775,8 @@ async function meterIccLoadProfiles(){
 }
 
 async function meterIccFineTuneProfile(file,button){
- if(!meterIccCompanionConnected){ showToast('Start Patch Companion on the target computer first','error'); return; }
- if(meterIccRunning||meterSeriesRunning){ showToast('Wait for the active meter work to finish first','error'); return; }
+ if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
+ if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
  const original=button?button.textContent:'Fine tune';
  if(button){ button.disabled=true; button.textContent='Applying...'; }
  try{
@@ -1830,7 +1830,7 @@ async function meterIccFineTuneProfile(file,button){
   meterIccShowFineTuneReport(file,result);
   meterIccRefreshProfiles();
  }catch(error){
-  showToast(error&&error.message?error.message:'Fine-tuning failed',true);
+  toast(error&&error.message?error.message:'Fine-tuning failed',true);
  }finally{
   if(button){ button.disabled=false; button.textContent=original; }
  }
