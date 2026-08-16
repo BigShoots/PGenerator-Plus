@@ -2647,6 +2647,29 @@ def build(payload, output_dir):
         mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb",
         apply_calibration=calibration_mode != "none")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
+    # A calibration is a trim: below the display's knee it must track the
+    # wire near-identically (the dense MSI sets stay within ~1%). Sparse
+    # characterizations can degenerate the ramp inversion into a wire-to-
+    # linear-light map (a 425-patch Medium set produced cal(0.5)=0.31 with
+    # one channel slammed to 1.0 at 75% while another stopped at 0.59). The
+    # separate-vcgt architecture cancels such curves by construction, but
+    # MHC2 on Windows and the composed KDE flow apply them for real. Fall
+    # back to no calibration rather than ship a corrupted one.
+    if calibration_mode != "none":
+        entries = len(calibration[0])
+        deviation = max(
+            abs(curve[int(x * (entries - 1))] - x)
+            for curve in calibration
+            for x in (0.15, 0.30, 0.45, 0.55))
+        if deviation > 0.08:
+            calibration = [[index / float(entries - 1) for index in range(entries)]
+                           for _channel in range(3)]
+            identity_mhc2 = [[index / 255.0 for index in range(256)]
+                             for _channel in range(3)]
+            mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
+                mhc2_type, black, white, primaries, profile_rows,
+                target_transfer or "srgb", apply_calibration=True,
+                adjustment_luts_override=identity_mhc2)
 
     # A separate VCGT starts with a profile of the calibrated virtual device.
     # KDE HDR calibration incorporated into B2A needs two models from the same
@@ -2865,6 +2888,19 @@ def build(payload, output_dir):
                 # find a near-identity correction, and simulating the
                 # calibration on top of them would apply it twice.
                 modeled_calibration = applied_calibration
+            # Same trim-shape guard as the primary curves: below the knee a
+            # calibration must track the wire near-identically. A degenerate
+            # derivation composed into the transforms renders as a linear-
+            # light S-curve on screen, so drop to identity instead.
+            entries = len(modeled_calibration[0])
+            deviation = max(
+                abs(curve[int(x * (entries - 1))] - x)
+                for curve in modeled_calibration
+                for x in (0.15, 0.30, 0.45, 0.55))
+            if deviation > 0.08:
+                modeled_calibration = [
+                    [index / float(entries - 1) for index in range(entries)]
+                    for _channel in range(3)]
             incorporated = modeled_calibration
             fit_calibration = modeled_calibration
             if experiment.get("emit_calibration"):
