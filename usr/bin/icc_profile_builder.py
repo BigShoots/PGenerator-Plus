@@ -2829,12 +2829,22 @@ def build(payload, output_dir):
                 # ColorChecker metrics.
                 win_luts = windows_hdr_profile_adjustment_luts(
                     raw_profile, profile_rows, calibration, black, white, matrix)
-                _, win_matrix, win_luts, _ = mhc2_payload(
+                _, win_matrix, win_luts, win_peak = mhc2_payload(
                     mhc2_type, black, white, primaries, profile_rows,
                     target_transfer or "srgb", apply_calibration=True,
                     adjustment_luts_override=win_luts)
-                modeled_calibration = vcgt_from_mhc2(
-                    win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
+                if win_peak < 0.75 * white["xyz"][1]:
+                    # The refinement inverts the measured per-channel ramps,
+                    # and a sparse characterization (no dense single-channel
+                    # coverage) can make that inversion collapse: one Medium
+                    # patch set drove a 310-nit panel's calibrated peak down
+                    # to 182 nits and the finished profile rendered an
+                    # S-curve. A calibration is a trim, never a 25% peak
+                    # cut - keep the primary-axis curves instead.
+                    pass
+                else:
+                    modeled_calibration = vcgt_from_mhc2(
+                        win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
             elif experiment.get("calibration_source") == "mhc2":
                 # Use the direct MHC2-equivalent curves instead of the
                 # A2B-modeled calibration.
