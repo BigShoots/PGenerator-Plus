@@ -98,11 +98,19 @@ sub webui_icc_profile_finetune (@) {
  my $parent="$_icc_profile_dir/$file";
  return '{"status":"error","message":"ICC profile not found"}' unless(-f $parent);
  # Derive a space-free versioned name so the result stays installable and
- # clearly separate from characterization-time pre-conditioning profiles.
- my $stem=$file; $stem=~s/\.icc$//i; $stem=~s/-FineTuned(?:-\d+)?$//;
- my $out_name=$stem."-FineTuned";
- my $suffix=2;
- while(-f "$_icc_profile_dir/$out_name.icc") { $out_name=$stem."-FineTuned-".$suffix; $suffix++; last if($suffix>99); }
+ # clearly separate from characterization-time pre-conditioning profiles. An
+ # iterative AutoCal-style session passes an explicit output stem instead and
+ # overwrites it on every pass, so converging does not litter the history
+ # with one file per iteration.
+ my $out_name="";
+ $out_name=$1 if($body=~/"output"\s*:\s*"([A-Za-z0-9._()-]{1,80})"/);
+ $out_name="" if($out_name=~/\.\./ || $out_name=~/\.icc$/i);
+ if($out_name eq "") {
+  my $stem=$file; $stem=~s/\.icc$//i; $stem=~s/-FineTuned(?:-\d+)?$//;
+  $out_name=$stem."-FineTuned";
+  my $suffix=2;
+  while(-f "$_icc_profile_dir/$out_name.icc") { $out_name=$stem."-FineTuned-".$suffix; $suffix++; last if($suffix>99); }
+ }
  my $token=time()."_".$$."_".int(rand(1000000));
  my $input="/tmp/icc_finetune_${token}.json";
  my $fh;

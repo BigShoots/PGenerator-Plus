@@ -1778,56 +1778,73 @@ async function meterIccFineTuneProfile(file,button,tuneMode){
  if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
  if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
  const original=button?button.textContent:'Fine tune';
- if(button){ button.disabled=true; button.textContent='Applying...'; }
+ if(button){ button.disabled=true; }
+ // An AutoCal-style session: apply, read the grey ladder, adjust the profile,
+ // re-apply and re-read, until every level converges inside the tolerance or
+ // the pass budget runs out. Every pass overwrites one output file so the
+ // history holds a single tuned profile per parent.
+ const MAX_PASSES=4;
+ const TARGET_DE=1.0;
+ const outStem=file.replace(/\.icc$/i,'').replace(/-FineTuned(?:-\d+)?$/,'')+'-FineTuned';
+ const passes=[];
  try{
-  // 1. Install and apply the parent so the reads go through it.
-  const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file})});
-  if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
-  for(let i=0;i<40;i++){
-   await new Promise(resolve=>setTimeout(resolve,1500));
-   const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
-   if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) break;
-   if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
-   if(i===39) throw new Error('Profile installation timed out');
+  let currentFile=file;
+  let lastResult=null;
+  for(let pass=1;pass<=MAX_PASSES;pass++){
+   if(button) button.textContent='Pass '+pass+': applying...';
+   const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:currentFile})});
+   if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
+   for(let i=0;i<40;i++){
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
+    if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) break;
+    if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
+    if(i===39) throw new Error('Profile installation timed out');
+   }
+   const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
+   const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
+   const body=meterMeasurementSignalContext({
+    type:'colors',points:990001,custom_series:true,custom_steps:steps,
+    display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
+    ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
+    target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
+    target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
+    patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined,
+    require_device_ready:meterSelectedMeasurementRequiresReady(),
+    pattern_provider:'companion',
+    ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
+   });
+   body.observer='1931_2';
+   body.target_white_use_measured=false;
+   body.target_black_use_measured=false;
+   body.series_has_saved_white_reference=true;
+   body.series_has_saved_black_reference=true;
+   body.signal_mode=(tuneMode||'hdr10')==='hdr10'?'hdr10':'sdr';
+   if(body.signal_mode==='hdr10'){ body.signal_range='2'; body.pattern_signal_range='2'; body.transport_signal_range='2'; body.max_luma='1000'; }
+   const started=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
+   if(!started||started.status!=='started') throw new Error(started&&started.message||'Could not start the fine-tune reads');
+   let readings=null;
+   for(let i=0;i<600;i++){
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+    if(button) button.textContent='Pass '+pass+': reading '+(state&&state.current_step||0)+'/'+steps.length;
+    if(state&&state.status==='complete'){ readings=state.readings||[]; break; }
+    if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
+   }
+   if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
+   if(button) button.textContent='Pass '+pass+': tuning...';
+   const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:currentFile,readings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE}),_timeoutMs:1800000});
+   if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
+   passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),converged:!!result.converged,file:String(result.file||'')});
+   lastResult=result;
+   if(result.converged){
+    // The currently applied profile already meets the tolerance everywhere.
+    break;
+   }
+   currentFile=outStem+'.icc';
   }
-  // 2. Grey series through the applied profile, repeats at the noisy levels.
-  if(button) button.textContent='Reading...';
-  const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
-  const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
-  const body=meterMeasurementSignalContext({
-   type:'colors',points:990001,custom_series:true,custom_steps:steps,
-   display_type:String((document.getElementById('meterIccDisplayType')||{}).value||getEffectiveDisplayType()),
-   ccss_override:String((document.getElementById('meterIccMeterProfile')||{}).value||''),
-   target_gamut:(document.getElementById('meterTargetGamut')||{}).value||'auto',
-   target_gamma:meterAutoCalTargetGammaValue(),delay_ms:meterDelayMs(),
-   patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined,
-   require_device_ready:meterSelectedMeasurementRequiresReady(),
-   pattern_provider:'companion',
-   ...meterPatternInsertionPayload(document.getElementById('meterIccPatternInsertion'))
-  });
-  body.observer='1931_2';
-  body.target_white_use_measured=false;
-  body.target_black_use_measured=false;
-  body.series_has_saved_white_reference=true;
-  body.series_has_saved_black_reference=true;
-  body.signal_mode=(tuneMode||'hdr10')==='hdr10'?'hdr10':'sdr';
-  if(body.signal_mode==='hdr10'){ body.signal_range='2'; body.pattern_signal_range='2'; body.transport_signal_range='2'; body.max_luma='1000'; }
-  const started=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
-  if(!started||started.status!=='started') throw new Error(started&&started.message||'Could not start the fine-tune reads');
-  let readings=null;
-  for(let i=0;i<600;i++){
-   await new Promise(resolve=>setTimeout(resolve,2000));
-   const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
-   if(button) button.textContent='Reading '+(state&&state.current_step||0)+'/'+steps.length;
-   if(state&&state.status==='complete'){ readings=state.readings||[]; break; }
-   if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
-  }
-  if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
-  // 3. Build the fine-tuned copy.
-  if(button) button.textContent='Tuning...';
-  const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file,readings,damping:0.5}),_timeoutMs:1800000});
-  if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
-  meterIccShowFineTuneReport(file,result);
+  meterIccShowFineTuneReport(file,lastResult,passes);
   meterIccRefreshProfiles();
  }catch(error){
   toast(error&&error.message?error.message:'Fine-tuning failed',true);
@@ -1836,7 +1853,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode){
  }
 }
 
-function meterIccShowFineTuneReport(parent,result){
+function meterIccShowFineTuneReport(parent,result,passes){
  const previous=document.getElementById('meterIccFineTuneReport');
  if(previous) previous.remove();
  const overlay=document.createElement('div');
@@ -1845,9 +1862,22 @@ function meterIccShowFineTuneReport(parent,result){
  const card=document.createElement('div');
  card.style.cssText='background:var(--bs-body-bg,#fff);color:var(--bs-body-color,#111);border-radius:10px;max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.4);';
  const fixed=value=>Number.isFinite(Number(value))?Number(value).toFixed(2):'--';
- let html='<h5 style="margin:0 0 4px">Fine-tune complete</h5>'
-  +'<div style="opacity:.75;margin-bottom:12px">'+String(result.file||'')+' created from '+String(parent||'')+'</div>'
-  +'<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
+ let html='<h5 style="margin:0 0 4px">Fine-tune '+(result&&result.converged?'converged':'complete')+'</h5>'
+  +'<div style="opacity:.75;margin-bottom:12px">'+String(result.file||'')+' from '+String(parent||'')+'</div>';
+ if(Array.isArray(passes)&&passes.length){
+  html+='<div style="margin-bottom:12px"><b>Session passes</b><table style="width:100%;font-size:.85em;border-collapse:collapse">'
+   +'<tr style="opacity:.7"><td>Pass</td><td>In-range mean/max</td><td>Rolloff mean/max</td><td>State</td></tr>';
+  passes.forEach(entry=>{
+   const de=entry.de||{};
+   html+='<tr><td>'+entry.pass+'</td><td>'+fixed(de.inrange_mean)+' / '+fixed(de.inrange_max)+'</td>'
+    +'<td>'+fixed(de.rolloff_mean)+' / '+fixed(de.rolloff_max)+'</td>'
+    +'<td>'+(entry.converged?'converged':'adjusted')+'</td></tr>';
+  });
+  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
+ }
+ if(!result.converged){
+  html+='<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
+ }
  if(result.selfcheck){
   html+='<div style="margin-bottom:4px;font-weight:600">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'
    +'<table style="width:100%;border-collapse:collapse;margin-bottom:6px"><tr style="opacity:.7"><td></td><td style="text-align:right">Average</td><td style="text-align:right">Peak</td></tr>'

@@ -61,6 +61,27 @@ def nits_to_pq(nits):
     return ((C1 + C2 * y) / (1.0 + C3 * y)) ** M2
 
 
+XYZ_TO_RGB2020 = [[1.7166512, -0.3556708, -0.2533663],
+                  [-0.6666844, 1.6164812, 0.0157685],
+                  [0.0176399, -0.0427706, 0.9421031]]
+RGB_TO_LMS = [[1688.0 / 4096, 2146.0 / 4096, 262.0 / 4096],
+              [683.0 / 4096, 2951.0 / 4096, 462.0 / 4096],
+              [99.0 / 4096, 309.0 / 4096, 3688.0 / 4096]]
+
+
+def de_itp(xyz_a, xyz_b):
+    """BT.2124 colour difference between two absolute XYZ stimuli."""
+    def itp(xyz):
+        rgb = [sum(XYZ_TO_RGB2020[r][k] * xyz[k] for k in range(3)) for r in range(3)]
+        lms = [sum(RGB_TO_LMS[r][k] * max(0.0, rgb[k]) for k in range(3)) for r in range(3)]
+        lp = [nits_to_pq(c) for c in lms]
+        return (0.5 * lp[0] + 0.5 * lp[1],
+                0.5 * (6610 * lp[0] - 13613 * lp[1] + 7003 * lp[2]) / 4096.0,
+                (17933 * lp[0] - 17390 * lp[1] - 543 * lp[2]) / 4096.0)
+    pa, pb = itp(xyz_a), itp(xyz_b)
+    return 720.0 * math.sqrt(sum((x - y) ** 2 for x, y in zip(pa, pb)))
+
+
 def read_profile(path):
     with open(path, "rb") as handle:
         data = bytearray(handle.read())
@@ -299,11 +320,17 @@ def finetune(payload, output_dir):
         else:
             gains = channel_gains([x, y, z], d65_xyz(target))
         effective = [1.0 + damping * (g - 1.0) for g in gains]
+        # Convergence metric in the acceptance colour difference: against the
+        # absolute target below the rolloff, and against D65 at the achieved
+        # luminance inside it, where only the balance is correctable.
+        reference = d65_xyz(y) if in_rolloff else d65_xyz(target)
+        level_de = de_itp([x, y, z], reference)
         levels.append({
             "pct": round(code * 100.0, 1),
             "target_nits": round(target, 3),
             "measured_nits": round(y, 3),
             "rolloff": in_rolloff,
+            "de_itp": round(level_de, 3),
             "gains": [round(g, 4) for g in gains],
             "before_err_pct": round((y / target - 1.0) * 100.0, 2),
             "predicted_err_pct": round((y * ((effective[0] + effective[1] + effective[2]) / 3.0)
@@ -313,6 +340,31 @@ def finetune(payload, output_dir):
     if len(keyed) < 6:
         raise ValueError("Too few usable neutral reads above the meter floor")
     keyed.sort()
+
+    # AutoCal-style sessions pass a tolerance: when every ladder level is
+    # already inside it, leave the profile untouched and report convergence
+    # instead of accumulating pointless micro-edits pass after pass.
+    target_de = float(payload.get("target_de", 0.0) or 0.0)
+    worst_de = max(lv["de_itp"] for lv in levels)
+    if target_de > 0.0 and worst_de <= target_de:
+        inr_de = [lv["de_itp"] for lv in levels if not lv["rolloff"]]
+        top_de = [lv["de_itp"] for lv in levels if lv["rolloff"]]
+        return {
+            "status": "ok",
+            "converged": True,
+            "file": os.path.basename(parent_path),
+            "parent": os.path.basename(parent_path),
+            "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+            "worst_de": round(worst_de, 3),
+            "before_de": {
+                "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
+                "inrange_max": round(max(inr_de), 3) if inr_de else None,
+                "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
+                "rolloff_max": round(max(top_de), 3) if top_de else None,
+            },
+            "levels": sorted(levels, key=lambda item: item["pct"]),
+            "selfcheck": None,
+        }
 
     def residual_gains(nits):
         if nits <= keyed[0][0]:
@@ -547,12 +599,22 @@ def finetune(payload, output_dir):
             import shutil
             shutil.rmtree(work, ignore_errors=True)
 
+    inr_de = [lv["de_itp"] for lv in levels if not lv["rolloff"]]
+    top_de = [lv["de_itp"] for lv in levels if lv["rolloff"]]
     summary = {
         "status": "ok",
+        "converged": False,
+        "worst_de": round(worst_de, 3),
         "file": out_name,
         "parent": os.path.basename(parent_path),
         "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
         "chroma_capable": primary_matrix is not None,
+        "before_de": {
+            "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
+            "inrange_max": round(max(inr_de), 3) if inr_de else None,
+            "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
+            "rolloff_max": round(max(top_de), 3) if top_de else None,
+        },
         "reads_used": len(keyed),
         "damping": damping,
         "max_correction_pct": round(max(applied) * 100.0, 2),
