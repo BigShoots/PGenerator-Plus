@@ -544,6 +544,137 @@ def finetune(payload, output_dir):
                             data[base_pos + ch * 2] = value >> 8
                             data[base_pos + ch * 2 + 1] = value & 0xFF
                 applied.append(max(abs(g - 1.0) for g in gains))
+
+    # ---- colour corrections -------------------------------------------------
+    # Each colour reading edits only the cLUT cell surrounding its own PCS
+    # position: per-channel gains through the panel primaries, converted to
+    # wire deltas along the local slope of that channel's drive level, scaled
+    # by the corner's trilinear weight so neighbouring colours are disturbed
+    # no more than their interpolation share. Damped, bounded, iterative -
+    # the same doctrine as the grey corridor.
+    color_levels = []
+    color_rows = payload.get("color_readings") or []
+    if color_rows and not has_mhc2:
+        bradford = ((0.8951, 0.2664, -0.1614),
+                    (-0.7502, 1.7135, 0.0367),
+                    (0.0389, -0.0685, 1.0296))
+        d65w = (0.9504559, 1.0, 1.0890578)
+        d50w = (0.9642, 1.0, 0.8249)
+        cone_src = mat_vec([list(r) for r in bradford], list(d65w))
+        cone_dst = mat_vec([list(r) for r in bradford], list(d50w))
+        scaled = [[cone_dst[r] / cone_src[r] * bradford[r][k] for k in range(3)]
+                  for r in range(3)]
+        brad_inv = mat_inv([list(r) for r in bradford])
+        adapt = [[sum(brad_inv[r][k] * scaled[k][c] for k in range(3))
+                  for c in range(3)] for r in range(3)]
+        encode = 32768.0 / 65535.0
+
+        def local_slope(wire):
+            """Wire code per unit log-luminance around this drive level."""
+            low = max(0.02, wire - 0.06)
+            high = min(0.98, wire + 0.06)
+            y_low = max(measured_lum(low), 1e-4)
+            y_high = max(measured_lum(high), y_low * 1.0001)
+            return (high - low) / (math.log(y_high) - math.log(y_low))
+
+        color_bound = 2.5 / 1023.0
+        for row in color_rows:
+            if row.get("error") or row.get("target_Yn") is None:
+                continue
+            tx = float(row.get("target_x", 0.0))
+            ty = float(row.get("target_y", 0.0))
+            tyn = float(row["target_Yn"]) * 1000.0
+            if ty <= 0.0 or tyn < 0.05:
+                continue
+            target = [tyn * tx / ty, tyn, tyn * (1.0 - tx - ty) / ty]
+            measured = [float(row.get("X", 0.0)), float(row.get("Y", 0.0)),
+                        float(row.get("Z", 0.0))]
+            if measured[1] <= 0.0:
+                continue
+            gains = channel_gains(measured, target)
+            if target[1] >= rolloff_start:
+                top = max(gains)
+                gains = [g / top for g in gains]
+            effective = [1.0 + damping * (g - 1.0) for g in gains]
+            before = de_itp(measured, target)
+            color_levels.append({
+                "name": str(row.get("name", "")),
+                "target_nits": round(target[1], 3),
+                "measured_nits": round(measured[1], 3),
+                "de_itp": round(before, 3),
+                "gains": [round(g, 4) for g in gains],
+            })
+            if max(abs(e - 1.0) for e in effective) < 0.0015:
+                continue
+            pcs = mat_vec(adapt, [c / lumi for c in target])
+            for tag in ("B2A0", "B2A1"):
+                if tag not in tags:
+                    continue
+                off, _ = tags[tag]
+                grid = data[off + 10]
+                in_entries, out_entries = struct.unpack(
+                    ">HH", bytes(data[off + 48:off + 52]))
+                in_off = off + 52
+                clut_off = in_off + 3 * in_entries * 2
+                out_off = clut_off + grid ** 3 * 3 * 2
+                coords = []
+                for ch in range(3):
+                    t = table_sample(data, in_off + ch * in_entries * 2,
+                                     in_entries, pcs[ch] * encode)
+                    coords.append(max(0.0, min(1.0, t)) * (grid - 1))
+                base_idx = [min(int(c), grid - 2) for c in coords]
+                frac = [coords[ch] - base_idx[ch] for ch in range(3)]
+
+                def out_invert(base, count, value):
+                    low_i, high_i = 0, count - 1
+                    low_v = be16(data, base) / 65535.0
+                    high_v = be16(data, base + (count - 1) * 2) / 65535.0
+                    if value <= low_v:
+                        return 0.0
+                    if value >= high_v:
+                        return 1.0
+                    while high_i - low_i > 1:
+                        mid = (low_i + high_i) // 2
+                        mid_v = be16(data, base + mid * 2) / 65535.0
+                        if mid_v <= value:
+                            low_i, low_v = mid, mid_v
+                        else:
+                            high_i, high_v = mid, mid_v
+                    step = high_v - low_v
+                    fraction = 0.0 if step <= 0 else (value - low_v) / step
+                    return (low_i + fraction) / (count - 1.0)
+
+                for di in range(2):
+                    for dj in range(2):
+                        for dk in range(2):
+                            weight = ((frac[0] if di else 1.0 - frac[0])
+                                      * (frac[1] if dj else 1.0 - frac[1])
+                                      * (frac[2] if dk else 1.0 - frac[2]))
+                            if weight < 0.05:
+                                continue
+                            pos = clut_off + ((((base_idx[0] + di) * grid
+                                                + (base_idx[1] + dj)) * grid
+                                               + (base_idx[2] + dk)) * 3) * 2
+                            for ch in range(3):
+                                node = be16(data, pos + ch * 2) / 65535.0
+                                wire = table_sample(
+                                    data, out_off + ch * out_entries * 2,
+                                    out_entries, node)
+                                if wire < 0.01:
+                                    continue
+                                delta = (math.log(max(effective[ch], 1e-6))
+                                         * local_slope(wire) * weight)
+                                delta = max(-color_bound, min(color_bound, delta))
+                                if abs(delta) < 0.2 / 1023.0:
+                                    continue
+                                new_node = out_invert(
+                                    out_off + ch * out_entries * 2,
+                                    out_entries, wire + delta)
+                                value = max(0, min(65535,
+                                                   int(round(new_node * 65535.0))))
+                                data[pos + ch * 2] = value >> 8
+                                data[pos + ch * 2 + 1] = value & 0xFF
+            applied.append(max(abs(e - 1.0) for e in effective))
     if not applied:
         raise ValueError("No corrections were applicable")
 
@@ -620,6 +751,7 @@ def finetune(payload, output_dir):
         "max_correction_pct": round(max(applied) * 100.0, 2),
         "mean_correction_pct": round(sum(applied) / len(applied) * 100.0, 2),
         "levels": sorted(levels, key=lambda item: item["pct"]),
+        "color_levels": color_levels,
         "selfcheck": selfcheck,
     }
     with io.open(out_path + ".finetune.json", "w", encoding="ascii") as handle:

@@ -1751,7 +1751,7 @@ async function meterIccLoadProfiles(){
    // button rather than offer a trap.
    const finetuneEligible=!!profile.tunable;
    finetune.style.display=finetuneEligible&&meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
-   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10');
+   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10',profile.tune_color!==false);
    const validate=document.createElement('button');
    validate.type='button';
    validate.className='btn btn-sm btn-secondary';
@@ -1774,7 +1774,7 @@ async function meterIccLoadProfiles(){
  }
 }
 
-async function meterIccFineTuneProfile(file,button,tuneMode){
+async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
  if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
  const original=button?button.textContent:'Fine tune';
@@ -1785,6 +1785,9 @@ async function meterIccFineTuneProfile(file,button,tuneMode){
  // history holds a single tuned profile per parent.
  const MAX_PASSES=4;
  const TARGET_DE=1.0;
+ // Colour patches are only meaningful for cLUT profiles: an MHC2 profile's
+ // correction is a per-channel curve set with no cell to move.
+ const TUNE_COLOR=tuneColor!==false;
  const outStem=file.replace(/\.icc$/i,'').replace(/-FineTuned(?:-\d+)?$/,'')+'-FineTuned';
  const passes=[];
  try{
@@ -1832,9 +1835,29 @@ async function meterIccFineTuneProfile(file,button,tuneMode){
     if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
    }
    if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
+   // Colour patches through the same applied profile. The chart carries the
+   // server's absolute targets per patch, so the tuner can correct the cLUT
+   // cells around each measured colour as well as the grey corridor.
+   let colorReadings=[];
+   if(TUNE_COLOR){
+    if(button) button.textContent='Pass '+pass+': colour...';
+    const ccBody=Object.assign({},body);
+    delete ccBody.custom_series; delete ccBody.custom_steps;
+    ccBody.points=30;
+    const ccStarted=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ccBody),_timeoutMs:12000});
+    if(ccStarted&&ccStarted.status==='started'){
+     for(let i=0;i<600;i++){
+      await new Promise(resolve=>setTimeout(resolve,2000));
+      const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+      if(button) button.textContent='Pass '+pass+': colour '+(state&&state.current_step||0)+'/30';
+      if(state&&state.status==='complete'){ colorReadings=state.readings||[]; break; }
+      if(state&&(state.status==='error'||state.status==='stopped')) break;
+     }
+    }
+   }
    if(button) button.textContent='Pass '+pass+': tuning...';
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:currentFile,readings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE}),_timeoutMs:1800000});
+    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
    passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),converged:!!result.converged,file:String(result.file||'')});
    lastResult=result;
@@ -1877,6 +1900,18 @@ function meterIccShowFineTuneReport(parent,result,passes){
  }
  if(!result.converged){
   html+='<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
+ }
+ const colorLevels=Array.isArray(result.color_levels)?result.color_levels:[];
+ if(colorLevels.length){
+  const des=colorLevels.map(entry=>Number(entry.de_itp)).filter(Number.isFinite);
+  const mean=des.length?des.reduce((a,b)=>a+b,0)/des.length:0;
+  const worst=colorLevels.slice().sort((a,b)=>Number(b.de_itp||0)-Number(a.de_itp||0)).slice(0,4);
+  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+colorLevels.length+' measured, mean '+fixed(mean)+' dE ITP before this pass)'
+   +'<table style="width:100%;font-size:.85em;border-collapse:collapse"><tr style="opacity:.7"><td>Patch</td><td>Target</td><td>Measured</td><td>dE ITP</td></tr>';
+  worst.forEach(entry=>{
+   html+='<tr><td>'+String(entry.name||'')+'</td><td>'+fixed(entry.target_nits)+'</td><td>'+fixed(entry.measured_nits)+'</td><td>'+fixed(entry.de_itp)+'</td></tr>';
+  });
+  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">The cLUT cells around each measured colour were adjusted by their interpolation share; the grey corridor is corrected separately above.</div></div>';
  }
  if(result.selfcheck){
   html+='<div style="margin-bottom:4px;font-weight:600">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'
