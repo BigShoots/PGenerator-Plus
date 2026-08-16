@@ -965,6 +965,23 @@ def cicp_tag(values):
     )
 
 
+def profile_association_tag(profile_type):
+    """Mark which Windows per-user display association owns this profile.
+
+    MHC2 luminance is not a signal-mode discriminator: a bright SDR display
+    can exceed a dim HDR display.  Keep the payload deliberately simple and
+    private so colour engines ignore it while Profile Loader can classify a
+    renamed profile without guessing from its luminance or filename.
+    """
+    association = {
+        "windows-sdr": b"windows-sdr",
+        "windows-hdr": b"windows-hdr",
+    }.get(profile_type)
+    if association is None:
+        return None
+    return b"text" + b"\0\0\0\0" + association + b"\0"
+
+
 def read_icc_tags(profile):
     if len(profile) < 132 or profile[36:40] != b"acsp":
         fail("ArgyllCMS did not create a valid ICC profile")
@@ -3094,6 +3111,14 @@ def build(payload, output_dir):
                     shutil.rmtree(repair_dir, ignore_errors=True)
         else:
             apply_profile_calibration(output_path, calibration)
+    association = profile_association_tag(profile_type)
+    if association is not None:
+        with open(output_path, "rb") as handle:
+            profile = handle.read()
+        profile = rebuild_icc(profile, {b"pGAs": association})
+        with open(output_path, "wb") as handle:
+            handle.write(profile)
+
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     final_ti3 = ti3
