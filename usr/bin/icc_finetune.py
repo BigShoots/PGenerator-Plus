@@ -15,9 +15,13 @@ supported, selected from the parent's own tags:
 - MHC2 profiles: the corrections land in the MHC2 per-channel adjustment
   curves (and the cloned vcgt when present) in the wire signal domain,
   which is the stage Windows and the patched KWin actually apply.
-- SDR cLUT profiles (no cicp): identical corridor treatment with targets
-  from the profile white and the requested transfer (gamma22, srgb or
-  bt1886) instead of PQ.
+- SDR cLUT profiles (no PQ cicp): identical corridor treatment with
+  targets from the profile white and the transfer the parent was built
+  against, instead of PQ.
+
+The request does not name that transfer, so it is recovered from the
+profile: the validation sidecar first, then the measurements sidecar, then
+the marker in the ICC description.
 
 Corrections are damped and bounded so a noisy read cannot damage a
 profile, and repeated passes converge the same way AutoCal iterations do.
@@ -25,12 +29,13 @@ profile, and repeated passes converge the same way AutoCal iterations do.
 Usage: icc_finetune.py input.json output_dir
 input.json: {"parent_path": ..., "readings": [{r_code,g_code,b_code,
              input_max,X,Y,Z,name}...], "name": ..., "damping": 0.5,
-             "target_transfer": "gamma22"}
+             "target_transfer": optional override}
 """
 import io
 import json
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -141,6 +146,84 @@ def read_profile(path):
     return data, tags
 
 
+SDR_TRANSFERS = ("srgb", "gamma22", "gamma24", "bt1886")
+# The labels profile_description writes into the ICC description.
+DESCRIPTION_TRANSFERS = {
+    "srgb": "srgb",
+    "gamma 2.2": "gamma22",
+    "gamma 2.4": "gamma24",
+    "bt.1886": "bt1886",
+}
+
+
+def read_text_tag(data, tags, signature):
+    entry = tags.get(signature)
+    if entry is None:
+        return ""
+    off, size = entry
+    kind = bytes(data[off:off + 4])
+    if kind == b"desc":
+        count = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
+        return bytes(data[off + 12:off + 12 + max(0, count - 1)]).decode("latin1", "replace")
+    if kind == b"mluc":
+        if struct.unpack(">I", bytes(data[off + 8:off + 12]))[0] < 1:
+            return ""
+        length, first = struct.unpack(">II", bytes(data[off + 20:off + 28]))
+        return bytes(data[off + first:off + first + length]).decode("utf-16-be", "replace")
+    if kind == b"text":
+        return bytes(data[off + 8:off + size]).split(b"\0")[0].decode("latin1", "replace")
+    return ""
+
+
+def transfer_from_description(text):
+    """Recover a build's SDR target transfer from the ICC description.
+
+    Builds append a "(SDR, <label>)" or "(SDR MHC2, <label>)" marker. It is the
+    only record of the transfer carried inside profiles built before the
+    validation sidecar started naming it.
+    """
+    found = re.search(r"\(SDR(?:\s+MHC2)?,\s*([^)]+)\)\s*$", text.strip())
+    if not found:
+        return ""
+    return DESCRIPTION_TRANSFERS.get(found.group(1).strip().lower(), "")
+
+
+def transfer_from_sidecar(parent_path, suffix, keys):
+    try:
+        with io.open(parent_path + suffix, "r", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, IOError, ValueError):
+        return ""
+    for key in keys:
+        if not isinstance(record, dict):
+            return ""
+        record = record.get(key)
+    value = str(record or "").lower()
+    return value if value in SDR_TRANSFERS else ""
+
+
+def resolve_transfer(payload, parent_path, data, tags):
+    """Recover the transfer the parent profile was actually built against.
+
+    The fine-tune request carries no transfer, so an unresolved one silently
+    evaluates an sRGB profile against pure 2.2. Those two differ by a factor of
+    three at 5% drive because sRGB has a linear toe, and the tune then chases
+    an error that exists only in its own target model.
+    """
+    requested = str(payload.get("target_transfer", "")).lower()
+    if requested in SDR_TRANSFERS:
+        return requested, "request"
+    for suffix, keys in ((".validation.json", ("target_transfer",)),
+                         (".measurements.json", ("build_config", "target_transfer"))):
+        found = transfer_from_sidecar(parent_path, suffix, keys)
+        if found:
+            return found, suffix.strip(".").split(".")[0]
+    found = transfer_from_description(read_text_tag(data, tags, "desc"))
+    if found:
+        return found, "description"
+    return "gamma22", "default"
+
+
 def be16(data, position):
     return (data[position] << 8) | data[position + 1]
 
@@ -228,7 +311,7 @@ def finetune(payload, output_dir):
     lumi = s15(data, tags["lumi"][0] + 12)
     fmt, rows, targ_text = parse_targ(data, tags)
     has_mhc2 = "MHC2" in tags
-    transfer = str(payload.get("target_transfer", "gamma22")).lower()
+    transfer, transfer_source = resolve_transfer(payload, parent_path, data, tags)
 
     # Grey residuals from the fine-tune reads
     reads = []
@@ -288,8 +371,14 @@ def finetune(payload, output_dir):
             prev_code, prev_y = code_i, y_i
         return neutral[-1][1]
 
-    if "cicp" in tags:
+    # cicp names the transfer, and SDR v4.4 builds carry one too (13, sRGB).
+    # Its mere presence is not an HDR marker; only a PQ or HLG characteristic
+    # is, and anything else falls through to the measured response.
+    cicp_transfer = data[tags["cicp"][0] + 9] if "cicp" in tags else None
+    if cicp_transfer in (16, 18):
         is_hdr = True
+    elif cicp_transfer is not None and cicp_transfer in (1, 4, 6, 8, 13, 14, 15):
+        is_hdr = False
     else:
         measured_half = max(neutral_at(0.5), 1e-6)
         pq_err = abs(math.log(measured_half / max(pq_to_nits(0.5), 1e-6)))
@@ -329,10 +418,12 @@ def finetune(payload, output_dir):
         ratio = max(0.5, min(2.0, target_xyz[1] / max(measured_xyz[1], 1e-9)))
         return [ratio, ratio, ratio]
 
-    def sdr_target(code):
-        if transfer == "srgb":
+    def sdr_target_for(name, code):
+        if name == "srgb":
             linear = srgb_eotf(code)
-        elif transfer == "bt1886":
+        elif name == "gamma24":
+            linear = code ** 2.4
+        elif name == "bt1886":
             gamma = 2.4
             lw, lb = lumi, max(0.0, ymin)
             a = (lw ** (1.0 / gamma) - lb ** (1.0 / gamma)) ** gamma
@@ -342,6 +433,9 @@ def finetune(payload, output_dir):
             linear = code ** 2.2
         return ymin + (lumi - ymin) * linear
 
+    def sdr_target(code):
+        return sdr_target_for(transfer, code)
+
     def level_target_nits(code):
         if is_hdr:
             return min(pq_to_nits(code), 0.995 * ymax)
@@ -350,6 +444,7 @@ def finetune(payload, output_dir):
     rolloff_start = 0.90 * ymax
     keyed = []
     levels = []
+    shape = []
     for code, samples in grouped:
         samples.sort()
         y, x, z = samples[len(samples) // 2]
@@ -385,6 +480,7 @@ def finetune(payload, output_dir):
                                         / target - 1.0) * 100.0, 2),
         })
         keyed.append((min(request, 0.995 * ymax), effective))
+        shape.append((code, y, target, in_rolloff))
     if len(keyed) < 6:
         raise ValueError("Too few usable neutral reads above the meter floor")
     keyed.sort()
@@ -403,6 +499,8 @@ def finetune(payload, output_dir):
             "file": os.path.basename(parent_path),
             "parent": os.path.basename(parent_path),
             "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+            "target_transfer": None if is_hdr else transfer,
+            "target_transfer_source": None if is_hdr else transfer_source,
             "worst_de": round(worst_de, 3),
             "before_de": {
                 "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
@@ -413,6 +511,44 @@ def finetune(payload, output_dir):
             "levels": sorted(levels, key=lambda item: item["pct"]),
             "selfcheck": None,
         }
+
+    # A wrong target model describes a display no panel resembles: the bottom
+    # of the ladder off by tens of percent, all in one direction, while
+    # everything from the mid range up is already on target. Acting on that
+    # shape saturates the gain clamp in the shadows and crushes them. A profile
+    # that is genuinely bad is wrong across its whole reachable range, so the
+    # body test below is what separates the two. Levels under a fifth of a
+    # candela are excluded: there the meter's own noise exceeds the signal, and
+    # a single noisy toe read must not be able to block a valid tune.
+    inrange = [item for item in shape if not item[3]]
+    shadow = sorted(item[1] / item[2] - 1.0 for item in inrange
+                    if item[0] < 0.25 and item[2] >= 0.2)
+    body = [abs(item[1] / item[2] - 1.0) for item in inrange if item[0] >= 0.35]
+    if (len(shadow) >= 3 and len(body) >= 3 and max(body) <= 0.10
+            and (shadow[0] > 0.0 or shadow[-1] < 0.0)
+            and abs(shadow[len(shadow) // 2]) >= 0.25):
+        message = ("The measured grey ladder tracks its target to within {:.0f}% above 35% "
+                   "drive but is {:.0f}% off below 25%. That is a target mismatch, not a "
+                   "display error, and correcting it would crush the shadows. This profile "
+                   "is being evaluated as {} (transfer resolved from: {}).").format(
+                       max(body) * 100.0, abs(shadow[len(shadow) // 2]) * 100.0,
+                       "HDR PQ" if is_hdr else transfer, transfer_source)
+        if not is_hdr:
+            scored = []
+            for name in SDR_TRANSFERS:
+                worst = 0.0
+                for code, measured, _target, _roll in inrange:
+                    want = sdr_target_for(name, code)
+                    if want >= 0.02:
+                        worst = max(worst, abs(measured / want - 1.0))
+                scored.append((worst, name))
+            scored.sort()
+            if scored[0][1] != transfer:
+                message += (" The readings fit {} far better ({:.0f}% worst error against "
+                            "{:.0f}%). Rebuild the profile or pass target_transfer.").format(
+                                scored[0][1], scored[0][0] * 100.0,
+                                dict((n, w) for w, n in scored)[transfer] * 100.0)
+        raise ValueError(message)
 
     def residual_gains(nits):
         if nits <= keyed[0][0]:
@@ -817,6 +953,8 @@ def finetune(payload, output_dir):
         "file": out_name,
         "parent": os.path.basename(parent_path),
         "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+        "target_transfer": None if is_hdr else transfer,
+        "target_transfer_source": None if is_hdr else transfer_source,
         "chroma_capable": primary_matrix is not None,
         "before_de": {
             "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,

@@ -254,8 +254,12 @@ def profile_description(payload):
     if payload.get("profile_type") in ("sdr", "windows-sdr") and str(payload.get("calibration_mode", "vcgt")).lower() != "none":
         transfer = str(payload.get("target_transfer", "srgb")).lower()
         label = WINDOWS_SDR_TRANSFER_LABELS.get(transfer, "sRGB")
-        description += (" (SDR MHC2, {})" if payload.get("profile_type") == "windows-sdr"
-                        else " (SDR, {})").format(label)
+        suffix = (" (SDR MHC2, {})" if payload.get("profile_type") == "windows-sdr"
+                  else " (SDR, {})").format(label)
+        # Fine-tune recovers the build's target transfer from this marker on
+        # profiles that predate the validation sidecar recording it, so a long
+        # name must lose its own tail rather than the marker.
+        return description[:120 - len(suffix)] + suffix
     return description[:120]
 
 
@@ -3104,6 +3108,11 @@ def build(payload, output_dir):
     write_text_atomic(ti3_path, final_ti3)
     validation = run_profcheck(ti3_path, output_path, validation_rows, profile_model, patch_set)
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
+    # Fine-tune has to evaluate this profile against the curve it was built
+    # for. Nothing in the ICC records that, and the measurements sidecar is
+    # only written for reusable characterizations, so name it here.
+    validation["profile_type"] = profile_type
+    validation["target_transfer"] = target_transfer
     if mhc2_validation:
         validation["mhc2"] = mhc2_validation
         validation["note"] = "ArgyllCMS checks the saved characterization fit. The MHC2 self-check also verifies the correction tag structure, matrix direction, adjustment curves and luminance metadata."
