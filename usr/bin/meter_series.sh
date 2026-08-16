@@ -332,6 +332,7 @@ EOJSON
 
 post_companion_patch() {
  local r="$1" g="$2" b="$3" size="$4" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
+ local preserve_hdr_calibration="${10:-0}"
  local code_min=0 code_max shift sequence payload tmp deadline ack ack_sequence ack_status ack_message
  [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
  code_max="$input_max"
@@ -348,6 +349,9 @@ post_companion_patch() {
  if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi
  COMPANION_SEQUENCE=$sequence
  payload="{\"status\":\"patch\",\"sequence\":$sequence,\"r\":$r,\"g\":$g,\"b\":$b,\"size\":$size,\"input_max\":$input_max,\"code_min\":$code_min,\"code_max\":$code_max,\"signal_mode\":\"$signal_mode\",\"max_luma\":$max_luma,\"min_luma\":$MIN_LUMA,\"max_cll\":$MAX_CLL,\"max_fall\":$MAX_FALL}"
+ if [[ "$preserve_hdr_calibration" == "1" ]]; then
+  payload="${payload%\}},\"preserve_hdr_calibration\":1}"
+ fi
  tmp="${COMPANION_COMMAND_FILE}.$$.$sequence.tmp"
  printf '%s' "$payload" > "$tmp" || companion_pattern_failure "Could not send a patch to PGenerator+ Patch Companion"
  # The root-run worker writes RGB patch commands, while the WebUI poll
@@ -1001,14 +1005,14 @@ post_insert_patch() {
  input_max=$(patch_insert_input_max_for_level "$precomputed")
  duration_sec=$(milliseconds_to_seconds "$duration_ms")
  echo "[$(date '+%H:%M:%S.%3N')] pattern insertion: reason=$reason level=${level}% code=$code input_max=$input_max duration=${duration_sec}s" >> /tmp/meter_series_debug.log
- post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max"
+ post_patch "$code" "$code" "$code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max" 1
  sleep "$duration_sec"
  # Clear the insertion flash before restoring the measurement patch. Without
  # this transition, a near-black read starts while the panel and meter still
  # carry the bright insertion state, producing repeatable but false XYZ.
  local black_code=0
  if [[ "${SIGNAL_MODE,,}" == "dv" ]]; then black_code=256; fi
- post_patch "$black_code" "$black_code" "$black_code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max"
+ post_patch "$black_code" "$black_code" "$black_code" 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$input_max" 1
  sleep 0.5
  PATCH_INSERT_FIRED=1
 }

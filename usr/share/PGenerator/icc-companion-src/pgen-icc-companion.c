@@ -107,7 +107,7 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.20"
-#define APP_BUILD "1"
+#define APP_BUILD "2"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -562,6 +562,7 @@ typedef struct {
     double command_max_luma, command_min_luma;
     double command_max_cll, command_max_fall;
     int command_size;
+    bool command_preserve_hdr_calibration;
     char command_mode[32];
     bool settings_pending;
     bool settings_fullscreen;
@@ -4083,6 +4084,7 @@ static void poll_server(void)
     double sequence_value, r, g, b, input_max, code_min, code_max, poll_ms;
     double max_luma = 1000.0, min_luma = 0.005, max_cll = 1000.0, max_fall = 400.0;
     double settings_revision_value, display_size_value, patch_size_value;
+    double preserve_hdr_calibration_value = 0.0;
     uint64_t sequence;
     bool is_alignment, reported_hdr_active = false;
     double output_maximum_luminance = 0.0, output_full_frame_luminance = 0.0;
@@ -4295,6 +4297,7 @@ static void poll_server(void)
         SDL_LockMutex(app.network_mutex);
         app.command_sequence = sequence;
         app.command_alignment = true;
+        app.command_preserve_hdr_calibration = false;
         app.command_pending = true;
         SDL_UnlockMutex(app.network_mutex);
         app.next_poll_ms = SDL_GetTicks() + 50;
@@ -4352,6 +4355,8 @@ static void poll_server(void)
     app.command_max_fall = max_fall;
     app.command_size = 100;
     if (json_number(response, "size", &patch_size_value)) app.command_size = (int)patch_size_value;
+    json_number(response, "preserve_hdr_calibration", &preserve_hdr_calibration_value);
+    app.command_preserve_hdr_calibration = preserve_hdr_calibration_value != 0.0;
     SDL_strlcpy(app.command_mode, mode, sizeof(app.command_mode));
     app.command_pending = true;
     SDL_UnlockMutex(app.network_mutex);
@@ -4373,6 +4378,7 @@ static int SDLCALL network_thread_main(void *unused)
 static void process_network_updates(void)
 {
     bool have_command = false, alignment = false, status_dirty = false;
+    bool preserve_hdr_calibration = false;
     bool have_settings = false, settings_fullscreen = false;
     int command_size = 100, settings_size = 100;
     uint64_t settings_revision = 0;
@@ -4401,6 +4407,7 @@ static void process_network_updates(void)
         max_luma = app.command_max_luma; min_luma = app.command_min_luma;
         max_cll = app.command_max_cll; max_fall = app.command_max_fall;
         command_size = app.command_size;
+        preserve_hdr_calibration = app.command_preserve_hdr_calibration;
         SDL_strlcpy(mode, app.command_mode, sizeof(mode));
         app.command_pending = false;
     }
@@ -4421,6 +4428,7 @@ static void process_network_updates(void)
 #ifdef _WIN32
         bool refresh_fullscreen_hdr =
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            !preserve_hdr_calibration &&
             command_size >= 100 &&
             app.hdr_swapchain &&
             (strcmp(app.displayed_mode, mode) || app.displayed_r != r ||
@@ -4448,7 +4456,9 @@ static void process_network_updates(void)
          * when a new fullscreen HDR patch is selected, not for the per-refresh
          * redraw loop or repeated reads of the same patch. The normal meter
          * settle delay starts after the new HDR patch is acknowledged, so it
-         * cannot sample this reset frame. */
+         * cannot sample this reset frame. Full-field OLED conditioning
+         * commands opt out because recreating the HDR path can silently drop
+         * the active Windows MHC2 calibration for every following patch. */
         if (refresh_fullscreen_hdr &&
             (!try_create_renderer(false, NULL) ||
              (SDL_Delay(50), !create_renderer(true)))) ok = false;
