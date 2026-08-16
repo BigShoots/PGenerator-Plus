@@ -457,6 +457,12 @@ def finetune(payload, output_dir):
     applied = []
     bound = 2.5 / 1023.0
     plateau_bound = 3.0 / 1023.0
+    # The corridor edits wire codes, where a couple of codes per pass is the
+    # right step. MHC2 corrections live in the normalised signal domain of a
+    # 256-entry curve, and the same numeric bound would cap a pass at 0.24%
+    # of full scale - two dozen passes to close a rolloff that measured 44%
+    # low. Curve edits get a proportionally larger step, still damped.
+    curve_bound = 0.06
 
     if has_mhc2:
         # The operative correction of an MHC2 profile is its per-channel
@@ -484,7 +490,7 @@ def finetune(payload, output_dir):
                     linear = clipped ** 2.2 if transfer != "srgb" else srgb_eotf(clipped)
                     linear = max(0.0, min(1.0, linear * eff))
                     new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
-                delta = max(-bound, min(bound, new - clipped))
+                delta = max(-curve_bound, min(curve_bound, new - clipped))
                 put_s15(data, base + index * 4, old + delta)
                 applied.append(abs(eff - 1.0))
         if "vcgt" in tags:
@@ -509,7 +515,7 @@ def finetune(payload, output_dir):
                             linear = old ** 2.2 if transfer != "srgb" else srgb_eotf(old)
                             linear = max(0.0, min(1.0, linear * eff))
                             new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
-                        delta = max(-bound, min(bound, new - old))
+                        delta = max(-curve_bound, min(curve_bound, new - old))
                         value = max(0, min(65535, int(round((old + delta) * 65535.0))))
                         data[pos] = value >> 8
                         data[pos + 1] = value & 0xFF
