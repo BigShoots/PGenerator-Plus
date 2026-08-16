@@ -206,13 +206,48 @@ def load_calibration_curves():
         return None
     return curves
 
+def _pq_code(nits):
+    """PQ signal code for an absolute luminance - the request domain the
+    calibration curves are indexed by."""
+    m1 = 2610.0/16384.0
+    m2 = 2523.0/32.0
+    c1 = 3424.0/4096.0
+    c2 = 2413.0/128.0
+    c3 = 2392.0/128.0
+    y = max(0.0, min(1.0, nits/10000.0))**m1
+    return ((c1 + c2*y)/(1.0 + c3*y))**m2
+
+
 def sample_curve(curve, position):
     position = max(0.0, min(1.0, position))*(len(curve)-1)
     low = min(int(position), len(curve)-2)
     fraction = position-low
     return curve[low]*(1.0-fraction)+curve[low+1]*fraction
 
+def choose_anchor_mode(cal, plateau_pct):
+    """Pick the corridor's calibration anchor from panel geometry.
+
+    The measured-code anchor is stable when a panel's plateau sits near the
+    top of its calibration, which is the usual case: sampling the curve at
+    the plateau code and at full drive then give almost the same wire value.
+    A panel that plateaus far below full drive while its calibration keeps
+    climbing (an OLED clipping at 60% wire whose red still runs to 1.0)
+    breaks that equivalence, and the measured-code anchor under-drives the
+    whole rolloff by tens of percent. Search the request domain there.
+    """
+    import os as _os
+    forced = _os.environ.get('PGEN_CAL_ANCHOR', '')
+    if forced in ('simple', 'luma'):
+        return forced
+    if not cal:
+        return 'simple'
+    top = max(curve[-1] for curve in cal)
+    at_plateau = max(sample_curve(curve, plateau_pct/100.0) for curve in cal)
+    return 'luma' if top - at_plateau > 0.10 else 'simple'
+
+
 def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
+    anchor_mode = choose_anchor_mode(cal, plateau_pct)
     if luma_w is None:
         luma_w = (0.2627, 0.6780, 0.0593)
     def measured_lum(code_pct):
@@ -264,10 +299,19 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
             # ratio approaches the balanced peak.
             w = max(0.0, min(1.0, (y_rel - KNEE)/(0.95 - KNEE)))
             v_cal = None
-            import os as _os
-            simple_anchor = _os.environ.get('PGEN_CAL_ANCHOR', 'simple') == 'simple'
+            simple_anchor = anchor_mode == 'simple'
             if cal is not None and simple_anchor:
-                v_cal = code_for_y(min(y_rel, 1.0), None) if y_rel < 1.0 else plateau_pct/100.0
+                # At and above measured white the request is full drive, and
+                # the calibration's domain is the request, not the panel's raw
+                # plateau code. Sampling the curve at the raw plateau mixes the
+                # two domains and under-drives peak white by however much the
+                # calibration still climbs above that code (-18% measured on a
+                # panel whose plateau starts at 60% while its calibration runs
+                # to full red drive).
+                # 0.98 rather than 1.0: grid interpolation and the 0.995
+                # plateau factor leave the white node fractionally short, and
+                # a request within 2% of white is a full-drive request.
+                v_cal = code_for_y(min(y_rel, 1.0), None) if y_rel < 0.98 else 1.0
             elif cal is not None:
                 # The calibration shifts each channel differently, so anchor
                 # the corridor's profile value against the luma-weighted sum

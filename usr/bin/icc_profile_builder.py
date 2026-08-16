@@ -2873,6 +2873,19 @@ def build(payload, output_dir):
                     mhc2_type, black, white, primaries, profile_rows,
                     target_transfer or "srgb", apply_calibration=True,
                     adjustment_luts_override=win_luts)
+                win_cal = vcgt_from_mhc2(
+                    win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
+                # The refinement can flatten the plateau: every channel held
+                # near the knee instead of the limiting channel driven to
+                # peak. Composed builds bake these curves into the cLUT, so a
+                # flattened top under-drives peak white by the same margin
+                # (measured -18% on the Innoview). The primary-axis curves are
+                # what vcgt mode ships and they carry the peak drive, so
+                # prefer them whenever the refinement gives up that much.
+                win_top = max(curve[-1] for curve in win_cal)
+                primary_top = max(curve[-1] for curve in calibration)
+                if win_top < 0.85 * primary_top:
+                    win_peak = 0.0
                 if win_peak < 0.75 * white["xyz"][1]:
                     # The refinement inverts the measured per-channel ramps,
                     # and a sparse characterization (no dense single-channel
@@ -2880,11 +2893,16 @@ def build(payload, output_dir):
                     # patch set drove a 310-nit panel's calibrated peak down
                     # to 182 nits and the finished profile rendered an
                     # S-curve. A calibration is a trim, never a 25% peak
-                    # cut - keep the primary-axis curves instead.
-                    pass
+                    # cut - keep the primary-axis curves instead. Those are
+                    # exactly the curves vcgt mode ships, and a composed build
+                    # is meant to bake the same shapers into the cLUT, so they
+                    # are the right fallback. The A2B-modeled curves are not:
+                    # they flatten at the plateau (holding every channel near
+                    # the knee) instead of driving the limiting channel to
+                    # peak, which under-drives the top by ~18%.
+                    modeled_calibration = calibration
                 else:
-                    modeled_calibration = vcgt_from_mhc2(
-                        win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
+                    modeled_calibration = win_cal
             elif applied_calibration is None and experiment.get("calibration_source") == "mhc2":
                 # Use the direct MHC2-equivalent curves instead of the
                 # A2B-modeled calibration.
