@@ -1859,11 +1859,27 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
-   passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),converged:!!result.converged,file:String(result.file||'')});
+   const colourLevels=Array.isArray(result.color_levels)?result.color_levels:[];
+   const colourDes=colourLevels.map(entry=>Number(entry.de2000)).filter(Number.isFinite);
+   passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),
+    color_mean:colourDes.length?colourDes.reduce((a,b)=>a+b,0)/colourDes.length:null,
+    converged:!!result.converged,file:String(result.file||'')});
    lastResult=result;
    if(result.converged){
     // The currently applied profile already meets the tolerance everywhere.
     break;
+   }
+   // Measured convergence: the grey axis keeps creeping down for a few
+   // passes while colour reaches its floor after one, so stop when a pass
+   // no longer improves either by a meaningful margin rather than waiting
+   // for an absolute tolerance the noisy toe level may never satisfy.
+   if(passes.length>1){
+    const now=passes[passes.length-1], was=passes[passes.length-2];
+    const grey=Number(now.de&&now.de.inrange_mean), greyWas=Number(was.de&&was.de.inrange_mean);
+    const col=Number(now.color_mean), colWas=Number(was.color_mean);
+    const greyStalled=!Number.isFinite(grey)||!Number.isFinite(greyWas)||grey>greyWas*0.97;
+    const colStalled=!Number.isFinite(col)||!Number.isFinite(colWas)||col>colWas*0.97;
+    if(greyStalled&&colStalled){ break; }
    }
    currentFile=outStem+'.icc';
   }
@@ -1889,11 +1905,12 @@ function meterIccShowFineTuneReport(parent,result,passes){
   +'<div style="opacity:.75;margin-bottom:12px">'+String(result.file||'')+' from '+String(parent||'')+'</div>';
  if(Array.isArray(passes)&&passes.length){
   html+='<div style="margin-bottom:12px"><b>Session passes</b><table style="width:100%;font-size:.85em;border-collapse:collapse">'
-   +'<tr style="opacity:.7"><td>Pass</td><td>In-range mean/max</td><td>Rolloff mean/max</td><td>State</td></tr>';
+   +'<tr style="opacity:.7"><td>Pass</td><td>In-range mean/max</td><td>Rolloff mean/max</td><td>Colour mean</td><td>State</td></tr>';
   passes.forEach(entry=>{
    const de=entry.de||{};
    html+='<tr><td>'+entry.pass+'</td><td>'+fixed(de.inrange_mean)+' / '+fixed(de.inrange_max)+'</td>'
     +'<td>'+fixed(de.rolloff_mean)+' / '+fixed(de.rolloff_max)+'</td>'
+    +'<td>'+(entry.color_mean==null?'--':fixed(entry.color_mean))+'</td>'
     +'<td>'+(entry.converged?'converged':'adjusted')+'</td></tr>';
   });
   html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
