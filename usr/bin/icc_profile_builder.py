@@ -823,7 +823,8 @@ def neutral_plateau_code(rows):
     return min(code for code, luminance in samples if luminance >= peak * 0.998)
 
 
-def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment):
+def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment,
+                                hold_plateau=True):
     """Invert the measured neutral response in the post-PQ MHC2 stage.
 
     The table input is a PQ wire code after the MHC2 matrix. Map its absolute
@@ -848,7 +849,9 @@ def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, ad
     # the display's peak then renders in that channel's colour. Above the peak
     # this table's job is to hold peak white, so hold the whole triplet at the
     # drive that reached the knee instead of letting one channel continue.
-    ceiling = neutral_plateau_code(rows)
+    # A ceiling of 1.0 is unreachable, so hold_plateau=False reproduces the
+    # unheld tail exactly for callers pinned to it.
+    ceiling = neutral_plateau_code(rows) if hold_plateau else 1.0
     channel_limits = [gain / maximum_gain for gain in neutral_gains]
     luts = [[] for _channel in range(3)]
     held = [0.0, 0.0, 0.0]
@@ -2891,53 +2894,65 @@ def build(payload, output_dir):
             else:
                 modeled_calibration = hdr_profile_calibration_from_a2b(
                     raw_profile, profile_rows, calibration)
+            # Live MHC2 and vcgt stages hold their tail at the measured
+            # plateau. Composed builds do not apply these curves, they resample
+            # them into the BToA shapers, the composed A2B and the neutral
+            # corridor, and every accepted hardware run of that flow was fitted
+            # with the unheld tail. Pin the composed input to that exact form
+            # until the two tails are compared on hardware; the held curves
+            # remain reachable as calibration_source "mhc2" for that comparison.
+            composed_primary = calibration if calibration_degenerate else vcgt_from_mhc2(
+                matrix, windows_hdr_adjustment_luts(
+                    profile_rows, black, white, primaries, 256,
+                    mhc2_wire_matrix(mhc2_type), matrix, hold_plateau=False),
+                mhc2_wire_matrix(mhc2_type))
             if applied_calibration is None and experiment.get("calibration_source", "windows") == "windows":
-                # Default: derive the calibration exactly the way windows-hdr
-                # builds refine their MHC2 curves, from the fitted A2B plus
-                # every original neutral and mixed characterization row. On
-                # the MSI 321URX acceptance runs this closed the rolloff band
-                # from 3.35 to 2.20 average dE-ITP and made the finished KDE
-                # profile beat the small MHC2 reference on both greyscale and
-                # ColorChecker metrics.
-                win_luts = windows_hdr_profile_adjustment_luts(
-                    raw_profile, profile_rows, calibration, black, white, matrix)
-                _, win_matrix, win_luts, win_peak = mhc2_payload(
-                    mhc2_type, black, white, primaries, profile_rows,
-                    target_transfer or "srgb", apply_calibration=True,
-                    adjustment_luts_override=win_luts)
-                win_cal = vcgt_from_mhc2(
-                    win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
-                # The refinement can flatten the plateau: every channel held
-                # near the knee instead of the limiting channel driven to
-                # peak. Composed builds bake these curves into the cLUT, so a
-                # flattened top under-drives peak white by the same margin
-                # (measured -18% on the Innoview). The primary-axis curves are
-                # what vcgt mode ships and they carry the peak drive, so
-                # prefer them whenever the refinement gives up that much.
-                win_top = max(curve[-1] for curve in win_cal)
-                primary_top = max(curve[-1] for curve in calibration)
-                if win_top < 0.85 * primary_top:
-                    win_peak = 0.0
-                if win_peak < 0.75 * white["xyz"][1]:
+                # Deriving the calibration the way windows-hdr builds refine
+                # their MHC2 curves closed the rolloff band from 3.35 to 2.20
+                # average dE-ITP on the MSI 321URX acceptance runs and beat the
+                # small MHC2 reference on greyscale and ColorChecker.
+                #
+                # It is not used unconditionally. Which family a composed build
+                # took was decided by whether this characterization's unheld
+                # primary tail ran a channel past the plateau, and the accepted
+                # builds on both displays were all spiking sets, so they all
+                # took the primary-axis branch. That discriminator is a tail
+                # defect, not a property of either family - once the tail is
+                # held the two agree to 0.002 at peak - so it is no basis for a
+                # choice. It is reproduced here rather than replaced because
+                # only a hardware comparison can settle which family a composed
+                # build should carry, and this keeps the measured configuration
+                # intact until that happens. The earlier reading of this as an
+                # 18% peak under-drive by the refinement was measuring the
+                # unheld tail.
+                #
+                # The trim guard already replaced a degenerate derivation with
+                # identity; keep that rather than swapping in a refinement the
+                # same characterization cannot support.
+                keep_primary = calibration_degenerate or any(
+                    abs(held[-1] - pinned[-1]) > 1e-9
+                    for held, pinned in zip(calibration, composed_primary))
+                modeled_calibration = composed_primary
+                if not keep_primary:
+                    win_luts = windows_hdr_profile_adjustment_luts(
+                        raw_profile, profile_rows, calibration, black, white, matrix)
+                    _, win_matrix, win_luts, win_peak = mhc2_payload(
+                        mhc2_type, black, white, primaries, profile_rows,
+                        target_transfer or "srgb", apply_calibration=True,
+                        adjustment_luts_override=win_luts)
                     # The refinement inverts the measured per-channel ramps,
                     # and a sparse characterization (no dense single-channel
                     # coverage) can make that inversion collapse: one Medium
                     # patch set drove a 310-nit panel's calibrated peak down
                     # to 182 nits and the finished profile rendered an
-                    # S-curve. A calibration is a trim, never a 25% peak
-                    # cut - keep the primary-axis curves instead. Those are
-                    # exactly the curves vcgt mode ships, and a composed build
-                    # is meant to bake the same shapers into the cLUT, so they
-                    # are the right fallback. The A2B-modeled curves are not:
-                    # they flatten at the plateau (holding every channel near
-                    # the knee) instead of driving the limiting channel to
-                    # peak, which under-drives the top by ~18%.
-                    modeled_calibration = calibration
-                else:
-                    modeled_calibration = win_cal
+                    # S-curve. A calibration is a trim, never a 25% peak cut.
+                    if win_peak >= 0.75 * white["xyz"][1]:
+                        modeled_calibration = vcgt_from_mhc2(
+                            win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
             elif applied_calibration is None and experiment.get("calibration_source") == "mhc2":
-                # Use the direct MHC2-equivalent curves instead of the
-                # A2B-modeled calibration.
+                # The MHC2-equivalent curves as the live stages apply them,
+                # tail held at the plateau. This is the A/B against the pinned
+                # composed input above.
                 modeled_calibration = calibration
             elif applied_calibration is None and experiment.get("calibration_source") == "modeled":
                 pass  # keep hdr_profile_calibration_from_a2b's curves
@@ -2965,7 +2980,7 @@ def build(payload, output_dir):
                 # degenerate the characterization cannot support a composed
                 # build, and failing beats shipping a broken profile.
                 if not calibration_degenerate:
-                    modeled_calibration = [list(curve) for curve in calibration]
+                    modeled_calibration = [list(curve) for curve in composed_primary]
                 else:
                     fail("This characterization lacks the dense neutral ramp a "
                          "no-VCGT (composed) profile needs. Rebuild with "
