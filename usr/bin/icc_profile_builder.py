@@ -1131,6 +1131,14 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
     neutral.sort(key=lambda item: item[0])
     if len(neutral) < 9 or neutral[0][0] > 0.002 or neutral[-1][0] < 0.998:
         fail("HDR calibration requires dense black-to-white neutral measurements")
+    # Counting rows is not coverage: a set whose neutrals are all black and
+    # white repeats passes the count and then fabricates a linear-light
+    # neutral by interpolating across the whole range. Require actual
+    # mid-range coverage before trusting the interpolation.
+    distinct = sorted(set(round(code, 4) for code, _ in neutral))
+    largest_gap = max(b - a for a, b in zip(distinct, distinct[1:]))
+    if largest_gap > 0.10:
+        fail("HDR calibration requires dense black-to-white neutral measurements")
 
     # Collapse repeated black/white anchors before interpolating chromaticity.
     # The dense neutral measurements contain the physical XYZ information we
@@ -2647,6 +2655,7 @@ def build(payload, output_dir):
         mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb",
         apply_calibration=calibration_mode != "none")
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
+    calibration_degenerate = False
     # A calibration is a trim: below the display's knee it must track the
     # wire near-identically (the dense MSI sets stay within ~1%). Sparse
     # characterizations can degenerate the ramp inversion into a wire-to-
@@ -2662,6 +2671,7 @@ def build(payload, output_dir):
             for curve in calibration
             for x in (0.15, 0.30, 0.45, 0.55))
         if deviation > 0.08:
+            calibration_degenerate = True
             calibration = [[index / float(entries - 1) for index in range(entries)]
                            for _channel in range(3)]
             identity_mhc2 = [[index / 255.0 for index in range(256)]
@@ -2840,9 +2850,16 @@ def build(payload, output_dir):
             # output shapers. No validation or second measurement pass is used.
             with open(output_path, "rb") as handle:
                 raw_profile = handle.read()
-            modeled_calibration = hdr_profile_calibration_from_a2b(
-                raw_profile, profile_rows, calibration)
-            if experiment.get("calibration_source", "windows") == "windows":
+            if applied_calibration is not None:
+                # The rows were measured with these curves physically applied
+                # on the display: they arrive as the calibration contract and
+                # no derivation runs. A shaper-style characterization has no
+                # dense raw-neutral ramp for the derivations to work from.
+                modeled_calibration = applied_calibration
+            else:
+                modeled_calibration = hdr_profile_calibration_from_a2b(
+                    raw_profile, profile_rows, calibration)
+            if applied_calibration is None and experiment.get("calibration_source", "windows") == "windows":
                 # Default: derive the calibration exactly the way windows-hdr
                 # builds refine their MHC2 curves, from the fitted A2B plus
                 # every original neutral and mixed characterization row. On
@@ -2868,11 +2885,11 @@ def build(payload, output_dir):
                 else:
                     modeled_calibration = vcgt_from_mhc2(
                         win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
-            elif experiment.get("calibration_source") == "mhc2":
+            elif applied_calibration is None and experiment.get("calibration_source") == "mhc2":
                 # Use the direct MHC2-equivalent curves instead of the
                 # A2B-modeled calibration.
                 modeled_calibration = calibration
-            elif experiment.get("calibration_source") == "modeled":
+            elif applied_calibration is None and experiment.get("calibration_source") == "modeled":
                 pass  # keep hdr_profile_calibration_from_a2b's curves
             # The measured/modelled curve already contains the dense neutral
             # inversion and the level-dependent D65 correction. Do not splice
@@ -2880,27 +2897,30 @@ def build(payload, output_dir):
             # curve can be far below the measured neutral response on an HDR
             # OLED, and the fixed 30-35% blend then creates a visible and
             # measurable luminance jump at exactly that boundary.
-            if applied_calibration is not None:
-                # The rows were measured with these curves physically applied
-                # on the display, so they already describe the calibrated
-                # device: fit them as-is and compose the same curves into the
-                # transforms. Deriving curves from the calibrated rows would
-                # find a near-identity correction, and simulating the
-                # calibration on top of them would apply it twice.
-                modeled_calibration = applied_calibration
             # Same trim-shape guard as the primary curves: below the knee a
             # calibration must track the wire near-identically. A degenerate
             # derivation composed into the transforms renders as a linear-
             # light S-curve on screen, so drop to identity instead.
             entries = len(modeled_calibration[0])
-            deviation = max(
+            deviation = 0.0 if applied_calibration is not None else max(
                 abs(curve[int(x * (entries - 1))] - x)
                 for curve in modeled_calibration
                 for x in (0.15, 0.30, 0.45, 0.55))
             if deviation > 0.08:
-                modeled_calibration = [
-                    [index / float(entries - 1) for index in range(entries)]
-                    for _channel in range(3)]
+                # A composed profile whose output tables carry no calibration
+                # is a vcgt profile with its vcgt deleted: it emits raw PQ
+                # codes to a panel that only tracks PQ through the
+                # calibration. Prefer the primary-axis curves when they
+                # passed their own trim guard; if every derivation is
+                # degenerate the characterization cannot support a composed
+                # build, and failing beats shipping a broken profile.
+                if not calibration_degenerate:
+                    modeled_calibration = [list(curve) for curve in calibration]
+                else:
+                    fail("This characterization lacks the dense neutral ramp a "
+                         "no-VCGT (composed) profile needs. Rebuild with "
+                         "Calibration with VCGT, or characterize with a grey "
+                         "ramp included.")
             incorporated = modeled_calibration
             fit_calibration = modeled_calibration
             if experiment.get("emit_calibration"):
