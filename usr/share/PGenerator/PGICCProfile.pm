@@ -65,15 +65,16 @@ sub webui_icc_profile_list (@) {
       if($tags{"cicp"}) {
        $tune_mode="hdr10";
       } elsif($tags{"MHC2"} && $mhc2_off>0 && $mhc2_size>44) {
+       # No cicp: decide from the correction's own peak luminance. The tag
+       # records the calibrated peak in cd/m2, and an SDR calibration target
+       # sits far below any HDR peak (measured here: SDR profiles 152-168,
+       # HDR profiles 299-999). The adjustment curve's endpoint was tried
+       # first and is useless - it reaches full drive on both kinds.
        my $mhc2="";
-       if(seek($ph,$mhc2_off,0) && read($ph,$mhc2,$mhc2_size)==$mhc2_size) {
-        my $entries=unpack("N",substr($mhc2,8,4));
-        my $lut0=unpack("N",substr($mhc2,24,4));
-        if($entries>1 && $lut0+8+$entries*4<=$mhc2_size) {
-         my $raw=unpack("N",substr($mhc2,$lut0+8+($entries-1)*4,4));
-         $raw-=4294967296 if($raw>=2147483648);
-         $tune_mode="hdr10" if($raw/65536.0<0.90);
-        }
+       if(seek($ph,$mhc2_off,0) && read($ph,$mhc2,20)==20) {
+        my $raw=unpack("N",substr($mhc2,16,4));
+        $raw-=4294967296 if($raw>=2147483648);
+        $tune_mode="hdr10" if($raw/65536.0>=250.0);
        }
       }
      }
