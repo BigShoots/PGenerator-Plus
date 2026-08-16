@@ -1903,13 +1903,13 @@ function meterIccShowFineTuneReport(parent,result,passes){
  }
  const colorLevels=Array.isArray(result.color_levels)?result.color_levels:[];
  if(colorLevels.length){
-  const des=colorLevels.map(entry=>Number(entry.de_itp)).filter(Number.isFinite);
+  const des=colorLevels.map(entry=>Number(entry.de2000)).filter(Number.isFinite);
   const mean=des.length?des.reduce((a,b)=>a+b,0)/des.length:0;
-  const worst=colorLevels.slice().sort((a,b)=>Number(b.de_itp||0)-Number(a.de_itp||0)).slice(0,4);
-  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+colorLevels.length+' measured, mean '+fixed(mean)+' dE ITP before this pass)'
-   +'<table style="width:100%;font-size:.85em;border-collapse:collapse"><tr style="opacity:.7"><td>Patch</td><td>Target</td><td>Measured</td><td>dE ITP</td></tr>';
+  const worst=colorLevels.slice().sort((a,b)=>Number(b.de2000||0)-Number(a.de2000||0)).slice(0,4);
+  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+colorLevels.length+' measured, mean '+fixed(mean)+' dE2000 before this pass)'
+   +'<table style="width:100%;font-size:.85em;border-collapse:collapse"><tr style="opacity:.7"><td>Patch</td><td>Target</td><td>Measured</td><td>dE2000</td></tr>';
   worst.forEach(entry=>{
-   html+='<tr><td>'+String(entry.name||'')+'</td><td>'+fixed(entry.target_nits)+'</td><td>'+fixed(entry.measured_nits)+'</td><td>'+fixed(entry.de_itp)+'</td></tr>';
+   html+='<tr><td>'+String(entry.name||'')+'</td><td>'+fixed(entry.target_nits)+'</td><td>'+fixed(entry.measured_nits)+'</td><td>'+fixed(entry.de2000)+'</td></tr>';
   });
   html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">The cLUT cells around each measured colour were adjusted by their interpolation share; the grey corridor is corrected separately above.</div></div>';
  }

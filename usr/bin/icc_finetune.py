@@ -82,6 +82,54 @@ def de_itp(xyz_a, xyz_b):
     return 720.0 * math.sqrt(sum((x - y) ** 2 for x, y in zip(pa, pb)))
 
 
+REF_NITS = 203.0
+LAB_WHITE = [0.95047 * REF_NITS, 1.0 * REF_NITS, 1.08883 * REF_NITS]
+
+
+def _lab(xyz):
+    def f(t):
+        return t ** (1.0 / 3.0) if t > (6.0 / 29.0) ** 3 else t / (3 * (6.0 / 29.0) ** 2) + 4.0 / 29.0
+    fx, fy, fz = (f(max(1e-9, xyz[i] / LAB_WHITE[i])) for i in range(3))
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+
+
+def de2000(xyz_a, xyz_b):
+    """CIEDE2000 against a 203 cd/m2 diffuse white - the metric colour
+    acceptance is judged in, so convergence is measured the same way."""
+    l1, a1, b1 = _lab(xyz_a)
+    l2, a2, b2 = _lab(xyz_b)
+    c1 = math.hypot(a1, b1)
+    c2 = math.hypot(a2, b2)
+    cm = (c1 + c2) / 2.0
+    g = 0.5 * (1 - math.sqrt(cm ** 7 / (cm ** 7 + 25.0 ** 7))) if cm > 0 else 0.0
+    a1p, a2p = a1 * (1 + g), a2 * (1 + g)
+    c1p, c2p = math.hypot(a1p, b1), math.hypot(a2p, b2)
+    h1 = math.degrees(math.atan2(b1, a1p)) % 360 if (b1 or a1p) else 0.0
+    h2 = math.degrees(math.atan2(b2, a2p)) % 360 if (b2 or a2p) else 0.0
+    dl = l2 - l1
+    dc = c2p - c1p
+    dh = 0.0 if c1p * c2p == 0 else (h2 - h1 - 360 if h2 - h1 > 180 else
+                                     h2 - h1 + 360 if h2 - h1 < -180 else h2 - h1)
+    dhp = 2 * math.sqrt(c1p * c2p) * math.sin(math.radians(dh) / 2.0)
+    lm = (l1 + l2) / 2.0
+    cmp_ = (c1p + c2p) / 2.0
+    if c1p * c2p == 0:
+        hm = h1 + h2
+    elif abs(h1 - h2) <= 180:
+        hm = (h1 + h2) / 2.0
+    else:
+        hm = (h1 + h2 + 360) / 2.0 if h1 + h2 < 360 else (h1 + h2 - 360) / 2.0
+    tt = (1 - 0.17 * math.cos(math.radians(hm - 30)) + 0.24 * math.cos(math.radians(2 * hm))
+          + 0.32 * math.cos(math.radians(3 * hm + 6)) - 0.20 * math.cos(math.radians(4 * hm - 63)))
+    sl = 1 + (0.015 * (lm - 50) ** 2) / math.sqrt(20 + (lm - 50) ** 2)
+    sc = 1 + 0.045 * cmp_
+    sh = 1 + 0.015 * cmp_ * tt
+    rt = (-2 * math.sqrt(cmp_ ** 7 / (cmp_ ** 7 + 25.0 ** 7))
+          * math.sin(math.radians(60 * math.exp(-(((hm - 275) / 25.0) ** 2)))) if cmp_ > 0 else 0.0)
+    return math.sqrt((dl / sl) ** 2 + (dc / sc) ** 2 + (dhp / sh) ** 2
+                     + rt * (dc / sc) * (dhp / sh))
+
+
 def read_profile(path):
     with open(path, "rb") as handle:
         data = bytearray(handle.read())
@@ -591,17 +639,41 @@ def finetune(payload, output_dir):
                         float(row.get("Z", 0.0))]
             if measured[1] <= 0.0:
                 continue
+            # Chart endpoints are referenced to a 1000 cd/m2 display, and a
+            # saturated primary is capped by that primary alone, not by white:
+            # this panel's red peaks near 83 cd/m2 against a 263 cd/m2 target.
+            # Decompose the target through the measured primaries and skip any
+            # patch that would need a channel beyond full drive. Those are out
+            # of range, not miscalibrated, and chasing them only distorts
+            # their neighbours.
+            if primary_matrix is not None:
+                rgb_target = mat_vec(primary_inverse, target)
+                if max(rgb_target) > 1.0:
+                    continue
+            elif tyn > 0.95 * ymax:
+                continue
             gains = channel_gains(measured, target)
-            if target[1] >= rolloff_start:
-                top = max(gains)
-                gains = [g / top for g in gains]
+            # A channel that barely contributes to a colour has a meaningless
+            # ratio: saturated cyan carries almost no red, so its red ratio is
+            # numerical noise that ran straight into the clamp and asked for a
+            # doubling. Correct only the channels the colour is actually made
+            # of, and leave the rest alone.
+            if primary_matrix is not None:
+                rgb_m = mat_vec(primary_inverse, measured)
+                strongest = max(rgb_m)
+                if strongest > 0:
+                    gains = [g if rgb_m[k] > 0.12 * strongest else 1.0
+                             for k, g in enumerate(gains)]
             effective = [1.0 + damping * (g - 1.0) for g in gains]
-            before = de_itp(measured, target)
+            # Fine-tune moves, not gross corrections: a colour cell should
+            # never shift by more than a few percent in one pass.
+            effective = [max(0.90, min(1.11, e)) for e in effective]
+            before = de2000(measured, target)
             color_levels.append({
                 "name": str(row.get("name", "")),
                 "target_nits": round(target[1], 3),
                 "measured_nits": round(measured[1], 3),
-                "de_itp": round(before, 3),
+                "de2000": round(before, 3),
                 "gains": [round(g, 4) for g in gains],
             })
             if max(abs(e - 1.0) for e in effective) < 0.0015:
