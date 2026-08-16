@@ -807,6 +807,22 @@ def windows_sdr_adjustment_luts(rows, black, white, primaries, entries, transfer
     return luts
 
 
+def neutral_plateau_code(rows):
+    """Return the drive above which the measured neutral ramp gains no light.
+
+    Displays that tone-map internally hold peak white over the whole top of
+    their range, so nothing above this code buys luminance. A display that
+    keeps climbing to full drive reports 1.0 and is therefore unaffected by
+    any ceiling derived from this.
+    """
+    samples = [(sum(row["rgb"]) / 3.0, row["xyz"][1]) for row in rows
+               if max(row["rgb"]) - min(row["rgb"]) <= 0.002]
+    peak = max([luminance for _code, luminance in samples] or [0.0])
+    if peak <= 0.0:
+        return 1.0
+    return min(code for code, luminance in samples if luminance >= peak * 0.998)
+
+
 def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment):
     """Invert the measured neutral response in the post-PQ MHC2 stage.
 
@@ -824,21 +840,37 @@ def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, ad
     maximum_gain = max(neutral_gains)
     if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
         fail("HDR MHC2 calibration matrix has an invalid neutral response")
-    luts = []
-    for channel in range(3):
-        values = []
-        previous = 0.0
-        channel_limit = neutral_gains[channel] / maximum_gain
-        for index in range(entries):
-            encoded = index / float(entries - 1)
-            target = max(0.0, min(1.0, (pq_to_nits(encoded) - black_nits) / span))
-            target = min(target, channel_limit)
-            value = invert_channel_response(channel_samples[channel], target)
-            previous = max(previous, max(0.0, min(1.0, value)))
-            values.append(previous)
+    # Over the plateau the ramp inverse is no longer unique: a channel asked
+    # for the last fraction of a percent of its own peak response resolves
+    # anywhere inside the flat top. The channel carrying the largest matrix
+    # gain is asked for exactly that, so on its own it runs to the far end of
+    # the plateau while the other two stop at the knee, and every input above
+    # the display's peak then renders in that channel's colour. Above the peak
+    # this table's job is to hold peak white, so hold the whole triplet at the
+    # drive that reached the knee instead of letting one channel continue.
+    ceiling = neutral_plateau_code(rows)
+    channel_limits = [gain / maximum_gain for gain in neutral_gains]
+    luts = [[] for _channel in range(3)]
+    held = [0.0, 0.0, 0.0]
+    clamped = False
+    for index in range(entries):
+        encoded = index / float(entries - 1)
+        neutral = max(0.0, min(1.0, (pq_to_nits(encoded) - black_nits) / span))
+        if not clamped:
+            values = [
+                invert_channel_response(channel_samples[channel],
+                                        min(neutral, channel_limits[channel]))
+                for channel in range(3)
+            ]
+            if max(values) > ceiling:
+                clamped = True
+            else:
+                held = [max(held[channel], max(0.0, min(1.0, values[channel])))
+                        for channel in range(3)]
+        for channel in range(3):
+            luts[channel].append(held[channel])
+    for values in luts:
         values[0] = 0.0
-        values[-1] = max(values[-2], values[-1])
-        luts.append(values)
     return luts
 
 
