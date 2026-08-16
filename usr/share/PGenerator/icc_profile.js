@@ -2126,7 +2126,10 @@ async function meterIccRetryBuild(){
   const profileQuality=['low','medium','high','ultra'].includes(selectedProfileQuality)?selectedProfileQuality:String((saved&&saved.profile_quality)||preset.profile_quality||'medium');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
-   calibration_mode:saved?meterIccCalibrationMode(saved):meterIccCalibrationModeValue(),
+   // Calibration mode is a build-time choice, not a property of the
+   // measurements: reusing a characterization must not silently override
+   // the user's current selection with the previous build's mode.
+   calibration_mode:meterIccCalibrationModeValue(),
    icc_version:String((document.getElementById('meterIccVersion')||{}).value||(saved&&saved.icc_version)||'auto'),
    cicp:meterIccCicpSettings(),
    pattern_provider:patternProvider,reuse_signature:reuseSignature,
