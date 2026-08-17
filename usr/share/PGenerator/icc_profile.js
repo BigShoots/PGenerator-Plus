@@ -1809,7 +1809,7 @@ function meterIccFineTuneProgressRender(){
  const list=document.getElementById('meterIccFineTuneSteps');
  if(list){
   const colors={pending:'var(--text2)',active:'var(--warning)',done:'var(--success)',error:'var(--danger)',skipped:'var(--text2)'};
-  const markers={pending:'○',active:'●',done:'●',error:'✕',skipped:'—'};
+  const markers={pending:'○',active:'●',done:'✓',error:'✕',skipped:'—'};
   list.innerHTML=s.steps.map(step=>'<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">'
    +'<span style="color:'+(colors[step.state]||colors.pending)+';width:14px;flex:none;text-align:center">'+(markers[step.state]||markers.pending)+'</span>'
    +'<div style="min-width:0"><div style="color:'+(step.state==='pending'||step.state==='skipped'?'var(--text2)':'var(--text)')+';font-weight:'+(step.state==='active'?'700':'400')+'">'+esc(step.label)+'</div>'
