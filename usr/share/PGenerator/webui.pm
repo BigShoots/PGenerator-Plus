@@ -34609,6 +34609,9 @@ async function meterLoadSolvedLutList(){
   // shown in the viewer.
   const r=await fetchJSON('/api/3d-lut/luts?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'});
   const luts=(r&&Array.isArray(r.luts))?r.luts:[];
+  // The server lists by filename (oldest timestamp first, converted icc_*
+  // names sorted apart); the history reads newest-first like profile history.
+  luts.sort((a,b)=>(Number(b&&b.mtime||0)-Number(a&&a.mtime||0))||String(a&&a.name||'').localeCompare(String(b&&b.name||'')));
   if(!luts.length){ panel.textContent='No solved LUTs yet — Build 3D LUT or run 3D LUT AutoCal to create one.'; return []; }
   const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   const escJs=(s)=>String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ');
