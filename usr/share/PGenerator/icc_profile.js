@@ -1744,13 +1744,16 @@ async function meterIccLoadProfiles(){
    finetune.type='button';
    finetune.className='btn btn-sm btn-secondary';
    finetune.textContent='Fine tune';
-   finetune.title='Apply this profile, read a grey series through it and create a corrected fine-tuned copy in the history';
-   // Fine-tuning edits the BToA corridor, which is only the transform the
-   // compositor uses for KDE HDR cLUT profiles. On MHC2 or SDR profiles the
-   // reads would go through a different path than the edit, so hide the
-   // button rather than offer a trap.
    const finetuneEligible=!!profile.tunable;
-   finetune.style.display=finetuneEligible&&meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
+   // Keep the action in a consistent place for every profile. Imported or
+   // diagnostic profiles without embedded characterization data cannot be
+   // adjusted safely, so explain that case instead of silently removing the
+   // control from the row.
+   finetune.disabled=!finetuneEligible;
+   finetune.title=finetuneEligible
+    ?'Apply this profile, read a grey series through it and create a corrected fine-tuned copy in the history'
+    :'Fine tuning requires a profile with embedded characterization data and an adjustable MHC2 or BToA stage';
+   finetune.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
    finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10',profile.tune_color!==false);
    const validate=document.createElement('button');
    validate.type='button';
