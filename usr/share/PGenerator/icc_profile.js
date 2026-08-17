@@ -1918,6 +1918,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  let currentFile=file;
  let sessionStarted=false;
  let finalized=false;
+ let sessionAnchorY=0;
  meterIccFineTuneCancelRequested=false;
  meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
  const cancelCheck=()=>{ if(meterIccFineTuneCancelRequested) throw new Error('Fine-tune cancelled'); };
@@ -1972,6 +1973,22 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
    }
    if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
+   // Canary against the Windows pipeline dropping into composed tone-mapping
+   // mid-session (measured live: a profile apply between passes dimmed 65%
+   // grey from ~391 to ~330 cd/m2 and every later read was garbage). Judge
+   // the ladder's own 65% patch: pass 1 against the PQ expectation, later
+   // passes against pass 1 -- per-pass corrections are bounded well below
+   // the tone-mapping sag.
+   const anchor=readings.find(r=>Number(r&&r.ire)===65&&r.r_code===r.g_code&&r.g_code===r.b_code);
+   const anchorY=anchor?Number(anchor.Y||anchor.luminance||0):0;
+   if(anchorY>0&&body.signal_mode==='hdr10'){
+    if(pass===1){
+     sessionAnchorY=anchorY;
+     if(Math.abs(anchorY/391-1)>0.12) throw new Error('The display pipeline is tone-mapping (65% grey read '+anchorY.toFixed(0)+' cd/m², expected ~391). Interact with the Windows session, confirm the Companion is fullscreen, and rerun.');
+    }else if(sessionAnchorY>0&&anchorY<sessionAnchorY*0.90){
+     throw new Error('The display pipeline degraded between passes (65% grey fell from '+sessionAnchorY.toFixed(0)+' to '+anchorY.toFixed(0)+' cd/m²). Keeping the best measured pass; wake the Windows session and rerun.');
+    }
+   }
    meterIccFineTuneProgressStep('grey','done','Measured '+readings.length+' grey levels');
    // Colour patches through the same applied profile. The chart carries the
    // server's absolute targets per patch, so the tuner can correct the cLUT
