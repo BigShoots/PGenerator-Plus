@@ -21314,7 +21314,10 @@ function meterFindMeasuredWhiteReading(){
  // autocal_white_reference.
  if(lgAutoCalChartRef && Array.isArray(meterReadings)){
   const sdr109=meterReadings.find(rd=>{
-   if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
+   // Some read/import paths carry valid tristimulus Y before the shared
+   // normalizer has mirrored it into luminance. Use the same validity helper
+   // as charts and export so the result does not depend on entry path.
+   if(!rd || !meterReadingHasLuminance(rd)) return false;
    if(!meterReadingIsGreyscale(rd)) return false;
    const _ire=Number(rd.ire!=null?rd.ire:(rd.plot_ire!=null?rd.plot_ire:null));
    const _code=Number(rd.r_code!=null?rd.r_code:(rd.r!=null?rd.r:0));
@@ -28358,7 +28361,7 @@ function meterFindSeriesWhiteReading(readings){
  // present. The autocal worker uses 109's measured Y as the target-curve
  // peak for every body anchor; the chart must match that reference.
  const _sdr109=list.find(rd=>{
-  if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return false;
+  if(!rd || !meterReadingHasLuminance(rd)) return false;
   if(!meterReadingIsGreyscale(rd)) return false;
   const _rdIre=Number(rd.ire);
   const _rdCode=Number(rd.r_code!=null?rd.r_code:rd.r);
@@ -28369,7 +28372,10 @@ function meterFindSeriesWhiteReading(readings){
  // re-reads replace the initial white on the chart.
  let best100=null;
  list.forEach(rd=>{
-  if(!rd || !(rd.luminance!=null && rd.luminance>=0)) return;
+  // meterReadingHasLuminance normalizes valid Y-only readings. Previously
+  // those readings were rejected here before meterReadingIsSeriesWhite could
+  // identify them, causing intermittent "No 100% white reading" CSV errors.
+  if(!rd || !meterReadingHasLuminance(rd)) return;
   if(!meterReadingIsGreyscale(rd)) return;
   const name=String(rd.name||'').toLowerCase();
   const _rdIre=Number(rd.ire);
