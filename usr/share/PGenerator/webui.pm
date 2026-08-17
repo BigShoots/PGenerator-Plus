@@ -16633,7 +16633,7 @@ let _hdmiIgnored=false;
 const uiBlockingOverlayIds=[
  'meterGreyProfileModal','meterCustomSeriesModal','meterCustomSeriesManagerModal',
  'meterImportWizardModal','meterLutToolsModal','lutSolveProgressModal',
- 'meterIccProfileModal','meterIccValidationModal','meterIccCubeModal',
+ 'meterIccProfileModal','meterIccValidationModal','meterIccCubeModal','meterIccFineTuneModal',
  'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
  'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
  'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',

@@ -1790,6 +1790,103 @@ async function meterIccLoadProfiles(){
  }
 }
 
+// Live progress for the fine-tune session. State lives at module level so
+// every stage update can re-render the whole list; hiding the modal only
+// hides it — the session keeps running and the button label still shows the
+// same progress.
+let meterIccFineTuneProgress=null;
+
+function meterIccFineTuneProgressRender(){
+ const s=meterIccFineTuneProgress;
+ if(!s) return;
+ const esc=value=>String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+ const passLabel=document.getElementById('meterIccFineTunePassLabel');
+ if(passLabel) passLabel.textContent=s.pass>0?('Pass '+s.pass+' of up to '+s.maxPasses):'Preparing session...';
+ const fileLabel=document.getElementById('meterIccFineTuneFile');
+ if(fileLabel) fileLabel.textContent='Fine-tuning '+s.file+' — each pass applies the current profile, measures it, corrects it, and re-checks until improvement stops. The best measured pass is kept.';
+ const list=document.getElementById('meterIccFineTuneSteps');
+ if(list){
+  const colors={pending:'var(--text2)',active:'var(--warning)',done:'var(--success)',error:'var(--danger)',skipped:'var(--text2)'};
+  const markers={pending:'○',active:'●',done:'●',error:'✕',skipped:'—'};
+  list.innerHTML=s.steps.map(step=>'<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">'
+   +'<span style="color:'+(colors[step.state]||colors.pending)+';width:14px;flex:none;text-align:center">'+(markers[step.state]||markers.pending)+'</span>'
+   +'<div style="min-width:0"><div style="color:'+(step.state==='pending'||step.state==='skipped'?'var(--text2)':'var(--text)')+';font-weight:'+(step.state==='active'?'700':'400')+'">'+esc(step.label)+'</div>'
+   +(step.detail?'<div class="meter-icc-note" style="margin-top:2px">'+esc(step.detail)+'</div>':'')
+   +'</div></div>').join('');
+ }
+ const history=document.getElementById('meterIccFineTuneHistory');
+ if(history) history.innerHTML=s.notes.map(note=>esc(note)).join('<br>');
+}
+
+function meterIccFineTuneProgressOpen(file,tuneColor,maxPasses){
+ meterIccFineTuneProgress={file:String(file||''),maxPasses:Number(maxPasses)||4,pass:0,notes:[],activeKey:null,tuneColor:tuneColor!==false,
+  steps:[
+   {key:'apply',label:'Apply the profile on the target computer',state:'pending',detail:''},
+   {key:'grey',label:'Read the grey ladder through the applied profile',state:'pending',detail:''},
+   {key:'color',label:'Read colour patches through the applied profile',state:'pending',detail:''},
+   {key:'tune',label:'Compute corrections and update the profile',state:'pending',detail:''},
+   {key:'evaluate',label:'Evaluate convergence',state:'pending',detail:''},
+   {key:'finalize',label:'Keep the best measured pass',state:'pending',detail:''}
+  ]};
+ if(tuneColor===false){
+  const color=meterIccFineTuneProgress.steps.find(step=>step.key==='color');
+  if(color){ color.state='skipped'; color.detail='Skipped — this profile tunes from grey reads alone'; }
+ }
+ meterIccFineTuneProgressRender();
+ const modal=document.getElementById('meterIccFineTuneModal');
+ if(modal){
+  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
+  modal.style.display='flex';
+ }
+ uiSyncBodyScrollLock();
+}
+
+function meterIccFineTuneProgressPass(pass){
+ const s=meterIccFineTuneProgress;
+ if(!s) return;
+ s.pass=Number(pass)||0;
+ s.steps.forEach(step=>{
+  if(step.key==='finalize') return;
+  if(step.key==='color'&&!s.tuneColor) return;
+  step.state='pending';
+  step.detail='';
+ });
+ meterIccFineTuneProgressRender();
+}
+
+function meterIccFineTuneProgressStep(key,state,detail){
+ const s=meterIccFineTuneProgress;
+ if(!s) return;
+ const step=s.steps.find(entry=>entry.key===key);
+ if(!step) return;
+ step.state=String(state||'pending');
+ step.detail=detail==null?step.detail:String(detail);
+ s.activeKey=step.state==='active'?step.key:(s.activeKey===key?null:s.activeKey);
+ meterIccFineTuneProgressRender();
+}
+
+function meterIccFineTuneProgressError(message){
+ const s=meterIccFineTuneProgress;
+ if(!s) return;
+ const step=s.steps.find(entry=>entry.key===s.activeKey)||s.steps.find(entry=>entry.state==='active');
+ if(step){ step.state='error'; step.detail=String(message||'Fine-tuning failed'); }
+ else s.notes.push(String(message||'Fine-tuning failed'));
+ meterIccFineTuneProgressRender();
+}
+
+function meterIccFineTuneProgressNote(text){
+ const s=meterIccFineTuneProgress;
+ if(!s) return;
+ s.notes.push(String(text||''));
+ meterIccFineTuneProgressRender();
+}
+
+function meterIccFineTuneProgressHide(){
+ const modal=document.getElementById('meterIccFineTuneModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
 async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
  if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
@@ -1810,10 +1907,13 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  let currentFile=file;
  let sessionStarted=false;
  let finalized=false;
+ meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
  try{
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
    if(button) button.textContent='Pass '+pass+': applying...';
+   meterIccFineTuneProgressPass(pass);
+   meterIccFineTuneProgressStep('apply','active','Installing '+currentFile+' on the target computer and applying it to the display');
    const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:currentFile})});
    if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
    for(let i=0;i<40;i++){
@@ -1823,6 +1923,8 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
     if(i===39) throw new Error('Profile installation timed out');
    }
+   meterIccFineTuneProgressStep('apply','done','Applied '+currentFile);
+   meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
    const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
    const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
    const body=meterMeasurementSignalContext({
@@ -1850,16 +1952,19 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     await new Promise(resolve=>setTimeout(resolve,2000));
     const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
     if(button) button.textContent='Pass '+pass+': reading '+(state&&state.current_step||0)+'/'+steps.length;
+    meterIccFineTuneProgressStep('grey','active','Reading level '+(state&&state.current_step||0)+'/'+steps.length);
     if(state&&state.status==='complete'){ readings=state.readings||[]; break; }
     if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
    }
    if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
+   meterIccFineTuneProgressStep('grey','done','Measured '+readings.length+' grey levels');
    // Colour patches through the same applied profile. The chart carries the
    // server's absolute targets per patch, so the tuner can correct the cLUT
    // cells around each measured colour as well as the grey corridor.
    let colorReadings=[];
    if(TUNE_COLOR){
     if(button) button.textContent='Pass '+pass+': colour...';
+    meterIccFineTuneProgressStep('color','active','Starting the colour patch reads...');
     const ccBody=Object.assign({},body);
     delete ccBody.custom_series; delete ccBody.custom_steps;
     ccBody.points=30;
@@ -1869,12 +1974,15 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
       await new Promise(resolve=>setTimeout(resolve,2000));
       const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
       if(button) button.textContent='Pass '+pass+': colour '+(state&&state.current_step||0)+'/30';
+      meterIccFineTuneProgressStep('color','active','Reading patch '+(state&&state.current_step||0)+'/30');
       if(state&&state.status==='complete'){ colorReadings=state.readings||[]; break; }
       if(state&&(state.status==='error'||state.status==='stopped')) break;
      }
     }
+    meterIccFineTuneProgressStep('color','done',colorReadings.length?('Measured '+colorReadings.length+' colour patches'):'No colour readings — continuing with grey corrections only');
    }
    if(button) button.textContent='Pass '+pass+': tuning...';
+   meterIccFineTuneProgressStep('tune','active','Computing corrections and writing '+outStem+'.icc (damping '+(pass===1?0.5:0.65)+')');
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE,target_color_de:2.0,session,pass}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
@@ -1886,8 +1994,15 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     color_mean:Number.isFinite(measuredColourMean)?measuredColourMean:null,
     converged:!!result.converged,file:String(result.file||''),result});
    lastResult=result;
+   const passEntry=passes[passes.length-1];
+   const passSummary='worst grey '+(Number.isFinite(passEntry.worst)?passEntry.worst.toFixed(2):'--')+' dE'
+    +(passEntry.color_mean==null?'':(', colour mean '+passEntry.color_mean.toFixed(2)));
+   meterIccFineTuneProgressStep('tune','done','Corrections computed — measured '+passSummary);
+   meterIccFineTuneProgressNote('Pass '+pass+': '+passSummary+(passEntry.converged?' (converged)':''));
+   meterIccFineTuneProgressStep('evaluate','active','Checking convergence...');
    if(result.converged){
     // The currently applied profile already meets the tolerance everywhere.
+    meterIccFineTuneProgressStep('evaluate','done','Converged — the applied profile meets the tolerance everywhere');
     break;
    }
    // Measured convergence: the grey axis keeps creeping down for a few
@@ -1904,32 +2019,47 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     // measurement noise. Finalization restores the earlier measured profile
     // even though this request already wrote the next candidate over the
     // public filename.
-    if(Number.isFinite(score)&&Number.isFinite(priorWorst)&&score>priorWorst*1.03){ break; }
+    if(Number.isFinite(score)&&Number.isFinite(priorWorst)&&score>priorWorst*1.03){
+     meterIccFineTuneProgressStep('evaluate','done','Score moved outside measurement noise — stopping and keeping the best pass');
+     break;
+    }
     const greyStalled=!Number.isFinite(grey)||!Number.isFinite(greyWas)||grey>greyWas*0.97;
     const colStalled=!Number.isFinite(col)||!Number.isFinite(colWas)||col>colWas*0.97;
-    if(greyStalled&&colStalled){ break; }
+    if(greyStalled&&colStalled){
+     meterIccFineTuneProgressStep('evaluate','done','No meaningful improvement over the last pass — stopping and keeping the best pass');
+     break;
+    }
    }
+   meterIccFineTuneProgressStep('evaluate','done',pass<MAX_PASSES?('Still improving — continuing to pass '+(pass+1)):'Pass budget reached — keeping the best measured pass');
    currentFile=outStem+'.icc';
   }
   if(!sessionStarted) throw new Error('Fine-tune session produced no measured checkpoint');
   if(button) button.textContent='Keeping best measured pass...';
+  meterIccFineTuneProgressStep('finalize','active','Restoring the best measured profile from the session checkpoints...');
   const selected=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({action:'finalize',file:currentFile,output:outStem,session}),_timeoutMs:180000});
   if(!selected||selected.status!=='ok') throw new Error(selected&&selected.message||'Could not restore the best measured profile');
   finalized=true;
+  meterIccFineTuneProgressStep('finalize','done','Kept pass '+Number(selected.best_pass||0)+' as '+String(selected.file||outStem+'.icc'));
   const selectedPass=passes.find(entry=>entry.pass===Number(selected.best_pass));
   passes.forEach(entry=>{ entry.selected=entry===selectedPass; });
   if(selectedPass&&selectedPass.result) lastResult=Object.assign({},selectedPass.result,{file:selected.file,selection:selected});
   else if(lastResult) lastResult=Object.assign({},lastResult,{file:selected.file,selection:selected});
+  meterIccFineTuneProgressHide();
   meterIccShowFineTuneReport(file,lastResult,passes);
   meterIccRefreshProfiles();
  }catch(error){
+  // The modal stays open with the failed step marked so the user can see
+  // where the session stopped; the toast still reports the message.
+  meterIccFineTuneProgressError(error&&error.message?error.message:'Fine-tuning failed');
   // A failed later read must not strand the unverified candidate written by
   // the preceding pass. Best-effort finalization restores the checkpoint.
   if(sessionStarted&&!finalized){
+   meterIccFineTuneProgressStep('finalize','active','Restoring the best measured checkpoint...');
    try{
     await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
      body:JSON.stringify({action:'finalize',file:currentFile,output:outStem,session}),_timeoutMs:180000});
+    meterIccFineTuneProgressStep('finalize','done','Best measured checkpoint restore requested');
    }catch(_restoreError){}
   }
   toast(error&&error.message?error.message:'Fine-tuning failed',true);
