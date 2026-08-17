@@ -654,9 +654,43 @@ def finetune(payload, output_dir):
     def sdr_target(code):
         return sdr_target_for(transfer, code)
 
+    def bt2390_tonemap(lsrc, lmax, ldisp):
+        # Port of the WebUI's bt2390Tonemap (webui.pm): BT.2390 EETF Hermite
+        # spline in the normalized PQ domain. The verification chart judges
+        # HDR greys against PQ + BT.2390 into the display peak; fine-tune must
+        # aim at the same curve or every pass walks the profile away from the
+        # reference it is graded by.
+        if lmax <= 0.0 or ldisp <= 0.0:
+            return lsrc
+        if ldisp >= lmax:
+            return min(lsrc, lmax)
+        if lsrc <= 0.0:
+            return 0.0
+        emax = nits_to_pq(lmax)
+        if emax <= 0.0:
+            return lsrc
+        e1 = nits_to_pq(lsrc) / emax
+        max_lum = nits_to_pq(ldisp) / emax
+        knee = 1.5 * max_lum - 0.5
+        if e1 < knee or knee >= 1.0:
+            e2 = e1
+        else:
+            t = (e1 - knee) / (1.0 - knee)
+            t2 = t * t
+            t3 = t2 * t
+            e2 = ((2.0 * t3 - 3.0 * t2 + 1.0) * knee
+                  + (t3 - 2.0 * t2 + t) * (1.0 - knee)
+                  + (-2.0 * t3 + 3.0 * t2) * max_lum)
+        return pq_to_nits(e2 * emax)
+
     def level_target_nits(code):
         if is_hdr:
-            return min(pq_to_nits(code), 0.995 * ymax)
+            # Raw PQ hard-clipped at the peak asked this panel for 10-30% more
+            # light than its own tone mapping produces through 55-80% drive:
+            # each pass pushed the corridor harder, verification (PQ+BT.2390)
+            # got worse, and the session diverged. Roll the full PQ container
+            # into the profile peak with the same EETF the chart uses.
+            return bt2390_tonemap(pq_to_nits(code), 10000.0, 0.995 * ymax)
         return min(sdr_target(code), 0.995 * ymax)
 
     # Resolve colour targets once for both cLUT cell edits and MHC2's global
