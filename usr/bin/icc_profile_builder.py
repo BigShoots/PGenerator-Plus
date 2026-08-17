@@ -842,41 +842,43 @@ def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, ad
     span = peak_nits - black_nits
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
-    if min(neutral_gains) <= 1e-6 or max(neutral_gains) <= 1e-6:
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
         fail("HDR MHC2 calibration matrix has an invalid neutral response")
-    # Hardware probing (capping one channel's tail at a time and reading the
-    # wire) shows Windows merges the three MHC2 LUTs into ONE shared ramp on
-    # scanout: per-channel curve differences never reach the panel, so
-    # authoring them either loses the white balance at clip (native white at
-    # 100%) or leaks the matrix's uneven neutral gains as a chroma push
-    # through the clipped band. Emit three IDENTICAL curves that invert the
-    # MEAN neutral response; the MHC2 matrix carries all channel balance.
-    # Identical curves make every merge law equivalent to honest per-channel
-    # application, on AMD and NVIDIA pipelines alike.
-    shared_samples = [(a[0], (a[1] + b[1] + c[1]) / 3.0)
-                      for a, b, c in zip(*channel_samples)]
-    # Over the plateau the ramp inverse is no longer unique. Above the
-    # display's peak this table's job is to hold peak white, so hold the
-    # curve at the drive that reached the knee: the clipped band and the
-    # 100% endpoint then share one tied white at the calibrated peak.
+    # Over the plateau the ramp inverse is no longer unique: a channel asked
+    # for the last fraction of a percent of its own peak response resolves
+    # anywhere inside the flat top. The channel carrying the largest matrix
+    # gain is asked for exactly that, so on its own it runs to the far end of
+    # the plateau while the other two stop at the knee, and every input above
+    # the display's peak then renders in that channel's colour. Above the peak
+    # this table's job is to hold peak white, so hold the whole triplet at the
+    # drive that reached the knee instead of letting one channel continue.
     # A ceiling of 1.0 is unreachable, so hold_plateau=False reproduces the
     # unheld tail exactly for callers pinned to it.
     ceiling = neutral_plateau_code(rows) if hold_plateau else 1.0
-    values = []
-    held = 0.0
+    channel_limits = [gain / maximum_gain for gain in neutral_gains]
+    luts = [[] for _channel in range(3)]
+    held = [0.0, 0.0, 0.0]
     clamped = False
     for index in range(entries):
         encoded = index / float(entries - 1)
         neutral = max(0.0, min(1.0, (pq_to_nits(encoded) - black_nits) / span))
         if not clamped:
-            value = invert_channel_response(shared_samples, neutral)
-            if value > ceiling:
+            values = [
+                invert_channel_response(channel_samples[channel],
+                                        min(neutral, channel_limits[channel]))
+                for channel in range(3)
+            ]
+            if max(values) > ceiling:
                 clamped = True
             else:
-                held = max(held, max(0.0, min(1.0, value)))
-        values.append(held)
-    values[0] = 0.0
-    return [list(values), list(values), list(values)]
+                held = [max(held[channel], max(0.0, min(1.0, values[channel])))
+                        for channel in range(3)]
+        for channel in range(3):
+            luts[channel].append(held[channel])
+    for values in luts:
+        values[0] = 0.0
+    return luts
 
 
 def mhc2_wire_matrix(profile_type):
