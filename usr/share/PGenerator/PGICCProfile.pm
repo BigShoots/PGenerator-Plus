@@ -420,7 +420,7 @@ sub webui_icc_pair_request (@) {
  return '{"status":"error","message":"Pairing request is empty"}' unless(defined($body) && length($body)>0 && length($body)<4096);
  my ($client,$platform,$version)=("","","");
  $client=$1 if($body=~/"client"\s*:\s*"([A-Za-z0-9._-]{1,64})"/);
- $platform=$1 if($body=~/"platform"\s*:\s*"(windows|linux)"/);
+ $platform=$1 if($body=~/"platform"\s*:\s*"(windows|linux|macos)"/);
  $version=$1 if($body=~/"version"\s*:\s*"([0-9.]{1,16})"/);
  return '{"status":"error","message":"Invalid pairing request"}' if($client eq "" || $platform eq "" || $version eq "");
  $ip="" unless(defined($ip) && $ip=~/^[0-9A-Fa-f:.]{1,45}$/);
@@ -638,7 +638,7 @@ sub webui_icc_companion_poll (@) {
  # so the UI needs this to say what is unavailable rather than showing the
  # missing values as a fault.
  my $platform=&webui_icc_companion_query_value($query,"platform")||"";
- $platform="" unless($platform=~/\A(?:windows|linux)\z/);
+ $platform="" unless($platform=~/\A(?:windows|linux|macos)\z/);
  my $swapchain_cs=&webui_icc_companion_query_value($query,"swapchain_cs")||"unknown";
  my $presentation=&webui_icc_companion_query_value($query,"presentation")||"unknown";
  # The Companion's own reason a requested transform is not running.
