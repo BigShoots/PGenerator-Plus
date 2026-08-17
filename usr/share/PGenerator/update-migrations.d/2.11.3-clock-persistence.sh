@@ -25,6 +25,12 @@ done
 
 chmod 0755 "$root/etc/init.d/fake-hwclock" "$root/etc/init.d/ntp" "$root/etc/cron.hourly/fake-hwclock"
 
+# Older release tooling could also materialize the Argyll multicall link as a
+# seven-byte regular file containing "oeminst". Shell fallback can hide that
+# defect, but direct exec calls fail. Restore the real argv[0]-selecting link.
+mkdir -p "$root/usr/bin"
+ln -snf oeminst "$root/usr/bin/i1d3ccss"
+
 # The stock default restrictions include nopeer. Without a source-template
 # exception, ntpd resolves pool names but refuses to mobilise associations for
 # the discovered servers, so the clock never synchronises. Preserve custom
