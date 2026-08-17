@@ -59,9 +59,9 @@ sub webui_icc_profile_list (@) {
        }
       }
       $tunable="true" if($tags{"targ"} && ($tags{"B2A0"} || $tags{"MHC2"}));
-      # Colour patches can only be corrected where there are cLUT cells to
-      # move: an MHC2 profile corrects through per-channel curves alone.
-      $tune_color=($tags{"B2A0"} && !$tags{"MHC2"})?"true":"false";
+      # cLUT profiles tune local cells. MHC2 profiles use the same colour
+      # evidence for a constrained residual 3x3 matrix correction.
+      $tune_color=($tunable eq "true")?"true":"false";
       if($tags{"cicp"}) {
        $tune_mode="hdr10";
       } elsif($tags{"MHC2"} && $mhc2_off>0 && $mhc2_size>44) {

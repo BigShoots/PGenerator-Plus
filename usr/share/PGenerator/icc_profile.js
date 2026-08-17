@@ -1788,8 +1788,8 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  // while the server privately checkpoints the best profile actually measured.
  const MAX_PASSES=4;
  const TARGET_DE=1.0;
- // Colour patches are only meaningful for cLUT profiles: an MHC2 profile's
- // correction is a per-channel curve set with no cell to move.
+ // cLUT profiles use colour reads for local cell edits. MHC2 profiles use
+ // them for a bounded, D65-preserving residual matrix correction.
  const TUNE_COLOR=tuneColor!==false;
  const outStem=file.replace(/\.icc$/i,'').replace(/-FineTuned(?:-\d+)?$/,'')+'-FineTuned';
  const session=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,14);
@@ -1863,13 +1863,14 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    }
    if(button) button.textContent='Pass '+pass+': tuning...';
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE,session,pass}),_timeoutMs:1800000});
+    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE,target_color_de:2.0,session,pass}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
    sessionStarted=true;
    const colourLevels=Array.isArray(result.color_levels)?result.color_levels:[];
-   const colourDes=colourLevels.map(entry=>Number(entry.de2000)).filter(Number.isFinite);
+   const measuredColourMean=Number(result.color_de&&result.color_de.mean);
    passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),
-    color_mean:colourDes.length?colourDes.reduce((a,b)=>a+b,0)/colourDes.length:null,
+    score:Number(result.selection_score!=null?result.selection_score:result.worst_de||0),
+    color_mean:Number.isFinite(measuredColourMean)?measuredColourMean:null,
     converged:!!result.converged,file:String(result.file||''),result});
    lastResult=result;
    if(result.converged){
@@ -1882,13 +1883,15 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    // for an absolute tolerance the noisy toe level may never satisfy.
    if(passes.length>1){
     const now=passes[passes.length-1], was=passes[passes.length-2];
-    const priorWorst=Math.min(...passes.slice(0,-1).map(entry=>Number(entry.worst)).filter(Number.isFinite));
+    const priorWorst=Math.min(...passes.slice(0,-1).map(entry=>Number(entry.score)).filter(Number.isFinite));
     const grey=Number(now.worst), greyWas=Number(was.worst);
+    const score=Number(now.score);
     const col=Number(now.color_mean), colWas=Number(was.color_mean);
-    // Stop when the global neutral worst case has moved outside measurement
-    // noise. Finalization restores the earlier measured profile even though
-    // this request already wrote the next candidate over the public filename.
-    if(Number.isFinite(grey)&&Number.isFinite(priorWorst)&&grey>priorWorst*1.03){ break; }
+    // Stop when the combined neutral/colour score has moved outside
+    // measurement noise. Finalization restores the earlier measured profile
+    // even though this request already wrote the next candidate over the
+    // public filename.
+    if(Number.isFinite(score)&&Number.isFinite(priorWorst)&&score>priorWorst*1.03){ break; }
     const greyStalled=!Number.isFinite(grey)||!Number.isFinite(greyWas)||grey>greyWas*0.97;
     const colStalled=!Number.isFinite(col)||!Number.isFinite(colWas)||col>colWas*0.97;
     if(greyStalled&&colStalled){ break; }
@@ -1946,21 +1949,23 @@ function meterIccShowFineTuneReport(parent,result,passes){
   html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
  }
  if(result&&result.selection){
-  html+='<div style="margin-bottom:12px">Kept pass '+Number(result.selection.best_pass||0)+' as the best measured result ('+fixed(result.selection.best_worst_de)+' worst dE ITP).</div>';
+  html+='<div style="margin-bottom:12px">Kept pass '+Number(result.selection.best_pass||0)+' as the best measured result (score '+fixed(result.selection.best_score)+', worst grey '+fixed(result.selection.best_worst_de)+' dE ITP).</div>';
  }else if(!result.converged){
   html+='<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
  }
  const colorLevels=Array.isArray(result.color_levels)?result.color_levels:[];
  if(colorLevels.length){
-  const des=colorLevels.map(entry=>Number(entry.de2000)).filter(Number.isFinite);
-  const mean=des.length?des.reduce((a,b)=>a+b,0)/des.length:0;
+  const mean=Number(result.color_de&&result.color_de.mean);
   const worst=colorLevels.slice().sort((a,b)=>Number(b.de2000||0)-Number(a.de2000||0)).slice(0,4);
-  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+colorLevels.length+' measured, mean '+fixed(mean)+' dE2000 before this pass)'
+  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+Number(result.color_de&&result.color_de.patches||colorLevels.length)+' chromatic patches, mean '+fixed(mean)+' dE2000 before this pass)'
    +'<table style="width:100%;font-size:.85em;border-collapse:collapse"><tr style="opacity:.7"><td>Patch</td><td>Target</td><td>Measured</td><td>dE2000</td></tr>';
   worst.forEach(entry=>{
    html+='<tr><td>'+String(entry.name||'')+'</td><td>'+fixed(entry.target_nits)+'</td><td>'+fixed(entry.measured_nits)+'</td><td>'+fixed(entry.de2000)+'</td></tr>';
   });
-  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">The cLUT cells around each measured colour were adjusted by their interpolation share; the grey corridor is corrected separately above.</div></div>';
+  const mhc2=/^mhc2/.test(String(result.mode||''));
+  const clut=colorLevels.some(entry=>entry.post_matrix_de2000!=null)||!mhc2;
+  const method=mhc2&&clut?'The MHC2 matrix removes the global colour residual, then the cLUT corrects the remaining local error.':mhc2?'The MHC2 matrix removes the bounded global colour residual.':'The cLUT cells around each measured colour were adjusted by their interpolation share.';
+  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">'+method+' The grey corridor is corrected separately above.</div></div>';
  }
  if(result.selfcheck){
   html+='<div style="margin-bottom:4px;font-weight:600">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'

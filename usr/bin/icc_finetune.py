@@ -12,9 +12,10 @@ supported, selected from the parent's own tags:
   target is absolute PQ; inside the rolloff the luminance is pinned by the
   panel, so gains are normalised to drops and only the white balance of
   the plateau is corrected.
-- MHC2 profiles: the corrections land in the MHC2 per-channel adjustment
-  curves (and the cloned vcgt when present) in the wire signal domain,
-  which is the stage Windows and the patched KWin actually apply.
+- MHC2 profiles: neutral corrections land in the MHC2 per-channel adjustment
+  curves (and the cloned vcgt when present). Reachable colour reads fit a
+  small D65-preserving residual correction into the MHC2 3x3 matrix. These
+  are the stages Windows and the patched KWin actually apply.
 - SDR cLUT profiles (no PQ cicp): identical corridor treatment with
   targets from the profile white and the transfer the parent was built
   against, instead of PQ.
@@ -82,7 +83,7 @@ def session_paths(output_dir, session):
 
 
 def checkpoint_session(payload, output_dir, profile_data, score, before_de,
-                       profile_name, mode):
+                       profile_name, mode, color_de=None, worst_de=None):
     """Retain the best profile that was actually measured in this session.
 
     The tuner writes the next candidate over the public FineTuned filename.
@@ -106,7 +107,7 @@ def checkpoint_session(payload, output_dir, profile_data, score, before_de,
             state = {}
     if state and state.get("output") != output:
         raise ValueError("Fine-tune session output changed")
-    prior = state.get("best_worst_de")
+    prior = state.get("best_score", state.get("best_worst_de"))
     if prior is None or float(score) < float(prior):
         write_atomic(best_path, bytes(profile_data))
         parent_path = payload.get("parent_path") or ""
@@ -121,8 +122,10 @@ def checkpoint_session(payload, output_dir, profile_data, score, before_de,
                 pass
         state = {
             "output": output,
-            "best_worst_de": round(float(score), 3),
+            "best_score": round(float(score), 3),
+            "best_worst_de": round(float(worst_de if worst_de is not None else score), 3),
             "best_before_de": before_de,
+            "best_color_de": color_de,
             "best_pass": int(payload.get("pass", 0) or 0),
             "best_profile": os.path.basename(profile_name),
             "mode": mode,
@@ -162,8 +165,10 @@ def finalize_session(payload, output_dir):
         "mode": state.get("mode"),
         "worst_de": state.get("best_worst_de"),
         "before_de": state.get("best_before_de"),
+        "color_de": state.get("best_color_de"),
+        "selection_score": state.get("best_score", state.get("best_worst_de")),
         "selection": {
-            "method": "best_measured_worst_de_itp",
+            "method": "best_measured_global_colour_score",
             "pass": state.get("best_pass"),
             "measured_profile": state.get("best_profile"),
         },
@@ -181,6 +186,8 @@ def finalize_session(payload, output_dir):
         "best_pass": state.get("best_pass"),
         "best_worst_de": state.get("best_worst_de"),
         "best_before_de": state.get("best_before_de"),
+        "best_color_de": state.get("best_color_de"),
+        "best_score": state.get("best_score", state.get("best_worst_de")),
         "measured_profile": state.get("best_profile"),
     }
 
@@ -419,6 +426,82 @@ def mat_vec(m, v):
     return [sum(m[r][k] * v[k] for k in range(3)) for r in range(3)]
 
 
+def mat_mul(a, b):
+    return [[sum(a[row][k] * b[k][column] for k in range(3))
+             for column in range(3)] for row in range(3)]
+
+
+def mhc2_residual_matrix(samples, damping):
+    """Fit a small measured-XYZ to target-XYZ correction for MHC2.
+
+    MHC2 has no 3D table, so colour fine-tuning can only remove the global
+    linear residual left by its matrix.  Fit chromaticity-normalised samples
+    with a weak identity prior, force D65 to remain invariant, then bound the
+    per-pass move.  Grayscale luminance and balance remain the curve tuner's
+    responsibility.
+    """
+    if len(samples) < 6:
+        return None
+    gram = [[0.0] * 3 for _row in range(3)]
+    cross = [[0.0] * 3 for _row in range(3)]
+    for measured, target in samples:
+        scale = max(float(target[1]), 1e-6)
+        m = [float(value) / scale for value in measured]
+        t = [float(value) / scale for value in target]
+        for row in range(3):
+            for column in range(3):
+                gram[row][column] += m[row] * m[column]
+                cross[row][column] += t[row] * m[column]
+    # A weak identity prior stabilizes a chart whose reachable colours occupy
+    # only part of the display gamut without overpowering real measurements.
+    ridge = 0.25
+    for index in range(3):
+        gram[index][index] += ridge
+        cross[index][index] += ridge
+    inverse = mat_inv(gram)
+    if inverse is None:
+        return None
+    fitted = mat_mul(cross, inverse)
+    white = d65_xyz(1.0)
+    white_norm = sum(value * value for value in white)
+    # Project the residual onto the subspace C*D65=D65.  This prevents colour
+    # reads from fighting the denser and less noisy neutral ladder.
+    fitted_white = mat_vec(fitted, white)
+    white_error = [white[row] - fitted_white[row] for row in range(3)]
+    fitted = [[fitted[row][column] + white_error[row] * white[column] / white_norm
+               for column in range(3)] for row in range(3)]
+    delta = [[float(damping) * (fitted[row][column]
+              - (1.0 if row == column else 0.0))
+              for column in range(3)] for row in range(3)]
+    # Re-project the damped delta so it has exactly zero effect on D65.
+    drift = mat_vec(delta, white)
+    delta = [[delta[row][column] - drift[row] * white[column] / white_norm
+              for column in range(3)] for row in range(3)]
+    diagonal_bound = 0.04
+    cross_bound = 0.025
+    scale = 1.0
+    for row in range(3):
+        for column in range(3):
+            bound = diagonal_bound if row == column else cross_bound
+            if abs(delta[row][column]) > bound:
+                scale = min(scale, bound / abs(delta[row][column]))
+    delta = [[value * scale for value in row] for row in delta]
+    correction = [[(1.0 if row == column else 0.0) + delta[row][column]
+                   for column in range(3)] for row in range(3)]
+    if mat_inv(correction) is None:
+        return None
+    before_mean = sum(de2000(measured, target)
+                      for measured, target in samples) / len(samples)
+    after_mean = sum(de2000(mat_vec(correction, measured), target)
+                     for measured, target in samples) / len(samples)
+    # A least-squares XYZ improvement is not automatically a perceptual one.
+    # Ignore fits whose dE00 gain is too small to distinguish from chart noise.
+    minimum_gain = max(0.01, before_mean * 0.01)
+    if after_mean > before_mean - minimum_gain:
+        return None
+    return correction
+
+
 def d65_xyz(nits):
     return [nits * D65_X / D65_Y, nits, nits * (1.0 - D65_X - D65_Y) / D65_Y]
 
@@ -576,6 +659,60 @@ def finetune(payload, output_dir):
             return min(pq_to_nits(code), 0.995 * ymax)
         return min(sdr_target(code), 0.995 * ymax)
 
+    # Resolve colour targets once for both cLUT cell edits and MHC2's global
+    # residual-matrix solve.  HDR chart Yn is normalized to its mastering
+    # reference (normally 1000 nits); SDR Yn is relative to the profile white.
+    # The old unconditional *1000 made SDR colour fine-tuning chase HDR light
+    # levels, so keep the signal domains explicit here.
+    color_levels = []
+    color_samples = []
+    for row in payload.get("color_readings") or []:
+        if row.get("error") or row.get("target_Yn") is None:
+            continue
+        tx = float(row.get("target_x", 0.0))
+        ty = float(row.get("target_y", 0.0))
+        reference_nits = (float(row.get("max_luma", 1000.0) or 1000.0)
+                          if is_hdr else lumi)
+        target_y = float(row["target_Yn"]) * reference_nits
+        if ty <= 0.0 or target_y < 0.05:
+            continue
+        target = [target_y * tx / ty, target_y,
+                  target_y * (1.0 - tx - ty) / ty]
+        measured = [float(row.get("X", 0.0)), float(row.get("Y", 0.0)),
+                    float(row.get("Z", 0.0))]
+        if measured[1] <= 0.0:
+            continue
+        rgb_target = None
+        reachable = True
+        if primary_matrix is not None:
+            rgb_target = mat_vec(primary_inverse, target)
+            reachable = min(rgb_target) >= -0.02 and max(rgb_target) <= 1.0
+        elif target_y > 0.95 * ymax:
+            reachable = False
+        if not reachable:
+            continue
+        gains = channel_gains(measured, target)
+        if primary_matrix is not None:
+            rgb_m = mat_vec(primary_inverse, measured)
+            strongest = max(rgb_m)
+            if strongest > 0:
+                gains = [gain if rgb_m[channel] > 0.12 * strongest else 1.0
+                         for channel, gain in enumerate(gains)]
+        level = {
+            "name": str(row.get("name", "")),
+            "target_nits": round(target[1], 3),
+            "measured_nits": round(measured[1], 3),
+            "de2000": round(de2000(measured, target), 3),
+            "gains": [round(gain, 4) for gain in gains],
+        }
+        color_levels.append(level)
+        chromatic = abs(tx - D65_X) > 0.002 or abs(ty - D65_Y) > 0.002
+        if chromatic and target_y >= 0.5:
+            color_samples.append({
+                "row": row, "measured": measured, "target": target,
+                "gains": gains, "level": level,
+            })
+
     rolloff_start = 0.90 * ymax
     keyed = []
     levels = []
@@ -633,10 +770,20 @@ def finetune(payload, output_dir):
         "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
         "rolloff_max": round(max(top_de), 3) if top_de else None,
     }
+    chromatic_des = [sample["level"]["de2000"] for sample in color_samples]
+    color_de = {
+        "mean": round(sum(chromatic_des) / len(chromatic_des), 3),
+        "max": round(max(chromatic_des), 3),
+        "patches": len(chromatic_des),
+    } if chromatic_des else None
+    selection_score = max(worst_de, color_de["mean"] if color_de else 0.0)
     mode = ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr")
     checkpoint = checkpoint_session(payload, output_dir, measured_profile_data,
-                                    worst_de, before_de, parent_path, mode)
-    if target_de > 0.0 and worst_de <= target_de:
+                                    selection_score, before_de, parent_path, mode,
+                                    color_de=color_de, worst_de=worst_de)
+    target_color_de = float(payload.get("target_color_de", 2.0) or 0.0)
+    color_converged = not color_de or target_color_de <= 0.0 or color_de["mean"] <= target_color_de
+    if target_de > 0.0 and worst_de <= target_de and color_converged:
         return {
             "status": "ok",
             "converged": True,
@@ -647,9 +794,13 @@ def finetune(payload, output_dir):
             "target_transfer_source": None if is_hdr else transfer_source,
             "worst_de": round(worst_de, 3),
             "before_de": before_de,
+            "color_de": color_de,
+            "selection_score": round(selection_score, 3),
             "session_best_pass": checkpoint.get("best_pass") if checkpoint else None,
             "session_best_worst_de": checkpoint.get("best_worst_de") if checkpoint else None,
+            "session_best_score": checkpoint.get("best_score") if checkpoint else None,
             "levels": sorted(levels, key=lambda item: item["pct"]),
+            "color_levels": color_levels,
             "selfcheck": None,
         }
 
@@ -732,6 +883,7 @@ def finetune(payload, output_dir):
     knee_slope = (knee_c1 - knee_c2) / max(math.log(0.85) - math.log(0.60), 1e-9)
 
     applied = []
+    matrix_correction = None
     bound = 2.5 / 1023.0
     plateau_bound = 3.0 / 1023.0
     # The corridor edits wire codes, where a couple of codes per pass is the
@@ -748,6 +900,37 @@ def finetune(payload, output_dir):
         # change into the cloned vcgt so both consumers stay in step.
         off, _ = tags["MHC2"]
         entries = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
+        matrix_offset = struct.unpack(">I", bytes(data[off + 20:off + 24]))[0]
+        matrix_samples = [(sample["measured"], sample["target"])
+                          for sample in color_samples]
+        matrix_correction = mhc2_residual_matrix(matrix_samples, damping)
+        if matrix_correction is not None:
+            current_matrix = [
+                [s15(data, off + matrix_offset + row * 16 + column * 4)
+                 for column in range(3)] for row in range(3)
+            ]
+            # The builder's validated MHC2 direction is
+            # physical * inverse(wire) * matrix.  A fitted correction maps the
+            # measured XYZ residual back to target XYZ, so it belongs on the
+            # right of the existing matrix.
+            updated_matrix = mat_mul(current_matrix, matrix_correction)
+            if all(math.isfinite(value) and abs(value) < 4.0
+                   for row in updated_matrix for value in row):
+                for row in range(3):
+                    for column in range(3):
+                        put_s15(data, off + matrix_offset + row * 16 + column * 4,
+                                updated_matrix[row][column])
+                move = max(abs(matrix_correction[row][column]
+                               - (1.0 if row == column else 0.0))
+                           for row in range(3) for column in range(3))
+                if move >= 1e-5:
+                    applied.append(move)
+                for sample in color_samples:
+                    predicted = mat_vec(matrix_correction, sample["measured"])
+                    sample["level"]["predicted_de2000"] = round(
+                        de2000(predicted, sample["target"]), 3)
+            else:
+                matrix_correction = None
         lut_offsets = struct.unpack(">III", bytes(data[off + 24:off + 36]))
         for ch in range(3):
             base = off + lut_offsets[ch] + 8
@@ -876,16 +1059,13 @@ def finetune(payload, output_dir):
                             data[base_pos + ch * 2 + 1] = value & 0xFF
                 applied.append(max(abs(g - 1.0) for g in gains))
 
-    # ---- colour corrections -------------------------------------------------
-    # Each colour reading edits only the cLUT cell surrounding its own PCS
-    # position: per-channel gains through the panel primaries, converted to
-    # wire deltas along the local slope of that channel's drive level, scaled
-    # by the corner's trilinear weight so neighbouring colours are disturbed
-    # no more than their interpolation share. Damped, bounded, iterative -
-    # the same doctrine as the grey corridor.
-    color_levels = []
-    color_rows = payload.get("color_readings") or []
-    if color_rows and not has_mhc2:
+    # ---- local cLUT colour corrections --------------------------------------
+    # A cLUT edits only the cell surrounding each colour's PCS position. For
+    # an MHC2+cLUT profile, first predict the global residual removed by the
+    # matrix above and give the cLUT only what remains; applying the original
+    # error to both stages would double-correct every consumer that uses them
+    # together. Matrix-family MHC2 profiles have no B2A table and stop above.
+    if color_samples and "B2A0" in tags:
         bradford = ((0.8951, 0.2664, -0.1614),
                     (-0.7502, 1.7135, 0.0367),
                     (0.0389, -0.0685, 1.0296))
@@ -909,56 +1089,26 @@ def finetune(payload, output_dir):
             return (high - low) / (math.log(y_high) - math.log(y_low))
 
         color_bound = 2.5 / 1023.0
-        for row in color_rows:
-            if row.get("error") or row.get("target_Yn") is None:
-                continue
-            tx = float(row.get("target_x", 0.0))
-            ty = float(row.get("target_y", 0.0))
-            tyn = float(row["target_Yn"]) * 1000.0
-            if ty <= 0.0 or tyn < 0.05:
-                continue
-            target = [tyn * tx / ty, tyn, tyn * (1.0 - tx - ty) / ty]
-            measured = [float(row.get("X", 0.0)), float(row.get("Y", 0.0)),
-                        float(row.get("Z", 0.0))]
-            if measured[1] <= 0.0:
-                continue
-            # Chart endpoints are referenced to a 1000 cd/m2 display, and a
-            # saturated primary is capped by that primary alone, not by white:
-            # this panel's red peaks near 83 cd/m2 against a 263 cd/m2 target.
-            # Decompose the target through the measured primaries and skip any
-            # patch that would need a channel beyond full drive. Those are out
-            # of range, not miscalibrated, and chasing them only distorts
-            # their neighbours.
-            if primary_matrix is not None:
-                rgb_target = mat_vec(primary_inverse, target)
-                if max(rgb_target) > 1.0:
-                    continue
-            elif tyn > 0.95 * ymax:
-                continue
+        for sample in color_samples:
+            row = sample["row"]
+            target = sample["target"]
+            measured = (mat_vec(matrix_correction, sample["measured"])
+                        if has_mhc2 and matrix_correction is not None
+                        else sample["measured"])
             gains = channel_gains(measured, target)
-            # A channel that barely contributes to a colour has a meaningless
-            # ratio: saturated cyan carries almost no red, so its red ratio is
-            # numerical noise that ran straight into the clamp and asked for a
-            # doubling. Correct only the channels the colour is actually made
-            # of, and leave the rest alone.
             if primary_matrix is not None:
                 rgb_m = mat_vec(primary_inverse, measured)
                 strongest = max(rgb_m)
                 if strongest > 0:
-                    gains = [g if rgb_m[k] > 0.12 * strongest else 1.0
-                             for k, g in enumerate(gains)]
+                    gains = [gain if rgb_m[channel] > 0.12 * strongest else 1.0
+                             for channel, gain in enumerate(gains)]
+            if has_mhc2:
+                sample["level"]["post_matrix_de2000"] = round(
+                    de2000(measured, target), 3)
             effective = [1.0 + damping * (g - 1.0) for g in gains]
             # Fine-tune moves, not gross corrections: a colour cell should
             # never shift by more than a few percent in one pass.
             effective = [max(0.90, min(1.11, e)) for e in effective]
-            before = de2000(measured, target)
-            color_levels.append({
-                "name": str(row.get("name", "")),
-                "target_nits": round(target[1], 3),
-                "measured_nits": round(measured[1], 3),
-                "de2000": round(before, 3),
-                "gains": [round(g, 4) for g in gains],
-            })
             if max(abs(e - 1.0) for e in effective) < 0.0015:
                 continue
             pcs = mat_vec(adapt, [c / lumi for c in target])
@@ -1096,14 +1246,20 @@ def finetune(payload, output_dir):
         "target_transfer_source": None if is_hdr else transfer_source,
         "chroma_capable": primary_matrix is not None,
         "before_de": before_de,
+        "color_de": color_de,
+        "selection_score": round(selection_score, 3),
         "session_best_pass": checkpoint.get("best_pass") if checkpoint else None,
         "session_best_worst_de": checkpoint.get("best_worst_de") if checkpoint else None,
+        "session_best_score": checkpoint.get("best_score") if checkpoint else None,
         "reads_used": len(keyed),
         "damping": damping,
         "max_correction_pct": round(max(applied) * 100.0, 2),
         "mean_correction_pct": round(sum(applied) / len(applied) * 100.0, 2),
         "levels": sorted(levels, key=lambda item: item["pct"]),
         "color_levels": color_levels,
+        "mhc2_matrix_correction": (
+            [[round(value, 7) for value in row] for row in matrix_correction]
+            if matrix_correction is not None else None),
         "selfcheck": selfcheck,
     }
     with io.open(out_path + ".finetune.json", "w", encoding="ascii") as handle:
