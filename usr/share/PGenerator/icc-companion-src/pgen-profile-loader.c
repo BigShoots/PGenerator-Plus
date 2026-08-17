@@ -1454,6 +1454,10 @@ static DWORD WINAPI apply_profile_thread(LPVOID unused) {
 }
 
 static void write_companion_result(BOOL ok) {
+    /* The apply stole foreground from the Companion's fullscreen HDR
+     * window; without this grant Windows denies its reactivation and the
+     * desktop's dim composed policy corrupts every following read. */
+    AllowSetForegroundWindow(ASFW_ANY);
     HANDLE result;
     DWORD written = 0;
     const char *text = ok ? "ok" : "error";

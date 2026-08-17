@@ -107,7 +107,7 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.21"
-#define APP_BUILD "1"
+#define APP_BUILD "2"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -3638,6 +3638,31 @@ static void raise_pattern_window(void)
 #endif
 }
 
+#ifdef _WIN32
+static void windows_verified_foreground(void)
+{
+    /* SetForegroundWindow is denied to background processes and the failure
+     * is silent: after the Profile Loader runs, the fullscreen HDR window can
+     * stay under the desktop's dim composed policy and every mid-band read
+     * sags 12-17%. A window restored from minimize is granted genuine
+     * foreground, mirroring the manual minimize/restore that recovers the
+     * bench. Verify with GetForegroundWindow and retry a bounded number of
+     * times rather than trusting the activation call. */
+    HWND window;
+    if (!app.fullscreen || !app.window) return;
+    window = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
+                                          SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!window) return;
+    for (int attempt = 0; attempt < 3 && GetForegroundWindow() != window; attempt++) {
+        ShowWindow(window, SW_MINIMIZE);
+        SDL_Delay(120);
+        ShowWindow(window, SW_RESTORE);
+        SDL_Delay(120);
+        windows_activate_pattern_window(window);
+    }
+}
+#endif
+
 static bool apply_display_settings(bool fullscreen, int patch_size)
 {
 #ifndef _WIN32
@@ -4596,7 +4621,10 @@ static void process_network_updates(void)
         if (refresh_fullscreen_hdr &&
             (!try_create_renderer(false, NULL) ||
              (SDL_Delay(50), !create_renderer(true)))) ok = false;
-        else ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+        else {
+            if (refresh_fullscreen_hdr) windows_verified_foreground();
+            ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+        }
 #else
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
 #endif
