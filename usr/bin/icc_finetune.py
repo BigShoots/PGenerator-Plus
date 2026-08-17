@@ -683,14 +683,28 @@ def finetune(payload, output_dir):
                   + (-2.0 * t3 + 3.0 * t2) * max_lum)
         return pq_to_nits(e2 * emax)
 
+    def hdr_mastering_nits():
+        for row in payload.get("readings") or []:
+            try:
+                candidate = float(row.get("max_luma") or 0.0)
+            except (TypeError, ValueError):
+                candidate = 0.0
+            if candidate > 0.0:
+                return candidate
+        return 1000.0
+
+    mastering = hdr_mastering_nits()
+
     def level_target_nits(code):
         if is_hdr:
-            # Raw PQ hard-clipped at the peak asked this panel for 10-30% more
-            # light than its own tone mapping produces through 55-80% drive:
-            # each pass pushed the corridor harder, verification (PQ+BT.2390)
-            # got worse, and the session diverged. Roll the full PQ container
-            # into the profile peak with the same EETF the chart uses.
-            return bt2390_tonemap(pq_to_nits(code), 10000.0, 0.995 * ymax)
+            # Mirror the verification chart exactly: PQ decode capped at the
+            # mastering peak, BT.2390-rolled into the profile peak. A panel
+            # whose peak covers the mastering level gets a plain clip (the
+            # EETF's own degenerate case) -- rolling from the 10000-nit
+            # container instead put the knee near 325 nits and graded a
+            # PQ-tracking panel 25 dE wrong through the mids.
+            return bt2390_tonemap(min(pq_to_nits(code), mastering), mastering,
+                                  0.995 * ymax)
         return min(sdr_target(code), 0.995 * ymax)
 
     # Resolve colour targets once for both cLUT cell edits and MHC2's global
