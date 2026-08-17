@@ -1,0 +1,57 @@
+#!/bin/sh
+
+PID_FILE=/var/run/ntpd.pid
+PROGRAM_NAME=ntpd
+INIT_NAME=ntp
+PROGRAM_DAEMON=/usr/sbin/ntpd
+DEFAULT_FILE=/etc/default/ntp
+
+[ -r "$DEFAULT_FILE" ] && . "$DEFAULT_FILE"
+
+ntp_pids() {
+ if [ -r "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ -r "/proc/$pid/comm" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "$PROGRAM_NAME" ]; then
+   printf '%s\n' "$pid"
+   return
+  fi
+ fi
+ pidof "$PROGRAM_NAME" 2>/dev/null || true
+}
+
+case "${1:-}" in
+ start)
+  echo -n "Starting $PROGRAM_NAME..."
+  if [ -z "$(ntp_pids)" ]; then
+   "$PROGRAM_DAEMON" ${DAEMON_ARGUMENT:-}
+  fi
+  echo "done"
+ ;;
+
+ stop)
+  echo -n "Stopping $PROGRAM_NAME..."
+  pids=$(ntp_pids)
+  if [ -n "$pids" ]; then
+   kill $pids 2>/dev/null || true
+   count=0
+   while [ -n "$(ntp_pids)" ] && [ "$count" -lt 5 ]; do
+    sleep 1
+    count=$((count + 1))
+   done
+   pids=$(ntp_pids)
+   [ -z "$pids" ] || kill -9 $pids 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  echo "done"
+ ;;
+
+ restart)
+  "$0" stop
+  "$0" start
+ ;;
+
+ *)
+  echo "Usage: /etc/init.d/$INIT_NAME {start|stop|restart}" >&2
+  exit 1
+ ;;
+esac

@@ -23,7 +23,18 @@ for entry in \
  ln -snf "$target" "$path"
 done
 
-chmod 0755 "$root/etc/init.d/fake-hwclock" "$root/etc/cron.hourly/fake-hwclock"
+chmod 0755 "$root/etc/init.d/fake-hwclock" "$root/etc/init.d/ntp" "$root/etc/cron.hourly/fake-hwclock"
+
+# The stock default restrictions include nopeer. Without a source-template
+# exception, ntpd resolves pool names but refuses to mobilise associations for
+# the discovered servers, so the clock never synchronises. Preserve custom
+# configuration and add only the missing exception. This is intentionally in
+# the migration as well as the cumulative /etc/ntp.conf overlay so 2.11.2
+# units receive both halves of the clock repair when updating to 2.11.3.
+ntp_conf="$root/etc/ntp.conf"
+if [ -f "$ntp_conf" ] && ! grep -Eq '^[[:space:]]*restrict[[:space:]]+source([[:space:]]|$)' "$ntp_conf"; then
+ printf '\n# Allow ntpd to mobilise servers discovered through pool directives.\nrestrict source nomodify notrap noquery\n' >> "$ntp_conf"
+fi
 
 system_crontab="$root/etc/crontab"
 mkdir -p "$(dirname "$system_crontab")"
@@ -39,4 +50,13 @@ chmod 0644 "$system_crontab"
 if [ -z "$root" ] && ! pidof crond >/dev/null 2>&1; then
  rm -f /var/run/crond.pid
  /etc/init.d/cron start >/dev/null 2>&1 || true
+fi
+
+# The stock ntp init script relied on /var/run/ntpd.pid, which ntpd does not
+# create on these images. Its restart action therefore left the old process
+# alive and the new configuration unread. The cumulative overlay supplies a
+# pidof-aware script; restart after extraction so the source rule takes effect
+# immediately instead of waiting for the next reboot.
+if [ -z "$root" ]; then
+ /etc/init.d/ntp restart >/dev/null 2>&1 || true
 fi
