@@ -1704,16 +1704,7 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
-    # Windows merges the three MHC2 LUTs into one shared ramp on scanout
-    # (hardware-probed: capping a single channel's tail reads as a neutral
-    # luminance drop), so the per-channel differences derived above cannot be
-    # expressed and only leak the matrix's uneven neutral gains as a chroma
-    # push through the clipped band. Collapse to the mean curve -- the MHC2
-    # matrix carries all channel balance -- so the clipped band and the 100%
-    # endpoint share one tied white at the calibrated peak.
-    shared = [sum(luts[channel][index] for channel in range(3)) / 3.0
-              for index in range(entries)]
-    return [list(shared), list(shared), list(shared)]
+    return luts
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
