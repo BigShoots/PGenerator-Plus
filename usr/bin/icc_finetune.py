@@ -824,7 +824,21 @@ def finetune(payload, output_dir):
         "max": round(max(chromatic_des), 3),
         "patches": len(chromatic_des),
     } if chromatic_des else None
-    selection_score = max(worst_de, color_de["mean"] if color_de else 0.0)
+
+    def robust_worst(values):
+        # The panel's white chroma drifts over a dE between reads in the
+        # clipped band, so a single-patch max let one noisy reading out-score
+        # a pass that improved every mean and the in-range max, stopping the
+        # session and discarding the better result. Average the two largest
+        # errors per band instead: still dominated by the worst region, no
+        # longer vetoed by one reading.
+        if not values:
+            return 0.0
+        ranked = sorted(values, reverse=True)
+        return sum(ranked[:2]) / float(min(2, len(ranked)))
+
+    selection_score = max(robust_worst(inr_de), robust_worst(top_de),
+                          color_de["mean"] if color_de else 0.0)
     mode = ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr")
     checkpoint = checkpoint_session(payload, output_dir, measured_profile_data,
                                     selection_score, before_de, parent_path, mode,
