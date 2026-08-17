@@ -383,6 +383,17 @@ def pq_to_nits(value):
 # below 1.2 cd/m2 on a display whose shadow response is steep, which is far too
 # coarse to invert. The calibration carries that region instead.
 VCGT_ENTRIES = 1024
+# MHC2 permits up to 4096 1DLUT entries and the OS interpolates to whatever
+# the hardware supports. 256 entries are coarse exactly where PQ moves
+# fastest (one step ~0.4% of code near the knee), so HDR writes the full
+# density. SDR keeps 256: its sRGB-domain curves are smooth and the
+# established SDR behaviour is validated on hardware.
+MHC2_HDR_LUT_ENTRIES = 4096
+MHC2_SDR_LUT_ENTRIES = 256
+
+
+def mhc2_lut_entries(profile_type):
+    return MHC2_HDR_LUT_ENTRIES if profile_type == "windows-hdr" else MHC2_SDR_LUT_ENTRIES
 
 
 def nits_to_pq(nits):
@@ -912,7 +923,7 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
         if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
             fail("HDR MHC2 calibration matrix has an invalid neutral response")
         calibrated_peak = black["xyz"][1] + (white["xyz"][1] - black["xyz"][1]) / maximum_gain
-    entries = 256
+    entries = mhc2_lut_entries(profile_type)
     header_size = 36
     matrix_offset = header_size
     lut0_offset = matrix_offset + 48
@@ -1639,7 +1650,7 @@ def profile_with_measured_chad(profile, black, white):
 
 
 def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
-                                        matrix, entries=256):
+                                        matrix, entries=MHC2_HDR_LUT_ENTRIES):
     """Derive Windows' post-PQ MHC2 curves from the fitted forward model.
 
     The dense neutral measurements determine luminance and the first stable
@@ -2730,7 +2741,9 @@ def build(payload, output_dir):
             calibration_degenerate = True
             calibration = [[index / float(entries - 1) for index in range(entries)]
                            for _channel in range(3)]
-            identity_mhc2 = [[index / 255.0 for index in range(256)]
+            identity_entries = mhc2_lut_entries(mhc2_type)
+            identity_mhc2 = [[index / float(identity_entries - 1)
+                              for index in range(identity_entries)]
                              for _channel in range(3)]
             mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
                 mhc2_type, black, white, primaries, profile_rows,
