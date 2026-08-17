@@ -1883,6 +1883,15 @@ function meterIccFineTuneProgressNote(text){
  meterIccFineTuneProgressRender();
 }
 
+let meterIccFineTuneCancelRequested=false;
+
+function meterIccFineTuneCancel(){
+ meterIccFineTuneCancelRequested=true;
+ meterIccFineTuneProgressNote('Cancel requested — stopping after the current step and keeping the best measured pass.');
+ // Abort an in-flight meter read so the session notices promptly.
+ fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+}
+
 function meterIccFineTuneProgressHide(){
  const modal=document.getElementById('meterIccFineTuneModal');
  if(modal) modal.style.display='none';
@@ -1909,10 +1918,13 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  let currentFile=file;
  let sessionStarted=false;
  let finalized=false;
+ meterIccFineTuneCancelRequested=false;
  meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
+ const cancelCheck=()=>{ if(meterIccFineTuneCancelRequested) throw new Error('Fine-tune cancelled'); };
  try{
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
+   cancelCheck();
    if(button) button.textContent='Pass '+pass+': applying...';
    meterIccFineTuneProgressPass(pass);
    meterIccFineTuneProgressStep('apply','active','Installing '+currentFile+' on the target computer and applying it to the display');
@@ -1952,6 +1964,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    let readings=null;
    for(let i=0;i<600;i++){
     await new Promise(resolve=>setTimeout(resolve,2000));
+    cancelCheck();
     const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
     if(button) button.textContent='Pass '+pass+': reading '+(state&&state.current_step||0)+'/'+steps.length;
     meterIccFineTuneProgressStep('grey','active','Reading level '+(state&&state.current_step||0)+'/'+steps.length);
@@ -1974,6 +1987,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     if(ccStarted&&ccStarted.status==='started'){
      for(let i=0;i<600;i++){
       await new Promise(resolve=>setTimeout(resolve,2000));
+      cancelCheck();
       const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
       if(button) button.textContent='Pass '+pass+': colour '+(state&&state.current_step||0)+'/30';
       meterIccFineTuneProgressStep('color','active','Reading patch '+(state&&state.current_step||0)+'/30');

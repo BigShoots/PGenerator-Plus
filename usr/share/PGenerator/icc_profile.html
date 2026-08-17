@@ -321,7 +321,10 @@
       <div style="font-size:1rem;font-weight:700;color:var(--text)">Fine-tune Progress</div>
       <div id="meterIccFineTunePassLabel" class="meter-icc-note" style="margin-top:4px"></div>
      </div>
-     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccFineTuneProgressHide()" title="Hide this window — the fine-tune session keeps running and the Fine tune button keeps showing its progress">Hide</button>
+     <div style="display:flex;gap:8px">
+      <button type="button" class="btn btn-sm btn-danger" onclick="meterIccFineTuneCancel()" title="Stop the session after the current step; the best pass measured so far is kept">Cancel</button>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccFineTuneProgressHide()" title="Hide this window — the fine-tune session keeps running and the Fine tune button keeps showing its progress">Hide</button>
+     </div>
     </div>
     <div id="meterIccFineTuneFile" class="meter-icc-note" style="margin-bottom:10px"></div>
     <div id="meterIccFineTuneSteps"></div>
