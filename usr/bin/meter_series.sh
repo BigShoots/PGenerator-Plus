@@ -2322,12 +2322,6 @@ EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh reading)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
 
-  # The refresh follows the series' darkest patch, and the panel's peak-white
-  # drive ramps back up over the first seconds of white; the subpixels do not
-  # ramp identically, so a single immediate read lands low with a red deficit
-  # relative to the in-series 100%. Read twice and keep the second: the first
-  # read absorbs the ramp regardless of its duration.
-  for REFRESH_PASS in 1 2; do
   PREV_COUNT=$(count_results)
   SCAN_OFFSET=$(output_size)
   printf " " >&3
@@ -2368,8 +2362,6 @@ EOJSON
     SCAN_OFFSET="$CUR_SIZE"
    fi
    sleep 0.3
-  done
-  $GOT_RESULT || break
   done
 
   REFRESH_READING=""
