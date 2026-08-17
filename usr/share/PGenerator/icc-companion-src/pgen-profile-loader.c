@@ -103,6 +103,7 @@ static BOOL g_auto_reapply = TRUE;
  * two toggles are tracked here and drawn from these. */
 static BOOL g_startup_enabled;
 static WCHAR g_companion_result[MAX_PATH];
+static WCHAR g_pending_companion[2048];
 static void accept_profile_path(const WCHAR *path);
 static void start_apply_profile(void);
 static void write_companion_result(BOOL ok);
@@ -1529,13 +1530,20 @@ static void apply_companion_command(const WCHAR *command) {
         DeleteFileW(result);
         wcsncpy_s(g_companion_result, MAX_PATH, result, _TRUNCATE);
     }
-    if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
-        write_companion_result(FALSE);
-        return;
-    }
     g_browse_has_mhc2 = profile_contains_mhc2(profile);
     g_browse_advanced = profile_is_hdr_association(profile);
+    /* Adopt the requested profile as the loader's selection IMMEDIATELY,
+       before any queueing: if the verify timer auto-reapplies while this
+       command waits out a prior apply's Advanced Color cycle, it must
+       reapply the profile the WebUI just asked for, never the stale saved
+       one. Rejecting a busy command used to leave the old selection saved
+       and the timer then set the old profile as default mid-session. */
     accept_profile_path(profile);
+    save_settings();
+    if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
+        wcsncpy_s(g_pending_companion, 2048, command, _TRUNCATE);
+        return;
+    }
     start_apply_profile();
 }
 
@@ -2114,7 +2122,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == TIMER_VERIFY) {
             if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0)
                 finish_companion_apply_if_active();
-            else if (InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0)
+            else if (InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0
+                     && !g_pending_companion[0])
                 verify_profile(TRUE);
         }
         return 0;
@@ -2125,6 +2134,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(g_apply, NULL, TRUE);
         if (wp) g_profile_pending_selection = FALSE;
         refresh_display_profiles();
+        if (g_pending_companion[0]) {
+            WCHAR queued[2048];
+            wcsncpy_s(queued, 2048, g_pending_companion, _TRUNCATE);
+            g_pending_companion[0] = L'\0';
+            apply_companion_command(queued);
+            return 0;
+        }
         verify_profile(FALSE);
         return 0;
     case WM_BROWSE_DONE:
