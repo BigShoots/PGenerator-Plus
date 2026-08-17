@@ -1671,7 +1671,9 @@ async function meterIccLoadProfiles(){
  const list=document.getElementById('meterIccProfileList');
  if(!list) return;
  try{
-  const response=await fetchJSON('/api/icc/profiles',{_quiet:true,_timeoutMs:5000});
+  // A build or fine-tune calls this right after writing a new profile; do
+  // not let the browser reuse a pre-build response for the listing.
+  const response=await fetchJSON('/api/icc/profiles?_='+Date.now(),{_quiet:true,_timeoutMs:5000,cache:'no-store'});
   const profiles=response&&Array.isArray(response.profiles)?response.profiles:[];
   const historyProfiles=[...profiles].sort((a,b)=>{
    const timestampDifference=Number(b&&b.mtime||0)-Number(a&&a.mtime||0);
@@ -2047,7 +2049,6 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
   else if(lastResult) lastResult=Object.assign({},lastResult,{file:selected.file,selection:selected});
   meterIccFineTuneProgressHide();
   meterIccShowFineTuneReport(file,lastResult,passes);
-  meterIccRefreshProfiles();
  }catch(error){
   // The modal stays open with the failed step marked so the user can see
   // where the session stopped; the toast still reports the message.
@@ -2065,6 +2066,9 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
   toast(error&&error.message?error.message:'Fine-tuning failed',true);
  }finally{
   if(button){ button.disabled=false; button.textContent=original; }
+  // Success and checkpoint-restored failures both leave a new or updated
+  // -FineTuned profile behind; refresh the history either way.
+  meterIccLoadProfiles();
  }
 }
 
@@ -2073,61 +2077,71 @@ function meterIccShowFineTuneReport(parent,result,passes){
  if(previous) previous.remove();
  const overlay=document.createElement('div');
  overlay.id='meterIccFineTuneReport';
- overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+ overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10024;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;';
  const card=document.createElement('div');
- card.style.cssText='background:var(--bs-body-bg,#fff);color:var(--bs-body-color,#111);border-radius:10px;max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.4);';
+ // Wide two-column card: the long measured-grey ladder gets its own column so
+ // the whole report fits without scrolling on a desktop viewport.
+ card.style.cssText='width:min(1080px,100%);max-height:92vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:18px;box-sizing:border-box;color:var(--text2);';
  const fixed=value=>Number.isFinite(Number(value))?Number(value).toFixed(2):'--';
- let html='<h5 style="margin:0 0 4px">Fine-tune '+(result&&result.converged?'converged':'complete')+'</h5>'
-  +'<div style="opacity:.75;margin-bottom:12px">'+String(result.file||'')+' from '+String(parent||'')+'</div>';
+ const tableStyle='width:100%;border-collapse:collapse;font-size:.78rem;color:var(--text2)';
+ const cell='padding:3px 10px 3px 0';
+ const cellRight='padding:3px 0 3px 10px;text-align:right';
+ const heading='font-size:.82rem;font-weight:700;color:var(--text);margin:0 0 6px';
+ const note='opacity:.65;font-size:.72rem;margin-top:4px;line-height:1.45';
+ let left='';
  if(Array.isArray(passes)&&passes.length){
-  html+='<div style="margin-bottom:12px"><b>Session passes</b><table style="width:100%;font-size:.85em;border-collapse:collapse">'
-   +'<tr style="opacity:.7"><td>Pass</td><td>In-range mean/max</td><td>Rolloff mean/max</td><td>Colour mean</td><td>State</td></tr>';
+  left+='<div style="margin-bottom:14px"><div style="'+heading+'">Session passes</div><table style="'+tableStyle+'">'
+   +'<tr style="opacity:.7"><td style="'+cell+'">Pass</td><td style="'+cell+'">In-range mean/max</td><td style="'+cell+'">Rolloff mean/max</td><td style="'+cell+'">Colour mean</td><td style="'+cell+'">State</td></tr>';
   passes.forEach(entry=>{
    const de=entry.de||{};
-   html+='<tr><td>'+entry.pass+'</td><td>'+fixed(de.inrange_mean)+' / '+fixed(de.inrange_max)+'</td>'
-    +'<td>'+fixed(de.rolloff_mean)+' / '+fixed(de.rolloff_max)+'</td>'
-    +'<td>'+(entry.color_mean==null?'--':fixed(entry.color_mean))+'</td>'
-    +'<td>'+(entry.selected?'kept':(entry.converged?'converged':'measured'))+'</td></tr>';
+   left+='<tr><td style="'+cell+'">'+entry.pass+'</td><td style="'+cell+'">'+fixed(de.inrange_mean)+' / '+fixed(de.inrange_max)+'</td>'
+    +'<td style="'+cell+'">'+fixed(de.rolloff_mean)+' / '+fixed(de.rolloff_max)+'</td>'
+    +'<td style="'+cell+'">'+(entry.color_mean==null?'--':fixed(entry.color_mean))+'</td>'
+    +'<td style="'+cell+(entry.selected?';color:var(--success);font-weight:700':'')+'">'+(entry.selected?'kept':(entry.converged?'converged':'measured'))+'</td></tr>';
   });
-  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
+  left+='</table><div style="'+note+'">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
  }
  if(result&&result.selection){
-  html+='<div style="margin-bottom:12px">Kept pass '+Number(result.selection.best_pass||0)+' as the best measured result (score '+fixed(result.selection.best_score)+', worst grey '+fixed(result.selection.best_worst_de)+' dE ITP).</div>';
+  left+='<div style="margin-bottom:14px">Kept pass '+Number(result.selection.best_pass||0)+' as the best measured result (score '+fixed(result.selection.best_score)+', worst grey '+fixed(result.selection.best_worst_de)+' dE ITP).</div>';
  }else if(!result.converged){
-  html+='<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
+  left+='<div style="margin-bottom:14px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
  }
  const colorLevels=Array.isArray(result.color_levels)?result.color_levels:[];
  if(colorLevels.length){
   const mean=Number(result.color_de&&result.color_de.mean);
   const worst=colorLevels.slice().sort((a,b)=>Number(b.de2000||0)-Number(a.de2000||0)).slice(0,4);
-  html+='<div style="margin-bottom:12px"><b>Colour patches</b> ('+Number(result.color_de&&result.color_de.patches||colorLevels.length)+' chromatic patches, mean '+fixed(mean)+' dE2000 before this pass)'
-   +'<table style="width:100%;font-size:.85em;border-collapse:collapse"><tr style="opacity:.7"><td>Patch</td><td>Target</td><td>Measured</td><td>dE2000</td></tr>';
+  left+='<div style="margin-bottom:14px"><div style="'+heading+'">Colour patches</div>'
+   +'<div style="margin-bottom:6px">'+Number(result.color_de&&result.color_de.patches||colorLevels.length)+' chromatic patches, mean '+fixed(mean)+' dE2000 before this pass. Largest errors:</div>'
+   +'<table style="'+tableStyle+'"><tr style="opacity:.7"><td style="'+cell+'">Patch</td><td style="'+cellRight+'">Target</td><td style="'+cellRight+'">Measured</td><td style="'+cellRight+'">dE2000</td></tr>';
   worst.forEach(entry=>{
-   html+='<tr><td>'+String(entry.name||'')+'</td><td>'+fixed(entry.target_nits)+'</td><td>'+fixed(entry.measured_nits)+'</td><td>'+fixed(entry.de2000)+'</td></tr>';
+   left+='<tr><td style="'+cell+'">'+String(entry.name||'')+'</td><td style="'+cellRight+'">'+fixed(entry.target_nits)+'</td><td style="'+cellRight+'">'+fixed(entry.measured_nits)+'</td><td style="'+cellRight+'">'+fixed(entry.de2000)+'</td></tr>';
   });
   const mhc2=/^mhc2/.test(String(result.mode||''));
   const clut=colorLevels.some(entry=>entry.post_matrix_de2000!=null)||!mhc2;
   const method=mhc2&&clut?'The MHC2 matrix removes the global colour residual, then the cLUT corrects the remaining local error.':mhc2?'The MHC2 matrix removes the bounded global colour residual.':'The cLUT cells around each measured colour were adjusted by their interpolation share.';
-  html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">'+method+' The grey corridor is corrected separately above.</div></div>';
+  left+='</table><div style="'+note+'">'+method+' The grey corridor is corrected separately.</div></div>';
  }
  if(result.selfcheck){
-  html+='<div style="margin-bottom:4px;font-weight:600">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'
-   +'<table style="width:100%;border-collapse:collapse;margin-bottom:6px"><tr style="opacity:.7"><td></td><td style="text-align:right">Average</td><td style="text-align:right">Peak</td></tr>'
-   +'<tr><td>Before</td><td style="text-align:right">'+fixed(result.selfcheck.before_avg)+'</td><td style="text-align:right">'+fixed(result.selfcheck.before_peak)+'</td></tr>'
-   +'<tr><td>After</td><td style="text-align:right">'+fixed(result.selfcheck.after_avg)+'</td><td style="text-align:right">'+fixed(result.selfcheck.after_peak)+'</td></tr></table>'
-   +'<div style="opacity:.7;font-size:.85em;margin-bottom:12px">'+String(result.selfcheck.note||'')+'</div>';
+  left+='<div style="margin-bottom:14px"><div style="'+heading+'">Self-check (ArgyllCMS profcheck, ΔE00 vs characterization)</div>'
+   +'<table style="'+tableStyle+'"><tr style="opacity:.7"><td style="'+cell+'"></td><td style="'+cellRight+'">Average</td><td style="'+cellRight+'">Peak</td></tr>'
+   +'<tr><td style="'+cell+'">Before</td><td style="'+cellRight+'">'+fixed(result.selfcheck.before_avg)+'</td><td style="'+cellRight+'">'+fixed(result.selfcheck.before_peak)+'</td></tr>'
+   +'<tr><td style="'+cell+'">After</td><td style="'+cellRight+'">'+fixed(result.selfcheck.after_avg)+'</td><td style="'+cellRight+'">'+fixed(result.selfcheck.after_peak)+'</td></tr></table>'
+   +'<div style="'+note+'">'+String(result.selfcheck.note||'')+'</div></div>';
  }
+ let right='';
  if(Array.isArray(result.levels)&&result.levels.length){
-  html+='<div style="margin-bottom:4px;font-weight:600">Measured grey error, before → predicted after</div>'
-   +'<table style="width:100%;border-collapse:collapse"><tr style="opacity:.7"><td>Level</td><td style="text-align:right">Target cd/m²</td><td style="text-align:right">Before</td><td style="text-align:right">After</td></tr>';
+  right+='<div><div style="'+heading+'">Measured grey error, before → predicted after</div>'
+   +'<table style="'+tableStyle+'"><tr style="opacity:.7"><td style="'+cell+'">Level</td><td style="'+cellRight+'">Target cd/m²</td><td style="'+cellRight+'">Before</td><td style="'+cellRight+'">After</td></tr>';
   result.levels.forEach(level=>{
-   html+='<tr><td>'+fixed(level.pct)+'%</td><td style="text-align:right">'+fixed(level.target_nits)+'</td>'
-    +'<td style="text-align:right">'+fixed(level.before_err_pct)+'%</td>'
-    +'<td style="text-align:right">'+fixed(level.predicted_err_pct)+'%</td></tr>';
+   right+='<tr><td style="'+cell+'">'+fixed(level.pct)+'%</td><td style="'+cellRight+'">'+fixed(level.target_nits)+'</td>'
+    +'<td style="'+cellRight+'">'+fixed(level.before_err_pct)+'%</td>'
+    +'<td style="'+cellRight+'">'+fixed(level.predicted_err_pct)+'%</td></tr>';
   });
-  html+='</table><div style="opacity:.7;font-size:.85em;margin-top:6px">Predicted values assume the damped, bounded corrections land as computed; run a verification read of the new profile to confirm.</div>';
+  right+='</table><div style="'+note+'">Predicted values assume the damped, bounded corrections land as computed; run a verification read of the new profile to confirm.</div></div>';
  }
- card.innerHTML=html;
+ card.innerHTML='<div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">Fine-tune '+(result&&result.converged?'converged':'complete')+'</div>'
+  +'<div class="meter-icc-note" style="margin-bottom:14px">'+String(result.file||'')+' from '+String(parent||'')+'</div>'
+  +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:0 28px;align-items:start"><div>'+left+'</div><div>'+right+'</div></div>';
  const close=document.createElement('button');
  close.type='button';
  close.className='btn btn-sm btn-primary';
