@@ -1781,17 +1781,20 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  if(button){ button.disabled=true; }
  // An AutoCal-style session: apply, read the grey ladder, adjust the profile,
  // re-apply and re-read, until every level converges inside the tolerance or
- // the pass budget runs out. Every pass overwrites one output file so the
- // history holds a single tuned profile per parent.
+ // the pass budget runs out. Every pass overwrites one public output file,
+ // while the server privately checkpoints the best profile actually measured.
  const MAX_PASSES=4;
  const TARGET_DE=1.0;
  // Colour patches are only meaningful for cLUT profiles: an MHC2 profile's
  // correction is a per-channel curve set with no cell to move.
  const TUNE_COLOR=tuneColor!==false;
  const outStem=file.replace(/\.icc$/i,'').replace(/-FineTuned(?:-\d+)?$/,'')+'-FineTuned';
+ const session=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,14);
  const passes=[];
+ let currentFile=file;
+ let sessionStarted=false;
+ let finalized=false;
  try{
-  let currentFile=file;
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
    if(button) button.textContent='Pass '+pass+': applying...';
@@ -1857,13 +1860,14 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    }
    if(button) button.textContent='Pass '+pass+': tuning...';
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE}),_timeoutMs:1800000});
+    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE,session,pass}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
+   sessionStarted=true;
    const colourLevels=Array.isArray(result.color_levels)?result.color_levels:[];
    const colourDes=colourLevels.map(entry=>Number(entry.de2000)).filter(Number.isFinite);
    passes.push({pass,de:result.before_de||{},worst:Number(result.worst_de||0),
     color_mean:colourDes.length?colourDes.reduce((a,b)=>a+b,0)/colourDes.length:null,
-    converged:!!result.converged,file:String(result.file||'')});
+    converged:!!result.converged,file:String(result.file||''),result});
    lastResult=result;
    if(result.converged){
     // The currently applied profile already meets the tolerance everywhere.
@@ -1875,17 +1879,40 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    // for an absolute tolerance the noisy toe level may never satisfy.
    if(passes.length>1){
     const now=passes[passes.length-1], was=passes[passes.length-2];
-    const grey=Number(now.de&&now.de.inrange_mean), greyWas=Number(was.de&&was.de.inrange_mean);
+    const priorWorst=Math.min(...passes.slice(0,-1).map(entry=>Number(entry.worst)).filter(Number.isFinite));
+    const grey=Number(now.worst), greyWas=Number(was.worst);
     const col=Number(now.color_mean), colWas=Number(was.color_mean);
+    // Stop when the global neutral worst case has moved outside measurement
+    // noise. Finalization restores the earlier measured profile even though
+    // this request already wrote the next candidate over the public filename.
+    if(Number.isFinite(grey)&&Number.isFinite(priorWorst)&&grey>priorWorst*1.03){ break; }
     const greyStalled=!Number.isFinite(grey)||!Number.isFinite(greyWas)||grey>greyWas*0.97;
     const colStalled=!Number.isFinite(col)||!Number.isFinite(colWas)||col>colWas*0.97;
     if(greyStalled&&colStalled){ break; }
    }
    currentFile=outStem+'.icc';
   }
+  if(!sessionStarted) throw new Error('Fine-tune session produced no measured checkpoint');
+  if(button) button.textContent='Keeping best measured pass...';
+  const selected=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({action:'finalize',file:currentFile,output:outStem,session}),_timeoutMs:180000});
+  if(!selected||selected.status!=='ok') throw new Error(selected&&selected.message||'Could not restore the best measured profile');
+  finalized=true;
+  const selectedPass=passes.find(entry=>entry.pass===Number(selected.best_pass));
+  passes.forEach(entry=>{ entry.selected=entry===selectedPass; });
+  if(selectedPass&&selectedPass.result) lastResult=Object.assign({},selectedPass.result,{file:selected.file,selection:selected});
+  else if(lastResult) lastResult=Object.assign({},lastResult,{file:selected.file,selection:selected});
   meterIccShowFineTuneReport(file,lastResult,passes);
   meterIccRefreshProfiles();
  }catch(error){
+  // A failed later read must not strand the unverified candidate written by
+  // the preceding pass. Best-effort finalization restores the checkpoint.
+  if(sessionStarted&&!finalized){
+   try{
+    await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({action:'finalize',file:currentFile,output:outStem,session}),_timeoutMs:180000});
+   }catch(_restoreError){}
+  }
   toast(error&&error.message?error.message:'Fine-tuning failed',true);
  }finally{
   if(button){ button.disabled=false; button.textContent=original; }
@@ -1911,11 +1938,13 @@ function meterIccShowFineTuneReport(parent,result,passes){
    html+='<tr><td>'+entry.pass+'</td><td>'+fixed(de.inrange_mean)+' / '+fixed(de.inrange_max)+'</td>'
     +'<td>'+fixed(de.rolloff_mean)+' / '+fixed(de.rolloff_max)+'</td>'
     +'<td>'+(entry.color_mean==null?'--':fixed(entry.color_mean))+'</td>'
-    +'<td>'+(entry.converged?'converged':'adjusted')+'</td></tr>';
+    +'<td>'+(entry.selected?'kept':(entry.converged?'converged':'measured'))+'</td></tr>';
   });
   html+='</table><div style="opacity:.6;font-size:.8em;margin-top:4px">Each row is measured through the profile applied at the start of that pass; dE ITP against absolute PQ in range, against D65 balance inside the rolloff.</div></div>';
  }
- if(!result.converged){
+ if(result&&result.selection){
+  html+='<div style="margin-bottom:12px">Kept pass '+Number(result.selection.best_pass||0)+' as the best measured result ('+fixed(result.selection.best_worst_de)+' worst dE ITP).</div>';
+ }else if(!result.converged){
   html+='<div style="margin-bottom:12px">Corrections applied: mean '+fixed(result.mean_correction_pct)+'%, max '+fixed(result.max_correction_pct)+'% across '+Number(result.reads_used||0)+' measured levels.</div>';
  }
  const colorLevels=Array.isArray(result.color_levels)?result.color_levels:[];

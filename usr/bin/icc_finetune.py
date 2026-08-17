@@ -50,6 +50,140 @@ C3 = 2392.0 / 128.0
 D65_X = 0.3127
 D65_Y = 0.3290
 
+SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+OUTPUT_RE = re.compile(r"^[A-Za-z0-9._()-]{1,80}$")
+
+
+def write_atomic(path, content, mode=0o644):
+    """Replace one session artifact without exposing a partial file."""
+    directory = os.path.dirname(path)
+    handle, temporary = tempfile.mkstemp(prefix=".icc-finetune-write-",
+                                         dir=directory)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def session_paths(output_dir, session):
+    if not SESSION_RE.match(str(session or "")):
+        raise ValueError("Invalid fine-tune session")
+    prefix = os.path.join(output_dir, ".icc-finetune-session-" + session)
+    return prefix + ".json", prefix + ".best-profile", prefix + ".best-sidecar"
+
+
+def checkpoint_session(payload, output_dir, profile_data, score, before_de,
+                       profile_name, mode):
+    """Retain the best profile that was actually measured in this session.
+
+    The tuner writes the next candidate over the public FineTuned filename.
+    This private checkpoint is therefore the only authoritative way to put
+    the best measured bytes back after a later pass regresses or after the
+    pass budget is exhausted.
+    """
+    session = payload.get("session")
+    if not session:
+        return None
+    state_path, best_path, sidecar_path = session_paths(output_dir, session)
+    output = str(payload.get("name") or "")
+    if not OUTPUT_RE.match(output) or output.endswith(".icc") or ".." in output:
+        raise ValueError("Invalid fine-tune output name")
+    state = {}
+    if os.path.isfile(state_path):
+        try:
+            with io.open(state_path, "r", encoding="ascii") as handle:
+                state = json.load(handle)
+        except (ValueError, OSError, IOError):
+            state = {}
+    if state and state.get("output") != output:
+        raise ValueError("Fine-tune session output changed")
+    prior = state.get("best_worst_de")
+    if prior is None or float(score) < float(prior):
+        write_atomic(best_path, bytes(profile_data))
+        parent_path = payload.get("parent_path") or ""
+        parent_sidecar = parent_path + ".finetune.json"
+        if os.path.isfile(parent_sidecar):
+            with open(parent_sidecar, "rb") as handle:
+                write_atomic(sidecar_path, handle.read())
+        else:
+            try:
+                os.unlink(sidecar_path)
+            except OSError:
+                pass
+        state = {
+            "output": output,
+            "best_worst_de": round(float(score), 3),
+            "best_before_de": before_de,
+            "best_pass": int(payload.get("pass", 0) or 0),
+            "best_profile": os.path.basename(profile_name),
+            "mode": mode,
+        }
+        write_atomic(state_path, json.dumps(state, separators=(",", ":")).encode("ascii"),
+                     mode=0o600)
+    return state
+
+
+def finalize_session(payload, output_dir):
+    """Promote the best measured checkpoint and discard private artifacts."""
+    session = payload.get("session")
+    state_path, best_path, sidecar_path = session_paths(output_dir, session)
+    if not os.path.isfile(state_path) or not os.path.isfile(best_path):
+        raise ValueError("Fine-tune session has no measured checkpoint")
+    with io.open(state_path, "r", encoding="ascii") as handle:
+        state = json.load(handle)
+    output = str(payload.get("name") or "")
+    if (not OUTPUT_RE.match(output) or output.endswith(".icc") or ".." in output
+            or output != state.get("output")):
+        raise ValueError("Invalid fine-tune output name")
+    out_name = output + ".icc"
+    out_path = os.path.join(output_dir, out_name)
+    with open(best_path, "rb") as handle:
+        write_atomic(out_path, handle.read())
+
+    metadata = {}
+    if os.path.isfile(sidecar_path):
+        try:
+            with io.open(sidecar_path, "r", encoding="ascii") as handle:
+                metadata = json.load(handle)
+        except (ValueError, OSError, IOError):
+            metadata = {}
+    metadata.update({
+        "status": "ok",
+        "file": out_name,
+        "mode": state.get("mode"),
+        "worst_de": state.get("best_worst_de"),
+        "before_de": state.get("best_before_de"),
+        "selection": {
+            "method": "best_measured_worst_de_itp",
+            "pass": state.get("best_pass"),
+            "measured_profile": state.get("best_profile"),
+        },
+    })
+    write_atomic(out_path + ".finetune.json",
+                 json.dumps(metadata, separators=(",", ":")).encode("ascii"))
+    for path in (state_path, best_path, sidecar_path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return {
+        "status": "ok",
+        "file": out_name,
+        "best_pass": state.get("best_pass"),
+        "best_worst_de": state.get("best_worst_de"),
+        "best_before_de": state.get("best_before_de"),
+        "measured_profile": state.get("best_profile"),
+    }
+
 
 def pq_to_nits(value):
     value = max(0.0, value)
@@ -306,6 +440,7 @@ def finetune(payload, output_dir):
     damping = float(payload.get("damping", 0.5))
     damping = max(0.1, min(1.0, damping))
     data, tags = read_profile(parent_path)
+    measured_profile_data = bytes(data)
     if "targ" not in tags or "lumi" not in tags:
         raise ValueError("The profile lacks the embedded characterization fine-tune needs")
     lumi = s15(data, tags["lumi"][0] + 12)
@@ -490,24 +625,30 @@ def finetune(payload, output_dir):
     # instead of accumulating pointless micro-edits pass after pass.
     target_de = float(payload.get("target_de", 0.0) or 0.0)
     worst_de = max(lv["de_itp"] for lv in levels)
+    inr_de = [lv["de_itp"] for lv in levels if not lv["rolloff"]]
+    top_de = [lv["de_itp"] for lv in levels if lv["rolloff"]]
+    before_de = {
+        "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
+        "inrange_max": round(max(inr_de), 3) if inr_de else None,
+        "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
+        "rolloff_max": round(max(top_de), 3) if top_de else None,
+    }
+    mode = ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr")
+    checkpoint = checkpoint_session(payload, output_dir, measured_profile_data,
+                                    worst_de, before_de, parent_path, mode)
     if target_de > 0.0 and worst_de <= target_de:
-        inr_de = [lv["de_itp"] for lv in levels if not lv["rolloff"]]
-        top_de = [lv["de_itp"] for lv in levels if lv["rolloff"]]
         return {
             "status": "ok",
             "converged": True,
             "file": os.path.basename(parent_path),
             "parent": os.path.basename(parent_path),
-            "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+            "mode": mode,
             "target_transfer": None if is_hdr else transfer,
             "target_transfer_source": None if is_hdr else transfer_source,
             "worst_de": round(worst_de, 3),
-            "before_de": {
-                "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
-                "inrange_max": round(max(inr_de), 3) if inr_de else None,
-                "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
-                "rolloff_max": round(max(top_de), 3) if top_de else None,
-            },
+            "before_de": before_de,
+            "session_best_pass": checkpoint.get("best_pass") if checkpoint else None,
+            "session_best_worst_de": checkpoint.get("best_worst_de") if checkpoint else None,
             "levels": sorted(levels, key=lambda item: item["pct"]),
             "selfcheck": None,
         }
@@ -944,24 +1085,19 @@ def finetune(payload, output_dir):
             import shutil
             shutil.rmtree(work, ignore_errors=True)
 
-    inr_de = [lv["de_itp"] for lv in levels if not lv["rolloff"]]
-    top_de = [lv["de_itp"] for lv in levels if lv["rolloff"]]
     summary = {
         "status": "ok",
         "converged": False,
         "worst_de": round(worst_de, 3),
         "file": out_name,
         "parent": os.path.basename(parent_path),
-        "mode": ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr"),
+        "mode": mode,
         "target_transfer": None if is_hdr else transfer,
         "target_transfer_source": None if is_hdr else transfer_source,
         "chroma_capable": primary_matrix is not None,
-        "before_de": {
-            "inrange_mean": round(sum(inr_de) / len(inr_de), 3) if inr_de else None,
-            "inrange_max": round(max(inr_de), 3) if inr_de else None,
-            "rolloff_mean": round(sum(top_de) / len(top_de), 3) if top_de else None,
-            "rolloff_max": round(max(top_de), 3) if top_de else None,
-        },
+        "before_de": before_de,
+        "session_best_pass": checkpoint.get("best_pass") if checkpoint else None,
+        "session_best_worst_de": checkpoint.get("best_worst_de") if checkpoint else None,
         "reads_used": len(keyed),
         "damping": damping,
         "max_correction_pct": round(max(applied) * 100.0, 2),
@@ -983,7 +1119,10 @@ def main():
     try:
         with io.open(sys.argv[1], "r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        result = finetune(payload, sys.argv[2])
+        if payload.get("action") == "finalize":
+            result = finalize_session(payload, sys.argv[2])
+        else:
+            result = finetune(payload, sys.argv[2])
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except (ValueError, OSError, IOError, KeyError) as error:
