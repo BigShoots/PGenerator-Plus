@@ -16,7 +16,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.3.4"
+#define APP_VERSION L"1.3.5"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -63,6 +63,8 @@ typedef HRESULT (WINAPI *PFN_ColorProfileRemoveDisplayAssociation)(
 typedef struct {
     LUID adapter;
     UINT32 source_id;
+    LUID target_adapter;
+    UINT32 target_id;
     WCHAR source_name[CCHDEVICENAME];
     WCHAR friendly[128];
     WCHAR monitor_path[256];
@@ -111,6 +113,7 @@ static UINT g_mismatch_count;
 static BOOL g_reapply_attempted_for_mismatch;
 static volatile LONG g_apply_in_progress;
 static volatile LONG g_browse_in_progress;
+static volatile LONG g_advanced_color_refresh_in_progress;
 static BOOL g_profile_pending_selection;
 static WCHAR g_browse_path[MAX_PATH];
 static BOOL g_browse_has_mhc2;
@@ -324,12 +327,122 @@ static BOOL profile_contains_hdr_cicp(const WCHAR *path) {
     return FALSE;
 }
 
+/* The MHC2 tag stores its calibrated peak as s15Fixed16 cd/m2 at offset 16,
+   after the signature, four reserved bytes, the entry count and the minimum
+   luminance. */
+static double profile_mhc2_peak_luminance(const WCHAR *path) {
+    HANDLE file;
+    BYTE header[132];
+    DWORD got = 0, count, i;
+    LARGE_INTEGER size;
+    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return 0.0;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 132 ||
+        !ReadFile(file, header, sizeof(header), &got, NULL) || got != sizeof(header)) {
+        CloseHandle(file);
+        return 0.0;
+    }
+    count = read_be32(header + 128);
+    for (i = 0; i < count && i < 4096; i++) {
+        BYTE tag[12], payload[20];
+        LARGE_INTEGER position;
+        uint32_t offset, tag_size, raw;
+        position.QuadPart = 132ULL + (uint64_t)i * 12ULL;
+        if (!SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, tag, sizeof(tag), &got, NULL) || got != sizeof(tag)) break;
+        if (memcmp(tag, "MHC2", 4) != 0) continue;
+        offset = read_be32(tag + 4);
+        tag_size = read_be32(tag + 8);
+        position.QuadPart = offset;
+        if (tag_size < sizeof(payload) || offset + sizeof(payload) > (uint64_t)size.QuadPart ||
+            !SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, payload, sizeof(payload), &got, NULL) || got != sizeof(payload)) break;
+        CloseHandle(file);
+        if (memcmp(payload, "MHC2", 4) != 0) return 0.0;
+        raw = read_be32(payload + 16);
+        return (raw >= 0x80000000u ? (double)raw - 4294967296.0 : (double)raw) / 65536.0;
+    }
+    CloseHandle(file);
+    return 0.0;
+}
+
+#define PGEN_ASSOCIATION_UNKNOWN 0
+#define PGEN_ASSOCIATION_SDR 1
+#define PGEN_ASSOCIATION_HDR 2
+
+/* PGenerator+ Windows profiles carry a private text tag naming the per-user
+   display association they were built for. Unknown ICC tags are ignored by
+   colour engines, while this positive marker avoids guessing from MHC2 peak
+   luminance. A bright SDR display can legitimately exceed a dim HDR display. */
+static int profile_association_marker(const WCHAR *path) {
+    HANDLE file;
+    BYTE header[132];
+    DWORD got = 0, count, i;
+    LARGE_INTEGER size;
+    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return PGEN_ASSOCIATION_UNKNOWN;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 132 ||
+        !ReadFile(file, header, sizeof(header), &got, NULL) || got != sizeof(header)) {
+        CloseHandle(file);
+        return PGEN_ASSOCIATION_UNKNOWN;
+    }
+    count = read_be32(header + 128);
+    if (count > 4096 || 132ULL + (uint64_t)count * 12ULL > (uint64_t)size.QuadPart) {
+        CloseHandle(file);
+        return PGEN_ASSOCIATION_UNKNOWN;
+    }
+    for (i = 0; i < count; i++) {
+        BYTE tag[12], payload[20];
+        LARGE_INTEGER position;
+        uint32_t offset, tag_size;
+        position.QuadPart = 132ULL + (uint64_t)i * 12ULL;
+        if (!SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, tag, sizeof(tag), &got, NULL) || got != sizeof(tag)) break;
+        if (memcmp(tag, "pGAs", 4) != 0) continue;
+        offset = read_be32(tag + 4);
+        tag_size = read_be32(tag + 8);
+        position.QuadPart = offset;
+        if (tag_size < sizeof(payload) ||
+            (uint64_t)offset + sizeof(payload) > (uint64_t)size.QuadPart ||
+            !SetFilePointerEx(file, position, NULL, FILE_BEGIN) ||
+            !ReadFile(file, payload, sizeof(payload), &got, NULL) || got != sizeof(payload)) break;
+        CloseHandle(file);
+        if (memcmp(payload, "text\0\0\0\0", 8) != 0 || payload[19] != 0)
+            return PGEN_ASSOCIATION_UNKNOWN;
+        if (memcmp(payload + 8, "windows-sdr", 11) == 0) return PGEN_ASSOCIATION_SDR;
+        if (memcmp(payload + 8, "windows-hdr", 11) == 0) return PGEN_ASSOCIATION_HDR;
+        return PGEN_ASSOCIATION_UNKNOWN;
+    }
+    CloseHandle(file);
+    return PGEN_ASSOCIATION_UNKNOWN;
+}
+
 static BOOL profile_name_is_hdr(const WCHAR *path) {
     WCHAR upper[MAX_PATH];
     size_t i;
     wcsncpy_s(upper, MAX_PATH, path, _TRUNCATE);
     for (i = 0; upper[i]; i++) upper[i] = towupper(upper[i]);
     return wcsstr(upper, L"HDR-MHC2") != NULL || wcsstr(upper, L"-HDR-") != NULL;
+}
+
+/* STANDARD versus EXTENDED is a property of the display association, not of
+   the ICC payload. A non-MHC2 HDR profile still belongs in Windows' EXTENDED
+   (HDR) association list; requiring MHC2 here made Windows show every HDR
+   cLUT-only profile as an SDR profile. Classify from the content, because a
+   renamed profile still has to reach the right list. New PGenerator+
+   profiles carry an authoritative private association marker. For older
+   profiles, cicp marks HDR authoritatively, and an MHC2 profile without cicp
+   is treated as HDR when its calibrated peak clears the usual SDR range. The
+   file name remains the last resort for profiles carrying none of them. */
+static BOOL profile_is_hdr_association(const WCHAR *path) {
+    int association = profile_association_marker(path);
+    if (association != PGEN_ASSOCIATION_UNKNOWN)
+        return association == PGEN_ASSOCIATION_HDR;
+    return profile_contains_hdr_cicp(path) ||
+           profile_mhc2_peak_luminance(path) >= 250.0 ||
+           profile_name_is_hdr(path);
 }
 
 static void make_ini_path(void) {
@@ -351,6 +464,7 @@ static void save_settings(void) {
 }
 
 static void load_settings(void) {
+    int association;
     GetPrivateProfileStringW(L"ProfileLoader", L"ProfilePath", L"", g_profile_path,
                              MAX_PATH, g_ini);
     GetPrivateProfileStringW(L"ProfileLoader", L"ProfileName", L"", g_profile_name,
@@ -362,10 +476,18 @@ static void load_settings(void) {
     g_associate_advanced = GetPrivateProfileIntW(L"ProfileLoader", L"AdvancedAssociation", 0, g_ini) != 0;
     if (GetFileAttributesW(g_profile_path) != INVALID_FILE_ATTRIBUTES) {
         g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
-        /* Reclassify saved profiles too. Older loader builds persisted a
-           non-MHC2 HDR selection as STANDARD, so trusting that old INI bit
-           would keep restoring it to Windows' SDR association list. */
-        g_associate_advanced = profile_name_is_hdr(g_profile_path);
+        /* Explicit builder markers remain authoritative. Otherwise upgrade a
+           saved STANDARD selection when the profile content or name proves it
+           is HDR, but preserve an existing Advanced Color selection for an
+           ambiguous vendor profile. Such profiles can carry no MHC2, cicp or
+           HDR token even though Windows already associated them with the HDR
+           display mode. Downgrading the saved bit makes auto-reapply move the
+           vendor profile into the SDR list after every loader restart. */
+        association = profile_association_marker(g_profile_path);
+        if (association != PGEN_ASSOCIATION_UNKNOWN)
+            g_associate_advanced = association == PGEN_ASSOCIATION_HDR;
+        else if (profile_is_hdr_association(g_profile_path))
+            g_associate_advanced = TRUE;
     }
 }
 
@@ -501,6 +623,8 @@ static void enumerate_displays(void) {
         ZeroMemory(entry, sizeof(*entry));
         entry->adapter = paths[i].sourceInfo.adapterId;
         entry->source_id = paths[i].sourceInfo.id;
+        entry->target_adapter = paths[i].targetInfo.adapterId;
+        entry->target_id = paths[i].targetInfo.id;
         wcsncpy_s(entry->source_name, CCHDEVICENAME, source.viewGdiDeviceName, _TRUNCATE);
         wcsncpy_s(entry->friendly, 128,
                   target.monitorFriendlyDeviceName[0] ? target.monitorFriendlyDeviceName : source.viewGdiDeviceName,
@@ -769,14 +893,6 @@ static BOOL install_elevated(const WCHAR *path) {
     }
 }
 
-static BOOL installed_profile_exists(const WCHAR *name) {
-    WCHAR directory[MAX_PATH], path[MAX_PATH];
-    DWORD count = MAX_PATH;
-    if (!GetColorDirectoryW(NULL, directory, &count)) return FALSE;
-    swprintf(path, MAX_PATH, L"%ls\\%ls", directory, name);
-    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
-}
-
 static BOOL display_profile_is_associated(DISPLAY_ENTRY *display, const WCHAR *name) {
     LPWSTR *profiles = NULL;
     DWORD count = 0, i;
@@ -826,6 +942,64 @@ static BOOL installed_profile_path(const WCHAR *name, WCHAR *path, size_t path_c
     return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+/* An installed profile of the same name is not necessarily the same profile.
+   A rebuilt or fine-tuned profile keeps its generated name, so treating the
+   name as proof of installation leaves Windows serving the previous version's
+   bytes under it and the new calibration never reaches the display. */
+static BOOL installed_profile_matches(const WCHAR *name, const WCHAR *source_path) {
+    WCHAR path[MAX_PATH];
+    HANDLE installed, source;
+    LARGE_INTEGER installed_size, source_size;
+    BOOL same;
+    if (!source_path || !source_path[0] ||
+        !installed_profile_path(name, path, MAX_PATH)) return FALSE;
+    installed = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL);
+    if (installed == INVALID_HANDLE_VALUE) return FALSE;
+    source = CreateFileW(source_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, NULL);
+    if (source == INVALID_HANDLE_VALUE) {
+        CloseHandle(installed);
+        return FALSE;
+    }
+    same = GetFileSizeEx(installed, &installed_size) &&
+           GetFileSizeEx(source, &source_size) &&
+           installed_size.QuadPart == source_size.QuadPart;
+    while (same) {
+        BYTE left[8192], right[8192];
+        DWORD got_left = 0, got_right = 0;
+        if (!ReadFile(installed, left, sizeof(left), &got_left, NULL) ||
+            !ReadFile(source, right, sizeof(right), &got_right, NULL) ||
+            got_left != got_right) same = FALSE;
+        else if (!got_left) break;
+        else if (memcmp(left, right, got_left) != 0) same = FALSE;
+    }
+    CloseHandle(source);
+    CloseHandle(installed);
+    return same;
+}
+
+/* InstallColorProfileW is not a replacement operation. On current Windows 11
+   it can even return success when a profile of the same name is already
+   installed while leaving that file's old bytes untouched. Compare first and
+   proactively uninstall a differing copy, then verify the installed bytes
+   after every install. A caller that cannot replace the file must not go on to
+   associate a name whose content is stale. */
+static BOOL install_profile_file(const WCHAR *path) {
+    WCHAR installed[MAX_PATH];
+    const WCHAR *name = profile_basename(path);
+    if (installed_profile_path(name, installed, MAX_PATH)) {
+        if (installed_profile_matches(name, path)) return TRUE;
+        if (!UninstallColorProfileW(NULL, installed, TRUE)) return FALSE;
+    }
+    if (!InstallColorProfileW(NULL, path)) return FALSE;
+    if (!installed_profile_matches(name, path)) {
+        SetLastError(ERROR_WRITE_FAULT);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL get_default_name(DISPLAY_ENTRY *display, COLORPROFILESUBTYPE subtype,
                              WCHAR *name, size_t name_count) {
     WCS_PROFILE_MANAGEMENT_SCOPE scope = WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
@@ -873,7 +1047,7 @@ static void append_display_profile_name(const WCHAR *name, BOOL advanced) {
     wcsncpy_s(entry->name, MAX_PATH, profile_basename(name), _TRUNCATE);
     entry->advanced = advanced ||
                       (installed_profile_path(entry->name, path, MAX_PATH) &&
-                       profile_contains_mhc2(path));
+                       profile_is_hdr_association(path));
 }
 
 static void append_display_profile_registry(DISPLAY_ENTRY *display) {
@@ -990,6 +1164,60 @@ static BOOL enable_per_user_profiles(DISPLAY_ENTRY *display, BOOL interactive) {
     return FALSE;
 }
 
+/* Windows keeps the Advanced Color association name when a fine-tune pass
+   replaces that profile's bytes, but DWM can continue using the transform it
+   built from the previous file. Re-enter HDR on the selected target before
+   reporting the Companion install complete so the next meter pass sees the
+   newly installed MHC2 curves. This is the per-display equivalent of the
+   Win+Alt+B recovery that operators otherwise have to perform by hand. */
+static BOOL refresh_advanced_color_profile(DISPLAY_ENTRY *display) {
+    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO info;
+    DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE state;
+    LONG result;
+    int attempt;
+    if (!display) return FALSE;
+    ZeroMemory(&info, sizeof(info));
+    info.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+    info.header.size = sizeof(info);
+    info.header.adapterId = display->target_adapter;
+    info.header.id = display->target_id;
+    result = DisplayConfigGetDeviceInfo(&info.header);
+    if (result != ERROR_SUCCESS) {
+        SetLastError((DWORD)result);
+        return FALSE;
+    }
+    if (!info.advancedColorEnabled) return TRUE;
+
+    InterlockedExchange(&g_advanced_color_refresh_in_progress, 1);
+    ZeroMemory(&state, sizeof(state));
+    state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
+    state.header.size = sizeof(state);
+    state.header.adapterId = display->target_adapter;
+    state.header.id = display->target_id;
+    state.enableAdvancedColor = 0;
+    result = DisplayConfigSetDeviceInfo(&state.header);
+    if (result != ERROR_SUCCESS) {
+        InterlockedExchange(&g_advanced_color_refresh_in_progress, 0);
+        SetLastError((DWORD)result);
+        return FALSE;
+    }
+    Sleep(3000);
+    state.enableAdvancedColor = 1;
+    for (attempt = 0; attempt < 6; attempt++) {
+        result = DisplayConfigSetDeviceInfo(&state.header);
+        if (result == ERROR_SUCCESS) break;
+        Sleep(500);
+    }
+    if (result != ERROR_SUCCESS) {
+        InterlockedExchange(&g_advanced_color_refresh_in_progress, 0);
+        SetLastError((DWORD)result);
+        return FALSE;
+    }
+    Sleep(4000);
+    InterlockedExchange(&g_advanced_color_refresh_in_progress, 0);
+    return TRUE;
+}
+
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
@@ -1083,6 +1311,7 @@ static void set_selected_profile_default(void) {
 static BOOL apply_profile(BOOL interactive) {
     DISPLAY_ENTRY *display = selected_display();
     DWORD error;
+    BOOL reinstalled = FALSE;
     if (!display) {
         if (interactive) MessageBoxW(g_window, L"Select an active display first.", APP_NAME,
                                      MB_OK | MB_ICONWARNING);
@@ -1100,36 +1329,54 @@ static BOOL apply_profile(BOOL interactive) {
         return FALSE;
     }
     wcsncpy_s(g_profile_name, MAX_PATH, profile_basename(g_profile_path), _TRUNCATE);
-    if (!installed_profile_exists(g_profile_name) && !InstallColorProfileW(NULL, g_profile_path)) {
-        error = GetLastError();
-        if (interactive && (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD) &&
-            install_elevated(g_profile_path)) {
-            error = ERROR_SUCCESS;
-        } else if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
-            if (interactive) message_error(g_window, L"Installing the color profile", error);
-            return FALSE;
+    if (!installed_profile_matches(g_profile_name, g_profile_path)) {
+        reinstalled = TRUE;
+        if (!install_profile_file(g_profile_path)) {
+            error = GetLastError();
+            if (interactive && (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD) &&
+                install_elevated(g_profile_path)) {
+                error = ERROR_SUCCESS;
+            } else if (!installed_profile_matches(g_profile_name, g_profile_path)) {
+                if (interactive) message_error(g_window, L"Installing the color profile", error);
+                return FALSE;
+            }
         }
     }
     g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
-    /* STANDARD versus EXTENDED is a property of the display association, not
-       of the ICC payload. A non-MHC2 HDR profile still belongs in Windows'
-       EXTENDED (HDR) association list; requiring MHC2 here made Windows show
-       every HDR cLUT-only profile as an SDR profile. */
-    g_associate_advanced = profile_name_is_hdr(g_profile_path) ||
-                           profile_contains_hdr_cicp(g_profile_path);
+    g_associate_advanced = profile_is_hdr_association(g_profile_path);
     /* Do this before the already-active shortcut. A profile may be present in
        the per-user WCS association list even though Color Management is still
        configured to ignore that list. */
     if (!enable_per_user_profiles(display, interactive)) return FALSE;
-    {
+    /* Replacing the file leaves the association name unchanged, so the
+       shortcut below would report success while Windows still holds the
+       transform it built from the previous bytes. Set the association again
+       instead. */
+    if (!reinstalled) {
         WCHAR actual[MAX_PATH + 128] = L"";
         if (profile_is_active(display, actual, sizeof(actual) / sizeof(actual[0]))) {
+            /* Any Advanced Color association change needs the reload cycle,
+             * not only MHC2 profiles: a cLUT-only HDR profile still changes
+             * the peak the pipeline reports, and an un-reloaded association
+             * was measured serving the previous transform mid-session. */
+            if (g_associate_advanced &&
+                !refresh_advanced_color_profile(display)) {
+                if (interactive)
+                    message_error(g_window, L"Reloading the Advanced Color profile", GetLastError());
+                return FALSE;
+            }
             wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
             save_settings();
             return TRUE;
         }
     }
     if (!associate_profile(display, interactive)) return FALSE;
+    if (g_associate_advanced &&
+        !refresh_advanced_color_profile(display)) {
+        if (interactive)
+            message_error(g_window, L"Reloading the Advanced Color profile", GetLastError());
+        return FALSE;
+    }
     wcsncpy_s(g_saved_monitor_path, 256, display->monitor_path, _TRUNCATE);
     save_settings();
     return TRUE;
@@ -1224,7 +1471,9 @@ static BOOL finish_companion_apply_if_active(void) {
     DISPLAY_ENTRY *display;
     WCHAR standard[MAX_PATH] = L"", advanced[MAX_PATH] = L"";
     const WCHAR *current;
-    if (!g_companion_result[0] || !g_profile_name[0]) return FALSE;
+    if (!g_companion_result[0] || !g_profile_name[0] ||
+        InterlockedCompareExchange(&g_advanced_color_refresh_in_progress, 0, 0) != 0)
+        return FALSE;
     display = selected_display();
     if (!display || !registry_profile_defaults(display, standard, MAX_PATH,
                                                 advanced, MAX_PATH)) return FALSE;
@@ -1281,7 +1530,7 @@ static void apply_companion_command(const WCHAR *command) {
         return;
     }
     g_browse_has_mhc2 = profile_contains_mhc2(profile);
-    g_browse_advanced = profile_name_is_hdr(profile);
+    g_browse_advanced = profile_is_hdr_association(profile);
     accept_profile_path(profile);
     start_apply_profile();
 }
@@ -1387,7 +1636,7 @@ static DWORD WINAPI choose_profile_thread(LPVOID unused) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
         g_browse_has_mhc2 = profile_contains_mhc2(g_browse_path);
-        g_browse_advanced = profile_name_is_hdr(g_browse_path);
+        g_browse_advanced = profile_is_hdr_association(g_browse_path);
         PostMessageW(g_window, WM_BROWSE_DONE, 1, 0);
     } else {
         PostMessageW(g_window, WM_BROWSE_DONE, 0, 0);
@@ -1985,7 +2234,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         while (*path == L' ' || *path == L'\"') path++;
         n = wcslen(path);
         if (n && path[n - 1] == L'\"') path[n - 1] = L'\0';
-        return InstallColorProfileW(NULL, path) ? 0 : (int)GetLastError();
+        return install_profile_file(path) ? 0 : (int)GetLastError();
     }
     if (already_running(command_line)) return 0;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

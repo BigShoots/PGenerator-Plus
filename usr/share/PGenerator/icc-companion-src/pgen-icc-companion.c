@@ -97,7 +97,7 @@ typedef int socket_handle_t;
 #include "pgen-icc-companion-icon.h"
 #endif
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#ifndef _WIN32
 static int reap_profile_loader(void *opaque)
 {
     pid_t child = (pid_t)(intptr_t)opaque;
@@ -106,8 +106,8 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.20"
-#define APP_BUILD "2"
+#define APP_VERSION "1.4.21"
+#define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -554,6 +554,13 @@ typedef struct {
     SDL_Mutex *network_mutex;
     SDL_AtomicInt quit_requested;
     SDL_AtomicInt install_in_progress;
+    /* Set by the install worker when the Profile Loader finished applying a
+     * profile: the loader cycles Advanced Color underneath this process, and
+     * a swapchain created before that cycle can survive demoted to composed
+     * presentation, where Windows tone-maps output to the profile-reported
+     * peak. Consumed on the main thread by recreating the renderer before
+     * the next fullscreen HDR patch is displayed. */
+    SDL_AtomicInt presentation_recovery_pending;
     bool command_pending;
     uint64_t refresh_until_ms;
     uint64_t command_sequence;
@@ -641,6 +648,7 @@ static unsigned long pgen_nvapi_display_id;
 static int pgen_nvapi_original_tone_mapping;
 static int pgen_nvapi_last_status;
 static bool pgen_nvapi_source_active;
+static UINT pgen_adapter_vendor_id;
 static bool pgen_nvapi_tone_mapping_saved;
 static bool pgen_nvapi_metadata_valid;
 static PgenNvHdrMetadata pgen_nvapi_metadata;
@@ -2513,6 +2521,11 @@ static bool windows_create_hdr_output(void)
         result = ID3D11Device_QueryInterface(app.hdr_device, &pgen_iid_idxgi_device,
                                              (void **)&dxgi_device);
     if (SUCCEEDED(result)) result = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+    if (SUCCEEDED(result)) {
+        DXGI_ADAPTER_DESC adapter_desc;
+        if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &adapter_desc)))
+            pgen_adapter_vendor_id = adapter_desc.VendorId;
+    }
     if (SUCCEEDED(result))
         result = IDXGIAdapter_GetParent(adapter, &pgen_iid_idxgi_factory2,
                                         (void **)&factory);
@@ -2566,16 +2579,30 @@ static bool windows_create_hdr_output(void)
         windows_destroy_hdr_output();
         return false;
     }
-    windows_nvapi_hdr_source_begin(app.window);
+    /* NVAPI only exists on NVIDIA: probing it on other vendors reported a
+     * loader sentinel (-2) as a driver error on every AMD and Intel machine.
+     * Name the actual path instead; the NVAPI error format is reserved for
+     * NVIDIA adapters where the status is a genuine NvAPI_Status. */
+    if (pgen_adapter_vendor_id == 0x10DE)
+        windows_nvapi_hdr_source_begin(app.window);
     app.hdr = true;
     app.hdr_active = windows_window_hdr_enabled(app.window);
     if (pgen_nvapi_source_active)
         SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-nvapi-rec2100",
                     sizeof(app.renderer_name));
-    else
+    else if (pgen_adapter_vendor_id == 0x10DE)
         SDL_snprintf(app.renderer_name, sizeof(app.renderer_name),
                      "direct3d11-hdr10-nvapi-error-%d",
                      pgen_nvapi_last_status);
+    else if (pgen_adapter_vendor_id == 0x1002 || pgen_adapter_vendor_id == 0x1022)
+        SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-amd",
+                    sizeof(app.renderer_name));
+    else if (pgen_adapter_vendor_id == 0x8086)
+        SDL_strlcpy(app.renderer_name, "direct3d11-hdr10-intel",
+                    sizeof(app.renderer_name));
+    else
+        SDL_strlcpy(app.renderer_name, "direct3d11-hdr10",
+                    sizeof(app.renderer_name));
     if (!app.hdr_active) {
         SDL_SetError("Windows HDR is not active on the selected display");
         windows_destroy_hdr_output();
@@ -3862,15 +3889,6 @@ static void companion_report_install(const char *job, bool ok, const char *messa
 
 static void companion_run_install(const char *poll_response)
 {
-#ifdef __APPLE__
-    /* No Profile Loader ships for macOS, so the install-and-apply feature
-     * does not exist in this build. Refuse the job immediately with the
-     * reason, so the WebUI shows it instead of waiting out its timeout. */
-    char job[96] = "";
-    if (json_string(poll_response, "install_job", job, sizeof(job)) && job[0])
-        companion_report_install(job, false,
-                                 "Installing display profiles is not supported on macOS");
-#else
     char job[96] = "", file[256] = "", request[768], directory[1200], profile_path[1500];
     unsigned char *profile = NULL;
     size_t profile_length = 0;
@@ -3895,7 +3913,7 @@ static void companion_run_install(const char *poll_response)
         companion_report_install(job, false, "Patch Companion could not download a valid ICC profile");
         return;
     }
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
     profile_is_hdr = linux_profile_name_is_hdr(file) ||
                      profile_has_hdr_cicp(profile, profile_length);
 #endif
@@ -3957,6 +3975,112 @@ static void companion_run_install(const char *poll_response)
                 SDL_Delay(250);
             }
             remove(result_path);
+            /* The loader has just cycled Advanced Color under our swapchain;
+             * schedule a renderer recreate before the next HDR patch so a
+             * composed-demoted presentation cannot poison the following
+             * meter reads. */
+            if (accepted)
+                SDL_SetAtomicInt(&app.presentation_recovery_pending, 1);
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        char loader[1200], display_argument[320], uuid_argument[128];
+        char result_argument[1600], result_path[1500];
+        char uuid_text[64] = "";
+        pid_t child;
+        (void)profile_is_hdr;   /* macOS keeps one profile slot per display */
+        if (!companion_tool_path("PGenProfileLoader", loader, sizeof(loader))) {
+            companion_report_install(job, false, "PGenerator+ Profile Loader is not installed beside Patch Companion");
+            return;
+        }
+        /* The display's CGDisplay UUID is the macOS analogue of the Windows
+         * monitor device path: stable across reboots and unambiguous when two
+         * identical panels are attached, which a display name is not. */
+        {
+            CGDirectDisplayID display_id = macos_direct_display_id(app.selected_display_id);
+            CFUUIDRef uuid = display_id ? CGDisplayCreateUUIDFromDisplayID(display_id) : NULL;
+            if (uuid) {
+                CFStringRef text = CFUUIDCreateString(NULL, uuid);
+                if (text) {
+                    CFStringGetCString(text, uuid_text, sizeof(uuid_text),
+                                       kCFStringEncodingUTF8);
+                    CFRelease(text);
+                }
+                CFRelease(uuid);
+            }
+        }
+        SDL_snprintf(result_path, sizeof(result_path), "%sinstall-%s.result", directory, job);
+        remove(result_path);
+        SDL_snprintf(display_argument, sizeof(display_argument), "--display=%s", app.selected_display);
+        SDL_snprintf(uuid_argument, sizeof(uuid_argument), "--display-uuid=%s", uuid_text);
+        SDL_snprintf(result_argument, sizeof(result_argument), "--result=%s", result_path);
+        child = fork();
+        if (child == 0) {
+            execl(loader, loader, "--apply-from-companion", uuid_argument,
+                  display_argument, result_argument, profile_path, (char *)NULL);
+            _exit(127);
+        }
+        if (child > 0) {
+            bool child_exited = false;
+            int child_status = 0;
+            /* The loader writes "ok" or "error: <reason>" once ColorSync has
+             * genuinely adopted (or refused) the profile - the same contract
+             * the Windows loader uses, and the reason macOS does not need the
+             * compositor-polling loop Linux falls back on below.
+             *
+             * Watch the child as well as the file. A loader that dies without
+             * writing - a dyld failure, a crash, bad arguments - would
+             * otherwise turn an instantly diagnosable error into two minutes
+             * of silence while this loop waits out its full timeout. */
+            for (int attempt = 0; attempt < 480; attempt++) {
+                FILE *result = fopen(result_path, "rb");
+                if (result) {
+                    char text[16] = "";
+                    fread(text, 1, sizeof(text) - 1, result);
+                    fclose(result);
+                    accepted = !strncmp(text, "ok", 2);
+                    break;
+                }
+                if (waitpid(child, &child_status, WNOHANG) == child) {
+                    /* One last look: it may have written the file in its final
+                     * moments, after this iteration's check. */
+                    result = fopen(result_path, "rb");
+                    if (result) {
+                        char text[16] = "";
+                        fread(text, 1, sizeof(text) - 1, result);
+                        fclose(result);
+                        accepted = !strncmp(text, "ok", 2);
+                    }
+                    child_exited = true;
+                    break;
+                }
+                SDL_Delay(250);
+            }
+            remove(result_path);
+            if (child_exited && !accepted) {
+                if (WIFSIGNALED(child_status))
+                    SDL_Log("Profile Loader died on signal %d without reporting "
+                            "a result", WTERMSIG(child_status));
+                else
+                    SDL_Log("Profile Loader exited with status %d without "
+                            "reporting a result",
+                            WIFEXITED(child_status) ? WEXITSTATUS(child_status) : -1);
+                SDL_free(profile);
+                companion_report_install(job, false,
+                    "Profile Loader exited without reporting a result - it may "
+                    "be missing a library or incompatible with this system");
+                return;
+            }
+            if (!child_exited) {
+                /* Still running after a result or the timeout: reap it in the
+                 * background rather than leaving a zombie. */
+                SDL_Thread *reaper = SDL_CreateThread(reap_profile_loader,
+                                                      "profile-loader-reaper",
+                                                      (void *)(intptr_t)child);
+                if (reaper) SDL_DetachThread(reaper);
+                else waitpid(child, NULL, WNOHANG);
+            }
         }
     }
 #else
@@ -4000,7 +4124,6 @@ static void companion_run_install(const char *poll_response)
     companion_report_install(job, accepted,
                              accepted ? "Profile Loader installed and applied the profile to the selected display"
                                       : "Profile Loader could not verify the profile on the selected display");
-#endif
 }
 
 static int SDLCALL companion_install_thread_main(void *data)
@@ -4426,8 +4549,18 @@ static void process_network_updates(void)
     if (have_command) {
         bool ok;
 #ifdef _WIN32
-        bool refresh_fullscreen_hdr =
+        /* A completed profile install also forces the reset: the loader's
+         * Advanced Color cycle can leave this pre-existing swapchain demoted
+         * to composed presentation (Windows then tone-maps to the profile
+         * peak), and the size >= 100 gate below means windowed-patch sessions
+         * would otherwise never recover. Consuming it here keeps the reset in
+         * the inter-patch window, before the settle delay and meter read. */
+        bool install_recovery =
+            SDL_GetAtomicInt(&app.presentation_recovery_pending) != 0 &&
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            !preserve_hdr_calibration && app.hdr_swapchain;
+        bool refresh_fullscreen_hdr = install_recovery ||
+            (app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
             !preserve_hdr_calibration &&
             command_size >= 100 &&
             app.hdr_swapchain &&
@@ -4437,7 +4570,7 @@ static void process_network_updates(void)
              app.displayed_max_luma != max_luma ||
              app.displayed_min_luma != min_luma ||
              app.displayed_max_cll != max_cll ||
-             app.displayed_max_fall != max_fall);
+             app.displayed_max_fall != max_fall));
 #endif
         char message[256] = "";
         raise_pattern_window();
@@ -4459,6 +4592,7 @@ static void process_network_updates(void)
          * cannot sample this reset frame. Full-field OLED conditioning
          * commands opt out because recreating the HDR path can silently drop
          * the active Windows MHC2 calibration for every following patch. */
+        if (refresh_fullscreen_hdr) SDL_SetAtomicInt(&app.presentation_recovery_pending, 0);
         if (refresh_fullscreen_hdr &&
             (!try_create_renderer(false, NULL) ||
              (SDL_Delay(50), !create_renderer(true)))) ok = false;
@@ -4811,6 +4945,13 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
      * compositor idle-inhibit protocol for the lifetime of this window. */
     SDL_DisableScreenSaver();
 #ifdef _WIN32
+    /* Idle transitions degrade the HDR pipeline mid-session even with the
+     * screensaver off: unattended meter runs measured a tone-mapped panel
+     * until the session was interacted with. Assert a display requirement
+     * for the process lifetime; cleared in SDL_AppQuit. */
+    SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+#endif
+#ifdef _WIN32
     set_windows_window_icon();
 #else
     set_embedded_window_icon();
@@ -4956,6 +5097,9 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result)
 {
+#ifdef _WIN32
+    SetThreadExecutionState(ES_CONTINUOUS);
+#endif
     AppState *state = (AppState *)appstate;
     (void)result;
     if (state) {
