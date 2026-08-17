@@ -42,6 +42,7 @@ sub webui_icc_profile_list (@) {
    my $tunable="false";
    my $tune_mode="sdr";
    my $tune_color="false";
+   my $has_clut="false";
    if(open(my $ph,"<:raw","$_icc_profile_dir/$file")) {
     my $head="";
     read($ph,$head,4096);
@@ -58,6 +59,7 @@ sub webui_icc_profile_list (@) {
         $mhc2_size=unpack("N",substr($head,132+$i*12+8,4));
        }
       }
+      $has_clut="true" if($tags{"B2A0"});
       $tunable="true" if($tags{"targ"} && ($tags{"B2A0"} || $tags{"MHC2"}));
       # cLUT profiles tune local cells. MHC2 profiles use the same colour
       # evidence for a constrained residual 3x3 matrix correction.
@@ -81,14 +83,103 @@ sub webui_icc_profile_list (@) {
     }
     close($ph);
    }
-   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color];
+   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color,$has_clut];
   }
   closedir($dh);
  }
  foreach my $profile (sort { $b->[2] <=> $a->[2] || $a->[0] cmp $b->[0] } @profiles) {
-  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7]."}";
+  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7].",\"has_clut\":".$profile->[8]."}";
  }
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
+}
+
+# Convert a stored ICC profile's BToA correction into a standard .cube 3D LUT
+# written straight into the solved-LUT directory, so the 3D LUT workspace
+# lists it like any solved LUT. The signal mode reuses the listing's tag
+# heuristics (cicp marks HDR authoritatively; an MHC2 profile without cicp is
+# HDR when its calibrated peak reaches 250 cd/m2). ICC names legally contain
+# parentheses but the solved-LUT routes whitelist [A-Za-z0-9._-], so the
+# output stem is sanitized before writing. The optional directory argument
+# exists for tests only.
+sub webui_icc_profile_to_cube (@) {
+ my ($body,$lut_dir)=@_;
+ $lut_dir="/var/lib/PGenerator/lg/luts" if(!defined($lut_dir) || $lut_dir eq "");
+ return '{"status":"error","message":"Conversion request is empty"}' if(!defined($body) || $body eq "");
+ return '{"status":"error","message":"The LUT conversion tool is unavailable"}' unless(-f $_icc_companion_lut_builder);
+ my $file="";
+ $file=$1 if($body=~/"file"\s*:\s*"([A-Za-z0-9._()-]+\.icc)"/i);
+ return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file";
+ return '{"status":"error","message":"ICC profile not found"}' unless(-f $path);
+ my $size=65;
+ $size=$1+0 if($body=~/"size"\s*:\s*(\d{1,4})/);
+ return '{"status":"error","message":"Unsupported 3D LUT size"}' unless($size==17 || $size==33 || $size==65);
+ my ($method,$mode)=("","sdr");
+ if(open(my $ph,"<:raw",$path)) {
+  my $head="";
+  read($ph,$head,4096);
+  if(length($head)>132) {
+   my $tag_count=unpack("N",substr($head,128,4));
+   if($tag_count>0 && $tag_count<200 && length($head)>=132+$tag_count*12) {
+    my %tags;
+    my ($mhc2_off,$mhc2_size)=(0,0);
+    for my $i (0..$tag_count-1) {
+     my $sig=substr($head,132+$i*12,4);
+     $tags{$sig}=1;
+     if($sig eq "MHC2") {
+      $mhc2_off=unpack("N",substr($head,132+$i*12+4,4));
+      $mhc2_size=unpack("N",substr($head,132+$i*12+8,4));
+     }
+    }
+    # Prefer the measured cLUT; a matrix/TRC-only profile still converts
+    # through the converter's matrix fallback.
+    $method=$tags{"B2A0"} ? "clut" : (($tags{"rXYZ"} && $tags{"gXYZ"} && $tags{"bXYZ"}) ? "matrix" : "");
+    if($tags{"cicp"}) {
+     $mode="hdr10";
+    } elsif($tags{"MHC2"} && $mhc2_off>0 && $mhc2_size>44) {
+     my $mhc2="";
+     if(seek($ph,$mhc2_off,0) && read($ph,$mhc2,20)==20) {
+      my $raw=unpack("N",substr($mhc2,16,4));
+      $raw-=4294967296 if($raw>=2147483648);
+      $mode="hdr10" if($raw/65536.0>=250.0);
+     }
+    }
+   }
+  }
+  close($ph);
+ }
+ return '{"status":"error","message":"The profile has no convertible cLUT or matrix stage"}' if($method eq "");
+ my $stem=$file;
+ $stem=~s/\.icc$//i;
+ $stem=~s/[^A-Za-z0-9._-]+/_/g;
+ $stem=~s/^[._]+//;
+ $stem=~s/_+$//;
+ $stem="profile" if($stem eq "");
+ system("mkdir -p $lut_dir 2>/dev/null") unless(-d $lut_dir);
+ my $out="icc_".$stem."_".$mode."_".time().".cube";
+ my $out_path="$lut_dir/$out";
+ # Names are whitelist-constrained above and cannot carry quotes; the profile
+ # data itself never enters the shell.
+ my $output=`timeout 900 /usr/bin/python3 $_icc_companion_lut_builder '$path' $method $mode '$out_path' $size 2>&1`;
+ my $exit=$?;
+ if($exit!=0 || !-f $out_path) {
+  unlink($out_path);
+  $output="" if(!defined($output));
+  $output=~s/\s+/ /g;
+  $output=~s/^ | $//g;
+  $output="LUT conversion failed" if($output eq "");
+  return '{"status":"error","message":"'.&_webui_json_escape($output).'"}';
+ }
+ my $bytes=(-s $out_path)||0;
+ my $nodes=$size*$size*$size;
+ # The delete route removes the .cube/.bin/.json triple by basename; write the
+ # sidecar so converted LUTs clean up like solved ones and keep provenance.
+ (my $sidecar=$out_path)=~s/\.cube$/.json/;
+ if(open(my $mf,'>',$sidecar)) {
+  print $mf "{\"status\":\"ok\",\"method\":\"".($method eq "clut"?"icc_clut":"icc_matrix")."\",\"signal_mode\":\"$mode\",\"source_profile\":\"".&_webui_json_escape($file)."\",\"lut_size\":$size,\"cube_lut_size\":$size,\"cube_axis_order\":\"r-fastest\",\"title\":\"ICC ".&_webui_json_escape($stem)."\"}";
+  close($mf);
+ }
+ return "{\"status\":\"ok\",\"file\":\"".&_webui_json_escape($out)."\",\"path\":\"".&_webui_json_escape($out_path)."\",\"size\":$bytes,\"nodes\":$nodes,\"lut_size\":$size,\"signal_mode\":\"$mode\",\"method\":\"$method\"}";
 }
 
 sub webui_icc_profile_finetune (@) {

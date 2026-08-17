@@ -279,7 +279,7 @@ def source_xyz(rgb, signal_mode, white_nits, adaptation):
     return mat_vec(adaptation, absolute_xyz)
 
 
-def build(profile_path, method, signal_mode, output_path):
+def make_transform(profile_path, method, signal_mode):
     if method not in ("clut", "matrix"):
         fail("Unsupported Companion correction method")
     if signal_mode not in ("sdr", "hdr10"):
@@ -294,6 +294,19 @@ def build(profile_path, method, signal_mode, output_path):
     # Source RGB is D65 in both supported signal modes. The profile's media
     # white and chad describe its measured display, not the source colourspace.
     adaptation = chromatic_adaptation(SOURCE_WHITE_D65, PCS_WHITE)
+    return transform, white_nits, adaptation
+
+
+def write_atomic(output_path, payload):
+    mode = "wb" if isinstance(payload, (bytes, bytearray)) else "w"
+    temporary = output_path + ".tmp.{}".format(os.getpid())
+    with open(temporary, mode) as handle:
+        handle.write(payload)
+    os.replace(temporary, output_path)
+
+
+def build(profile_path, method, signal_mode, output_path):
+    transform, white_nits, adaptation = make_transform(profile_path, method, signal_mode)
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
@@ -304,18 +317,42 @@ def build(profile_path, method, signal_mode, output_path):
                 corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
                 for value in corrected:
                     output.extend(struct.pack(">H", int(round(max(0.0, min(1.0, value)) * 65535.0))))
-    temporary = output_path + ".tmp.{}".format(os.getpid())
-    with open(temporary, "wb") as handle:
-        handle.write(output)
-    os.replace(temporary, output_path)
+    write_atomic(output_path, output)
+
+
+def build_cube(profile_path, method, signal_mode, output_path, size, title=None):
+    if size < 2 or size > 129:
+        fail("Unsupported 3D LUT size")
+    transform, white_nits, adaptation = make_transform(profile_path, method, signal_mode)
+    if title is None:
+        title = "{} {} ICC correction".format(
+            re.sub(r"\.ic[cm]$", "", os.path.basename(profile_path), flags=re.I), signal_mode)
+    lines = ['TITLE "{}"'.format(title.replace('"', "'")),
+             "LUT_3D_SIZE {}".format(size),
+             "DOMAIN_MIN 0.0 0.0 0.0",
+             "DOMAIN_MAX 1.0 1.0 1.0"]
+    # Standard .cube node order is red-fastest/blue-slowest -- the reverse of
+    # the PGLT payload above. Keeping the PGLT nesting here would hand external
+    # tools an R<->B swapped lattice whose neutral axis still looks correct.
+    for blue in range(size):
+        for green in range(size):
+            for red in range(size):
+                rgb = (red / (size - 1.0), green / (size - 1.0), blue / (size - 1.0))
+                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
+                lines.append(" ".join(
+                    "{:.9f}".format(max(0.0, min(1.0, value))) for value in corrected))
+    write_atomic(output_path, "\n".join(lines) + "\n")
 
 
 def main():
-    if len(sys.argv) != 5:
-        print("Usage: icc_companion_lut.py PROFILE clut|matrix sdr|hdr10 OUTPUT", file=sys.stderr)
+    if len(sys.argv) not in (5, 6):
+        print("Usage: icc_companion_lut.py PROFILE clut|matrix sdr|hdr10 OUTPUT [CUBE_SIZE]", file=sys.stderr)
         return 2
     try:
-        build(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+        if len(sys.argv) == 6:
+            build_cube(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]))
+        else:
+            build(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
         return 0
     except (OSError, ValueError, struct.error) as error:
         print(str(error), file=sys.stderr)

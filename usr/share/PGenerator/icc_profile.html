@@ -313,3 +313,15 @@
     </div>
    </div>
   </div>
+
+  <div id="meterIccCubeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10022;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(560px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:18px;box-sizing:border-box">
+    <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:8px">3D LUT Created</div>
+    <div id="meterIccCubeSummary" class="meter-icc-note" style="line-height:1.55;margin-bottom:14px"></div>
+    <div class="btn-row" style="justify-content:flex-end;margin:0;flex-wrap:wrap">
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccCloseCubeModal()">Close</button>
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccCubeOpenWorkspace()" title="Open LUT Tools and load this LUT in the 3D cube viewer">View in 3D LUT Workspace</button>
+     <button type="button" class="btn btn-sm btn-primary" onclick="meterIccCubeDownload()" title="Standard .cube (Resolve, madVR, LUT boxes)">Download .cube</button>
+    </div>
+   </div>
+  </div>

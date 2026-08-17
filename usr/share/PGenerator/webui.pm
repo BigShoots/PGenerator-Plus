@@ -799,7 +799,7 @@ sub webui_route_is_compute (@) {
  my ($method,$path)=@_;
  return 0 if(!defined($method) || $method ne "POST");
  $path="" if(!defined($path));
- return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches" || $path eq "/api/icc/finetune");
+ return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches" || $path eq "/api/icc/finetune" || $path eq "/api/icc/to-cube");
  return 0;
 }
 
@@ -1844,6 +1844,11 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/icc/delete" && $method eq "POST") {
     my $result=&webui_icc_profile_delete($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/icc/to-cube" && $method eq "POST") {
+    my $result=&webui_icc_profile_to_cube($body);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
@@ -16628,7 +16633,7 @@ let _hdmiIgnored=false;
 const uiBlockingOverlayIds=[
  'meterGreyProfileModal','meterCustomSeriesModal','meterCustomSeriesManagerModal',
  'meterImportWizardModal','meterLutToolsModal','lutSolveProgressModal',
- 'meterIccProfileModal','meterIccValidationModal',
+ 'meterIccProfileModal','meterIccValidationModal','meterIccCubeModal',
  'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
  'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
  'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',

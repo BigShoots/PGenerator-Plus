@@ -1762,6 +1762,19 @@ async function meterIccLoadProfiles(){
    validate.disabled=!profile.validation;
    validate.title=profile.validation?'View the ArgyllCMS profcheck results':'No saved self-check is available for this profile';
    validate.onclick=()=>meterIccOpenValidation(profile.name);
+   const cube=document.createElement('button');
+   cube.type='button';
+   cube.className='btn btn-sm btn-secondary';
+   cube.textContent='3D LUT';
+   const cubeEligible=!!profile.has_clut;
+   // Keep the action in a consistent place for every profile, matching the
+   // Fine tune button: matrix-only or imported profiles explain why the
+   // conversion is unavailable instead of losing the control.
+   cube.disabled=!cubeEligible;
+   cube.title=cubeEligible
+    ?'Convert this profile’s correction cLUT into a 3D LUT (.cube) and add it to the 3D LUT workspace'
+    :'3D LUT conversion requires a profile with a BToA cLUT stage';
+   cube.onclick=()=>meterIccConvertProfileToCube(profile.name,cube);
    const remove=document.createElement('button');
    remove.type='button';
    remove.className='btn btn-sm btn-danger';
@@ -1769,7 +1782,7 @@ async function meterIccLoadProfiles(){
    remove.title='Delete this profile';
    remove.setAttribute('aria-label','Delete '+profile.name);
    remove.onclick=()=>meterIccDeleteProfile(profile.name);
-   row.append(name,created,download,install,finetune,validate,remove);
+   row.append(name,created,download,install,finetune,validate,cube,remove);
    list.appendChild(row);
   });
  }catch(error){
@@ -2014,6 +2027,61 @@ async function meterIccInstallProfile(file,button){
   throw new Error('Patch Companion did not finish the profile installation');
  }catch(error){ showToast(error&&error.message?error.message:'Profile installation failed','error'); }
  finally{ if(button){ button.disabled=false; button.textContent=original; } }
+}
+
+let meterIccCubeResult=null;
+
+async function meterIccConvertProfileToCube(file,button){
+ const original=button?button.textContent:'3D LUT';
+ if(button){ button.disabled=true; button.textContent='Converting...'; }
+ try{
+  // The Pi samples the 65^3 lattice point by point through the profile's
+  // BToA tables; allow minutes rather than the default fetch timeout.
+  const result=await fetchJSON('/api/icc/to-cube',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file,size:65}),_timeoutMs:900000});
+  if(!result||result.status!=='ok'||!result.file) throw new Error(result&&result.message?result.message:'LUT conversion failed');
+  meterIccCubeResult=result;
+  // The cube lands in the solved-LUT directory, so a plain refresh registers
+  // it in the 3D LUT workspace list alongside solved LUTs.
+  if(typeof meterLoadSolvedLutList==='function') meterLoadSolvedLutList();
+  meterIccShowCubeModal(file,result);
+ }catch(error){ toast(error&&error.message?error.message:'LUT conversion failed',true); }
+ finally{ if(button){ button.disabled=false; button.textContent=original; } }
+}
+
+function meterIccShowCubeModal(file,result){
+ const summary=document.getElementById('meterIccCubeSummary');
+ if(summary){
+  const size=Number(result.lut_size||0);
+  const modeLabel=String(result.signal_mode||'sdr')==='hdr10'?'HDR10':'SDR';
+  const methodLabel=String(result.method||'clut')==='clut'?'BToA cLUT':'matrix/TRC';
+  summary.textContent='Converted '+file+' ('+modeLabel+', '+methodLabel+') into '
+   +(size?size+'×'+size+'×'+size+' ':'')+String(result.file||'')
+   +'. The LUT was added to the 3D LUT workspace history on this PGenerator+.';
+ }
+ const modal=document.getElementById('meterIccCubeModal');
+ if(modal){
+  if(typeof meterEnsureModalOnBody==='function') meterEnsureModalOnBody(modal);
+  modal.style.display='flex';
+ }
+ uiSyncBodyScrollLock();
+}
+
+function meterIccCloseCubeModal(){
+ const modal=document.getElementById('meterIccCubeModal');
+ if(modal) modal.style.display='none';
+ uiSyncBodyScrollLock();
+}
+
+function meterIccCubeDownload(){
+ const file=meterIccCubeResult&&meterIccCubeResult.file;
+ if(file) window.location.href='/api/3d-lut/cube?file='+encodeURIComponent(file);
+}
+
+async function meterIccCubeOpenWorkspace(){
+ const file=meterIccCubeResult&&meterIccCubeResult.file;
+ meterIccCloseCubeModal();
+ if(typeof meterOpenLutTools==='function') meterOpenLutTools();
+ if(file&&typeof meterSolvedLutRefreshAndSelect==='function') await meterSolvedLutRefreshAndSelect(file);
 }
 
 function meterIccCloseValidation(){
