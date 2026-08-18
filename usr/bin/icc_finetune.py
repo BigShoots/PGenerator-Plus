@@ -485,7 +485,9 @@ def stable_tail_start(values, tolerance=4.0 / 65536.0):
 
 def mhc2_endpoint_start(entries):
     """First table entry Windows uses for exact maximum-code HDR white."""
-    return max(1, min(entries - 1, int(math.ceil(
+    # 253/255 lies between dense-table samples. Start at its lower neighbour
+    # so interpolation cannot mix the ordinary held shoulder into exact white.
+    return max(1, min(entries - 1, int(math.floor(
         253.0 * (entries - 1) / 255.0))))
 
 

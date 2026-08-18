@@ -398,7 +398,11 @@ def mhc2_lut_entries(profile_type):
 
 def mhc2_exact_white_start(entries):
     """First MHC2 entry used by Windows' exact maximum-code HDR path."""
-    return max(1, min(entries - 1, int(math.ceil(
+    # Use the lower dense-table neighbour. At 4096 entries, 253/255 falls
+    # between two samples; rounding up leaves Windows interpolating part of
+    # the held shoulder into exact white. Marking both neighbours as endpoint
+    # keeps the probed 253 boundary constant while 99% remains below it.
+    return max(1, min(entries - 1, int(math.floor(
         253.0 * (entries - 1) / 255.0))))
 
 
