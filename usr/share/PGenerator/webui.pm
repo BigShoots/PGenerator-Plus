@@ -4128,19 +4128,22 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    if($points==2) {
     my $low=30;
     my $high=100;
+    my $two_point_max_stimulus=(int($series_color_format||0) != 0 && $signal_mode ne "dv") ? 109 : 100;
     $low=$grey_two_point_low+0 if($grey_two_point_low ne "");
     $high=$grey_two_point_high+0 if($grey_two_point_high ne "");
     $low=0 if($low < 0);
-    $low=99 if($low > 99);
-    $high=1 if($high < 1);
-    $high=100 if($high > 100);
+    $low=$two_point_max_stimulus if($low > $two_point_max_stimulus);
+    $high=0 if($high < 0);
+    $high=$two_point_max_stimulus if($high > $two_point_max_stimulus);
     if($high <= $low) {
-     if($high >= 100) { $low=$high-1; }
+     if($low >= $two_point_max_stimulus) { $high=$two_point_max_stimulus; $low=$two_point_max_stimulus-1; }
      else { $high=$low+1; }
     }
     @ire_vals=($low,$high);
     foreach my $v (@ire_vals) {
-     my $label=(abs($v-int($v))<0.05)?int($v):sprintf("%.1f",$v);
+     my $label=sprintf("%.4f",$v);
+     $label=~s/0+$//;
+     $label=~s/\.$//;
      my $role=(abs($v-$high)<0.0001)?"High":"Low";
      $step_names{$v}="$role ${label}%";
     }
@@ -4380,6 +4383,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      autocal_26_codes => ($lg_autocal_26_codes ? 1 : 0),
      extended_sdr_codes => ($lg_extended_sdr_codes ? 1 : 0),
      legal_sdr_ddc_codes => ($lg_legal_sdr_ddc_codes ? 1 : 0),
+     two_point_ycbcr_headroom => (($points==2 && int($series_color_format||0) != 0 && $signal_mode ne "dv") ? 1 : 0),
      dv_series => ($dv_series ? 1 : 0),
      dv_series_code_bits => (defined($dv_series_code_bits) ? $dv_series_code_bits : 8),
      dv_series_full_range => ($dv_series_full_range ? 1 : 0),
@@ -4522,7 +4526,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 		     # DV's target math is its own 8/10-bit ladder via
 		     # $dv_series_code_bits; the existing 16/219 formula was a
 		     # pre-existing approximation we leave untouched.
-		     if(!$dv_series && $series_input_max == 1023) {
+		     if(!$dv_series && $points==2 && int($series_color_format||0) != 0) {
+		      # YCbCr Default is Limited even when signal_range is 0. Its
+		      # two-point code field can extend above legal white, but target
+		      # normalisation remains anchored at 940/235 and clamps the
+		      # 100..109% headroom segment at reference white.
+		      if($series_input_max == 1023) { $target_min_code=64; $target_span_code=876; }
+		      else { $target_min_code=16; $target_span_code=219; }
+		     } elsif(!$dv_series && $series_input_max == 1023) {
 		      if($lg_extended_sdr_codes) {
 		       # Extended SDR tops out at FULL scale, so 10-bit is 64..1023
 		       # (span 959). 956 was the 8-bit span 239 upshifted by 4.
@@ -10848,6 +10859,7 @@ sub webui_pattern_pq_encode_normalized (@) {
 #   autocal_26_codes 0/1       SDR 26pt slot map
 #   extended_sdr_codes 0/1    use extended (16..255) SDR range
 #   legal_sdr_ddc_codes 0/1   use legal (16..235) SDR range
+#   two_point_ycbcr_headroom 0/1 allow 100..109% to use YCbCr super-white
 #   dv_series       0/1        use DV tunnel branch
 #   dv_series_code_bits 8/10/12  source-code precision inside the tunnel
 #   dv_series_full_range 0/1  use full tunnel range
@@ -10872,6 +10884,7 @@ sub webui_grey_code_for_stimulus (@) {
  my $lg_autocal_26_codes=$opts_hr->{"autocal_26_codes"} ? 1 : 0;
  my $lg_extended_sdr_codes=$opts_hr->{"extended_sdr_codes"} ? 1 : 0;
  my $lg_legal_sdr_ddc_codes=$opts_hr->{"legal_sdr_ddc_codes"} ? 1 : 0;
+ my $two_point_ycbcr_headroom=$opts_hr->{"two_point_ycbcr_headroom"} ? 1 : 0;
  my $dv_series=$opts_hr->{"dv_series"} ? 1 : 0;
  my $dv_series_code_bits=$opts_hr->{"dv_series_code_bits"};
  $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10 && $dv_series_code_bits!=12));
@@ -10881,6 +10894,27 @@ sub webui_grey_code_for_stimulus (@) {
  my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? $dv_series_code_max : ($dv_series_code_bits==12?3504:($dv_series_code_bits==10?876:219))) : 255;
  my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
  $input_max=$dv_series_code_max if($dv_series);
+ if($two_point_ycbcr_headroom) {
+  # YCbCr Limited keeps the nominal legal ramp through 100%, then exposes
+  # super-white through 109%. RGB Limited deliberately does not enter this
+  # branch and remains capped at 235/940.
+  my $_tp_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
+  my $_tp_min=$_tp_bits==10 ? 64 : 16;
+  my $_tp_legal=$_tp_bits==10 ? 940 : 235;
+  my $_tp_max=$_tp_bits==10 ? 1023 : 255;
+  my $_tp_stim=$raw_stim_for_ac26_ltd+0;
+  $_tp_stim=0 if($_tp_stim < 0);
+  $_tp_stim=109 if($_tp_stim > 109);
+  if($_tp_stim <= 100) {
+   $code=int($_tp_min + $_tp_stim/100*($_tp_legal-$_tp_min) + .5);
+  } else {
+   $code=int($_tp_legal + ($_tp_stim-100)/9*($_tp_max-$_tp_legal) + .5);
+  }
+  $code=$_tp_min if($code < $_tp_min);
+  $code=$_tp_max if($code > $_tp_max);
+  $input_max=$_tp_max;
+  return ($code,$input_max);
+ }
  if($lg_autocal_26_codes) {
   # 8-bit link: no headroom and no 10-bit legal-expanded ladder. Drive plain
   # 8-bit codes that match the worker's patch_code_for_stimulus 8-bit path
@@ -13843,15 +13877,19 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset);border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
-     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
-      <span>Low Patch</span>
-      <input type="number" id="meterTwoPointLow" min="0" max="99" step="1" value="30" style="width:84px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
-     </label>
-     <label style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
-      <span>High Patch</span>
-      <input type="number" id="meterTwoPointHigh" min="1" max="100" step="1" value="100" style="width:84px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
-     </label>
-     <div style="font-size:.7rem;color:var(--text2);line-height:1.45;max-width:38ch">Defaults use the common 30 / 100 two-point workflow. Change them before starting the series if you want different low and high patches.</div>
+     <div style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <label for="meterTwoPointLow">Low Patch</label>
+      <input type="number" id="meterTwoPointLow" min="0" max="99" step="0.1" value="30" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+      <label for="meterTwoPointLowCode" style="margin-top:2px">RGB Code</label>
+      <input type="number" id="meterTwoPointLowCode" min="0" max="255" step="1" value="77" inputmode="numeric" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+     </div>
+     <div style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+      <label for="meterTwoPointHigh">High Patch</label>
+      <input type="number" id="meterTwoPointHigh" min="1" max="100" step="0.1" value="100" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+      <label for="meterTwoPointHighCode" style="margin-top:2px">RGB Code</label>
+      <input type="number" id="meterTwoPointHighCode" min="0" max="255" step="1" value="255" inputmode="numeric" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
+     </div>
+     <div style="font-size:.7rem;color:var(--text2);line-height:1.45;max-width:42ch"><span id="meterTwoPointCodeHint">RGB codes follow the active signal format, range, and bit depth.</span> Defaults use the common 30 / 100 two-point workflow.</div>
     </div>
    </div>
    <div class="btn-row" id="meterReadBtnRow" style="margin:0">
@@ -16049,6 +16087,7 @@ function meterQueueOutputSettingsRefresh(saveMeterPrefs){
    updateMeterTargetWhitepointVisibility();
    meterSyncHdrDiffuseWhiteControl();
    meterSyncActiveSeriesSignalMode();
+   meterSyncTwoPointInputs();
    meterRefreshActiveSeriesCharts();
    meterUpdateReadButtons();
    try{ if(typeof meterSyncTargetGammaOptionsForSignal==='function') meterSyncTargetGammaOptionsForSignal(); }catch(e){}
@@ -31870,6 +31909,83 @@ function meterIsTwoPointGreyscale(){
  return meterActiveSeriesType==='greyscale' && Number(meterActiveSeriesPoints)===2;
 }
 
+function meterTwoPointSignalMode(){
+ return String((document.getElementById('signal_mode')||{}).value||'sdr').toLowerCase();
+}
+
+function meterTwoPointCodeLimits(){
+ // The patch source stays 10-bit when the HDMI container is set to 12-bit;
+ // Dolby Vision is the exception and uses its 12-bit legal source domain.
+ if(meterTwoPointSignalMode()==='dv'){
+  return {bits:12,inputMax:4095,min:256,legalMax:3760,max:3760,headroom:false,label:'Dolby Vision legal'};
+ }
+ const selectedBits=parseInt((document.getElementById('max_bpc')||{}).value||'8',10);
+ const bits=selectedBits>=10?10:8;
+ const inputMax=bits===10?1023:255;
+ const limited=meterIsLimitedRange();
+ const ycbcr=!meterOutputIsRgb();
+ if(!limited) return {bits,inputMax,min:0,legalMax:inputMax,max:inputMax,headroom:false,label:'RGB Full'};
+ const min=bits===10?64:16;
+ const legalMax=bits===10?940:235;
+ return {bits,inputMax,min,legalMax,max:ycbcr?inputMax:legalMax,headroom:ycbcr,label:ycbcr?'YCbCr Limited':'RGB Limited'};
+}
+
+function meterTwoPointStimulusMax(){
+ return meterTwoPointCodeLimits().headroom?109:100;
+}
+
+function meterTwoPointCodeFromStimulus(stimulus){
+ const limits=meterTwoPointCodeLimits();
+ const maxStimulus=limits.headroom?109:100;
+ const value=Math.max(0,Math.min(maxStimulus,Number(stimulus)||0));
+ if(limits.headroom&&value>100){
+  return Math.max(limits.min,Math.min(limits.max,Math.round(limits.legalMax+(value-100)/9*(limits.max-limits.legalMax))));
+ }
+ return Math.max(limits.min,Math.min(limits.legalMax,Math.round(limits.min+value/100*(limits.legalMax-limits.min))));
+}
+
+function meterTwoPointStimulusFromCode(code){
+ const limits=meterTwoPointCodeLimits();
+ const value=Math.max(limits.min,Math.min(limits.max,Math.round(Number(code)||0)));
+ let stimulus;
+ if(limits.headroom&&value>limits.legalMax){
+  stimulus=100+(value-limits.legalMax)*9/(limits.max-limits.legalMax);
+ }else{
+  stimulus=(value-limits.min)*100/(limits.legalMax-limits.min);
+ }
+ return Math.round(Math.max(0,Math.min(limits.headroom?109:100,stimulus))*10000)/10000;
+}
+
+function meterFormatTwoPointStimulusValue(value){
+ const numeric=Number(value);
+ if(!Number.isFinite(numeric)) return '0';
+ return String(Math.round(numeric*10000)/10000).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+}
+
+function meterUpdateTwoPointCodeUi(values){
+ const limits=meterTwoPointCodeLimits();
+ const maxStimulus=limits.headroom?109:100;
+ const lowEl=document.getElementById('meterTwoPointLow');
+ const highEl=document.getElementById('meterTwoPointHigh');
+ const lowCodeEl=document.getElementById('meterTwoPointLowCode');
+ const highCodeEl=document.getElementById('meterTwoPointHighCode');
+ if(lowEl) lowEl.max=String(maxStimulus);
+ if(highEl) highEl.max=String(maxStimulus);
+ [lowCodeEl,highCodeEl].forEach(el=>{
+  if(!el) return;
+  el.min=String(limits.min);
+  el.max=String(limits.max);
+ });
+ if(lowCodeEl) lowCodeEl.value=String(values.lowCode);
+ if(highCodeEl) highCodeEl.value=String(values.highCode);
+ const hint=document.getElementById('meterTwoPointCodeHint');
+ if(hint){
+  hint.textContent=limits.headroom
+   ? limits.bits+'-bit '+limits.label+': '+limits.min+'-'+limits.legalMax+' is 0-100%; 100-109% uses headroom through '+limits.max+'. '
+   : limits.bits+'-bit '+limits.label+' code range: '+limits.min+'-'+limits.max+'. ';
+ }
+}
+
 function meterIsToneMapSeries(){
  return meterSeriesTab==='autocal' && meterNormalizeAutoCalSeriesChoice(meterAutoCalSeriesChoice)==='tone-map';
 }
@@ -31900,20 +32016,28 @@ function meterTwoPointValues(){
  let high=parseFloat((highEl&&highEl.value)||METER_TWO_POINT_DEFAULTS.high);
  if(!Number.isFinite(low)) low=METER_TWO_POINT_DEFAULTS.low;
  if(!Number.isFinite(high)) high=METER_TWO_POINT_DEFAULTS.high;
- low=Math.max(0,Math.min(99,Math.round(low*10)/10));
- high=Math.max(1,Math.min(100,Math.round(high*10)/10));
+ const maxStimulus=meterTwoPointStimulusMax();
+ low=Math.max(0,Math.min(maxStimulus,Math.round(low*10000)/10000));
+ high=Math.max(0,Math.min(maxStimulus,Math.round(high*10000)/10000));
  if(high<=low){
-  if(high>=100) low=Math.max(0,Math.min(99,high-1));
-  else high=Math.min(100,low+1);
+  if(low>=maxStimulus){ high=maxStimulus; low=Math.max(0,maxStimulus-1); }
+  else high=Math.min(maxStimulus,low+1);
  }
- return {low,high};
+ return {
+  low,
+  high,
+  lowCode:meterTwoPointCodeFromStimulus(low),
+  highCode:meterTwoPointCodeFromStimulus(high),
+  inputMax:meterTwoPointCodeLimits().inputMax
+ };
 }
 
 function meterSetTwoPointInputs(values){
  const lowEl=document.getElementById('meterTwoPointLow');
  const highEl=document.getElementById('meterTwoPointHigh');
- if(lowEl) lowEl.value=meterFormatPercentValue(values.low);
- if(highEl) highEl.value=meterFormatPercentValue(values.high);
+ if(lowEl) lowEl.value=meterFormatTwoPointStimulusValue(values.low);
+ if(highEl) highEl.value=meterFormatTwoPointStimulusValue(values.high);
+ meterUpdateTwoPointCodeUi(values);
 }
 
 function meterSyncTwoPointInputs(){
@@ -31962,6 +32086,23 @@ function meterUpdateSeriesLabels(){
 }
 
 function meterHandleTwoPointLevelChange(){
+ meterSyncTwoPointInputs();
+ saveMeterSettings();
+ if(meterIsTwoPointGreyscale()) meterRefreshActiveSeriesCharts();
+}
+
+function meterHandleTwoPointCodeChange(event){
+ const codeEl=event&&event.currentTarget;
+ const isHigh=!!(codeEl&&codeEl.id==='meterTwoPointHighCode');
+ const stimulusEl=document.getElementById(isHigh?'meterTwoPointHigh':'meterTwoPointLow');
+ const limits=meterTwoPointCodeLimits();
+ let code=parseInt((codeEl&&codeEl.value)||'',10);
+ if(!Number.isFinite(code)){
+  const current=meterTwoPointValues();
+  code=isHigh?current.highCode:current.lowCode;
+ }
+ code=Math.max(limits.min,Math.min(limits.max,code));
+ if(stimulusEl) stimulusEl.value=meterFormatTwoPointStimulusValue(meterTwoPointStimulusFromCode(code));
  meterSyncTwoPointInputs();
  saveMeterSettings();
  if(meterIsTwoPointGreyscale()) meterRefreshActiveSeriesCharts();
@@ -36429,12 +36570,13 @@ function meterBuildStepsJS(type,points){
 	  if(points===2){
    const twoPoint=meterSyncTwoPointInputs();
    [
-    {role:'high',value:twoPoint.high},
-    {role:'low',value:twoPoint.low}
+    {role:'high',value:twoPoint.high,code:twoPoint.highCode},
+    {role:'low',value:twoPoint.low,code:twoPoint.lowCode}
    ].forEach(entry=>{
-    const c=meterCodeFromSignalPercent(entry.value);
-    const label=(entry.role==='low'?'Low ':'High ')+meterFormatPercentValue(entry.value)+'%';
-    const inputMax=meterChartIsDv()?4095:(meterPatchBitDepth()===10?1023:255);
+    const c=Number.isFinite(Number(entry.code))?Number(entry.code):meterCodeFromSignalPercent(entry.value);
+    const formatValue=(typeof meterFormatTwoPointStimulusValue==='function')?meterFormatTwoPointStimulusValue:meterFormatPercentValue;
+    const label=(entry.role==='low'?'Low ':'High ')+formatValue(entry.value)+'%';
+    const inputMax=Number(twoPoint.inputMax)||(meterChartIsDv()?4095:(meterPatchBitDepth()===10?1023:255));
     const step={ire:entry.value,stimulus:entry.value,signal_r_pct:entry.value,signal_g_pct:entry.value,signal_b_pct:entry.value,r:c,g:c,b:c,input_max:inputMax,name:label,point_role:entry.role,series_type:'greyscale'};
     steps.push(step);
    });
@@ -55233,6 +55375,10 @@ async function loadMeterSettings(attempt){
 ['meterTwoPointLow','meterTwoPointHigh'].forEach(id=>{
  const el=document.getElementById(id);
  if(el) el.addEventListener('change',meterHandleTwoPointLevelChange);
+});
+['meterTwoPointLowCode','meterTwoPointHighCode'].forEach(id=>{
+ const el=document.getElementById(id);
+ if(el) el.addEventListener('change',meterHandleTwoPointCodeChange);
 });
 const meterCcssCreateDisplayTypeEl=document.getElementById('meterCcssCreateDisplayType');
 if(meterCcssCreateDisplayTypeEl) meterCcssCreateDisplayTypeEl.addEventListener('change',()=>{
