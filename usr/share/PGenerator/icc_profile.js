@@ -1200,7 +1200,7 @@ function meterIccSyncUi(){
  const retry=document.getElementById('meterIccRetryBuildBtn');
  const retryCount=Number(retry&&retry.dataset?retry.dataset.measurementCount:0);
  if(retry&&retryCount>0){
-  retry.textContent='Rebuild '+retryCount+' Measurements ('+profileQuality.replace(/^./,letter=>letter.toUpperCase())+' Quality)';
+  retry.textContent='Rebuild with '+retryCount+' Measurements';
  }
  meterIccRememberUiSettings();
 }
@@ -2461,7 +2461,7 @@ async function meterIccRefreshRecoveryAvailability(){
    meterIccApplyPatchPreset(inferred);
   }
   const calculationQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||(saved&&saved.profile_quality)||'medium');
-  retry.textContent='Rebuild '+profileCount+' Measurements ('+calculationQuality.replace(/^./,letter=>letter.toUpperCase())+' Quality)';
+  retry.textContent='Rebuild with '+profileCount+' Measurements';
   retry.title='Rebuild exactly these saved measurements using the selected algorithm type and table resolution. No larger patch set will be generated or measured.';
   }
   return available;
