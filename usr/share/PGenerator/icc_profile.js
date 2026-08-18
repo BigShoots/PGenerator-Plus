@@ -1403,11 +1403,13 @@ async function meterCalibrationPatternProviderChanged(){
  const select=document.getElementById('meterPatternProvider');
  if(select) select.dataset.previousValue=select.value;
  meterCalibrationSyncPatternProviderUi();
- saveMeterSettings();
+ await saveMeterSettings();
  const connected=await meterIccRefreshCompanionStatus();
  if(meterCalibrationUsesCompanion()&&connected){
   if(!await meterCalibrationPushCompanionCorrection()) return;
   try{ await fetchJSON('/api/icc/companion/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'align'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
+ }else if(typeof meterRefreshStabilizationIdlePattern==='function'){
+  await meterRefreshStabilizationIdlePattern(false);
  }
 }
 async function meterCalibrationPushCompanionCorrection(){

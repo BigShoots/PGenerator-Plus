@@ -1025,6 +1025,32 @@ sub webui_icc_companion_pattern (@) {
  return '{"status":"error","message":"Invalid companion pattern request"}' unless(defined($body) && length($body)<8192);
  my $connected=&webui_icc_companion_status();
  return '{"status":"error","message":"PGenerator+ Patch Companion is not connected"}' unless($connected=~/"connected"\s*:\s*true/);
+ my $idle_request=($body=~/"(?:name|status)"\s*:\s*"(?:stop|align|alignment)"/i) ? 1 : 0;
+ if($idle_request && $body=~/"only_if_idle"\s*:\s*true/i && -f $_icc_companion_command_file) {
+  my $current="";
+  if(open(my $fh,"<",$_icc_companion_command_file)) { local $/; $current=<$fh>||""; close($fh); }
+  my $currently_idle=($current eq "" || $current=~/"status"\s*:\s*"align"/i || $current=~/"stabilization"\s*:\s*true/i) ? 1 : 0;
+  return '{"status":"ok","unchanged":true}' if(!$currently_idle);
+ }
+ # A stop/alignment command marks the selected patch generator as idle. When
+ # stabilization is enabled, replace that idle target with the configured
+ # full-screen neutral stimulus. The shared helper also verifies that a meter
+ # is still connected before allowing the replacement.
+ if($idle_request) {
+  my ($stabilization_active,$stimulus)=&webui_meter_stabilization_active();
+  if($stabilization_active) {
+   &webui_reload_pgenerator_conf();
+   my $signal_mode=&webui_pattern_signal_mode($body);
+   my ($signal_range)=$body=~/"signal_range"\s*:\s*"?(\d+)"?/;
+   $signal_range=&webui_preferred_rgb_quant_range() if(!defined($signal_range) || $signal_range eq "");
+   my $max_bpc=($signal_mode eq "hdr10") ? 10 : ($pgenerator_conf{"max_bpc"}||8);
+   my ($code,$input_max)=&webui_meter_stabilization_code($stimulus,$signal_mode,$signal_range,$max_bpc);
+   my $max_luma=&webui_pattern_max_luma($body);
+   $body='{"name":"stabilization","r":'.$code.',"g":'.$code.',"b":'.$code
+    .',"size":100,"input_max":'.$input_max.',"signal_mode":"'.$signal_mode
+    .'","signal_range":"'.$signal_range.'","max_luma":'.$max_luma.'}';
+  }
+ }
  my $sequence=int(Time::HiRes::time()*1000);
  if(open(my $fh,"<",$_icc_companion_command_file)) {
   local $/; my $previous=<$fh>||""; close($fh);
@@ -1044,6 +1070,7 @@ sub webui_icc_companion_pattern (@) {
   $r=$input_max if($r>$input_max); $g=$input_max if($g>$input_max); $b=$input_max if($b>$input_max);
   my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/); $size=100 if($size<1 || $size>100);
   my $signal_mode="sdr"; $signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"(sdr|hdr10|hlg|dv)"/);
+  my $stabilization=($body=~/"name"\s*:\s*"stabilization"/i) ? ',"stabilization":true' : '';
   # Fall back to the configured HDR metadata, not to fixed literals. A display
   # tone maps against the mastering metadata it is sent, so an ICC
   # characterization measured with different max_luma/max_cll/max_fall than the
@@ -1062,7 +1089,7 @@ sub webui_icc_companion_pattern (@) {
   my $scale=1; $scale=4 if($input_max==1023); $scale=16 if($input_max==4095);
   my $code_min=($signal_range eq "1") ? 16*$scale : 0;
   my $code_max=($signal_range eq "1") ? 235*$scale : $input_max;
-  $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).',"min_luma":'.($min_luma+0).',"max_cll":'.($max_cll+0).',"max_fall":'.($max_fall+0).'}';
+  $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).',"min_luma":'.($min_luma+0).',"max_cll":'.($max_cll+0).',"max_fall":'.($max_fall+0).$stabilization.'}';
  }
  return &webui_icc_companion_write_atomic($_icc_companion_command_file,$payload,0644)
   ? '{"status":"ok","sequence":'.$sequence.'}'

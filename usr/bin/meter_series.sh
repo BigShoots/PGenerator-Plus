@@ -382,6 +382,13 @@ post_companion_patch() {
 
 companion_show_alignment() {
  [[ "$PATTERN_PROVIDER" == "companion" ]] || return 0
+ # Route the idle command through the WebUI first so the meter-gated
+ # stabilization policy can replace alignment with its full-screen stimulus.
+ # Retain the direct file write as a fallback if the local API is unavailable.
+ local response
+ response=$(curl -s --max-time 5 "$API_BASE/icc/companion/pattern" -X POST \
+  -H 'Content-Type: application/json' -d '{"name":"align"}' 2>/dev/null || true)
+ [[ "$response" == *'"status":"ok"'* ]] && return 0
  local sequence tmp payload
  sequence=$(date +%s%3N)
  if (( sequence <= COMPANION_SEQUENCE )); then sequence=$((COMPANION_SEQUENCE + 1)); fi

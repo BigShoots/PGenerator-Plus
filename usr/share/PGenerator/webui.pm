@@ -6618,6 +6618,7 @@ sub webui_meter_settings_save (@) {
 	 display_type ccss_override pattern_provider target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
+    stabilization_pattern_enabled stabilization_pattern_stimulus
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
     low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
@@ -11089,6 +11090,58 @@ sub webui_grey_code_for_stimulus (@) {
  return ($code,$input_max);
 }
 
+# The stabilization pattern is an idle-state policy rather than a new
+# measurement pattern. Keep its durable preference in Meter Settings, but gate
+# activation against the live meter status so an unplugged meter always falls
+# back to the normal black idle frame.
+sub webui_meter_stabilization_settings (@) {
+ my $enabled=0;
+ my $stimulus=25;
+ foreach my $path ($_meter_settings_runtime,$_meter_settings_persist,$_meter_settings_persist_legacy,$_meter_settings_file) {
+  next unless(-f $path);
+  my $json="";
+  if(open(my $fh,"<",$path)) { local $/; $json=<$fh>; close($fh); }
+  next if($json eq "" || $json!~/^\s*\{/);
+  $enabled=1 if($json=~/"stabilization_pattern_enabled"\s*:\s*(?:true|1|"1")/i);
+  $stimulus=$1+0 if($json=~/"stabilization_pattern_stimulus"\s*:\s*"?(-?\d+(?:\.\d+)?)"?/i);
+  last;
+ }
+ $stimulus=0 if($stimulus < 0);
+ $stimulus=100 if($stimulus > 100);
+ return ($enabled,$stimulus);
+}
+
+sub webui_meter_stabilization_active (@) {
+ my ($enabled,$stimulus)=&webui_meter_stabilization_settings();
+ return (0,$stimulus) if(!$enabled);
+ my $status=&webui_meter_status();
+ return (($status=~/"detected"\s*:\s*true/i)?1:0,$stimulus);
+}
+
+sub webui_meter_stabilization_code (@) {
+ my ($stimulus,$signal_mode,$signal_range,$max_bpc)=@_;
+ my %opts=(
+  max_bpc => (defined($max_bpc) ? $max_bpc : ""),
+  dv_series => (lc($signal_mode||"") eq "dv" ? 1 : 0),
+  dv_series_code_bits => (lc($signal_mode||"") eq "dv" ? 12 : 8),
+ );
+ return &webui_grey_code_for_stimulus($stimulus,$signal_mode,"",$signal_range,\%opts);
+}
+
+sub webui_pattern_idle_refresh_allowed (@) {
+ return (1,"") if(!-f $command_file);
+ my $current="";
+ if(open(my $fh,"<",$command_file)) {
+  while(my $line=<$fh>) {
+   if($line=~/^PATTERN_NAME=(.*)$/) { $current=$1; last; }
+  }
+  close($fh);
+ }
+ $current=~s/[\r\n]+//g;
+ return (1,$current) if($current eq "" || $current eq "stop" || $current eq "stabilization");
+ return (0,$current);
+}
+
 sub webui_pattern_pq_decode_normalized (@) {
  my $code=shift;
  $code=0 if($code < 0);
@@ -11745,12 +11798,27 @@ sub webui_pattern (@) {
  my ($name)=$body=~/"name"\s*:\s*"([^"]+)"/;
  return '{"status":"error","message":"Missing pattern name"}' if(!$name);
  $name=~s/[^a-zA-Z0-9_ -]//g;
+ if($name eq "stop" && $body=~/"only_if_idle"\s*:\s*true/i) {
+  my ($allowed,$current)=&webui_pattern_idle_refresh_allowed();
+  if(!$allowed) {
+   $current=~s/[^a-zA-Z0-9_ -]//g;
+   return '{"status":"ok","pattern":"'.$current.'","unchanged":true}';
+  }
+ }
  if($name eq "patch" && &webui_pattern_stop_guard_active()) {
   if(&webui_pattern_stop_guard_allows_patch($body)) {
    &webui_pattern_stop_guard_clear();
   } else {
    &log("WebUI: replacing stale patch request with idle pattern after meter stop");
    $name="stop";
+  }
+ }
+ my $stabilization_stimulus=25;
+ if($name eq "stop") {
+  my ($stabilization_active,$configured_stimulus)=&webui_meter_stabilization_active();
+  if($stabilization_active) {
+   $name="stabilization";
+   $stabilization_stimulus=$configured_stimulus;
   }
  }
  my $signal_mode=&webui_pattern_signal_mode($body);
@@ -11897,14 +11965,26 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
   return '{"status":"ok","pattern":"'.$name.'"}';
  }
 }
- # Generic patch — takes r,g,b,size params from JSON body
- elsif($pat eq "" && $name eq "patch") {
-  my ($pr)=$body=~/"r"\s*:\s*(\d+)/; $pr=0 if(!defined $pr);
-  my ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
-  my ($pb)=$body=~/"b"\s*:\s*(\d+)/; $pb=0 if(!defined $pb);
+ # Generic patch takes r,g,b,size params from JSON. Stabilization uses the
+ # same renderer path with a mode-correct neutral code and a forced full field.
+ elsif($pat eq "" && ($name eq "patch" || $name eq "stabilization")) {
+  my ($pr,$pg,$pb,$sz,$imax);
+  if($name eq "stabilization") {
+   ($pr,$imax)=&webui_meter_stabilization_code(
+    $stabilization_stimulus,$signal_mode,$pattern_signal_range,$pgenerator_conf{"max_bpc"}
+   );
+   $pg=$pr;
+   $pb=$pr;
+   $sz=100;
+   &log("WebUI: displaying stabilization pattern at $stabilization_stimulus% stimulus");
+  } else {
+   ($pr)=$body=~/"r"\s*:\s*(\d+)/; $pr=0 if(!defined $pr);
+   ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
+   ($pb)=$body=~/"b"\s*:\s*(\d+)/; $pb=0 if(!defined $pb);
+   ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
+   ($imax)=$body=~/"input_max"\s*:\s*(\d+)/;
+  }
   my ($raw_pr,$raw_pg,$raw_pb)=($pr,$pg,$pb);
-  my ($sz)=$body=~/"size"\s*:\s*(\d+)/; $sz=100 if(!defined $sz);
-  my ($imax)=$body=~/"input_max"\s*:\s*(\d+)/;
   my $input_max=$imax ? int($imax) : 255;
   my $target_bits=($signal_mode eq "dv") ? 12 : $pat_bits;
   my $target_max=&webui_pattern_target_max($target_bits);
@@ -12410,6 +12490,7 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	.meter-pattern-insert-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 	.meter-pattern-insert-popover.open{display:block}
+	.meter-stabilization-grid{grid-template-columns:minmax(96px,1fr);min-width:120px}
 	.meter-xyz-gear-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
 	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;flex:0 0 auto}
 	.meter-xyz-gear:hover{color:var(--text);border-color:var(--accent)}
@@ -12433,6 +12514,8 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	#meterProfileGearPopover .meter-profile-section input[type=number].meter-input-disabled{opacity:.45;background:var(--bg2,#1b1b26);cursor:not-allowed}
 	.meter-xyz-toggle-row{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap}
 	.meter-xyz-toggle-row .meter-toggle{flex:0 0 auto;min-width:0}
+	.meter-xyz-toggle-row.is-unavailable{opacity:.58}
+	.meter-xyz-toggle-row.is-unavailable .meter-toggle{cursor:not-allowed}
 	.meter-xyz-gear-wrap.is-hidden,.meter-pattern-insert-wrap.is-hidden{display:none}
 	.meter-field-label{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
 .meter-xyz-toggle-block{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
@@ -13530,6 +13613,19 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
              <input type="number" id="meterTargetWhiteY" min="0.001" max="0.999" step="0.0001" placeholder="0.3290">
              <button class="btn btn-sm btn-secondary" type="button" onclick="meterUseMeasuredWhiteTarget()">Use measured values</button>
             </div>
+           </div>
+          </div>
+         </span>
+        </div>
+        <div class="meter-xyz-toggle-row" id="meterStabilizationToggleWrap">
+         <label class="meter-toggle meter-field-label" title="Keep a full-screen neutral patch on the selected patch generator while calibration is idle">
+          <input type="checkbox" id="meterStabilizationEnabled" disabled> Stabilization Pattern
+         </label>
+         <span class="meter-pattern-insert-wrap is-hidden">
+          <button type="button" id="meterStabilizationGear" class="meter-pattern-insert-gear" aria-label="Stabilization pattern options" aria-expanded="false" title="Stabilization pattern options">&#9881;</button>
+          <div class="meter-pattern-insert-popover" id="meterStabilizationPopover" role="dialog" aria-label="Stabilization pattern options">
+           <div class="meter-pattern-insert-grid meter-stabilization-grid">
+            <label>Stimulus <input id="meterStabilizationStimulus" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
            </div>
           </div>
          </span>
@@ -17441,6 +17537,7 @@ async function applySettings(){
    // the live connector modes instead of the pre-apply snapshot.
    await loadModes(true);
    if(typeof lgRefreshPictureModeAfterOutputApply==='function') lgRefreshPictureModeAfterOutputApply();
+   if(typeof meterRefreshStabilizationIdlePattern==='function') await meterRefreshStabilizationIdlePattern(false);
    applySettingsModalSuccess();
   }catch(e){
    applySettingsModalError((e&&e.message)||'Apply failed while reloading config.');
@@ -27955,6 +28052,7 @@ async function meterCheckStatus(){
   return;
  }
 
+ const meterWasDetected=meterDetected;
  const r=await fetchJSON('/api/meter/status',{_quiet:true,_timeoutMs:5000});
  // A timed-out request is not a USB disconnect. Keep a previously detected
  // meter and its charts visible until the daemon explicitly reports
@@ -28016,6 +28114,10 @@ async function meterCheckStatus(){
    meterUpdateReadButtons();
   }
  }
+  if(typeof meterSyncStabilizationAvailability==='function') meterSyncStabilizationAvailability();
+  if(meterWasDetected!==meterDetected && typeof meterRefreshStabilizationIdlePattern==='function'){
+   meterRefreshStabilizationIdlePattern(false);
+  }
   syncTopStatusStack();
   // Sync shared series state across browsers. First restore any browser-local
   // snapshot from the current session so a manual reread survives refresh and
@@ -38732,6 +38834,47 @@ function meterAutoCalCloseComplete(){
 	  if(typeof saveMeterSettings==='function') saveMeterSettings();
 	 }
 	}
+
+function meterStabilizationUiIdle(){
+ if(typeof activePattern!=='undefined'&&activePattern!=null) return false;
+ if(typeof meterCurrentPatchStep!=='undefined'&&meterCurrentPatchStep) return false;
+ if(typeof meterPatchDisplayLockedForRead==='function'&&meterPatchDisplayLockedForRead()) return false;
+ return true;
+}
+
+function meterSyncStabilizationAvailability(){
+ const checkbox=document.getElementById('meterStabilizationEnabled');
+ const wrap=document.getElementById('meterStabilizationToggleWrap');
+ const gear=document.getElementById('meterStabilizationGear');
+ const available=!!meterDetected;
+ if(checkbox){
+  checkbox.disabled=!available;
+  checkbox.title=available?'':'Connect a meter to use the stabilization pattern';
+ }
+ if(gear) gear.disabled=!available;
+ if(wrap){
+  wrap.classList.toggle('is-unavailable',!available);
+  wrap.title=available?'':'Connect a meter to use the stabilization pattern';
+ }
+ if(typeof window.meterUpdateGearVisibility==='function') window.meterUpdateGearVisibility();
+}
+
+// Re-issue the selected generator's idle command after the preference or meter
+// availability changes. The backend decides whether that idle state is the
+// configured stabilization patch or normal black and independently verifies
+// that the meter is connected.
+function meterRefreshStabilizationIdlePattern(force){
+ const checkbox=document.getElementById('meterStabilizationEnabled');
+ if(!meterStabilizationUiIdle()) return Promise.resolve(null);
+ if(!force&&!(checkbox&&checkbox.checked)) return Promise.resolve(null);
+ const displayToken=++meterPatternDisplayToken;
+ const endpoint=meterCalibrationReadPatternProvider()==='companion'?'/api/icc/companion/pattern':'/api/pattern';
+ const send=()=>displayToken===meterPatternDisplayToken
+  ?fetchJSON(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop',only_if_idle:true}),_quiet:true,_timeoutMs:5000})
+  :null;
+ meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send);
+ return meterPatternDisplayQueue;
+}
 
 // Clear whatever patch is on the display (fire-and-forget). The last profiling
 // patch used to linger on the TV until the operator closed the complete modal
@@ -54772,6 +54915,8 @@ function saveMeterSettings(){
 	  patch_insert_time_frequency:String(meterSecondsInputMs('meterPatchInsertTimeFrequency',meterPatternInsertionDefaultsForMode().timeFrequency)),
 	  patch_insert_time_duration:String(meterSecondsInputMs('meterPatchInsertTimeDuration',5)),
 	  patch_insert_time_level:val('meterPatchInsertTimeLevel','25')||'25',
+	  stabilization_pattern_enabled:chk('meterStabilizationEnabled'),
+	  stabilization_pattern_stimulus:val('meterStabilizationStimulus','25')||'25',
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
@@ -54992,6 +55137,8 @@ async function loadMeterSettings(attempt){
 	    s.patch_insert_time_enabled!=null||s.patch_insert_time_frequency!=null||s.patch_insert_time_duration!=null||s.patch_insert_time_level!=null){
 	  meterMarkPatternInsertionControlsUserSet();
 	 }
+	 setChk('meterStabilizationEnabled',s.stabilization_pattern_enabled);
+	 setVal('meterStabilizationStimulus',s.stabilization_pattern_stimulus,'25');
 	 if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
  const greyMode=meterNormalizeSavedGreyRefMode(s.grey_ref_mode,s.incl_lum);
@@ -55059,6 +55206,9 @@ async function loadMeterSettings(attempt){
   if(live) updateLiveReading(live);
  }
  meterSettingsLoaded=true;
+ meterSyncStabilizationAvailability();
+ window.meterUpdateGearVisibility&&window.meterUpdateGearVisibility();
+ meterRefreshStabilizationIdlePattern(false);
  // skipAutoSelect only when a series is already active (restored from the
  // per-boot cache above). On a fresh boot/update nothing is restorable, so
  // an unconditional skip left meterActiveSeriesType null: the greyscale
@@ -55123,6 +55273,7 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  };
  const gears={
   patternInsert:setupGear('meterPatternInsertGear','meterPatternInsertPopover'),
+  stabilization:setupGear('meterStabilizationGear','meterStabilizationPopover'),
   customD65:setupGear('meterCustomD65Gear','meterCustomD65GearPopover'),
   meterProfile:setupGear('meterProfileGear','meterProfileGearPopover'),
   iccCompanion:setupGear('meterCompanionGear','meterCompanionGearPopover')
@@ -55133,13 +55284,33 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
   if(pi){const w=gearWrap('meterPatternInsertGear');if(w) w.classList.toggle('is-hidden',!pi.checked);if(!pi.checked&&gears.patternInsert) gears.patternInsert.close();}
   const d65=document.getElementById('meterCustomD65Enabled');
   if(d65){const w=gearWrap('meterCustomD65Gear');if(w) w.classList.toggle('is-hidden',!d65.checked);if(!d65.checked&&gears.customD65) gears.customD65.close();}
+  const stabilization=document.getElementById('meterStabilizationEnabled');
+  if(stabilization){
+   const available=!!meterDetected;
+   const w=gearWrap('meterStabilizationGear');
+   if(w) w.classList.toggle('is-hidden',!available||!stabilization.checked);
+   if((!available||!stabilization.checked)&&gears.stabilization) gears.stabilization.close();
+  }
  };
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const d65El=document.getElementById('meterCustomD65Enabled');
  if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
+ const stabilizationEl=document.getElementById('meterStabilizationEnabled');
+ if(stabilizationEl) stabilizationEl.addEventListener('change',async()=>{
+  window.meterUpdateGearVisibility();
+  await saveMeterSettings();
+  await meterRefreshStabilizationIdlePattern(true);
+ });
+ const stabilizationStimulusEl=document.getElementById('meterStabilizationStimulus');
+ if(stabilizationStimulusEl) stabilizationStimulusEl.addEventListener('change',async()=>{
+  stabilizationStimulusEl.value=String(meterNumberInput('meterStabilizationStimulus',25,0,100));
+  await saveMeterSettings();
+  await meterRefreshStabilizationIdlePattern(false);
+ });
  try{ meterRelocateProfileControls(); }catch(e){}
  window.meterUpdateGearVisibility();
+ meterSyncStabilizationAvailability();
 })();
 const meterSimulateSpectroEl=document.getElementById('meterSimulateSpectro');
 if(meterSimulateSpectroEl) meterSimulateSpectroEl.addEventListener('change',async()=>{
