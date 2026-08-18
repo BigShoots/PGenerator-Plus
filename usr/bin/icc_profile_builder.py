@@ -2082,25 +2082,39 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
-    exact_endpoints = None
     chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
+    apply_mhc2_modeled_neutral_residual(
+        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
     if chad_payload and len(chad_payload) >= 44 and chad_payload[:4] == b"sf32":
         chad_values = [value / 65536.0
                        for value in struct.unpack_from(">9i", chad_payload, 8)]
         chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
+        endpoint_start = mhc2_exact_white_start(entries)
+        held = [luts[channel][endpoint_start - 1] for channel in range(3)]
         exact_probe = [list(curve) for curve in luts]
         if apply_mhc2_profile_exact_white_tail(
-                exact_probe, mft2_a2b_evaluator(model_profile), chad):
-            exact_endpoints = [curve[-1] for curve in exact_probe]
-    apply_mhc2_modeled_neutral_residual(
-        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
-    if exact_endpoints is not None:
-        endpoint_start = mhc2_exact_white_start(entries)
-        for channel in range(3):
-            endpoint = max(luts[channel][endpoint_start - 1],
-                           exact_endpoints[channel])
-            for index in range(endpoint_start, entries):
-                luts[channel][index] = endpoint
+                exact_probe, mft2_a2b_evaluator(model_profile), chad,
+                damping=2.5):
+            # Windows' exact-maximum path attenuates a narrow dense-table
+            # endpoint more than the ordinary shoulder. Scale the modeled
+            # raise by the profile's own held-channel separation, with a
+            # tighter cap on channels that are not the weakest. A neutral
+            # shoulder therefore remains a near-no-op, while a deliberately
+            # balanced shoulder cannot be undone at exactly 100% input.
+            weakest = min(held)
+            spread = max(held) - weakest
+            for channel in range(3):
+                if exact_probe[channel][-1] <= held[channel] + 1e-9:
+                    endpoint = held[channel]
+                else:
+                    fraction = (0.60 if held[channel] <= weakest + 1e-9
+                                else 0.30)
+                    movement_limit = max(0.0035, fraction * spread)
+                    endpoint = min(held[channel] + 0.035,
+                                   held[channel] + movement_limit,
+                                   exact_probe[channel][-1])
+                for index in range(endpoint_start, entries):
+                    luts[channel][index] = endpoint
     return luts
 
 
