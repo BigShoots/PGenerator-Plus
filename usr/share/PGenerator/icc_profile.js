@@ -1963,25 +1963,14 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
     if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
     if(i===39) throw new Error('Profile installation timed out');
    }
-   meterIccFineTuneProgressStep('apply','done','Applied '+currentFile);
-   meterIccFineTuneProgressStep('apply','active','Cycling the patch window to restore hardware-overlay presentation...');
-   await meterIccCompanionCycleFullscreen(mhc2Path,tuneCorrectionOverride);
-   // Deterministic presentation gate, measured on hardware: after an apply's
-   // Advanced Color cycle the fullscreen HDR swapchain can stay demoted to
-   // DWM "composed" presentation, where Windows tone-maps output into the
-   // profile-reported peak and every mid-band read sags 12-17% (65% grey:
-   // 343 vs 391 cd/m2, controlled A/B). "hardware-overlay" or "direct" is
-   // the clean state; real user input on the patch window re-promotes it.
-   meterIccFineTuneProgressStep('apply','active','Waiting for hardware-overlay presentation...');
-   let promoted=false;
-   for(let i=0;i<12;i++){
-    const cs=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000});
-    const pm=String(cs&&cs.presentation_mode||'');
-    if(pm!=='composed'&&pm!=='composition-failure'){ promoted=true; break; }
-    await new Promise(resolve=>setTimeout(resolve,2500));
-   }
-   if(!promoted) throw new Error('The display pipeline stayed in composed presentation after the profile apply (Windows tone-maps composed output and the readings would be invalid). Click the Patch Companion window on the target computer, then rerun the fine-tune.');
-   meterIccFineTuneProgressStep('apply','done','Applied '+currentFile+' (hardware-overlay presentation confirmed)');
+   // Build 4 deliberately completes its post-install MHC2 foreground handoff
+   // when the first HDR patch arrives. Before that command, the last idle
+   // frame can legitimately still report "composed". Waiting for overlay here
+   // deadlocks the recovery by refusing to send the patch that triggers it.
+   // The in-series check below remains authoritative because patch delivery is
+   // acknowledged only after the Companion has completed the handoff and
+   // presented the calibrated frame again.
+   meterIccFineTuneProgressStep('apply','done','Installed '+currentFile+'; confirming hardware-overlay presentation with the first measurement patch');
    meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
    const percents=[0,5,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,75,76,78,80,85,90,95,100];
    const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
@@ -2009,9 +1998,9 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
    for(let i=0;i<600;i++){
     await new Promise(resolve=>setTimeout(resolve,2000));
     cancelCheck();
-    // Frame statistics only reflect presented frames, so the pre-ladder gate
-    // can pass on a stale pre-apply sample. Re-check once while patches are
-    // actually presenting: this sample is authoritative.
+    // Frame statistics only reflect presented frames. Check once while patches
+    // are actually presenting, after the first patch has triggered build 4's
+    // post-install MHC2 foreground recovery.
     if(i===4){
      const cs=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000});
      const pm=String(cs&&cs.presentation_mode||'');
