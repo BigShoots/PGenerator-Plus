@@ -647,14 +647,14 @@ def regularize_mhc2_neutral_samples(samples, damping):
         for sample in plateau_body:
             sample["gains"] = list(pooled)
         if endpoint is not None:
-            # Rolloff gains normally lower the strong channels to the weakest
-            # one. The final MHC2 entry cannot be lowered below the held body
-            # without becoming non-monotonic, so express the same colour ratio
-            # by raising weak endpoint channels instead. Bound each pass because
-            # this is an empirical Windows control point, not part of the panel
-            # response inverse used for the curve body.
-            floor = max(min(endpoint["gains"]), 1e-6)
-            endpoint["gains"] = [min(1.12, gain / floor)
+            # Hardware A/B showed that Windows' exact maximum-code control is
+            # inverse to an ordinary sampled MHC2 table entry: raising red's
+            # final value reduced measured red. Rolloff gains are normalized
+            # drops for the channels that measured too strong, so reciprocate
+            # them into raise-only endpoint controls for those same channels.
+            # The final values are rebuilt from the held body below, making a
+            # later pass able to undo an earlier endpoint move cleanly.
+            endpoint["gains"] = [min(1.12, 1.0 / max(gain, 1e-6))
                                  for gain in endpoint["gains"]]
             endpoint["mhc2_endpoint"] = True
 
@@ -1286,11 +1286,10 @@ def finetune(payload, output_dir):
                 if (is_hdr and index == entries - 1
                         and endpoint_sample is not None):
                     # Exact maximum code is a separate Windows Advanced Color
-                    # control point. Scale this one table value directly. The
-                    # physical response inverse is flat on the HDR plateau and
-                    # would otherwise run to 1.0 before hitting the normal
-                    # per-pass bound.
-                    new = clipped * endpoint_sample["effective"][ch]
+                    # control point. Defer it until after the physical shoulder
+                    # has been held, so every pass starts from the body rather
+                    # than accumulating an endpoint-only offset.
+                    new = clipped
                 elif is_hdr and panel_channel_samples is not None:
                     response = sample_pairs(panel_channel_samples[ch], clipped)
                     new = invert_pairs(panel_channel_samples[ch],
@@ -1301,15 +1300,15 @@ def finetune(payload, output_dir):
                     linear = clipped ** 2.2 if transfer != "srgb" else srgb_eotf(clipped)
                     linear = max(0.0, min(1.0, linear * eff))
                     new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
-                local_bound = (0.02 if is_hdr and index == entries - 1
-                               and endpoint_sample is not None else curve_bound)
-                delta = max(-local_bound, min(local_bound, new - clipped))
+                delta = max(-curve_bound, min(curve_bound, new - clipped))
                 updated_curve[index] = old + delta
                 if abs(delta) >= 0.5 / 65536.0:
                     applied.append(abs(eff - 1.0))
             updated_curve = isotonic_values(updated_curve)
             if is_hdr:
-                tail = stable_tail_start(original_curve)
+                tail_source = (original_curve[:-1] if endpoint_sample is not None
+                               else original_curve)
+                tail = stable_tail_start(tail_source)
                 if tail < entries - 1:
                     # Hold the shoulder independently of exact maximum code.
                     # Letting updated_curve[-1] select this value made the
@@ -1317,7 +1316,12 @@ def finetune(payload, output_dir):
                     # the display has only one physical plateau there.
                     held = max(updated_curve[tail],
                                updated_curve[tail - 1] if tail else 0.0)
-                    endpoint_value = max(held, updated_curve[-1])
+                    if endpoint_sample is not None:
+                        endpoint_value = min(
+                            held + 0.02,
+                            held * endpoint_sample["effective"][ch])
+                    else:
+                        endpoint_value = max(held, updated_curve[-1])
                     for index in range(tail, entries - 1):
                         updated_curve[index] = held
                     updated_curve[-1] = endpoint_value
