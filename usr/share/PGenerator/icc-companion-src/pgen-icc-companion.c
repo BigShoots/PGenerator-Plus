@@ -107,7 +107,7 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.21"
-#define APP_BUILD "4"
+#define APP_BUILD "2"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -2145,14 +2145,7 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
      * still measure the active profile. Other platforms can pass through. */
     if(!strcmp(app.correction_mode,"none")) {
 #ifdef _WIN32
-        /* Windowed output reliably passes through the OS MHC2 stage, so a
-         * true no-correction read has to pre-cancel it there. The fullscreen
-         * HDR swapchain is different: whether DWM applies MHC2 to it is
-         * state-dependent (recreating the HDR path silently drops it), and
-         * measured wire output shows it absent, so a fullscreen pre-inversion
-         * reaches the panel raw. Fullscreen submits the source unchanged. */
-        if(!app.fullscreen&&!app.settings_fullscreen&&
-           app.correction_profile_data&&
+        if(app.correction_profile_data&&
            !strcmp(app.correction_signal_mode,"hdr10"))
             apply_mhc2_inverse(rgb);
         *red=rgb[0];*green=rgb[1];*blue=rgb[2];
@@ -2220,17 +2213,11 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
      * already runs after this transform - applying the tag here as well would
      * run it twice. */
 #endif
-    if(!app.fullscreen&&!app.settings_fullscreen){
+    {
 #ifdef _WIN32
-        /* Windows reliably applies the active profile's MHC2 stage to an
-         * ordinary window, so cancel it here or the display is corrected
-         * twice. The fullscreen HDR swapchain must NOT be pre-inverted:
-         * whether DWM applies MHC2 to it is state-dependent (recreating the
-         * HDR path silently drops the calibration), and measured wire output
-         * shows it absent, so a fullscreen inversion lands on the panel raw
-         * and desaturates every chromatic patch while dimming and tinting
-         * white. Fullscreen explicit modes submit the corrected result as-is
-         * and never depend on an OS stage that cannot be observed. */
+        /* DWM will apply MHC2 after either borderless or windowed presentation.
+         * Cancel it before submitting an explicitly corrected cLUT/matrix
+         * result so that the requested transform reaches the display once. */
         apply_mhc2_inverse(output);
 #endif
     }
