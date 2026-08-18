@@ -1117,6 +1117,15 @@ def regularize_hdr_shadow_balance(curves):
             raw_offset = own[channel] - own_mean
             smooth_offset = weighted_offsets[channel] / weight_sum
             offset = raw_offset + strength * (smooth_offset - raw_offset)
+            # Below roughly 10 nits, measured chromaticity is less reliable
+            # than luminance. Retain the broad correction direction but fade
+            # its channel separation instead of trusting its full magnitude.
+            # The common drive is unchanged, balanced curves remain a no-op,
+            # and confidence reaches one before the HDR body begins.
+            signal = pq_to_nits(position)
+            confidence = 0.65 + 0.35 * smooth_unit(
+                (signal - 0.12) / (10.0 - 0.12))
+            offset *= confidence
             # Keep this a regularizer, not another calibration stage.
             move = max(-0.012, min(0.012, offset - raw_offset))
             result[channel][index] = max(
@@ -1166,7 +1175,7 @@ def isotonic_curve(values):
 
 
 def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
-                                         neutral_gains, damping=0.25):
+                                         neutral_gains, damping=0.5):
     """Close the residual left by the fitted HDR MHC2 neutral model.
 
     The forward profile fit and the per-channel curves are individually good
@@ -2069,16 +2078,25 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
-    plateau_corrected = apply_mhc2_modeled_neutral_residual(
-        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
+    exact_endpoints = None
     chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
-    if (not plateau_corrected and chad_payload and len(chad_payload) >= 44
-            and chad_payload[:4] == b"sf32"):
+    if chad_payload and len(chad_payload) >= 44 and chad_payload[:4] == b"sf32":
         chad_values = [value / 65536.0
                        for value in struct.unpack_from(">9i", chad_payload, 8)]
         chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
-        apply_mhc2_profile_exact_white_tail(
-            luts, mft2_a2b_evaluator(model_profile), chad)
+        exact_probe = [list(curve) for curve in luts]
+        if apply_mhc2_profile_exact_white_tail(
+                exact_probe, mft2_a2b_evaluator(model_profile), chad):
+            exact_endpoints = [curve[-1] for curve in exact_probe]
+    apply_mhc2_modeled_neutral_residual(
+        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
+    if exact_endpoints is not None:
+        endpoint_start = mhc2_exact_white_start(entries)
+        for channel in range(3):
+            endpoint = max(luts[channel][endpoint_start - 1],
+                           exact_endpoints[channel])
+            for index in range(endpoint_start, entries):
+                luts[channel][index] = endpoint
     return luts
 
 
