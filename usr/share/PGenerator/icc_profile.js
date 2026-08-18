@@ -1939,6 +1939,22 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     if(i===39) throw new Error('Profile installation timed out');
    }
    meterIccFineTuneProgressStep('apply','done','Applied '+currentFile);
+   // Deterministic presentation gate, measured on hardware: after an apply's
+   // Advanced Color cycle the fullscreen HDR swapchain can stay demoted to
+   // DWM "composed" presentation, where Windows tone-maps output into the
+   // profile-reported peak and every mid-band read sags 12-17% (65% grey:
+   // 343 vs 391 cd/m2, controlled A/B). "hardware-overlay" or "direct" is
+   // the clean state; real user input on the patch window re-promotes it.
+   meterIccFineTuneProgressStep('apply','active','Waiting for hardware-overlay presentation...');
+   let promoted=false;
+   for(let i=0;i<12;i++){
+    const cs=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000});
+    const pm=String(cs&&cs.presentation_mode||'');
+    if(pm!=='composed'&&pm!=='composition-failure'){ promoted=true; break; }
+    await new Promise(resolve=>setTimeout(resolve,2500));
+   }
+   if(!promoted) throw new Error('The display pipeline stayed in composed presentation after the profile apply (Windows tone-maps composed output and the readings would be invalid). Click the Patch Companion window on the target computer, then rerun the fine-tune.');
+   meterIccFineTuneProgressStep('apply','done','Applied '+currentFile+' (hardware-overlay presentation confirmed)');
    meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
    const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
    const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
