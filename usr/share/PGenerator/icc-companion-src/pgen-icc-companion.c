@@ -107,7 +107,7 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.21"
-#define APP_BUILD "4"
+#define APP_BUILD "11"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -561,6 +561,7 @@ typedef struct {
      * peak. Consumed on the main thread by recreating the renderer before
      * the next fullscreen HDR patch is displayed. */
     SDL_AtomicInt presentation_recovery_pending;
+    SDL_AtomicInt correction_recovery_pending;
     bool command_pending;
     uint64_t refresh_until_ms;
     uint64_t command_sequence;
@@ -2219,6 +2220,33 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
          * Cancel it before submitting an explicitly corrected cLUT/matrix
          * result so that the requested transform reaches the display once. */
         apply_mhc2_inverse(output);
+        /* Windows samples exact maximum-code white from a separate MHC2 tail.
+         * On a tone-mapped display that tail can have a different white
+         * balance from the otherwise-held shoulder, and a clipped cLUT
+         * endpoint cannot be pre-inverted back through it reliably. Detect a
+         * genuinely held MHC2 shoulder from the profile itself. For exact
+         * neutral only, submit the ordinary 95% shoulder code unchanged so
+         * the attached Windows MHC2 stage produces the same physical plateau
+         * as 80-95%. Identity and non-rolloff MHC2 curves fail this detector
+         * and keep the normal cLUT endpoint. */
+        if(!strcmp(app.correction_mode,"clut")&&
+           !strcmp(app.correction_signal_mode,"hdr10")){
+            double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
+            double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
+            if(high>=0.999&&high-low<=0.00001){
+                double lower_input[3]={0.90,0.90,0.90};
+                double shoulder_input[3]={0.95,0.95,0.95};
+                double lower_output[3],shoulder_output[3];
+                if(apply_local_mhc2(lower_input,lower_output)&&
+                   apply_local_mhc2(shoulder_input,shoulder_output)){
+                    double movement=0.0;
+                    for(int channel=0;channel<3;channel++)
+                        movement=fmax(movement,fabs(shoulder_output[channel]-lower_output[channel]));
+                    if(movement<=0.003)
+                        output[0]=output[1]=output[2]=0.95;
+                }
+            }
+        }
 #endif
     }
     *red = output[0]; *green = output[1]; *blue = output[2];
@@ -3553,6 +3581,65 @@ static bool render_current_frame(void)
 }
 
 #ifdef _WIN32
+static bool windows_activate_pattern_window(HWND window);
+
+static LRESULT CALLBACK windows_handoff_window_proc(HWND window, UINT message,
+                                                     WPARAM wparam, LPARAM lparam)
+{
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+static bool windows_presentation_handoff(HWND target)
+{
+    static const wchar_t class_name[] = L"PGeneratorPresentationHandoff";
+    static ATOM window_class;
+    HINSTANCE instance = GetModuleHandleW(NULL);
+    MONITORINFO monitor_info;
+    HMONITOR monitor;
+    HWND cover;
+    if (!target || !instance) return false;
+    monitor = MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST);
+    ZeroMemory(&monitor_info, sizeof(monitor_info));
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (!monitor || !GetMonitorInfoW(monitor, &monitor_info)) return false;
+    if (!window_class) {
+        WNDCLASSEXW window_class_info;
+        ZeroMemory(&window_class_info, sizeof(window_class_info));
+        window_class_info.cbSize = sizeof(window_class_info);
+        window_class_info.lpfnWndProc = windows_handoff_window_proc;
+        window_class_info.hInstance = instance;
+        window_class_info.hCursor = LoadCursorW(NULL, IDC_ARROW);
+        window_class_info.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+        window_class_info.lpszClassName = class_name;
+        window_class = RegisterClassExW(&window_class_info);
+        if (!window_class && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return false;
+    }
+    cover = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                            class_name, L"", WS_POPUP,
+                            monitor_info.rcMonitor.left,
+                            monitor_info.rcMonitor.top,
+                            monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                            monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                            NULL, NULL, instance, NULL);
+    if (!cover) return false;
+    ShowWindow(cover, SW_SHOW);
+    UpdateWindow(cover);
+    SetWindowPos(cover, HWND_TOPMOST, monitor_info.rcMonitor.left,
+                 monitor_info.rcMonitor.top,
+                 monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                 monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                 SWP_SHOWWINDOW);
+    SetForegroundWindow(cover);
+    SetActiveWindow(cover);
+    SetFocus(cover);
+    SDL_Delay(500);
+    DestroyWindow(cover);
+    windows_activate_pattern_window(target);
+    SDL_Delay(500);
+    return true;
+}
+
 static bool windows_activate_pattern_window(HWND window)
 {
     HWND foreground;
@@ -4357,6 +4444,10 @@ static void poll_server(void)
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
         if (settings_revision != app.correction_lut_revision ||
             strcmp(active_profile, app.correction_profile)) {
+#ifdef _WIN32
+            bool correction_path_changed = strcmp(app.correction_mode,
+                                                   correction_mode) != 0;
+#endif
             SDL_strlcpy(app.correction_mode, correction_mode, sizeof(app.correction_mode));
             SDL_strlcpy(app.correction_profile, active_profile, sizeof(app.correction_profile));
             SDL_strlcpy(app.correction_signal_mode, correction_signal_mode, sizeof(app.correction_signal_mode));
@@ -4385,6 +4476,16 @@ static void poll_server(void)
             }
 #endif
             load_correction_lut(settings_revision);
+#ifdef _WIN32
+            /* Explicit cLUT/matrix output pre-cancels the Windows MHC2 stage,
+             * so a handling-mode transition must prove that stage is attached
+             * before the next HDR patch is acknowledged. A same-window
+             * settings refresh previously rendered immediately but skipped
+             * the real minimize/restore foreground handoff, leaving cLUT
+             * accuracy dependent on the prior Windows state. */
+            if (correction_path_changed)
+                SDL_SetAtomicInt(&app.correction_recovery_pending, 1);
+#endif
         }
         SDL_LockMutex(app.network_mutex);
         if (settings_revision != app.applied_settings_revision &&
@@ -4588,6 +4689,16 @@ static void process_network_updates(void)
             SDL_GetAtomicInt(&app.presentation_recovery_pending) != 0 &&
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
             !preserve_hdr_calibration && app.hdr_swapchain;
+        /* Changing between Windows-system MHC2 and an explicit transform is
+         * different from a profile install, but both must preserve the live
+         * swapchain: recreating it detaches the downstream MHC2 stage that an
+         * explicit transform has already pre-cancelled. Track mode changes
+         * separately so the same-monitor presentation handoff runs even when
+         * the next request repeats the currently displayed patch. */
+        bool correction_recovery =
+            SDL_GetAtomicInt(&app.correction_recovery_pending) != 0 &&
+            app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            !preserve_hdr_calibration && app.hdr_swapchain;
         bool refresh_fullscreen_hdr =
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
             !preserve_hdr_calibration &&
@@ -4602,7 +4713,8 @@ static void process_network_updates(void)
              app.displayed_max_fall != max_fall);
         bool recover_mhc2_after_render =
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
-            (install_recovery || refresh_fullscreen_hdr || !had_hdr_swapchain);
+            (install_recovery || correction_recovery ||
+             refresh_fullscreen_hdr || !had_hdr_swapchain);
 #endif
         char message[256] = "";
         raise_pattern_window();
@@ -4624,8 +4736,10 @@ static void process_network_updates(void)
          * cannot sample this reset frame. Full-field OLED conditioning
          * commands opt out because recreating the HDR path can silently drop
          * the active Windows MHC2 calibration for every following patch. */
-        if (install_recovery || refresh_fullscreen_hdr)
+        if (install_recovery)
             SDL_SetAtomicInt(&app.presentation_recovery_pending, 0);
+        if (correction_recovery)
+            SDL_SetAtomicInt(&app.correction_recovery_pending, 0);
         if (refresh_fullscreen_hdr &&
             (!try_create_renderer(false, NULL) ||
              (SDL_Delay(50), !create_renderer(true)))) ok = false;
@@ -4636,7 +4750,13 @@ static void process_network_updates(void)
              * Do the handoff before acknowledging the patch, then present it
              * again so the meter never sees the uncalibrated first frame. */
             if (ok && recover_mhc2_after_render) {
-                if (!windows_verified_foreground(true))
+                bool needs_handoff = install_recovery || correction_recovery ||
+                                     !had_hdr_swapchain;
+                if ((needs_handoff && !windows_presentation_handoff(
+                        (HWND)SDL_GetPointerProperty(
+                            SDL_GetWindowProperties(app.window),
+                            SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL))) ||
+                    !windows_verified_foreground(true))
                     ok = SDL_SetError("The HDR patch window could not regain foreground after MHC2 recovery");
                 else
                     ok = render_patch(mode, r, g, b);
