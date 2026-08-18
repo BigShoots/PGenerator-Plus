@@ -43,6 +43,7 @@ sub webui_icc_profile_list (@) {
    my $tune_mode="sdr";
    my $tune_color="false";
    my $has_clut="false";
+   my $has_mhc2="false";
    if(open(my $ph,"<:raw","$_icc_profile_dir/$file")) {
     my $head="";
     read($ph,$head,4096);
@@ -60,6 +61,7 @@ sub webui_icc_profile_list (@) {
        }
       }
       $has_clut="true" if($tags{"B2A0"});
+      $has_mhc2="true" if($tags{"MHC2"});
       $tunable="true" if($tags{"targ"} && ($tags{"B2A0"} || $tags{"MHC2"}));
       # cLUT profiles tune local cells. MHC2 profiles use the same colour
       # evidence for a constrained residual 3x3 matrix correction.
@@ -83,12 +85,12 @@ sub webui_icc_profile_list (@) {
     }
     close($ph);
    }
-   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color,$has_clut];
+   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color,$has_clut,$has_mhc2];
   }
   closedir($dh);
  }
  foreach my $profile (sort { $b->[2] <=> $a->[2] || $a->[0] cmp $b->[0] } @profiles) {
-  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7].",\"has_clut\":".$profile->[8]."}";
+  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7].",\"has_clut\":".$profile->[8].",\"has_mhc2\":".$profile->[9]."}";
  }
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
 }

@@ -517,18 +517,18 @@ async function meterIccPushCompanionDisplaySettings(showError,correctionOverride
  }
 }
 
-async function meterIccCompanionCycleFullscreen(){
+async function meterIccCompanionCycleFullscreen(forceFullscreen,correctionOverride){
  // Re-entering fullscreen exercises Windows' presentation-promotion path.
  // Measured on hardware: a swapchain demoted to composed by a profile
  // apply's Advanced Color cycle re-promotes to hardware-overlay after a
  // windowed round-trip, with no user input -- where renderer recreation,
  // activation calls and injected clicks are all denied. Skip when the
  // operator runs windowed: there is nothing to promote.
- const configured=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+ const configured=forceFullscreen?'fullscreen':String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
  if(configured!=='fullscreen') return;
- await meterIccPushCompanionDisplaySettings(false,undefined,'window');
+ await meterIccPushCompanionDisplaySettings(false,correctionOverride,'window');
  await new Promise(resolve=>setTimeout(resolve,2500));
- await meterIccPushCompanionDisplaySettings(false,undefined,'fullscreen');
+ await meterIccPushCompanionDisplaySettings(false,correctionOverride,'fullscreen');
  await new Promise(resolve=>setTimeout(resolve,3500));
 }
 
@@ -1773,7 +1773,7 @@ async function meterIccLoadProfiles(){
     ?'Apply this profile, read a grey series through it and create a corrected fine-tuned copy in the history'
     :'Fine tuning requires a profile with embedded characterization data and an adjustable MHC2 or BToA stage';
    finetune.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
-   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10',profile.tune_color!==false);
+   finetune.onclick=()=>meterIccFineTuneProfile(profile.name,finetune,profile.tune_mode||'hdr10',profile.tune_color!==false,profile.has_mhc2===true);
    const validate=document.createElement('button');
    validate.type='button';
    validate.className='btn btn-sm btn-secondary';
@@ -1915,7 +1915,7 @@ function meterIccFineTuneProgressHide(){
  uiSyncBodyScrollLock();
 }
 
-async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
+async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
  if(!meterIccCompanionConnected){ toast('Start Patch Companion on the target computer first',true); return; }
  if(meterIccRunning||meterSeriesRunning){ toast('Wait for the active meter work to finish first',true); return; }
  const original=button?button.textContent:'Fine tune';
@@ -1936,9 +1936,14 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  let sessionStarted=false;
  let finalized=false;
  let sessionAnchorY=0;
+ const mhc2Path=tuneMhc2===true;
+ const tuneWindowOverride=mhc2Path?'fullscreen':undefined;
+ const tuneCorrectionOverride=mhc2Path?'system':undefined;
  // Sessions may follow an exit-fullscreen from a previous run; re-assert the
- // configured window mode before the first apply and read.
- await meterIccPushCompanionDisplaySettings(false);
+ // measurement path before the first apply and read. Windows MHC2 must be
+ // graded through Windows system handling on a fullscreen HDR swapchain.
+ await meterIccPushCompanionDisplaySettings(
+  false,tuneCorrectionOverride,tuneWindowOverride);
  meterIccFineTuneCancelRequested=false;
  meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
  const cancelCheck=()=>{ if(meterIccFineTuneCancelRequested) throw new Error('Fine-tune cancelled'); };
@@ -1960,7 +1965,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    }
    meterIccFineTuneProgressStep('apply','done','Applied '+currentFile);
    meterIccFineTuneProgressStep('apply','active','Cycling the patch window to restore hardware-overlay presentation...');
-   await meterIccCompanionCycleFullscreen();
+   await meterIccCompanionCycleFullscreen(mhc2Path,tuneCorrectionOverride);
    // Deterministic presentation gate, measured on hardware: after an apply's
    // Advanced Color cycle the fullscreen HDR swapchain can stay demoted to
    // DWM "composed" presentation, where Windows tone-maps output into the
@@ -2149,7 +2154,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
   // Success and checkpoint-restored failures both leave a new or updated
   // -FineTuned profile behind; refresh the history either way.
   meterIccLoadProfiles();
-  meterIccPushCompanionDisplaySettings(false,undefined,'window');
+  meterIccPushCompanionDisplaySettings(false);
  }
 }
 
