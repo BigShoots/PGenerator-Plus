@@ -1948,6 +1948,16 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
  meterIccFineTuneCancelRequested=false;
  meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
  const cancelCheck=()=>{ if(meterIccFineTuneCancelRequested) throw new Error('Fine-tune cancelled'); };
+ const anchorProblem=(anchorY,pass)=>{
+  if(!(anchorY>0)) return 'The 66% pipeline canary did not return a usable luminance reading';
+  if(pass===1){
+   sessionAnchorY=anchorY;
+   if(Math.abs(anchorY/429-1)>0.12) return 'The display pipeline is tone-mapping (66% grey read '+anchorY.toFixed(0)+' cd/m², expected ~429). The presentation path is not suitable for fine-tuning.';
+  }else if(sessionAnchorY>0&&anchorY<sessionAnchorY*0.90){
+   return 'The display pipeline degraded between passes (66% grey fell from '+sessionAnchorY.toFixed(0)+' to '+anchorY.toFixed(0)+' cd/m²). Keeping the best measured pass.';
+  }
+  return '';
+ };
  try{
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
@@ -1973,7 +1983,12 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
    // presented the calibrated frame again.
    meterIccFineTuneProgressStep('apply','done','Installed '+currentFile+'; confirming hardware-overlay presentation with the first measurement patch');
    meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
-   const percents=[0,5,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,75,76,78,80,85,90,95,100];
+   // Measure the 66% pipeline canary first. DXGI can report "composed" on a
+   // healthy AMD HDR path, so the measured PQ response is authoritative. A
+   // genuinely tone-mapped path is rejected after one read instead of after
+   // most of the ladder. The tuner keys samples by code and does not depend
+   // on acquisition order.
+   const percents=[66,0,5,10,15,20,25,30,40,50,55,58,60,62,64,68,70,72,74,75,76,78,80,85,90,95,100];
    const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
    const body=meterMeasurementSignalContext({
     type:'colors',points:990001,custom_series:true,custom_steps:steps,
@@ -1996,42 +2011,35 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
    const started=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
    if(!started||started.status!=='started') throw new Error(started&&started.message||'Could not start the fine-tune reads');
    let readings=null;
+   let anchorChecked=false;
    for(let i=0;i<600;i++){
     await new Promise(resolve=>setTimeout(resolve,2000));
     cancelCheck();
-    // Frame statistics only reflect presented frames. Check once while patches
-    // are actually presenting, after the first patch has triggered build 4's
-    // post-install MHC2 foreground recovery.
-    if(i===4){
-     const cs=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000});
-     const pm=String(cs&&cs.presentation_mode||'');
-     if(pm==='composed'||pm==='composition-failure') throw new Error('Presentation dropped to composed during the grey ladder — Windows is tone-mapping the output and these readings would be invalid. Click the Patch Companion window on the target computer, then rerun the fine-tune.');
-    }
     const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
     if(button) button.textContent='Pass '+pass+': reading '+(state&&state.current_step||0)+'/'+steps.length;
     meterIccFineTuneProgressStep('grey','active','Reading level '+(state&&state.current_step||0)+'/'+steps.length);
+    if(body.signal_mode==='hdr10'&&!anchorChecked&&state&&Array.isArray(state.readings)){
+     const liveAnchor=state.readings.find(r=>Number(r&&r.ire)===66&&r.r_code===r.g_code&&r.g_code===r.b_code);
+     if(liveAnchor){
+      const liveAnchorY=Number(liveAnchor.Y||liveAnchor.luminance||0);
+      const problem=anchorProblem(liveAnchorY,pass);
+      if(problem){
+       await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+       throw new Error(problem);
+      }
+      anchorChecked=true;
+      meterIccFineTuneProgressNote('Pass '+pass+': 66% pipeline canary '+liveAnchorY.toFixed(1)+' cd/m²');
+     }
+    }
     if(state&&state.status==='complete'){ readings=state.readings||[]; break; }
     if(state&&(state.status==='error'||state.status==='stopped')) throw new Error('Fine-tune reads did not complete');
    }
    if(!readings||!readings.length) throw new Error('Fine-tune reads did not complete');
-   // Canary against the Windows pipeline dropping into composed tone-mapping
-   // mid-session (measured live: a profile apply between passes dimmed 65%
-   // grey from ~391 to ~330 cd/m2 and every later read was garbage). Judge
-   // the ladder's own 65% patch: pass 1 against the PQ expectation, later
-   // passes against pass 1 -- per-pass corrections are bounded well below
-   // the tone-mapping sag.
-   // The ladder's steps are 62/64/66/68...: there is no 65% step, and an
-   // anchor keyed to 65 never armed -- two degraded sessions ran to
-   // completion under a check that could not fire. Anchor on 66% instead.
-   const anchor=readings.find(r=>Number(r&&r.ire)===66&&r.r_code===r.g_code&&r.g_code===r.b_code);
-   const anchorY=anchor?Number(anchor.Y||anchor.luminance||0):0;
-   if(anchorY>0&&body.signal_mode==='hdr10'){
-    if(pass===1){
-     sessionAnchorY=anchorY;
-     if(Math.abs(anchorY/429-1)>0.12) throw new Error('The display pipeline is tone-mapping (66% grey read '+anchorY.toFixed(0)+' cd/m², expected ~429). The presentation was likely demoted to composed; rerun the fine-tune (each pass now re-cycles fullscreen) or click the patch window.');
-    }else if(sessionAnchorY>0&&anchorY<sessionAnchorY*0.90){
-     throw new Error('The display pipeline degraded between passes (66% grey fell from '+sessionAnchorY.toFixed(0)+' to '+anchorY.toFixed(0)+' cd/m²). Keeping the best measured pass.');
-    }
+   if(body.signal_mode==='hdr10'&&!anchorChecked){
+    const anchor=readings.find(r=>Number(r&&r.ire)===66&&r.r_code===r.g_code&&r.g_code===r.b_code);
+    const anchorY=anchor?Number(anchor.Y||anchor.luminance||0):0;
+    const problem=anchorProblem(anchorY,pass);
+    if(problem) throw new Error(problem);
    }
    meterIccFineTuneProgressStep('grey','done','Measured '+readings.length+' grey levels');
    // Colour patches through the same applied profile. The chart carries the
@@ -2125,6 +2133,8 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
   meterIccFineTuneProgressHide();
   meterIccShowFineTuneReport(file,lastResult,passes);
  }catch(error){
+  // Do not leave a meter worker finishing the rest of a rejected ladder.
+  await fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
   // The modal stays open with the failed step marked so the user can see
   // where the session stopped; the toast still reports the message.
   meterIccFineTuneProgressError(error&&error.message?error.message:'Fine-tuning failed');
