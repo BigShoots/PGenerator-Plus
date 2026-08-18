@@ -1107,7 +1107,14 @@ def finetune(payload, output_dir):
         mean = sum(values) / float(len(values))
         return 0.75 * mean + 0.25 * robust_worst(values)
 
-    selection_score = max(band_score(inr_de), band_score(top_de),
+    # Regional means should beat ordinary one-read noise, but they must not
+    # hide a genuinely broken isolated level.  Keep half of the absolute
+    # worst point as a generic safety rail.  It is deliberately softer than
+    # max-only selection (so a 4-5 dE noisy white read cannot erase broad
+    # gains), while a catastrophic spike such as 9 dE cannot win merely
+    # because the colour-patch mean improved.
+    point_guard = 0.5 * worst_de
+    selection_score = max(band_score(inr_de), band_score(top_de), point_guard,
                           color_de["mean"] if color_de else 0.0)
     mode = ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr")
     checkpoint = checkpoint_session(payload, output_dir, measured_profile_data,
