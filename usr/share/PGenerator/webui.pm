@@ -12524,7 +12524,8 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	.meter-pattern-insert-gear.active{color:var(--accent);border-color:var(--accent);background:rgba(91,127,255,.12)}
 	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 	.meter-pattern-insert-popover.open{display:block}
-	.meter-stabilization-grid{grid-template-columns:minmax(96px,1fr);min-width:120px}
+	.meter-stabilization-grid{grid-template-columns:minmax(96px,1fr);min-width:220px;max-width:240px}
+	.meter-stabilization-note{font-size:.65rem;color:var(--text2);line-height:1.4;margin-bottom:4px}
 	.meter-xyz-gear-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
 	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;flex:0 0 auto}
 	.meter-xyz-gear:hover{color:var(--text);border-color:var(--accent)}
@@ -13659,6 +13660,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
           <button type="button" id="meterStabilizationGear" class="meter-pattern-insert-gear" aria-label="Stabilization pattern options" aria-expanded="false" title="Stabilization pattern options">&#9881;</button>
           <div class="meter-pattern-insert-popover" id="meterStabilizationPopover" role="dialog" aria-label="Stabilization pattern options">
            <div class="meter-pattern-insert-grid meter-stabilization-grid">
+            <div class="meter-stabilization-note">Uses a full-screen 100% area pattern at the selected stimulus whenever no measurement patch is displayed.</div>
             <label>Stimulus <input id="meterStabilizationStimulus" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
            </div>
           </div>
