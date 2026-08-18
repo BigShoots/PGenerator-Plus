@@ -6629,7 +6629,7 @@ sub webui_meter_settings_save (@) {
 	 display_type ccss_override pattern_provider target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    stabilization_pattern_enabled stabilization_pattern_stimulus stabilization_pattern_size
+    stabilization_pattern_enabled stabilization_pattern_stimulus stabilization_pattern_size stabilization_pattern_measurement_only
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
     low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
@@ -12540,6 +12540,7 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	.meter-stabilization-grid{grid-template-columns:minmax(0,1fr);width:220px;min-width:0;max-width:calc(100vw - 48px)}
 	.meter-stabilization-grid select{width:100%;min-width:0;box-sizing:border-box}
 	.meter-stabilization-note{width:100%;min-width:0;max-width:100%;font-size:.65rem;color:var(--text2);line-height:1.4;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;box-sizing:border-box}
+	.meter-pattern-insert-grid label.meter-stabilization-measurement-only{height:auto;min-height:0;align-items:flex-start;line-height:1.3;padding-top:2px}
 	.meter-xyz-gear-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
 	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;flex:0 0 auto}
 	.meter-xyz-gear:hover{color:var(--text);border-color:var(--accent)}
@@ -13693,6 +13694,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
               <option value="apl_25">25% APL (window on grey)</option>
               <option value="apl_50">50% APL (window on grey)</option>
              </select>
+            </label>
+            <label class="meter-toggle meter-stabilization-measurement-only" title="When enabled, the stabilization pattern remains on the display when you manually select a patch thumbnail. The measurement patch appears only while that patch is being read.">
+             <input type="checkbox" id="meterStabilizationMeasurementOnly"> Only display measurement patch when being read
             </label>
            </div>
           </div>
@@ -29520,9 +29524,11 @@ async function meterStartSingleReadWithTimeout(readPayload,timeoutMs,shouldCance
 	   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
 	  if(!initR) throw new Error('Meter read connection error');
 	  if(initR&&initR.status==='error') throw new Error(initR.message||'Read failed');
-	  return meterPollRead(timeoutMs||180000,shouldCancel);
+	  const readResult=await meterPollRead(timeoutMs||180000,shouldCancel);
+	  return readResult;
 	 } finally {
 	  meterPingBusy=false;
+	  await meterRestoreStabilizationAfterMeasurement();
 		 }
 }
 
@@ -30860,6 +30866,7 @@ async function meterContinuousLoop(){
 		   body:JSON.stringify(readPayload),_quiet:true,_timeoutMs:90000});
 	  if(!initR||(initR&&initR.status==='error')){
 	   meterContinuousReadInFlight=false;
+	   await meterRestoreStabilizationAfterMeasurement();
 	   const msg=String((initR&&initR.message)||'Meter read connection error');
 	   const transient=/communication|connection|init|start|fifo|timeout|unavailable/i.test(msg);
 	   meterContinuousStartupErrors++;
@@ -30877,6 +30884,7 @@ async function meterContinuousLoop(){
 	  }
 	  const r=await meterPollRead(180000,()=>!meterContinuousActive);
 	  meterContinuousReadInFlight=false;
+  await meterRestoreStabilizationAfterMeasurement();
   if(r&&r.status==='cancelled'){
    document.getElementById('meterDot').style.background=meterDetected?'var(--green)':'var(--text2)';
    if(meterContinuousActive) meterContinuousTimer=setTimeout(meterContinuousLoop,nextDelay);
@@ -30889,12 +30897,10 @@ async function meterContinuousLoop(){
 	    nextDelay=50;
    const rd=r.readings[0];
     meterNormalizeMeasuredReading(rd);
-   // Drop the entire result if the user switched thumbnails mid-read. The
-   // meter integrates over time; clicking a different thumb pushes a new
-   // pattern to the screen so the in-flight read actually measures the new
-   // patch's photons. Storing it under the original requestedStep would
-   // overwrite that patch's last good reading with values measured from a
-   // different patch entirely.
+   // Drop the entire result if the user switched thumbnails mid-read. In the
+   // normal preview mode that can change the displayed light; in measurement-
+   // only mode it changes which step the next iteration will read. Either way,
+   // the completed sample belongs only to requestedStep.
    const stillOnRequested=!requestedStep||!meterCurrentPatchStep||meterStepNameKey(meterCurrentPatchStep)===meterStepNameKey(requestedStep);
    const invalidatedByLgWrite=readSuspendToken!==meterContinuousSuspendToken;
    if(!stillOnRequested||invalidatedByLgWrite){
@@ -30926,6 +30932,7 @@ async function meterContinuousLoop(){
   }
 	 }catch(e){
 	  meterContinuousReadInFlight=false;
+	  await meterRestoreStabilizationAfterMeasurement();
 	  meterContinuousStartupErrors++;
 	  meterContinuousRetryDelayMs=Math.min(1000,Math.max(250,(meterContinuousRetryDelayMs||50)*2));
 	  nextDelay=meterContinuousRetryDelayMs;
@@ -31557,7 +31564,15 @@ function meterSelectPatchFromInteraction(step,reading,opts){
  }
  if(resolvedReading) updateLiveReading(resolvedReading);
  else meterClearLiveReading(resolvedStep);
-	 meterDisplayPatch(resolvedStep,{fresh:false,allowAfterStop:true});
+	 if(meterStabilizationMeasurementOnlyEnabled()){
+	  // Selecting a thumbnail changes the requested/UI step only. Preserve the
+	  // current measurement patch while a read is active; otherwise make sure
+	  // the configured stabilization pattern owns the idle display.
+	  if(typeof activePattern!=='undefined'&&activePattern!=null) clearActive();
+	  if(!meterPatchDisplayLockedForRead()) meterRestoreStabilizationAfterMeasurement();
+	 }else{
+	  meterDisplayPatch(resolvedStep,{fresh:false,allowAfterStop:true});
+	 }
  document.getElementById('meterLiveReading').style.display='';
  meterHideProgressIfIdle();
  meterUpdateReadButtons();
@@ -39011,6 +39026,17 @@ function meterAutoCalCloseComplete(){
 	 }
 	}
 
+function meterStabilizationMeasurementOnlyEnabled(){
+ const stabilization=document.getElementById('meterStabilizationEnabled');
+ const measurementOnly=document.getElementById('meterStabilizationMeasurementOnly');
+ return !!(meterDetected&&stabilization&&stabilization.checked&&measurementOnly&&measurementOnly.checked);
+}
+
+function meterRestoreStabilizationAfterMeasurement(){
+ if(!meterStabilizationMeasurementOnlyEnabled()) return Promise.resolve(null);
+ return meterStopCalibrationPattern().catch(()=>null);
+}
+
 function meterStabilizationUiIdle(){
  if(typeof activePattern!=='undefined'&&activePattern!=null) return false;
  if(typeof meterCurrentPatchStep!=='undefined'&&meterCurrentPatchStep) return false;
@@ -39020,6 +39046,7 @@ function meterStabilizationUiIdle(){
 
 function meterSyncStabilizationAvailability(){
  const checkbox=document.getElementById('meterStabilizationEnabled');
+ const measurementOnly=document.getElementById('meterStabilizationMeasurementOnly');
  const wrap=document.getElementById('meterStabilizationToggleWrap');
  const gear=document.getElementById('meterStabilizationGear');
  const available=!!meterDetected;
@@ -39027,6 +39054,7 @@ function meterSyncStabilizationAvailability(){
   checkbox.disabled=!available;
   checkbox.title=available?'':'Connect a meter to use the stabilization pattern';
  }
+ if(measurementOnly) measurementOnly.disabled=!available;
  if(gear) gear.disabled=!available;
  if(wrap){
   wrap.classList.toggle('is-unavailable',!available);
@@ -55094,6 +55122,7 @@ function saveMeterSettings(){
 	  stabilization_pattern_enabled:chk('meterStabilizationEnabled'),
 	  stabilization_pattern_stimulus:val('meterStabilizationStimulus','25')||'25',
 	  stabilization_pattern_size:val('meterStabilizationSize','100')||'100',
+	  stabilization_pattern_measurement_only:chk('meterStabilizationMeasurementOnly'),
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
@@ -55317,6 +55346,7 @@ async function loadMeterSettings(attempt){
 	 setChk('meterStabilizationEnabled',s.stabilization_pattern_enabled);
 	 setVal('meterStabilizationStimulus',s.stabilization_pattern_stimulus,'25');
 	 setVal('meterStabilizationSize',s.stabilization_pattern_size,'100');
+	 setChk('meterStabilizationMeasurementOnly',s.stabilization_pattern_measurement_only);
 	 if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
  const greyMode=meterNormalizeSavedGreyRefMode(s.grey_ref_mode,s.incl_lum);
@@ -55482,18 +55512,31 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  if(stabilizationEl) stabilizationEl.addEventListener('change',async()=>{
   window.meterUpdateGearVisibility();
   await saveMeterSettings();
-  await meterRefreshStabilizationIdlePattern(true);
+  if(meterStabilizationMeasurementOnlyEnabled()&&!meterPatchDisplayLockedForRead()) await meterRestoreStabilizationAfterMeasurement();
+  else await meterRefreshStabilizationIdlePattern(true);
  });
  const stabilizationStimulusEl=document.getElementById('meterStabilizationStimulus');
  if(stabilizationStimulusEl) stabilizationStimulusEl.addEventListener('change',async()=>{
   stabilizationStimulusEl.value=String(meterNumberInput('meterStabilizationStimulus',25,0,100));
   await saveMeterSettings();
-  await meterRefreshStabilizationIdlePattern(false);
+  if(meterStabilizationMeasurementOnlyEnabled()&&!meterPatchDisplayLockedForRead()) await meterRestoreStabilizationAfterMeasurement();
+  else await meterRefreshStabilizationIdlePattern(false);
  });
  const stabilizationSizeEl=document.getElementById('meterStabilizationSize');
  if(stabilizationSizeEl) stabilizationSizeEl.addEventListener('change',async()=>{
   await saveMeterSettings();
-  await meterRefreshStabilizationIdlePattern(false);
+  if(meterStabilizationMeasurementOnlyEnabled()&&!meterPatchDisplayLockedForRead()) await meterRestoreStabilizationAfterMeasurement();
+  else await meterRefreshStabilizationIdlePattern(false);
+ });
+ const stabilizationMeasurementOnlyEl=document.getElementById('meterStabilizationMeasurementOnly');
+ if(stabilizationMeasurementOnlyEl) stabilizationMeasurementOnlyEl.addEventListener('change',async()=>{
+  await saveMeterSettings();
+  if(meterPatchDisplayLockedForRead()) return;
+  if(meterStabilizationMeasurementOnlyEnabled()){
+   await meterRestoreStabilizationAfterMeasurement();
+  }else if(stabilizationEl&&stabilizationEl.checked&&meterCurrentPatchStep){
+   await meterDisplayPatch(meterCurrentPatchStep,{fresh:false,allowAfterStop:true});
+  }
  });
  try{ meterRelocateProfileControls(); }catch(e){}
  window.meterUpdateGearVisibility();
