@@ -2023,14 +2023,17 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    // the ladder's own 65% patch: pass 1 against the PQ expectation, later
    // passes against pass 1 -- per-pass corrections are bounded well below
    // the tone-mapping sag.
-   const anchor=readings.find(r=>Number(r&&r.ire)===65&&r.r_code===r.g_code&&r.g_code===r.b_code);
+   // The ladder's steps are 62/64/66/68...: there is no 65% step, and an
+   // anchor keyed to 65 never armed -- two degraded sessions ran to
+   // completion under a check that could not fire. Anchor on 66% instead.
+   const anchor=readings.find(r=>Number(r&&r.ire)===66&&r.r_code===r.g_code&&r.g_code===r.b_code);
    const anchorY=anchor?Number(anchor.Y||anchor.luminance||0):0;
    if(anchorY>0&&body.signal_mode==='hdr10'){
     if(pass===1){
      sessionAnchorY=anchorY;
-     if(Math.abs(anchorY/391-1)>0.12) throw new Error('The display pipeline is tone-mapping (65% grey read '+anchorY.toFixed(0)+' cd/m², expected ~391). Interact with the Windows session, confirm the Companion is fullscreen, and rerun.');
+     if(Math.abs(anchorY/429-1)>0.12) throw new Error('The display pipeline is tone-mapping (66% grey read '+anchorY.toFixed(0)+' cd/m², expected ~429). The presentation was likely demoted to composed; rerun the fine-tune (each pass now re-cycles fullscreen) or click the patch window.');
     }else if(sessionAnchorY>0&&anchorY<sessionAnchorY*0.90){
-     throw new Error('The display pipeline degraded between passes (65% grey fell from '+sessionAnchorY.toFixed(0)+' to '+anchorY.toFixed(0)+' cd/m²). Keeping the best measured pass; wake the Windows session and rerun.');
+     throw new Error('The display pipeline degraded between passes (66% grey fell from '+sessionAnchorY.toFixed(0)+' to '+anchorY.toFixed(0)+' cd/m²). Keeping the best measured pass.');
     }
    }
    meterIccFineTuneProgressStep('grey','done','Measured '+readings.length+' grey levels');
