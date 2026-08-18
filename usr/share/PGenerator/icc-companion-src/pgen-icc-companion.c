@@ -107,7 +107,7 @@ static int reap_profile_loader(void *opaque)
 #endif
 
 #define APP_VERSION "1.4.21"
-#define APP_BUILD "2"
+#define APP_BUILD "4"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 /* Width in source code units over which the grey-axis calibration blends into
  * the cLUT result. */
@@ -3639,7 +3639,7 @@ static void raise_pattern_window(void)
 }
 
 #ifdef _WIN32
-static void windows_verified_foreground(void)
+static bool windows_verified_foreground(bool force_cycle)
 {
     /* SetForegroundWindow is denied to background processes and the failure
      * is silent: after the Profile Loader runs, the fullscreen HDR window can
@@ -3649,17 +3649,22 @@ static void windows_verified_foreground(void)
      * bench. Verify with GetForegroundWindow and retry a bounded number of
      * times rather than trusting the activation call. */
     HWND window;
-    if (!app.fullscreen || !app.window) return;
+    if (!app.fullscreen || !app.window) return false;
     window = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(app.window),
                                           SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    if (!window) return;
-    for (int attempt = 0; attempt < 3 && GetForegroundWindow() != window; attempt++) {
+    if (!window) return false;
+    for (int attempt = 0;
+         attempt < 3 && (force_cycle || GetForegroundWindow() != window);
+         attempt++) {
         ShowWindow(window, SW_MINIMIZE);
-        SDL_Delay(120);
+        SDL_Delay(250);
         ShowWindow(window, SW_RESTORE);
-        SDL_Delay(120);
+        SDL_Delay(250);
         windows_activate_pattern_window(window);
+        SDL_Delay(250);
+        force_cycle = false;
     }
+    return GetForegroundWindow() == window;
 }
 #endif
 
@@ -4000,10 +4005,10 @@ static void companion_run_install(const char *poll_response)
                 SDL_Delay(250);
             }
             remove(result_path);
-            /* The loader has just cycled Advanced Color under our swapchain;
-             * schedule a renderer recreate before the next HDR patch so a
-             * composed-demoted presentation cannot poison the following
-             * meter reads. */
+            /* The loader has just cycled Advanced Color under our swapchain.
+             * Recover foreground before the next HDR patch, but keep this
+             * renderer alive: destroying the new HDR path here detaches the
+             * MHC2 stage Windows just loaded until another foreground handoff. */
             if (accepted)
                 SDL_SetAtomicInt(&app.presentation_recovery_pending, 1);
         }
@@ -4574,18 +4579,17 @@ static void process_network_updates(void)
     if (have_command) {
         bool ok;
 #ifdef _WIN32
-        /* A completed profile install also forces the reset: the loader's
-         * Advanced Color cycle can leave this pre-existing swapchain demoted
-         * to composed presentation (Windows then tone-maps to the profile
-         * peak), and the size >= 100 gate below means windowed-patch sessions
-         * would otherwise never recover. Consuming it here keeps the reset in
-         * the inter-patch window, before the settle delay and meter read. */
+        bool had_hdr_swapchain = app.hdr_swapchain != NULL;
+        /* A completed profile install needs foreground recovery after the
+         * loader's Advanced Color cycle. Do not include it in the renderer
+         * refresh below: recreating the HDR swapchain after a successful
+         * install detaches Windows' newly loaded MHC2 stage. */
         bool install_recovery =
             SDL_GetAtomicInt(&app.presentation_recovery_pending) != 0 &&
             app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
             !preserve_hdr_calibration && app.hdr_swapchain;
-        bool refresh_fullscreen_hdr = install_recovery ||
-            (app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+        bool refresh_fullscreen_hdr =
+            app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
             !preserve_hdr_calibration &&
             command_size >= 100 &&
             app.hdr_swapchain &&
@@ -4595,7 +4599,10 @@ static void process_network_updates(void)
              app.displayed_max_luma != max_luma ||
              app.displayed_min_luma != min_luma ||
              app.displayed_max_cll != max_cll ||
-             app.displayed_max_fall != max_fall));
+             app.displayed_max_fall != max_fall);
+        bool recover_mhc2_after_render =
+            app.fullscreen && !alignment && !strcmp(mode, "hdr10") &&
+            (install_recovery || refresh_fullscreen_hdr || !had_hdr_swapchain);
 #endif
         char message[256] = "";
         raise_pattern_window();
@@ -4617,13 +4624,23 @@ static void process_network_updates(void)
          * cannot sample this reset frame. Full-field OLED conditioning
          * commands opt out because recreating the HDR path can silently drop
          * the active Windows MHC2 calibration for every following patch. */
-        if (refresh_fullscreen_hdr) SDL_SetAtomicInt(&app.presentation_recovery_pending, 0);
+        if (install_recovery || refresh_fullscreen_hdr)
+            SDL_SetAtomicInt(&app.presentation_recovery_pending, 0);
         if (refresh_fullscreen_hdr &&
             (!try_create_renderer(false, NULL) ||
              (SDL_Delay(50), !create_renderer(true)))) ok = false;
         else {
-            if (refresh_fullscreen_hdr) windows_verified_foreground();
             ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
+            /* Windows attaches an active MHC2 stage only after the new HDR
+             * path has presented and then completed a real foreground handoff.
+             * Do the handoff before acknowledging the patch, then present it
+             * again so the meter never sees the uncalibrated first frame. */
+            if (ok && recover_mhc2_after_render) {
+                if (!windows_verified_foreground(true))
+                    ok = SDL_SetError("The HDR patch window could not regain foreground after MHC2 recovery");
+                else
+                    ok = render_patch(mode, r, g, b);
+            }
         }
 #else
         ok = alignment ? render_alignment() : render_patch(mode, r, g, b);
