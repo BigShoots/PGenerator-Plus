@@ -379,6 +379,110 @@ def put_s15(data, position, value):
     data[position:position + 4] = struct.pack(">i", raw)
 
 
+def median(values):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        raise ValueError("Cannot take the median of an empty sequence")
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return 0.5 * (ordered[middle - 1] + ordered[middle])
+
+
+def smoothstep(value):
+    value = max(0.0, min(1.0, float(value)))
+    return value * value * (3.0 - 2.0 * value)
+
+
+def isotonic_values(values):
+    """Pool adjacent violations without turning a local dip into a tail.
+
+    MHC2 is required to be monotonic. Independent residual edits can otherwise
+    leave a one-entry reversal, especially in the sparse HDR toe. Pooling the
+    conflicting neighbourhood distributes that correction locally instead of
+    using a cumulative maximum that would propagate one noisy sample through
+    every brighter level.
+    """
+    blocks = []
+    for index, value in enumerate(values):
+        blocks.append([index, index, float(value), 1.0])
+        while (len(blocks) >= 2
+               and blocks[-2][2] / blocks[-2][3] > blocks[-1][2] / blocks[-1][3]):
+            right = blocks.pop()
+            left = blocks.pop()
+            blocks.append([left[0], right[1], left[2] + right[2],
+                           left[3] + right[3]])
+    fitted = [0.0] * len(values)
+    for start, end, total, weight in blocks:
+        value = max(0.0, min(1.0, total / weight))
+        for index in range(start, end + 1):
+            fitted[index] = value
+    return fitted
+
+
+def isotonic_channel_samples(samples):
+    """Fit a normalized physical channel response from raw neutral reads."""
+    grouped = []
+    for code, response in sorted(samples):
+        if grouped and abs(code - grouped[-1][0]) < 1e-7:
+            grouped[-1][1].append(response)
+        else:
+            grouped.append([code, [response]])
+    collapsed = [(code, median(responses)) for code, responses in grouped]
+    if len(collapsed) < 5:
+        return None
+    fitted = isotonic_values([response for _code, response in collapsed])
+    peak = fitted[-1]
+    if peak <= 1e-9:
+        return None
+    return [(collapsed[index][0], fitted[index] / peak)
+            for index in range(len(collapsed))]
+
+
+def sample_pairs(samples, position):
+    if position <= samples[0][0]:
+        return samples[0][1]
+    for index in range(1, len(samples)):
+        if samples[index][0] >= position:
+            x0, y0 = samples[index - 1]
+            x1, y1 = samples[index]
+            fraction = 0.0 if x1 <= x0 else (position - x0) / (x1 - x0)
+            return y0 + fraction * (y1 - y0)
+    return samples[-1][1]
+
+
+def invert_pairs(samples, target):
+    target = max(samples[0][1], min(samples[-1][1], target))
+    if target <= samples[0][1]:
+        return samples[0][0]
+    for index in range(1, len(samples)):
+        x0, y0 = samples[index - 1]
+        x1, y1 = samples[index]
+        if target <= y1 + 1e-12:
+            if y1 <= y0 + 1e-12:
+                return x0
+            return x0 + (target - y0) / (y1 - y0) * (x1 - x0)
+    return samples[-1][0]
+
+
+def sample_values(values, position):
+    spot = max(0.0, min(1.0, position)) * (len(values) - 1)
+    low = min(int(spot), len(values) - 2)
+    fraction = spot - low
+    return values[low] * (1.0 - fraction) + values[low + 1] * fraction
+
+
+def stable_tail_start(values, tolerance=4.0 / 65536.0):
+    """Find an existing held plateau, or return len(values) when none exists."""
+    if len(values) < 4:
+        return len(values)
+    endpoint = values[-1]
+    index = len(values) - 1
+    while index > 0 and abs(values[index - 1] - endpoint) <= tolerance:
+        index -= 1
+    return index if len(values) - index >= 4 else len(values)
+
+
 def table_sample(data, base, count, value):
     value = max(0.0, min(1.0, value)) * (count - 1)
     low = min(int(value), count - 2)
@@ -506,6 +610,75 @@ def d65_xyz(nits):
     return [nits * D65_X / D65_Y, nits, nits * (1.0 - D65_X - D65_Y) / D65_Y]
 
 
+def regularize_mhc2_neutral_samples(samples, damping):
+    """Make MHC2 residuals match the regions the hardware can distinguish.
+
+    The HDR shoulder is one physical output state, even though the fine-tune
+    ladder samples it at many input codes. Give that whole state one robust
+    white-balance correction. In the toe, retain broad measured trends but
+    suppress point chroma below the meter's reliable floor and smooth adjacent
+    samples in log-gain space. This keeps one noisy dark read from carving a
+    visible step into a high-resolution MHC2 curve.
+    """
+    plateau = [sample for sample in samples if sample["rolloff"]]
+    if plateau:
+        peak = max(sample["measured_y"] for sample in plateau)
+        stable = [sample for sample in plateau
+                  if sample["measured_y"] >= 0.985 * peak]
+        if len(stable) < 3:
+            stable = plateau
+        pooled = [math.exp(median(
+            math.log(max(sample["gains"][channel], 1e-6))
+            for sample in stable)) for channel in range(3)]
+        top = max(pooled)
+        pooled = [gain / top for gain in pooled]
+        for sample in plateau:
+            sample["gains"] = list(pooled)
+
+    body = [sample for sample in samples if not sample["rolloff"]]
+    original = dict((sample["code"], [math.log(max(gain, 1e-6))
+                                      for gain in sample["gains"]])
+                    for sample in body)
+    for sample in body:
+        # Above 45% the meter has ample signal and the response changes fast
+        # enough near the HDR knee that a local smoothing kernel is not useful.
+        if sample["code"] > 0.45:
+            continue
+        weighted_chroma = [0.0, 0.0, 0.0]
+        weight_sum = 0.0
+        for neighbour in body:
+            distance = abs(neighbour["code"] - sample["code"])
+            if distance >= 0.101:
+                continue
+            kernel = max(0.0, 1.0 - distance / 0.101)
+            signal = max(neighbour["target"], neighbour["measured_y"])
+            reliability = smoothstep((signal - 0.12) / 0.88)
+            weight = kernel * (0.20 + 0.80 * reliability)
+            logs = original[neighbour["code"]]
+            neighbour_common = sum(logs) / 3.0
+            for channel in range(3):
+                weighted_chroma[channel] += weight * (
+                    logs[channel] - neighbour_common)
+            weight_sum += weight
+        if weight_sum <= 0.0:
+            continue
+        own_logs = original[sample["code"]]
+        common = sum(own_logs) / 3.0
+        chroma = [value / weight_sum for value in weighted_chroma]
+        signal = max(sample["target"], sample["measured_y"])
+        # Luminance becomes useful before chromaticity. Below 0.12 cd/m2 both
+        # are left to the denser characterization that built the parent.
+        luminance_strength = smoothstep((signal - 0.12) / 0.68)
+        chroma_strength = smoothstep((signal - 0.25) / 1.75)
+        sample["gains"] = [math.exp(common * luminance_strength
+                                    + chroma[channel] * chroma_strength)
+                           for channel in range(3)]
+
+    for sample in samples:
+        sample["effective"] = [1.0 + damping * (gain - 1.0)
+                               for gain in sample["gains"]]
+
+
 def srgb_eotf(v):
     if v <= 0.04045:
         return v / 12.92
@@ -564,11 +737,13 @@ def finetune(payload, output_dir):
     xi = fmt.index("XYZ_X")
     yi = fmt.index("XYZ_Y")
     zi = fmt.index("XYZ_Z")
-    neutral = sorted((float(r[ri]) / 100.0,
-                      float(r[yi]) * lumi / 100.0)
-                     for r in rows
-                     if abs(float(r[ri]) - float(r[gi])) < 0.3
-                     and abs(float(r[gi]) - float(r[bi])) < 0.3)
+    neutral_xyz = sorted(
+        (sum(float(r[index]) for index in (ri, gi, bi)) / 300.0,
+         [float(r[index]) * lumi / 100.0 for index in (xi, yi, zi)])
+        for r in rows
+        if abs(float(r[ri]) - float(r[gi])) < 0.3
+        and abs(float(r[gi]) - float(r[bi])) < 0.3)
+    neutral = [(code, xyz[1]) for code, xyz in neutral_xyz]
     if len(neutral) < 4:
         raise ValueError("The embedded characterization has no neutral axis")
     ymax = max(y for _, y in neutral)
@@ -617,12 +792,36 @@ def finetune(payload, output_dir):
                                       float(r[yi]) * lumi / 100.0,
                                       float(r[zi]) * lumi / 100.0])
     primary_matrix = None
+    panel_channel_samples = None
     if len(primaries) == 3:
         cols = [primaries[ch][1] for ch in range(3)]
         primary_matrix = [[cols[c][r] for c in range(3)] for r in range(3)]
         primary_inverse = mat_inv(primary_matrix)
         if primary_inverse is None:
             primary_matrix = None
+        else:
+            # The MHC2 curves output raw panel drive, not PQ light. Recover
+            # each physical channel response from the embedded neutral ramp so
+            # a requested gain can be inverted in the panel's actual domain.
+            # The former PQ(old_curve_value) approximation is especially bad
+            # in OLED shadows and creates the visible 10-35% oscillation.
+            black_xyz = neutral_xyz[0][1]
+            axes = [[primaries[column][1][row] - black_xyz[row]
+                     for column in range(3)] for row in range(3)]
+            axes_inverse = mat_inv(axes)
+            if axes_inverse is not None:
+                raw_samples = [[] for _channel in range(3)]
+                for code, xyz in neutral_xyz:
+                    response = mat_vec(
+                        axes_inverse,
+                        [xyz[row] - black_xyz[row] for row in range(3)])
+                    for channel in range(3):
+                        raw_samples[channel].append(
+                            (code, max(0.0, response[channel])))
+                fitted = [isotonic_channel_samples(channel_samples)
+                          for channel_samples in raw_samples]
+                if all(curve is not None for curve in fitted):
+                    panel_channel_samples = fitted
 
     def channel_gains(measured_xyz, target_xyz):
         """Per-channel gains that move the measured colour to the target,
@@ -762,7 +961,9 @@ def finetune(payload, output_dir):
             })
 
     rolloff_start = 0.90 * ymax
+    neutral_samples = []
     keyed = []
+    mhc2_keyed = []
     levels = []
     shape = []
     for code, samples in grouped:
@@ -782,28 +983,51 @@ def finetune(payload, output_dir):
             gains = [g / top for g in gains]
         else:
             gains = channel_gains([x, y, z], d65_xyz(target))
-        effective = [1.0 + damping * (g - 1.0) for g in gains]
         # Convergence metric in the acceptance colour difference: against the
         # absolute target below the rolloff, and against D65 at the achieved
         # luminance inside it, where only the balance is correctable.
         reference = d65_xyz(y) if in_rolloff else d65_xyz(target)
         level_de = de_itp([x, y, z], reference)
+        neutral_samples.append({
+            "code": code, "request": request, "target": target,
+            "measured_y": y, "measured": [x, y, z],
+            "rolloff": in_rolloff, "de_itp": level_de,
+            "gains": gains,
+        })
+
+    if has_mhc2 and is_hdr:
+        regularize_mhc2_neutral_samples(neutral_samples, damping)
+    else:
+        for sample in neutral_samples:
+            sample["effective"] = [1.0 + damping * (gain - 1.0)
+                                   for gain in sample["gains"]]
+
+    for sample in neutral_samples:
+        code = sample["code"]
+        request = sample["request"]
+        target = sample["target"]
+        y = sample["measured_y"]
+        in_rolloff = sample["rolloff"]
+        gains = sample["gains"]
+        effective = sample["effective"]
         levels.append({
             "pct": round(code * 100.0, 1),
             "target_nits": round(target, 3),
             "measured_nits": round(y, 3),
             "rolloff": in_rolloff,
-            "de_itp": round(level_de, 3),
+            "de_itp": round(sample["de_itp"], 3),
             "gains": [round(g, 4) for g in gains],
             "before_err_pct": round((y / target - 1.0) * 100.0, 2),
             "predicted_err_pct": round((y * ((effective[0] + effective[1] + effective[2]) / 3.0)
                                         / target - 1.0) * 100.0, 2),
         })
         keyed.append((min(request, 0.995 * ymax), effective))
+        mhc2_keyed.append((code, effective))
         shape.append((code, y, target, in_rolloff))
     if len(keyed) < 6:
         raise ValueError("Too few usable neutral reads above the meter floor")
-    keyed.sort()
+    keyed.sort(key=lambda item: item[0])
+    mhc2_keyed.sort(key=lambda item: item[0])
 
     # AutoCal-style sessions pass a tolerance: when every ladder level is
     # already inside it, leave the profile untouched and report convergence
@@ -904,16 +1128,22 @@ def finetune(payload, output_dir):
                                 dict((n, w) for w, n in scored)[transfer] * 100.0)
         raise ValueError(message)
 
-    def residual_gains(nits):
-        if nits <= keyed[0][0]:
-            return keyed[0][1]
-        for i in range(1, len(keyed)):
-            if keyed[i][0] >= nits:
-                n0, g0 = keyed[i - 1]
-                n1, g1 = keyed[i]
-                t = 0.0 if n1 == n0 else (nits - n0) / (n1 - n0)
+    def interpolate_gains(points, position):
+        if position <= points[0][0]:
+            return points[0][1]
+        for i in range(1, len(points)):
+            if points[i][0] >= position:
+                n0, g0 = points[i - 1]
+                n1, g1 = points[i]
+                t = 0.0 if n1 == n0 else (position - n0) / (n1 - n0)
                 return [g0[k] + t * (g1[k] - g0[k]) for k in range(3)]
-        return keyed[-1][1]
+        return points[-1][1]
+
+    def residual_gains(nits):
+        return interpolate_gains(keyed, nits)
+
+    def mhc2_residual_gains(source_code):
+        return interpolate_gains(mhc2_keyed, source_code)
 
     def measured_lum(code):
         if code <= neutral[0][0]:
@@ -963,14 +1193,14 @@ def finetune(payload, output_dir):
         off, _ = tags["MHC2"]
         entries = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
         matrix_offset = struct.unpack(">I", bytes(data[off + 20:off + 24]))[0]
+        current_matrix = [
+            [s15(data, off + matrix_offset + row * 16 + column * 4)
+             for column in range(3)] for row in range(3)
+        ]
         matrix_samples = [(sample["measured"], sample["target"])
                           for sample in color_samples]
         matrix_correction = mhc2_residual_matrix(matrix_samples, damping)
         if matrix_correction is not None:
-            current_matrix = [
-                [s15(data, off + matrix_offset + row * 16 + column * 4)
-                 for column in range(3)] for row in range(3)
-            ]
             # The builder's validated MHC2 direction is
             # physical * inverse(wire) * matrix.  A fitted correction maps the
             # measured XYZ residual back to target XYZ, so it belongs on the
@@ -982,6 +1212,7 @@ def finetune(payload, output_dir):
                     for column in range(3):
                         put_s15(data, off + matrix_offset + row * 16 + column * 4,
                                 updated_matrix[row][column])
+                current_matrix = updated_matrix
                 move = max(abs(matrix_correction[row][column]
                                - (1.0 if row == column else 0.0))
                            for row in range(3) for column in range(3))
@@ -994,51 +1225,102 @@ def finetune(payload, output_dir):
             else:
                 matrix_correction = None
         lut_offsets = struct.unpack(">III", bytes(data[off + 24:off + 36]))
+        # MHC2's matrix precedes its curves. A neutral source therefore enters
+        # the three curves at different post-matrix PQ positions. Map each
+        # curve input back to the original source code before looking up its
+        # measured residual. Treating the curve index itself as source PQ was
+        # shifting shadow corrections and the plateau boundary independently
+        # in R, G and B.
+        mhc2_neutral_gains = mat_vec(
+            XYZ_TO_RGB2020, mat_vec(current_matrix, d65_xyz(1.0)))
+        if min(mhc2_neutral_gains) <= 1e-6:
+            mhc2_neutral_gains = [1.0, 1.0, 1.0]
+        updated_luts = []
         for ch in range(3):
             base = off + lut_offsets[ch] + 8
+            original_curve = [s15(data, base + index * 4)
+                              for index in range(entries)]
+            updated_curve = list(original_curve)
             for index in range(entries):
                 position = index / (entries - 1.0)
-                request = pq_to_nits(position) if is_hdr else sdr_target(position)
+                if is_hdr:
+                    source_nits = pq_to_nits(position) / mhc2_neutral_gains[ch]
+                    source_code = nits_to_pq(source_nits)
+                    request = source_nits
+                    eff = mhc2_residual_gains(source_code)[ch]
+                else:
+                    request = sdr_target(position)
+                    eff = residual_gains(min(request, 0.995 * ymax))[ch]
                 if request < 0.02:
                     continue
-                eff = residual_gains(min(request, 0.995 * ymax))[ch]
                 if abs(eff - 1.0) < 0.0005:
                     continue
-                old = s15(data, base + index * 4)
+                old = original_curve[index]
                 clipped = max(0.0, min(1.0, old))
-                if is_hdr:
+                if is_hdr and panel_channel_samples is not None:
+                    response = sample_pairs(panel_channel_samples[ch], clipped)
+                    new = invert_pairs(panel_channel_samples[ch],
+                                       max(0.0, min(1.0, response * eff)))
+                elif is_hdr:
                     new = nits_to_pq(pq_to_nits(clipped) * eff)
                 else:
                     linear = clipped ** 2.2 if transfer != "srgb" else srgb_eotf(clipped)
                     linear = max(0.0, min(1.0, linear * eff))
                     new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
                 delta = max(-curve_bound, min(curve_bound, new - clipped))
-                put_s15(data, base + index * 4, old + delta)
-                applied.append(abs(eff - 1.0))
+                updated_curve[index] = old + delta
+                if abs(delta) >= 0.5 / 65536.0:
+                    applied.append(abs(eff - 1.0))
+            updated_curve = isotonic_values(updated_curve)
+            if is_hdr:
+                tail = stable_tail_start(original_curve)
+                if tail < entries:
+                    # The endpoint is guaranteed to use the pooled plateau
+                    # residual. The first held entry can sit fractionally on
+                    # the knee and interpolate with the last body sample, so
+                    # using it would reintroduce a channel-dependent tail.
+                    held = updated_curve[-1]
+                    if tail:
+                        held = max(held, updated_curve[tail - 1])
+                    for index in range(tail, entries):
+                        updated_curve[index] = held
+            for index, value in enumerate(updated_curve):
+                put_s15(data, base + index * 4, value)
+            updated_luts.append(updated_curve)
         if "vcgt" in tags:
             voff, _ = tags["vcgt"]
             vchannels, ventries, vwidth = struct.unpack(">HHH", bytes(data[voff + 12:voff + 18]))
             if vwidth == 2 and vchannels == 3:
                 vbase = voff + 18
                 for ch in range(3):
+                    previous = 0.0
                     for index in range(ventries):
                         position = index / (ventries - 1.0)
-                        request = pq_to_nits(position) if is_hdr else sdr_target(position)
-                        if request < 0.02:
-                            continue
-                        eff = residual_gains(min(request, 0.995 * ymax))[ch]
-                        if abs(eff - 1.0) < 0.0005:
-                            continue
                         pos = vbase + (ch * ventries + index) * 2
-                        old = be16(data, pos) / 65535.0
                         if is_hdr:
-                            new = nits_to_pq(pq_to_nits(old) * eff)
+                            # vcgt is the neutral-axis clone of matrix+MHC2.
+                            # Rebuild it from those updated stages instead of
+                            # applying a second, differently parameterized edit.
+                            curve_input = nits_to_pq(
+                                pq_to_nits(position) * mhc2_neutral_gains[ch])
+                            new = sample_values(updated_luts[ch], curve_input)
+                            previous = max(previous, max(0.0, min(1.0, new)))
+                            value = max(0, min(65535,
+                                               int(round(previous * 65535.0))))
                         else:
+                            request = sdr_target(position)
+                            if request < 0.02:
+                                continue
+                            eff = residual_gains(min(request, 0.995 * ymax))[ch]
+                            if abs(eff - 1.0) < 0.0005:
+                                continue
+                            old = be16(data, pos) / 65535.0
                             linear = old ** 2.2 if transfer != "srgb" else srgb_eotf(old)
                             linear = max(0.0, min(1.0, linear * eff))
                             new = linear ** (1.0 / 2.2) if transfer != "srgb" else srgb_inverse(linear)
-                        delta = max(-curve_bound, min(curve_bound, new - old))
-                        value = max(0, min(65535, int(round((old + delta) * 65535.0))))
+                            delta = max(-curve_bound, min(curve_bound, new - old))
+                            value = max(0, min(65535,
+                                               int(round((old + delta) * 65535.0))))
                         data[pos] = value >> 8
                         data[pos + 1] = value & 0xFF
     else:
