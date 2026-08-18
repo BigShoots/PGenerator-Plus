@@ -1092,7 +1092,22 @@ def finetune(payload, output_dir):
         ranked = sorted(values, reverse=True)
         return sum(ranked[:2]) / float(min(2, len(ranked)))
 
-    selection_score = max(robust_worst(inr_de), robust_worst(top_de),
+    def band_score(values):
+        """Grade a region without letting one noisy point veto its mean.
+
+        MHC2 fine-tuning is measured close to the meter floor and across a
+        physically clipped HDR shoulder.  A max-only checkpoint selector can
+        therefore discard a candidate that improved almost every level (and
+        colour) because one dark or exact-white read moved by normal hardware
+        noise.  Retain meaningful worst-point pressure, but make the regional
+        mean the authority used to select the profile that is actually kept.
+        """
+        if not values:
+            return 0.0
+        mean = sum(values) / float(len(values))
+        return 0.75 * mean + 0.25 * robust_worst(values)
+
+    selection_score = max(band_score(inr_de), band_score(top_de),
                           color_de["mean"] if color_de else 0.0)
     mode = ("mhc2" if has_mhc2 else "b2a") + ("-hdr" if is_hdr else "-sdr")
     checkpoint = checkpoint_session(payload, output_dir, measured_profile_data,

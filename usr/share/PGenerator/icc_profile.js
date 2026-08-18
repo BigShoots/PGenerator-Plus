@@ -1973,6 +1973,10 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
    cancelCheck();
+   // The first pass needs enough authority to make a useful correction.  A
+   // later pass is a residual/recovery edit and must be gentler so one noisy
+   // toe or exact-white read cannot swing the MHC2 curve back past the target.
+   const passDamping=pass===1?0.5:0.35;
    if(button) button.textContent='Pass '+pass+': applying...';
    meterIccFineTuneProgressPass(pass);
    meterIccFineTuneProgressStep('apply','active','Installing '+currentFile+' on the target computer and applying it to the display');
@@ -2070,9 +2074,9 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
     meterIccFineTuneProgressStep('color','done',colorReadings.length?('Measured '+colorReadings.length+' colour patches'):'No colour readings — continuing with grey corrections only');
    }
    if(button) button.textContent='Pass '+pass+': tuning...';
-   meterIccFineTuneProgressStep('tune','active','Computing corrections and writing '+outStem+'.icc (damping '+(pass===1?0.5:0.65)+')');
+   meterIccFineTuneProgressStep('tune','active','Computing corrections and writing '+outStem+'.icc (damping '+passDamping+')');
    const result=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:pass===1?0.5:0.65,output:outStem,target_de:TARGET_DE,target_color_de:2.0,session,pass}),_timeoutMs:1800000});
+    body:JSON.stringify({file:currentFile,readings,color_readings:colorReadings,damping:passDamping,output:outStem,target_de:TARGET_DE,target_color_de:2.0,session,pass}),_timeoutMs:1800000});
    if(!result||result.status!=='ok') throw new Error(result&&result.message||'Fine-tuning failed');
    sessionStarted=true;
    const colourLevels=Array.isArray(result.color_levels)?result.color_levels:[];
@@ -2103,12 +2107,17 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
     const grey=Number(now.worst), greyWas=Number(was.worst);
     const score=Number(now.score);
     const col=Number(now.color_mean), colWas=Number(was.color_mean);
-    // Stop when the combined neutral/colour score has moved outside
-    // measurement noise. Finalization restores the earlier measured profile
-    // even though this request already wrote the next candidate over the
-    // public filename.
+    // A regressed read has already produced a new, lower-damping correction.
+    // Measure that recovery candidate before deciding which checkpoint wins.
+    // The old immediate stop discarded it and commonly restored pass 1, which
+    // made the advertised FineTuned profile byte-identical to its parent.
     if(Number.isFinite(score)&&Number.isFinite(priorWorst)&&score>priorWorst*1.03){
-     meterIccFineTuneProgressStep('evaluate','done','Score moved outside measurement noise — stopping and keeping the best pass');
+     if(pass<MAX_PASSES){
+      meterIccFineTuneProgressStep('evaluate','done','This pass regressed — measuring the damped recovery candidate in pass '+(pass+1));
+      currentFile=outStem+'.icc';
+      continue;
+     }
+     meterIccFineTuneProgressStep('evaluate','done','Pass budget reached after a regression — keeping the best measured pass');
      break;
     }
     const greyStalled=!Number.isFinite(grey)||!Number.isFinite(greyWas)||grey>greyWas*0.97;
