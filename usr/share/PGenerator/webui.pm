@@ -49171,18 +49171,15 @@ function drawRGBChart(gs,allSteps,readingMap){
  // Keep the exact plotted values on the canvas. Hover registration consumes
  // this same map instead of independently recalculating RGB balance.
  ctx.canvas._meterRgbBalancePlot={formula:meterRgbBalanceFormula(),balanceByIre:balMap};
- // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
- // Perceptual mode is explicitly a detail view, so permit a much tighter
- // minimum span than the conventional +/-5% balance chart.
+ // Auto-scale Y axis based on actual data, but keep the chart centered on 100
+ // with the conventional +/-5% minimum span in every RGB balance mode.
  const allVals=Object.values(balMap).filter(b=>b&&!b.noChroma).flatMap(b=>[b.R,b.G,b.B]);
- const perceptualDetail=meterRgbBalanceFormula()==='perceptual';
  let yMin,yMax;
  if(allVals.length>0){
   const dataMin=Math.min(...allVals),dataMax=Math.max(...allVals);
-  const margin=Math.max(perceptualDetail?0.05:1,(dataMax-dataMin)*0.15);
+  const margin=Math.max(1,(dataMax-dataMin)*0.15);
   const needed=Math.max(100-(dataMin-margin),(dataMax+margin)-100);
-  const quantum=perceptualDetail?(needed<=1?0.05:(needed<=5?0.25:1)):1;
-  const halfRange=Math.max(perceptualDetail?0.25:5,Math.ceil(needed/quantum)*quantum);
+  const halfRange=Math.max(5,Math.ceil(needed));
   yMin=100-halfRange;
   yMax=100+halfRange;
  } else {yMin=95;yMax=105;}
@@ -49193,7 +49190,7 @@ function drawRGBChart(gs,allSteps,readingMap){
   xInset:15,
   xSteps:xSteps.length-1||1,ySteps:4,
     xLabel:(i)=>i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
-    yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(perceptualDetail&&(yMax-yMin)<=2?2:1),
+    yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(1),
     rotateX:rotateX
  });
  // Reference line at 100%
