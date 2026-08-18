@@ -486,7 +486,7 @@ def stable_tail_start(values, tolerance=4.0 / 65536.0):
 def mhc2_endpoint_start(entries):
     """First table entry Windows uses for exact maximum-code HDR white."""
     return max(1, min(entries - 1, int(math.ceil(
-        248.0 * (entries - 1) / 255.0))))
+        253.0 * (entries - 1) / 255.0))))
 
 
 def table_sample(data, base, count, value):
@@ -1268,9 +1268,10 @@ def finetune(payload, output_dir):
         endpoint_sample = next(
             (sample for sample in neutral_samples
              if sample.get("mhc2_endpoint")), None)
-        # 256-entry hardware probes located Windows' exact-white lookup in
-        # indices 248-255. Use the same normalized boundary for dense 4096-
-        # entry profiles rather than special-casing one table size.
+        # Hardware boundary probes located a clean split at normalized entry
+        # 253: 99% remains on the corrected shoulder while exact maximum code
+        # responds to entries 253-255. Use the same normalized boundary for
+        # dense 4096-entry profiles rather than special-casing one table size.
         endpoint_start = mhc2_endpoint_start(entries)
         for ch in range(3):
             base = off + lut_offsets[ch] + 8

@@ -396,6 +396,12 @@ def mhc2_lut_entries(profile_type):
     return MHC2_HDR_LUT_ENTRIES if profile_type == "windows-hdr" else MHC2_SDR_LUT_ENTRIES
 
 
+def mhc2_exact_white_start(entries):
+    """First MHC2 entry used by Windows' exact maximum-code HDR path."""
+    return max(1, min(entries - 1, int(math.ceil(
+        253.0 * (entries - 1) / 255.0))))
+
+
 def nits_to_pq(nits):
     """Encode absolute cd/m2 as a normalized ST.2084 signal value."""
     m1 = 2610.0 / 16384.0
@@ -1056,6 +1062,135 @@ def sample_table(table, position):
     return table[low] * (1.0 - fraction) + table[low + 1] * fraction
 
 
+def regularize_hdr_shadow_balance(curves):
+    """Suppress local HDR shadow chroma oscillation without moving luminance.
+
+    The dense neutral solve can follow isolated low-signal meter noise more
+    closely than a real display warrants. Smooth only each channel's offset
+    from the triplet mean, using the same broad 10% PQ-code neighbourhood as
+    fine-tune. The common drive at every entry is retained, so this cannot
+    reshape the measured luminance response. Balanced and smoothly varying
+    displays are effectively unchanged.
+    """
+    if (len(curves) != 3 or min(len(curve) for curve in curves) < 2
+            or len(set(len(curve) for curve in curves)) != 1):
+        fail("HDR shadow regularization requires three equal calibration curves")
+    entries = len(curves[0])
+    original = [list(curve) for curve in curves]
+    result = [list(curve) for curve in curves]
+
+    def smooth_unit(value):
+        value = max(0.0, min(1.0, value))
+        return value * value * (3.0 - 2.0 * value)
+
+    for index in range(1, entries):
+        position = index / float(entries - 1)
+        if position >= 0.45:
+            break
+        own = [original[channel][index] for channel in range(3)]
+        own_mean = sum(own) / 3.0
+        weighted_offsets = [0.0, 0.0, 0.0]
+        weight_sum = 0.0
+        for step in range(-4, 5):
+            neighbour = position + step * 0.025
+            if neighbour < 0.0 or neighbour > 0.45:
+                continue
+            values = [sample_table(original[channel], neighbour)
+                      for channel in range(3)]
+            mean = sum(values) / 3.0
+            distance = abs(neighbour - position)
+            kernel = max(0.0, 1.0 - distance / 0.101)
+            signal = pq_to_nits(neighbour)
+            reliability = smooth_unit((signal - 0.12) / 0.88)
+            weight = kernel * (0.20 + 0.80 * reliability)
+            for channel in range(3):
+                weighted_offsets[channel] += weight * (values[channel] - mean)
+            weight_sum += weight
+        if weight_sum <= 0.0:
+            continue
+        # Fade back to the untouched model before leaving the shadow region,
+        # preventing a join at 45% while retaining full smoothing through the
+        # 10-35% range where sparse HDR reads most often oscillate.
+        strength = (1.0 if position <= 0.35 else
+                    smooth_unit((0.45 - position) / 0.10))
+        for channel in range(3):
+            raw_offset = own[channel] - own_mean
+            smooth_offset = weighted_offsets[channel] / weight_sum
+            offset = raw_offset + strength * (smooth_offset - raw_offset)
+            # Keep this a regularizer, not another calibration stage.
+            move = max(-0.012, min(0.012, offset - raw_offset))
+            result[channel][index] = max(
+                0.0, min(1.0, own_mean + raw_offset + move))
+
+    for channel in range(3):
+        result[channel][0] = 0.0
+        previous = 0.0
+        for index in range(entries):
+            previous = max(previous, result[channel][index])
+            result[channel][index] = previous
+    return result
+
+
+def apply_mhc2_profile_exact_white_tail(luts, evaluate, chad, damping=0.5):
+    """Solve a profile-predicted exact-white residual in entries 253-255.
+
+    The fitted A2B is the builder's independent model of panel RGB to XYZ.
+    Use its local derivative at the held MHC2 shoulder to solve the channel
+    move that makes exact white D65. Translate that move to raise-only form so
+    the final three entries remain monotonic. If the fitted display already
+    predicts neutral white, the deadband leaves the tail untouched.
+    """
+    if len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1:
+        fail("MHC2 exact-white correction requires three equal curves")
+    if len(chad) != 3 or any(len(row) != 3 for row in chad):
+        fail("MHC2 exact-white correction requires a chromatic-adaptation matrix")
+    start = mhc2_exact_white_start(len(luts[0]))
+    held = [max(luts[channel][start - 1], luts[channel][start])
+            for channel in range(3)]
+    actual = evaluate(held)
+    if len(actual) != 3 or not all(math.isfinite(value) for value in actual):
+        return False
+    try:
+        raw = mat_vec_mul(mat_inv(chad), actual)
+    except ValueError:
+        return False
+    if raw[1] <= 1e-9:
+        return False
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    target = mat_vec_mul(chad, [raw[1] * component for component in d65])
+    step = 2.0 / 1023.0
+    jacobian = [[0.0] * 3 for _axis in range(3)]
+    for channel in range(3):
+        probe = list(held)
+        probe[channel] = min(1.0, held[channel] + step)
+        if probe[channel] <= held[channel]:
+            return False
+        result = evaluate(probe)
+        denominator = probe[channel] - held[channel]
+        for axis in range(3):
+            jacobian[axis][channel] = (result[axis] - actual[axis]) / denominator
+    try:
+        delta = mat_vec_mul(
+            mat_inv(jacobian),
+            [target[axis] - actual[axis] for axis in range(3)],
+        )
+    except ValueError:
+        return False
+    if not all(math.isfinite(value) for value in delta):
+        return False
+    floor = min(delta)
+    raised = [max(0.0, value - floor) * damping for value in delta]
+    if max(raised) < 0.0015:
+        return False
+    for channel in range(3):
+        endpoint = min(1.0, held[channel] + 0.035,
+                       held[channel] + raised[channel])
+        for index in range(start, len(luts[channel])):
+            luts[channel][index] = endpoint
+    return True
+
+
 def invert_table(table, value):
     """Invert a normalized monotonic table with linear interpolation."""
     value = max(0.0, min(1.0, value))
@@ -1663,6 +1798,7 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
     model_profile = profile_with_measured_chad(profile, black, white)
     source_curves = hdr_profile_calibration_from_a2b(
         model_profile, rows, fallback, entries=4096)
+    source_curves = regularize_hdr_shadow_balance(source_curves)
     wire = mhc2_wire_matrix("windows-hdr")
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
@@ -1717,6 +1853,13 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
+    chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
+    if chad_payload and len(chad_payload) >= 44 and chad_payload[:4] == b"sf32":
+        chad_values = [value / 65536.0
+                       for value in struct.unpack_from(">9i", chad_payload, 8)]
+        chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
+        apply_mhc2_profile_exact_white_tail(
+            luts, mft2_a2b_evaluator(model_profile), chad)
     return luts
 
 
