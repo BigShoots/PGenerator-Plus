@@ -14366,10 +14366,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         <option value="0.05">Near-black (0.05)</option>
        </select>
       </label>
-      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="RGB balance method: Perceptual uses L* by channel; Chromaticity uses linear RGB normalized to the target white.">
+      <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="RGB balance method: Perceptual magnifies L* channel deviations by up to 20x near black and returns to normal at 100% IRE; Absolute uses the original unweighted L* calculation; Chromaticity uses linear RGB normalized to the target white.">
        RGB bal
        <select id="meterRgbBalanceFormula" class="inline-select" onchange="meterOnGreyRefChange()">
         <option value="perceptual">Perceptual (default)</option>
+        <option value="absolute">Absolute</option>
         <option value="hcfr">Chromaticity</option>
        </select>
       </label>
@@ -24602,18 +24603,31 @@ function ynToLstar(yn){
  return yn>=0?L:-L;
 }
 
-// Reads the selected RGB balance formula: perceptual lightness of linear RGB
-// or the HCFR-style unit-Y XYZ path from measured xy.
+// Reads the selected RGB balance formula: shadow-weighted perceptual L*, the
+// original unweighted absolute L*, or HCFR-style unit-Y XYZ from measured xy.
 function meterRgbBalanceFormula(){
  const sel=document.getElementById('meterRgbBalanceFormula');
  if(sel && sel.value) return sel.value;
  return 'perceptual';
 }
 
-// Perceptual RGB balance: linearRGB → L*, diff + 100.
-// The ire>0 branch builds a luminance-compensated target (chroma-only) in
-// 'absolute'/'relative' modes, or an absolute target in 'eotf' mode.
-function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel){
+// Perceptual RGB balance shadow emphasis. A fourth-power falloff concentrates
+// the added separation below 30% IRE, where small channel errors are easiest
+// to lose in a normal base-100 chart. The gain is bounded at 20x near black
+// and is exactly 1x at 100% IRE and above.
+function meterPerceptualRgbBalanceGain(reading){
+ const slot=(typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null;
+ const measuredIre=Number(slot!=null?slot:(reading&&reading.ire));
+ if(!Number.isFinite(measuredIre)) return 1;
+ const normalized=Math.max(0,Math.min(100,measuredIre))/100;
+ return 1+19*Math.pow(1-normalized,4);
+}
+
+// L* RGB balance shared by the weighted Perceptual mode and the unweighted
+// Absolute mode. The ire>0 branch builds a luminance-compensated target
+// (chroma-only) in 'absolute'/'relative' grey-reference modes, or an absolute
+// target in 'eotf' grey-reference mode.
+function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel,shadowWeighted){
  const readingXYZ=meterReadingXYZ(reading);
  const whiteXYZ=meterReadingXYZ(whiteRef);
  if(!readingXYZ||!whiteXYZ||whiteXYZ.Y<=0) return {R:100,G:100,B:100,noChroma:true};
@@ -24675,12 +24689,28 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel){
  const gamut=meterAnalysisGamut();
  const mRgb=xyzToLinRgb(mXn,mYn,mZn,gamut.xyzToRgb);
  const tRgb=xyzToLinRgb(lcXn,lcYn,lcZn,gamut.xyzToRgb);
- // Per-channel percent: L*(measured) - L*(target) + 100 (perceptual balance)
+ // The inline fallback keeps this long-standing function independently
+ // testable when extracted from the generated WebUI source.
+ const weighted=shadowWeighted!==false;
+ const fallbackIreValue=ire==null?NaN:Number(ire);
+ const fallbackIre=Number.isFinite(fallbackIreValue)?Math.max(0,Math.min(100,fallbackIreValue))/100:1;
+ const shadowGain=weighted
+  ? ((typeof meterPerceptualRgbBalanceGain==='function')
+    ? meterPerceptualRgbBalanceGain(reading)
+    : 1+19*Math.pow(1-fallbackIre,4))
+  : 1;
+ // Per-channel percent: magnify the signed L* error around the neutral 100
+ // baseline. A perfectly balanced channel remains exactly 100 at every IRE.
  return {
-  R:ynToLstar(mRgb[0])-ynToLstar(tRgb[0])+100,
-  G:ynToLstar(mRgb[1])-ynToLstar(tRgb[1])+100,
-  B:ynToLstar(mRgb[2])-ynToLstar(tRgb[2])+100
+  R:(ynToLstar(mRgb[0])-ynToLstar(tRgb[0]))*shadowGain+100,
+  G:(ynToLstar(mRgb[1])-ynToLstar(tRgb[1]))*shadowGain+100,
+  B:(ynToLstar(mRgb[2])-ynToLstar(tRgb[2]))*shadowGain+100
  };
+}
+
+// Original unweighted L* balance retained as an explicit comparison view.
+function rgbBalanceAbsolute(reading,whiteRef,modeOrIncl,blackLevel){
+ return rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel,false);
 }
 
 // HCFR-style RGB balance for the luma-mode-OFF branch.
@@ -24721,9 +24751,10 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel){
 // Dispatcher — keeps every existing caller working while honoring the
 // new <select id="meterRgbBalanceFormula"> selector.
 function rgbBalance(reading,whiteRef,modeOrIncl,blackLevel){
- return meterRgbBalanceFormula()==='hcfr'
-  ? rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel)
-  : rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel);
+ const formula=meterRgbBalanceFormula();
+ if(formula==='hcfr') return rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel);
+ if(formula==='absolute') return rgbBalanceAbsolute(reading,whiteRef,modeOrIncl,blackLevel);
+ return rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel);
 }
 
 // RGB agreement for a colour-series patch. Greyscale RGB balance compares a
@@ -48759,12 +48790,17 @@ function drawRGBChart(gs,allSteps,readingMap){
  const blackLevel=meterChartBlackLevel(gs);
  gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode,blackLevel);});
  // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
+ // Perceptual mode is explicitly a detail view, so permit a much tighter
+ // minimum span than the conventional +/-5% balance chart.
  const allVals=Object.values(balMap).filter(b=>b&&!b.noChroma).flatMap(b=>[b.R,b.G,b.B]);
+ const perceptualDetail=meterRgbBalanceFormula()==='perceptual';
  let yMin,yMax;
  if(allVals.length>0){
   const dataMin=Math.min(...allVals),dataMax=Math.max(...allVals);
-  const margin=Math.max(1,(dataMax-dataMin)*0.15);
-  const halfRange=Math.max(5,Math.ceil(Math.max(100-(dataMin-margin),(dataMax+margin)-100)));
+  const margin=Math.max(perceptualDetail?0.05:1,(dataMax-dataMin)*0.15);
+  const needed=Math.max(100-(dataMin-margin),(dataMax+margin)-100);
+  const quantum=perceptualDetail?(needed<=1?0.05:(needed<=5?0.25:1)):1;
+  const halfRange=Math.max(perceptualDetail?0.25:5,Math.ceil(needed/quantum)*quantum);
   yMin=100-halfRange;
   yMax=100+halfRange;
  } else {yMin=95;yMax=105;}
@@ -48775,7 +48811,7 @@ function drawRGBChart(gs,allSteps,readingMap){
   xInset:15,
   xSteps:xSteps.length-1||1,ySteps:4,
     xLabel:(i)=>i<xSteps.length?meterGreyscaleChartLabel(xSteps[i],xSteps,i):'',
-    yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(1),
+    yLabel:(i,n)=>(yMin+(yMax-yMin)*i/n).toFixed(perceptualDetail&&(yMax-yMin)<=2?2:1),
     rotateX:rotateX
  });
  // Reference line at 100%
@@ -52135,7 +52171,11 @@ function chartHandleHover(e,canvasId){
  if(targetY!=='--') html+=' &nbsp; <span>Target Y: '+targetY+' cd/m\u00B2</span>';
  if(rd.cct) html+='<br>CCT: '+rd.cct+'K';
  html+='<br>x: '+(rd.x!=null?rd.x.toFixed(4):'--')+' &nbsp;y: '+(rd.y!=null?rd.y.toFixed(4):'--');
- html+='<br>R: '+bal.R.toFixed(1)+' &nbsp;G: '+bal.G.toFixed(1)+' &nbsp;B: '+bal.B.toFixed(1);
+ html+='<br>R: '+bal.R.toFixed(3)+' &nbsp;G: '+bal.G.toFixed(3)+' &nbsp;B: '+bal.B.toFixed(3);
+ if(meterRgbBalanceFormula()==='perceptual'){
+  const perceptualGain=meterPerceptualRgbBalanceGain(rd);
+  if(perceptualGain>1.0005) html+='<br>Perceptual gain: '+perceptualGain.toFixed(2)+'x';
+ }
  if(gamma!=null) html+='<br>Gamma: '+gamma.toFixed(2);
  if(hit.deChroma!=null&&hit.deSelected!=null){
   // Separate-luminance split: bar total with its chroma/luminance parts.
