@@ -13877,16 +13877,16 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </div>
     <div id="meterTwoPointControls" style="display:none;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--surface-inset);border-radius:6px">
      <div style="font-size:.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">2pt Levels</div>
-     <div style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+     <div style="font-size:.72rem;color:var(--text2);display:grid;grid-template-columns:92px 92px;gap:4px 8px;align-items:end">
       <label for="meterTwoPointLow">Low Patch</label>
+      <label for="meterTwoPointLowCode">RGB Code</label>
       <input type="number" id="meterTwoPointLow" min="0" max="99" step="0.1" value="30" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
-      <label for="meterTwoPointLowCode" style="margin-top:2px">RGB Code</label>
       <input type="number" id="meterTwoPointLowCode" min="0" max="255" step="1" value="77" inputmode="numeric" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
      </div>
-     <div style="font-size:.72rem;color:var(--text2);display:flex;flex-direction:column;gap:4px">
+     <div style="font-size:.72rem;color:var(--text2);display:grid;grid-template-columns:92px 92px;gap:4px 8px;align-items:end">
       <label for="meterTwoPointHigh">High Patch</label>
+      <label for="meterTwoPointHighCode">RGB Code</label>
       <input type="number" id="meterTwoPointHigh" min="1" max="100" step="0.1" value="100" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
-      <label for="meterTwoPointHighCode" style="margin-top:2px">RGB Code</label>
       <input type="number" id="meterTwoPointHighCode" min="0" max="255" step="1" value="255" inputmode="numeric" style="width:92px;background:var(--surface-field);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;box-sizing:border-box">
      </div>
      <div style="font-size:.7rem;color:var(--text2);line-height:1.45;max-width:42ch"><span id="meterTwoPointCodeHint">RGB codes follow the active signal format, range, and bit depth.</span> Defaults use the common 30 / 100 two-point workflow.</div>
