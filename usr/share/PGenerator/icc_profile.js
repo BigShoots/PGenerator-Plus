@@ -1982,6 +1982,14 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    for(let i=0;i<600;i++){
     await new Promise(resolve=>setTimeout(resolve,2000));
     cancelCheck();
+    // Frame statistics only reflect presented frames, so the pre-ladder gate
+    // can pass on a stale pre-apply sample. Re-check once while patches are
+    // actually presenting: this sample is authoritative.
+    if(i===4){
+     const cs=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000});
+     const pm=String(cs&&cs.presentation_mode||'');
+     if(pm==='composed'||pm==='composition-failure') throw new Error('Presentation dropped to composed during the grey ladder — Windows is tone-mapping the output and these readings would be invalid. Click the Patch Companion window on the target computer, then rerun the fine-tune.');
+    }
     const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
     if(button) button.textContent='Pass '+pass+': reading '+(state&&state.current_step||0)+'/'+steps.length;
     meterIccFineTuneProgressStep('grey','active','Reading level '+(state&&state.current_step||0)+'/'+steps.length);
