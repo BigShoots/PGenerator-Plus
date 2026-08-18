@@ -517,6 +517,21 @@ async function meterIccPushCompanionDisplaySettings(showError,correctionOverride
  }
 }
 
+async function meterIccCompanionCycleFullscreen(){
+ // Re-entering fullscreen exercises Windows' presentation-promotion path.
+ // Measured on hardware: a swapchain demoted to composed by a profile
+ // apply's Advanced Color cycle re-promotes to hardware-overlay after a
+ // windowed round-trip, with no user input -- where renderer recreation,
+ // activation calls and injected clicks are all denied. Skip when the
+ // operator runs windowed: there is nothing to promote.
+ const configured=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+ if(configured!=='fullscreen') return;
+ await meterIccPushCompanionDisplaySettings(false,undefined,'window');
+ await new Promise(resolve=>setTimeout(resolve,2500));
+ await meterIccPushCompanionDisplaySettings(false,undefined,'fullscreen');
+ await new Promise(resolve=>setTimeout(resolve,3500));
+}
+
 function meterIccCompanionCorrectionChanged(source){
  // Only the calibration workspace still carries a correction selector. The
  // ICC workspace has none: a profile build forces no correction for its whole
@@ -1942,6 +1957,8 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
     if(i===39) throw new Error('Profile installation timed out');
    }
    meterIccFineTuneProgressStep('apply','done','Applied '+currentFile);
+   meterIccFineTuneProgressStep('apply','active','Cycling the patch window to restore hardware-overlay presentation...');
+   await meterIccCompanionCycleFullscreen();
    // Deterministic presentation gate, measured on hardware: after an apply's
    // Advanced Color cycle the fullscreen HDR swapchain can stay demoted to
    // DWM "composed" presentation, where Windows tone-maps output into the
@@ -2224,7 +2241,11 @@ async function meterIccInstallProfile(file,button){
   while(Date.now()<deadline){
    await new Promise(resolve=>setTimeout(resolve,750));
    const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
-   if(state&&state.status==='ok'){ showToast(state.message||('Installed and applied '+file),'success'); return; }
+   if(state&&state.status==='ok'){
+    showToast(state.message||('Installed and applied '+file),'success');
+    await meterIccCompanionCycleFullscreen();
+    return;
+   }
    if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
   }
   throw new Error('Patch Companion did not finish the profile installation');
