@@ -1976,7 +1976,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
    if(!promoted) throw new Error('The display pipeline stayed in composed presentation after the profile apply (Windows tone-maps composed output and the readings would be invalid). Click the Patch Companion window on the target computer, then rerun the fine-tune.');
    meterIccFineTuneProgressStep('apply','done','Applied '+currentFile+' (hardware-overlay presentation confirmed)');
    meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
-   const percents=[0,5,5,5,10,10,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,74,75,76,78,80,85,90,95,100,100];
+   const percents=[0,5,10,15,20,25,30,40,50,55,58,60,62,64,66,68,70,72,74,75,76,78,80,85,90,95,100];
    const steps=percents.map(pct=>({ire:pct,r:Math.round(pct*1023/100),g:Math.round(pct*1023/100),b:Math.round(pct*1023/100),input_max:1023}));
    const body=meterMeasurementSignalContext({
     type:'colors',points:990001,custom_series:true,custom_steps:steps,
