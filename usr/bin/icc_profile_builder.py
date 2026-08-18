@@ -1131,6 +1131,222 @@ def regularize_hdr_shadow_balance(curves):
     return result
 
 
+def sample_channel_response(samples, position):
+    """Sample a measured, normalized channel-response fit."""
+    position = max(0.0, min(1.0, position))
+    if position <= samples[0][0]:
+        return samples[0][1]
+    for index in range(1, len(samples)):
+        x0, y0 = samples[index - 1]
+        x1, y1 = samples[index]
+        if position <= x1:
+            fraction = 0.0 if x1 <= x0 else (position - x0) / (x1 - x0)
+            return y0 + fraction * (y1 - y0)
+    return samples[-1][1]
+
+
+def isotonic_curve(values):
+    """Pool adjacent curve reversals without extending a local high sample."""
+    blocks = []
+    for index, value in enumerate(values):
+        blocks.append([index, index, float(value), 1.0])
+        while (len(blocks) >= 2
+               and blocks[-2][2] / blocks[-2][3]
+               > blocks[-1][2] / blocks[-1][3]):
+            right = blocks.pop()
+            left = blocks.pop()
+            blocks.append([left[0], right[1], left[2] + right[2],
+                           left[3] + right[3]])
+    fitted = [0.0] * len(values)
+    for start, end, total, weight in blocks:
+        value = max(0.0, min(1.0, total / weight))
+        for index in range(start, end + 1):
+            fitted[index] = value
+    return fitted
+
+
+def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
+                                         neutral_gains, damping=0.25):
+    """Close the residual left by the fitted HDR MHC2 neutral model.
+
+    The forward profile fit and the per-channel curves are individually good
+    approximations, but a small disagreement between them is magnified at a
+    steep OLED knee. Predict their composed neutral output through the
+    measured simultaneous-channel response, solve only its remaining D65
+    error, then invert that same measured response back into MHC2 drive.
+
+    Plateau samples describe one physical output state and therefore share a
+    robust correction. Shadow chroma is smoothed and faded by meter signal.
+    Every correction is lower-or-hold in response space, bounded in device
+    code and protected by a deadband, so already-neutral displays are not
+    changed and noisy near-black reads cannot carve steps into the curves.
+
+    Returns True when a material plateau correction was applied. Callers use
+    this to keep the exact-white tail attached to the corrected shoulder.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(neutral_gains) != 3 or min(neutral_gains) <= 1e-6):
+        fail("Modeled MHC2 neutral correction has invalid calibration data")
+    channel_samples = neutral_channel_samples(rows, black, primaries)
+    black_xyz = black["xyz"]
+    axes = [
+        [primaries[column]["xyz"][axis] - black_xyz[axis]
+         for column in range(3)]
+        for axis in range(3)
+    ]
+    inverse_axes = mat_inv(axes)
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+
+    positions = sorted(set(
+        [index / 100.0 for index in range(101)]
+        + [sum(row["rgb"]) / 3.0 for row in rows
+           if max(row["rgb"]) - min(row["rgb"]) <= 0.002]
+    ))
+    modeled = []
+    for source_code in positions:
+        responses = []
+        for channel in range(3):
+            curve_input = nits_to_pq(
+                pq_to_nits(source_code) * neutral_gains[channel])
+            device_code = sample_table(luts[channel], curve_input)
+            responses.append(sample_channel_response(
+                channel_samples[channel], device_code))
+        xyz = [
+            black_xyz[axis] + sum(
+                axes[axis][channel] * responses[channel]
+                for channel in range(3))
+            for axis in range(3)
+        ]
+        if xyz[1] <= 0.0 or min(responses) <= 1e-8:
+            gains = [1.0, 1.0, 1.0]
+        else:
+            target_response = mat_vec_mul(
+                inverse_axes,
+                [xyz[1] * d65[axis] - black_xyz[axis]
+                 for axis in range(3)],
+            )
+            if min(target_response) <= 0.0:
+                gains = [1.0, 1.0, 1.0]
+            else:
+                gains = [max(0.85, min(1.15,
+                    target_response[channel] / responses[channel]))
+                    for channel in range(3)]
+                strongest = max(gains)
+                gains = [gain / strongest for gain in gains]
+                if max(gains) - min(gains) < 0.003:
+                    gains = [1.0, 1.0, 1.0]
+        modeled.append({
+            "code": source_code,
+            "y": xyz[1],
+            "gains": gains,
+            "rolloff": False,
+        })
+
+    peak = max(sample["y"] for sample in modeled)
+    rolloff_start = 0.90 * peak
+    for sample in modeled:
+        sample["rolloff"] = pq_to_nits(sample["code"]) >= rolloff_start
+    plateau = [sample for sample in modeled
+               if sample["rolloff"] and sample["code"] < 0.999]
+    stable = [sample for sample in plateau if sample["y"] >= 0.985 * peak]
+    if len(stable) < 3:
+        stable = plateau
+    plateau_material = False
+    if stable:
+        pooled = []
+        for channel in range(3):
+            values = sorted(math.log(max(sample["gains"][channel], 1e-6))
+                            for sample in stable)
+            middle = len(values) // 2
+            value = (values[middle] if len(values) % 2 else
+                     0.5 * (values[middle - 1] + values[middle]))
+            pooled.append(math.exp(value))
+        strongest = max(pooled)
+        pooled = [gain / strongest for gain in pooled]
+        plateau_material = max(pooled) - min(pooled) >= 0.003
+        for sample in modeled:
+            if sample["rolloff"]:
+                sample["gains"] = list(pooled)
+
+    original_logs = {
+        sample["code"]: [math.log(max(gain, 1e-6))
+                         for gain in sample["gains"]]
+        for sample in modeled if not sample["rolloff"]
+    }
+    for sample in modeled:
+        if sample["rolloff"] or sample["code"] > 0.45:
+            continue
+        weighted = [0.0, 0.0, 0.0]
+        weight_sum = 0.0
+        for neighbour in modeled:
+            if neighbour["rolloff"]:
+                continue
+            distance = abs(neighbour["code"] - sample["code"])
+            if distance >= 0.101:
+                continue
+            kernel = max(0.0, 1.0 - distance / 0.101)
+            reliability = smoothstep((neighbour["y"] - 0.03) / 0.97)
+            weight = kernel * (0.20 + 0.80 * reliability)
+            logs = original_logs[neighbour["code"]]
+            for channel in range(3):
+                weighted[channel] += weight * logs[channel]
+            weight_sum += weight
+        if weight_sum > 0.0:
+            sample["gains"] = [math.exp(value / weight_sum)
+                               for value in weighted]
+
+    effective = []
+    for sample in modeled:
+        strength = (1.0 if sample["rolloff"] else
+                    smoothstep((sample["y"] - 0.03) / 0.97))
+        effective.append((sample["code"], [
+            math.exp(damping * strength * math.log(max(gain, 1e-6)))
+            for gain in sample["gains"]
+        ]))
+
+    def residual_gain(source_code, channel):
+        if source_code <= effective[0][0]:
+            return effective[0][1][channel]
+        for index in range(1, len(effective)):
+            x0, gains0 = effective[index - 1]
+            x1, gains1 = effective[index]
+            if source_code <= x1:
+                fraction = 0.0 if x1 <= x0 else (
+                    (source_code - x0) / (x1 - x0))
+                return (gains0[channel] * (1.0 - fraction)
+                        + gains1[channel] * fraction)
+        return effective[-1][1][channel]
+
+    maximum_move = 0.0
+    entries = len(luts[0])
+    for channel in range(3):
+        updated = list(luts[channel])
+        for index in range(1, entries):
+            curve_input = index / float(entries - 1)
+            source_nits = pq_to_nits(curve_input) / neutral_gains[channel]
+            source_code = nits_to_pq(source_nits)
+            gain = residual_gain(source_code, channel)
+            if abs(gain - 1.0) < 0.0005:
+                continue
+            old = luts[channel][index]
+            response = sample_channel_response(channel_samples[channel], old)
+            new = invert_channel_response(
+                channel_samples[channel], max(0.0, response * gain))
+            delta = max(-0.012, min(0.012, new - old))
+            updated[index] = old + delta
+            maximum_move = max(maximum_move, abs(delta))
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return plateau_material and maximum_move >= 0.5 / 65536.0
+
+
+def smoothstep(value):
+    value = max(0.0, min(1.0, value))
+    return value * value * (3.0 - 2.0 * value)
+
+
 def apply_mhc2_profile_exact_white_tail(luts, evaluate, chad, damping=0.5):
     """Solve a profile-predicted exact-white residual in entries 253-255.
 
@@ -1853,8 +2069,11 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
+    plateau_corrected = apply_mhc2_modeled_neutral_residual(
+        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
     chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
-    if chad_payload and len(chad_payload) >= 44 and chad_payload[:4] == b"sf32":
+    if (not plateau_corrected and chad_payload and len(chad_payload) >= 44
+            and chad_payload[:4] == b"sf32"):
         chad_values = [value / 65536.0
                        for value in struct.unpack_from(">9i", chad_payload, 8)]
         chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
