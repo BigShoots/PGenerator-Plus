@@ -1958,6 +1958,17 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
   }
   return '';
  };
+ const installOnTarget=async targetFile=>{
+  const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:targetFile})});
+  if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
+  for(let i=0;i<40;i++){
+   await new Promise(resolve=>setTimeout(resolve,1500));
+   const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
+   if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) return;
+   if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
+  }
+  throw new Error('Profile installation timed out');
+ };
  try{
   let lastResult=null;
   for(let pass=1;pass<=MAX_PASSES;pass++){
@@ -1965,15 +1976,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
    if(button) button.textContent='Pass '+pass+': applying...';
    meterIccFineTuneProgressPass(pass);
    meterIccFineTuneProgressStep('apply','active','Installing '+currentFile+' on the target computer and applying it to the display');
-   const queued=await fetchJSON('/api/icc/companion/profile-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:currentFile})});
-   if(!queued||queued.status!=='ok'||!queued.job) throw new Error(queued&&queued.message||'Could not queue profile installation');
-   for(let i=0;i<40;i++){
-    await new Promise(resolve=>setTimeout(resolve,1500));
-    const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
-    if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) break;
-    if(state&&state.status==='error') throw new Error(state.message||'Profile installation failed');
-    if(i===39) throw new Error('Profile installation timed out');
-   }
+   await installOnTarget(currentFile);
    // Build 4 deliberately completes its post-install MHC2 foreground handoff
    // when the first HDR patch arrives. Before that command, the last idle
    // frame can legitimately still report "composed". Waiting for overlay here
@@ -1981,7 +1984,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
    // The in-series check below remains authoritative because patch delivery is
    // acknowledged only after the Companion has completed the handoff and
    // presented the calibrated frame again.
-   meterIccFineTuneProgressStep('apply','done','Installed '+currentFile+'; confirming hardware-overlay presentation with the first measurement patch');
+   meterIccFineTuneProgressStep('apply','done','Installed '+currentFile+'; confirming the calibrated HDR response with the first measurement patch');
    meterIccFineTuneProgressStep('grey','active','Starting the grey ladder reads...');
    // Measure the 66% pipeline canary first. DXGI can report "composed" on a
    // healthy AMD HDR path, so the measured PQ response is authoritative. A
@@ -2124,8 +2127,11 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor,tuneMhc2){
   const selected=await fetchJSON('/api/icc/finetune',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({action:'finalize',file:currentFile,output:outStem,session}),_timeoutMs:180000});
   if(!selected||selected.status!=='ok') throw new Error(selected&&selected.message||'Could not restore the best measured profile');
+  const selectedFile=String(selected.file||outStem+'.icc');
+  meterIccFineTuneProgressStep('finalize','active','Reapplying '+selectedFile+' so Windows reloads the selected MHC2 state...');
+  await installOnTarget(selectedFile);
   finalized=true;
-  meterIccFineTuneProgressStep('finalize','done','Kept pass '+Number(selected.best_pass||0)+' as '+String(selected.file||outStem+'.icc'));
+  meterIccFineTuneProgressStep('finalize','done','Kept and reapplied pass '+Number(selected.best_pass||0)+' as '+selectedFile);
   const selectedPass=passes.find(entry=>entry.pass===Number(selected.best_pass));
   passes.forEach(entry=>{ entry.selected=entry===selectedPass; });
   if(selectedPass&&selectedPass.result) lastResult=Object.assign({},selectedPass.result,{file:selected.file,selection:selected});
