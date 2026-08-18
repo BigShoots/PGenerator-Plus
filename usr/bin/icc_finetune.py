@@ -483,6 +483,12 @@ def stable_tail_start(values, tolerance=4.0 / 65536.0):
     return index if len(values) - index >= 4 else len(values)
 
 
+def mhc2_endpoint_start(entries):
+    """First table entry Windows uses for exact maximum-code HDR white."""
+    return max(1, min(entries - 1, int(math.ceil(
+        248.0 * (entries - 1) / 255.0))))
+
+
 def table_sample(data, base, count, value):
     value = max(0.0, min(1.0, value)) * (count - 1)
     low = min(int(value), count - 2)
@@ -647,14 +653,14 @@ def regularize_mhc2_neutral_samples(samples, damping):
         for sample in plateau_body:
             sample["gains"] = list(pooled)
         if endpoint is not None:
-            # Hardware A/B showed that Windows' exact maximum-code control is
-            # inverse to an ordinary sampled MHC2 table entry: raising red's
-            # final value reduced measured red. Rolloff gains are normalized
-            # drops for the channels that measured too strong, so reciprocate
-            # them into raise-only endpoint controls for those same channels.
-            # The final values are rebuilt from the held body below, making a
-            # later pass able to undo an earlier endpoint move cleanly.
-            endpoint["gains"] = [min(1.12, 1.0 / max(gain, 1e-6))
+            # The shoulder's normalized gains lower the channels measured too
+            # strong. Its separate high-tail control cannot be lowered below
+            # the monotonic held body, so express the same ratio by raising the
+            # weak channels instead. A hardware threshold sweep found that
+            # Windows samples the final ~3% of the MHC2 table for exact 100%
+            # white, while 76-99% stays on the ordinary held shoulder.
+            floor = max(min(endpoint["gains"]), 1e-6)
+            endpoint["gains"] = [min(1.12, gain / floor)
                                  for gain in endpoint["gains"]]
             endpoint["mhc2_endpoint"] = True
 
@@ -1262,6 +1268,10 @@ def finetune(payload, output_dir):
         endpoint_sample = next(
             (sample for sample in neutral_samples
              if sample.get("mhc2_endpoint")), None)
+        # 256-entry hardware probes located Windows' exact-white lookup in
+        # indices 248-255. Use the same normalized boundary for dense 4096-
+        # entry profiles rather than special-casing one table size.
+        endpoint_start = mhc2_endpoint_start(entries)
         for ch in range(3):
             base = off + lut_offsets[ch] + 8
             original_curve = [s15(data, base + index * 4)
@@ -1283,12 +1293,12 @@ def finetune(payload, output_dir):
                     continue
                 old = original_curve[index]
                 clipped = max(0.0, min(1.0, old))
-                if (is_hdr and index == entries - 1
+                if (is_hdr and index >= endpoint_start
                         and endpoint_sample is not None):
                     # Exact maximum code is a separate Windows Advanced Color
-                    # control point. Defer it until after the physical shoulder
-                    # has been held, so every pass starts from the body rather
-                    # than accumulating an endpoint-only offset.
+                    # tail region. Defer it until after the physical shoulder
+                    # has been held, so every pass rebuilds it from the body
+                    # rather than accumulating an endpoint-only offset.
                     new = clipped
                 elif is_hdr and panel_channel_samples is not None:
                     response = sample_pairs(panel_channel_samples[ch], clipped)
@@ -1306,7 +1316,8 @@ def finetune(payload, output_dir):
                     applied.append(abs(eff - 1.0))
             updated_curve = isotonic_values(updated_curve)
             if is_hdr:
-                tail_source = (original_curve[:-1] if endpoint_sample is not None
+                tail_source = (original_curve[:endpoint_start]
+                               if endpoint_sample is not None
                                else original_curve)
                 tail = stable_tail_start(tail_source)
                 if tail < entries - 1:
@@ -1318,13 +1329,16 @@ def finetune(payload, output_dir):
                                updated_curve[tail - 1] if tail else 0.0)
                     if endpoint_sample is not None:
                         endpoint_value = min(
-                            held + 0.02,
+                            held + 0.035,
                             held * endpoint_sample["effective"][ch])
                     else:
                         endpoint_value = max(held, updated_curve[-1])
-                    for index in range(tail, entries - 1):
+                    body_end = (endpoint_start if endpoint_sample is not None
+                                else entries)
+                    for index in range(tail, body_end):
                         updated_curve[index] = held
-                    updated_curve[-1] = endpoint_value
+                    for index in range(body_end, entries):
+                        updated_curve[index] = endpoint_value
             for index, value in enumerate(updated_curve):
                 put_s15(data, base + index * 4, value)
             updated_luts.append(updated_curve)
