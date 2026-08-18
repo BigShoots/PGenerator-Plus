@@ -2540,6 +2540,8 @@ def run_colprof(payload, ti3, output_path, profile_model, patch_set, icc_version
         if companion_build_offload(ti3, command, temporary_output, timeout_seconds):
             os.rename(temporary_output, output_path)
             return
+        if os.environ.get("PGEN_ICC_REQUIRE_OFFLOAD"):
+            fail("Patch Companion did not claim the required profile build")
         completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
         if completed.returncode != 0 or not os.path.isfile(temporary_output) or os.path.getsize(temporary_output) <= 0:
