@@ -496,8 +496,8 @@ function meterIccCompanionCorrectionValue(){
  return ['system','none','clut','matrix'].includes(requested)?requested:'system';
 }
 
-async function meterIccPushCompanionDisplaySettings(showError,correctionOverride){
- const mode=String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
+async function meterIccPushCompanionDisplaySettings(showError,correctionOverride,windowOverride){
+ const mode=windowOverride||String((document.getElementById('meterIccCompanionWindowMode')||{}).value||'window');
  const correctionMode=correctionOverride||meterIccCompanionCorrectionValue();
  const activeSignal=String((typeof meterChartSignalMode==='function'?meterChartSignalMode():'sdr')||'sdr').toLowerCase()==='hdr10'?'hdr10':'sdr';
  meterIccCompanionSettingsPending++;
@@ -1919,6 +1919,9 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
  let sessionStarted=false;
  let finalized=false;
  let sessionAnchorY=0;
+ // Sessions may follow an exit-fullscreen from a previous run; re-assert the
+ // configured window mode before the first apply and read.
+ await meterIccPushCompanionDisplaySettings(false);
  meterIccFineTuneCancelRequested=false;
  meterIccFineTuneProgressOpen(file,TUNE_COLOR,MAX_PASSES);
  const cancelCheck=()=>{ if(meterIccFineTuneCancelRequested) throw new Error('Fine-tune cancelled'); };
@@ -2124,6 +2127,7 @@ async function meterIccFineTuneProfile(file,button,tuneMode,tuneColor){
   // Success and checkpoint-restored failures both leave a new or updated
   // -FineTuned profile behind; refresh the history either way.
   meterIccLoadProfiles();
+  meterIccPushCompanionDisplaySettings(false,undefined,'window');
  }
 }
 
@@ -2757,6 +2761,9 @@ async function meterIccStart(){
   if(status) status.textContent=error&&error.message?error.message:'Could not start ICC profiling.';
   if(!(error&&error.icc_cancelled)) toast(error&&error.message?error.message:'Could not start ICC profiling',true);
   await meterIccRestoreCompanionCorrectionAfterProfile();
+  // The session is over: hand the desktop back instead of leaving the patch
+  // window covering the display until the next run re-applies fullscreen.
+  meterIccPushCompanionDisplaySettings(false,undefined,'window');
  }
 }
 
@@ -2852,6 +2859,9 @@ async function meterIccPoll(){
  }else{
    if(status) status.textContent=state.status==='error'?('Measurement failed: '+(state.current_name||'meter error')):'ICC profiling stopped.';
    await meterIccRestoreCompanionCorrectionAfterProfile();
+  // The session is over: hand the desktop back instead of leaving the patch
+  // window covering the display until the next run re-applies fullscreen.
+  meterIccPushCompanionDisplaySettings(false,undefined,'window');
   }
  }catch(error){
   const status=document.getElementById('meterIccStatus');
@@ -2948,6 +2958,9 @@ async function meterIccBuild(readings){
   meterIccSyncUi();
   meterUpdateReadButtons();
   await meterIccRestoreCompanionCorrectionAfterProfile();
+  // The session is over: hand the desktop back instead of leaving the patch
+  // window covering the display until the next run re-applies fullscreen.
+  meterIccPushCompanionDisplaySettings(false,undefined,'window');
  }
 }
 
@@ -2965,6 +2978,9 @@ async function meterIccStop(){
   meterIccSyncUi();
   meterUpdateReadButtons();
   await meterIccRestoreCompanionCorrectionAfterProfile();
+  // The session is over: hand the desktop back instead of leaving the patch
+  // window covering the display until the next run re-applies fullscreen.
+  meterIccPushCompanionDisplaySettings(false,undefined,'window');
   return;
  }
  if(!meterIccRunning) return;
