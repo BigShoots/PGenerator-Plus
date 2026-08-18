@@ -2094,7 +2094,7 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
         exact_probe = [list(curve) for curve in luts]
         if apply_mhc2_profile_exact_white_tail(
                 exact_probe, mft2_a2b_evaluator(model_profile), chad,
-                damping=2.5):
+                damping=3.0):
             # Windows' exact-maximum path attenuates a narrow dense-table
             # endpoint more than the ordinary shoulder. Scale the modeled
             # raise by the profile's own held-channel separation, with a
@@ -2107,8 +2107,8 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
                 if exact_probe[channel][-1] <= held[channel] + 1e-9:
                     endpoint = held[channel]
                 else:
-                    fraction = (0.60 if held[channel] <= weakest + 1e-9
-                                else 0.30)
+                    fraction = (0.63 if held[channel] <= weakest + 1e-9
+                                else 0.28)
                     movement_limit = max(0.0035, fraction * spread)
                     endpoint = min(held[channel] + 0.035,
                                    held[channel] + movement_limit,
