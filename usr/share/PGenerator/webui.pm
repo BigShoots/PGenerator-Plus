@@ -6899,6 +6899,11 @@ sub webui_meter_settings_load (@) {
      if($delay_user_set) {
       $json=~s/\{\s*/{"delay_user_set":true,"delay_explicit":true,/;
      }
+  # Absolute is the baseline RGB-balance presentation. Perceptual remains an
+  # explicit shadow-detail view and must only be restored when it was saved.
+  if($json!~/"rgb_formula"\s*:/) {
+   $json=~s/\{\s*/{"rgb_formula":"absolute",/;
+  }
   if($meter_target_gamma_auto ne "") {
    # Only seed the DV target gamma as a first-run default when none is
    # stored. Do NOT overwrite an operator-chosen value — the dropdown is
@@ -6931,6 +6936,7 @@ sub webui_meter_settings_load (@) {
   }
  }
    my @fallback_parts;
+   push @fallback_parts, '"rgb_formula":"absolute"';
    push @fallback_parts, "\"target_gamut\":\"$meter_target_gamut_auto\"" if($meter_target_gamut_auto ne "");
    push @fallback_parts, "\"target_gamma\":\"$meter_target_gamma_auto\"" if($meter_target_gamma_auto ne "");
    push @fallback_parts, "\"hdr_master_peak\":\"$peak\"";
@@ -14368,9 +14374,9 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
       </label>
       <label style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px" title="RGB balance method: Perceptual magnifies L* channel deviations by up to 20x near black and returns to normal at 100% IRE; Absolute uses the original unweighted L* calculation; Chromaticity uses linear RGB normalized to the target white.">
        RGB bal
-       <select id="meterRgbBalanceFormula" class="inline-select" onchange="meterOnGreyRefChange()">
-        <option value="perceptual">Perceptual (default)</option>
-        <option value="absolute">Absolute</option>
+       <select id="meterRgbBalanceFormula" class="inline-select" onchange="meterOnRgbBalanceFormulaChange()">
+        <option value="absolute" selected>Absolute (default)</option>
+        <option value="perceptual">Perceptual</option>
         <option value="hcfr">Chromaticity</option>
        </select>
       </label>
@@ -24608,7 +24614,7 @@ function ynToLstar(yn){
 function meterRgbBalanceFormula(){
  const sel=document.getElementById('meterRgbBalanceFormula');
  if(sel && sel.value) return sel.value;
- return 'perceptual';
+ return 'absolute';
 }
 
 // Perceptual RGB balance shadow emphasis. A fourth-power falloff concentrates
@@ -26408,6 +26414,31 @@ function meterQueueGreyAnalysisRefresh(){
   meterGreyAnalysisRefreshFrame=0;
   meterGreyAnalysisRefreshPaintFrame=window.requestAnimationFrame(meterDrawGreyAnalysisCharts);
  });
+}
+
+// RGB balance formula changes are presentation-only. Redraw the RGB canvas,
+// its hit zones, and the live RGB companion immediately from one formula state
+// so the plotted lines cannot lag behind the hover values while the general
+// two-frame analysis refresh queue is yielding to browser input.
+function meterOnRgbBalanceFormulaChange(){
+ try{ meterSaveColorPrefs(); }catch(e){}
+ if(!Array.isArray(meterReadings)||!meterReadings.length) return;
+ const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+ if(isColor||meterIsTwoPointGreyscale()){
+  drawAllCharts(meterReadings);
+  return;
+ }
+ if(typeof meterCancelRunningGreyscaleChartRefresh==='function') meterCancelRunningGreyscaleChartRefresh();
+ meterCancelQueuedGreyAnalysisRefresh();
+ const allStepsRaw=meterSeriesSteps?meterGreyscaleSeriesSteps(meterSeriesSteps):null;
+ const allSteps=allStepsRaw?meterFilterLgAutoCalChartItems(allStepsRaw):null;
+ const gs=meterFilterLgAutoCalChartItems(meterGreyscaleReadings(meterReadings));
+ if(!gs.length) return;
+ const readingMap=meterGreyscaleReadingMap(gs);
+ drawRGBChart(gs,allSteps,readingMap);
+ chartRegisterInteraction();
+ const live=meterCurrentPatchStep?meterFindReadingForStep(meterCurrentPatchStep):null;
+ if(live&&meterReadingIsRealMeasurement(live)) updateLiveReading(live);
 }
 
 function meterOnGreyRefChange(src){
@@ -48776,6 +48807,7 @@ function meterGreyscaleRgbBalanceReference(gs){
 function drawRGBChart(gs,allSteps,readingMap){
  const ctx=getChartCtx('chartRGB');
  if(!ctx) return;
+ ctx.canvas._meterRgbBalancePlot=null;
  let effectiveWhiteRGB=meterGreyscaleRgbBalanceReference(gs);
  if(!effectiveWhiteRGB||effectiveWhiteRGB.Y<=0){
   if(allSteps) drawRGBChartPreset(allSteps);
@@ -48789,6 +48821,9 @@ function drawRGBChart(gs,allSteps,readingMap){
  const greyMode=meterGreyRefMode();
  const blackLevel=meterChartBlackLevel(gs);
  gs.forEach(rd=>{balMap[rd.ire]=rgbBalance(rd,effectiveWhiteRGB,greyMode,blackLevel);});
+ // Keep the exact plotted values on the canvas. Hover registration consumes
+ // this same map instead of independently recalculating RGB balance.
+ ctx.canvas._meterRgbBalancePlot={formula:meterRgbBalanceFormula(),balanceByIre:balMap};
  // Auto-scale Y axis based on actual data, but keep the chart centered on 100.
  // Perceptual mode is explicitly a detail view, so permit a much tighter
  // minimum span than the conventional +/-5% balance chart.
@@ -52120,7 +52155,11 @@ function chartRegisterInteraction(){
    const visibleX=(xNorm-view.x0)/(view.x1-view.x0);
    if(visibleX<0||visibleX>1) return;
    const cx=pad.l+xInset+visibleX*dw;
-   const bal=effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode,rgbBlackLevel):{R:100,G:100,B:100};
+   const plotted=(cid==='chartRGB'&&canvas._meterRgbBalancePlot
+    &&canvas._meterRgbBalancePlot.formula===meterRgbBalanceFormula())
+    ? canvas._meterRgbBalancePlot.balanceByIre[rd.ire]
+    : null;
+   const bal=plotted||(effectiveWhiteRGB?rgbBalance(rd,effectiveWhiteRGB,greyMode,rgbBlackLevel):{R:100,G:100,B:100});
    _chartHitZones.push({canvasId:cid, cx:cx, cy:cH/2, radius:isBarChart?18:8, ire:step.ire, reading:rd,
     rgbBalance:bal, deSelected:deSelected[rd.ire], de2000:de2000[rd.ire], deChroma:sepLum?deChroma[rd.ire]:null, deLabel:deLabel});
   });
