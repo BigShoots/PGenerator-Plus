@@ -6629,7 +6629,7 @@ sub webui_meter_settings_save (@) {
 	 display_type ccss_override pattern_provider target_gamut delay delay_user_set delay_explicit pattern_delay patch_size patch_insert disable_aio
 	  patch_insert_patch_enabled patch_insert_patch_every patch_insert_patch_duration patch_insert_patch_level
 	  patch_insert_time_enabled patch_insert_time_frequency patch_insert_time_duration patch_insert_time_level
-    stabilization_pattern_enabled stabilization_pattern_stimulus
+    stabilization_pattern_enabled stabilization_pattern_stimulus stabilization_pattern_size
     refresh_rate ccss_file ccss_create_display_type measurement_meter_port profiling_meter_port custom_series_dirty
     low_light_enabled low_light_mode low_light_trigger
   grey_two_point_low grey_two_point_high
@@ -11131,6 +11131,7 @@ sub webui_grey_code_for_stimulus (@) {
 sub webui_meter_stabilization_settings (@) {
  my $enabled=0;
  my $stimulus=25;
+ my $size=100;
  foreach my $path ($_meter_settings_runtime,$_meter_settings_persist,$_meter_settings_persist_legacy,$_meter_settings_file) {
   next unless(-f $path);
   my $json="";
@@ -11138,18 +11139,27 @@ sub webui_meter_stabilization_settings (@) {
   next if($json eq "" || $json!~/^\s*\{/);
   $enabled=1 if($json=~/"stabilization_pattern_enabled"\s*:\s*(?:true|1|"1")/i);
   $stimulus=$1+0 if($json=~/"stabilization_pattern_stimulus"\s*:\s*"?(-?\d+(?:\.\d+)?)"?/i);
+  if($json=~/"stabilization_pattern_size"\s*:\s*"?(apl_\d+|\d+)"?/i) {
+   my $configured_size=lc($1);
+   if($configured_size=~/^apl_(5|10|18|25|50)$/) {
+    my $apl=int($1);
+    $size=($apl>10) ? 100+$apl : $apl;
+   } elsif($configured_size=~/^(2|5|10|18|25|50|75|100|105|110|118|125|150)$/) {
+    $size=int($configured_size);
+   }
+  }
   last;
  }
  $stimulus=0 if($stimulus < 0);
  $stimulus=100 if($stimulus > 100);
- return ($enabled,$stimulus);
+ return ($enabled,$stimulus,$size);
 }
 
 sub webui_meter_stabilization_active (@) {
- my ($enabled,$stimulus)=&webui_meter_stabilization_settings();
- return (0,$stimulus) if(!$enabled);
+ my ($enabled,$stimulus,$size)=&webui_meter_stabilization_settings();
+ return (0,$stimulus,$size) if(!$enabled);
  my $status=&webui_meter_status();
- return (($status=~/"detected"\s*:\s*true/i)?1:0,$stimulus);
+ return (($status=~/"detected"\s*:\s*true/i)?1:0,$stimulus,$size);
 }
 
 sub webui_meter_stabilization_code (@) {
@@ -11848,11 +11858,13 @@ sub webui_pattern (@) {
   }
  }
  my $stabilization_stimulus=25;
+ my $stabilization_size=100;
  if($name eq "stop") {
-  my ($stabilization_active,$configured_stimulus)=&webui_meter_stabilization_active();
+  my ($stabilization_active,$configured_stimulus,$configured_size)=&webui_meter_stabilization_active();
   if($stabilization_active) {
    $name="stabilization";
    $stabilization_stimulus=$configured_stimulus;
+   $stabilization_size=$configured_size;
   }
  }
  my $signal_mode=&webui_pattern_signal_mode($body);
@@ -12000,7 +12012,8 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
  }
 }
  # Generic patch takes r,g,b,size params from JSON. Stabilization uses the
- # same renderer path with a mode-correct neutral code and a forced full field.
+ # same renderer path with its independently configured geometry and a
+ # mode-correct neutral code.
  elsif($pat eq "" && ($name eq "patch" || $name eq "stabilization")) {
   my ($pr,$pg,$pb,$sz,$imax);
   if($name eq "stabilization") {
@@ -12009,8 +12022,8 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
    );
    $pg=$pr;
    $pb=$pr;
-   $sz=100;
-   &log("WebUI: displaying stabilization pattern at $stabilization_stimulus% stimulus");
+   $sz=$stabilization_size;
+   &log("WebUI: displaying stabilization pattern at $stabilization_stimulus% stimulus with size $stabilization_size");
   } else {
    ($pr)=$body=~/"r"\s*:\s*(\d+)/; $pr=0 if(!defined $pr);
    ($pg)=$body=~/"g"\s*:\s*(\d+)/; $pg=0 if(!defined $pg);
@@ -12525,6 +12538,7 @@ body.layout-tablet .meter-live-primary-values{flex-wrap:nowrap!important;overflo
 	.meter-pattern-insert-popover{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:50;padding:10px;background:#11131b;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 	.meter-pattern-insert-popover.open{display:block}
 	.meter-stabilization-grid{grid-template-columns:minmax(0,1fr);width:220px;min-width:0;max-width:calc(100vw - 48px)}
+	.meter-stabilization-grid select{width:100%;min-width:0;box-sizing:border-box}
 	.meter-stabilization-note{width:100%;min-width:0;max-width:100%;font-size:.65rem;color:var(--text2);line-height:1.4;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;box-sizing:border-box}
 	.meter-xyz-gear-wrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto}
 	.meter-xyz-gear{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--border);background:#0d0d15;color:var(--text2);border-radius:5px;cursor:pointer;font-size:.85rem;line-height:1;transition:color .15s,border-color .15s,background .15s;flex:0 0 auto}
@@ -13653,15 +13667,33 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
          </span>
         </div>
         <div class="meter-xyz-toggle-row" id="meterStabilizationToggleWrap">
-         <label class="meter-toggle meter-field-label" title="Keep a full-screen neutral patch on the selected patch generator while calibration is idle">
+         <label class="meter-toggle meter-field-label" title="Keep a neutral patch on the selected patch generator while calibration is idle">
           <input type="checkbox" id="meterStabilizationEnabled" disabled> Stabilization Pattern
          </label>
          <span class="meter-pattern-insert-wrap is-hidden">
           <button type="button" id="meterStabilizationGear" class="meter-pattern-insert-gear" aria-label="Stabilization pattern options" aria-expanded="false" title="Stabilization pattern options">&#9881;</button>
           <div class="meter-pattern-insert-popover" id="meterStabilizationPopover" role="dialog" aria-label="Stabilization pattern options">
            <div class="meter-pattern-insert-grid meter-stabilization-grid">
-            <div class="meter-stabilization-note">Uses a full-screen 100% area pattern at the selected stimulus whenever no measurement patch is displayed.</div>
+            <div class="meter-stabilization-note">Uses a 100% full-field pattern by default at the selected stimulus whenever no measurement patch is displayed.</div>
             <label>Stimulus <input id="meterStabilizationStimulus" type="number" min="0" max="100" step="1" value="25"><span>%</span></label>
+            <label>Patch Size
+             <select id="meterStabilizationSize">
+              <option value="2">2% Window</option>
+              <option value="5">5% Window</option>
+              <option value="10">10% Window</option>
+              <option value="18">18% Window</option>
+              <option value="25">25% Window</option>
+              <option value="50">50% Window</option>
+              <option value="75">75% Window</option>
+              <option value="100" selected>100% Full Field</option>
+              <option disabled>APL</option>
+              <option value="apl_5">5% APL (window on black)</option>
+              <option value="apl_10">10% APL (window on black)</option>
+              <option value="apl_18">18% APL (window on grey)</option>
+              <option value="apl_25">25% APL (window on grey)</option>
+              <option value="apl_50">50% APL (window on grey)</option>
+             </select>
+            </label>
            </div>
           </div>
          </span>
@@ -55061,6 +55093,7 @@ function saveMeterSettings(){
 	  patch_insert_time_level:val('meterPatchInsertTimeLevel','25')||'25',
 	  stabilization_pattern_enabled:chk('meterStabilizationEnabled'),
 	  stabilization_pattern_stimulus:val('meterStabilizationStimulus','25')||'25',
+	  stabilization_pattern_size:val('meterStabilizationSize','100')||'100',
 	  refresh_rate:val('meterRefreshRate'),
   ccss_file:customCcssFile||'',
   grey_patch_profiles_json:JSON.stringify(meterGreyPatchProfiles),
@@ -55283,6 +55316,7 @@ async function loadMeterSettings(attempt){
 	 }
 	 setChk('meterStabilizationEnabled',s.stabilization_pattern_enabled);
 	 setVal('meterStabilizationStimulus',s.stabilization_pattern_stimulus,'25');
+	 setVal('meterStabilizationSize',s.stabilization_pattern_size,'100');
 	 if(s.refresh_rate!=null) document.getElementById('meterRefreshRate').value=s.refresh_rate;
  // Color-science selections (server values win)
  const greyMode=meterNormalizeSavedGreyRefMode(s.grey_ref_mode,s.incl_lum);
@@ -55453,6 +55487,11 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  const stabilizationStimulusEl=document.getElementById('meterStabilizationStimulus');
  if(stabilizationStimulusEl) stabilizationStimulusEl.addEventListener('change',async()=>{
   stabilizationStimulusEl.value=String(meterNumberInput('meterStabilizationStimulus',25,0,100));
+  await saveMeterSettings();
+  await meterRefreshStabilizationIdlePattern(false);
+ });
+ const stabilizationSizeEl=document.getElementById('meterStabilizationSize');
+ if(stabilizationSizeEl) stabilizationSizeEl.addEventListener('change',async()=>{
   await saveMeterSettings();
   await meterRefreshStabilizationIdlePattern(false);
  });

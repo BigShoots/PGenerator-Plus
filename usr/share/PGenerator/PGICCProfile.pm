@@ -1034,10 +1034,10 @@ sub webui_icc_companion_pattern (@) {
  }
  # A stop/alignment command marks the selected patch generator as idle. When
  # stabilization is enabled, replace that idle target with the configured
- # full-screen neutral stimulus. The shared helper also verifies that a meter
+ # neutral stimulus and geometry. The shared helper also verifies that a meter
  # is still connected before allowing the replacement.
  if($idle_request) {
-  my ($stabilization_active,$stimulus)=&webui_meter_stabilization_active();
+  my ($stabilization_active,$stimulus,$size)=&webui_meter_stabilization_active();
   if($stabilization_active) {
    &webui_reload_pgenerator_conf();
    my $signal_mode=&webui_pattern_signal_mode($body);
@@ -1047,7 +1047,7 @@ sub webui_icc_companion_pattern (@) {
    my ($code,$input_max)=&webui_meter_stabilization_code($stimulus,$signal_mode,$signal_range,$max_bpc);
    my $max_luma=&webui_pattern_max_luma($body);
    $body='{"name":"stabilization","r":'.$code.',"g":'.$code.',"b":'.$code
-    .',"size":100,"input_max":'.$input_max.',"signal_mode":"'.$signal_mode
+    .',"size":'.$size.',"input_max":'.$input_max.',"signal_mode":"'.$signal_mode
     .'","signal_range":"'.$signal_range.'","max_luma":'.$max_luma.'}';
   }
  }
@@ -1068,7 +1068,9 @@ sub webui_icc_companion_pattern (@) {
   my $input_max=255; $input_max=$1 if($body=~/"(?:input_max|patch_input_max)"\s*:\s*(\d+)/);
   $input_max=255 if($input_max<1 || $input_max>65535);
   $r=$input_max if($r>$input_max); $g=$input_max if($g>$input_max); $b=$input_max if($b>$input_max);
-  my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/); $size=100 if($size<1 || $size>100);
+  my $size=100; $size=$1 if($body=~/"size"\s*:\s*(\d+)/);
+  my %allowed_apl_size=map { $_=>1 } (105,110,118,125,150);
+  $size=100 if(($size<1 || $size>100) && !$allowed_apl_size{$size});
   my $signal_mode="sdr"; $signal_mode=$1 if($body=~/"signal_mode"\s*:\s*"(sdr|hdr10|hlg|dv)"/);
   my $stabilization=($body=~/"name"\s*:\s*"stabilization"/i) ? ',"stabilization":true' : '';
   # Fall back to the configured HDR metadata, not to fixed literals. A display
