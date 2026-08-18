@@ -1907,6 +1907,7 @@ function meterIccFineTuneCancel(){
  meterIccFineTuneProgressNote('Cancel requested — stopping after the current step and keeping the best measured pass.');
  // Abort an in-flight meter read so the session notices promptly.
  fetchJSON('/api/meter/stop',{method:'POST',_quiet:true,_timeoutMs:5000});
+ meterIccFineTuneProgressHide();
 }
 
 function meterIccFineTuneProgressHide(){
