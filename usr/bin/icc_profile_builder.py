@@ -2315,16 +2315,44 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
         updated.extend(struct.pack(">HH", new_input_entries, new_output_entries))
         new_input_tables = []
         for channel in range(3):
-            table = []
+            quantized_table = []
             for index in range(new_input_entries):
                 encoded_xyz = index / float(new_input_entries - 1)
                 pcs = encoded_xyz / xyz_to_mft
                 relative = max(0.0, pcs / d50[channel])
                 pq_value = nits_to_pq(relative * white_y)
                 quantized = max(0, min(65535, int(round(pq_value * 65535.0))))
-                updated.extend(struct.pack(">H", quantized))
-                table.append(quantized / 65535.0)
-            new_input_tables.append(table)
+                quantized_table.append(quantized)
+
+            # Linear PCS has less than one full mft2 input-table interval at
+            # 5% PQ on a bright HDR display. Sampling the analytic shaper only
+            # at the fixed table nodes then gives X, Y and Z different PQ
+            # errors, which becomes a visible RGB-balance error after the
+            # output calibration. Pin the piecewise-linear table to the exact
+            # 5% mapping. This changes no target response; it removes the
+            # interpolation error at the first normally measurable HDR grey.
+            shadow_anchor = 0.05
+            anchor_encoded_xyz = (d50[channel]
+                                  * pq_to_nits(shadow_anchor) / white_y
+                                  * xyz_to_mft)
+            anchor_position = anchor_encoded_xyz * (new_input_entries - 1)
+            anchor_low = int(anchor_position)
+            anchor_fraction = anchor_position - anchor_low
+            if (anchor_low >= 0 and anchor_low + 2 < new_input_entries
+                    and anchor_fraction > 1e-9):
+                low_value = quantized_table[anchor_low] / 65535.0
+                needed = ((shadow_anchor
+                           - low_value * (1.0 - anchor_fraction))
+                          / anchor_fraction)
+                lower = quantized_table[anchor_low] / 65535.0
+                upper = quantized_table[anchor_low + 2] / 65535.0
+                if lower <= needed <= upper:
+                    quantized_table[anchor_low + 1] = max(
+                        0, min(65535, int(round(needed * 65535.0))))
+            updated.extend(struct.pack(">{}H".format(new_input_entries),
+                                       *quantized_table))
+            new_input_tables.append(
+                [value / 65535.0 for value in quantized_table])
 
         def pq_from_clut_coordinates(coordinates):
             # A uniform XYZ input table has fewer than two samples below 5%
@@ -2358,31 +2386,16 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
                     if spread <= 2:
-                        ordered = sorted(pq_coordinates)
-                        neutral_pq = ordered[1]
-                        neutral_pcs = [
-                            d50[channel] * pq_to_nits(neutral_pq) / white_y
-                            for channel in range(3)
-                        ]
-                        original_neutral = evaluate_original(neutral_pcs)
-                        result = [
-                            max(0.0, min(1.0, neutral_pq + original[channel]
-                                              - original_neutral[channel]))
-                            for channel in range(3)
-                        ]
+                        # Keep this corridor linear in each axis. Trilinear
+                        # interpolation then reproduces an on-axis request
+                        # exactly, leaving the dense output shapers as the one
+                        # owner of neutral calibration. Storing the median at
+                        # every nearby node biases the interpolation between
+                        # diagonal nodes; a two-thousandth code bias at 20% PQ
+                        # is enough to create a large OLED shadow colour error.
+                        result = list(pq_coordinates)
                     elif spread == 3:
-                        ordered = sorted(pq_coordinates)
-                        neutral_pq = ordered[1]
-                        neutral_pcs = [
-                            d50[channel] * pq_to_nits(neutral_pq) / white_y
-                            for channel in range(3)
-                        ]
-                        original_neutral = evaluate_original(neutral_pcs)
-                        anchored = [
-                            max(0.0, min(1.0, neutral_pq + original[channel]
-                                              - original_neutral[channel]))
-                            for channel in range(3)
-                        ]
+                        anchored = pq_coordinates
                         result = [(anchored[channel] + original[channel]) * 0.5
                                   for channel in range(3)]
                     else:
