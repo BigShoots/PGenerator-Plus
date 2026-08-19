@@ -868,10 +868,12 @@ function meterIccPatchesToSteps(patches,profileType,includeMetadataWhite){
  return steps;
 }
 
-async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite){
+async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite,profileModel){
  settings=settings||meterIccPatchSettings();
+ const payload=Object.assign({},settings,{profile_type:profileType});
+ if(profileModel) payload.profile_model=profileModel;
  const response=await fetchJSON('/api/icc/patches',{
-  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings),_timeoutMs:920000
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:920000
  });
  if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not generate the optimized patch set');
  return meterIccPatchesToSteps(response.patches,profileType,includeMetadataWhite);
@@ -880,6 +882,7 @@ async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite){
 async function meterIccGeneratePreconditionedSteps(readings,runConfig){
  const payload={
   profile_type:runConfig.profile_type,
+  profile_model:runConfig.profile_model,
   signal_mode:runConfig.signal_mode,
   name:runConfig.name+' precondition',
   meter_name:runConfig.meter_name,
@@ -2752,7 +2755,7 @@ async function meterIccStart(){
    meterIccSetProgress(usePreRead?'Preparing display pre-read':'Optimizing patch set',0,usePreRead?34:patchSettings.patch_count);
    steps=meterIccStampReuseSignature(usePreRead
     ?await meterIccGenerateSteps(type,meterIccPreReadSettings(),false)
-    :await meterIccGenerateSteps(type,patchSettings),reuseSignature);
+    :await meterIccGenerateSteps(type,patchSettings,undefined,profileModel),reuseSignature);
    measurementSteps=steps;
    if(!usePreRead&&previousReadings.length){
     const matches=meterIccMatchReusableReadings(steps,previousReadings,reuseSignature);

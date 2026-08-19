@@ -1207,10 +1207,11 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
     error, then invert that same measured response back into MHC2 drive.
 
     Plateau samples describe one physical output state and therefore share a
-    robust correction. Shadow chroma is smoothed and faded by meter signal.
-    Every correction is lower-or-hold in response space, bounded in device
-    code and protected by a deadband, so already-neutral displays are not
-    changed and noisy near-black reads cannot carve steps into the curves.
+    robust correction. The uniquely invertible body and shadows are already
+    handled by the measured neutral/Jacobian solve and are deliberately left
+    alone here. Every plateau correction is lower-or-hold in response space,
+    bounded in device code and protected by a deadband, so an already-neutral
+    display is unchanged.
 
     Returns True when a material plateau correction was applied. Callers use
     this to keep the exact-white tail attached to the corrected shoulder.
@@ -1300,37 +1301,9 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
             if sample["rolloff"]:
                 sample["gains"] = list(pooled)
 
-    original_logs = {
-        sample["code"]: [math.log(max(gain, 1e-6))
-                         for gain in sample["gains"]]
-        for sample in modeled if not sample["rolloff"]
-    }
-    for sample in modeled:
-        if sample["rolloff"] or sample["code"] > 0.45:
-            continue
-        weighted = [0.0, 0.0, 0.0]
-        weight_sum = 0.0
-        for neighbour in modeled:
-            if neighbour["rolloff"]:
-                continue
-            distance = abs(neighbour["code"] - sample["code"])
-            if distance >= 0.101:
-                continue
-            kernel = max(0.0, 1.0 - distance / 0.101)
-            reliability = smoothstep((neighbour["y"] - 0.03) / 0.97)
-            weight = kernel * (0.20 + 0.80 * reliability)
-            logs = original_logs[neighbour["code"]]
-            for channel in range(3):
-                weighted[channel] += weight * logs[channel]
-            weight_sum += weight
-        if weight_sum > 0.0:
-            sample["gains"] = [math.exp(value / weight_sum)
-                               for value in weighted]
-
     effective = []
     for sample in modeled:
-        strength = (1.0 if sample["rolloff"] else
-                    smoothstep((sample["y"] - 0.03) / 0.97))
+        strength = 1.0 if sample["rolloff"] else 0.0
         effective.append((sample["code"], [
             math.exp(damping * strength * math.log(max(gain, 1e-6)))
             for gain in sample["gains"]
@@ -1744,10 +1717,18 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
             fail("HDR low-light calibration requires measured single-channel ramps")
 
     color_measurements = []
+    neutral_probe_groups = {}
+    neutral_probe_pattern = re.compile(
+        r"^ICC Neutral Jacobian ([0-9]{4}) ([RGB])([+-])$")
     for row in rows:
         rgb = tuple(row["rgb"])
         if max(rgb) - min(rgb) > 0.002:
-            color_measurements.append((rgb, tuple(row["xyz"])))
+            measurement = (rgb, tuple(row["xyz"]), str(row.get("name", "")))
+            color_measurements.append(measurement)
+            match = neutral_probe_pattern.match(measurement[2])
+            if match:
+                center = int(match.group(1)) / 1023.0
+                neutral_probe_groups.setdefault(center, []).append(measurement)
 
     def measured_channel_xyz(channel, code):
         anchors = channel_measurements[channel]
@@ -1787,25 +1768,30 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
             for axis in range(3)
         )
 
-    def measured_local_jacobian(code):
-        """Fit a local physical RGB-to-XYZ derivative around neutral."""
-        center_xyz = measured_xyz_at_code(code)
-        nearby = sorted(
-            color_measurements,
-            key=lambda item: sum((item[0][channel] - code) ** 2
-                                 for channel in range(3)),
-        )[:12]
-        if len(nearby) < 12:
+    def fit_measured_jacobian(code, nearby, dedicated=False):
+        """Fit a physical RGB-to-XYZ derivative around one neutral code."""
+        minimum = 6 if dedicated else 12
+        if len(nearby) < minimum:
             return None, 0.0
+        if dedicated:
+            # The midpoint of symmetric +/- samples is a cleaner derivative
+            # origin than a separate neutral read. It cancels the common
+            # loading response and prevents a small center-read offset from
+            # being misclassified as a poor directional fit.
+            center_xyz = tuple(sum(item[1][axis] for item in nearby)
+                               / len(nearby) for axis in range(3))
+        else:
+            center_xyz = measured_xyz_at_code(code)
         bandwidth2 = max(1e-8, sum(
             (nearby[-1][0][channel] - code) ** 2 for channel in range(3)))
         normal = [[0.0] * 3 for _axis in range(3)]
         cross = [[0.0] * 3 for _axis in range(3)]
         weighted_actual = 0.0
         samples = []
-        for rgb, xyz in nearby:
+        for rgb, xyz, _name in nearby:
             distance2 = sum((rgb[channel] - code) ** 2 for channel in range(3))
-            weight = math.exp(-2.0 * distance2 / bandwidth2)
+            weight = (1.0 if dedicated else
+                      math.exp(-2.0 * distance2 / bandwidth2))
             device_delta = [rgb[channel] - code for channel in range(3)]
             xyz_delta = [xyz[axis] - center_xyz[axis] for axis in range(3)]
             samples.append((weight, device_delta, xyz_delta))
@@ -1835,6 +1821,12 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                 (xyz_delta[axis] - predicted[axis]) ** 2 for axis in range(3))
         fit = max(0.0, 1.0 - weighted_error / max(weighted_actual, 1e-12))
         radius = math.sqrt(bandwidth2)
+        if dedicated:
+            # Six symmetric probes at one loading level provide the derivative
+            # directly. Let their fit quality, rather than the distance to a
+            # random targen point, decide how much the solve can be trusted.
+            confidence = max(0.0, min(1.0, (fit - 0.45) / 0.45))
+            return jacobian, confidence
         # Requiring 32 neighbours made a 425-patch set reach far outside the
         # local HDR shoulder. Its radius then zeroed confidence completely and
         # silently fell back to Argyll's smoothed plateau, even though the 12
@@ -1844,6 +1836,58 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         coverage = max(0.0, min(1.0, (0.30 - radius) / 0.12))
         confidence = coverage * max(0.0, min(1.0, (fit - 0.35) / 0.55))
         return jacobian, confidence
+
+    dedicated_jacobians = []
+    for center, samples in sorted(neutral_probe_groups.items()):
+        # Reject incomplete groups. A cancelled measurement run must not turn
+        # three or four directional samples into a confident 3x3 inverse.
+        directions = set()
+        for _rgb, _xyz, name in samples:
+            match = neutral_probe_pattern.match(name)
+            if match:
+                directions.add(match.group(2) + match.group(3))
+        if directions != set(("R-", "R+", "G-", "G+", "B-", "B+")):
+            continue
+        jacobian, confidence = fit_measured_jacobian(
+            center, sorted(samples, key=lambda item: sum(
+                (item[0][channel] - center) ** 2 for channel in range(3))),
+            dedicated=True)
+        if jacobian is not None and confidence > 0.0:
+            dedicated_jacobians.append((center, jacobian, confidence))
+
+    def measured_local_jacobian(code):
+        """Fit or interpolate a local physical RGB-to-XYZ derivative."""
+        if dedicated_jacobians:
+            if code <= dedicated_jacobians[0][0]:
+                center, jacobian, confidence = dedicated_jacobians[0]
+                reach = max(0.0, min(1.0, 1.0 - (center - code) / 0.04))
+                if reach > 0.0:
+                    return jacobian, confidence * reach
+            elif code >= dedicated_jacobians[-1][0]:
+                center, jacobian, confidence = dedicated_jacobians[-1]
+                reach = max(0.0, min(1.0, 1.0 - (code - center) / 0.04))
+                if reach > 0.0:
+                    return jacobian, confidence * reach
+            else:
+                for index in range(1, len(dedicated_jacobians)):
+                    left = dedicated_jacobians[index - 1]
+                    right = dedicated_jacobians[index]
+                    if code <= right[0]:
+                        fraction = ((code - left[0])
+                                    / max(right[0] - left[0], 1e-9))
+                        jacobian = [[
+                            left[1][axis][channel] * (1.0 - fraction)
+                            + right[1][axis][channel] * fraction
+                            for channel in range(3)] for axis in range(3)]
+                        confidence = (left[2] * (1.0 - fraction)
+                                      + right[2] * fraction)
+                        return jacobian, confidence
+        nearby = sorted(
+            color_measurements,
+            key=lambda item: sum((item[0][channel] - code) ** 2
+                                 for channel in range(3)),
+        )[:12]
+        return fit_measured_jacobian(code, nearby)
 
     step = 2.0 / 1023.0
     curves = [[], [], []]
@@ -1912,6 +1956,8 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                     mat_inv(local_jacobian),
                     [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
                 )
+                local_delta = [max(-0.025, min(0.025, value))
+                               for value in local_delta]
                 delta = [local_delta[channel] * local_confidence
                          + delta[channel] * (1.0 - local_confidence)
                          for channel in range(3)]
@@ -1953,6 +1999,14 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                 model_weight = 1.0 - (target_fraction - 0.40) / 0.35
             else:
                 model_weight = min(1.0, (target_fraction - 0.75) / 0.15)
+        # Dedicated probes make the fitted model physically local even below
+        # the old 1.25%-of-peak cutoff. Raise its weight only as the actual
+        # measured signal becomes reliable; an incomplete or noisy probe set
+        # has low confidence and naturally falls back to the axis solution.
+        if dedicated_jacobians and local_confidence > 0.0:
+            signal_confidence = smoothstep((target_nits - 0.01) / 0.14)
+            model_weight = max(
+                model_weight, local_confidence * signal_confidence)
         for channel in range(3):
             model_value = max(0.0, min(plateau_code, base + delta[channel]))
             fallback_value = max(0.0, min(1.0, axis_rgb[channel]))
@@ -2045,7 +2099,14 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
     model_profile = profile_with_measured_chad(profile, black, white)
     source_curves = hdr_profile_calibration_from_a2b(
         model_profile, rows, fallback, entries=4096)
-    source_curves = regularize_hdr_shadow_balance(source_curves)
+    # The broad legacy smoother protects sparse charts from isolated meter
+    # noise, but it also spreads a real 5% correction into an otherwise good
+    # 10% point. Dedicated same-loading probes make that guess unnecessary.
+    # Preserve their locally solved curve exactly; old charts retain the
+    # conservative regularizer.
+    if not any(str(row.get("name", "")).startswith(
+               "ICC Neutral Jacobian ") for row in rows):
+        source_curves = regularize_hdr_shadow_balance(source_curves)
     wire = mhc2_wire_matrix("windows-hdr")
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
@@ -2894,6 +2955,73 @@ def parse_ti1_patches(path):
     return patches
 
 
+def hdr_neutral_jacobian_probes(payload):
+    """Return symmetric, same-loading probes for an HDR neutral derivative.
+
+    A generic optimized chart can place its nearest mixed-colour samples far
+    from the grey axis. That is enough for a forward cLUT, but it is not enough
+    to decide which channel to trim at a particular HDR grey level. Reserve a
+    small, deterministic part of HDR cLUT charts for +/- RGB perturbations at
+    useful neutral levels. The measurements let the calibration solve the
+    display's local behaviour instead of extrapolating isolated primary ramps.
+    """
+    profile_type = str(payload.get("profile_type", ""))
+    profile_model = str(payload.get("profile_model", ""))
+    if (profile_type not in ("kde-hdr", "windows-hdr")
+            or profile_model not in PROFILE_MODELS
+            or PROFILE_MODELS[profile_model]["family"] != "clut"):
+        return []
+    levels = (5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70)
+    delta = 12
+    probes = []
+    for percent in levels:
+        center = int(round(percent * 1023.0 / 100.0))
+        for channel, label in enumerate("RGB"):
+            for direction, suffix in ((-1, "-"), (1, "+")):
+                codes = [center, center, center]
+                codes[channel] = max(0, min(1023, center + direction * delta))
+                probes.append({
+                    "r": codes[0] / 1023.0,
+                    "g": codes[1] / 1023.0,
+                    "b": codes[2] / 1023.0,
+                    "name": "ICC Neutral Jacobian {:04d} {}{}".format(
+                        center, label, suffix),
+                })
+    return probes
+
+
+def inject_hdr_neutral_jacobian_probes(patches, payload, total):
+    """Replace redundant optimized rows with local HDR balance probes."""
+    requested = hdr_neutral_jacobian_probes(payload)
+    if not requested:
+        return patches
+    quantized = lambda patch: tuple(int(round(max(0.0, min(1.0,
+        float(patch[channel]))) * 1023.0)) for channel in ("r", "g", "b"))
+    existing = {quantized(patch) for patch in patches}
+    additions = []
+    for probe in requested:
+        key = quantized(probe)
+        if key not in existing:
+            additions.append(probe)
+            existing.add(key)
+    optimized = [index for index, patch in enumerate(patches)
+                 if str(patch.get("name", "")).startswith("ICC Optimized ")]
+    # Custom charts can devote every row to explicitly requested ramps. Add
+    # only complete six-probe level groups that fit by replacing optimized
+    # rows; never increase the user's requested measurement count.
+    replace_count = min(len(additions), len(optimized))
+    replace_count -= replace_count % 6
+    additions = additions[:replace_count]
+    if not additions:
+        return patches
+    remove = set(optimized[-replace_count:])
+    result = [patch for index, patch in enumerate(patches) if index not in remove]
+    result.extend(additions)
+    if len(result) > total:
+        result = result[:total]
+    return result
+
+
 def generate_patches(payload, output_dir):
     targen = os.environ.get("PGEN_TARGEN", "/usr/bin/targen")
     if not os.path.isfile(targen) or not os.access(targen, os.X_OK):
@@ -2935,6 +3063,7 @@ def generate_patches(payload, output_dir):
             detail = (output or "").strip().splitlines()
             fail("ArgyllCMS patch generation failed" + (": " + detail[-1][:240] if detail else ""))
         patches = parse_ti1_patches(ti1_path)
+        patches = inject_hdr_neutral_jacobian_probes(patches, payload, total)
         return {"status": "ok", "patches": patches, "count": len(patches)}
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2962,6 +3091,8 @@ def generate_preconditioned_patches(payload, output_dir):
         precondition_payload["profile_quality"] = "low"
         run_colprof(precondition_payload, ti3, profile_path, "matrix", "small")
         settings = dict(settings)
+        settings["profile_type"] = payload.get("profile_type")
+        settings["profile_model"] = payload.get("profile_model")
         settings["precondition_profile"] = "precondition.icc"
         result = generate_patches(settings, temp_dir)
         result["precondition_patches"] = len(rows)
