@@ -3676,8 +3676,18 @@ def build(payload, output_dir):
                     else:
                         profile = calibrated_profile
                 else:
+                    # The Companion evaluates HDR source PCS relative to the
+                    # profile's lumi tag. KDE's tag remains at the measured
+                    # characterization white, while calibrated Windows HDR
+                    # stores its lower post-MHC2 white there. Shape B2A in the
+                    # same domain its consumer will use. Shaping Windows B2A
+                    # against raw white made every cLUT request too large by
+                    # raw_white/calibrated_white before the calibration curves
+                    # ran, even though the MHC2 and B2A curves were identical.
+                    b2a_white = (luminance if keeps_mhc2 and luminance
+                                 else white["xyz"][1])
                     reshaped_profile = reshape_hdr_b2a_for_pq(
-                        virtual_profile, white["xyz"][1],
+                        virtual_profile, b2a_white,
                         incorporated_calibration=incorporated,
                         grid_size=33 if experiment.get("grid") == 33 else 65)
                     reshaped_tags = dict(read_icc_tags(reshaped_profile))
