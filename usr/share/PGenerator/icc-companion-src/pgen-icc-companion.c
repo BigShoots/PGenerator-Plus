@@ -106,12 +106,9 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.21"
-#define APP_BUILD "11"
+#define APP_VERSION "1.4.22"
+#define APP_BUILD "4"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
-/* Width in source code units over which the grey-axis calibration blends into
- * the cLUT result. */
-#define PGEN_NEUTRAL_BLEND 0.06
 #define RESPONSE_CAPACITY 32768
 #define PGEN_UNUSED __attribute__((unused))
 
@@ -581,6 +578,7 @@ typedef struct {
     char correction_profile[192];
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
+    bool windows_correction_isolated;
     int windowed_x;
     int windowed_y;
     int windowed_width;
@@ -1658,6 +1656,69 @@ static bool companion_tool_path(const char *name, char *out, size_t out_size)
     return true;
 }
 
+#ifdef _WIN32
+/* Explicit none/cLUT/matrix output must not run underneath Windows' per-user
+ * MHC2 calibration. The Profile Loader switches only the selected monitor's
+ * WCS scope and preserves every saved association. B2A0 remains loaded from
+ * the cached selected profile for cLUT/matrix evaluation; none submits the
+ * source directly to the same isolated output. */
+static bool windows_set_correction_isolation(bool isolate)
+{
+    char loader[1200], command[5000], monitor_utf8[1024] = "";
+    char profile_utf8[32768] = "", result_path[1500];
+    STARTUPINFOA startup;
+    PROCESS_INFORMATION process;
+    FILE *result;
+    bool accepted = false;
+    const char *directory;
+    if (app.windows_correction_isolated == isolate) return true;
+    if (!app.windows_monitor_path[0] || !app.correction_profile_path[0] ||
+        !companion_tool_path("PGenProfileLoader", loader, sizeof(loader)))
+        return false;
+    if (!WideCharToMultiByte(CP_UTF8, 0, app.windows_monitor_path, -1,
+                             monitor_utf8, sizeof(monitor_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, 0, app.correction_profile_path, -1,
+                             profile_utf8, sizeof(profile_utf8), NULL, NULL))
+        return false;
+    directory = SDL_GetPrefPath("PGeneratorPlus", "profiles");
+    if (!directory) return false;
+    SDL_snprintf(result_path, sizeof(result_path), "%scorrection-stage.result",
+                 directory);
+    remove(result_path);
+    SDL_snprintf(command, sizeof(command),
+                 "\"%s\" %s --profile \"%s\" --monitor \"%s\" --owner-pid %lu --result \"%s\"",
+                 loader,
+                 isolate ? "--isolate-for-correction"
+                         : "--restore-after-correction",
+                 profile_utf8, monitor_utf8,
+                 (unsigned long)GetCurrentProcessId(), result_path);
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    ZeroMemory(&process, sizeof(process));
+    if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL,
+                        &startup, &process))
+        return false;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    for (int attempt = 0; attempt < 480; attempt++) {
+        result = fopen(result_path, "rb");
+        if (result) {
+            char text[16] = "";
+            fread(text, 1, sizeof(text) - 1, result);
+            fclose(result);
+            accepted = !strncmp(text, "ok", 2);
+            break;
+        }
+        SDL_Delay(250);
+    }
+    remove(result_path);
+    if (!accepted) return false;
+    app.windows_correction_isolated = isolate;
+    SDL_SetAtomicInt(&app.presentation_recovery_pending, 1);
+    return true;
+}
+#endif
+
 /* Which build this is; only these three are packaged. Reported so the server
  * can describe what is genuinely unavailable instead of showing an empty value
  * as a failure - installing a finished profile through the Profile Loader, for
@@ -1939,13 +2000,10 @@ static double mhc2_curve_sample(const unsigned char *curve, uint32_t count,
  * bypassed once Advanced Color is on, so for HDR the Companion is the only
  * thing that can. A profile without the tag is left untouched.
  */
-/* Undo the MHC2 stage Windows applies to composed HDR output.
- *
- * Windows applies the active profile's MHC2 calibration to both the ordinary
- * window and our borderless composed fullscreen swapchain. Explicit cLUT,
- * matrix and no-correction modes pre-compensate with this inverse so only the
- * transform selected in the Companion reaches the display.
- */
+/* Undo MHC2 only for the diagnostic no-correction mode. Explicit cLUT and
+ * matrix modes suspend Windows' per-user profile stage instead, because a
+ * clipped MHC2 curve is not invertible and those modes must evaluate their
+ * selected transform without borrowing data from MHC2. */
 static bool apply_mhc2_inverse(double rgb[3])
 {
     static const double wire[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
@@ -2029,37 +2087,6 @@ static bool apply_vcgt(double rgb[3])
 }
 #endif
 
-static bool apply_local_mhc2(const double input[3], double output[3])
-{
-    static const double wire[3][3]={{0.6369580,0.1446169,0.1688810},{0.2627002,0.6779981,0.0593017},{0.0,0.0280727,1.0609851}};
-    IccTag tag=icc_tag(app.correction_profile_data,app.correction_profile_size,"MHC2");
-    double inverse_wire[3][3],linear[3],xyz[3],adjusted[3],target[3];
-    double matrix[3][3]={{1,0,0},{0,1,0},{0,0,1}};
-    uint32_t count,matrix_offset,curve_offsets[3];
-    if(!tag.data||tag.size<36||memcmp(tag.data,"MHC2",4))return false;
-    count=read_be32(tag.data+8);matrix_offset=read_be32(tag.data+20);
-    for(int channel=0;channel<3;channel++)curve_offsets[channel]=read_be32(tag.data+24+channel*4);
-    if(matrix_offset){
-        if(matrix_offset+48>tag.size)return false;
-        for(int row=0;row<3;row++)for(int column=0;column<3;column++)
-            matrix[row][column]=read_s15(tag.data+matrix_offset+(row*4+column)*4);
-    }
-    if(count>4096||(count>0&&count<2))return false;
-    if(count)for(int channel=0;channel<3;channel++)
-        if(curve_offsets[channel]<36||curve_offsets[channel]+8+(size_t)count*4>tag.size||
-           memcmp(tag.data+curve_offsets[channel],"sf32",4))return false;
-    if(!inverse_matrix3(wire,inverse_wire))return false;
-    for(int channel=0;channel<3;channel++)linear[channel]=pq_to_nits(input[channel])/10000.0;
-    for(int row=0;row<3;row++)xyz[row]=wire[row][0]*linear[0]+wire[row][1]*linear[1]+wire[row][2]*linear[2];
-    for(int row=0;row<3;row++)adjusted[row]=matrix[row][0]*xyz[0]+matrix[row][1]*xyz[1]+matrix[row][2]*xyz[2];
-    for(int row=0;row<3;row++)target[row]=inverse_wire[row][0]*adjusted[0]+inverse_wire[row][1]*adjusted[1]+inverse_wire[row][2]*adjusted[2];
-    for(int channel=0;channel<3;channel++){
-        double encoded=linear_to_pq(target[channel]);
-        output[channel]=count?mhc2_curve_sample(tag.data+curve_offsets[channel],count,encoded):encoded;
-    }
-    return true;
-}
-
 static bool load_correction_lut(uint64_t revision)
 {
     FILE *file;
@@ -2140,15 +2167,13 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     static const double d65_white[3]={0.9504559,1.0,1.0890578};
     double adaptation[3][3];
 
-    /* Windows 11 applies the active MHC2 transform to both ordinary windows
-     * and our borderless composed HDR swapchain. "None" therefore has to
-     * pre-cancel that OS stage; simply submitting the source values would
-     * still measure the active profile. Other platforms can pass through. */
+    /* On Windows the selected monitor's per-user profile stage is suspended
+     * before none/cLUT/matrix HDR handling reaches this function. None is the
+     * profiling path, so it must be literal source passthrough. Pre-inverting
+     * MHC2 here made raw characterizations depend on whether Windows happened
+     * to attach that stage to the HDR swapchain. */
     if(!strcmp(app.correction_mode,"none")) {
 #ifdef _WIN32
-        if(app.correction_profile_data&&
-           !strcmp(app.correction_signal_mode,"hdr10"))
-            apply_mhc2_inverse(rgb);
         *red=rgb[0];*green=rgb[1];*blue=rgb[2];
 #endif
         return true;
@@ -2187,23 +2212,6 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
     companion_source_xyz(rgb,app.correction_signal_mode,white_nits,adaptation,xyz);
     if(!strcmp(app.correction_mode,"clut")){if(!apply_local_clut(xyz,output))return false;}
     else if(!apply_local_matrix(xyz,output))return false;
-    /* A 3D cLUT cannot resolve the steep PQ shadow axis at its grid spacing.
-     * Use the profile's own MHC2 calibration for exact and near-neutral HDR
-     * requests, while chromatic requests continue through the selected cLUT
-     * or matrix transform. MHC2 is defined on wire codes, so it is the one
-     * correction that legitimately lives in the source domain. */
-    {
-        double direct[3];
-        double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
-        double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
-        double spread=high-low;
-        double weight=1.0-spread/PGEN_NEUTRAL_BLEND;
-        if(weight>0.0&&apply_local_mhc2(rgb,direct)){
-            if(weight>1.0)weight=1.0;
-            for(int channel=0;channel<3;channel++)
-                output[channel]=weight*direct[channel]+(1.0-weight)*output[channel];
-        }
-    }
 #ifndef __APPLE__
     /* Standard ICC order: vcgt runs on the transform's device output, exactly
      * where a video-card gamma table would. */
@@ -2214,41 +2222,10 @@ static bool apply_correction_lut(double *red, double *green, double *blue)
      * already runs after this transform - applying the tag here as well would
      * run it twice. */
 #endif
-    {
-#ifdef _WIN32
-        /* DWM will apply MHC2 after either borderless or windowed presentation.
-         * Cancel it before submitting an explicitly corrected cLUT/matrix
-         * result so that the requested transform reaches the display once. */
-        apply_mhc2_inverse(output);
-        /* Windows samples exact maximum-code white from a separate MHC2 tail.
-         * On a tone-mapped display that tail can have a different white
-         * balance from the otherwise-held shoulder, and a clipped cLUT
-         * endpoint cannot be pre-inverted back through it reliably. Detect a
-         * genuinely held MHC2 shoulder from the profile itself. For exact
-         * neutral only, submit the ordinary 95% shoulder code unchanged so
-         * the attached Windows MHC2 stage produces the same physical plateau
-         * as 80-95%. Identity and non-rolloff MHC2 curves fail this detector
-         * and keep the normal cLUT endpoint. */
-        if(!strcmp(app.correction_mode,"clut")&&
-           !strcmp(app.correction_signal_mode,"hdr10")){
-            double high=rgb[0]>rgb[1]?(rgb[0]>rgb[2]?rgb[0]:rgb[2]):(rgb[1]>rgb[2]?rgb[1]:rgb[2]);
-            double low=rgb[0]<rgb[1]?(rgb[0]<rgb[2]?rgb[0]:rgb[2]):(rgb[1]<rgb[2]?rgb[1]:rgb[2]);
-            if(high>=0.999&&high-low<=0.00001){
-                double lower_input[3]={0.90,0.90,0.90};
-                double shoulder_input[3]={0.95,0.95,0.95};
-                double lower_output[3],shoulder_output[3];
-                if(apply_local_mhc2(lower_input,lower_output)&&
-                   apply_local_mhc2(shoulder_input,shoulder_output)){
-                    double movement=0.0;
-                    for(int channel=0;channel<3;channel++)
-                        movement=fmax(movement,fabs(shoulder_output[channel]-lower_output[channel]));
-                    if(movement<=0.003)
-                        output[0]=output[1]=output[2]=0.95;
-                }
-            }
-        }
-#endif
-    }
+    /* Windows explicit modes suspend the selected monitor's per-user profile
+     * stage before reaching this function. Do not sample MHC2 locally and do
+     * not pre-invert it: B2A0 (plus a real vcgt when present) is the complete
+     * correction path the operator selected. */
     *red = output[0]; *green = output[1]; *blue = output[2];
     return true;
 }
@@ -3679,6 +3656,7 @@ static bool windows_set_borderless_windowed(bool fullscreen)
 {
     if (fullscreen) {
         SDL_Rect bounds;
+        const int composition_inset = 1;
         SDL_DisplayID display = SDL_GetDisplayForWindow(app.window);
         if (!display || !SDL_GetDisplayBounds(display, &bounds)) return false;
         if (!app.windowed_geometry_valid) {
@@ -3687,12 +3665,21 @@ static bool windows_set_borderless_windowed(bool fullscreen)
                                    &app.windowed_height)) return false;
             app.windowed_geometry_valid = true;
         }
-        /* Exact monitor coverage intentionally exercises Windows' fullscreen
-         * presentation promotion path. */
+        /* Keep the borderless measurement window one physical pixel inside
+         * the output. Exact monitor coverage makes Windows eligible for
+         * DirectFlip/MPO promotion, and this driver's promoted HDR path has a
+         * different shadow transfer and can lose the selected MHC2 stage.
+         * The inset is invisible to a centered measurement patch but keeps
+         * DWM composition deterministic without relying on another window
+         * (such as Chrome) to overlap the target display. */
         if (!SDL_SetWindowBordered(app.window, false) ||
             !SDL_SetWindowResizable(app.window, false) ||
-            !SDL_SetWindowPosition(app.window, bounds.x, bounds.y) ||
-            !SDL_SetWindowSize(app.window, bounds.w, bounds.h) ||
+            !SDL_SetWindowPosition(app.window,
+                                   bounds.x + composition_inset,
+                                   bounds.y + composition_inset) ||
+            !SDL_SetWindowSize(app.window,
+                               bounds.w - 2 * composition_inset,
+                               bounds.h - 2 * composition_inset) ||
             !SDL_SyncWindow(app.window)) return false;
     } else if (app.windowed_geometry_valid) {
         if (!SDL_SetWindowBordered(app.window, true) ||
@@ -4019,6 +4006,18 @@ static void companion_run_install(const char *poll_response)
         !job[0] || !file[0] || strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
         return;
     }
+#ifdef _WIN32
+    /* Profile installation changes the Windows default itself. Restore the
+     * normal profile scope before handing that job to the loader; the next
+     * settings poll will cache the newly installed B2A0 and isolate it again
+     * if explicit handling is still selected. */
+    if (app.windows_correction_isolated &&
+        !windows_set_correction_isolation(false)) {
+        companion_report_install(job, false,
+            "Patch Companion could not restore Windows profile handling before installation");
+        return;
+    }
+#endif
     SDL_snprintf(request, sizeof(request),
                  "/api/icc/companion/profile-install-data?token=%s&job=%s",
                  app.config.token, job);
@@ -4348,6 +4347,17 @@ static void poll_server(void)
                            active_profile_path, SDL_arraysize(active_profile_path),
                            reported_hdr_active, app.windows_monitor_path,
                            SDL_arraysize(app.windows_monitor_path));
+    /* WCS now reports the system-scope fallback while explicit correction is
+     * isolated. Keep reporting and evaluating the profile whose B2A0 bytes we
+     * cached before the switch; the fallback is deliberately not the selected
+     * transform. */
+    if (app.windows_correction_isolated && app.correction_profile[0]) {
+        SDL_strlcpy(active_profile, app.correction_profile,
+                    sizeof(active_profile));
+        wcsncpy(active_profile_path, app.correction_profile_path,
+                SDL_arraysize(active_profile_path) - 1);
+        active_profile_path[SDL_arraysize(active_profile_path) - 1] = L'\0';
+    }
 #else
     /* There is no DXGI swapchain and no OS presentation-mode query here.
      * Report what this build genuinely knows - the colorspace the renderer
@@ -4442,11 +4452,43 @@ static void poll_server(void)
         uint64_t settings_revision = (uint64_t)settings_revision_value;
         json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
+#ifdef _WIN32
+        {
+            bool wants_isolation = reported_hdr_active &&
+                (!strcmp(correction_mode, "none") ||
+                 !strcmp(correction_mode, "clut") ||
+                 !strcmp(correction_mode, "matrix")) &&
+                !strcmp(correction_signal_mode, "hdr10");
+            if (app.windows_correction_isolated && !wants_isolation) {
+                if (!windows_set_correction_isolation(false)) {
+                    app.correction_ready = false;
+                    SDL_strlcpy(app.correction_error,
+                                "Could not restore Windows profile handling on the selected display",
+                                sizeof(app.correction_error));
+                    app.next_poll_ms = SDL_GetTicks() + 500;
+                    return;
+                }
+                active_profile[0] = '\0';
+                active_profile_path[0] = L'\0';
+                windows_active_profile(app.window, active_profile,
+                                       sizeof(active_profile), active_profile_path,
+                                       SDL_arraysize(active_profile_path),
+                                       reported_hdr_active,
+                                       app.windows_monitor_path,
+                                       SDL_arraysize(app.windows_monitor_path));
+            }
+        }
+#endif
         if (settings_revision != app.correction_lut_revision ||
             strcmp(active_profile, app.correction_profile)) {
 #ifdef _WIN32
             bool correction_path_changed = strcmp(app.correction_mode,
                                                    correction_mode) != 0;
+            bool wants_isolation = reported_hdr_active &&
+                (!strcmp(correction_mode, "none") ||
+                 !strcmp(correction_mode, "clut") ||
+                 !strcmp(correction_mode, "matrix")) &&
+                !strcmp(correction_signal_mode, "hdr10");
 #endif
             SDL_strlcpy(app.correction_mode, correction_mode, sizeof(app.correction_mode));
             SDL_strlcpy(app.correction_profile, active_profile, sizeof(app.correction_profile));
@@ -4477,13 +4519,18 @@ static void poll_server(void)
 #endif
             load_correction_lut(settings_revision);
 #ifdef _WIN32
-            /* Explicit cLUT/matrix output pre-cancels the Windows MHC2 stage,
-             * so a handling-mode transition must prove that stage is attached
-             * before the next HDR patch is acknowledged. A same-window
-             * settings refresh previously rendered immediately but skipped
-             * the real minimize/restore foreground handoff, leaving cLUT
-             * accuracy dependent on the prior Windows state. */
-            if (correction_path_changed)
+            if (app.correction_ready && wants_isolation &&
+                !app.windows_correction_isolated &&
+                !windows_set_correction_isolation(true)) {
+                app.correction_ready = false;
+                SDL_strlcpy(app.correction_error,
+                                "Could not suspend Windows MHC2 for the selected explicit correction path",
+                            sizeof(app.correction_error));
+            }
+            /* The loader cycles Advanced Color when either isolating explicit
+             * B2A0 handling or restoring Windows system handling. Complete the
+             * foreground handoff before the next HDR patch is acknowledged. */
+            if (correction_path_changed || wants_isolation)
                 SDL_SetAtomicInt(&app.correction_recovery_pending, 1);
 #endif
         }
@@ -5271,6 +5318,11 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         SDL_SetAtomicInt(&state->quit_requested, 1);
         if (state->network_thread) SDL_WaitThread(state->network_thread, NULL);
         if (state->install_thread) SDL_WaitThread(state->install_thread, NULL);
+#ifdef _WIN32
+        if (state->windows_correction_isolated &&
+            !windows_set_correction_isolation(false))
+            SDL_Log("Could not restore Windows profile handling while exiting");
+#endif
 #if !defined(_WIN32) && !defined(__APPLE__)
         kwin_restore_profile_source();
 #endif

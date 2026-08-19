@@ -16,7 +16,7 @@
 #include <wctype.h>
 
 #define APP_NAME L"PGenerator+ Profile Loader"
-#define APP_VERSION L"1.3.5"
+#define APP_VERSION L"1.3.7"
 #define WM_TRAYICON (WM_APP + 1)
 #define WM_APPLY_DONE (WM_APP + 2)
 #define WM_BROWSE_DONE (WM_APP + 3)
@@ -104,8 +104,17 @@ static BOOL g_auto_reapply = TRUE;
 static BOOL g_startup_enabled;
 static WCHAR g_companion_result[MAX_PATH];
 static WCHAR g_pending_companion[2048];
+static BOOL g_correction_isolated;
+static BOOL g_isolation_was_per_user = TRUE;
+static HANDLE g_isolation_owner;
+static int g_profile_operation;
+#define PROFILE_OPERATION_APPLY 0
+#define PROFILE_OPERATION_ISOLATE 1
+#define PROFILE_OPERATION_RESTORE 2
 static void accept_profile_path(const WCHAR *path);
 static void start_apply_profile(void);
+static void start_profile_operation(int operation);
+static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive);
 static void write_companion_result(BOOL ok);
 static HBRUSH g_brush_input;
 static BOOL g_exiting;
@@ -462,6 +471,10 @@ static void save_settings(void) {
     WritePrivateProfileStringW(L"ProfileLoader", L"AutoReapply", g_auto_reapply ? L"1" : L"0", g_ini);
     WritePrivateProfileStringW(L"ProfileLoader", L"HasMHC2", g_profile_has_mhc2 ? L"1" : L"0", g_ini);
     WritePrivateProfileStringW(L"ProfileLoader", L"AdvancedAssociation", g_associate_advanced ? L"1" : L"0", g_ini);
+    WritePrivateProfileStringW(L"ProfileLoader", L"CorrectionIsolationActive",
+                               g_correction_isolated ? L"1" : L"0", g_ini);
+    WritePrivateProfileStringW(L"ProfileLoader", L"IsolationWasPerUser",
+                               g_isolation_was_per_user ? L"1" : L"0", g_ini);
 }
 
 static void load_settings(void) {
@@ -475,6 +488,12 @@ static void load_settings(void) {
     g_auto_reapply = GetPrivateProfileIntW(L"ProfileLoader", L"AutoReapply", 1, g_ini) != 0;
     g_profile_has_mhc2 = GetPrivateProfileIntW(L"ProfileLoader", L"HasMHC2", 0, g_ini) != 0;
     g_associate_advanced = GetPrivateProfileIntW(L"ProfileLoader", L"AdvancedAssociation", 0, g_ini) != 0;
+    g_correction_isolated = GetPrivateProfileIntW(L"ProfileLoader",
+                                                   L"CorrectionIsolationActive", 0,
+                                                   g_ini) != 0;
+    g_isolation_was_per_user = GetPrivateProfileIntW(L"ProfileLoader",
+                                                      L"IsolationWasPerUser", 1,
+                                                      g_ini) != 0;
     if (GetFileAttributesW(g_profile_path) != INVALID_FILE_ATTRIBUTES) {
         g_profile_has_mhc2 = profile_contains_mhc2(g_profile_path);
         /* Explicit builder markers remain authoritative. Otherwise upgrade a
@@ -1219,6 +1238,62 @@ static BOOL refresh_advanced_color_profile(DISPLAY_ENTRY *display) {
     return TRUE;
 }
 
+/* Explicit Companion cLUT/matrix handling already contains the profile's
+   calibration in B2A0 (or the matrix/TRC path). Windows must therefore stop
+   applying the per-user Advanced Color calibration underneath that test.
+   Toggling the per-user scope leaves every association and its ordering
+   intact, unlike removing the current default, which would promote an older
+   HDR profile from the same display's list. */
+static BOOL set_explicit_correction_isolation(BOOL isolate) {
+    DISPLAY_ENTRY *display = selected_display();
+    BOOL enabled = FALSE;
+    if (!display || !display->driver_key[0]) {
+        SetLastError(ERROR_NOT_FOUND);
+        return FALSE;
+    }
+    if (!WcsGetUsePerUserProfiles(display->driver_key, CLASS_MONITOR, &enabled))
+        return FALSE;
+    if (isolate) {
+        if (!g_correction_isolated) {
+            g_isolation_was_per_user = enabled;
+            g_correction_isolated = TRUE;
+            save_settings();
+        }
+        if (enabled && !WcsSetUsePerUserProfiles(display->driver_key,
+                                                 CLASS_MONITOR, FALSE))
+            return FALSE;
+    } else {
+        if (enabled != g_isolation_was_per_user &&
+            !WcsSetUsePerUserProfiles(display->driver_key, CLASS_MONITOR,
+                                      g_isolation_was_per_user))
+            return FALSE;
+        /* Re-enabling the per-user scope does not reliably reselect the
+           previous Advanced Color default. Reassert the exact cached profile
+           before the reload so system handling cannot fall back to the vendor
+           profile or another older association. */
+        if (g_isolation_was_per_user && !associate_profile(display, FALSE))
+            return FALSE;
+    }
+    /* Make DWM rebuild the Advanced Color path now. Without this, Windows can
+       retain the transform from the previous scope until an unrelated window
+       activation happens to rebuild it. */
+    if (!refresh_advanced_color_profile(display)) return FALSE;
+    if (!WcsGetUsePerUserProfiles(display->driver_key, CLASS_MONITOR, &enabled) ||
+        enabled != (isolate ? FALSE : g_isolation_was_per_user)) {
+        SetLastError(ERROR_INVALID_STATE);
+        return FALSE;
+    }
+    if (!isolate) {
+        g_correction_isolated = FALSE;
+        if (g_isolation_owner) {
+            CloseHandle(g_isolation_owner);
+            g_isolation_owner = NULL;
+        }
+    }
+    save_settings();
+    return TRUE;
+}
+
 static BOOL associate_profile(DISPLAY_ENTRY *display, BOOL interactive) {
     HRESULT hr;
     BOOL associated;
@@ -1448,7 +1523,12 @@ static void clear_display_default(void) {
 static DWORD WINAPI apply_profile_thread(LPVOID unused) {
     BOOL ok;
     (void)unused;
-    ok = apply_profile(TRUE);
+    if (g_profile_operation == PROFILE_OPERATION_ISOLATE)
+        ok = set_explicit_correction_isolation(TRUE);
+    else if (g_profile_operation == PROFILE_OPERATION_RESTORE)
+        ok = set_explicit_correction_isolation(FALSE);
+    else
+        ok = apply_profile(TRUE);
     write_companion_result(ok);
     PostMessageW(g_window, WM_APPLY_DONE, ok ? 1 : 0, 0);
     return 0;
@@ -1476,7 +1556,8 @@ static BOOL finish_companion_apply_if_active(void) {
     DISPLAY_ENTRY *display;
     WCHAR standard[MAX_PATH] = L"", advanced[MAX_PATH] = L"";
     const WCHAR *current;
-    if (!g_companion_result[0] || !g_profile_name[0] ||
+    if (g_profile_operation != PROFILE_OPERATION_APPLY ||
+        !g_companion_result[0] || !g_profile_name[0] ||
         InterlockedCompareExchange(&g_advanced_color_refresh_in_progress, 0, 0) != 0)
         return FALSE;
     display = selected_display();
@@ -1517,10 +1598,18 @@ static void apply_companion_command(const WCHAR *command) {
     WCHAR profile[MAX_PATH] = L"";
     WCHAR monitor[256] = L"";
     WCHAR result[MAX_PATH] = L"";
-    if (!command || !wcsstr(command, L"--apply-from-companion") ||
+    WCHAR owner_text[32] = L"";
+    BOOL isolate, restore;
+    DWORD owner_pid = 0;
+    if (!command) return;
+    isolate = wcsstr(command, L"--isolate-for-correction") != NULL;
+    restore = wcsstr(command, L"--restore-after-correction") != NULL;
+    if ((!wcsstr(command, L"--apply-from-companion") && !isolate && !restore) ||
         !command_value(command, L"--profile", profile, MAX_PATH)) return;
     command_value(command, L"--monitor", monitor, 256);
     command_value(command, L"--result", result, MAX_PATH);
+    if (command_value(command, L"--owner-pid", owner_text, 32))
+        owner_pid = wcstoul(owner_text, NULL, 10);
     if (monitor[0]) {
         wcsncpy_s(g_saved_monitor_path, 256, monitor, _TRUNCATE);
         enumerate_displays();
@@ -1540,16 +1629,27 @@ static void apply_companion_command(const WCHAR *command) {
        and the timer then set the old profile as default mid-session. */
     accept_profile_path(profile);
     save_settings();
+    g_profile_operation = isolate ? PROFILE_OPERATION_ISOLATE
+                                  : (restore ? PROFILE_OPERATION_RESTORE
+                                             : PROFILE_OPERATION_APPLY);
+    if (isolate && owner_pid) {
+        HANDLE owner = OpenProcess(SYNCHRONIZE, FALSE, owner_pid);
+        if (owner) {
+            if (g_isolation_owner) CloseHandle(g_isolation_owner);
+            g_isolation_owner = owner;
+        }
+    }
     if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0) {
         wcsncpy_s(g_pending_companion, 2048, command, _TRUNCATE);
         return;
     }
-    start_apply_profile();
+    start_profile_operation(g_profile_operation);
 }
 
-static void start_apply_profile(void) {
+static void start_profile_operation(int operation) {
     HANDLE thread;
     if (InterlockedCompareExchange(&g_apply_in_progress, 1, 0) != 0) return;
+    g_profile_operation = operation;
     EnableWindow(g_apply, FALSE);
     SetWindowTextW(g_apply, L"Applying...");
     set_pending_status(L"APPLYING PROFILE",
@@ -1567,11 +1667,20 @@ static void start_apply_profile(void) {
     CloseHandle(thread);
 }
 
+static void start_apply_profile(void) {
+    start_profile_operation(PROFILE_OPERATION_APPLY);
+}
+
 static void verify_profile(BOOL allow_reapply) {
     DISPLAY_ENTRY *display = selected_display();
     WCHAR actual[MAX_PATH + 128] = L"";
     WCHAR text[768];
     BOOL active;
+    if (g_correction_isolated) {
+        set_status(TRUE,
+                   L"Explicit cLUT/matrix correction is active. The selected display's per-user profile stage is temporarily suspended; all saved profile associations are unchanged.");
+        return;
+    }
     if (!display) {
         set_status(FALSE, L"No active display is available.");
         return;
@@ -2120,7 +2229,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         if (wp == TIMER_VERIFY) {
-            if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0)
+            if (g_correction_isolated && g_isolation_owner &&
+                WaitForSingleObject(g_isolation_owner, 0) == WAIT_OBJECT_0 &&
+                InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0) {
+                g_companion_result[0] = L'\0';
+                start_profile_operation(PROFILE_OPERATION_RESTORE);
+            } else if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) != 0)
                 finish_companion_apply_if_active();
             else if (InterlockedCompareExchange(&g_browse_in_progress, 0, 0) == 0
                      && !g_pending_companion[0])
@@ -2212,6 +2326,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DeleteObject(g_brush_background);
         DeleteObject(g_brush_card);
         if (g_brush_input) DeleteObject(g_brush_input);
+        if (g_isolation_owner) {
+            CloseHandle(g_isolation_owner);
+            g_isolation_owner = NULL;
+        }
         PostQuitMessage(0);
         return 0;
     }
@@ -2224,7 +2342,10 @@ static BOOL already_running(const WCHAR *command_line) {
     {
         HWND other = FindWindowW(L"PGeneratorPlusProfileLoaderWindow", NULL);
         if (other) {
-            if (command_line && wcsstr(command_line, L"--apply-from-companion")) {
+            if (command_line &&
+                (wcsstr(command_line, L"--apply-from-companion") ||
+                 wcsstr(command_line, L"--isolate-for-correction") ||
+                 wcsstr(command_line, L"--restore-after-correction"))) {
                 COPYDATASTRUCT copy;
                 copy.dwData = 1;
                 copy.cbData = (DWORD)((wcslen(command_line) + 1) * sizeof(WCHAR));
@@ -2245,7 +2366,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     MSG msg;
     INITCOMMONCONTROLSEX controls;
     BOOL tray_only = wcsstr(command_line, L"--tray") != NULL;
-    BOOL companion_apply = wcsstr(command_line, L"--apply-from-companion") != NULL;
+    BOOL companion_apply = wcsstr(command_line, L"--apply-from-companion") != NULL ||
+                           wcsstr(command_line, L"--isolate-for-correction") != NULL ||
+                           wcsstr(command_line, L"--restore-after-correction") != NULL;
     WCHAR *install_arg = wcsstr(command_line, L"--install-only ");
     (void)previous;
     if (install_arg) {
@@ -2302,8 +2425,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
                                 CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(714),
                                 NULL, NULL, instance, NULL);
     if (!g_window) return 1;
-    if (wcsstr(command_line, L"--apply-from-companion"))
+    if (companion_apply)
         apply_companion_command(command_line);
+    else if (g_correction_isolated &&
+             InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0) {
+        /* A persisted isolation flag means the previous Companion or loader
+           did not complete its normal restore. Recover the user's Windows
+           profile scope before doing ordinary tray verification. */
+        g_companion_result[0] = L'\0';
+        start_profile_operation(PROFILE_OPERATION_RESTORE);
+    }
     {
         DWORD corner = 2; /* DWMWCP_ROUND on Windows 11. */
         DwmSetWindowAttribute(g_window, 33, &corner, sizeof(corner));
