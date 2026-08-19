@@ -1805,8 +1805,20 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         ridge = max(1e-12, sum(normal[index][index] for index in range(3)) * 1e-7)
         for index in range(3):
             normal[index][index] += ridge
+        # The dedicated +/- probes use a deliberately small device-code
+        # displacement. Their normal matrix is therefore well-conditioned
+        # but has a determinant below mat_inv()'s absolute primary-matrix
+        # guard. Normalize its magnitude before inversion so the guard tests
+        # conditioning instead of rejecting every measured probe group.
+        normal_scale = max(abs(value) for row in normal for value in row)
+        if normal_scale <= 1e-18:
+            return None, 0.0
         try:
-            inverse = mat_inv(normal)
+            scaled_inverse = mat_inv([
+                [value / normal_scale for value in row] for row in normal
+            ])
+            inverse = [[value / normal_scale for value in row]
+                       for row in scaled_inverse]
         except Exception:
             return None, 0.0
         jacobian = [
