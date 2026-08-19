@@ -390,6 +390,13 @@ VCGT_ENTRIES = 1024
 # established SDR behaviour is validated on hardware.
 MHC2_HDR_LUT_ENTRIES = 4096
 MHC2_SDR_LUT_ENTRIES = 256
+# Windows has a distinct exact-maximum HDR presentation path. If the MHC2
+# matrix sends neutral maximum code to 1.0 or above, that path can clamp one
+# or more channels before the per-channel curves run even though every lower
+# code is correct. Reserve a small, generic matrix-domain margin and move the
+# inverse scale into the curves. The represented correction is unchanged;
+# only its location inside the MHC2 pipeline moves away from the clamp.
+MHC2_HDR_NEUTRAL_HEADROOM = 0.95
 
 
 def mhc2_lut_entries(profile_type):
@@ -977,8 +984,37 @@ def mhc2_wire_matrix(profile_type):
     return xy_matrix(((0.640, 0.330), (0.300, 0.600), (0.150, 0.060)), (0.3127, 0.3290))
 
 
+def mhc2_hdr_with_neutral_headroom(adjustment, luts, wire,
+                                   headroom=MHC2_HDR_NEUTRAL_HEADROOM):
+    """Move a uniform HDR matrix scale into its curves without changing it."""
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(adjustment, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    maximum_gain = max(neutral_gains)
+    if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
+        fail("HDR MHC2 calibration matrix has an invalid neutral response")
+    if maximum_gain <= headroom:
+        return adjustment, luts, 1.0
+
+    scale = headroom / maximum_gain
+    scaled = [[value * scale for value in row] for row in adjustment]
+    remapped = []
+    for curve in luts:
+        values = []
+        previous = 0.0
+        for index in range(len(curve)):
+            position = index / float(len(curve) - 1)
+            source_position = nits_to_pq(min(10000.0, pq_to_nits(position) / scale))
+            value = max(previous, max(0.0, min(1.0, sample_table(curve, source_position))))
+            values.append(value)
+            previous = value
+        values[0] = curve[0]
+        remapped.append(values)
+    return scaled, remapped, scale
+
+
 def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb",
-                 apply_calibration=True, adjustment_luts_override=None):
+                 apply_calibration=True, adjustment_luts_override=None,
+                 hdr_neutral_headroom=False):
     physical = measured_primary_matrix(black, white, primaries)
     wire = mhc2_wire_matrix(profile_type)
     identity = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
@@ -1003,21 +1039,6 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
             fail("HDR MHC2 calibration matrix has an invalid neutral response")
         calibrated_peak = black["xyz"][1] + (white["xyz"][1] - black["xyz"][1]) / maximum_gain
     entries = mhc2_lut_entries(profile_type)
-    header_size = 36
-    matrix_offset = header_size
-    lut0_offset = matrix_offset + 48
-    lut_bytes = 8 + entries * 4
-    offsets = (lut0_offset, lut0_offset + lut_bytes, lut0_offset + 2 * lut_bytes)
-    min_luminance = max(0.0, black["xyz"][1])
-    peak_luminance = max(calibrated_peak, min_luminance + 0.0001)
-    data = bytearray(b"MHC2" + b"\0\0\0\0")
-    data.extend(struct.pack(">I", entries))
-    data.extend(s15fixed16(min_luminance))
-    data.extend(s15fixed16(peak_luminance))
-    data.extend(struct.pack(">IIII", matrix_offset, *offsets))
-    for row in adjustment:
-        for value in (row[0], row[1], row[2], 0.0):
-            data.extend(s15fixed16(value))
     # MHC2 curves operate after Windows applies the wire transfer function.
     # They contain only the measured post-transfer adjustment, never the wire
     # transfer function itself. Both HDR and SDR invert the measured channel
@@ -1033,6 +1054,24 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
         luts = windows_sdr_adjustment_luts(rows, black, white, primaries, entries, target_transfer, wire, adjustment)
     else:
         luts = windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment)
+    if profile_type == "windows-hdr" and apply_calibration and hdr_neutral_headroom:
+        adjustment, luts, _ = mhc2_hdr_with_neutral_headroom(adjustment, luts, wire)
+
+    header_size = 36
+    matrix_offset = header_size
+    lut0_offset = matrix_offset + 48
+    lut_bytes = 8 + entries * 4
+    offsets = (lut0_offset, lut0_offset + lut_bytes, lut0_offset + 2 * lut_bytes)
+    min_luminance = max(0.0, black["xyz"][1])
+    peak_luminance = max(calibrated_peak, min_luminance + 0.0001)
+    data = bytearray(b"MHC2" + b"\0\0\0\0")
+    data.extend(struct.pack(">I", entries))
+    data.extend(s15fixed16(min_luminance))
+    data.extend(s15fixed16(peak_luminance))
+    data.extend(struct.pack(">IIII", matrix_offset, *offsets))
+    for row in adjustment:
+        for value in (row[0], row[1], row[2], 0.0):
+            data.extend(s15fixed16(value))
     for values in luts:
         data.extend(b"sf32" + b"\0\0\0\0")
         for value in values:
@@ -2577,12 +2616,11 @@ def validate_mhc2_profile(profile, expected_payload, physical, wire, expected_me
         fail("MHC2 correction curve contains an implausible single-step jump")
     if expect_calibration:
         residual = mat_mul(physical, mat_mul(mat_inv(wire), matrix))
-        # SDR white-point correction may need uniform headroom so no corrected
-        # channel exceeds 1.0. In that case the valid physical round trip is a
-        # positive scalar identity, not identity itself. HDR keeps its matrix
-        # unscaled and must still round-trip to exact identity here.
+        # SDR white-point correction and HDR endpoint protection may use a
+        # uniform matrix scale. In either case the valid physical round trip
+        # is a positive scalar identity, not identity itself.
         matrix_scale = (sum(residual[index][index] for index in range(3)) / 3.0
-                        if profile_type == "windows-sdr" else 1.0)
+                        if profile_type in ("windows-sdr", "windows-hdr") else 1.0)
         if matrix_scale <= 0.0 or matrix_scale > 1.002:
             fail("MHC2 correction matrix has an invalid round-trip scale")
         maximum_residual = max(
@@ -3271,7 +3309,10 @@ def build(payload, output_dir):
         "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
         mhc2_type, black, white, primaries, profile_rows, target_transfer or "srgb",
-        apply_calibration=calibration_mode != "none")
+        apply_calibration=calibration_mode != "none",
+        hdr_neutral_headroom=(
+            profile_type == "windows-hdr" and calibration_mode != "none"
+            and PROFILE_MODELS[profile_model]["family"] != "clut"))
     calibration = vcgt_from_mhc2(matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
     calibration_degenerate = False
     # A calibration is a trim: below the display's knee it must track the
@@ -3299,7 +3340,10 @@ def build(payload, output_dir):
             mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
                 mhc2_type, black, white, primaries, profile_rows,
                 target_transfer or "srgb", apply_calibration=True,
-                adjustment_luts_override=identity_mhc2)
+                adjustment_luts_override=identity_mhc2,
+                hdr_neutral_headroom=(
+                    profile_type == "windows-hdr"
+                    and PROFILE_MODELS[profile_model]["family"] != "clut"))
 
     # A separate VCGT starts with a profile of the calibrated virtual device.
     # KDE HDR calibration incorporated into B2A needs two models from the same
@@ -3366,7 +3410,8 @@ def build(payload, output_dir):
         mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
             mhc2_type, black, white, primaries, profile_rows,
             target_transfer or "srgb", apply_calibration=True,
-            adjustment_luts_override=adjustment_luts)
+            adjustment_luts_override=adjustment_luts,
+            hdr_neutral_headroom=True)
         calibration = vcgt_from_mhc2(
             matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
     # Every output follows one calibration path: generate and insert MHC2,
