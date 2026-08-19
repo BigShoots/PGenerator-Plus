@@ -2,8 +2,8 @@
 1 ICON "../favicon.ico"
 
 1 VERSIONINFO
-FILEVERSION 1,4,23,0
-PRODUCTVERSION 1,4,23,0
+FILEVERSION 1,4,24,0
+PRODUCTVERSION 1,4,24,0
  FILEOS 0x40004
  FILETYPE 0x1
 BEGIN
@@ -13,11 +13,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "PGenerator+"
    VALUE "FileDescription", "PGenerator+ Patch Companion"
-   VALUE "FileVersion", "1.4.23"
+   VALUE "FileVersion", "1.4.24"
    VALUE "InternalName", "PGeneratorPlusPatchCompanion"
    VALUE "OriginalFilename", "PGeneratorPlusPatchCompanion.exe"
    VALUE "ProductName", "PGenerator+ Patch Companion"
-   VALUE "ProductVersion", "1.4.23"
+   VALUE "ProductVersion", "1.4.24"
   END
  END
  BLOCK "VarFileInfo"
