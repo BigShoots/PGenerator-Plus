@@ -4453,12 +4453,12 @@ static void poll_server(void)
         json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
 #ifdef _WIN32
+        bool wants_isolation = reported_hdr_active &&
+            (!strcmp(correction_mode, "none") ||
+             !strcmp(correction_mode, "clut") ||
+             !strcmp(correction_mode, "matrix")) &&
+            !strcmp(correction_signal_mode, "hdr10");
         {
-            bool wants_isolation = reported_hdr_active &&
-                (!strcmp(correction_mode, "none") ||
-                 !strcmp(correction_mode, "clut") ||
-                 !strcmp(correction_mode, "matrix")) &&
-                !strcmp(correction_signal_mode, "hdr10");
             if (app.windows_correction_isolated && !wants_isolation) {
                 if (!windows_set_correction_isolation(false)) {
                     app.correction_ready = false;
@@ -4480,15 +4480,15 @@ static void poll_server(void)
         }
 #endif
         if (settings_revision != app.correction_lut_revision ||
-            strcmp(active_profile, app.correction_profile)) {
+            strcmp(active_profile, app.correction_profile)
+#ifdef _WIN32
+            || (wants_isolation && !app.windows_correction_isolated &&
+                !app.correction_ready)
+#endif
+            ) {
 #ifdef _WIN32
             bool correction_path_changed = strcmp(app.correction_mode,
                                                    correction_mode) != 0;
-            bool wants_isolation = reported_hdr_active &&
-                (!strcmp(correction_mode, "none") ||
-                 !strcmp(correction_mode, "clut") ||
-                 !strcmp(correction_mode, "matrix")) &&
-                !strcmp(correction_signal_mode, "hdr10");
 #endif
             SDL_strlcpy(app.correction_mode, correction_mode, sizeof(app.correction_mode));
             SDL_strlcpy(app.correction_profile, active_profile, sizeof(app.correction_profile));

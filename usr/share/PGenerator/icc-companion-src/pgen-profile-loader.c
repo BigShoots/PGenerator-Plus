@@ -107,6 +107,7 @@ static WCHAR g_pending_companion[2048];
 static BOOL g_correction_isolated;
 static BOOL g_isolation_was_per_user = TRUE;
 static HANDLE g_isolation_owner;
+static BOOL g_reject_next_isolate_for_stale_restore;
 static int g_profile_operation;
 #define PROFILE_OPERATION_APPLY 0
 #define PROFILE_OPERATION_ISOLATE 1
@@ -1619,6 +1620,17 @@ static void apply_companion_command(const WCHAR *command) {
         DeleteFileW(result);
         wcsncpy_s(g_companion_result, MAX_PATH, result, _TRUNCATE);
     }
+    /* A previous Companion can be terminated while explicit correction has
+       the per-user profile scope suspended. Loader startup restores the saved
+       scope synchronously, but the new Companion may already have queried the
+       temporary system fallback and sent it back in its first isolate request.
+       Reject that one stale request. The Companion will query the restored
+       profile and retry instead of caching or associating the fallback. */
+    if (isolate && g_reject_next_isolate_for_stale_restore) {
+        g_reject_next_isolate_for_stale_restore = FALSE;
+        write_companion_result(FALSE);
+        return;
+    }
     g_browse_has_mhc2 = profile_contains_mhc2(profile);
     g_browse_advanced = profile_is_hdr_association(profile);
     /* Adopt the requested profile as the loader's selection IMMEDIATELY,
@@ -2425,16 +2437,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
                                 CW_USEDEFAULT, CW_USEDEFAULT, px(728), px(714),
                                 NULL, NULL, instance, NULL);
     if (!g_window) return 1;
+    if (g_correction_isolated) {
+        /* Complete stale-isolation recovery before accepting commands from a
+           newly launched Companion. Running this synchronously closes the
+           installer/startup race where the Companion could cache Windows'
+           temporary system-scope fallback during the four-second Advanced
+           Color reload. The first isolate command is rejected below so the
+           Companion re-queries the restored per-user profile. */
+        BOOL restored;
+        g_profile_operation = PROFILE_OPERATION_RESTORE;
+        g_reject_next_isolate_for_stale_restore = TRUE;
+        set_pending_status(L"RESTORING PROFILE",
+                           L"Restoring the selected display profile after an interrupted explicit correction session.");
+        restored = set_explicit_correction_isolation(FALSE);
+        if (restored) {
+            refresh_display_profiles();
+            verify_profile(FALSE);
+        } else if (InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0) {
+            g_companion_result[0] = L'\0';
+            start_profile_operation(PROFILE_OPERATION_RESTORE);
+        }
+    }
     if (companion_apply)
         apply_companion_command(command_line);
-    else if (g_correction_isolated &&
-             InterlockedCompareExchange(&g_apply_in_progress, 0, 0) == 0) {
-        /* A persisted isolation flag means the previous Companion or loader
-           did not complete its normal restore. Recover the user's Windows
-           profile scope before doing ordinary tray verification. */
-        g_companion_result[0] = L'\0';
-        start_profile_operation(PROFILE_OPERATION_RESTORE);
-    }
     {
         DWORD corner = 2; /* DWMWCP_ROUND on Windows 11. */
         DwmSetWindowAttribute(g_window, 33, &corner, sizeof(corner));
