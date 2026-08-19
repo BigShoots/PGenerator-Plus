@@ -1117,7 +1117,6 @@ signal_startup_ready
 startup_marker "startup ready signaled"
 log "command loop ready"
 
-LAST_R="" LAST_G="" LAST_B="" LAST_PSIZE="" LAST_SIGNAL_MODE="" LAST_MAX_LUMA="" LAST_SIGNAL_RANGE="" LAST_TRANSPORT_SIGNAL_RANGE="" LAST_INPUT_MAX=""
 STARTUP_CALIBRATION_COMPLETED=0
 if (( WHITE_REF_DONE == 1 || DARK_CAL_DONE == 1 )); then
  STARTUP_CALIBRATION_COMPLETED=1
@@ -1179,15 +1178,15 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	   # Mark measuring so the polling endpoint knows a read is in flight.
 	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\"}"
 
-  # Re-display when the rendered patch changes, including transport fields
-  # like signal mode and mastering peak that affect how the same RGB codes map.
-	  if [[ "$PATTERN_PROVIDER" == "companion" || "$R" != "$LAST_R" || "$G" != "$LAST_G" || "$B" != "$LAST_B" || "$PSIZE" != "$LAST_PSIZE" || "$SIGNAL_MODE" != "$LAST_SIGNAL_MODE" || "$MAX_LUMA" != "$LAST_MAX_LUMA" || "$SIGNAL_RANGE" != "$LAST_SIGNAL_RANGE" || "$TRANSPORT_SIGNAL_RANGE" != "$LAST_TRANSPORT_SIGNAL_RANGE" || "$INPUT_MAX" != "$LAST_INPUT_MAX" ]]; then
-	   if ! post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"; then
-	    log "pattern provider failed for $NAME"
-	    continue
-	   fi
-	   LAST_R="$R"; LAST_G="$G"; LAST_B="$B"; LAST_PSIZE="$PSIZE"; LAST_SIGNAL_MODE="$SIGNAL_MODE"; LAST_MAX_LUMA="$MAX_LUMA"; LAST_SIGNAL_RANGE="$SIGNAL_RANGE"; LAST_TRANSPORT_SIGNAL_RANGE="$TRANSPORT_SIGNAL_RANGE"; LAST_INPUT_MAX="$INPUT_MAX"
-	   fi
+  # Always re-display the requested measurement patch before a read. The
+  # WebUI can replace it with the stabilization pattern after the previous
+  # read, so this long-lived worker cannot safely infer the current display
+  # from its last READ command. This also makes repeated reads of one patch
+  # behave the same for the local renderer and Patch Companion.
+	  if ! post_patch "$R" "$G" "$B" "$PSIZE" "$SIGNAL_MODE" "$MAX_LUMA" "$SIGNAL_RANGE" "$TRANSPORT_SIGNAL_RANGE" "$INPUT_MAX"; then
+	   log "pattern provider failed for $NAME"
+	   continue
+	  fi
 
   if (( SETTLE_MS > 0 )); then
    SETTLE_SEC=$(awk "BEGIN{printf \"%.3f\", $SETTLE_MS/1000.0}")
