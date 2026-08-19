@@ -1003,6 +1003,24 @@ def profile_association_tag(profile_type):
     return b"text" + b"\0\0\0\0" + association + b"\0"
 
 
+def profile_calibration_contract_tag(profile_type, calibration_mode, profile_model):
+    """Record how independent ICC consumers must obtain calibration.
+
+    A Windows HDR profile can serve two consumers that never run together:
+    Windows applies MHC2, while Patch Companion's explicit cLUT path evaluates
+    B2A0 with Windows colour handling isolated. In no-VCGT profile mode the
+    same neutral correction therefore lives in both representations. Keep a
+    private marker in the profile so fine-tune can update both without guessing
+    from a filename or an external sidecar.
+    """
+    if (profile_type == "windows-hdr" and calibration_mode == "profile"
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        contract = b"mhc2+b2a-shapers"
+    else:
+        contract = calibration_mode.encode("ascii")
+    return b"text" + b"\0\0\0\0" + contract + b"\0"
+
+
 def read_icc_tags(profile):
     if len(profile) < 132 or profile[36:40] != b"acsp":
         fail("ArgyllCMS did not create a valid ICC profile")
@@ -3256,11 +3274,10 @@ def build(payload, output_dir):
         # Backport of the KDE corridor in its raw flavor: rebuild the BToA
         # neutral corridor from the embedded characterization and continue
         # everything at or above measured white at the earliest measured
-        # plateau. The BToA of an MHC2 profile must keep emitting raw device
-        # codes because the MHC2 stage applies the calibration downstream,
-        # so no calibration curves are composed here. This removes the
-        # inverse-extrapolation region that read collapsed-to-white through
-        # every corrected path, without touching the fitted color transform.
+        # plateau. Calibration is composed into the output shapers only after
+        # this raw-domain repair, below. This removes the inverse-extrapolation
+        # region that read collapsed-to-white without touching the fitted color
+        # transform.
         repair_tool = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "icc_b2a_repair.py")
         repair_dir = tempfile.mkdtemp(prefix="pgen_b2a_repair_")
@@ -3309,8 +3326,10 @@ def build(payload, output_dir):
             shutil.move(repaired_path, output_path)
         finally:
             shutil.rmtree(repair_dir, ignore_errors=True)
-    if calibration_mode == "profile" and not keeps_mhc2:
-        if profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut":
+    if (calibration_mode == "profile"
+            and profile_type in ("kde-hdr", "windows-hdr")
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        if profile_type in ("kde-hdr", "windows-hdr"):
             # The dense original neutral series anchors luminance, while the
             # raw A2B local Jacobian supplies level-dependent white correction.
             # Re-express those same measurements through the resulting curves
@@ -3319,7 +3338,12 @@ def build(payload, output_dir):
             # output shapers. No validation or second measurement pass is used.
             with open(output_path, "rb") as handle:
                 raw_profile = handle.read()
-            if applied_calibration is not None:
+            if keeps_mhc2:
+                # Windows and explicit cLUT handling are independent consumers.
+                # Preserve the exact MHC2 neutral correction in B2A rather than
+                # deriving a nearby composed-only curve family.
+                modeled_calibration = calibration
+            elif applied_calibration is not None:
                 # The rows were measured with these curves physically applied
                 # on the display: they arrive as the calibration contract and
                 # no derivation runs. A shaper-style characterization has no
@@ -3340,7 +3364,8 @@ def build(payload, output_dir):
                     profile_rows, black, white, primaries, 256,
                     mhc2_wire_matrix(mhc2_type), matrix, hold_plateau=False),
                 mhc2_wire_matrix(mhc2_type))
-            if applied_calibration is None and experiment.get("calibration_source", "windows") == "windows":
+            if (not keeps_mhc2 and applied_calibration is None
+                    and experiment.get("calibration_source", "windows") == "windows"):
                 # Deriving the calibration the way windows-hdr builds refine
                 # their MHC2 curves closed the rolloff band from 3.35 to 2.20
                 # average dE-ITP on the MSI 321URX acceptance runs and beat the
@@ -3383,12 +3408,14 @@ def build(payload, output_dir):
                     if win_peak >= 0.75 * white["xyz"][1]:
                         modeled_calibration = vcgt_from_mhc2(
                             win_matrix, win_luts, mhc2_wire_matrix(mhc2_type))
-            elif applied_calibration is None and experiment.get("calibration_source") == "mhc2":
+            elif (not keeps_mhc2 and applied_calibration is None
+                  and experiment.get("calibration_source") == "mhc2"):
                 # The MHC2-equivalent curves as the live stages apply them,
                 # tail held at the plateau. This is the A/B against the pinned
                 # composed input above.
                 modeled_calibration = calibration
-            elif applied_calibration is None and experiment.get("calibration_source") == "modeled":
+            elif (not keeps_mhc2 and applied_calibration is None
+                  and experiment.get("calibration_source") == "modeled"):
                 pass  # keep hdr_profile_calibration_from_a2b's curves
             # The measured/modelled curve already contains the dense neutral
             # inversion and the level-dependent D65 correction. Do not splice
@@ -3460,24 +3487,33 @@ def build(payload, output_dir):
                     calibrated_profile = handle.read()
                 if experiment.get("skip_reshape"):
                     # Keep applycal's stock composed B2A untouched.
-                    profile = rebuild_icc(calibrated_profile, {b"MHC2": None, b"vcgt": None})
-                    profile = rebuild_icc(
-                        profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+                    if keeps_mhc2:
+                        calibrated_tags = dict(read_icc_tags(calibrated_profile))
+                        replacements = {
+                            signature: calibrated_tags[signature]
+                            for signature in (b"B2A0", b"B2A1", b"B2A2")
+                            if signature in calibrated_tags
+                        }
+                        profile = rebuild_icc(raw_profile, replacements)
+                    else:
+                        profile = calibrated_profile
                 else:
                     reshaped_profile = reshape_hdr_b2a_for_pq(
                         virtual_profile, white["xyz"][1],
                         incorporated_calibration=incorporated,
                         grid_size=33 if experiment.get("grid") == 33 else 65)
                     reshaped_tags = dict(read_icc_tags(reshaped_profile))
+                    shaped_signatures = ((b"B2A0", b"B2A1", b"B2A2")
+                                         if keeps_mhc2
+                                         else (b"B2A0", b"B2A1", b"B2A2", b"lumi"))
                     replacements = {
                         signature: reshaped_tags[signature]
-                        for signature in (b"B2A0", b"B2A1", b"B2A2", b"lumi")
+                        for signature in shaped_signatures
                         if signature in reshaped_tags
                     }
-                    profile = rebuild_icc(calibrated_profile, replacements)
-                    profile = rebuild_icc(profile, {b"MHC2": None, b"vcgt": None})
                     profile = rebuild_icc(
-                        profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
+                        raw_profile if keeps_mhc2 else calibrated_profile,
+                        replacements)
                     if experiment.get("refine"):
                         # Off by default: on the MSI 321URX acceptance runs the
                         # forward-model refinement worsened ColorChecker dE2000
@@ -3485,6 +3521,13 @@ def build(payload, output_dir):
                         # grey cast. Kept as an opt-in for comparisons.
                         profile = refine_hdr_b2a_from_forward_model(
                             profile, raw_profile, white["xyz"][1])
+                profile = rebuild_icc(profile, {
+                    b"MHC2": mhc2 if keeps_mhc2 else None,
+                    b"vcgt": None,
+                    b"lumi": (xyz_tag((0.0, luminance, 0.0))
+                              if keeps_mhc2 else dict(read_icc_tags(profile)).get(b"lumi")),
+                    b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None,
+                })
             finally:
                 shutil.rmtree(virtual_dir, ignore_errors=True)
             with open(output_path, "wb") as handle:
@@ -3522,13 +3565,18 @@ def build(payload, output_dir):
                     shutil.move(repaired_path, output_path)
                 finally:
                     shutil.rmtree(repair_dir, ignore_errors=True)
-        else:
-            apply_profile_calibration(output_path, calibration)
+    elif calibration_mode == "profile" and not keeps_mhc2:
+        apply_profile_calibration(output_path, calibration)
     association = profile_association_tag(profile_type)
-    if association is not None:
+    calibration_contract = profile_calibration_contract_tag(
+        profile_type, calibration_mode, profile_model)
+    if association is not None or calibration_contract is not None:
         with open(output_path, "rb") as handle:
             profile = handle.read()
-        profile = rebuild_icc(profile, {b"pGAs": association})
+        profile = rebuild_icc(profile, {
+            b"pGAs": association,
+            b"pGCm": calibration_contract,
+        })
         with open(output_path, "wb") as handle:
             handle.write(profile)
 

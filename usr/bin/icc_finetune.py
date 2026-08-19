@@ -13,9 +13,10 @@ supported, selected from the parent's own tags:
   panel, so gains are normalised to drops and only the white balance of
   the plateau is corrected.
 - MHC2 profiles: neutral corrections land in the MHC2 per-channel adjustment
-  curves (and the cloned vcgt when present). Reachable colour reads fit a
-  small D65-preserving residual correction into the MHC2 3x3 matrix. These
-  are the stages Windows and the patched KWin actually apply.
+  curves and in the selected secondary representation: cloned vcgt, or B2A
+  output shapers for a no-VCGT dual-consumer profile. Reachable colour reads
+  fit a small D65-preserving residual correction into MHC2 and independently
+  correct B2A, so Windows handling and explicit cLUT handling remain complete.
 - SDR cLUT profiles (no PQ cicp): identical corridor treatment with
   targets from the profile white and the transfer the parent was built
   against, instead of PQ.
@@ -472,6 +473,77 @@ def sample_values(values, position):
     return values[low] * (1.0 - fraction) + values[low + 1] * fraction
 
 
+def invert_values(values, target):
+    """Invert a normalized monotonic table, choosing the start of plateaus."""
+    target = max(values[0], min(values[-1], target))
+    if target <= values[0]:
+        return 0.0
+    low, high = 0, len(values) - 1
+    while high - low > 1:
+        middle = (low + high) // 2
+        if values[middle] < target:
+            low = middle
+        else:
+            high = middle
+    before, after = values[low], values[high]
+    fraction = 0.0 if after <= before else (target - before) / (after - before)
+    return (low + fraction) / float(len(values) - 1)
+
+
+def mhc2_neutral_curves(matrix, adjustment_luts, entries=4096):
+    """Clone Windows HDR MHC2's complete neutral-axis output as three curves."""
+    wire = [[0.6369580, 0.1446169, 0.1688810],
+            [0.2627002, 0.6779981, 0.0593017],
+            [0.0000000, 0.0280727, 1.0609851]]
+    inverse_wire = mat_inv(wire)
+    if inverse_wire is None:
+        raise ValueError("BT.2020 wire matrix is invalid")
+    curves = [[], [], []]
+    for index in range(entries):
+        position = index / float(entries - 1)
+        linear = [pq_to_nits(position) / 10000.0] * 3
+        target = mat_vec(inverse_wire, mat_vec(matrix, mat_vec(wire, linear)))
+        for channel in range(3):
+            encoded = nits_to_pq(max(0.0, target[channel]) * 10000.0)
+            encoded = sample_values(adjustment_luts[channel], encoded)
+            curves[channel].append(max(0.0, min(1.0, encoded)))
+    for channel in range(3):
+        curves[channel] = isotonic_values(curves[channel])
+    return curves
+
+
+def remap_b2a_output_calibration(data, tags, old_curves, new_curves):
+    """Replace C_old(base) with C_new(base) in every mft2 B2A shaper."""
+    changed = False
+    for tag in ("B2A0", "B2A1"):
+        if tag not in tags:
+            continue
+        off, size = tags[tag]
+        if size < 52 or bytes(data[off:off + 4]) != b"mft2":
+            continue
+        inputs, outputs, grid = data[off + 8], data[off + 9], data[off + 10]
+        in_entries, out_entries = struct.unpack(">HH", bytes(data[off + 48:off + 52]))
+        if inputs != 3 or outputs != 3 or grid < 2 or min(in_entries, out_entries) < 2:
+            continue
+        out_off = off + 52 + inputs * in_entries * 2 + grid ** inputs * outputs * 2
+        if out_off + outputs * out_entries * 2 > off + size:
+            raise ValueError("The profile has a truncated B2A output shaper")
+        for channel in range(3):
+            base = out_off + channel * out_entries * 2
+            previous = 0
+            for index in range(out_entries):
+                composed = be16(data, base + index * 2) / 65535.0
+                raw = invert_values(old_curves[channel], composed)
+                updated = sample_values(new_curves[channel], raw)
+                value = max(previous, max(0, min(65535, int(round(updated * 65535.0)))))
+                data[base + index * 2] = value >> 8
+                data[base + index * 2 + 1] = value & 0xFF
+                previous = value
+        changed = True
+    if not changed:
+        raise ValueError("The profile lacks the B2A shapers required by its calibration contract")
+
+
 def stable_tail_start(values, tolerance=4.0 / 65536.0):
     """Find an existing held plateau, or return len(values) when none exists."""
     if len(values) < 4:
@@ -733,6 +805,8 @@ def finetune(payload, output_dir):
     lumi = s15(data, tags["lumi"][0] + 12)
     fmt, rows, targ_text = parse_targ(data, tags)
     has_mhc2 = "MHC2" in tags
+    calibration_contract = read_text_tag(data, tags, "pGCm")
+    mirrors_mhc2_in_b2a = calibration_contract == "mhc2+b2a-shapers"
     transfer, transfer_source = resolve_transfer(payload, parent_path, data, tags)
 
     # Grey residuals from the fine-tune reads
@@ -1250,6 +1324,7 @@ def finetune(payload, output_dir):
             [s15(data, off + matrix_offset + row * 16 + column * 4)
              for column in range(3)] for row in range(3)
         ]
+        original_matrix = [list(row) for row in current_matrix]
         matrix_samples = [(sample["measured"], sample["target"])
                           for sample in color_samples]
         matrix_correction = mhc2_residual_matrix(matrix_samples, damping)
@@ -1278,6 +1353,11 @@ def finetune(payload, output_dir):
             else:
                 matrix_correction = None
         lut_offsets = struct.unpack(">III", bytes(data[off + 24:off + 36]))
+        original_luts = []
+        for ch in range(3):
+            base = off + lut_offsets[ch] + 8
+            original_luts.append([s15(data, base + index * 4)
+                                  for index in range(entries)])
         # MHC2's matrix precedes its curves. A neutral source therefore enters
         # the three curves at different post-matrix PQ positions. Map each
         # curve input back to the original source code before looking up its
@@ -1367,6 +1447,12 @@ def finetune(payload, output_dir):
             for index, value in enumerate(updated_curve):
                 put_s15(data, base + index * 4, value)
             updated_luts.append(updated_curve)
+        if mirrors_mhc2_in_b2a:
+            if not is_hdr:
+                raise ValueError("The B2A/MHC2 calibration contract requires HDR PQ")
+            old_curves = mhc2_neutral_curves(original_matrix, original_luts)
+            new_curves = mhc2_neutral_curves(current_matrix, updated_luts)
+            remap_b2a_output_calibration(data, tags, old_curves, new_curves)
         if "vcgt" in tags:
             voff, _ = tags["vcgt"]
             vchannels, ventries, vwidth = struct.unpack(">HHH", bytes(data[voff + 12:voff + 18]))
@@ -1484,11 +1570,12 @@ def finetune(payload, output_dir):
                 applied.append(max(abs(g - 1.0) for g in gains))
 
     # ---- local cLUT colour corrections --------------------------------------
-    # A cLUT edits only the cell surrounding each colour's PCS position. For
-    # an MHC2+cLUT profile, first predict the global residual removed by the
-    # matrix above and give the cLUT only what remains; applying the original
-    # error to both stages would double-correct every consumer that uses them
-    # together. Matrix-family MHC2 profiles have no B2A table and stop above.
+    # A cLUT edits only the cell surrounding each colour's PCS position. In an
+    # MHC2+cLUT profile, the two stages serve independent consumers. Windows
+    # handling applies MHC2 without B2A, while explicit cLUT handling applies
+    # B2A with Windows colour handling isolated. Give B2A the full measured
+    # residual rather than subtracting a matrix stage absent from that path.
+    # Matrix-family MHC2 profiles have no B2A table and stop above.
     if color_samples and "B2A0" in tags:
         bradford = ((0.8951, 0.2664, -0.1614),
                     (-0.7502, 1.7135, 0.0367),
@@ -1516,9 +1603,7 @@ def finetune(payload, output_dir):
         for sample in color_samples:
             row = sample["row"]
             target = sample["target"]
-            measured = (mat_vec(matrix_correction, sample["measured"])
-                        if has_mhc2 and matrix_correction is not None
-                        else sample["measured"])
+            measured = sample["measured"]
             gains = channel_gains(measured, target)
             if primary_matrix is not None:
                 rgb_m = mat_vec(primary_inverse, measured)
@@ -1526,9 +1611,9 @@ def finetune(payload, output_dir):
                 if strongest > 0:
                     gains = [gain if rgb_m[channel] > 0.12 * strongest else 1.0
                              for channel, gain in enumerate(gains)]
-            if has_mhc2:
+            if has_mhc2 and matrix_correction is not None:
                 sample["level"]["post_matrix_de2000"] = round(
-                    de2000(measured, target), 3)
+                    de2000(mat_vec(matrix_correction, measured), target), 3)
             effective = [1.0 + damping * (g - 1.0) for g in gains]
             # Fine-tune moves, not gross corrections: a colour cell should
             # never shift by more than a few percent in one pass.

@@ -248,6 +248,20 @@ def choose_anchor_mode(cal, plateau_pct):
 
 def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
     anchor_mode = choose_anchor_mode(cal, plateau_pct)
+    mhc2_shoulder_anchor = None
+    if 'MHC2' in tags:
+        mhc2_off, mhc2_size = tags['MHC2']
+        if mhc2_size >= 36:
+            entries = struct.unpack('>I', bytes(d[mhc2_off+8:mhc2_off+12]))[0]
+            if entries >= 2:
+                # Windows reserves the normalized 253/255 tail for its exact
+                # maximum-code path. An explicit B2A consumer has no matching
+                # Windows endpoint attenuation, so neutral highlights must use
+                # the last ordinary shoulder entry instead of spreading the
+                # special endpoint across every request above profile white.
+                endpoint_start = max(1, min(entries-1,
+                                             (253*(entries-1))//255))
+                mhc2_shoulder_anchor = (endpoint_start-1)/float(entries-1)
     if luma_w is None:
         luma_w = (0.2627, 0.6780, 0.0593)
     def measured_lum(code_pct):
@@ -311,7 +325,12 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
                 # 0.98 rather than 1.0: grid interpolation and the 0.995
                 # plateau factor leave the white node fractionally short, and
                 # a request within 2% of white is a full-drive request.
-                v_cal = code_for_y(min(y_rel, 1.0), None) if y_rel < 0.98 else 1.0
+                if y_rel < 0.98:
+                    v_cal = code_for_y(min(y_rel, 1.0), None)
+                elif mhc2_shoulder_anchor is not None:
+                    v_cal = mhc2_shoulder_anchor
+                else:
+                    v_cal = 1.0
             elif cal is not None:
                 # The calibration shifts each channel differently, so anchor
                 # the corridor's profile value against the luma-weighted sum
