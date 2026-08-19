@@ -848,6 +848,75 @@ def neutral_plateau_code(rows):
     return min(code for code, luminance in samples if luminance >= peak * 0.998)
 
 
+def validate_hdr_neutral_response_continuity(rows):
+    """Reject a characterization that crossed HDR presentation states.
+
+    A promoted Windows HDR surface can have a different shadow transfer from
+    the composed surface used a moment later. The resulting neutral ramp is
+    not a display defect that an ICC curve can invert: it contains a single
+    large response jump while the requested PQ codes remain closely spaced.
+    Detect that local discontinuity before fitting either KDE B2A shapers or
+    Windows MHC2 curves. Smooth native tracking errors remain buildable.
+    """
+    grouped = {}
+    for row in rows:
+        if max(row["rgb"]) - min(row["rgb"]) > 0.002:
+            continue
+        code = sum(row["rgb"]) / 3.0
+        if code < 0.03 or code > 0.76:
+            continue
+        grouped.setdefault(round(code, 6), []).append(row["xyz"][1])
+    samples = []
+    for code, values in grouped.items():
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        luminance = (ordered[middle] if len(ordered) % 2 else
+                     0.5 * (ordered[middle - 1] + ordered[middle]))
+        samples.append((code, luminance))
+    samples.sort()
+    if len(samples) < 16:
+        return
+    peak = max(row["xyz"][1] for row in rows)
+    intervals = []
+    for index in range(1, len(samples)):
+        code0, y0 = samples[index - 1]
+        code1, y1 = samples[index]
+        if code1 - code0 <= 1e-6 or code1 > 0.75:
+            continue
+        expected_rise = pq_to_nits(code1) - pq_to_nits(code0)
+        actual_rise = max(0.0, y1 - y0)
+        if expected_rise <= 1e-9:
+            continue
+        intervals.append({
+            "code0": code0,
+            "code1": code1,
+            "y0": y0,
+            "y1": y1,
+            "rise": actual_rise,
+            "gain": actual_rise / expected_rise,
+        })
+    for index, interval in enumerate(intervals):
+        neighbours = [
+            intervals[other]["gain"]
+            for other in range(max(0, index - 2), min(len(intervals), index + 3))
+            if other != index and intervals[other]["gain"] > 1e-6
+        ]
+        if len(neighbours) < 2:
+            continue
+        neighbours.sort()
+        local_gain = neighbours[len(neighbours) // 2]
+        material_rise = max(0.05, peak * 0.002)
+        if (interval["rise"] >= material_rise
+                and interval["gain"] > 5.0 * local_gain):
+            fail(
+                "HDR characterization changed presentation response near "
+                "{:.1f}% input ({:.3f} to {:.3f} cd/m2). Keep Patch "
+                "Companion on the target display in composed fullscreen "
+                "mode and repeat the measurements.".format(
+                    interval["code1"] * 100.0,
+                    interval["y0"], interval["y1"]))
+
+
 def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment,
                                 hold_plateau=True):
     """Invert the measured neutral response in the post-PQ MHC2 stage.
@@ -1349,66 +1418,6 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
 def smoothstep(value):
     value = max(0.0, min(1.0, value))
     return value * value * (3.0 - 2.0 * value)
-
-
-def apply_mhc2_profile_exact_white_tail(luts, evaluate, chad, damping=0.5):
-    """Solve a profile-predicted exact-white residual in entries 253-255.
-
-    The fitted A2B is the builder's independent model of panel RGB to XYZ.
-    Use its local derivative at the held MHC2 shoulder to solve the channel
-    move that makes exact white D65. Translate that move to raise-only form so
-    the final three entries remain monotonic. If the fitted display already
-    predicts neutral white, the deadband leaves the tail untouched.
-    """
-    if len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1:
-        fail("MHC2 exact-white correction requires three equal curves")
-    if len(chad) != 3 or any(len(row) != 3 for row in chad):
-        fail("MHC2 exact-white correction requires a chromatic-adaptation matrix")
-    start = mhc2_exact_white_start(len(luts[0]))
-    held = [max(luts[channel][start - 1], luts[channel][start])
-            for channel in range(3)]
-    actual = evaluate(held)
-    if len(actual) != 3 or not all(math.isfinite(value) for value in actual):
-        return False
-    try:
-        raw = mat_vec_mul(mat_inv(chad), actual)
-    except ValueError:
-        return False
-    if raw[1] <= 1e-9:
-        return False
-    d65 = (0.3127 / 0.3290, 1.0,
-           (1.0 - 0.3127 - 0.3290) / 0.3290)
-    target = mat_vec_mul(chad, [raw[1] * component for component in d65])
-    step = 2.0 / 1023.0
-    jacobian = [[0.0] * 3 for _axis in range(3)]
-    for channel in range(3):
-        probe = list(held)
-        probe[channel] = min(1.0, held[channel] + step)
-        if probe[channel] <= held[channel]:
-            return False
-        result = evaluate(probe)
-        denominator = probe[channel] - held[channel]
-        for axis in range(3):
-            jacobian[axis][channel] = (result[axis] - actual[axis]) / denominator
-    try:
-        delta = mat_vec_mul(
-            mat_inv(jacobian),
-            [target[axis] - actual[axis] for axis in range(3)],
-        )
-    except ValueError:
-        return False
-    if not all(math.isfinite(value) for value in delta):
-        return False
-    floor = min(delta)
-    raised = [max(0.0, value - floor) * damping for value in delta]
-    if max(raised) < 0.0015:
-        return False
-    for channel in range(3):
-        endpoint = min(1.0, held[channel] + 0.035,
-                       held[channel] + raised[channel])
-        for index in range(start, len(luts[channel])):
-            luts[channel][index] = endpoint
-    return True
 
 
 def invert_table(table, value):
@@ -2173,39 +2182,18 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             values.append(previous)
         values[0] = 0.0
         luts.append(values)
-    chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
     apply_mhc2_modeled_neutral_residual(
         luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
-    if chad_payload and len(chad_payload) >= 44 and chad_payload[:4] == b"sf32":
-        chad_values = [value / 65536.0
-                       for value in struct.unpack_from(">9i", chad_payload, 8)]
-        chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
-        endpoint_start = mhc2_exact_white_start(entries)
-        held = [luts[channel][endpoint_start - 1] for channel in range(3)]
-        exact_probe = [list(curve) for curve in luts]
-        if apply_mhc2_profile_exact_white_tail(
-                exact_probe, mft2_a2b_evaluator(model_profile), chad,
-                damping=3.0):
-            # Windows' exact-maximum path attenuates a narrow dense-table
-            # endpoint more than the ordinary shoulder. Scale the modeled
-            # raise by the profile's own held-channel separation, with a
-            # tighter cap on channels that are not the weakest. A neutral
-            # shoulder therefore remains a near-no-op, while a deliberately
-            # balanced shoulder cannot be undone at exactly 100% input.
-            weakest = min(held)
-            spread = max(held) - weakest
-            for channel in range(3):
-                if exact_probe[channel][-1] <= held[channel] + 1e-9:
-                    endpoint = held[channel]
-                else:
-                    fraction = (0.63 if held[channel] <= weakest + 1e-9
-                                else 0.28)
-                    movement_limit = max(0.0035, fraction * spread)
-                    endpoint = min(held[channel] + 0.035,
-                                   held[channel] + movement_limit,
-                                   exact_probe[channel][-1])
-                for index in range(endpoint_start, entries):
-                    luts[channel][index] = endpoint
+    # Every code on a measured HDR plateau represents the same physical
+    # output state. A separate modeled raise in the final dense-table entries
+    # made Windows exact-white change chromaticity even though 80-95% was
+    # stable. Hold the measured shoulder triplet through the endpoint. Panels
+    # that keep rising to full drive naturally hold at 1.0 and are unchanged.
+    endpoint_start = mhc2_exact_white_start(entries)
+    for channel in range(3):
+        endpoint = luts[channel][endpoint_start - 1]
+        for index in range(endpoint_start, entries):
+            luts[channel][index] = endpoint
     return luts
 
 
@@ -3266,6 +3254,8 @@ def build(payload, output_dir):
     metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
     metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
     profile_rows = [row for row in rows if row["name"] not in metadata_white_names]
+    if profile_type in ("kde-hdr", "windows-hdr"):
+        validate_hdr_neutral_response_continuity(profile_rows)
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
