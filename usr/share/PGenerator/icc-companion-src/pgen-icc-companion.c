@@ -106,7 +106,7 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.24"
+#define APP_VERSION "1.4.25"
 #define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 #define RESPONSE_CAPACITY 32768
