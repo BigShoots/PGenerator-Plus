@@ -322,10 +322,13 @@ def repair(d, tags, curve, ymax, plateau_pct, balanced, cal=None, luma_w=None):
                 # calibration still climbs above that code (-18% measured on a
                 # panel whose plateau starts at 60% while its calibration runs
                 # to full red drive).
-                # 0.98 rather than 1.0: grid interpolation and the 0.995
-                # plateau factor leave the white node fractionally short, and
-                # a request within 2% of white is a full-drive request.
-                if y_rel < 0.98:
+                # Follow the measured rise until it is genuinely at the
+                # plateau. Switching to the held MHC2 shoulder at 0.98 made a
+                # 75% PQ request on a 1000-nit display jump to peak white even
+                # though it is still a uniquely representable luminance. The
+                # same 0.995 boundary used by code_for_y keeps ordinary
+                # roll-off points distinct and holds only the real plateau.
+                if y_rel < 0.995:
                     v_cal = code_for_y(min(y_rel, 1.0), None)
                 elif mhc2_shoulder_anchor is not None:
                     v_cal = mhc2_shoulder_anchor

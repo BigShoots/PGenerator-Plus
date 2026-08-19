@@ -1883,9 +1883,34 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         radius = math.sqrt(bandwidth2)
         if dedicated:
             # Six symmetric probes at one loading level provide the derivative
-            # directly. Let their fit quality, rather than the distance to a
-            # random targen point, decide how much the solve can be trusted.
+            # directly. Their directional fit can still look excellent when
+            # the panel changed state between the neutral ramp and this local
+            # group, though. Require the midpoint of the six probes to agree
+            # with the independent neutral ramp before that derivative owns
+            # the correction. This keeps a stable local probe authoritative
+            # without letting a loading or presentation transition turn into
+            # an over-correction on a display that did not need it.
             confidence = max(0.0, min(1.0, (fit - 0.45) / 0.45))
+            reference_xyz = measured_xyz_at_code(code)
+            center_sum = sum(center_xyz)
+            reference_sum = sum(reference_xyz)
+            if center_sum <= 1e-12 or reference_sum <= 1e-12:
+                return jacobian, 0.0
+            center_xy = (center_xyz[0] / center_sum,
+                         center_xyz[1] / center_sum)
+            reference_xy = (reference_xyz[0] / reference_sum,
+                            reference_xyz[1] / reference_sum)
+            chroma_distance = math.hypot(
+                center_xy[0] - reference_xy[0],
+                center_xy[1] - reference_xy[1])
+            chroma_agreement = 1.0 - smoothstep(
+                (chroma_distance - 0.0015) / (0.0060 - 0.0015))
+            luminance_difference = (abs(center_xyz[1] - reference_xyz[1])
+                                    / max(center_xyz[1], reference_xyz[1],
+                                          1e-9))
+            luminance_agreement = 1.0 - smoothstep(
+                (luminance_difference - 0.03) / (0.12 - 0.03))
+            confidence *= chroma_agreement * luminance_agreement
             return jacobian, confidence
         # Requiring 32 neighbours made a 425-patch set reach far outside the
         # local HDR shoulder. Its radius then zeroed confidence completely and
@@ -2033,6 +2058,12 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                                / (additive_end - additive_full))
         else:
             additive_weight = 0.0
+        # A complete, stable same-loading probe group is a direct measurement
+        # of this derivative. The independent-primary fallback predates those
+        # probes and must not overwrite their solved delta in the low-light
+        # band. Partial confidence blends the two; charts without trustworthy
+        # local probes retain the established fallback unchanged.
+        additive_weight *= 1.0 - local_confidence
         delta = [normalized_primary_delta[channel] * additive_weight
                  + delta[channel] * (1.0 - additive_weight) for channel in range(3)]
         delta = [max(-0.04, min(0.04, value)) for value in delta]
