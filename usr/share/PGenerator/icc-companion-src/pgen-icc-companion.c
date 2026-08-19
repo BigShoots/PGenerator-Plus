@@ -579,6 +579,7 @@ typedef struct {
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
     bool windows_correction_isolated;
+    bool windows_restore_attempted;
     int windowed_x;
     int windowed_y;
     int windowed_width;
@@ -1662,7 +1663,7 @@ static bool companion_tool_path(const char *name, char *out, size_t out_size)
  * WCS scope and preserves every saved association. B2A0 remains loaded from
  * the cached selected profile for cLUT/matrix evaluation; none submits the
  * source directly to the same isolated output. */
-static bool windows_set_correction_isolation(bool isolate)
+static bool windows_set_correction_isolation_internal(bool isolate, bool force)
 {
     char loader[1200], command[5000], monitor_utf8[1024] = "";
     char profile_utf8[32768] = "", result_path[1500];
@@ -1671,7 +1672,7 @@ static bool windows_set_correction_isolation(bool isolate)
     FILE *result;
     bool accepted = false;
     const char *directory;
-    if (app.windows_correction_isolated == isolate) return true;
+    if (!force && app.windows_correction_isolated == isolate) return true;
     if (!app.windows_monitor_path[0] || !app.correction_profile_path[0] ||
         !companion_tool_path("PGenProfileLoader", loader, sizeof(loader)))
         return false;
@@ -1716,6 +1717,16 @@ static bool windows_set_correction_isolation(bool isolate)
     app.windows_correction_isolated = isolate;
     SDL_SetAtomicInt(&app.presentation_recovery_pending, 1);
     return true;
+}
+
+static bool windows_set_correction_isolation(bool isolate)
+{
+    return windows_set_correction_isolation_internal(isolate, false);
+}
+
+static bool windows_restore_correction_state(void)
+{
+    return windows_set_correction_isolation_internal(false, true);
 }
 #endif
 
@@ -4453,11 +4464,38 @@ static void poll_server(void)
         json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
 #ifdef _WIN32
-        bool wants_isolation = reported_hdr_active &&
+        bool explicit_hdr_requested =
             (!strcmp(correction_mode, "none") ||
              !strcmp(correction_mode, "clut") ||
              !strcmp(correction_mode, "matrix")) &&
             !strcmp(correction_signal_mode, "hdr10");
+        bool wants_isolation = reported_hdr_active && explicit_hdr_requested;
+        if (!explicit_hdr_requested)
+            app.windows_restore_attempted = false;
+        else if (reported_hdr_active)
+            app.windows_restore_attempted = false;
+        else if (!app.windows_restore_attempted) {
+            /* An upgrade can terminate the previous processes between the
+             * disable and re-enable halves of an Advanced Color reload. Ask
+             * the loader to recover its persisted isolation state even though
+             * DXGI currently reports HDR off, then query the selected profile
+             * again before caching any explicit transform. */
+            app.windows_restore_attempted = true;
+            if (!app.correction_profile_path[0] && active_profile_path[0]) {
+                wcsncpy(app.correction_profile_path, active_profile_path,
+                        SDL_arraysize(app.correction_profile_path) - 1);
+                app.correction_profile_path[
+                    SDL_arraysize(app.correction_profile_path) - 1] = L'\0';
+            }
+            if (!windows_restore_correction_state()) {
+                app.correction_ready = false;
+                SDL_strlcpy(app.correction_error,
+                            "Could not recover Windows HDR profile handling after startup",
+                            sizeof(app.correction_error));
+            }
+            app.next_poll_ms = SDL_GetTicks() + 250;
+            return;
+        }
         {
             if (app.windows_correction_isolated && !wants_isolation) {
                 if (!windows_set_correction_isolation(false)) {

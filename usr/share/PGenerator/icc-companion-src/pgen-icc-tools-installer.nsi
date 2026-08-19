@@ -40,9 +40,9 @@ VIAddVersionKey "LegalCopyright" "GNU GPL"
 Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   SectionIn RO
   ; Close an older installed build before replacing its executable files.
+  ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGeneratorPlusPatchCompanion.exe /F'
   ExecWait '"$SYSDIR\taskkill.exe" /IM PGenICCCompanion.exe /F'
-  ExecWait '"$SYSDIR\taskkill.exe" /IM PGenProfileLoader.exe /F'
   SetOutPath "$INSTDIR"
   Delete "$INSTDIR\PGenICCCompanion.exe"
   File "..\icc-companion\windows-x64\PGeneratorPlusPatchCompanion.exe"
@@ -101,6 +101,13 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
                 "EstimatedSize" 6280
 SectionEnd
+
+Function .onInstSuccess
+  ; Always start the freshly installed loader, including for silent upgrades.
+  ; It restores any persisted correction isolation before Companion can cache
+  ; Windows' temporary system-scope fallback profile.
+  Exec '"$INSTDIR\PGenProfileLoader.exe" --tray'
+FunctionEnd
 
 Section "Start Profile Loader with Windows" SEC_STARTUP
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \

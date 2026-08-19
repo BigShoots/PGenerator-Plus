@@ -1207,26 +1207,36 @@ static BOOL refresh_advanced_color_profile(DISPLAY_ENTRY *display) {
         SetLastError((DWORD)result);
         return FALSE;
     }
-    if (!info.advancedColorEnabled) return TRUE;
-
     InterlockedExchange(&g_advanced_color_refresh_in_progress, 1);
     ZeroMemory(&state, sizeof(state));
     state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
     state.header.size = sizeof(state);
     state.header.adapterId = display->target_adapter;
     state.header.id = display->target_id;
-    state.enableAdvancedColor = 0;
-    result = DisplayConfigSetDeviceInfo(&state.header);
-    if (result != ERROR_SUCCESS) {
-        InterlockedExchange(&g_advanced_color_refresh_in_progress, 0);
-        SetLastError((DWORD)result);
-        return FALSE;
+    if (info.advancedColorEnabled) {
+        state.enableAdvancedColor = 0;
+        result = DisplayConfigSetDeviceInfo(&state.header);
+        if (result != ERROR_SUCCESS) {
+            InterlockedExchange(&g_advanced_color_refresh_in_progress, 0);
+            SetLastError((DWORD)result);
+            return FALSE;
+        }
+        Sleep(3000);
     }
-    Sleep(3000);
     state.enableAdvancedColor = 1;
     for (attempt = 0; attempt < 6; attempt++) {
         result = DisplayConfigSetDeviceInfo(&state.header);
-        if (result == ERROR_SUCCESS) break;
+        if (result == ERROR_SUCCESS) {
+            Sleep(500);
+            ZeroMemory(&info, sizeof(info));
+            info.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+            info.header.size = sizeof(info);
+            info.header.adapterId = display->target_adapter;
+            info.header.id = display->target_id;
+            result = DisplayConfigGetDeviceInfo(&info.header);
+            if (result == ERROR_SUCCESS && info.advancedColorEnabled) break;
+            if (result == ERROR_SUCCESS) result = ERROR_INVALID_STATE;
+        }
         Sleep(500);
     }
     if (result != ERROR_SUCCESS) {
@@ -1606,7 +1616,8 @@ static void apply_companion_command(const WCHAR *command) {
     isolate = wcsstr(command, L"--isolate-for-correction") != NULL;
     restore = wcsstr(command, L"--restore-after-correction") != NULL;
     if ((!wcsstr(command, L"--apply-from-companion") && !isolate && !restore) ||
-        !command_value(command, L"--profile", profile, MAX_PATH)) return;
+        (!restore && !command_value(command, L"--profile", profile, MAX_PATH))) return;
+    if (restore) command_value(command, L"--profile", profile, MAX_PATH);
     command_value(command, L"--monitor", monitor, 256);
     command_value(command, L"--result", result, MAX_PATH);
     if (command_value(command, L"--owner-pid", owner_text, 32))
@@ -1620,6 +1631,15 @@ static void apply_companion_command(const WCHAR *command) {
         DeleteFileW(result);
         wcsncpy_s(g_companion_result, MAX_PATH, result, _TRUNCATE);
     }
+    if (restore && !g_correction_isolated) {
+        /* Startup recovery may have completed synchronously before the
+           Companion's forced restore request reached this process. Confirm
+           that recovered state without adopting the temporary fallback path
+           carried by the request. */
+        g_reject_next_isolate_for_stale_restore = FALSE;
+        write_companion_result(TRUE);
+        return;
+    }
     /* A previous Companion can be terminated while explicit correction has
        the per-user profile scope suspended. Loader startup restores the saved
        scope synchronously, but the new Companion may already have queried the
@@ -1631,16 +1651,18 @@ static void apply_companion_command(const WCHAR *command) {
         write_companion_result(FALSE);
         return;
     }
-    g_browse_has_mhc2 = profile_contains_mhc2(profile);
-    g_browse_advanced = profile_is_hdr_association(profile);
+    if (!restore) {
+        g_browse_has_mhc2 = profile_contains_mhc2(profile);
+        g_browse_advanced = profile_is_hdr_association(profile);
     /* Adopt the requested profile as the loader's selection IMMEDIATELY,
        before any queueing: if the verify timer auto-reapplies while this
        command waits out a prior apply's Advanced Color cycle, it must
        reapply the profile the WebUI just asked for, never the stale saved
        one. Rejecting a busy command used to leave the old selection saved
        and the timer then set the old profile as default mid-session. */
-    accept_profile_path(profile);
-    save_settings();
+        accept_profile_path(profile);
+        save_settings();
+    }
     g_profile_operation = isolate ? PROFILE_OPERATION_ISOLATE
                                   : (restore ? PROFILE_OPERATION_RESTORE
                                              : PROFILE_OPERATION_APPLY);
