@@ -14371,6 +14371,7 @@ sub lg_autocal_26_queue_hdr20_1d_dpg_upload {
 	 my $response=api_json("POST","/api/lg/1d-dpg/upload",{
 	  picture_mode=>$picture_mode,
 	  ddc_layout=>"hdr20",
+	  signal_mode=>$config->{"signal_mode"}||"hdr10",
 	  dpg_data=>$dpg_data,
 	  helper_timeout=>90,
 	 },120);
@@ -14424,28 +14425,33 @@ sub lg_autocal_26_commit_hdr20_1d_dpg_single_socket {
 	 my $response=api_json("POST","/api/lg/1d-dpg/upload",{
 	  picture_mode=>$picture_mode,
 	  ddc_layout=>"hdr20",
+	  signal_mode=>$config->{"signal_mode"}||"hdr10",
 	  dpg_data=>$dpg_data,
 	  keep_calibration_mode=>JSON::PP::false,
 	  calibration_mode_active=>JSON::PP::false,
 	  helper_timeout=>90,
 	 },120);
-	 # Real CAL_START / CAL_END responses have type=>"response"; the
-	 # "skipped" placeholder would mean the helper did NOT do its own
-	 # CAL_START or CAL_END on this socket -- in that case the DPG would
-	 # not commit and we MUST fall back to a held-session CAL_END (or
-	 # treat as failure). With both flags false the helper is supposed
-	 # to send both on its own socket, so anything else is a bug.
+	 # SDR/HDR require real CAL_START/CAL_END responses. Some LG Dolby Vision
+	 # firmware returns its narrow error-code-20 driver rejection for those
+	 # session commands while still accepting and persisting 1D_DPG_DATA.
+	 # The helper marks only that exact DV response as tolerated. A "skipped"
+	 # placeholder or any other failure still cannot count as a commit.
 	 my $status_ok=(ref($response) eq "HASH" && ($response->{status}//"") eq "ok") ? 1 : 0;
+	 my $signal_mode=lc($config->{"signal_mode"}||$state->{"signal_mode"}||"");
 	 my $cal_start_real=(ref($response) eq "HASH" && ref($response->{"cal_start_response"}) eq "HASH"
 	  && ($response->{"cal_start_response"}{"type"}//"") eq "response") ? 1 : 0;
 	 my $cal_end_real=(ref($response) eq "HASH" && ref($response->{"cal_end_response"}) eq "HASH"
 	  && ($response->{"cal_end_response"}{"type"}//"") eq "response") ? 1 : 0;
-	 my $committed=($status_ok && $cal_start_real && $cal_end_real) ? 1 : 0;
+	 my $cal_start_tolerated=(ref($response) eq "HASH" && $response->{"cal_start_tolerated"}) ? 1 : 0;
+	 my $cal_end_tolerated=(ref($response) eq "HASH" && $response->{"cal_end_tolerated"}) ? 1 : 0;
+	 my $cal_start_accepted=$cal_start_real || ($signal_mode eq "dv" && $cal_start_tolerated);
+	 my $cal_end_accepted=$cal_end_real || ($signal_mode eq "dv" && $cal_end_tolerated);
+	 my $committed=($status_ok && $cal_start_accepted && $cal_end_accepted) ? 1 : 0;
 	 $state->{"hdr20_1d_dpg_single_socket_commit"}=$committed ? JSON::PP::true : JSON::PP::false;
 	 my $resp_msg=(ref($response) eq "HASH" && $response->{"message"}) ? $response->{"message"} : (defined $response ? "unexpected response" : "endpoint unreachable");
 	 $state->{"hdr20_1d_dpg_single_socket_commit_message"}=$committed
-	  ? "committed on one socket (CAL_START and CAL_END both real responses): ".$resp_msg
-	  : sprintf("commit NOT made: status_ok=%d cal_start_real=%d cal_end_real=%d %s",$status_ok,$cal_start_real,$cal_end_real,$resp_msg);
+	  ? "committed on one socket (CAL_START/CAL_END accepted): ".$resp_msg
+	  : sprintf("commit NOT made: status_ok=%d cal_start_accepted=%d cal_end_accepted=%d %s",$status_ok,$cal_start_accepted,$cal_end_accepted,$resp_msg);
 	 log_line("HDR20 1D DPG single-socket commit: ".$state->{"hdr20_1d_dpg_single_socket_commit_message"});
 	 write_state($state);
 	 return $committed;
@@ -14904,6 +14910,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				%{$extra},
 				picture_mode=>$picture_mode,
 				ddc_layout=>"hdr20",
+				signal_mode=>$config->{"signal_mode"}||"hdr10",
 				dpg_data=>$dpg,
 				keep_calibration_mode=>JSON::PP::true,
 				calibration_mode_active=>($cal_active ? JSON::PP::true : JSON::PP::false),
@@ -18845,9 +18852,13 @@ sub committed_top_window_polish {
 sub start_calibration_mode {
  my ($picture_mode,$state,$message)=@_;
  $message||="LG calibration mode enabled.";
+ my $signal_mode=(ref($state) eq "HASH")
+  ? ($state->{"requested_signal_mode"}||$state->{"signal_mode"}||"")
+  : "";
  my $result=api_json("POST","/api/lg/calibration-mode",{
   enabled => JSON::PP::true,
   picture_mode => $picture_mode||"",
+  signal_mode => $signal_mode,
  },90);
  if(ref($result) eq "HASH" && ($result->{"status"}||"") eq "ok") {
   set_state_calibration_mode($state,1,$result->{"calibration_picture_mode"}||$result->{"active_picture_mode"}||$picture_mode||"");

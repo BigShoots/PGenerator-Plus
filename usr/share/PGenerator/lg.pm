@@ -1590,6 +1590,7 @@ sub webui_lg_calibration_mode (@) {
   client_key => $client_key,
   enable => $enabled,
   picture_mode => $payload->{"picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
   connect_timeout => 5,
  });
  if(($result->{"status"}||"") eq "ok") {
@@ -3387,11 +3388,10 @@ const LG_PICTURE_MODES_BY_SIGNAL={
  ]
 };
 
-// LG's 2021 OLED menu predates the 2022+ Dolby Vision Filmmaker naming.
-// LG's published C1 specifications list six HDR modes and five Dolby Vision
-// modes: HDR adds Filmmaker, while Dolby Vision calls its dark reference mode
-// Cinema. Keep the proven dark-reference wire value and change its UI label.
-const LG_2021_PICTURE_MODES_BY_SIGNAL={
+// LG's 2019-2021 OLED menus predate the 2022+ Dolby Vision Filmmaker naming.
+// C9/CX/C1 call their dark DV reference preset Cinema. Keep the proven
+// dark-reference calibration value and change only its visible UI label.
+const LG_PRE2022_PICTURE_MODES_BY_SIGNAL={
  hdr10:[
   ['hdrCinema','HDR Cinema'],
   ['hdrCinemaBright','HDR Cinema Home'],
@@ -3469,16 +3469,16 @@ function lgSignalModeKey(){
  return 'sdr';
 }
 
-function lgUses2021PictureModeMap(){
+function lgUsesPre2022PictureModeMap(){
  const state=window.lgStatusState||{};
  const model=String(state.modelName||state.model_name||state.displayName||'').toUpperCase();
- return /OLED\d*(?:A|B|C|G|Z)1(?:[^0-9]|$)/.test(model);
+ return /OLED\d*(?:A|B|C|E|G|R|W|Z)(?:9|X|1)/.test(model);
 }
 
 function lgPictureModesForSignal(signalMode){
  const signal=String(signalMode||'sdr');
- if(lgUses2021PictureModeMap()&&LG_2021_PICTURE_MODES_BY_SIGNAL[signal]){
-  return LG_2021_PICTURE_MODES_BY_SIGNAL[signal];
+ if(lgUsesPre2022PictureModeMap()&&LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal]){
+  return LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal];
  }
  return LG_PICTURE_MODES_BY_SIGNAL[signal]||LG_PICTURE_MODES_BY_SIGNAL.sdr;
 }
@@ -3488,8 +3488,8 @@ function lgPictureModeEntries(){
   ...LG_PICTURE_MODES_BY_SIGNAL.sdr,
   ...LG_PICTURE_MODES_BY_SIGNAL.hdr10,
   ...LG_PICTURE_MODES_BY_SIGNAL.dv,
-  ...LG_2021_PICTURE_MODES_BY_SIGNAL.hdr10,
-  ...LG_2021_PICTURE_MODES_BY_SIGNAL.dv
+  ...LG_PRE2022_PICTURE_MODES_BY_SIGNAL.hdr10,
+  ...LG_PRE2022_PICTURE_MODES_BY_SIGNAL.dv
  ];
 }
 
@@ -3539,10 +3539,10 @@ function lgPictureModeCanonicalValue(value){
   hdr_vivid:'hdrVivid',
   hdrtechnicolorexpert:'hdrTechnicolorExpert',
   hdr_technicolorexpert:'hdrTechnicolorExpert',
-  dolbyvisioncinema:lgUses2021PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
-  dolby_hdr_cinema:lgUses2021PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
-  // The backend's dark-reference mode is called Cinema on C1 and Filmmaker
-  // on C2+. Both use the proven dolbyVisionFilmMaker calibration value; the
+  dolbyvisioncinema:lgUsesPre2022PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
+  dolby_hdr_cinema:lgUsesPre2022PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
+  // The dark-reference mode is called Cinema on C9/CX/C1 and Filmmaker on
+  // C2+. Both use the proven dolbyVisionFilmMaker calibration value; the
   // generation-specific options above supply the correct visible label.
   dolbyhdrcinema:'dolbyVisionFilmMaker',
   dolbyvisioncinemahome:'dolbyVisionCinemaBright',
@@ -4898,7 +4898,7 @@ async function lgSetCalibrationMode(){
   const r=await fetchJSON('/api/lg/calibration-mode',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({enabled,picture_mode:lgSelectedPictureModeValue()||''}),
+   body:JSON.stringify({enabled,picture_mode:lgSelectedPictureModeValue()||'',signal_mode:lgSignalModeKey()}),
    _timeoutMs:18000
   });
   if(r&&r.status==='ok'){

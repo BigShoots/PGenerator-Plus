@@ -42298,7 +42298,7 @@ async function meterFullAutoCalEnsureCalibrationModeOff(reason){
    const r=await fetchJSON('/api/lg/calibration-mode',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({enabled:false,picture_mode:meterLgPictureModeValue()}),
+    body:JSON.stringify({enabled:false,picture_mode:meterLgPictureModeValue(),signal_mode:meterFullAutoCalRunSignalMode()}),
     _quiet:true,
     _timeoutMs:35000
    });
