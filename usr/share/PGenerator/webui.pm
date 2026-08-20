@@ -19280,7 +19280,15 @@ function meterSanitizeExportFilenameBase(value){
 function meterPromptExportFilename(key,defaultBase,extension,promptLabel){
  const ext='.'+String(extension||'').replace(/^\./,'');
  const sessionBase=(key&&meterExportFilenameBases[key])?meterExportFilenameBases[key]:defaultBase;
- const entered=window.prompt(promptLabel||'Enter a file name',sessionBase);
+ let entered=null;
+ try{
+  if(typeof window.prompt!=='function') return meterDefaultExportFilename(key,defaultBase,extension);
+  entered=window.prompt(promptLabel||'Enter a file name',sessionBase);
+ }catch(e){
+  // Embedded browsers such as VS Code's webview expose prompt() but throw
+  // when it is called. Export with a useful timestamped name instead.
+  return meterDefaultExportFilename(key,defaultBase,extension);
+ }
  if(entered==null) return null;
  const base=meterSanitizeExportFilenameBase(entered);
  if(!base){
