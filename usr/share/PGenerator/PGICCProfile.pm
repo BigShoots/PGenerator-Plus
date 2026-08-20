@@ -1051,9 +1051,23 @@ sub webui_icc_companion_status (@) {
  my $shipped=&webui_icc_companion_shipped_version();
  my $shipped_json=($shipped ne "") ? ',"shipped_version":"'.&_webui_json_escape($shipped).'"' : "";
  my $pair_requests_json=',"pair_requests":'.&webui_icc_pair_requests_fragment();
- return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.'}' unless($content=~/^\s*\{/);
+ # A Companion running colprof/targen cannot send its normal heartbeat until
+ # the child exits. A matching claim proves that it received the current job;
+ # expose that busy state separately so the UI does not call it disconnected.
+ my ($build_job,$build_claim)=("","");
+ if(open(my $jf,"<",$_icc_companion_build_job)) { local $/; $build_job=<$jf>||""; close($jf); }
+ if(open(my $cf,"<",$_icc_companion_build_claim)) { local $/; $build_claim=<$cf>||""; close($cf); }
+ my ($job_id,$claim_id,$operation)=("","","");
+ $job_id=$1 if($build_job=~/"job"\s*:\s*"(\d+-\d+)"/);
+ $claim_id=$1 if($build_claim=~/"job"\s*:\s*"(\d+-\d+)"/);
+ $operation=$1 if($build_job=~/"operation"\s*:\s*"(colprof|targen)"/);
+ my $build_active=($job_id ne "" && $job_id eq $claim_id && $operation ne ""
+                   && !-f $_icc_companion_build_result && !-f $_icc_companion_build_error) ? 1 : 0;
+ my $build_json=',"build_offload":'.($build_active?'true':'false');
+ $build_json.=',"build_operation":"'.$operation.'"' if($build_active);
+ return '{"status":"ok","connected":false,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.$build_json.'}' unless($content=~/^\s*\{/);
  $content=~s/^\s*\{//;
- return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.','.$content;
+ return '{"status":"ok","connected":true,'.&webui_icc_companion_settings_fragment().$shipped_json.$pair_requests_json.$build_json.','.$content;
 }
 
 # Publish a calibration-card patch to the paired target-computer companion.

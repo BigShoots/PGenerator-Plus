@@ -43,12 +43,18 @@ function meterIccCalibrationModeValue(){
  return ['vcgt','profile','none'].includes(mode)?mode:'vcgt';
 }
 
+function meterIccB2aGridValue(){
+ const value=Number((document.getElementById('meterIccB2aGrid')||{}).value||65);
+ return value===33?33:65;
+}
+
 function meterIccStoredRunConfig(config,patchCount){
  if(!config) return null;
  const calibrationMode=meterIccCalibrationMode(config);
  return {
   profile_type:String(config.profile_type||''),profile_model:String(config.profile_model||''),
   profile_quality:String(config.profile_quality||''),quality:String(config.quality||''),
+  b2a_grid:Number(config.b2a_grid)===33?33:65,
   calibration_mode:calibrationMode,include_vcgt:calibrationMode==='vcgt',
   icc_version:String(config.icc_version||'auto'),cicp:config.cicp||null,
   signal_mode:String(config.signal_mode||''),pattern_provider:String(config.pattern_provider||''),
@@ -76,6 +82,7 @@ function meterIccUiSettings(){
  return {
   name:value('meterIccProfileName'),profile_type:value('meterIccProfileType'),target_transfer:value('meterIccTargetTransfer'),
   profile_model:value('meterIccProfileModel'),profile_quality:value('meterIccProfileQuality'),quality:value('meterIccQuality'),
+  b2a_grid:meterIccB2aGridValue(),
   pattern_provider:value('meterIccPatternProvider'),window_mode:value('meterIccCompanionWindowMode'),start_delay:value('meterIccStartDelay'),
   avg_deviation:value('meterIccAvgDeviation'),
   calibration_mode:meterIccCalibrationModeValue(),
@@ -119,6 +126,7 @@ function meterIccRestoreUiSettings(){
   set('meterIccTargetTransfer',saved.target_transfer,['srgb','gamma22','gamma24','bt1886']);
   set('meterIccProfileModel',saved.profile_model,Object.keys(METER_ICC_PROFILE_MODELS));
   set('meterIccProfileQuality',saved.profile_quality,['low','medium','high','ultra']);
+  set('meterIccB2aGrid',saved.b2a_grid,[33,65].map(String));
   set('meterIccQuality',saved.quality,['small','medium','large','custom']);
   set('meterIccPatternProvider',saved.pattern_provider,['companion','local']);
   set('meterIccCompanionWindowMode',saved.window_mode,['window','fullscreen']);
@@ -666,12 +674,12 @@ const METER_ICC_PATCH_PRESETS={
  matrix:{
   small:{patch_count:55,white_patches:1,black_patches:1,gray_steps:17,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:0,good_optimization:true,auto_precondition:false,profile_quality:'medium'},
   medium:{patch_count:95,white_patches:2,black_patches:2,gray_steps:25,single_channel_steps:13,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:10,good_optimization:true,auto_precondition:false,profile_quality:'high'},
-  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:51,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'ultra'}
+  large:{patch_count:225,white_patches:4,black_patches:4,gray_steps:51,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:false,profile_quality:'high'}
  },
  clut:{
   small:{patch_count:175,white_patches:4,black_patches:4,gray_steps:38,single_channel_steps:9,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'medium'},
   medium:{patch_count:425,white_patches:4,black_patches:4,gray_steps:101,single_channel_steps:17,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'},
-  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:257,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'ultra'}
+  large:{patch_count:1000,white_patches:4,black_patches:4,gray_steps:257,single_channel_steps:25,cube_steps:0,cube_surface_steps:0,bcc_steps:0,neutral_emphasis:50,dark_emphasis:20,good_optimization:true,auto_precondition:true,profile_quality:'high'}
  }
 };
 
@@ -1057,6 +1065,10 @@ function meterIccSyncUi(){
  const profileModel=String((document.getElementById('meterIccProfileModel')||{}).value||'clut');
  const profileModelInfo=meterIccProfileModelInfo(profileModel);
  const profileQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||'high');
+ const b2aGrid=meterIccB2aGridValue();
+ const b2aGridField=document.getElementById('meterIccB2aGridField');
+ const usesHdrB2a=info.mode==='hdr10'&&profileModelInfo.family==='clut';
+ if(b2aGridField) b2aGridField.style.display=usesHdrB2a?'':'none';
  const calibrationMode=meterIccCalibrationModeValue();
  const selectedIccVersion=String((document.getElementById('meterIccVersion')||{}).value||'auto');
  const effectiveIccVersion=meterIccEffectiveVersion(type);
@@ -1180,7 +1192,7 @@ function meterIccSyncUi(){
   :'PGenerator+ HDMI';
  if(summary) summary.textContent=invalidPatchSet
   ?('Increase total patches to at least '+patchMinimum+' for the selected structured patch coverage.')
-  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution. ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. Calibration: '+({vcgt:'With VCGT',profile:'Without VCGT',none:'None'}[calibrationMode])+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(selectsSdrTarget?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
+  :(generatorLabel+' output: '+info.mode.toUpperCase()+'. Algorithm: '+profileModelInfo.label+' at '+profileQuality+' table resolution.'+(usesHdrB2a?' B2A cLUT: '+b2aGrid+'³.':'')+' ICC v'+effectiveIccVersion+(effectiveIccVersion==='4.4'?' CICP '+cicp.colour_primaries+'/'+cicp.transfer_characteristics+'/'+cicp.matrix_coefficients+'/'+cicp.video_full_range_flag:'')+'. Calibration: '+({vcgt:'With VCGT',profile:'Without VCGT',none:'None'}[calibrationMode])+'. Meter: '+meterLabel+'. Display: '+displayLabel+'. Meter correction: '+correctionLabel+'. Pattern insertion: '+(insertion?'On':'Off')+'. '+count+' profile patches'+(preRead?' plus a 34-patch optimization pre-read':'')+'.'+(selectsSdrTarget?' Target: '+transfer.label+'.':'')+(!usesCompanion?' '+localMode.message:''));
  const busy=meterIccStarting||meterIccRunning||meterIccBuildPending||meterSeriesRunning||meterActionPending||meterContinuousActive||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning;
  if(start){
   const selectedMeter=typeof meterSelectedMeasurementMeter==='function'?meterSelectedMeasurementMeter():null;
@@ -1366,14 +1378,15 @@ function meterCalibrationApplyCompanionAvailability(connected){
  }
  if(!connected) meterCalibrationSelectLocalOutput();
 }
-function meterCalibrationShowCompanionStatus(connected,text){
+function meterCalibrationShowCompanionStatus(connected,text,busy){
  const target=document.getElementById('meterCalibrationCompanionStatus');
  if(!target) return;
  target.textContent='';
- target.style.color=connected?'var(--green)':'var(--red)';
+ const color=busy?'#ffca28':(connected?'var(--green)':'var(--red)');
+ target.style.color=color;
  if(!meterCalibrationUsesCompanion()) return;
  const dot=document.createElement('span');
- dot.style.color=connected?'var(--green)':'var(--red)';
+ dot.style.color=color;
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
  meterIccAppendCompanionVersionWarning(target,connected);
@@ -1570,26 +1583,27 @@ function meterIccVersionAtLeast(have,want){
 }
 
 
-function meterIccShowCompanionStatus(connected,text){
+function meterIccShowCompanionStatus(connected,text,busy){
  const target=document.getElementById('meterIccCompanionStatus');
  if(!target) return;
  target.textContent='';
- target.style.color=connected?'var(--green)':'var(--red)';
+ const color=busy?'#ffca28':(connected?'var(--green)':'var(--red)');
+ target.style.color=color;
  const dot=document.createElement('span');
- dot.style.color=connected?'var(--green)':'var(--red)';
+ dot.style.color=color;
  dot.textContent='\u25cf';
  target.append(dot,document.createTextNode(' '+text));
  meterIccAppendCompanionVersionWarning(target,connected);
 }
 
-function meterIccUpdateTopCompanionStatus(connected,detail){
+function meterIccUpdateTopCompanionStatus(connected,detail,busy){
  const wrap=document.getElementById('iccCompanionTopStatusWrap');
  if(!wrap) return;
  wrap.style.display=connected?'':'none';
  wrap.title=connected?String(detail||'PGenerator+ Patch Companion connected'):'PGenerator+ Patch Companion not connected';
  const dot=document.getElementById('iccCompanionTopDot');
  const text=document.getElementById('iccCompanionTopStatusText');
- if(dot) dot.style.background='var(--green)';
+ if(dot) dot.style.background=busy?'#ffca28':'var(--green)';
  if(text){
   text.textContent='PGenerator+ Patch Companion'+(meterIccCompanionClient?' ['+meterIccCompanionClient+']':'');
   text.style.color='var(--text)';
@@ -1601,6 +1615,7 @@ async function meterIccRefreshCompanionStatus(){
  // Fire-and-forget: this only ever primes a cache that the outdated-version
  // check below reads synchronously, so it cannot delay this poll.
  meterIccRefreshGithubVersionCache();
+ let buildOffloadActive=false;
  try{
   const state=await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:3500});
   // Shown in both companion-status locations regardless of connection state --
@@ -1610,11 +1625,12 @@ async function meterIccRefreshCompanionStatus(){
   const windowMode=document.getElementById('meterIccCompanionWindowMode');
   if(windowMode&&state&&['window','fullscreen'].includes(String(state.window_mode||''))) windowMode.value=String(state.window_mode);
   const reportedConnected=!!(state&&state.connected);
+  buildOffloadActive=!!(state&&state.build_offload);
   const companionJustConnected=reportedConnected&&!meterIccCompanionReportedConnected;
   meterIccCompanionReportedConnected=reportedConnected;
   if(companionJustConnected) meterIccRefreshGithubVersionCache(true);
   if(reportedConnected) meterIccCompanionLastSeenAt=Date.now();
-  meterIccCompanionConnected=reportedConnected||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
+  meterIccCompanionConnected=reportedConnected||buildOffloadActive||(meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000);
   if(reportedConnected){
    const client=String(state.client||'target computer');
    meterIccCompanionClient=client;
@@ -1667,14 +1683,30 @@ async function meterIccRefreshCompanionStatus(){
     :'';
    const detail='Connected: '+client+(selectedDisplay?' on '+selectedDisplay:'')+' using '+renderer+hdr+nativeDetail+correction+transformState+(version?' (v'+version+')':'');
    meterIccCompanionDetail=detail;
-   meterIccShowCompanionStatus(true,detail);
-   meterCalibrationShowCompanionStatus(true,detail);
+   if(buildOffloadActive){
+    const buildText=String(state.build_operation||'')==='targen'
+     ?'Patch chart generation is being offloaded to Patch Companion'
+     :'Profile build is being offloaded to Patch Companion';
+    meterIccCompanionDetail=buildText;
+    meterIccShowCompanionStatus(true,buildText,true);
+    meterCalibrationShowCompanionStatus(true,buildText,true);
+   }else{
+    meterIccShowCompanionStatus(true,detail);
+    meterCalibrationShowCompanionStatus(true,detail);
+   }
+  }else if(buildOffloadActive){
+   const buildText=String(state.build_operation||'')==='targen'
+    ?'Patch chart generation is being offloaded to Patch Companion'
+    :'Profile build is being offloaded to Patch Companion';
+   meterIccCompanionDetail=buildText;
+   meterIccShowCompanionStatus(true,buildText,true);
+   meterCalibrationShowCompanionStatus(true,buildText,true);
   }else if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }catch(error){
   meterIccCompanionConnected=meterIccCompanionLastSeenAt>0&&Date.now()-meterIccCompanionLastSeenAt<12000;
   if(!meterIccCompanionConnected){ meterIccShowCompanionStatus(false,'Companion not connected'); meterCalibrationShowCompanionStatus(false,'Companion not connected'); }
  }
- meterIccUpdateTopCompanionStatus(meterIccCompanionConnected,meterIccCompanionDetail);
+ meterIccUpdateTopCompanionStatus(meterIccCompanionConnected,meterIccCompanionDetail,buildOffloadActive);
  document.querySelectorAll('.meter-icc-install-profile').forEach(button=>{
   button.style.display=meterIccCompanionConnected&&meterIccVersionAtLeast(meterIccCompanionVersion,'1.4.11')?'':'none';
  });
@@ -2535,6 +2567,7 @@ async function meterIccRetryBuild(){
   const profileQuality=['low','medium','high','ultra'].includes(selectedProfileQuality)?selectedProfileQuality:String((saved&&saved.profile_quality)||preset.profile_quality||'medium');
   meterIccRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:info.mode,steps:[],
+   b2a_grid:meterIccB2aGridValue(),
    // Calibration mode is a build-time choice, not a property of the
    // measurements: reusing a characterization must not silently override
    // the user's current selection with the previous build's mode.
@@ -2683,6 +2716,7 @@ async function meterIccStart(){
   const usePreRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
   const baseRunConfig={
    profile_type:type,profile_model:profileModel,profile_quality:profileQuality,name,quality,signal_mode:mode,pattern_provider:patternProvider,
+   b2a_grid:meterIccB2aGridValue(),
    calibration_mode:meterIccCalibrationModeValue(),
    icc_version:String((document.getElementById('meterIccVersion')||{}).value||'auto'),cicp:meterIccCicpSettings(),
    patch_settings:patchSettings,start_token:startToken,reuse_signature:reuseSignature,

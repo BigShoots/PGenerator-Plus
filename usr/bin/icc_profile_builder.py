@@ -3606,6 +3606,20 @@ def build(payload, output_dir):
     # the same measurements and the same surrounding stages so a hardware
     # comparison isolates exactly one construction difference.
     experiment = payload.get("hdr_experiment") if isinstance(payload.get("hdr_experiment"), dict) else {}
+    b2a_grid = None
+    if (profile_type in ("kde-hdr", "windows-hdr")
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        requested_grid = payload.get("b2a_grid")
+        if requested_grid in (None, ""):
+            # Preserve old experimental rebuild payloads while the setting
+            # graduates to a normal Display Profiler control.
+            requested_grid = 33 if experiment.get("grid") == 33 else 65
+        try:
+            b2a_grid = int(requested_grid)
+        except (TypeError, ValueError):
+            fail("HDR B2A cube density must be 33 or 65")
+        if b2a_grid not in (33, 65):
+            fail("HDR B2A cube density must be 33 or 65")
     mhc2_type = profile_type if keeps_mhc2 else (
         "windows-hdr" if profile_type == "kde-hdr" else "windows-sdr")
     mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
@@ -3747,7 +3761,8 @@ def build(payload, output_dir):
     profile = rebuild_icc(profile, {b"vcgt": vcgt_tag(calibration) if include_vcgt else None})
     if (profile_type == "kde-hdr" and PROFILE_MODELS[profile_model]["family"] == "clut"
             and calibration_mode == "vcgt"):
-        profile = reshape_hdr_b2a_for_pq(profile, white["xyz"][1])
+        profile = reshape_hdr_b2a_for_pq(
+            profile, white["xyz"][1], grid_size=b2a_grid)
     if not keeps_mhc2:
         profile = rebuild_icc(profile, {b"MHC2": None})
     profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
@@ -4001,7 +4016,7 @@ def build(payload, output_dir):
                     reshaped_profile = reshape_hdr_b2a_for_pq(
                         virtual_profile, b2a_white,
                         incorporated_calibration=incorporated,
-                        grid_size=33 if experiment.get("grid") == 33 else 65)
+                        grid_size=b2a_grid)
                     reshaped_tags = dict(read_icc_tags(reshaped_profile))
                     shaped_signatures = ((b"B2A0", b"B2A1", b"B2A2")
                                          if keeps_mhc2
@@ -4094,6 +4109,7 @@ def build(payload, output_dir):
     write_text_atomic(ti3_path, final_ti3)
     validation = run_profcheck(ti3_path, output_path, validation_rows, profile_model, patch_set)
     validation["profile_quality"] = profile_quality or ("high" if patch_set == "large" or len(profile_rows) > 800 else "medium")
+    validation["b2a_grid"] = b2a_grid
     # Fine-tune has to evaluate this profile against the curve it was built
     # for. Nothing in the ICC records that, and the measurements sidecar is
     # only written for reusable characterizations, so name it here.
@@ -4145,6 +4161,7 @@ def build(payload, output_dir):
                 "patch_settings": payload.get("patch_settings") if isinstance(payload.get("patch_settings"), dict) else None,
                 "avg_deviation": payload.get("avg_deviation"),
                 "patch_count": len(profile_rows),
+                "b2a_grid": b2a_grid,
             },
             "status": "ok",
             "readings": reusable_rows,
@@ -4161,6 +4178,7 @@ def build(payload, output_dir):
         "profile_model_label": PROFILE_MODELS[profile_model]["label"],
         "patch_set": patch_set,
         "profile_quality": profile_quality or None,
+        "b2a_grid": b2a_grid,
         "calibration_mode": calibration_mode,
         "include_vcgt": include_vcgt,
         "icc_version": icc_version,

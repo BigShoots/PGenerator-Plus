@@ -62,6 +62,13 @@
          <option value="ultra">Ultra</option>
         </select>
        </div>
+       <div id="meterIccB2aGridField" class="meter-icc-field meter-icc-b2a-grid-field">
+        <label for="meterIccB2aGrid">B2A cLUT cube <span class="meter-icc-help" data-tip="Sets the three-dimensional grid used by the explicit HDR B2A cLUT. This does not change the MHC2 matrix or its calibration curves. A 65³ cube is much larger and slower to build; use it only when measurements show a benefit over 33³.">?</span></label>
+        <select id="meterIccB2aGrid" onchange="meterIccSyncUi()">
+         <option value="33">33³</option>
+         <option value="65" selected>65³</option>
+        </select>
+       </div>
        <div class="meter-icc-field meter-icc-avg-deviation-field">
         <label for="meterIccAvgDeviation">Measurement deviation (%) <span class="meter-icc-help" data-tip="How much noise ArgyllCMS should expect in the meter readings (colprof -r). Lower values fit the measurements more tightly. Higher values smooth over noisier data. Default is 0.50% when left blank.">?</span></label>
         <input id="meterIccAvgDeviation" type="number" min="0" max="5" step="0.05" inputmode="decimal" placeholder="0.50 (ArgyllCMS default)" oninput="meterIccSyncUi()">
