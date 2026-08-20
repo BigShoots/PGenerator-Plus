@@ -4002,7 +4002,7 @@ static void companion_run_targen(const char *poll_response)
         SDL_snprintf(command, sizeof(command),
                      "title PGenerator+ ICC Chart Generation & "
                      "echo. & echo PGenerator+ is optimizing the measurement chart. & "
-                     "echo This calculation was offloaded from the PGenerator device. & "
+                     "echo This calculation was offloaded from PGenerator+. & "
                      "echo Please do not close this window. It will close automatically when generation finishes. & "
                      "echo. & \"%s\" %s%s%s%s \"%s\"",
                      tool, cleaned,
@@ -4162,7 +4162,7 @@ static void companion_run_build(const char *poll_response)
         SDL_snprintf(command, sizeof(command),
                      "title PGenerator+ ICC Profile Build & "
                      "echo. & echo PGenerator+ is building your ICC profile. & "
-                     "echo This calculation was offloaded from the PGenerator device. & "
+                     "echo This calculation was offloaded from PGenerator+. & "
                      "echo Please do not close this window. It will close automatically when the build finishes. & "
                      "echo. & \"%s\" %s -O \"%s\" \"%s\"",
                      tool, cleaned, icc_path, base_path);
