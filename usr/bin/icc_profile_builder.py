@@ -2414,12 +2414,11 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
         if len(payload) < 52 or payload[:4] != b"mft2":
             continue
         input_channels, output_channels, source_grid = payload[8], payload[9], payload[10]
-        # 65 remains the measured default: at 33 the corridor/cLUT interaction
-        # broke a single mid-rolloff patch by 13 dE on hardware (70% stimulus)
-        # with two different corridor anchors, while 65 measured 1.25 dE at the
-        # same patch. A 33-point grid stays selectable for experiments until
-        # that cell interaction is solved; the build-time answer is vectorizing
-        # this resample, not shrinking the grid.
+        # Keep 65 as the accuracy-oriented default. The neutral corridor below
+        # is expressed as a fraction of the cube axis, not as a fixed count of
+        # cells: two cells in 65^3 cover the same chromatic distance as one in
+        # 33^3. A fixed two-cell corridor made the 33^3 option twice as wide
+        # and pulled legitimate near-neutral colours onto the grey axis.
         grid = max(source_grid, grid_size)
         input_entries, output_entries = struct.unpack(">HH", payload[48:52])
         if input_channels != 3 or output_channels != 3 or source_grid < 2 or input_entries < 2 or output_entries < 2:
@@ -2524,6 +2523,11 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
             return estimates
 
         denominator = float(grid - 1)
+        # Preserve the same normalized corridor width at each supported cube
+        # density. This intentionally evaluates to one cell at 33^3 and two
+        # cells at 65^3.
+        neutral_corridor_cells = max(
+            1, int(round(2.0 * denominator / 64.0)))
         for red in range(grid):
             for green in range(grid):
                 for blue in range(grid):
@@ -2535,7 +2539,7 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
                     ]
                     original = evaluate_original(pcs)
                     spread = max(red, green, blue) - min(red, green, blue)
-                    if spread <= 2:
+                    if spread <= neutral_corridor_cells:
                         # Keep this corridor linear in each axis. Trilinear
                         # interpolation then reproduces an on-axis request
                         # exactly, leaving the dense output shapers as the one
@@ -2544,7 +2548,7 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
                         # diagonal nodes; a two-thousandth code bias at 20% PQ
                         # is enough to create a large OLED shadow colour error.
                         result = list(pq_coordinates)
-                    elif spread == 3:
+                    elif spread == neutral_corridor_cells + 1:
                         anchored = pq_coordinates
                         result = [(anchored[channel] + original[channel]) * 0.5
                                   for channel in range(3)]
