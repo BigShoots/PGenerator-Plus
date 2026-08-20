@@ -928,6 +928,20 @@ def validate_hdr_neutral_response_continuity(rows):
                     interval["y0"], interval["y1"]))
 
 
+def validate_mhc2_active_shadow_coverage(rows):
+    """Require active-path samples in the device range used by the HDR toe."""
+    shadow_codes = sorted(set(
+        round(sum(row["rgb"]) / 3.0, 6)
+        for row in rows
+        if max(row["rgb"]) - min(row["rgb"]) <= 0.002
+        and 0.0 < sum(row["rgb"]) / 3.0 <= 0.05
+    ))
+    if len(shadow_codes) < 4:
+        fail("Separate Windows MHC2 measurements need at least four neutral "
+             "anchors below 5% device drive so shadow luminance is measured "
+             "instead of extrapolated")
+
+
 def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment,
                                 hold_plateau=True):
     """Invert the measured neutral response in the post-PQ MHC2 stage.
@@ -1018,7 +1032,7 @@ def mhc2_hdr_with_neutral_headroom(adjustment, luts, wire,
 
 def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="srgb",
                  apply_calibration=True, adjustment_luts_override=None,
-                 hdr_neutral_headroom=False):
+                 hdr_neutral_headroom=False, calibrated_peak_override=None):
     physical = measured_primary_matrix(black, white, primaries)
     wire = mhc2_wire_matrix(profile_type)
     identity = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
@@ -1042,6 +1056,13 @@ def mhc2_payload(profile_type, black, white, primaries, rows, target_transfer="s
         if min(neutral_gains) <= 1e-6 or maximum_gain <= 1e-6:
             fail("HDR MHC2 calibration matrix has an invalid neutral response")
         calibrated_peak = black["xyz"][1] + (white["xyz"][1] - black["xyz"][1]) / maximum_gain
+    if calibrated_peak_override is not None:
+        calibrated_peak = min(
+            calibrated_peak,
+            max(black["xyz"][1] + 0.0001,
+                finite_number(calibrated_peak_override,
+                              "calibrated peak override")),
+        )
     entries = mhc2_lut_entries(profile_type)
     # MHC2 curves operate after Windows applies the wire transfer function.
     # They contain only the measured post-transfer adjustment, never the wire
@@ -1115,7 +1136,8 @@ def profile_association_tag(profile_type):
     return b"text" + b"\0\0\0\0" + association + b"\0"
 
 
-def profile_calibration_contract_tag(profile_type, calibration_mode, profile_model):
+def profile_calibration_contract_tag(profile_type, calibration_mode, profile_model,
+                                     independent_mhc2=False):
     """Record how independent ICC consumers must obtain calibration.
 
     A Windows HDR profile can serve two consumers that never run together:
@@ -1127,11 +1149,16 @@ def profile_calibration_contract_tag(profile_type, calibration_mode, profile_mod
     """
     if (profile_type == "windows-hdr" and calibration_mode == "profile"
             and PROFILE_MODELS[profile_model]["family"] == "clut"):
-        # Windows and the explicit Companion path are mutually exclusive
-        # consumers of the same measured correction. MHC2 carries it for the
-        # Windows path and the B2A output shapers carry it for explicit cLUT
-        # evaluation. Fine-tune must keep those two representations aligned.
-        contract = b"mhc2+b2a-shapers"
+        if independent_mhc2:
+            # The Windows-system response was characterized after activating
+            # a null MHC2 profile, while B2A was fitted from raw measurements.
+            # They are deliberately independent correction paths. Fine-tune
+            # must never mirror an MHC2 residual into the explicit cLUT.
+            contract = b"mhc2-common-tone+b2a-shapers"
+        else:
+            # Legacy one-pass profiles derive both representations from the
+            # same raw characterization and retain the mirrored contract.
+            contract = b"mhc2+b2a-shapers"
     else:
         contract = calibration_mode.encode("ascii")
     return b"text" + b"\0\0\0\0" + contract + b"\0"
@@ -1460,6 +1487,174 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
         updated[0] = 0.0
         luts[channel][:] = updated
     return plateau_material and maximum_move >= 0.5 / 65536.0
+
+
+def apply_mhc2_balanced_peak_cap(luts, rows, black, white, primaries,
+                                 neutral_gains):
+    """Keep a non-neutral HDR shoulder inside its measurable channel range.
+
+    An internally tone-mapped display can map many upper device codes to the
+    same physical peak. Once every MHC2 channel lands on that plateau, its
+    matrix correction is no longer observable and white reverts to the native
+    peak chromaticity. Use the measured primary ramps to find the brightest
+    D65 response that remains inside every channel's useful range, then bring
+    only the upper neutral shoulder down to that measured triplet.
+
+    The cap is conditional on a material measured peak-white error. A display
+    whose shoulder is already D65 is left byte-for-byte unchanged.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(neutral_gains) != 3 or min(neutral_gains) <= 1e-6):
+        fail("Balanced HDR peak correction has invalid calibration data")
+    white_sum = sum(white["xyz"])
+    if white_sum <= 1e-9:
+        return None
+    white_xy = (white["xyz"][0] / white_sum, white["xyz"][1] / white_sum)
+    if math.hypot(white_xy[0] - 0.3127, white_xy[1] - 0.3290) < 0.0015:
+        return None
+
+    neutral = sorted(
+        (sum(row["rgb"]) / 3.0, row["xyz"][1])
+        for row in rows if max(row["rgb"]) - min(row["rgb"]) <= 0.002
+    )
+    if len(neutral) < 9:
+        return None
+    measured_peak = max(value for _code, value in neutral)
+    if measured_peak <= 0.0:
+        return None
+    # The first point within 5% of measured peak is still on the useful side
+    # of a hard OLED knee, while a display that rises continuously reaches it
+    # near full drive and therefore gives up almost no range.
+    safe_code = min(code for code, value in neutral
+                    if value >= measured_peak * 0.95)
+
+    channel_samples = []
+    for channel in range(3):
+        count = sum(
+            1 for row in rows
+            if row["rgb"][channel] > 0.0
+            and all(row["rgb"][other] <= 0.002
+                    for other in range(3) if other != channel)
+        )
+        if count < 6:
+            return None
+        channel_samples.append(monotonic_channel_samples(
+            rows, black, primaries[channel], channel))
+
+    black_xyz = black["xyz"]
+    axes = [
+        [primaries[column]["xyz"][axis] - black_xyz[axis]
+         for column in range(3)]
+        for axis in range(3)
+    ]
+    inverse_axes = mat_inv(axes)
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    response_per_nit = mat_vec_mul(inverse_axes, d65)
+    black_response = mat_vec_mul(
+        inverse_axes, [-black_xyz[axis] for axis in range(3)])
+    safe_responses = [sample_channel_response(samples, safe_code)
+                      for samples in channel_samples]
+    limits = []
+    for channel in range(3):
+        slope = response_per_nit[channel]
+        if slope <= 1e-9:
+            return None
+        limits.append((safe_responses[channel] - black_response[channel])
+                      / slope)
+    balanced_peak = min(limits)
+    if (not math.isfinite(balanced_peak) or balanced_peak <= 0.0
+            or balanced_peak < measured_peak * 0.50):
+        return None
+    target_responses = [
+        black_response[channel] + balanced_peak * response_per_nit[channel]
+        for channel in range(3)
+    ]
+    target_codes = [
+        invert_channel_response(channel_samples[channel],
+                                target_responses[channel])
+        for channel in range(3)
+    ]
+
+    # A candidate-centred probe set measures the exact unequal RGB triplet
+    # proposed by the independent-ramp solve and its local one-sided response.
+    # The HDR knee is strongly asymmetric, so selecting the best physically
+    # measured candidate is safer than extrapolating a symmetric derivative
+    # through the flat side of the plateau. Optional refine rows are generated
+    # from that one-sided response and participate in the same selection.
+    peak_candidates = [
+        row for row in rows
+        if (re.match(r"^ICC MHC2 Peak Candidate(?: [RGB][+-])?$",
+                     str(row.get("name", "")))
+            or re.match(r"^ICC MHC2 Peak Refine [A-Z]+$",
+                        str(row.get("name", ""))))
+        and row["xyz"][1] >= measured_peak * 0.80
+    ]
+    if peak_candidates:
+        def candidate_error(row):
+            total = sum(row["xyz"])
+            if total <= 1e-9:
+                return float("inf")
+            x = row["xyz"][0] / total
+            y = row["xyz"][1] / total
+            return math.hypot(x - 0.3127, y - 0.3290)
+
+        measured_best = min(peak_candidates, key=candidate_error)
+        if candidate_error(measured_best) < math.hypot(
+                white_xy[0] - 0.3127, white_xy[1] - 0.3290):
+            balanced_peak = measured_best["xyz"][1]
+            target_codes = list(measured_best["rgb"])
+
+    shoulder_code = min(code for code, value in neutral
+                        if value >= measured_peak * 0.90)
+    transition_end = min(balanced_peak, pq_to_nits(shoulder_code))
+    transition_start = transition_end * 0.80
+    entries = len(luts[0])
+    for channel in range(3):
+        gain = neutral_gains[channel]
+        start_input = nits_to_pq(transition_start * gain)
+        anchor = sample_table(luts[channel], start_input)
+        target = max(anchor, target_codes[channel])
+        updated = []
+        for index, old in enumerate(luts[channel]):
+            position = index / float(entries - 1)
+            source_nits = pq_to_nits(position) / gain
+            if source_nits <= transition_start:
+                updated.append(old)
+                continue
+            weight = smoothstep((source_nits - transition_start)
+                                / max(transition_end - transition_start, 1e-9))
+            ceiling = anchor * (1.0 - weight) + target * weight
+            updated.append(ceiling)
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return balanced_peak
+
+
+def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
+                                         primaries, target_transfer):
+    """Fit MHC2 for the Windows path without changing the raw cLUT model."""
+    profile_type = "windows-hdr"
+    wire = mhc2_wire_matrix(profile_type)
+    _, matrix, seed_luts, _ = mhc2_payload(
+        profile_type, black, white, primaries, rows,
+        target_transfer or "srgb", apply_calibration=True,
+        hdr_neutral_headroom=True)
+    fallback = vcgt_from_mhc2(matrix, seed_luts, wire)
+    adjustment_luts = windows_hdr_profile_adjustment_luts(
+        profile, rows, fallback, black, white, matrix)
+    rgb_adjustment = mat_mul(
+        mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    balanced_peak = apply_mhc2_balanced_peak_cap(
+        adjustment_luts, rows, black, white, primaries, neutral_gains)
+    return mhc2_payload(
+        profile_type, black, white, primaries, rows,
+        target_transfer or "srgb", apply_calibration=True,
+        adjustment_luts_override=adjustment_luts,
+        hdr_neutral_headroom=True,
+        calibrated_peak_override=balanced_peak)
 
 
 def smoothstep(value):
@@ -3595,14 +3790,35 @@ def build(payload, output_dir):
     metadata_white_names = ("ICC HDR Metadata White", "ICC Full Frame White")
     metadata_white_rows = [row for row in rows if row["name"] in metadata_white_names]
     profile_rows = [row for row in rows if row["name"] not in metadata_white_names]
+    mhc2_profile_rows = profile_rows
+    supplied_mhc2_readings = payload.get("mhc2_readings")
+    if supplied_mhc2_readings is not None:
+        if profile_type != "windows-hdr" or calibration_mode == "none":
+            fail("Separate MHC2 measurements require a calibrated Windows HDR profile")
+        if not isinstance(supplied_mhc2_readings, list):
+            fail("Separate MHC2 measurements must be a list")
+        mhc2_payload_input = dict(payload)
+        mhc2_payload_input["readings"] = supplied_mhc2_readings
+        mhc2_rows = normalize_measurements(mhc2_payload_input)
+        mhc2_profile_rows = [
+            row for row in mhc2_rows if row["name"] not in metadata_white_names
+        ]
     if profile_type in ("kde-hdr", "windows-hdr"):
         validate_hdr_neutral_response_continuity(profile_rows)
+    if mhc2_profile_rows is not profile_rows:
+        validate_hdr_neutral_response_continuity(mhc2_profile_rows)
+        validate_mhc2_active_shadow_coverage(mhc2_profile_rows)
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
     # MHC2 and the characterization summary use the raw measurements: they
     # describe the panel, not an already calibrated signal.
     black, white, primaries = profile_measurement_summary(profile_rows)
+    mhc2_black, mhc2_white, mhc2_primaries = (
+        profile_measurement_summary(mhc2_profile_rows)
+        if mhc2_profile_rows is not profile_rows
+        else (black, white, primaries)
+    )
     keeps_mhc2 = profile_type in ("windows-sdr", "windows-hdr")
     # Stage switches for controlled pipeline experiments. Every switch keeps
     # the same measurements and the same surrounding stages so a hardware
@@ -3722,21 +3938,41 @@ def build(payload, output_dir):
         # curves derived from the fitted A2B plus every original neutral and
         # mixed-color characterization row. This prevents non-additive HDR
         # plateaus from producing a one-channel jump at peak white.
-        adjustment_luts = windows_hdr_profile_adjustment_luts(
+        raw_adjustment_luts = windows_hdr_profile_adjustment_luts(
             profile, profile_rows, calibration, black, white, matrix)
-        mhc2, matrix, adjustment_luts, calibrated_white = mhc2_payload(
+        raw_mhc2, raw_matrix, raw_adjustment_luts, raw_calibrated_white = mhc2_payload(
             mhc2_type, black, white, primaries, profile_rows,
             target_transfer or "srgb", apply_calibration=True,
-            adjustment_luts_override=adjustment_luts,
+            adjustment_luts_override=raw_adjustment_luts,
             hdr_neutral_headroom=True)
+        raw_calibration = vcgt_from_mhc2(
+            raw_matrix, raw_adjustment_luts, mhc2_wire_matrix(mhc2_type))
+        if mhc2_profile_rows is profile_rows:
+            mhc2 = raw_mhc2
+            matrix = raw_matrix
+            adjustment_luts = raw_adjustment_luts
+            calibrated_white = raw_calibrated_white
+        else:
+            # Windows changes the Advanced Color path as soon as an MHC2
+            # profile becomes active, even when that profile carries a null
+            # transform. Characterize that actual path separately so MHC2
+            # corrects the pixels Windows presents. The original raw rows
+            # still own A2B/B2A and their explicit cLUT calibration below.
+            mhc2, matrix, adjustment_luts, calibrated_white = (
+                windows_hdr_mhc2_from_active_profile(
+                    profile, mhc2_profile_rows, mhc2_black, mhc2_white,
+                    mhc2_primaries, target_transfer))
         # Keep the full measured correction in MHC2. The fitted curves are
         # already resampled into the post-matrix coordinate above, so their
         # per-channel separation is the residual the matrix alone cannot
         # express. Replacing them with a common-tone approximation removes the
         # measured shadow inverse and can drive the HDR shoulder into a clamp
         # where the white-point correction disappears.
-        calibration = vcgt_from_mhc2(
-            matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
+        # B2A/cLUT is evaluated with Windows colour handling isolated, so it
+        # must retain the raw-display calibration. MHC2 above is an independent
+        # consumer derived from the active Windows path when those readings
+        # were supplied.
+        calibration = raw_calibration
     # Generate and insert MHC2, clone its neutral-axis behaviour into vcgt for
     # the legacy single-calibration paths, then remove MHC2 only from profile
     # types whose consumers do not use it.
@@ -3763,7 +3999,8 @@ def build(payload, output_dir):
     profile = rebuild_icc(profile, {b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None})
     if keeps_mhc2:
         mhc2_validation = validate_mhc2_profile(
-            profile, mhc2, measured_primary_matrix(black, white, primaries),
+            profile, mhc2,
+            measured_primary_matrix(mhc2_black, mhc2_white, mhc2_primaries),
             mhc2_wire_matrix(profile_type), luminance, profile_type,
             expect_calibration=calibration_mode != "none",
         )
@@ -4077,9 +4314,52 @@ def build(payload, output_dir):
                     shutil.rmtree(repair_dir, ignore_errors=True)
     elif calibration_mode == "profile" and not keeps_mhc2:
         apply_profile_calibration(output_path, calibration)
+
+    if (mhc2_profile_rows is not profile_rows
+            and profile_type == "windows-hdr"
+            and calibration_mode != "none"
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        # All B2A/cLUT construction is complete. Refit the independent MHC2
+        # against this exact final A2B model so no intermediate profile can
+        # leak into the Windows-system correction. This changes MHC2 and its
+        # luminance metadata only; the raw-measurement cLUT remains untouched.
+        with open(output_path, "rb") as handle:
+            profile = handle.read()
+        mhc2, matrix, adjustment_luts, calibrated_white = (
+            windows_hdr_mhc2_from_active_profile(
+                profile, mhc2_profile_rows, mhc2_black, mhc2_white,
+                mhc2_primaries, target_transfer))
+        if metadata_white_rows:
+            active_peak = max(
+                mhc2_white["xyz"][1], mhc2_black["xyz"][1] + 0.0001)
+            calibration_scale = (
+                (calibrated_white - mhc2_black["xyz"][1])
+                / (active_peak - mhc2_black["xyz"][1]))
+            luminance = (black["xyz"][1]
+                         + calibration_scale
+                         * (metadata_white_rows[0]["xyz"][1]
+                            - black["xyz"][1]))
+        else:
+            luminance = calibrated_white
+        profile = rebuild_icc(profile, {
+            b"MHC2": mhc2,
+            b"lumi": xyz_tag((0.0, luminance, 0.0)),
+            b"vcgt": None,
+            b"cicp": cicp_tag(cicp) if icc_version == "4.4" else None,
+        })
+        mhc2_validation = validate_mhc2_profile(
+            profile, mhc2,
+            measured_primary_matrix(
+                mhc2_black, mhc2_white, mhc2_primaries),
+            mhc2_wire_matrix(profile_type), luminance, profile_type,
+            expect_calibration=True,
+        )
+        with open(output_path, "wb") as handle:
+            handle.write(profile)
     association = profile_association_tag(profile_type)
     calibration_contract = profile_calibration_contract_tag(
-        profile_type, calibration_mode, profile_model)
+        profile_type, calibration_mode, profile_model,
+        independent_mhc2=mhc2_profile_rows is not profile_rows)
     if association is not None or calibration_contract is not None:
         with open(output_path, "rb") as handle:
             profile = handle.read()
@@ -4156,10 +4436,24 @@ def build(payload, output_dir):
                 "patch_settings": payload.get("patch_settings") if isinstance(payload.get("patch_settings"), dict) else None,
                 "avg_deviation": payload.get("avg_deviation"),
                 "patch_count": len(profile_rows),
+                "mhc2_patch_count": (len(mhc2_profile_rows)
+                                     if mhc2_profile_rows is not profile_rows
+                                     else None),
                 "b2a_grid": b2a_grid,
             },
             "status": "ok",
             "readings": reusable_rows,
+            "mhc2_readings": ([{
+                "name": row["name"],
+                "r_code": row["codes"][0],
+                "g_code": row["codes"][1],
+                "b_code": row["codes"][2],
+                "input_max": row["input_max"],
+                "X": row["xyz"][0],
+                "Y": row["xyz"][1],
+                "Z": row["xyz"][2],
+            } for row in mhc2_profile_rows]
+                if mhc2_profile_rows is not profile_rows else None),
         })
     elif os.path.exists(measurement_path):
         os.unlink(measurement_path)
