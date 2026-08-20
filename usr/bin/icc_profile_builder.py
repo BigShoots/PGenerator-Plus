@@ -1127,13 +1127,11 @@ def profile_calibration_contract_tag(profile_type, calibration_mode, profile_mod
     """
     if (profile_type == "windows-hdr" and calibration_mode == "profile"
             and PROFILE_MODELS[profile_model]["family"] == "clut"):
-        # MHC2 and the explicit B2A path share the characterization, but they
-        # no longer share an identical set of calibration curves. Windows'
-        # matrix owns the neutral chromatic correction and its 1DLUTs carry a
-        # commuting common-tone trim. B2A retains the independently modeled
-        # per-channel shapers. Fine-tune must therefore never copy an MHC2
-        # residual blindly into B2A.
-        contract = b"mhc2-common-tone+b2a-shapers"
+        # Windows and the explicit Companion path are mutually exclusive
+        # consumers of the same measured correction. MHC2 carries it for the
+        # Windows path and the B2A output shapers carry it for explicit cLUT
+        # evaluation. Fine-tune must keep those two representations aligned.
+        contract = b"mhc2+b2a-shapers"
     else:
         contract = calibration_mode.encode("ascii")
     return b"text" + b"\0\0\0\0" + contract + b"\0"
@@ -3731,24 +3729,17 @@ def build(payload, output_dir):
             target_transfer or "srgb", apply_calibration=True,
             adjustment_luts_override=adjustment_luts,
             hdr_neutral_headroom=True)
-        # Explicit cLUT handling and Windows' MHC2 stage are independent
-        # consumers. Keep the fitted per-channel neutral inverse for B2A, where
-        # it was derived and validated, but do not stack the same chromatic
-        # correction behind MHC2's white-point matrix. Hardware applies that
-        # split as a second white correction and strongly recolours the OLED
-        # shoulder. MHC2 retains the fitted common luminance correction and a
-        # held peak; B2A keeps the full modeled shapers.
+        # Keep the full measured correction in MHC2. The fitted curves are
+        # already resampled into the post-matrix coordinate above, so their
+        # per-channel separation is the residual the matrix alone cannot
+        # express. Replacing them with a common-tone approximation removes the
+        # measured shadow inverse and can drive the HDR shoulder into a clamp
+        # where the white-point correction disappears.
         calibration = vcgt_from_mhc2(
             matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
-        mhc2_adjustment_luts = windows_hdr_commuting_adjustment_luts(
-            matrix, adjustment_luts, black, white, calibrated_white)
-        mhc2 = mhc2_with_adjustment_luts(mhc2, mhc2_adjustment_luts)
-        adjustment_luts = mhc2_adjustment_luts
     # Generate and insert MHC2, clone its neutral-axis behaviour into vcgt for
     # the legacy single-calibration paths, then remove MHC2 only from profile
-    # types whose consumers do not use it. Windows HDR cLUT profile mode is the
-    # deliberate exception above: its B2A shapers retain the independently
-    # modeled calibration instead of duplicating MHC2's matrix-safe curves.
+    # types whose consumers do not use it.
     replacements = {b"MHC2": mhc2}
     luminance = None
     if keeps_mhc2:

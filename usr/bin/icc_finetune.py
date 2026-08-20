@@ -1317,10 +1317,9 @@ def finetune(payload, output_dir):
     if has_mhc2:
         # The operative correction of an MHC2 profile is its per-channel
         # adjustment curve set, applied in the wire signal domain by Windows.
-        # Older profiles cloned the same calibration into B2A and therefore
-        # need the edit mirrored. New Windows HDR cLUT profiles deliberately
-        # use a common-tone MHC2 stage and independently modeled B2A shapers;
-        # a system-path residual must not be copied into that explicit cLUT.
+        # Profiles that clone the same calibration into B2A need the edit
+        # mirrored so Windows handling and explicit cLUT evaluation continue
+        # to represent the same measured correction.
         off, _ = tags["MHC2"]
         entries = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
         matrix_offset = struct.unpack(">I", bytes(data[off + 20:off + 24]))[0]
