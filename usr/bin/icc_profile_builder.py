@@ -1969,14 +1969,18 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
 
     color_measurements = []
     neutral_probe_groups = {}
+    # Saved measurement series may add a routing prefix such as
+    # "MHC Baseline " to every patch name. The semantic ICC suffix is stable;
+    # do not silently discard the active-path derivatives because of that
+    # harmless provenance prefix.
     neutral_probe_pattern = re.compile(
-        r"^ICC Neutral Jacobian ([0-9]{4}) ([RGB])([+-])$")
+        r"(?:^| )ICC Neutral Jacobian ([0-9]{4}) ([RGB])([+-])$")
     for row in rows:
         rgb = tuple(row["rgb"])
         if max(rgb) - min(rgb) > 0.002:
             measurement = (rgb, tuple(row["xyz"]), str(row.get("name", "")))
             color_measurements.append(measurement)
-            match = neutral_probe_pattern.match(measurement[2])
+            match = neutral_probe_pattern.search(measurement[2])
             if match:
                 center = int(match.group(1)) / 1023.0
                 neutral_probe_groups.setdefault(center, []).append(measurement)
@@ -2131,7 +2135,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         # three or four directional samples into a confident 3x3 inverse.
         directions = set()
         for _rgb, _xyz, name in samples:
-            match = neutral_probe_pattern.match(name)
+            match = neutral_probe_pattern.search(name)
             if match:
                 directions.add(match.group(2) + match.group(3))
         if directions != set(("R-", "R+", "G-", "G+", "B-", "B+")):
@@ -2398,8 +2402,8 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
     # 10% point. Dedicated same-loading probes make that guess unnecessary.
     # Preserve their locally solved curve exactly; old charts retain the
     # conservative regularizer.
-    if not any(str(row.get("name", "")).startswith(
-               "ICC Neutral Jacobian ") for row in rows):
+    if not any("ICC Neutral Jacobian " in str(row.get("name", ""))
+               for row in rows):
         source_curves = regularize_hdr_shadow_balance(source_curves)
     wire = mhc2_wire_matrix("windows-hdr")
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
