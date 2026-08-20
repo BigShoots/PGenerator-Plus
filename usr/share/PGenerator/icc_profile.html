@@ -53,6 +53,13 @@
         </select>
         <div class="meter-icc-note" id="meterIccProfileModelNote" hidden></div>
        </div>
+       <div id="meterIccB2aGridField" class="meter-icc-field meter-icc-b2a-grid-field">
+        <label for="meterIccB2aGrid">B2A cLUT cube <span class="meter-icc-help" data-tip="Sets the three-dimensional grid used by the explicit HDR B2A cLUT. This does not change the MHC2 matrix or its calibration curves. A 65³ cube is much larger and slower to build; use it only when measurements show a benefit over 33³.">?</span></label>
+        <select id="meterIccB2aGrid" onchange="meterIccSyncUi()">
+         <option value="33">33³</option>
+         <option value="65" selected>65³</option>
+        </select>
+       </div>
        <div class="meter-icc-field meter-icc-profile-quality-field">
         <label for="meterIccProfileQuality">Table resolution <span class="meter-icc-help" data-tip="Sets fitting effort and/or table size in the resulting profile. For cLUT profiles this mainly sets lookup-table detail. For matrix profiles it sets per-channel curve detail and fitting effort. Independent of how many patches you measure. After a completed run you can rebuild the same readings at another resolution without measuring again. Ultra is mainly a test setting.">?</span></label>
         <select id="meterIccProfileQuality" onchange="meterIccSyncUi()">
@@ -60,13 +67,6 @@
          <option value="medium">Medium</option>
          <option value="high" selected>High</option>
          <option value="ultra">Ultra</option>
-        </select>
-       </div>
-       <div id="meterIccB2aGridField" class="meter-icc-field meter-icc-b2a-grid-field">
-        <label for="meterIccB2aGrid">B2A cLUT cube <span class="meter-icc-help" data-tip="Sets the three-dimensional grid used by the explicit HDR B2A cLUT. This does not change the MHC2 matrix or its calibration curves. A 65³ cube is much larger and slower to build; use it only when measurements show a benefit over 33³.">?</span></label>
-        <select id="meterIccB2aGrid" onchange="meterIccSyncUi()">
-         <option value="33">33³</option>
-         <option value="65" selected>65³</option>
         </select>
        </div>
        <div class="meter-icc-field meter-icc-avg-deviation-field">
