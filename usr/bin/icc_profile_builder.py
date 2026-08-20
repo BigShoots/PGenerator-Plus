@@ -1340,7 +1340,8 @@ def isotonic_curve(values):
 
 
 def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
-                                         neutral_gains, damping=0.5):
+                                         neutral_gains, damping=0.5,
+                                         include_body=False):
     """Close the residual left by the fitted HDR MHC2 neutral model.
 
     The forward profile fit and the per-channel curves are individually good
@@ -1350,11 +1351,11 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
     error, then invert that same measured response back into MHC2 drive.
 
     Plateau samples describe one physical output state and therefore share a
-    robust correction. The uniquely invertible body and shadows are already
-    handled by the measured neutral/Jacobian solve and are deliberately left
-    alone here. Every plateau correction is lower-or-hold in response space,
-    bounded in device code and protected by a deadband, so an already-neutral
-    display is unchanged.
+    robust correction. When no separately measured active Windows path is
+    available, the profile model also closes its smoothed shadow/body
+    residual. Every correction is lower-or-hold in response space, bounded in
+    device code and protected by a deadband, so an already-neutral display is
+    unchanged.
 
     Returns True when a material plateau correction was applied. Callers use
     this to keep the exact-white tail attached to the corrected shoulder.
@@ -1444,9 +1445,39 @@ def apply_mhc2_modeled_neutral_residual(luts, rows, black, primaries,
             if sample["rolloff"]:
                 sample["gains"] = list(pooled)
 
+    if include_body:
+        original_logs = {
+            sample["code"]: [math.log(max(gain, 1e-6))
+                             for gain in sample["gains"]]
+            for sample in modeled if not sample["rolloff"]
+        }
+        for sample in modeled:
+            if sample["rolloff"] or sample["code"] > 0.45:
+                continue
+            weighted = [0.0, 0.0, 0.0]
+            weight_sum = 0.0
+            for neighbour in modeled:
+                if neighbour["rolloff"]:
+                    continue
+                distance = abs(neighbour["code"] - sample["code"])
+                if distance >= 0.101:
+                    continue
+                kernel = max(0.0, 1.0 - distance / 0.101)
+                reliability = smoothstep((neighbour["y"] - 0.03) / 0.97)
+                weight = kernel * (0.20 + 0.80 * reliability)
+                logs = original_logs[neighbour["code"]]
+                for channel in range(3):
+                    weighted[channel] += weight * logs[channel]
+                weight_sum += weight
+            if weight_sum > 0.0:
+                sample["gains"] = [math.exp(value / weight_sum)
+                                   for value in weighted]
+
     effective = []
     for sample in modeled:
-        strength = 1.0 if sample["rolloff"] else 0.0
+        strength = (1.0 if sample["rolloff"] else
+                    smoothstep((sample["y"] - 0.03) / 0.97)
+                    if include_body else 0.0)
         effective.append((sample["code"], [
             math.exp(damping * strength * math.log(max(gain, 1e-6)))
             for gain in sample["gains"]
@@ -1662,6 +1693,60 @@ def smoothstep(value):
     return value * value * (3.0 - 2.0 * value)
 
 
+def apply_mhc2_profile_exact_white_tail(luts, evaluate, chad, damping=0.5):
+    """Solve a profile-predicted exact-white residual in the final entries."""
+    if len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1:
+        fail("MHC2 exact-white correction requires three equal curves")
+    if len(chad) != 3 or any(len(row) != 3 for row in chad):
+        fail("MHC2 exact-white correction requires a chromatic-adaptation matrix")
+    start = mhc2_exact_white_start(len(luts[0]))
+    held = [max(luts[channel][start - 1], luts[channel][start])
+            for channel in range(3)]
+    actual = evaluate(held)
+    if len(actual) != 3 or not all(math.isfinite(value) for value in actual):
+        return False
+    try:
+        raw = mat_vec_mul(mat_inv(chad), actual)
+    except ValueError:
+        return False
+    if raw[1] <= 1e-9:
+        return False
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    target = mat_vec_mul(chad, [raw[1] * component for component in d65])
+    step = 2.0 / 1023.0
+    jacobian = [[0.0] * 3 for _axis in range(3)]
+    for channel in range(3):
+        probe = list(held)
+        probe[channel] = min(1.0, held[channel] + step)
+        if probe[channel] <= held[channel]:
+            return False
+        result = evaluate(probe)
+        denominator = probe[channel] - held[channel]
+        for axis in range(3):
+            jacobian[axis][channel] = (
+                result[axis] - actual[axis]) / denominator
+    try:
+        delta = mat_vec_mul(
+            mat_inv(jacobian),
+            [target[axis] - actual[axis] for axis in range(3)],
+        )
+    except ValueError:
+        return False
+    if not all(math.isfinite(value) for value in delta):
+        return False
+    floor = min(delta)
+    raised = [max(0.0, value - floor) * damping for value in delta]
+    if max(raised) < 0.0015:
+        return False
+    for channel in range(3):
+        endpoint = min(1.0, held[channel] + 0.035,
+                       held[channel] + raised[channel])
+        for index in range(start, len(luts[channel])):
+            luts[channel][index] = endpoint
+    return True
+
+
 def invert_table(table, value):
     """Invert a normalized monotonic table with linear interpolation."""
     value = max(0.0, min(1.0, value))
@@ -1789,13 +1874,16 @@ def mft2_a2b_evaluator(profile):
     return evaluate
 
 
-def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
+def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
+                                     raw_measurement_model=False):
     """Build neutral B2A output curves from the raw measured forward model.
 
     Dense neutral measurements anchor luminance and the first OLED plateau.
     Argyll's A2B fit supplies only the local, level-dependent RGB-to-XYZ
     Jacobian used for white-point correction. This consumes the original
     characterization set and never requires a post-profile measurement pass.
+    A raw-only build retains the measured primary fallback throughout the
+    low-signal range; active-path probe builds can use their local Jacobians.
     """
     neutral = []
     for row in rows:
@@ -2061,15 +2149,18 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         # but has a determinant below mat_inv()'s absolute primary-matrix
         # guard. Normalize its magnitude before inversion so the guard tests
         # conditioning instead of rejecting every measured probe group.
-        normal_scale = max(abs(value) for row in normal for value in row)
-        if normal_scale <= 1e-18:
-            return None, 0.0
         try:
-            scaled_inverse = mat_inv([
-                [value / normal_scale for value in row] for row in normal
-            ])
-            inverse = [[value / normal_scale for value in row]
-                       for row in scaled_inverse]
+            if raw_measurement_model:
+                inverse = mat_inv(normal)
+            else:
+                normal_scale = max(abs(value) for row in normal for value in row)
+                if normal_scale <= 1e-18:
+                    return None, 0.0
+                scaled_inverse = mat_inv([
+                    [value / normal_scale for value in row] for row in normal
+                ])
+                inverse = [[value / normal_scale for value in row]
+                           for row in scaled_inverse]
         except Exception:
             return None, 0.0
         jacobian = [
@@ -2244,8 +2335,9 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
                     mat_inv(local_jacobian),
                     [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
                 )
-                local_delta = [max(-0.025, min(0.025, value))
-                               for value in local_delta]
+                if not raw_measurement_model:
+                    local_delta = [max(-0.025, min(0.025, value))
+                                   for value in local_delta]
                 delta = [local_delta[channel] * local_confidence
                          + delta[channel] * (1.0 - local_confidence)
                          for channel in range(3)]
@@ -2266,7 +2358,8 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096):
         # probes and must not overwrite their solved delta in the low-light
         # band. Partial confidence blends the two; charts without trustworthy
         # local probes retain the established fallback unchanged.
-        additive_weight *= 1.0 - local_confidence
+        if not raw_measurement_model:
+            additive_weight *= 1.0 - local_confidence
         delta = [normalized_primary_delta[channel] * additive_weight
                  + delta[channel] * (1.0 - additive_weight) for channel in range(3)]
         delta = [max(-0.04, min(0.04, value)) for value in delta]
@@ -2380,7 +2473,8 @@ def profile_with_measured_chad(profile, black, white):
 
 
 def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
-                                        matrix, entries=MHC2_HDR_LUT_ENTRIES):
+                                        matrix, entries=MHC2_HDR_LUT_ENTRIES,
+                                        raw_measurement_model=False):
     """Derive Windows' post-PQ MHC2 curves from the fitted forward model.
 
     The dense neutral measurements determine luminance and the first stable
@@ -2392,14 +2486,16 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
     """
     model_profile = profile_with_measured_chad(profile, black, white)
     source_curves = hdr_profile_calibration_from_a2b(
-        model_profile, rows, fallback, entries=4096)
+        model_profile, rows, fallback, entries=4096,
+        raw_measurement_model=raw_measurement_model)
     # The broad legacy smoother protects sparse charts from isolated meter
     # noise, but it also spreads a real 5% correction into an otherwise good
     # 10% point. Dedicated same-loading probes make that guess unnecessary.
     # Preserve their locally solved curve exactly; old charts retain the
     # conservative regularizer.
-    if not any(str(row.get("name", "")).startswith(
-               "ICC Neutral Jacobian ") for row in rows):
+    if (raw_measurement_model
+            or not any(str(row.get("name", "")).startswith(
+                       "ICC Neutral Jacobian ") for row in rows)):
         source_curves = regularize_hdr_shadow_balance(source_curves)
     wire = mhc2_wire_matrix("windows-hdr")
     rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
@@ -2456,17 +2552,44 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
         values[0] = 0.0
         luts.append(values)
     apply_mhc2_modeled_neutral_residual(
-        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains)
-    # Every code on a measured HDR plateau represents the same physical
-    # output state. A separate modeled raise in the final dense-table entries
-    # made Windows exact-white change chromaticity even though 80-95% was
-    # stable. Hold the measured shoulder triplet through the endpoint. Panels
-    # that keep rising to full drive naturally hold at 1.0 and are unchanged.
+        luts, rows, black, profile_measurement_summary(rows)[2], neutral_gains,
+        include_body=raw_measurement_model)
     endpoint_start = mhc2_exact_white_start(entries)
-    for channel in range(3):
-        endpoint = luts[channel][endpoint_start - 1]
-        for index in range(endpoint_start, entries):
-            luts[channel][index] = endpoint
+    if raw_measurement_model:
+        chad_payload = dict(read_icc_tags(model_profile)).get(b"chad")
+        if (chad_payload and len(chad_payload) >= 44
+                and chad_payload[:4] == b"sf32"):
+            chad_values = [value / 65536.0 for value in struct.unpack_from(
+                ">9i", chad_payload, 8)]
+            chad = [chad_values[0:3], chad_values[3:6], chad_values[6:9]]
+            held = [luts[channel][endpoint_start - 1]
+                    for channel in range(3)]
+            exact_probe = [list(curve) for curve in luts]
+            if apply_mhc2_profile_exact_white_tail(
+                    exact_probe, mft2_a2b_evaluator(model_profile), chad,
+                    damping=3.0):
+                weakest = min(held)
+                spread = max(held) - weakest
+                for channel in range(3):
+                    if exact_probe[channel][-1] <= held[channel] + 1e-9:
+                        endpoint = held[channel]
+                    else:
+                        fraction = (0.63 if held[channel] <= weakest + 1e-9
+                                    else 0.28)
+                        movement_limit = max(0.0035, fraction * spread)
+                        endpoint = min(held[channel] + 0.035,
+                                       held[channel] + movement_limit,
+                                       exact_probe[channel][-1])
+                    for index in range(endpoint_start, entries):
+                        luts[channel][index] = endpoint
+    else:
+        # Every code on a measured HDR plateau represents the same physical
+        # output state. Hold the separately measured active-path shoulder
+        # triplet through exact white rather than extrapolating its model.
+        for channel in range(3):
+            endpoint = luts[channel][endpoint_start - 1]
+            for index in range(endpoint_start, entries):
+                luts[channel][index] = endpoint
     return luts
 
 
@@ -3938,13 +4061,15 @@ def build(payload, output_dir):
         # curves derived from the fitted A2B plus every original neutral and
         # mixed-color characterization row. This prevents non-additive HDR
         # plateaus from producing a one-channel jump at peak white.
+        has_active_mhc2_measurements = mhc2_profile_rows is not profile_rows
         raw_adjustment_luts = windows_hdr_profile_adjustment_luts(
-            profile, profile_rows, calibration, black, white, matrix)
+            profile, profile_rows, calibration, black, white, matrix,
+            raw_measurement_model=not has_active_mhc2_measurements)
         raw_mhc2, raw_matrix, raw_adjustment_luts, raw_calibrated_white = mhc2_payload(
             mhc2_type, black, white, primaries, profile_rows,
             target_transfer or "srgb", apply_calibration=True,
             adjustment_luts_override=raw_adjustment_luts,
-            hdr_neutral_headroom=True)
+            hdr_neutral_headroom=has_active_mhc2_measurements)
         raw_calibration = vcgt_from_mhc2(
             raw_matrix, raw_adjustment_luts, mhc2_wire_matrix(mhc2_type))
         if mhc2_profile_rows is profile_rows:
