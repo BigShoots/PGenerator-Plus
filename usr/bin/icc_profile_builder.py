@@ -60,6 +60,10 @@ class CompanionBuildTimeout(ValueError):
     pass
 
 
+class CompanionBuildFailed(ValueError):
+    pass
+
+
 def fail(message):
     raise ValueError(message)
 
@@ -2833,6 +2837,7 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
         write_text_atomic(ti3_path, ti3)
         job = {
             "job": job_id,
+            "operation": "colprof",
             "argyll_version": local_version,
             "timeout": timeout_seconds,
             "flags": flags,
@@ -2871,17 +2876,139 @@ def companion_build_offload(ti3, command, temporary_output, timeout_seconds):
                 pass
 
 
-def argyll_version():
-    """Version string of the local colprof, used to gate the offload."""
-    colprof = os.environ.get("PGEN_COLPROF", "/usr/bin/colprof")
+def companion_targen_offload(command, output_path, timeout_seconds,
+                             precondition_path=None):
+    """Run targen on a connected compatible Patch Companion.
+
+    Chart optimization is CPU-only and can be slower than the entire meter
+    pass on a Pi 4. The same Companion that runs colprof can run targen too,
+    provided it explicitly advertises that capability. Older Companions keep
+    using the local path instead of receiving a job type they do not know.
+    """
+    if os.environ.get("PGEN_ICC_NO_OFFLOAD"):
+        return False
+    input_path = os.path.join(COMPANION_BUILD_DIR, "job.input")
     try:
-        process = subprocess.Popen([colprof], stdout=subprocess.PIPE,
+        state_path = os.path.join(COMPANION_BUILD_DIR, "companion.json")
+        state = read_companion_state(state_path)
+        if not companion_seen_recently(state) or not state.get("targen"):
+            return False
+        local_version = argyll_tool_version(
+            os.environ.get("PGEN_TARGEN", "/usr/bin/targen"))
+        remote_version = str(state.get("argyll_version", ""))
+        if not local_version or local_version != remote_version:
+            return False
+        if not os.path.isdir(COMPANION_BUILD_DIR):
+            return False
+
+        job_id = "%d-%d" % (int(time.time()), os.getpid())
+        result_path = os.path.join(COMPANION_BUILD_DIR, "result.icc")
+        error_path = os.path.join(COMPANION_BUILD_DIR, "error.txt")
+        claim_path = os.path.join(COMPANION_BUILD_DIR, "claim.json")
+        for stale in (result_path, error_path, claim_path, input_path):
+            if os.path.exists(stale):
+                os.remove(stale)
+
+        # Drop the output basename and replace the Pi-only preconditioning
+        # path with a staged binary input the Companion names locally.
+        flags = []
+        index = 1
+        has_precondition = False
+        while index < len(command):
+            item = command[index]
+            if index == len(command) - 1:
+                index += 1
+                continue
+            if item == "-c" and index + 1 < len(command):
+                has_precondition = True
+                index += 2
+                continue
+            flags.append(item)
+            index += 1
+        if has_precondition:
+            if not precondition_path or not os.path.isfile(precondition_path):
+                return False
+            temporary_input = input_path + ".tmp"
+            shutil.copyfile(precondition_path, temporary_input)
+            os.rename(temporary_input, input_path)
+        else:
+            # Fetching this file is also the job claim. An empty input is
+            # intentional for an ordinary un-preconditioned chart.
+            with open(input_path + ".tmp", "wb") as handle:
+                handle.write(b"")
+            os.rename(input_path + ".tmp", input_path)
+
+        job = {
+            "job": job_id,
+            "operation": "targen",
+            "argyll_version": local_version,
+            "timeout": timeout_seconds,
+            "flags": flags,
+            "input_bytes": os.path.getsize(input_path),
+            "precondition": has_precondition,
+        }
+        write_json_atomic(os.path.join(COMPANION_BUILD_DIR, "job.json"), job)
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if os.path.isfile(result_path) and os.path.getsize(result_path) > 32:
+                shutil.copyfile(result_path, output_path)
+                os.remove(result_path)
+                return True
+            if os.path.isfile(error_path):
+                try:
+                    with io.open(error_path, "r", encoding="utf-8") as handle:
+                        reason = handle.read(240).strip()
+                except (OSError, IOError):
+                    reason = "unknown Companion error"
+                try:
+                    os.remove(error_path)
+                except OSError:
+                    pass
+                # An error file can only be written after this exact job was
+                # claimed. Do not disguise a desktop failure by repeating the
+                # expensive randomized optimization on the Pi and reporting
+                # whatever progress line the fallback happened to print last.
+                raise CompanionBuildFailed(
+                    "Patch Companion chart generation failed: {}".format(
+                        reason or "unknown Companion error"))
+            if not companion_seen_recently(read_companion_state(state_path)):
+                claim = read_companion_state(claim_path)
+                if str(claim.get("job", "")) != job_id:
+                    return False
+            time.sleep(COMPANION_BUILD_POLL_SECONDS)
+        raise CompanionBuildTimeout(
+            "Patch Companion chart generation timed out after {} seconds".format(
+                timeout_seconds))
+    except CompanionBuildTimeout:
+        raise
+    except CompanionBuildFailed:
+        raise
+    except (OSError, IOError, ValueError, KeyError):
+        return False
+    finally:
+        for leftover in ("job.json", "job.input", "claim.json"):
+            try:
+                os.remove(os.path.join(COMPANION_BUILD_DIR, leftover))
+            except OSError:
+                pass
+
+
+def argyll_tool_version(tool):
+    """Version string reported by one local ArgyllCMS command."""
+    try:
+        process = subprocess.Popen([tool], stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, universal_newlines=True)
         text = process.communicate()[0] or ""
     except (OSError, ValueError):
         return ""
     match = re.search(r"Version\s+([0-9]+(?:\.[0-9]+)+)", text)
     return match.group(1) if match else ""
+
+
+def argyll_version():
+    """Version string of the local colprof, used to gate the offload."""
+    return argyll_tool_version(
+        os.environ.get("PGEN_COLPROF", "/usr/bin/colprof"))
 
 
 def colprof_supports_icc44(colprof):
@@ -3129,6 +3256,7 @@ def generate_patches(payload, output_dir):
         if payload.get("good_optimization", True):
             command.append("-G")
         precondition = str(payload.get("precondition_profile", ""))
+        precondition_path = ""
         if precondition:
             if not re.match(r"^[A-Za-z0-9._-]+\.icc$", precondition, re.I):
                 fail("Invalid preconditioning profile")
@@ -3137,12 +3265,26 @@ def generate_patches(payload, output_dir):
                 fail("Preconditioning profile was not found")
             command.extend(["-c", precondition_path])
         command.append(base)
-        timeout_seconds = min(900, max(90, 60 + total // 15))
+        # Optimized and preconditioned charts can spend many iterations in
+        # Argyll's re-seeding stage. Give the desktop offload a useful bound
+        # and retain a generous local fallback instead of killing targen while
+        # its last progress line merely says "Re-seeding".
+        timeout_seconds = min(1800, max(300, 120 + total // 4))
+        ti1_path = base + ".ti1"
+        if companion_targen_offload(command, ti1_path, timeout_seconds,
+                                    precondition_path or None):
+            patches = parse_ti1_patches(ti1_path)
+            patches = inject_hdr_neutral_jacobian_probes(patches, payload, total)
+            return {"status": "ok", "patches": patches, "count": len(patches)}
+        if os.environ.get("PGEN_ICC_REQUIRE_OFFLOAD"):
+            fail("Patch Companion did not claim the required chart generation")
         completed = subprocess.Popen(["timeout", str(timeout_seconds)] + command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         output = completed.communicate()[0]
-        ti1_path = base + ".ti1"
         if completed.returncode != 0 or not os.path.isfile(ti1_path):
             detail = (output or "").strip().splitlines()
+            if completed.returncode == 124:
+                fail("ArgyllCMS patch generation timed out after {} seconds".format(
+                    timeout_seconds))
             fail("ArgyllCMS patch generation failed" + (": " + detail[-1][:240] if detail else ""))
         patches = parse_ti1_patches(ti1_path)
         patches = inject_hdr_neutral_jacobian_probes(patches, payload, total)

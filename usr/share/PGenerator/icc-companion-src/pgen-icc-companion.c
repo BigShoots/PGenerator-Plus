@@ -106,7 +106,7 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.25"
+#define APP_VERSION "1.4.26"
 #define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 #define RESPONSE_CAPACITY 32768
@@ -1792,6 +1792,54 @@ static const char *companion_argyll_version(void)
     pclose(pipe);
 #endif
     return cached;
+}
+
+/* targen jobs are advertised separately from colprof so a new generator never
+ * sends chart work to an older Companion that only understands profile fits.
+ * Require the same Argyll version from both bundled commands. */
+static bool companion_targen_available(void)
+{
+    static int cached = -1;
+    char path[1024], command[1200], version[32] = "";
+    FILE *pipe;
+    if (cached >= 0) return cached != 0;
+    cached = 0;
+    if (!companion_tool_path("targen", path, sizeof(path))) return false;
+    {
+        FILE *probe = fopen(path, "rb");
+        if (!probe) return false;
+        fclose(probe);
+    }
+#ifdef _WIN32
+    SDL_snprintf(command, sizeof(command), "\"\"%s\"\" 2>&1", path);
+    pipe = _popen(command, "r");
+#else
+    SDL_snprintf(command, sizeof(command), "\"%s\" 2>&1", path);
+    pipe = popen(command, "r");
+#endif
+    if (!pipe) return false;
+    {
+        char line[512];
+        while (fgets(line, sizeof(line), pipe)) {
+            const char *found = strstr(line, "Version ");
+            if (found) {
+                unsigned index = 0;
+                found += 8;
+                while (index + 1 < sizeof(version) &&
+                       ((*found >= '0' && *found <= '9') || *found == '.'))
+                    version[index++] = *found++;
+                version[index] = '\0';
+                break;
+            }
+        }
+    }
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    cached = version[0] && !strcmp(version, companion_argyll_version());
+    return cached != 0;
 }
 
 static PGEN_UNUSED uint16_t read_be16(const unsigned char *value)
@@ -3667,7 +3715,6 @@ static bool windows_set_borderless_windowed(bool fullscreen)
 {
     if (fullscreen) {
         SDL_Rect bounds;
-        const int composition_inset = 1;
         SDL_DisplayID display = SDL_GetDisplayForWindow(app.window);
         if (!display || !SDL_GetDisplayBounds(display, &bounds)) return false;
         if (!app.windowed_geometry_valid) {
@@ -3676,21 +3723,15 @@ static bool windows_set_borderless_windowed(bool fullscreen)
                                    &app.windowed_height)) return false;
             app.windowed_geometry_valid = true;
         }
-        /* Keep the borderless measurement window one physical pixel inside
-         * the output. Exact monitor coverage makes Windows eligible for
-         * DirectFlip/MPO promotion, and this driver's promoted HDR path has a
-         * different shadow transfer and can lose the selected MHC2 stage.
-         * The inset is invisible to a centered measurement patch but keeps
-         * DWM composition deterministic without relying on another window
-         * (such as Chrome) to overlap the target display. */
+        /* Cover every physical pixel. Leaving even one desktop pixel visible
+         * creates a lit perimeter on this HDR desktop and can change an OLED's
+         * ABL response during full-field measurements. Presentation recovery
+         * is handled by the explicit foreground handoff, not by shrinking the
+         * measurement surface. */
         if (!SDL_SetWindowBordered(app.window, false) ||
             !SDL_SetWindowResizable(app.window, false) ||
-            !SDL_SetWindowPosition(app.window,
-                                   bounds.x + composition_inset,
-                                   bounds.y + composition_inset) ||
-            !SDL_SetWindowSize(app.window,
-                               bounds.w - 2 * composition_inset,
-                               bounds.h - 2 * composition_inset) ||
+            !SDL_SetWindowPosition(app.window, bounds.x, bounds.y) ||
+            !SDL_SetWindowSize(app.window, bounds.w, bounds.h) ||
             !SDL_SyncWindow(app.window)) return false;
     } else if (app.windowed_geometry_valid) {
         if (!SDL_SetWindowBordered(app.window, true) ||
@@ -3855,6 +3896,172 @@ static bool companion_quote_append(char *destination, size_t capacity, size_t *u
     return true;
 }
 
+static void companion_run_targen(const char *poll_response)
+{
+    char ti1_path[1200], base_path[1200], input_path[1200], tool[1024];
+    char command[8192], flags[2048], directory[1024];
+    unsigned char *input = NULL;
+    size_t input_length = 0;
+    FILE *handle;
+    int status, attempt;
+    bool built = false;
+    bool precondition = strstr(poll_response, "\"precondition\":true") != NULL;
+
+    if (!companion_targen_available() ||
+        !companion_tool_path("targen", tool, sizeof(tool))) {
+        companion_report_build_error("targen is not available in this Companion package");
+        return;
+    }
+    flags[0] = '\0';
+    {
+        const char *start = strstr(poll_response, "\"flags\":[");
+        if (start) {
+            const char *end = strchr(start, ']');
+            size_t length = end ? (size_t)(end - start - 9) : 0;
+            if (length && length < sizeof(flags)) {
+                memcpy(flags, start + 9, length);
+                flags[length] = '\0';
+            }
+        }
+    }
+    {
+        const char *base = SDL_GetPrefPath("PGeneratorPlus", "build");
+        if (!base) {
+            companion_report_build_error("could not create the chart work directory");
+            return;
+        }
+        SDL_strlcpy(directory, base, sizeof(directory));
+        SDL_snprintf(base_path, sizeof(base_path), "%schart", directory);
+        SDL_snprintf(ti1_path, sizeof(ti1_path), "%schart.ti1", directory);
+        SDL_snprintf(input_path, sizeof(input_path), "%sprecondition.icc", directory);
+    }
+    remove(ti1_path);
+    remove(input_path);
+
+    {   /* Fetching even an empty input claims the synchronous chart job. */
+        char path[512];
+        SDL_snprintf(path, sizeof(path),
+                     "/api/icc/companion/build-input?token=%s", app.config.token);
+        status = http_binary(&app.config, "GET", path, "application/octet-stream",
+                             NULL, 0, &input, &input_length);
+        if (status != 200) {
+            if (input) SDL_free(input);
+            companion_report_build_error("could not claim the chart generation job");
+            return;
+        }
+    }
+    if (precondition) {
+        if (!input || input_length <= 128 || input_length > 64u * 1024u * 1024u ||
+            memcmp(input + 36, "acsp", 4)) {
+            if (input) SDL_free(input);
+            companion_report_build_error("the preconditioning profile is invalid");
+            return;
+        }
+        handle = fopen(input_path, "wb");
+        if (!handle || fwrite(input, 1, input_length, handle) != input_length) {
+            if (handle) fclose(handle);
+            SDL_free(input);
+            companion_report_build_error("could not stage the preconditioning profile");
+            return;
+        }
+        fclose(handle);
+    }
+    if (input) SDL_free(input);
+
+    {
+        char cleaned[3072];
+        size_t out = 0, index = 0;
+        while (flags[index]) {
+            char argument[1024];
+            size_t length = 0;
+            bool truncated = false;
+            while (flags[index] == ' ' || flags[index] == ',') index++;
+            if (flags[index] != '"') break;
+            index++;
+            while (flags[index] && flags[index] != '"') {
+                char c = flags[index++];
+                if (c == '\\' && flags[index]) c = flags[index++];
+                if (length + 1 >= sizeof(argument)) { truncated = true; break; }
+                argument[length++] = c;
+            }
+            if (truncated || flags[index] != '"') { out = 0; break; }
+            index++;
+            argument[length] = '\0';
+            if (!companion_quote_append(cleaned, sizeof(cleaned), &out, argument)) {
+                out = 0;
+                break;
+            }
+        }
+        if (!out) {
+            companion_report_build_error("the chart arguments could not be read");
+            remove(input_path);
+            return;
+        }
+        cleaned[out] = '\0';
+#ifdef _WIN32
+        SDL_snprintf(command, sizeof(command),
+                     "title PGenerator+ ICC Chart Generation & "
+                     "echo. & echo PGenerator+ is optimizing the measurement chart. & "
+                     "echo This calculation was offloaded from the PGenerator device. & "
+                     "echo Please do not close this window. It will close automatically when generation finishes. & "
+                     "echo. & \"%s\" %s%s%s%s \"%s\"",
+                     tool, cleaned,
+                     precondition ? " -c \"" : "",
+                     precondition ? input_path : "",
+                     precondition ? "\"" : "", base_path);
+#else
+        SDL_snprintf(command, sizeof(command), "\"%s\" %s%s%s%s \"%s\"",
+                     tool, cleaned,
+                     precondition ? " -c \"" : "",
+                     precondition ? input_path : "",
+                     precondition ? "\"" : "", base_path);
+#endif
+    }
+    queue_status("PGenerator+ Patch Companion | Optimizing ICC measurement chart...");
+    /* OFPS occasionally exhausts one randomized layout while re-seeding.
+     * A second invocation starts from a new layout and normally succeeds.
+     * Retry here where the CPU work lives instead of falling back to the Pi
+     * and presenting the last harmless "Re-seeding" progress line as the
+     * cause of the failure. */
+    for (attempt = 1; attempt <= 3 && !built; attempt++) {
+        remove(ti1_path);
+        if (attempt > 1)
+            queue_status("PGenerator+ Patch Companion | Retrying ICC chart optimization...");
+        status = system(command);
+        (void)status;
+
+        handle = fopen(ti1_path, "rb");
+        if (handle) {
+            long size;
+            fseek(handle, 0, SEEK_END);
+            size = ftell(handle);
+            fseek(handle, 0, SEEK_SET);
+            if (size > 32 && size < 64 * 1024 * 1024) {
+                unsigned char *ti1 = (unsigned char *)SDL_malloc((size_t)size);
+                if (ti1 && fread(ti1, 1, (size_t)size, handle) == (size_t)size) {
+                    char path[512];
+                    unsigned char *reply = NULL;
+                    size_t reply_length = 0;
+                    SDL_snprintf(path, sizeof(path),
+                                 "/api/icc/companion/build-result?token=%s",
+                                 app.config.token);
+                    if (http_binary(&app.config, "POST", path,
+                                    "application/octet-stream", ti1, (size_t)size,
+                                    &reply, &reply_length) == 200 && reply &&
+                        strstr((const char *)reply, "\"status\":\"ok\""))
+                        built = true;
+                    if (reply) SDL_free(reply);
+                }
+                if (ti1) SDL_free(ti1);
+            }
+            fclose(handle);
+        }
+    }
+    remove(ti1_path);
+    remove(input_path);
+    if (!built) companion_report_build_error("targen failed after three chart optimization attempts");
+}
+
 static void companion_run_build(const char *poll_response)
 {
     char ti3_path[1200], icc_path[1200], base_path[1200], tool[1024];
@@ -3864,6 +4071,11 @@ static void companion_run_build(const char *poll_response)
     FILE *handle;
     int status;
     bool built = false;
+
+    if (strstr(poll_response, "\"operation\":\"targen\"")) {
+        companion_run_targen(poll_response);
+        return;
+    }
 
     if (!companion_tool_path("colprof", tool, sizeof(tool))) return;
     /* Flags are produced by the generator's builder from its argument list. */
@@ -4437,7 +4649,7 @@ static void poll_server(void)
     profile_name_hex(active_profile, profile_hex, sizeof(profile_hex));
     profile_name_hex(app.selected_display, display_hex, sizeof(display_hex));
     SDL_snprintf(path, sizeof(path),
-                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&build=%s&platform=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&transform_note_hex=%s&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s",
+                 "/api/icc/companion/poll?token=%s&client=%s&version=%s&build=%s&platform=%s&renderer=%s&hdr=%d&profile_hex=%s&display_hex=%s&swapchain_cs=%s&presentation=%s&output_max=%.3f&output_full=%.3f&output_bits=%u&transform=%s&transform_ready=%d&transform_note_hex=%s&source_r=%.6f&source_g=%.6f&source_b=%.6f&submitted_r=%.6f&submitted_g=%.6f&submitted_b=%.6f&build_argyll=%s&build_targen=%d",
                  app.config.token, app.config.client, APP_VERSION, APP_BUILD,
                  companion_platform(),
                  reported_renderer, reported_hdr_active ? 1 : 0, profile_hex,
@@ -4448,7 +4660,7 @@ static void poll_server(void)
                  app.correction_ready ? 1 : 0, transform_note_hex,
                  app.source_r, app.source_g, app.source_b,
                  app.submitted_r, app.submitted_g, app.submitted_b,
-                 companion_argyll_version());
+                 companion_argyll_version(), companion_targen_available() ? 1 : 0);
     status = http_request(&app.config, "GET", path, NULL, response, sizeof(response));
     if (status != 200) {
         char title[256];

@@ -418,6 +418,7 @@ our $_icc_companion_settings_file="$_icc_companion_dir/display.json";
 our $_icc_companion_build_dir="$_icc_companion_dir/build";
 our $_icc_companion_build_job="$_icc_companion_build_dir/job.json";
 our $_icc_companion_build_ti3="$_icc_companion_build_dir/job.ti3";
+our $_icc_companion_build_input="$_icc_companion_build_dir/job.input";
 our $_icc_companion_build_result="$_icc_companion_build_dir/result.icc";
 our $_icc_companion_build_error="$_icc_companion_build_dir/error.txt";
 our $_icc_companion_build_claim="$_icc_companion_build_dir/claim.json";
@@ -791,7 +792,7 @@ sub webui_route_is_concurrent_safe (@) {
  # Companion has a token at all, and pair-decide is the matching one-shot
  # click from the WebUI -- but they stay safe under two concurrent workers
  # because the pairing store's read-modify-write cycle is lock()-guarded.
- return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result" || $path eq "/api/icc/companion/build-ti3" || $path eq "/api/icc/companion/pair-request" || $path eq "/api/icc/companion/pair-status" || $path eq "/api/icc/companion/pair-decide");
+ return 1 if($path eq "/api/icc/companion/poll" || $path eq "/api/icc/companion/ack" || $path eq "/api/icc/companion/status" || $path eq "/api/icc/companion/settings" || $path eq "/api/icc/companion/build-result" || $path eq "/api/icc/companion/build-ti3" || $path eq "/api/icc/companion/build-input" || $path eq "/api/icc/companion/pair-request" || $path eq "/api/icc/companion/pair-status" || $path eq "/api/icc/companion/pair-decide");
  return 0;
 }
 
@@ -1883,6 +1884,11 @@ sub webui_handle_request (@) {
    elsif($path eq "/api/icc/companion/build-ti3") {
     my ($ok,$data)=&webui_icc_companion_build_ti3($request_query);
     if($ok) { print $client "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
+    else { print $client "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
+   }
+   elsif($path eq "/api/icc/companion/build-input") {
+    my ($ok,$data)=&webui_icc_companion_build_input($request_query);
+    if($ok) { print $client "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
     else { print $client "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ".length($data)."\r\n$cors\r\n$data"; }
    }
    elsif($path eq "/api/icc/companion/build-result" && $method eq "POST") {

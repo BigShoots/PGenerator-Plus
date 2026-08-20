@@ -16,10 +16,10 @@ BrandingText "PGenerator+"
 Icon "..\favicon.ico"
 UninstallIcon "..\favicon.ico"
 
-VIProductVersion "1.4.25.0"
+VIProductVersion "1.4.26.0"
 VIAddVersionKey "ProductName" "PGenerator+ ICC Tools"
 VIAddVersionKey "FileDescription" "PGenerator+ Patch Companion and Profile Loader installer"
-VIAddVersionKey "FileVersion" "1.4.25"
+VIAddVersionKey "FileVersion" "1.4.26"
 VIAddVersionKey "LegalCopyright" "GNU GPL"
 
 !define MUI_ABORTWARNING
@@ -52,7 +52,8 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   File "PROFILE-LOADER-README.txt"
   File "..\icc-companion\SDL3-LICENSE.txt"
   File "..\icc-companion\DejaVu-LICENSE.txt"
-  ; ArgyllCMS colprof/profcheck let the Companion run the profile fit locally.
+  ; ArgyllCMS targen/colprof/profcheck let the Companion run chart generation
+  ; and the profile fit locally.
   ; A high-quality cLUT fit takes about ten minutes on a Pi 4 and under a
   ; minute here. Version-matched to the Pi's ArgyllCMS: the same measurements
   ; fitted by a different version produce a different profile.
@@ -60,6 +61,7 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   ; https://github.com/BigShoots/ArgyllCMS_ICC4.4.
   File "..\icc-companion\windows-x64\colprof.exe"
   File "..\icc-companion\windows-x64\profcheck.exe"
+  File "..\icc-companion\windows-x64\targen.exe"
   File /oname=ArgyllCMS-LICENSE.txt "..\icc-companion\ArgyllCMS-LICENSE.txt"
   ; Stored without compression so the Pi can replace the fixed-width pairing
   ; slots before download. The resulting EXE remains a single installer.
@@ -83,7 +85,7 @@ Section "PGenerator+ Patch Companion and Profile Loader" SEC_CORE
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "DisplayName" "PGenerator+ ICC Tools"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
-              "DisplayVersion" "1.4.25"
+              "DisplayVersion" "1.4.26"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
               "Publisher" "PGenerator+"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PGeneratorPlusICCTools" \
@@ -148,6 +150,7 @@ Section "Uninstall"
   Delete "$INSTDIR\ArgyllCMS-LICENSE.txt"
   Delete "$INSTDIR\colprof.exe"
   Delete "$INSTDIR\profcheck.exe"
+  Delete "$INSTDIR\targen.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd
