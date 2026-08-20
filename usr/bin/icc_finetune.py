@@ -807,6 +807,8 @@ def finetune(payload, output_dir):
     has_mhc2 = "MHC2" in tags
     calibration_contract = read_text_tag(data, tags, "pGCm")
     mirrors_mhc2_in_b2a = calibration_contract == "mhc2+b2a-shapers"
+    independent_mhc2_and_b2a = (
+        calibration_contract == "mhc2-common-tone+b2a-shapers")
     transfer, transfer_source = resolve_transfer(payload, parent_path, data, tags)
 
     # Grey residuals from the fine-tune reads
@@ -1314,9 +1316,11 @@ def finetune(payload, output_dir):
 
     if has_mhc2:
         # The operative correction of an MHC2 profile is its per-channel
-        # adjustment curve set, applied in the wire signal domain by Windows
-        # and by the patched KWin. Edit those curves, and mirror the same
-        # change into the cloned vcgt so both consumers stay in step.
+        # adjustment curve set, applied in the wire signal domain by Windows.
+        # Older profiles cloned the same calibration into B2A and therefore
+        # need the edit mirrored. New Windows HDR cLUT profiles deliberately
+        # use a common-tone MHC2 stage and independently modeled B2A shapers;
+        # a system-path residual must not be copied into that explicit cLUT.
         off, _ = tags["MHC2"]
         entries = struct.unpack(">I", bytes(data[off + 8:off + 12]))[0]
         matrix_offset = struct.unpack(">I", bytes(data[off + 20:off + 24]))[0]
@@ -1453,6 +1457,12 @@ def finetune(payload, output_dir):
             old_curves = mhc2_neutral_curves(original_matrix, original_luts)
             new_curves = mhc2_neutral_curves(current_matrix, updated_luts)
             remap_b2a_output_calibration(data, tags, old_curves, new_curves)
+        elif independent_mhc2_and_b2a:
+            # The explicit cLUT was fitted from the characterization directly.
+            # Fine-tune readings in this branch measured Windows system
+            # handling, so they contain no evidence that B2A needs the same
+            # edit. Preserve its independently calibrated shapers.
+            pass
         if "vcgt" in tags:
             voff, _ = tags["vcgt"]
             vchannels, ventries, vwidth = struct.unpack(">HHH", bytes(data[voff + 12:voff + 18]))

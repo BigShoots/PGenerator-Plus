@@ -1127,7 +1127,13 @@ def profile_calibration_contract_tag(profile_type, calibration_mode, profile_mod
     """
     if (profile_type == "windows-hdr" and calibration_mode == "profile"
             and PROFILE_MODELS[profile_model]["family"] == "clut"):
-        contract = b"mhc2+b2a-shapers"
+        # MHC2 and the explicit B2A path share the characterization, but they
+        # no longer share an identical set of calibration curves. Windows'
+        # matrix owns the neutral chromatic correction and its 1DLUTs carry a
+        # commuting common-tone trim. B2A retains the independently modeled
+        # per-channel shapers. Fine-tune must therefore never copy an MHC2
+        # residual blindly into B2A.
+        contract = b"mhc2-common-tone+b2a-shapers"
     else:
         contract = calibration_mode.encode("ascii")
     return b"text" + b"\0\0\0\0" + contract + b"\0"
@@ -2269,6 +2275,115 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
         for index in range(endpoint_start, entries):
             luts[channel][index] = endpoint
     return luts
+
+
+def windows_hdr_commuting_adjustment_luts(matrix, modeled_luts, black, white,
+                                           calibrated_peak, entries=None):
+    """Reduce modeled HDR MHC2 curves to a matrix-safe common tone trim.
+
+    The MHC2 matrix is linear and precedes the post-PQ 1DLUTs. A separate
+    per-channel inverse derived from the same neutral measurements can correct
+    the panel's white point a second time after the matrix, particularly on an
+    OLED shoulder where the inverse is poorly conditioned. Preserve the
+    modeled neutral luminance correction as one common light-domain factor,
+    while leaving chromatic correction to the matrix. A common factor commutes
+    with the matrix in linear light and cannot invent channel separation on a
+    display whose measured response does not need it.
+
+    Near black, small absolute meter errors produce large ratios and a common
+    code move can still expose unequal physical channel toes. Keep only the
+    matrix plus neutral-headroom compensation through 25% PQ, then blend the
+    measured common tone correction in by 35%. Fine-tune can add a bounded
+    channel residual later, after measuring the actually applied profile.
+    """
+    if (len(modeled_luts) != 3 or min(len(curve) for curve in modeled_luts) < 2
+            or len(set(len(curve) for curve in modeled_luts)) != 1):
+        fail("HDR MHC2 modeled curves are invalid")
+    if entries is None:
+        entries = len(modeled_luts[0])
+    if entries != len(modeled_luts[0]):
+        fail("HDR MHC2 commuting curves must preserve the modeled table size")
+
+    wire = mhc2_wire_matrix("windows-hdr")
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
+    final_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    if min(final_gains) <= 1e-6:
+        fail("HDR MHC2 calibration matrix has an invalid neutral response")
+
+    black_nits = max(0.0, black["xyz"][1])
+    raw_peak = max(white["xyz"][1], black_nits + 0.0001)
+    calibrated_span = max(calibrated_peak - black_nits, 0.0001)
+    pre_headroom_maximum = (raw_peak - black_nits) / calibrated_span
+    scale = max(final_gains) / pre_headroom_maximum
+    if not math.isfinite(scale) or scale <= 1e-6 or scale > 1.0001:
+        fail("HDR MHC2 neutral-headroom scale is invalid")
+    scale = min(1.0, scale)
+    source_limit = min(1.0, nits_to_pq(calibrated_peak))
+
+    def baseline_output(position):
+        return nits_to_pq(pq_to_nits(position) / scale)
+
+    def common_factor(source_position):
+        source_position = max(0.0, min(source_limit, source_position))
+        source_nits = pq_to_nits(source_position)
+        ratios = []
+        for channel in range(3):
+            curve_input = nits_to_pq(source_nits * final_gains[channel])
+            baseline = baseline_output(curve_input)
+            baseline_nits = pq_to_nits(baseline)
+            modeled = sample_table(modeled_luts[channel], curve_input)
+            if baseline_nits > 1e-8:
+                ratios.append(pq_to_nits(modeled) / baseline_nits)
+        factor = sorted(ratios)[len(ratios) // 2] if ratios else 1.0
+        factor = max(0.25, min(4.0, factor))
+        if source_position <= 0.25:
+            weight = 0.0
+        elif source_position >= 0.35:
+            weight = 1.0
+        else:
+            weight = (source_position - 0.25) / 0.10
+            weight = weight * weight * (3.0 - 2.0 * weight)
+        return 1.0 + weight * (factor - 1.0)
+
+    luts = []
+    for channel in range(3):
+        limit_input = nits_to_pq(
+            pq_to_nits(source_limit) * final_gains[channel])
+        values = []
+        previous = 0.0
+        for index in range(entries):
+            position = index / float(entries - 1)
+            active_input = min(position, limit_input)
+            source_position = nits_to_pq(
+                pq_to_nits(active_input) / final_gains[channel])
+            value = nits_to_pq(
+                pq_to_nits(baseline_output(active_input))
+                * common_factor(source_position))
+            previous = max(previous, max(0.0, min(1.0, value)))
+            values.append(previous)
+        values[0] = 0.0
+        luts.append(values)
+    return luts
+
+
+def mhc2_with_adjustment_luts(payload, luts):
+    """Replace only the three 1DLUTs in an already serialized MHC2 tag."""
+    if len(payload) < 36 or payload[:4] != b"MHC2":
+        fail("MHC2 payload is invalid")
+    entries = struct.unpack_from(">I", payload, 8)[0]
+    if (entries < 2 or len(luts) != 3
+            or any(len(curve) != entries for curve in luts)):
+        fail("MHC2 replacement curves have an invalid size")
+    offsets = struct.unpack_from(">III", payload, 24)
+    result = bytearray(payload)
+    for channel, offset in enumerate(offsets):
+        if (offset <= 0 or offset + 8 + entries * 4 > len(result)
+                or result[offset:offset + 4] != b"sf32"):
+            fail("MHC2 replacement curve offset is invalid")
+        for index, value in enumerate(luts[channel]):
+            result[offset + 8 + index * 4:offset + 12 + index * 4] = \
+                s15fixed16(max(0.0, min(1.0, value)))
+    return bytes(result)
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
@@ -3598,13 +3713,24 @@ def build(payload, output_dir):
             target_transfer or "srgb", apply_calibration=True,
             adjustment_luts_override=adjustment_luts,
             hdr_neutral_headroom=True)
+        # Explicit cLUT handling and Windows' MHC2 stage are independent
+        # consumers. Keep the fitted per-channel neutral inverse for B2A, where
+        # it was derived and validated, but do not stack the same chromatic
+        # correction behind MHC2's white-point matrix. Hardware applies that
+        # split as a second white correction and strongly recolours the OLED
+        # shoulder. MHC2 retains the fitted common luminance correction and a
+        # held peak; B2A keeps the full modeled shapers.
         calibration = vcgt_from_mhc2(
             matrix, adjustment_luts, mhc2_wire_matrix(mhc2_type))
-    # Every output follows one calibration path: generate and insert MHC2,
-    # clone that exact correction's neutral-axis behaviour into vcgt, then
-    # remove MHC2 only from profile types whose consumers do not use it. This
-    # prevents SDR and KDE profiles from silently falling back to a different
-    # grey-axis calibration than their Windows counterparts.
+        mhc2_adjustment_luts = windows_hdr_commuting_adjustment_luts(
+            matrix, adjustment_luts, black, white, calibrated_white)
+        mhc2 = mhc2_with_adjustment_luts(mhc2, mhc2_adjustment_luts)
+        adjustment_luts = mhc2_adjustment_luts
+    # Generate and insert MHC2, clone its neutral-axis behaviour into vcgt for
+    # the legacy single-calibration paths, then remove MHC2 only from profile
+    # types whose consumers do not use it. Windows HDR cLUT profile mode is the
+    # deliberate exception above: its B2A shapers retain the independently
+    # modeled calibration instead of duplicating MHC2's matrix-safe curves.
     replacements = {b"MHC2": mhc2}
     luminance = None
     if keeps_mhc2:
