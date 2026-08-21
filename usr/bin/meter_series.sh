@@ -88,6 +88,17 @@ fi
 STOP_FILE="/tmp/meter_series_stop_${SERIES_ID}.signal"
 USB_CANCEL_SUPPRESS_FILE="/tmp/meter_series_cancel_usb_suppress.uptime"
 SPOTREAD_BIN="/usr/bin/spotread"
+# Simulated meter (WebUI port 99): swap in the spotread-protocol simulator.
+# It enumerates itself as port 99 via -?, needs no USB device, and takes no
+# CCSS/refresh/USB identity.
+METER_SIMULATED=0
+if [[ "$METER_PORT" == "99" ]]; then
+ METER_SIMULATED=1
+ SPOTREAD_BIN="/usr/bin/spotread_sim"
+ METER_USB_ID=""
+ CCSS_FILE=""
+ REFRESH_RATE=""
+fi
 API_BASE="http://127.0.0.1/api"
 TMPDIR="/tmp"
 SPECTRO_MARKER_ID=$(printf '%s' "${METER_USB_ID:-unknown}" | tr -cd 'A-Za-z0-9')
@@ -246,6 +257,7 @@ series_quit_spotread() {
   # spontaneous errors before it or errors that continue afterward still warn.
   [[ "$quit_reason" == "cancel" ]] && record_series_cancel_usb_suppression
   pkill -TERM -x spotread 2>/dev/null || true
+ pkill -TERM -x spotread_sim 2>/dev/null || true
   local term_waited=0
   while (( term_waited < 50 )) && pgrep -x spotread >/dev/null 2>&1; do
    sleep 0.1
@@ -255,6 +267,7 @@ series_quit_spotread() {
  if pgrep -x spotread >/dev/null 2>&1; then
   echo "[$(date '+%H:%M:%S.%3N')] series stop: spotread ignored TERM for 5s; forcing SIGKILL" >> /tmp/meter_series_debug.log
   pkill -9 -x spotread 2>/dev/null || true
+ pkill -9 -x spotread_sim 2>/dev/null || true
  fi
  # spotread is gone; now the surrounding cat/script pipeline can be reaped
  # without interrupting a USB transaction.
@@ -1078,6 +1091,11 @@ find_port() {
  local requested_port="$1"
  local requested_usb_id="${2:-$METER_USB_ID}"
  local cache="/tmp/spotread_port_cache"
+ # Simulated meter: fixed virtual port; never touch the USB port cache.
+ if (( METER_SIMULATED )); then
+  echo "99"
+  return
+ fi
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
  # Resolve by USB vid:pid first: the spotread -c index is enumeration order
@@ -1236,6 +1254,7 @@ restart_spotread_session() {
  fi
  [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
  pkill -9 -x spotread 2>/dev/null
+ pkill -9 -x spotread_sim 2>/dev/null
  sleep 1.5
  rm -f "$OUTFILE" "$CMDPIPE"
  touch "$OUTFILE"
@@ -1280,6 +1299,7 @@ meter_full_cleanup() {
  pkill -9 -f 'cat.*spotread_cmd'         2>/dev/null
  pkill -9 -f 'sudo.*spotread'            2>/dev/null
  pkill -9 -x spotread                    2>/dev/null
+pkill -9 -x spotread_sim                2>/dev/null
  rm -f /tmp/meter_session.pid /tmp/meter_session.cmd /tmp/meter_session.config 2>/dev/null
  # Remove all stale spotread / meter_read temp artifacts
  rm -f /tmp/spotread_cmd_*    2>/dev/null
@@ -1499,6 +1519,7 @@ HANDLED_OFFSET=0
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter does not support requested mode","debug":"$DBGOUT","readings":[]}
 EOJSON
   pkill -9 -x spotread 2>/dev/null
+ pkill -9 -x spotread_sim 2>/dev/null
   exit 1
  fi
 
@@ -1510,6 +1531,7 @@ EOJSON
   meter_full_cleanup
   rm -f /tmp/spotread_port_cache 2>/dev/null
   pkill -9 -x spotread 2>/dev/null
+ pkill -9 -x spotread_sim 2>/dev/null
   sleep 2
   PORT_NUM=$(find_port "$METER_PORT")
   continue
@@ -1520,6 +1542,7 @@ EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Meter init failed","debug":"$DBGOUT","readings":[]}
 EOJSON
  pkill -9 -x spotread 2>/dev/null
+ pkill -9 -x spotread_sim 2>/dev/null
  exit 1
 done
 

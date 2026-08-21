@@ -1113,6 +1113,9 @@ sub webui_icc_companion_pattern (@) {
  my $payload="";
  if($body=~/"(?:name|status)"\s*:\s*"(?:stop|align|alignment)"/i) {
   $payload='{"status":"align","sequence":'.$sequence.'}';
+  # Simulated meter: the Companion window is now idle on its alignment target.
+  &webui_meter_sim_pattern_record(name=>"stop",r=>0,g=>0,b=>0,input_max=>255,
+   signal_mode=>"sdr",source_range=>"FULL",provider=>"companion");
  } else {
   my ($r,$g,$b)=(0,0,0);
   $r=$1 if($body=~/"(?:r|patch_r)"\s*:\s*(\d+)/);
@@ -1145,6 +1148,10 @@ sub webui_icc_companion_pattern (@) {
   my $code_min=($signal_range eq "1") ? 16*$scale : 0;
   my $code_max=($signal_range eq "1") ? 235*$scale : $input_max;
   $payload='{"status":"patch","sequence":'.$sequence.',"r":'.$r.',"g":'.$g.',"b":'.$b.',"size":'.$size.',"input_max":'.$input_max.',"code_min":'.$code_min.',"code_max":'.$code_max.',"signal_mode":"'.$signal_mode.'","max_luma":'.($max_luma+0).',"min_luma":'.($min_luma+0).',"max_cll":'.($max_cll+0).',"max_fall":'.($max_fall+0).$stabilization.'}';
+  # Simulated meter: record the Companion patch so spotread_sim measures it.
+  &webui_meter_sim_pattern_record(name=>"patch",r=>$r,g=>$g,b=>$b,input_max=>$input_max,
+   signal_mode=>$signal_mode,source_range=>(($signal_range eq "1")?"LIMITED":"FULL"),
+   max_luma=>$max_luma,provider=>"companion");
  }
  return &webui_icc_companion_write_atomic($_icc_companion_command_file,$payload,0644)
   ? '{"status":"ok","sequence":'.$sequence.'}'

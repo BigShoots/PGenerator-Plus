@@ -1707,6 +1707,11 @@ sub webui_handle_request (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/meter/simulate" && $method eq "POST") {
+    my $result=&webui_meter_simulation_set($body);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/meter/read/result") {
     my $result=&webui_meter_read_result();
     my $len=length($result);
@@ -2232,6 +2237,101 @@ sub webui_meter_usb_power_health (@) {
  return $res;
 }
 
+# --- Simulated meter -------------------------------------------------------
+# A virtual demo/testing meter offered when NO physical meter is detected.
+# Reads are produced by /usr/bin/spotread_sim (spawned by meter_session.sh /
+# meter_series.sh in place of the real spotread when port 99 is selected),
+# which synthesizes XYZ from the pattern the generator is actually displaying
+# (recorded by webui_meter_sim_pattern_record below).
+our $_meter_sim_port="99";
+my $_meter_sim_flag_primary="/var/lib/PGenerator/meter_simulation.flag";
+my $_meter_sim_flag_fallback="/tmp/meter_simulation.flag";
+my $_meter_sim_pattern_file="/tmp/pgen_sim_pattern.json";
+
+sub webui_meter_simulation_enabled (@) {
+ return 1 if(-f $_meter_sim_flag_primary || -f $_meter_sim_flag_fallback);
+ return 0;
+}
+
+sub webui_meter_simulation_set (@) {
+ my ($body)=@_;
+ $body="" if(!defined($body));
+ my $enable=($body=~/"enabled"\s*:\s*(?:true|1|"1")/i) ? 1 : 0;
+ if($enable) {
+  my $written=0;
+  foreach my $path ($_meter_sim_flag_primary,$_meter_sim_flag_fallback) {
+   if(open(my $fh,">",$path)) { print $fh "1\n"; close($fh); chmod(0666,$path); $written=1; last; }
+  }
+  return '{"status":"error","message":"Could not persist the simulation flag"}' if(!$written);
+  &log("WebUI: simulated meter enabled");
+ } else {
+  unlink($_meter_sim_flag_primary,$_meter_sim_flag_fallback);
+  # Tear down any live simulated session so a later real meter starts clean.
+  system("sudo pkill -9 -x spotread_sim 2>/dev/null");
+  &log("WebUI: simulated meter disabled");
+ }
+ return '{"status":"ok","enabled":'.($enable?"true":"false").'}';
+}
+
+sub webui_meter_port_is_simulated (@) {
+ my ($port)=@_;
+ $port="" if(!defined($port));
+ $port=~s/[^0-9]//g;
+ return ($port ne "" && $port eq $_meter_sim_port) ? 1 : 0;
+}
+
+# AutoCal launch gate: block when the run would use the simulated meter,
+# either explicitly (port 99 in the payload) or implicitly (simulation is
+# enabled and no real meter is detected, so the sim meter is the only one the
+# worker could resolve).
+sub webui_meter_autocal_blocked_for_simulation (@) {
+ my ($body)=@_;
+ $body="" if(!defined($body));
+ my $port="";
+ $port=$1 if($body=~/"(?:measurement_meter_port|meter_port)"\s*:\s*"?(\d+)"?/);
+ return 1 if(&webui_meter_port_is_simulated($port));
+ return 0 if(!&webui_meter_simulation_enabled());
+ my $status=&webui_meter_status();
+ return 1 if(defined($status) && $status=~/"simulated"\s*:\s*true/);
+ return 0;
+}
+
+# Status JSON shaped exactly like a wrapper --detect result. The meter entry
+# field order matches the regexes in webui_meter_status_prune_disconnected /
+# webui_meter_port_is_spectro (usb_id null keeps it through lsusb pruning).
+sub webui_meter_simulated_status_json (@) {
+ my $entry='{"port_num":"'.$_meter_sim_port.'","port":"'.$_meter_sim_port.'","usb_id":null,"name":"Simulated Meter","meter_type":"colorimeter"}';
+ return '{"detected":true,"name":"Simulated Meter","usb_id":null,"port":"'.$_meter_sim_port.'","port_num":"'.$_meter_sim_port.'","meter_type":"colorimeter","meters":['.$entry.'],"spotread_available":true,"simulated":true}';
+}
+
+# Record the pattern currently on the generator so spotread_sim can synthesize
+# a reading from what is really displayed. Written on every pattern change
+# while simulation is enabled (atomic replace; world-readable for the root
+# helper scripts).
+sub webui_meter_sim_pattern_record (@) {
+ my (%f)=@_;
+ return if(!&webui_meter_simulation_enabled());
+ my $name=defined($f{name}) ? $f{name} : "";
+ $name=~s/[^A-Za-z0-9_ .:-]//g;
+ my $json='{"ts":'.time().',"name":"'.$name.'"';
+ foreach my $k (qw(r g b input_max)) {
+  $json.=',"'.$k.'":'.int($f{$k}) if(defined($f{$k}) && $f{$k}=~/^-?\d+(?:\.\d+)?$/);
+ }
+ $json.=',"signal_mode":"'.$f{signal_mode}.'"' if(defined($f{signal_mode}) && $f{signal_mode}=~/^[a-z0-9]+$/);
+ $json.=',"source_range":"'.$f{source_range}.'"' if(defined($f{source_range}) && $f{source_range}=~/^(?:LIMITED|FULL)$/);
+ $json.=',"max_luma":'.int($f{max_luma}) if(defined($f{max_luma}) && $f{max_luma}=~/^\d+(?:\.\d+)?$/);
+ $json.=',"provider":"'.$f{provider}.'"' if(defined($f{provider}) && $f{provider}=~/^[a-z]+$/);
+ $json.=',"complex":1' if($f{complex});
+ $json.='}';
+ my $tmp=$_meter_sim_pattern_file.".$$.tmp";
+ if(open(my $fh,">",$tmp)) {
+  print $fh $json;
+  close($fh);
+  chmod(0666,$tmp);
+  rename($tmp,$_meter_sim_pattern_file);
+ }
+}
+
 sub webui_meter_simulate_spectro_enabled (@) {
  foreach my $path ("/tmp/meter_settings.json", "/var/lib/PGenerator/meter_settings.json", "/usr/share/PGenerator/meter_settings.json") {
   next unless(-f $path);
@@ -2307,7 +2407,7 @@ sub webui_meter_status_prune_disconnected (@) {
 }
 
 sub webui_meter_status (@) {
- my $spotread_running=`pgrep -x spotread 2>/dev/null`;
+ my $spotread_running=`pgrep -x spotread 2>/dev/null; pgrep -x spotread_sim 2>/dev/null`;
  my $session_alive=&webui_meter_session_alive();
  my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
  if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
@@ -2320,6 +2420,12 @@ sub webui_meter_status (@) {
    }
   }
   return &webui_meter_status_apply_overrides($_meter_last_good_status);
+ }
+ # Busy with no real meter on record: a simulated session (spotread_sim) may
+ # own the "meter" right now. Keep reporting the virtual instrument instead
+ # of probing (the probe is real-USB only and would report detected:false).
+ if($busy && &webui_meter_simulation_enabled()) {
+  return &webui_meter_status_apply_overrides(&webui_meter_simulated_status_json());
  }
  my $json=`sudo bash $_meter_wrapper --detect 2>/dev/null`;
  chomp($json);
@@ -2350,6 +2456,11 @@ sub webui_meter_status (@) {
    &log("WebUI: transient meter probe miss, keeping last known detection") if($busy || $age < 15);
    return &webui_meter_status_apply_overrides($_meter_last_good_status);
   }
+ }
+ # No physical meter present: offer the simulated meter when it is enabled.
+ # A detected real meter always wins (the branches above return first).
+ if(&webui_meter_simulation_enabled() && $json!~/"detected"\s*:\s*true/) {
+  return &webui_meter_status_apply_overrides(&webui_meter_simulated_status_json());
  }
  return &webui_meter_status_apply_overrides($json);
 }
@@ -2738,8 +2849,12 @@ sub webui_meter_spotread_settled (@) {
  $limit_ms=4000 if(!defined($limit_ms) || $limit_ms <= 0);
  my $waited=0;
  while($waited < $limit_ms) {
-  my $still=`pgrep -x spotread 2>/dev/null`;
-  return 1 if(!defined($still) || $still!~/\d/);
+  my $still=`pgrep -x spotread 2>/dev/null; pgrep -x spotread_sim 2>/dev/null`;
+  if(!defined($still) || $still!~/\d/) {
+   return 1;
+  }
+  # A lingering simulator holds no USB claim; a -9 is always safe for it.
+  system("sudo pkill -9 -x spotread_sim 2>/dev/null") if($still=~/\d/ && `pgrep -x spotread 2>/dev/null`!~/\d/);
   Time::HiRes::sleep(0.1);
   $waited+=100;
  }
@@ -5778,6 +5893,11 @@ sub webui_meter_lg_body_with_display_model (@) {
 sub webui_meter_lg_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG Auto Cal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ # AutoCal writes calibration data into a real TV; simulated readings would
+ # upload garbage. Block every launch that would run on the simulated meter.
+ if(&webui_meter_autocal_blocked_for_simulation($body)) {
+  return '{"status":"error","message":"AutoCal is not available with the Simulated Meter. Connect a real meter to calibrate a display."}';
+ }
  $body=&webui_meter_lg_autocal_body_with_defaults($body);
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
@@ -6187,6 +6307,9 @@ sub webui_meter_lg_3d_autocal_kill (@) {
 sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ if(&webui_meter_autocal_blocked_for_simulation($body)) {
+  return '{"status":"error","message":"AutoCal is not available with the Simulated Meter. Connect a real meter to calibrate a display."}';
+ }
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
  return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
@@ -11892,6 +12015,10 @@ sub webui_pattern (@) {
 	 local $webui_pattern_image_source_range=($pattern_color_format == 0) ? $source_range : "FULL";
 	 my $w=$w_s || 1920; my $h=$h_s || 1080;
  my $pat=""; my $img=&webui_pattern_diag_image_file($name); my $pat_bits=&webui_pattern_effective_bits("",$signal_mode);
+ # Simulated-meter capture: raw patch codes (pre bit-scaling) recorded for
+ # spotread_sim at the end of this sub. Named solids/complex patterns are
+ # resolved just before the record call.
+ my ($sim_r,$sim_g,$sim_b,$sim_imax)=(undef,undef,undef,0);
  my $pattern_source_bits=($signal_mode eq "dv") ? 12 : $pat_bits;
  my $pattern_source_max=&webui_pattern_target_max($pattern_source_bits);
  my $pattern_debug_extra="";
@@ -12039,10 +12166,13 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
   }
   my ($raw_pr,$raw_pg,$raw_pb)=($pr,$pg,$pb);
   my $input_max=$imax ? int($imax) : 255;
+  ($sim_r,$sim_g,$sim_b)=($raw_pr,$raw_pg,$raw_pb);
+  $sim_imax=$imax ? int($imax) : 0;   # resolved just below when 0
   my $target_bits=($signal_mode eq "dv") ? 12 : $pat_bits;
   my $target_max=&webui_pattern_target_max($target_bits);
   $input_max=$target_max if(!$imax && ($pr > 255 || $pg > 255 || $pb > 255));
   $input_max=$target_max if($input_max <= 255 && ($pr > 255 || $pg > 255 || $pb > 255));
+  $sim_imax=$input_max if(!$sim_imax);
   $pr=&webui_pattern_scale_value($pr,$input_max,$target_bits);
   $pg=&webui_pattern_scale_value($pg,$input_max,$target_bits);
   $pb=&webui_pattern_scale_value($pb,$input_max,$target_bits);
@@ -12101,6 +12231,26 @@ elsif($pat eq "" && $name eq "uploaded_diag_video") {
  close($fh);
  rename("$command_file.tmp","$command_file");
  &create_return_file();
+ # Record what is now on screen for the simulated meter. Patch/stabilization
+ # captured raw codes above; named solid fields map to their 8-bit authoring
+ # values; everything else (ramps, bars, images) is marked complex.
+ if(&webui_meter_simulation_enabled()) {
+  if(!defined($sim_r)) {
+   my %solid=(white=>[255,255,255],black=>[0,0,0],stop=>[0,0,0],red=>[255,0,0],green=>[0,255,0],blue=>[0,0,255],
+              cyan=>[0,255,255],magenta=>[255,0,255],yellow=>[255,255,0],gray50=>[128,128,128]);
+   if($solid{$name}) {
+    ($sim_r,$sim_g,$sim_b)=@{$solid{$name}};
+    $sim_imax=255;
+   }
+  }
+  if(defined($sim_r)) {
+   &webui_meter_sim_pattern_record(name=>$name,r=>$sim_r,g=>$sim_g,b=>$sim_b,input_max=>$sim_imax,
+    signal_mode=>$signal_mode,source_range=>$source_range,max_luma=>$max_luma,provider=>"local");
+  } else {
+   &webui_meter_sim_pattern_record(name=>$name,complex=>1,
+    signal_mode=>$signal_mode,source_range=>$source_range,max_luma=>$max_luma,provider=>"local");
+  }
+ }
  return '{"status":"ok","pattern":"'.$name.'"}';
 }
 

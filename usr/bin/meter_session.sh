@@ -74,6 +74,17 @@ case "${METER_USB_ID,,}" in
 esac
 
 SPOTREAD_BIN="/usr/bin/spotread"
+# Simulated meter (WebUI port 99): swap in the spotread-protocol simulator.
+# It enumerates itself as port 99 via -?, so find_port resolves it without
+# any USB device present. No CCSS/refresh/USB identity applies to it.
+METER_SIMULATED=0
+if [[ "$METER_PORT" == "99" ]]; then
+ METER_SIMULATED=1
+ SPOTREAD_BIN="/usr/bin/spotread_sim"
+ METER_USB_ID=""
+ CCSS_FILE=""
+ REFRESH_RATE=""
+fi
 TMPDIR="/tmp"
 API_BASE="http://127.0.0.1/api"
 CMD_FIFO="/tmp/meter_session.cmd"
@@ -467,6 +478,11 @@ find_port() {
  local requested_port="$1"
  local requested_usb_id="$2"
  local cache="/tmp/spotread_port_cache"
+ # Simulated meter: fixed virtual port; never touch the USB port cache.
+ if (( METER_SIMULATED )); then
+  echo "99"
+  return
+ fi
  local help_out
  help_out=$(timeout 5 "$SPOTREAD_BIN" -? 2>&1 || true)
  # Resolve by USB vid:pid first: the spotread -c index is enumeration order
@@ -688,6 +704,7 @@ cleanup() {
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
   kill "$BG_PID" 2>/dev/null
   pkill -TERM -x spotread 2>/dev/null
+  pkill -TERM -x spotread_sim 2>/dev/null
   local _t=0
   while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
    sleep 0.1
@@ -700,6 +717,7 @@ cleanup() {
   kill -9 "$BG_PID" 2>/dev/null
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
+ pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 
@@ -777,6 +795,7 @@ respawn_spotread () {
  if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
   kill "$BG_PID" 2>/dev/null
   pkill -TERM -x spotread 2>/dev/null
+  pkill -TERM -x spotread_sim 2>/dev/null
   local _t=0
   while (( _t < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
    sleep 0.1
@@ -788,6 +807,7 @@ respawn_spotread () {
   kill -9 "$BG_PID" 2>/dev/null
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
+ pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
  # The wait-for-ready loop below is run twice (150 iterations x 0.1s =
  # 15s per attempt, 30s total). The i1d3 AIO can take >5s to re-init
  # after a per-read low_light mode change (the previous step's averaging
@@ -856,6 +876,7 @@ respawn_spotread () {
   if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
    kill "$BG_PID" 2>/dev/null
    pkill -TERM -x spotread 2>/dev/null
+  pkill -TERM -x spotread_sim 2>/dev/null
    local _t2=0
    while (( _t2 < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1; }; do
     sleep 0.1
@@ -867,6 +888,7 @@ respawn_spotread () {
    kill -9 "$BG_PID" 2>/dev/null
   fi
   pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
+ pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
  done
  log "respawn: spotread failed to ready within 15s on both attempts after $respawn_reason, surfacing error"
  write_state '{"status":"error","message":"Meter respawn failed"}'

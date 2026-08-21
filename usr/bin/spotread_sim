@@ -1,0 +1,264 @@
+#!/usr/bin/perl
+# spotread_sim - Simulated meter backend speaking spotread's console protocol.
+#
+# Used by meter_session.sh / meter_series.sh when the operator selects the
+# WebUI's "Simulated Meter" (port 99). The scripts drive this exactly like the
+# real ArgyllCMS spotread: spawn under `script -qfc`, wait for the
+# "to take a reading:" prompt, send a key per reading, parse
+# "Result is XYZ: X Y Z, Yxy: Y x y" lines, send 'q' to quit.
+#
+# Readings are synthesized from the pattern the generator is actually
+# displaying (webui.pm records every pattern to /tmp/pgen_sim_pattern.json)
+# through a deliberately imperfect display model: a slightly warm white point,
+# per-channel gamma error, off-target primaries, a raised black floor and read
+# noise, so charts and delta-E numbers look like a real uncalibrated panel.
+#
+# Flags are accepted for compatibility and ignored, except:
+#   -?   print a spotread-style usage/enumeration block that lists the
+#        simulated instrument as port 99 so find_port() resolves it.
+
+use strict;
+use warnings;
+use Time::HiRes qw(sleep time);
+
+my $STATE_FILE = "/tmp/pgen_sim_pattern.json";
+my $SIM_PORT   = 99;
+
+# ---------------------------------------------------------------- CLI flags
+if (grep { $_ eq "-?" || $_ eq "--help" } @ARGV) {
+ print "Read Print Spot values (simulated), Version PGenerator-sim 1.0\n";
+ print "usage: spotread_sim [-options] [logfile]\n";
+ print " -c listno            Choose instrument from the following list (default 1)\n";
+ print "    $SIM_PORT = '/dev/bus/usb/099/099 (PGenerator Simulated Meter)'\n";
+ exit 0;
+}
+
+$| = 1;
+binmode(STDIN);
+
+# --------------------------------------------------------- display model
+# Deterministic per-session imperfections plus per-read noise.
+srand(time() ^ $$);
+
+sub _mat3_inverse {
+ my ($m) = @_;
+ my ($a,$b,$c,$d,$e,$f,$g,$h,$i) = map { @$_ } @$m;
+ my $det = $a*($e*$i - $f*$h) - $b*($d*$i - $f*$g) + $c*($d*$h - $e*$g);
+ return undef if (abs($det) < 1e-12);
+ my $s = 1.0/$det;
+ return [
+  [ ($e*$i - $f*$h)*$s, ($c*$h - $b*$i)*$s, ($b*$f - $c*$e)*$s ],
+  [ ($f*$g - $d*$i)*$s, ($a*$i - $c*$g)*$s, ($c*$d - $a*$f)*$s ],
+  [ ($d*$h - $e*$g)*$s, ($b*$g - $a*$h)*$s, ($a*$e - $b*$d)*$s ],
+ ];
+}
+
+# Build an RGB->XYZ matrix (Y of white = 1) from primary and white xy coords.
+sub rgb_to_xyz_matrix {
+ my ($xr,$yr,$xg,$yg,$xb,$yb,$xw,$yw) = @_;
+ my @X = ($xr/$yr, $xg/$yg, $xb/$yb);
+ my @Y = (1.0, 1.0, 1.0);
+ my @Z = ((1-$xr-$yr)/$yr, (1-$xg-$yg)/$yg, (1-$xb-$yb)/$yb);
+ my $M = [ [@X], [@Y], [@Z] ];
+ my $Mi = _mat3_inverse($M) or return undef;
+ my @W = ($xw/$yw, 1.0, (1-$xw-$yw)/$yw);
+ my @S = map {
+  $Mi->[$_][0]*$W[0] + $Mi->[$_][1]*$W[1] + $Mi->[$_][2]*$W[2]
+ } (0..2);
+ return [
+  [ $X[0]*$S[0], $X[1]*$S[1], $X[2]*$S[2] ],
+  [ $Y[0]*$S[0], $Y[1]*$S[1], $Y[2]*$S[2] ],
+  [ $Z[0]*$S[0], $Z[1]*$S[1], $Z[2]*$S[2] ],
+ ];
+}
+
+# "Native" panel primaries: SDR mode slightly off Rec.709; HDR modes P3-ish
+# inside the BT.2020 container (realistic undersaturation vs 2020 targets).
+my $MTX_SDR = rgb_to_xyz_matrix(0.646,0.332, 0.292,0.612, 0.155,0.061, 0.3160,0.3295);
+my $MTX_HDR = rgb_to_xyz_matrix(0.674,0.316, 0.272,0.677, 0.150,0.055, 0.3155,0.3300);
+
+my %PANEL = (
+ sdr_peak   => 224.0,   # cd/m^2 at 100% white
+ sdr_black  => 0.115,   # raised black floor -> visible low-end lift
+ hdr_peak   => 772.0,   # panel tone-map peak for PQ/HLG/DV
+ hdr_black  => 0.006,
+ # per-channel linear gains: warm-ish white balance error
+ gain       => [1.020, 1.000, 0.958],
+ # per-channel SDR decode gamma (target is usually 2.2 / BT.1886 2.4)
+ gamma      => [2.34, 2.42, 2.27],
+);
+
+sub gauss {
+ my ($sigma) = @_;
+ my ($u1,$u2) = (rand() || 1e-9, rand());
+ return $sigma * sqrt(-2*log($u1)) * cos(2*3.14159265358979*$u2);
+}
+
+sub pq_eotf {
+ my ($v) = @_;                     # 0..1 signal -> absolute cd/m^2
+ $v = 0 if ($v < 0); $v = 1 if ($v > 1);
+ my ($m1,$m2,$c1,$c2,$c3) = (2610/16384, 2523/4096*128, 3424/4096, 2413/4096*32, 2392/4096*32);
+ my $p = $v ** (1/$m2);
+ my $num = $p - $c1; $num = 0 if ($num < 0);
+ my $den = $c2 - $c3*$p;
+ return 0 if ($den <= 0);
+ return 10000 * (($num/$den) ** (1/$m1));
+}
+
+sub hlg_inv_oetf {
+ my ($v) = @_;                     # 0..1 signal -> 0..1 scene linear
+ $v = 0 if ($v < 0); $v = 1 if ($v > 1);
+ my ($a,$b,$c) = (0.17883277, 0.28466892, 0.55991073);
+ return ($v*$v)/3.0 if ($v <= 0.5);
+ return (exp(($v-$c)/$a) + $b)/12.0;
+}
+
+# Soft-knee tone map above ~65% of panel peak (PQ modes).
+sub panel_tonemap {
+ my ($nits, $peak) = @_;
+ my $knee = 0.65*$peak;
+ return $nits if ($nits <= $knee);
+ my $over = $nits - $knee;
+ my $span = $peak - $knee;
+ return $knee + $span * (1 - exp(-$over/$span));
+}
+
+sub read_state {
+ my %s = (r=>0, g=>0, b=>0, input_max=>255, signal_mode=>"sdr",
+          source_range=>"FULL", name=>"stop", complex=>0, max_luma=>1000);
+ my $json = "";
+ if (open(my $fh, "<", $STATE_FILE)) { local $/; $json = <$fh>; close($fh); }
+ return \%s if (!defined($json) || $json eq "");
+ $s{name}=$1         if ($json =~ /"name"\s*:\s*"([^"]*)"/);
+ $s{r}=$1            if ($json =~ /"r"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ $s{g}=$1            if ($json =~ /"g"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ $s{b}=$1            if ($json =~ /"b"\s*:\s*(-?\d+(?:\.\d+)?)/);
+ $s{input_max}=$1    if ($json =~ /"input_max"\s*:\s*(\d+)/);
+ $s{signal_mode}=$1  if ($json =~ /"signal_mode"\s*:\s*"([^"]*)"/);
+ $s{source_range}=$1 if ($json =~ /"source_range"\s*:\s*"([^"]*)"/);
+ $s{complex}=1       if ($json =~ /"complex"\s*:\s*(?:1|true)/);
+ $s{max_luma}=$1     if ($json =~ /"max_luma"\s*:\s*(\d+(?:\.\d+)?)/);
+ return \%s;
+}
+
+sub normalize_channel {
+ my ($code, $imax, $limited) = @_;
+ $imax = 255 if (!$imax || $imax <= 0);
+ my $v;
+ if ($limited) {
+  my $lo = $imax * 16.0/255.0;
+  my $hi = $imax * 235.0/255.0;
+  $v = ($code - $lo) / ($hi - $lo);
+ } else {
+  $v = $code / $imax;
+ }
+ $v = 0 if ($v < 0);
+ $v = 1.09 if ($v > 1.09);   # allow super-white in limited range
+ return $v;
+}
+
+sub measure_xyz {
+ my $s = read_state();
+ my $mode = lc($s->{signal_mode} || "sdr");
+ my $limited = (uc($s->{source_range} || "FULL") eq "LIMITED") ? 1 : 0;
+ my ($r,$g,$b);
+ if ($s->{complex}) {
+  # Unknown/complex pattern (ramps, bars, images): approximate a 25% APL.
+  ($r,$g,$b) = (0.25, 0.25, 0.25);
+ } else {
+  $r = normalize_channel($s->{r}, $s->{input_max}, $limited);
+  $g = normalize_channel($s->{g}, $s->{input_max}, $limited);
+  $b = normalize_channel($s->{b}, $s->{input_max}, $limited);
+ }
+
+ my ($mtx, $black, @lin);
+ if ($mode eq "hdr10" || $mode eq "dv") {
+  $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
+  @lin = map { panel_tonemap(pq_eotf($_), $PANEL{hdr_peak}) } ($r,$g,$b);
+ } elsif ($mode eq "hlg") {
+  $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
+  my @scene = map { hlg_inv_oetf($_) } ($r,$g,$b);
+  # System gamma 1.2 applied on the luminance-ish mix, approximated per channel.
+  @lin = map { $PANEL{hdr_peak} * ($_ ** 1.2) } @scene;
+ } else {
+  $mtx = $MTX_SDR; $black = $PANEL{sdr_black};
+  @lin = map {
+   my $v = $_ < 0 ? 0 : $_;
+   $PANEL{sdr_peak} * ($v ** $PANEL{gamma}[0]);
+  } ($r,$g,$b);
+  # Per-channel gamma: recompute channels 1 and 2 with their own exponents.
+  $lin[1] = $PANEL{sdr_peak} * (($g < 0 ? 0 : $g) ** $PANEL{gamma}[1]);
+  $lin[2] = $PANEL{sdr_peak} * (($b < 0 ? 0 : $b) ** $PANEL{gamma}[2]);
+ }
+
+ # White-balance gain errors.
+ $lin[$_] *= $PANEL{gain}[$_] for (0..2);
+
+ # Matrix to XYZ (matrix is normalized to Y_white=1, so scale is in @lin).
+ my @XYZ = map {
+  $mtx->[$_][0]*$lin[0] + $mtx->[$_][1]*$lin[1] + $mtx->[$_][2]*$lin[2]
+ } (0..2);
+
+ # Black floor: panel leakage at the native white chromaticity.
+ my @bl = map { $mtx->[$_][0] + $mtx->[$_][1] + $mtx->[$_][2] } (0..2);
+ $XYZ[$_] += $bl[$_] * $black for (0..2);
+
+ # Read noise: multiplicative + absolute floor jitter, larger near black.
+ my $Y = $XYZ[1];
+ my $rel = 0.0035 + 0.004/(1.0 + $Y);
+ my $mul = 1.0 + gauss($rel);
+ $mul = 0.7 if ($mul < 0.7);
+ $XYZ[$_] *= $mul for (0..2);
+ for my $i (0..2) {
+  $XYZ[$i] += gauss(0.0015);
+  $XYZ[$i] = 0 if ($XYZ[$i] < 0);
+ }
+
+ # Small chromaticity jitter via Yxy.
+ my $sum = $XYZ[0] + $XYZ[1] + $XYZ[2];
+ my ($x,$y);
+ if ($sum > 1e-9) {
+  $x = $XYZ[0]/$sum; $y = $XYZ[1]/$sum;
+  $x += gauss(0.0006); $y += gauss(0.0006);
+  $x = 0.001 if ($x < 0.001); $y = 0.001 if ($y < 0.001);
+  my $Y2 = $XYZ[1];
+  $XYZ[0] = $x*$Y2/$y;
+  $XYZ[2] = (1-$x-$y)*$Y2/$y;
+ } else {
+  ($x,$y) = (0.3127, 0.3290);
+ }
+ return (@XYZ, $x, $y);
+}
+
+# ------------------------------------------------------------ protocol loop
+sleep(0.8);   # mimic instrument init
+print "Simulated instrument 'PGenerator Simulated Meter' on port $SIM_PORT\n";
+print "Current calibration response:\n";
+
+sub prompt {
+ print "\nPlace instrument on spot to be measured,\n";
+ print "and hit 'k' to do a calibration, 'q' to quit, any other key to take a reading:";
+}
+
+prompt();
+
+my $c;
+while (sysread(STDIN, $c, 1)) {
+ next if ($c eq "\n" || $c eq "\r" || $c eq "");
+ if (lc($c) eq "q") {
+  print "\nspotread_sim: exiting\n";
+  last;
+ }
+ if (lc($c) eq "k") {
+  sleep(0.6);
+  print "\nCalibration complete\n";
+  prompt();
+  next;
+ }
+ sleep(0.35 + rand(0.25));   # integration time
+ my ($X,$Y,$Z,$x,$y) = measure_xyz();
+ printf "\n Result is XYZ: %.6f %.6f %.6f, Yxy: %.6f %.6f %.6f\n",
+  $X, $Y, $Z, $Y, $x, $y;
+ prompt();
+}
+exit 0;
