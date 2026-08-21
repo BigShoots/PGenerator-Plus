@@ -3267,6 +3267,11 @@ async function meterIccBuild(readings){
   if(retry) retry.style.display='';
   toast('ICC profile created');
   await meterIccLoadProfiles();
+  // Refresh the rebuild button from the measurements just saved with this
+  // profile. Without this the button keeps the count captured when the
+  // workspace was opened (e.g. an older 175-patch run) and keeps showing
+  // that stale number after a much larger run has completed.
+  meterIccRefreshRecoveryAvailability();
   if(meterIccRunConfig&&meterIccRunConfig.mhc2_seed_file){
    try{
     await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_seed_file}),_quiet:true,_timeoutMs:5000});
@@ -3296,6 +3301,9 @@ async function meterIccBuild(readings){
   if(status) status.textContent=error&&error.message?error.message:'ICC profile build failed.';
   const retry=document.getElementById('meterIccRetryBuildBtn');
   if(retry) retry.style.display='';
+  // Recompute the recovery count here too so the retry label reflects what a
+  // rebuild would actually use rather than a count from before this run.
+  meterIccRefreshRecoveryAvailability();
   toast(error&&error.message?error.message:'ICC profile build failed',true);
  }finally{
   meterIccStopBuildClock(buildClock,false);
