@@ -963,6 +963,39 @@ static BOOL installed_profile_path(const WCHAR *name, WCHAR *path, size_t path_c
     return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+/* Profile History on PGenerator+ remains the durable copy of every generated
+   profile. Keeping every older generated profile associated with the same
+   Windows display eventually makes ColorProfileSetDisplayDefaultAssociation
+   fail with E_INVALIDARG. Before a Companion-driven apply, remove only older
+   PGenerator+ profiles for the same SDR/HDR association. Vendor profiles,
+   profiles for the other signal mode and the installed ICC files are left
+   untouched. */
+static void prune_companion_profile_associations(DISPLAY_ENTRY *display) {
+    HKEY key;
+    WCHAR profiles[8192];
+    const WCHAR *item;
+    const WCHAR *value = g_associate_advanced ? L"ICMProfileAC" : L"ICMProfile";
+    int wanted = g_associate_advanced ? PGEN_ASSOCIATION_HDR : PGEN_ASSOCIATION_SDR;
+    if (!display || !g_profile_name[0] || !p_remove_association) return;
+    key = open_display_profile_registry(display);
+    if (!key) return;
+    if (!read_profile_list(key, value, profiles, 8192)) {
+        RegCloseKey(key);
+        return;
+    }
+    RegCloseKey(key);
+    for (item = profiles; *item; item += wcslen(item) + 1) {
+        WCHAR path[MAX_PATH];
+        if (_wcsicmp(item, g_profile_name) == 0 ||
+            !installed_profile_path(item, path, MAX_PATH) ||
+            profile_association_marker(path) != wanted)
+            continue;
+        p_remove_association(WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER,
+                             item, display->adapter, display->source_id,
+                             g_associate_advanced);
+    }
+}
+
 /* An installed profile of the same name is not necessarily the same profile.
    A rebuilt or fine-tuned profile keeps its generated name, so treating the
    name as proof of installation leaves Windows serving the previous version's
@@ -1435,6 +1468,8 @@ static BOOL apply_profile(BOOL interactive) {
        the per-user WCS association list even though Color Management is still
        configured to ignore that list. */
     if (!enable_per_user_profiles(display, interactive)) return FALSE;
+    if (g_profile_operation == PROFILE_OPERATION_APPLY && g_companion_result[0])
+        prune_companion_profile_associations(display);
     /* Replacing the file leaves the association name unchanged, so the
        shortcut below would report success while Windows still holds the
        transform it built from the previous bytes. Set the association again
