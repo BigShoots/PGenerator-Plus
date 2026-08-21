@@ -2572,6 +2572,10 @@ function meterIccMhc2ShadowFeedbackSteps(){
   'ICC MHC2 Shadow Feedback '+code,code,code,code));
 }
 
+function meterIccMhc2FinalFeedbackStep(name){
+ return [meterIccMhc2PeakStep(name,1023,1023,1023)];
+}
+
 function meterIccMhc2PeakCandidateSteps(codes){
  if(!Array.isArray(codes)||codes.length!==3) throw new Error('The provisional MHC2 profile did not return a peak probe');
  const r=Math.round(Number(codes[0])),g=Math.round(Number(codes[1])),b=Math.round(Number(codes[2]));
@@ -3080,20 +3084,42 @@ async function meterIccPoll(){
     const refineReadings=meterIccProfileReadings(state.readings);
     if(refineReadings.length!==7) throw new Error('The Windows MHC2 peak refinement is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...refineReadings];
-    const feedbackSteps=meterIccMhc2ShadowFeedbackSteps();
-    meterIccRunConfig.stage='mhc2-shadow-feedback';
-    meterIccRunConfig.steps=feedbackSteps;
-    if(status) status.textContent='Applying the provisional profile to verify its shadow response...';
-    meterIccSetProgress('Applying provisional MHC2 profile',0,feedbackSteps.length);
-    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_provisional_file);
-    meterIccSetProgress('Measuring provisional MHC2 shadows',0,feedbackSteps.length);
-    await meterIccLaunchMeasurementSeries(feedbackSteps,meterIccRunConfig.profile_type,'companion');
-   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-shadow-feedback'){
+    meterIccRunConfig.stage='mhc2-feedback-provisional';
+    if(status) status.textContent='Building the provisional final MHC2 profile for applied-path verification...';
+    await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-base'){
     const feedbackReadings=meterIccProfileReadings(state.readings);
-    if(feedbackReadings.length!==4) throw new Error('The Windows MHC2 shadow verification is incomplete');
+    if(feedbackReadings.length!==5) throw new Error('The Windows MHC2 base verification is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...feedbackReadings];
+    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback R+');
+    meterIccRunConfig.stage='mhc2-feedback-r';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.R);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-r'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==1) throw new Error('The Windows MHC2 red feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback G+');
+    meterIccRunConfig.stage='mhc2-feedback-g';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.G);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-g'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==1) throw new Error('The Windows MHC2 green feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback B+');
+    meterIccRunConfig.stage='mhc2-feedback-b';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.B);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-b'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==1) throw new Error('The Windows MHC2 blue feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
     meterIccRunConfig.stage='mhc2-final';
-    if(status) status.textContent='Active Windows path verified. Building the final ICC profile...';
+    if(status) status.textContent='Applied Windows MHC2 response verified. Building the final ICC profile...';
     await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
@@ -3154,6 +3180,8 @@ async function meterIccBuild(readings){
    payload.include_vcgt=false;
   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-provisional'){
    payload.name=String(meterIccRunConfig.name||'PGenerator+ display profile')+' MHC2 Peak Probe';
+  }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-provisional'){
+   payload.name=String(meterIccRunConfig.name||'PGenerator+ display profile')+' MHC2 Final Feedback Base';
   }
   delete payload.steps;
   delete payload.reused_readings;
@@ -3162,6 +3190,7 @@ async function meterIccBuild(readings){
   delete payload.raw_profile_readings;
   delete payload.mhc2_seed_file;
   delete payload.mhc2_provisional_file;
+  delete payload.mhc2_feedback_profiles;
   // Stay beyond the server's four-hour runaway guard. Ultra cLUT fitting on
   // the Pi can legitimately exceed two hours when desktop offload is absent.
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15010000});
@@ -3195,6 +3224,22 @@ async function meterIccBuild(readings){
    continuedWithActiveMhc2=true;
    return;
   }
+  if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-provisional'){
+   const profiles=response.mhc2_feedback_profiles;
+   if(!profiles||!profiles.base||!profiles.R||!profiles.G||!profiles.B)
+    throw new Error('The provisional build did not create the final MHC2 feedback profiles');
+   const steps=[...meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback Base'),...meterIccMhc2ShadowFeedbackSteps()];
+   meterIccRunConfig.mhc2_feedback_profiles=profiles;
+   meterIccRunConfig.stage='mhc2-feedback-base';
+   meterIccRunConfig.steps=steps;
+   if(status) status.textContent='Applying the provisional final MHC2 profile for closed-loop verification...';
+   meterIccSetProgress('Applying provisional final MHC2 profile',0,steps.length);
+   await meterIccApplyProfileForActiveMhc2(profiles.base);
+   meterIccSetProgress('Measuring applied MHC2 response',0,steps.length);
+   await meterIccLaunchMeasurementSeries(steps,meterIccRunConfig.profile_type,'companion');
+   continuedWithActiveMhc2=true;
+   return;
+  }
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
    const transferText=response.target_transfer?(' Target response curve: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
@@ -3221,6 +3266,12 @@ async function meterIccBuild(readings){
     await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_seed_file}),_quiet:true,_timeoutMs:5000});
     if(meterIccRunConfig.mhc2_provisional_file)
      await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_provisional_file}),_quiet:true,_timeoutMs:5000});
+    if(meterIccRunConfig.mhc2_feedback_profiles){
+     for(const file of Object.values(meterIccRunConfig.mhc2_feedback_profiles)){
+      if(typeof file==='string'&&/\.icc$/i.test(file))
+       await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file}),_quiet:true,_timeoutMs:5000});
+     }
+    }
     await meterIccLoadProfiles();
    }catch(_error){}
   }

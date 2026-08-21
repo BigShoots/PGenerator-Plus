@@ -1937,6 +1937,110 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
     return True
 
 
+def apply_mhc2_final_peak_feedback(luts, rows, neutral_gains,
+                                    calibrated_peak, probe_delta=0.01):
+    """Close peak white through the finished Windows MHC2 pipeline.
+
+    Patch-domain RGB probes do not measure the same local response as changes
+    to MHC2's post-transfer curves.  In particular, an HDR panel may already
+    be on its tone-mapping plateau when a patch channel is perturbed.  The
+    profile build therefore installs three temporary profiles whose final
+    curve shoulders differ by ``probe_delta`` and measures their actual XYZ.
+    Solve that measured 3x3 response here.  A display which is already D65
+    produces a negligible solve and is left unchanged.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(luts[0]) < 2):
+        return False
+    names = {
+        "base": "ICC MHC2 Final Feedback Base",
+        "R": "ICC MHC2 Final Feedback R+",
+        "G": "ICC MHC2 Final Feedback G+",
+        "B": "ICC MHC2 Final Feedback B+",
+    }
+    measured = {}
+    for row in rows:
+        for key, name in names.items():
+            if str(row.get("name", "")) == name:
+                measured[key] = row
+    if any(key not in measured for key in names):
+        return False
+    if not math.isfinite(probe_delta) or probe_delta <= 1e-6:
+        return False
+
+    base = measured["base"]["xyz"]
+    if base[1] <= 1e-9 or not all(math.isfinite(value) for value in base):
+        return False
+    base_total = sum(base)
+    if base_total <= 1e-9:
+        return False
+    base_xy = (base[0] / base_total, base[1] / base_total)
+    if math.hypot(base_xy[0] - 0.3127, base_xy[1] - 0.3290) < 0.0005:
+        return False
+    for channel in "RGB":
+        probe = measured[channel]["xyz"]
+        if (not all(math.isfinite(value) for value in probe)
+                or probe[1] < base[1] * 0.75
+                or probe[1] > base[1] * 1.25):
+            return False
+        probe_total = sum(probe)
+        if probe_total <= 1e-9:
+            return False
+        distance = math.hypot(
+            probe[0] / probe_total - base_xy[0],
+            probe[1] / probe_total - base_xy[1])
+        if distance < 0.00025 or distance > 0.05:
+            return False
+    columns = [[(measured[channel]["xyz"][axis] - base[axis]) / probe_delta
+                for axis in range(3)] for channel in "RGB"]
+    jacobian = [[columns[channel][axis] for channel in range(3)]
+                for axis in range(3)]
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    try:
+        delta = mat_vec_mul(mat_inv(jacobian), [
+            base[1] * d65[axis] - base[axis] for axis in range(3)
+        ])
+    except ValueError:
+        return False
+    if not all(math.isfinite(value) for value in delta):
+        return False
+
+    # This is a residual correction, not a new calibration model.  Limit one
+    # pass so a noisy OLED read or a screen-cleaning frame cannot reshape a
+    # profile.  The 0.9 damping also keeps a display already near target from
+    # crossing to the opposite side due to meter repeatability.
+    delta = [max(-0.035, min(0.035, value * 0.9)) for value in delta]
+    if max(abs(value) for value in delta) < 0.00025:
+        return False
+
+    neutral = sorted((sum(row["rgb"]) / 3.0, row["xyz"][1])
+                     for row in rows
+                     if max(row["rgb"]) - min(row["rgb"]) <= 0.002)
+    measured_peak = max((value for _code, value in neutral),
+                        default=max(float(calibrated_peak), 0.0001))
+    shoulder = next((code for code, value in neutral
+                     if value >= measured_peak * 0.80), 0.75)
+    transition_end = max(0.55, min(0.98, shoulder))
+    transition_start = max(0.0, transition_end - 0.05)
+    entries = len(luts[0])
+    for channel in range(3):
+        updated = []
+        gain = neutral_gains[channel] if (
+            len(neutral_gains) == 3 and neutral_gains[channel] > 1e-6) else 1.0
+        for index, old in enumerate(luts[channel]):
+            position = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(position) / gain)
+            weight = smoothstep((source_code - transition_start)
+                                / max(transition_end - transition_start, 1e-6))
+            updated.append(max(0.0, min(1.0,
+                old + delta[channel] * weight)))
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return True
+
+
 def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
                                          primaries, target_transfer):
     """Fit MHC2 for the measured Windows path without changing raw cLUT."""
@@ -1969,6 +2073,8 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     apply_mhc2_active_shadow_jacobians(
         adjustment_luts, rows, neutral_gains, calibrated_peak)
     apply_mhc2_active_shadow_feedback(
+        adjustment_luts, rows, neutral_gains, calibrated_peak)
+    apply_mhc2_final_peak_feedback(
         adjustment_luts, rows, neutral_gains, calibrated_peak)
     mhc2 = mhc2_with_adjustment_luts(mhc2, adjustment_luts)
     return mhc2, matrix, adjustment_luts, calibrated_peak
@@ -2986,6 +3092,37 @@ def mhc2_with_adjustment_luts(payload, luts):
             result[offset + 8 + index * 4:offset + 12 + index * 4] = \
                 s15fixed16(max(0.0, min(1.0, value)))
     return bytes(result)
+
+
+def mhc2_profile_with_curve_probe(profile, channel, delta=0.01):
+    """Return a profile with one MHC2 highlight shoulder raised for probing."""
+    if channel not in (0, 1, 2) or not math.isfinite(delta) or delta <= 0.0:
+        fail("MHC2 final feedback probe is invalid")
+    tags = dict(read_icc_tags(profile))
+    payload = tags.get(b"MHC2")
+    if not payload or len(payload) < 84 or payload[:4] != b"MHC2":
+        fail("MHC2 final feedback probe requires an MHC2 profile")
+    entries = struct.unpack(">I", payload[8:12])[0]
+    offsets = struct.unpack(">IIII", payload[20:36])[1:]
+    curves = []
+    for offset in offsets:
+        if (entries < 2 or offset < 36 or
+                offset + 8 + entries * 4 > len(payload) or
+                payload[offset:offset + 4] != b"sf32"):
+            fail("MHC2 final feedback probe curve is invalid")
+        curves.append([
+            read_s15fixed16(payload, offset + 8 + index * 4)
+            for index in range(entries)
+        ])
+    for index, old in enumerate(curves[channel]):
+        position = index / float(entries - 1)
+        weight = smoothstep((position - 0.70) / 0.05)
+        curves[channel][index] = max(0.0, min(1.0, old + delta * weight))
+    curves[channel] = isotonic_curve(curves[channel])
+    curves[channel][0] = 0.0
+    return rebuild_icc(profile, {
+        b"MHC2": mhc2_with_adjustment_luts(payload, curves)
+    })
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
@@ -4781,6 +4918,24 @@ def build(payload, output_dir):
         with open(output_path, "wb") as handle:
             handle.write(profile)
 
+    mhc2_feedback_profiles = None
+    if (profile_type == "windows-hdr"
+            and str(payload.get("stage", "")) == "mhc2-feedback-provisional"):
+        with open(output_path, "rb") as handle:
+            feedback_base = handle.read()
+        mhc2_feedback_profiles = {"base": filename, "delta": 0.01}
+        for channel, label in enumerate(("R", "G", "B")):
+            probe_name = unique_profile_filename(
+                output_dir,
+                "{}-MHC2-Final-Feedback-{}-Probe.icc".format(stem, label),
+            )
+            probe_path = os.path.join(output_dir, probe_name)
+            probe_profile = mhc2_profile_with_curve_probe(
+                feedback_base, channel, 0.01)
+            with open(probe_path, "wb") as handle:
+                handle.write(probe_profile)
+            mhc2_feedback_profiles[label] = probe_name
+
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
     final_ti3 = ti3
@@ -4897,6 +5052,7 @@ def build(payload, output_dir):
                              for curve in adjustment_luts]
                             if (profile_type == "windows-hdr"
                                 and adjustment_luts) else None),
+        "mhc2_feedback_profiles": mhc2_feedback_profiles,
         "validation": validation,
     }
 
