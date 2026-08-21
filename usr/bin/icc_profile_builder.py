@@ -407,6 +407,7 @@ MHC2_HDR_NEUTRAL_HEADROOM = 0.95
 # profile edit itself rather than a source-patch approximation.
 MHC2_CURVE_FEEDBACK_DELTA = 4.0 / 1023.0
 MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
+MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 
 
 def mhc2_lut_entries(profile_type):
@@ -1968,7 +1969,8 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
 
 
 def profile_curve_feedback_anchors(rows, label, calibrated_peak,
-                                   probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
+                                   probe_delta=MHC2_CURVE_FEEDBACK_DELTA,
+                                   return_diagnostics=False):
     """Choose bounded shadow corrections inside the measured response hull.
 
     The responses here come from changing the actual profile curve used by
@@ -1994,6 +1996,7 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
         return chroma + luminance
 
     anchors = []
+    diagnostics = {}
     for code in MHC2_CURVE_FEEDBACK_CODES:
         names = {
             "base": "{} Base {}".format(label, code),
@@ -2023,6 +2026,11 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
             base[1] / base_total - 0.3290)
         luminance_error = abs(base[1] / target_y - 1.0)
         if chroma_error < 0.0007 and luminance_error < 0.02:
+            diagnostics[code] = {
+                "needed": False,
+                "accepted": True,
+                "predicted_chroma_error": chroma_error,
+            }
             continue
 
         valid = True
@@ -2079,13 +2087,43 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                             or predicted_luminance_error
                             > current_luminance_error + 0.01):
                         continue
-                    candidate = (predicted_error, weight_sum, delta)
+                    candidate = (predicted_error, weight_sum, delta,
+                                 predicted)
                     if best is None or candidate[:2] < best[:2]:
                         best = candidate
-        if (best is not None and best[0] < current_error * 0.92
-                and max(abs(value) for value in best[2]) >= 0.00015):
+        accepted = (best is not None and best[0] < current_error * 0.92
+                    and max(abs(value) for value in best[2]) >= 0.00015)
+        predicted_chroma_error = float("inf")
+        if best is not None:
+            predicted_total = sum(best[3])
+            if predicted_total > 1e-9:
+                predicted_chroma_error = math.hypot(
+                    best[3][0] / predicted_total - 0.3127,
+                    best[3][1] / predicted_total - 0.3290)
+        diagnostics[code] = {
+            "needed": True,
+            "accepted": accepted,
+            "predicted_chroma_error": predicted_chroma_error,
+        }
+        if accepted:
             anchors.append((source_code, best[2]))
-    return anchors
+    return (anchors, diagnostics) if return_diagnostics else anchors
+
+
+def validate_profile_curve_feedback_recoverable(rows, label,
+                                                calibrated_peak):
+    """Reject a stale baseline that one measured response hull cannot close."""
+    _anchors, diagnostics = profile_curve_feedback_anchors(
+        rows, label, calibrated_peak, return_diagnostics=True)
+    bad = [code for code in MHC2_CURVE_FEEDBACK_CODES
+           if code not in diagnostics
+           or (diagnostics[code]["needed"]
+               and (not diagnostics[code]["accepted"]
+                    or diagnostics[code]["predicted_chroma_error"] > 0.006))]
+    if bad:
+        fail("{} baseline is outside its measured correction hull at codes {}. "
+             "Remeasure the active profile path instead of reusing stale "
+             "feedback.".format(label, ", ".join(str(code) for code in bad)))
 
 
 def validate_profile_curve_feedback_complete(rows):
@@ -4936,6 +4974,10 @@ def build(payload, output_dir):
                 and calibration_mode == "profile"
                 and PROFILE_MODELS[profile_model]["family"] == "clut"
                 and str(payload.get("stage", "")) == "mhc2-final"):
+            if (str(payload.get("mhc2_feedback_contract", ""))
+                    != MHC2_PROFILE_RESPONSE_CONTRACT):
+                fail("Final HDR MHC2 build requires current active-path "
+                     "response provenance; remeasure the active profile path")
             validate_profile_curve_feedback_complete(mhc2_profile_rows)
     else:
         mhc2_fit_rows = mhc2_profile_rows
@@ -5513,6 +5555,11 @@ def build(payload, output_dir):
         final_neutral_gains = mat_vec_mul(
             final_rgb_adjustment, (1.0, 1.0, 1.0))
 
+        if str(payload.get("stage", "")) == "mhc2-final":
+            validate_profile_curve_feedback_recoverable(
+                mhc2_profile_rows, "ICC MHC2 Curve Feedback",
+                calibrated_white)
+
         # Correct the explicit cLUT path only from variants that changed its
         # actual B2A neutral corridor. A profile that already meets the target
         # either lands inside the deadband or fails the improvement gate and
@@ -5697,6 +5744,8 @@ def build(payload, output_dir):
                 "mhc2_patch_count": (len(mhc2_profile_rows)
                                      if mhc2_profile_rows is not profile_rows
                                      else None),
+                "mhc2_feedback_contract": (
+                    str(payload.get("mhc2_feedback_contract", "")) or None),
                 "b2a_grid": b2a_grid,
             },
             "status": "ok",
@@ -5745,6 +5794,9 @@ def build(payload, output_dir):
                             if (profile_type == "windows-hdr"
                                 and adjustment_luts) else None),
         "mhc2_feedback_profiles": mhc2_feedback_profiles,
+        "mhc2_feedback_contract": (
+            MHC2_PROFILE_RESPONSE_CONTRACT
+            if mhc2_feedback_profiles is not None else None),
         "validation": validation,
     }
 

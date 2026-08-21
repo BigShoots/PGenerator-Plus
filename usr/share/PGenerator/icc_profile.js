@@ -2581,6 +2581,8 @@ function meterIccCurveFeedbackSteps(label,variant,includePeak){
  return steps;
 }
 
+const METER_ICC_MHC2_FEEDBACK_CONTRACT='signed-independent-v1';
+
 function meterIccHasCompleteCurveFeedback(readings){
  const names=new Set((Array.isArray(readings)?readings:[]).map(
  reading=>String(reading&&reading.name||'')));
@@ -2755,6 +2757,7 @@ async function meterIccRetryBuild(){
   const canResumeMhc2=(type==='windows-hdr'
    &&meterIccRunConfig.calibration_mode==='profile'
    &&family==='clut'&&patternProvider==='companion'
+   &&String((reusable.build_config||{}).mhc2_feedback_contract||'')===METER_ICC_MHC2_FEEDBACK_CONTRACT
    &&savedMhc2.length>=48&&meterIccReadingsHaveRequiredAnchors(savedMhc2));
   if(canResumeMhc2){
    meterIccRunConfig.mhc2_readings=savedMhc2;
@@ -2773,8 +2776,13 @@ async function meterIccRetryBuild(){
    }
   }
   const status=document.getElementById('meterIccStatus');
+  const freshActiveMhc2=(type==='windows-hdr'
+   &&meterIccRunConfig.calibration_mode==='profile'
+   &&family==='clut'&&patternProvider==='companion'&&!canResumeMhc2);
   if(status) status.textContent=(meterIccRunConfig.stage==='mhc2-feedback-provisional')
    ?('Rebuilding '+readings.length+' saved measurements, then measuring only the 52 missing final MHC2 and cLUT response patches.')
+   :freshActiveMhc2
+    ?('Rebuilding '+readings.length+' saved raw measurements, then remeasuring the active Windows path because the saved response chain has no current transform provenance.')
    :('Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' table resolution. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.');
   await meterIccBuild(readings);
  }catch(error){
@@ -3384,12 +3392,15 @@ async function meterIccBuild(readings){
   }
   if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-provisional'){
    const profiles=response.mhc2_feedback_profiles;
+   if(String(response.mhc2_feedback_contract||'')!==METER_ICC_MHC2_FEEDBACK_CONTRACT)
+    throw new Error('The provisional build did not return current active-path response provenance');
    if(!profiles||!profiles.base||!profiles.R||!profiles.G||!profiles.B
       ||!profiles.R_minus||!profiles.G_minus||!profiles.B_minus
       ||!profiles.clut_R||!profiles.clut_G||!profiles.clut_B
       ||!profiles.clut_R_minus||!profiles.clut_G_minus||!profiles.clut_B_minus)
     throw new Error('The provisional build did not create the final MHC2 feedback profiles');
    meterIccRunConfig.mhc2_feedback_profiles=profiles;
+   meterIccRunConfig.mhc2_feedback_contract=response.mhc2_feedback_contract;
    const resumeNegative=meterIccHasPositiveCurveFeedback(meterIccRunConfig.mhc2_readings);
    const steps=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback',resumeNegative?'R-':'',!resumeNegative);
    meterIccRunConfig.stage=resumeNegative?'mhc2-feedback-r-minus':'mhc2-feedback-base';
