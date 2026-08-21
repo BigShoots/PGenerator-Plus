@@ -1852,7 +1852,8 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
 
 def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
                                        calibrated_peak, damping=0.5,
-                                       label="ICC MHC2 Shadow"):
+                                       label="ICC MHC2 Shadow",
+                                       output_mapper=None):
     """Close the residual measured through the provisional MHC2 profile."""
     probe_pattern = re.compile(
         r"^{} Jacobian (\d+) ([RGB])([+-])$".format(re.escape(label)))
@@ -1890,12 +1891,22 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
             continue
         jacobian = [[columns[column][axis] for column in range(3)]
                     for axis in range(3)]
+        inverse = mat_inv(jacobian)
+        norm = max(sum(abs(jacobian[row][column]) for row in range(3))
+                   for column in range(3))
+        inverse_norm = max(sum(abs(inverse[row][column]) for row in range(3))
+                           for column in range(3))
+        if norm * inverse_norm > 50.0:
+            # Near-black meter noise can make two probe columns almost
+            # dependent. Such a solve amplifies noise into a large chromatic
+            # edit; let adjacent well-conditioned anchors interpolate instead.
+            continue
         source_code = code / float(probes["R+"]["input_max"])
         target_y = min(pq_to_nits(source_code), calibrated_peak)
         d65 = (0.3127 / 0.3290, 1.0,
                (1.0 - 0.3127 - 0.3290) / 0.3290)
         measured = feedback[code]["xyz"]
-        delta = mat_vec_mul(mat_inv(jacobian), [
+        delta = mat_vec_mul(inverse, [
             target_y * d65[axis] - measured[axis] for axis in range(3)
         ])
         # A local linear solve is only a residual correction. Bound it to a
@@ -1917,9 +1928,9 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
     points = [(start, [0.0, 0.0, 0.0])] + anchors + [
         (end, [0.0, 0.0, 0.0])]
 
-    def correction(source_code, channel):
+    def correction_vector(source_code):
         if source_code <= points[0][0] or source_code >= points[-1][0]:
-            return 0.0
+            return [0.0, 0.0, 0.0]
         for index in range(1, len(points)):
             x0, values0 = points[index - 1]
             x1, values1 = points[index]
@@ -1927,8 +1938,12 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
                 fraction = 0.0 if x1 <= x0 else (
                     (source_code - x0) / (x1 - x0))
                 weight = smoothstep(fraction)
-                return values0[channel] * (1.0 - weight) + values1[channel] * weight
-        return 0.0
+                correction = [
+                    values0[channel] * (1.0 - weight)
+                    + values1[channel] * weight for channel in range(3)]
+                return (output_mapper(source_code, correction)
+                        if output_mapper else correction)
+        return [0.0, 0.0, 0.0]
 
     entries = len(luts[0])
     for channel in range(3):
@@ -1937,8 +1952,9 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
         for index, old in enumerate(luts[channel]):
             curve_input = index / float(entries - 1)
             source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            correction = correction_vector(source_code)
             updated.append(max(0.0, min(1.0,
-                old + correction(source_code, channel))))
+                old + correction[channel])))
         updated = isotonic_curve(updated)
         updated[0] = 0.0
         luts[channel][:] = updated
@@ -2347,6 +2363,16 @@ def mft2_b2a_evaluator(profile):
 
 def windows_hdr_b2a_neutral_evaluator(profile):
     """Evaluate the exact neutral HDR source path used by explicit cLUT mode."""
+    evaluate = windows_hdr_b2a_source_evaluator(profile)
+
+    def evaluate_neutral(code):
+        return evaluate((code, code, code))
+
+    return evaluate_neutral
+
+
+def windows_hdr_b2a_source_evaluator(profile):
+    """Evaluate HDR source RGB through the profile's exact B2A transform."""
     tags = dict(read_icc_tags(profile))
     lumi = tags.get(b"lumi")
     if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
@@ -2363,13 +2389,27 @@ def windows_hdr_b2a_neutral_evaluator(profile):
         (0.0, 0.0280727, 1.0609851),
     )
 
-    def evaluate(code):
-        linear = pq_to_nits(max(0.0, min(1.0, code))) / white_nits
-        source_xyz = [linear * sum(row) for row in bt2020_xyz]
+    def evaluate(codes):
+        linear = [pq_to_nits(max(0.0, min(1.0, code))) / white_nits
+                  for code in codes]
+        source_xyz = mat_vec_mul(bt2020_xyz, linear)
         pcs_xyz = mat_vec_mul(adaptation, source_xyz)
         return evaluate_b2a(pcs_xyz)
 
     return evaluate
+
+
+def windows_hdr_b2a_correction_mapper(profile):
+    """Map a source-code correction into the B2A device-output domain."""
+    evaluate = windows_hdr_b2a_source_evaluator(profile)
+
+    def map_correction(source_code, delta):
+        base = evaluate((source_code, source_code, source_code))
+        shifted = evaluate(tuple(max(0.0, min(1.0, source_code + value))
+                                 for value in delta))
+        return [shifted[channel] - base[channel] for channel in range(3)]
+
+    return map_correction
 
 
 def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
@@ -5181,9 +5221,10 @@ def build(payload, output_dir):
             mat_inv(final_wire), mat_mul(final_matrix, final_wire))
         final_neutral_gains = mat_vec_mul(
             final_rgb_adjustment, (1.0, 1.0, 1.0))
+        correction_mapper = windows_hdr_b2a_correction_mapper(profile)
         shadow_corrected = apply_mhc2_active_shadow_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white)
+            calibrated_white, output_mapper=correction_mapper)
         if shadow_corrected:
             profile = windows_hdr_b2a_with_shadow_luts(
                 profile, reference_matching_luts, matching_luts,
@@ -5200,9 +5241,11 @@ def build(payload, output_dir):
         # the two Windows pipelines without adding a display-specific offset.
         clut_reference_luts = [list(curve) for curve in matching_luts]
         clut_corrected_luts = [list(curve) for curve in matching_luts]
+        correction_mapper = windows_hdr_b2a_correction_mapper(profile)
         clut_path_corrected = apply_mhc2_active_shadow_feedback(
             clut_corrected_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, label="ICC cLUT Final Shadow")
+            calibrated_white, label="ICC cLUT Final Shadow",
+            output_mapper=correction_mapper)
         if clut_path_corrected:
             profile = windows_hdr_b2a_with_shadow_luts(
                 profile, clut_reference_luts, clut_corrected_luts,
@@ -5211,7 +5254,8 @@ def build(payload, output_dir):
                 profile, final_mhc2)
         apply_mhc2_active_shadow_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, label="ICC MHC2 Final Shadow")
+            calibrated_white, label="ICC MHC2 Final Shadow",
+            output_mapper=windows_hdr_b2a_correction_mapper(profile))
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
