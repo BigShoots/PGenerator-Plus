@@ -1757,6 +1757,186 @@ def apply_mhc2_active_neutral_luminance(luts, rows, black, primaries,
         luts[channel][:] = updated[channel]
 
 
+def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
+                                        calibrated_peak):
+    """Close measured shadow RGB residuals with local active-path probes."""
+    groups = {}
+    pattern = re.compile(r"^ICC MHC2 Shadow Jacobian (\d+) ([RGB])([+-])$")
+    for row in rows:
+        match = pattern.match(str(row.get("name", "")))
+        if match:
+            groups.setdefault(int(match.group(1)), {})[
+                match.group(2) + match.group(3)] = row
+    anchors = []
+    for code in sorted(groups):
+        probes = groups[code]
+        if any(channel + sign not in probes
+               for channel in "RGB" for sign in "-+"):
+            continue
+        midpoints = []
+        columns = []
+        for channel in "RGB":
+            low = probes[channel + "-"]
+            high = probes[channel + "+"]
+            span = high["rgb"]["RGB".index(channel)] - low["rgb"]["RGB".index(channel)]
+            if span <= 1e-9:
+                break
+            midpoints.append([0.5 * (low["xyz"][axis] + high["xyz"][axis])
+                              for axis in range(3)])
+            columns.append([(high["xyz"][axis] - low["xyz"][axis]) / span
+                            for axis in range(3)])
+        if len(columns) != 3:
+            continue
+        center_xyz = [sum(value[axis] for value in midpoints) / 3.0
+                      for axis in range(3)]
+        jacobian = [[columns[column][axis] for column in range(3)]
+                    for axis in range(3)]
+        source_code = code / float(probes["R+"]["input_max"])
+        target_y = min(pq_to_nits(source_code), calibrated_peak)
+        d65 = (0.3127 / 0.3290, 1.0,
+               (1.0 - 0.3127 - 0.3290) / 0.3290)
+        delta = mat_vec_mul(mat_inv(jacobian), [
+            target_y * d65[axis] - center_xyz[axis] for axis in range(3)
+        ])
+        center_code = [
+            0.5 * (probes[channel + "-"]["rgb"][index]
+                   + probes[channel + "+"]["rgb"][index])
+            for index, channel in enumerate("RGB")
+        ]
+        target_codes = [max(center_code[channel] - 0.03,
+                            min(center_code[channel] + 0.03,
+                                center_code[channel] + delta[channel]))
+                        for channel in range(3)]
+        current = []
+        source_nits = pq_to_nits(source_code)
+        for channel in range(3):
+            curve_input = nits_to_pq(source_nits * neutral_gains[channel])
+            current.append(sample_table(luts[channel], curve_input))
+        anchors.append((source_code, [target_codes[channel] - current[channel]
+                                     for channel in range(3)]))
+    if not anchors:
+        return False
+
+    start = max(0.0, anchors[0][0] - 0.04)
+    end = min(1.0, anchors[-1][0] + 0.07)
+    points = [(start, [0.0, 0.0, 0.0])] + anchors + [
+        (end, [0.0, 0.0, 0.0])]
+
+    def correction(source_code, channel):
+        if source_code <= points[0][0] or source_code >= points[-1][0]:
+            return 0.0
+        for index in range(1, len(points)):
+            x0, values0 = points[index - 1]
+            x1, values1 = points[index]
+            if source_code <= x1:
+                fraction = 0.0 if x1 <= x0 else (
+                    (source_code - x0) / (x1 - x0))
+                weight = smoothstep(fraction)
+                return values0[channel] * (1.0 - weight) + values1[channel] * weight
+        return 0.0
+
+    entries = len(luts[0])
+    for channel in range(3):
+        updated = []
+        gain = neutral_gains[channel]
+        for index, old in enumerate(luts[channel]):
+            curve_input = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            updated.append(max(0.0, min(1.0,
+                old + correction(source_code, channel))))
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return True
+
+
+def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
+                                       calibrated_peak):
+    """Close the residual measured through the provisional MHC2 profile."""
+    probe_pattern = re.compile(
+        r"^ICC MHC2 Shadow Jacobian (\d+) ([RGB])([+-])$")
+    feedback_pattern = re.compile(r"^ICC MHC2 Shadow Feedback (\d+)$")
+    groups = {}
+    feedback = {}
+    for row in rows:
+        match = probe_pattern.match(str(row.get("name", "")))
+        if match:
+            groups.setdefault(int(match.group(1)), {})[
+                match.group(2) + match.group(3)] = row
+            continue
+        match = feedback_pattern.match(str(row.get("name", "")))
+        if match:
+            feedback[int(match.group(1))] = row
+
+    anchors = []
+    for code in sorted(set(groups).intersection(feedback)):
+        probes = groups[code]
+        if any(channel + sign not in probes
+               for channel in "RGB" for sign in "-+"):
+            continue
+        columns = []
+        for channel in "RGB":
+            low = probes[channel + "-"]
+            high = probes[channel + "+"]
+            component = "RGB".index(channel)
+            span = high["rgb"][component] - low["rgb"][component]
+            if span <= 1e-9:
+                break
+            columns.append([(high["xyz"][axis] - low["xyz"][axis]) / span
+                            for axis in range(3)])
+        if len(columns) != 3:
+            continue
+        jacobian = [[columns[column][axis] for column in range(3)]
+                    for axis in range(3)]
+        source_code = code / float(probes["R+"]["input_max"])
+        target_y = min(pq_to_nits(source_code), calibrated_peak)
+        d65 = (0.3127 / 0.3290, 1.0,
+               (1.0 - 0.3127 - 0.3290) / 0.3290)
+        measured = feedback[code]["xyz"]
+        delta = mat_vec_mul(mat_inv(jacobian), [
+            target_y * d65[axis] - measured[axis] for axis in range(3)
+        ])
+        # A local linear solve is only a residual correction. Bound it to a
+        # small move so noisy near-black measurements cannot reshape a panel
+        # that was already close to target.
+        anchors.append((source_code, [max(-0.02, min(0.02, value))
+                                     for value in delta]))
+    if not anchors:
+        return False
+
+    start = max(0.0, anchors[0][0] - 0.04)
+    end = min(1.0, anchors[-1][0] + 0.07)
+    points = [(start, [0.0, 0.0, 0.0])] + anchors + [
+        (end, [0.0, 0.0, 0.0])]
+
+    def correction(source_code, channel):
+        if source_code <= points[0][0] or source_code >= points[-1][0]:
+            return 0.0
+        for index in range(1, len(points)):
+            x0, values0 = points[index - 1]
+            x1, values1 = points[index]
+            if source_code <= x1:
+                fraction = 0.0 if x1 <= x0 else (
+                    (source_code - x0) / (x1 - x0))
+                weight = smoothstep(fraction)
+                return values0[channel] * (1.0 - weight) + values1[channel] * weight
+        return 0.0
+
+    entries = len(luts[0])
+    for channel in range(3):
+        updated = []
+        gain = neutral_gains[channel]
+        for index, old in enumerate(luts[channel]):
+            curve_input = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            updated.append(max(0.0, min(1.0,
+                old + correction(source_code, channel))))
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return True
+
+
 def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
                                          primaries, target_transfer):
     """Fit MHC2 for the measured Windows path without changing raw cLUT."""
@@ -1786,6 +1966,10 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     apply_mhc2_active_neutral_luminance(
         adjustment_luts, rows, black, primaries, neutral_gains,
         calibrated_peak)
+    apply_mhc2_active_shadow_jacobians(
+        adjustment_luts, rows, neutral_gains, calibrated_peak)
+    apply_mhc2_active_shadow_feedback(
+        adjustment_luts, rows, neutral_gains, calibrated_peak)
     mhc2 = mhc2_with_adjustment_luts(mhc2, adjustment_luts)
     return mhc2, matrix, adjustment_luts, calibrated_peak
 

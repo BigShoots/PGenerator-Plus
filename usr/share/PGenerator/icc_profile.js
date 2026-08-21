@@ -2532,6 +2532,7 @@ function meterIccProfileReadings(readings){
 function meterIccActiveMhc2Steps(){
  const neutralCodes=[0,20,25,30,35,40,45,51,61,72,82,92,102,128,153,205,256,307,358,409,460,512,563,614,665,716,767,818,870,921,972,1023];
  const axisCodes=[20,62,135,251,441,648,778,934,1023];
+ const shadowCodes=[102,153,205,256];
  const steps=neutralCodes.map(code=>({
   ire:100*code/1023,r:code,g:code,b:code,input_max:1023,
   name:'ICC MHC2 Active Grey '+code
@@ -2549,6 +2550,14 @@ function meterIccActiveMhc2Steps(){
   input_max:1023,
   name:'ICC Neutral Jacobian 0767 '+channel+(delta<0?'-':'+')
  })));
+ shadowCodes.forEach(code=>['R','G','B'].forEach(channel=>[-4,4].forEach(delta=>steps.push({
+  ire:100*(3*code+delta)/(3*1023),
+  r:code+(channel==='R'?delta:0),
+  g:code+(channel==='G'?delta:0),
+  b:code+(channel==='B'?delta:0),
+  input_max:1023,
+  name:'ICC MHC2 Shadow Jacobian '+code+' '+channel+(delta<0?'-':'+')
+ }))));
  return steps;
 }
 
@@ -2556,6 +2565,11 @@ function meterIccMhc2PeakStep(name,r,g,b){
  const clamp=value=>Math.max(0,Math.min(1023,Math.round(Number(value)||0)));
  r=clamp(r);g=clamp(g);b=clamp(b);
  return {ire:100*(r+g+b)/(3*1023),r:r,g:g,b:b,input_max:1023,name:name};
+}
+
+function meterIccMhc2ShadowFeedbackSteps(){
+ return [102,153,205,256].map(code=>meterIccMhc2PeakStep(
+  'ICC MHC2 Shadow Feedback '+code,code,code,code));
 }
 
 function meterIccMhc2PeakCandidateSteps(codes){
@@ -3066,8 +3080,20 @@ async function meterIccPoll(){
     const refineReadings=meterIccProfileReadings(state.readings);
     if(refineReadings.length!==7) throw new Error('The Windows MHC2 peak refinement is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...refineReadings];
+    const feedbackSteps=meterIccMhc2ShadowFeedbackSteps();
+    meterIccRunConfig.stage='mhc2-shadow-feedback';
+    meterIccRunConfig.steps=feedbackSteps;
+    if(status) status.textContent='Applying the provisional profile to verify its shadow response...';
+    meterIccSetProgress('Applying provisional MHC2 profile',0,feedbackSteps.length);
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_provisional_file);
+    meterIccSetProgress('Measuring provisional MHC2 shadows',0,feedbackSteps.length);
+    await meterIccLaunchMeasurementSeries(feedbackSteps,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-shadow-feedback'){
+    const feedbackReadings=meterIccProfileReadings(state.readings);
+    if(feedbackReadings.length!==4) throw new Error('The Windows MHC2 shadow verification is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...feedbackReadings];
     meterIccRunConfig.stage='mhc2-final';
-    if(status) status.textContent='Active Windows path measured. Building the final ICC profile...';
+    if(status) status.textContent='Active Windows path verified. Building the final ICC profile...';
     await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
