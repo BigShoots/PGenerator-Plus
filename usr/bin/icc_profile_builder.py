@@ -5190,12 +5190,13 @@ def build(payload, output_dir):
             fail("Windows HDR cLUT matching requires an MHC2 tag")
         matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
             profile, final_mhc2)
-        reference_matching_luts = [list(curve) for curve in matching_luts]
-        # The applied-path feedback pass measures this exact cloned profile at
-        # the four shadow anchors and at peak.  Apply those residuals only
-        # after cloning B2A; doing it earlier lets the clone silently discard
-        # the closed-loop result.  Older saved characterizations without the
-        # feedback rows remain a pure deterministic B2A clone.
+        # Patch-domain RGB Jacobians measure how the display reacts to source
+        # code changes. They do not measure how either ICC implementation
+        # reacts to edits of its inverse curves. Applying those rows here can
+        # over-correct alternating shadow anchors and make a deterministic
+        # rebuild worse than its measured B2A fit. Keep the cloned B2A neutral
+        # response intact. The independently measured profile-variant probes
+        # below remain valid for the exact-white shoulder.
         matrix_offset = struct.unpack_from(">I", final_mhc2, 20)[0]
         final_matrix = [
             [read_s15fixed16(
@@ -5208,18 +5209,6 @@ def build(payload, output_dir):
             mat_inv(final_wire), mat_mul(final_matrix, final_wire))
         final_neutral_gains = mat_vec_mul(
             final_rgb_adjustment, (1.0, 1.0, 1.0))
-        shadow_corrected = apply_mhc2_active_shadow_feedback(
-            matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white)
-        if shadow_corrected:
-            profile = windows_hdr_b2a_with_shadow_luts(
-                profile, reference_matching_luts, matching_luts,
-                final_neutral_gains)
-            # Quantization of the rewritten one-cell corridor is now the
-            # authoritative cLUT response. Re-clone it so MHC2 follows those
-            # exact saved values, then apply only the independent peak probe.
-            matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
-                profile, final_mhc2)
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
