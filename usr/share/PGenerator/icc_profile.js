@@ -2572,6 +2572,23 @@ function meterIccMhc2ShadowFeedbackSteps(){
   'ICC MHC2 Shadow Feedback '+code,code,code,code));
 }
 
+function meterIccFinalShadowPathSteps(label){
+ const steps=[];
+ [102,153,205,256].forEach(code=>{
+  ['R','G','B'].forEach(channel=>[-4,4].forEach(delta=>steps.push({
+   ire:100*(3*code+delta)/(3*1023),
+   r:code+(channel==='R'?delta:0),
+   g:code+(channel==='G'?delta:0),
+   b:code+(channel==='B'?delta:0),
+   input_max:1023,
+   name:label+' Jacobian '+code+' '+channel+(delta<0?'-':'+')
+  })));
+  steps.push(meterIccMhc2PeakStep(
+   label+' Feedback '+code,code,code,code));
+ });
+ return steps;
+}
+
 function meterIccMhc2FinalFeedbackStep(name){
  return [meterIccMhc2PeakStep(name,1023,1023,1023)];
 }
@@ -2637,8 +2654,8 @@ function meterIccNeedsActiveMhc2Stage(config){
   &&config.pattern_provider==='companion'&&meterIccCompanionConnected;
 }
 
-async function meterIccApplyProfileForActiveMhc2(file){
- await meterIccPushCompanionDisplaySettings(false,'system','fullscreen');
+async function meterIccApplyProfileForActiveMhc2(file,correctionMode='system'){
+ await meterIccPushCompanionDisplaySettings(false,correctionMode,'fullscreen');
  const queued=await fetchJSON('/api/icc/companion/profile-install',{
   method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({file}),_timeoutMs:10000
@@ -2649,7 +2666,13 @@ async function meterIccApplyProfileForActiveMhc2(file){
  while(Date.now()<deadline){
   await new Promise(resolve=>setTimeout(resolve,750));
   const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
-  if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) return;
+  if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))){
+   // Installation activates Windows system handling. Reassert an explicit
+   // cLUT request after install when the next stage must measure B2A itself.
+   if(correctionMode!=='system')
+    await meterIccPushCompanionDisplaySettings(false,correctionMode,'fullscreen');
+   return;
+  }
   if(state&&state.status==='error') throw new Error(state.message||'MHC2 seed profile installation failed');
  }
  throw new Error('Patch Companion did not finish applying the MHC2 seed profile');
@@ -3118,8 +3141,27 @@ async function meterIccPoll(){
     const readings=meterIccProfileReadings(state.readings);
     if(readings.length!==1) throw new Error('The Windows MHC2 blue feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    meterIccRunConfig.stage='mhc2-path-provisional';
+    if(status) status.textContent='Applied Windows MHC2 response verified. Building the matched-path verification profile...';
+    await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-path-clut'){
+    const readings=meterIccProfileReadings(state.readings);
+    const expected=meterIccFinalShadowPathSteps('ICC cLUT Final Shadow').length;
+    if(readings.length!==expected) throw new Error('The final Windows cLUT shadow verification is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const steps=meterIccFinalShadowPathSteps('ICC MHC2 Final Shadow');
+    meterIccRunConfig.stage='mhc2-path-system';
+    meterIccRunConfig.steps=steps;
+    if(status) status.textContent='cLUT shadow response measured. Measuring the same points through Windows system handling...';
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_path_provisional_file,'system');
+    await meterIccLaunchMeasurementSeries(steps,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-path-system'){
+    const readings=meterIccProfileReadings(state.readings);
+    const expected=meterIccFinalShadowPathSteps('ICC MHC2 Final Shadow').length;
+    if(readings.length!==expected) throw new Error('The final Windows MHC2 shadow verification is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
     meterIccRunConfig.stage='mhc2-final';
-    if(status) status.textContent='Applied Windows MHC2 response verified. Building the final ICC profile...';
+    if(status) status.textContent='Both Windows profile paths measured. Building the final matched ICC profile...';
     await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
@@ -3240,6 +3282,19 @@ async function meterIccBuild(readings){
    continuedWithActiveMhc2=true;
    return;
   }
+  if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-path-provisional'){
+   const steps=meterIccFinalShadowPathSteps('ICC cLUT Final Shadow');
+   meterIccRunConfig.mhc2_path_provisional_file=response.file;
+   meterIccRunConfig.stage='mhc2-path-clut';
+   meterIccRunConfig.steps=steps;
+   if(status) status.textContent='Applying the provisional profile through its cLUT for final shadow verification...';
+   meterIccSetProgress('Applying provisional cLUT profile',0,steps.length);
+   await meterIccApplyProfileForActiveMhc2(response.file,'clut');
+   meterIccSetProgress('Measuring final cLUT shadow response',0,steps.length);
+   await meterIccLaunchMeasurementSeries(steps,meterIccRunConfig.profile_type,'companion');
+   continuedWithActiveMhc2=true;
+   return;
+  }
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
    const transferText=response.target_transfer?(' Target response curve: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
@@ -3266,6 +3321,8 @@ async function meterIccBuild(readings){
     await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_seed_file}),_quiet:true,_timeoutMs:5000});
     if(meterIccRunConfig.mhc2_provisional_file)
      await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_provisional_file}),_quiet:true,_timeoutMs:5000});
+    if(meterIccRunConfig.mhc2_path_provisional_file)
+     await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_path_provisional_file}),_quiet:true,_timeoutMs:5000});
     if(meterIccRunConfig.mhc2_feedback_profiles){
      for(const file of Object.values(meterIccRunConfig.mhc2_feedback_profiles)){
       if(typeof file==='string'&&/\.icc$/i.test(file))
