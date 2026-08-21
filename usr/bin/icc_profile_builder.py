@@ -5234,28 +5234,6 @@ def build(payload, output_dir):
             # exact saved values, then apply only the independent peak probe.
             matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
                 profile, final_mhc2)
-        # A second closed-loop pass measures the provisional finished profile
-        # through each Windows transform independently. Correct B2A from the
-        # cLUT measurements, then clone that result and correct only MHC2 from
-        # the system-path measurements. This accounts for real differences in
-        # the two Windows pipelines without adding a display-specific offset.
-        clut_reference_luts = [list(curve) for curve in matching_luts]
-        clut_corrected_luts = [list(curve) for curve in matching_luts]
-        correction_mapper = windows_hdr_b2a_correction_mapper(profile)
-        clut_path_corrected = apply_mhc2_active_shadow_feedback(
-            clut_corrected_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, label="ICC cLUT Final Shadow",
-            output_mapper=correction_mapper)
-        if clut_path_corrected:
-            profile = windows_hdr_b2a_with_shadow_luts(
-                profile, clut_reference_luts, clut_corrected_luts,
-                final_neutral_gains)
-            matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
-                profile, final_mhc2)
-        apply_mhc2_active_shadow_feedback(
-            matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, label="ICC MHC2 Final Shadow",
-            output_mapper=windows_hdr_b2a_correction_mapper(profile))
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
