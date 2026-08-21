@@ -25195,8 +25195,20 @@ function meterLiveRgbData(reading){
  }
  if(!measured||!(measured.Y>0)) return {mode:'balance',R:null,G:null,B:null,noChroma:true};
  const readings=Array.isArray(meterReadings)&&meterReadings.length?meterReadings:[reading];
- const whiteRef=meterFindSeriesWhiteReading(readings)
+ let whiteRef=meterFindSeriesWhiteReading(readings)
   ||(meterWhiteReading&&!meterWhiteReading.synthetic_target?meterWhiteReading:null);
+ // Continuous/single reads on a colour patch usually have no measured white in
+ // the current series (saturation sweeps carry no White step), which left the
+ // live RGB bars stuck at "--" during continuous measurement. Fall back to the
+ // latest mode-matched measured white from any cached series, then to a
+ // synthetic target-white reference (target white point at the colour
+ // reference luminance) so the bars stay usable for live calibration.
+ if(!whiteRef&&typeof meterFindMeasuredWhiteReading==='function'){
+  try{ whiteRef=meterFindMeasuredWhiteReading(); }catch(e){}
+ }
+ if(!whiteRef&&typeof meterSyntheticGreyWhiteReading==='function'){
+  try{ whiteRef=meterSyntheticGreyWhiteReading(meterColorReferenceNits()); }catch(e){}
+ }
  const blackRef=(typeof meterSeriesBaselineBlack!=='undefined')?meterSeriesBaselineBlack:null;
  const balance=whiteRef?meterColorPatchRgbBalance(reading,whiteRef,blackRef):null;
  return balance?{mode:'balance',...balance}:{mode:'balance',R:null,G:null,B:null,noChroma:true};
