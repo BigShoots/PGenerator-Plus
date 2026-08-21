@@ -1969,19 +1969,20 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
 
 def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                                    probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
-    """Solve bounded shadow corrections from symmetric profile variants.
+    """Choose bounded shadow corrections inside the measured response hull.
 
-    The derivatives here come from changing the actual profile curve used by
+    The responses here come from changing the actual profile curve used by
     the selected presentation path. They therefore include Windows, the
     Companion and the display response, unlike source-patch RGB Jacobians.
     Both signs are measured because a one-sided positive probe cannot safely
     predict the negative common correction needed by an over-bright shadow.
+    The selected point is a convex combination of Base and the six signed
+    probes, so it never relies on a central derivative or a multi-axis corner
+    that the hardware did not measure.
     """
     if not math.isfinite(probe_delta) or probe_delta <= 1e-6:
         return []
     by_name = {str(row.get("name", "")): row for row in rows}
-    d65 = (0.3127 / 0.3290, 1.0,
-           (1.0 - 0.3127 - 0.3290) / 0.3290)
 
     def error_metric(xyz, target_y):
         total = sum(xyz)
@@ -2025,7 +2026,7 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
             continue
 
         valid = True
-        columns = []
+        responses = {}
         for channel in "RGB":
             low = measured[channel + "-"]
             high = measured[channel + "+"]
@@ -2035,67 +2036,55 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                     or max(low[1], high[1]) > base[1] * 1.35):
                 valid = False
                 break
-            column = [(high[axis] - low[axis]) / (2.0 * probe_delta)
-                      for axis in range(3)]
-            if max(abs(value) for value in column) < max(1e-5,
-                                                          base[1] * 0.02):
+            responses[channel + "-"] = [low[axis] - base[axis]
+                                          for axis in range(3)]
+            responses[channel + "+"] = [high[axis] - base[axis]
+                                          for axis in range(3)]
+            if max(abs(value) for response in (
+                    responses[channel + "-"], responses[channel + "+"])
+                    for value in response) < max(1e-5, base[1] * 0.02):
                 valid = False
                 break
-            columns.append(column)
         if not valid:
             continue
-        jacobian = [[columns[column][axis] for column in range(3)]
-                    for axis in range(3)]
-        try:
-            inverse = mat_inv(jacobian)
-        except ValueError:
-            continue
-        norm = max(sum(abs(jacobian[row][column]) for row in range(3))
-                   for column in range(3))
-        inverse_norm = max(sum(abs(inverse[row][column]) for row in range(3))
-                           for column in range(3))
-        if not math.isfinite(norm * inverse_norm) or norm * inverse_norm > 80.0:
-            continue
-        target = [target_y * d65[axis] for axis in range(3)]
-        solved = mat_vec_mul(inverse, [target[axis] - base[axis]
-                                      for axis in range(3)])
-        if not all(math.isfinite(value) for value in solved):
-            continue
-        # Preserve the solved RGB direction. Independent channel clamps turn
-        # a chromatic correction into a common lift or cut. Limit the entire
-        # vector to the measured probe span, then use the prediction gate to
-        # select a smaller step when needed. Going beyond one probe step is
-        # unsafe in the steep PQ toe even when the central derivative predicts
-        # a further improvement.
-        solved = [value * 0.75 for value in solved]
-        largest = max(abs(value) for value in solved)
-        limit = probe_delta
-        if largest > limit:
-            scale = limit / largest
-            solved = [value * scale for value in solved]
         current_error = error_metric(base, target_y)
         current_luminance_error = abs(math.log(base[1] / target_y))
         best = None
-        for scale in (1.0, 0.75, 0.5, 0.25, 0.125):
-            delta = [value * scale for value in solved]
-            predicted = [
-                base[axis] + sum(jacobian[axis][channel] * delta[channel]
-                                 for channel in range(3))
-                for axis in range(3)
-            ]
-            predicted_error = error_metric(predicted, target_y)
-            predicted_luminance_error = (
-                abs(math.log(predicted[1] / target_y))
-                if predicted[1] > 1e-9 else float("inf"))
-            if (predicted_error < current_error * 0.92
-                    and predicted[1] >= target_y * 0.65
-                    and predicted[1] <= target_y * 1.35
-                    and predicted_luminance_error
-                    <= current_luminance_error + 0.01):
-                best = delta
-                break
-        if best is not None and max(abs(value) for value in best) >= 0.00015:
-            anchors.append((source_code, best))
+        # Eighth-step weights give a dense, deterministic search of the
+        # three-dimensional signed response simplex without an optimizer
+        # dependency. The L1 bound is what keeps every result in the convex
+        # hull of Base and the six actual probe measurements.
+        weights = [value / 8.0 for value in range(-8, 9)]
+        for red in weights:
+            for green in weights:
+                for blue in weights:
+                    vector = (red, green, blue)
+                    weight_sum = sum(abs(value) for value in vector)
+                    if weight_sum <= 1e-12 or weight_sum > 1.0 + 1e-12:
+                        continue
+                    delta = [value * probe_delta for value in vector]
+                    predicted = list(base)
+                    for channel, weight in zip("RGB", vector):
+                        if abs(weight) <= 1e-12:
+                            continue
+                        response = responses[channel + ("+" if weight > 0 else "-")]
+                        for axis in range(3):
+                            predicted[axis] += abs(weight) * response[axis]
+                    predicted_error = error_metric(predicted, target_y)
+                    predicted_luminance_error = (
+                        abs(math.log(predicted[1] / target_y))
+                        if predicted[1] > 1e-9 else float("inf"))
+                    if (predicted[1] < target_y * 0.65
+                            or predicted[1] > target_y * 1.35
+                            or predicted_luminance_error
+                            > current_luminance_error + 0.01):
+                        continue
+                    candidate = (predicted_error, weight_sum, delta)
+                    if best is None or candidate[:2] < best[:2]:
+                        best = candidate
+        if (best is not None and best[0] < current_error * 0.92
+                and max(abs(value) for value in best[2]) >= 0.00015):
+            anchors.append((source_code, best[2]))
     return anchors
 
 
@@ -2306,6 +2295,14 @@ MHC2_FINAL_FEEDBACK_NAMES = frozenset((
 ))
 
 
+def is_profile_response_feedback_name(name):
+    """Return whether a row measures a temporary finished-profile variant."""
+    name = str(name)
+    return (name in MHC2_FINAL_FEEDBACK_NAMES
+            or name.startswith("ICC MHC2 Curve Feedback ")
+            or name.startswith("ICC cLUT Curve Feedback "))
+
+
 def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
                                          primaries, target_transfer):
     """Fit MHC2 for the measured Windows path without changing raw cLUT."""
@@ -2315,10 +2312,11 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     # changes the inferred peak, lumi tag and B2A normalization.  That made a
     # peak-only feedback pass reshape the entire cLUT and discarded the
     # already-closed shadow/midtone result.  Keep the characterization fit on
-    # the same rows used by the provisional profile, then consume the probes
-    # only in apply_mhc2_final_peak_feedback below.
+    # the same rows used by the provisional profile. The finished-profile
+    # response probes are consumed only by the final output stage.
     fit_rows = [row for row in rows
-                if str(row.get("name", "")) not in MHC2_FINAL_FEEDBACK_NAMES]
+                if not is_profile_response_feedback_name(
+                    row.get("name", ""))]
     if not fit_rows:
         fit_rows = rows
     profile_type = "windows-hdr"
@@ -2351,8 +2349,6 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
         adjustment_luts, fit_rows, neutral_gains, calibrated_peak)
     apply_mhc2_active_shadow_feedback(
         adjustment_luts, fit_rows, neutral_gains, calibrated_peak)
-    apply_mhc2_final_peak_feedback(
-        adjustment_luts, rows, neutral_gains, calibrated_peak)
     mhc2 = mhc2_with_adjustment_luts(mhc2, adjustment_luts)
     return mhc2, matrix, adjustment_luts, calibrated_peak
 
@@ -3590,6 +3586,25 @@ def mhc2_with_adjustment_luts(payload, luts):
             result[offset + 8 + index * 4:offset + 12 + index * 4] = \
                 s15fixed16(max(0.0, min(1.0, value)))
     return bytes(result)
+
+
+def mhc2_adjustment_luts(payload):
+    """Read the three adjustment curves from a serialized MHC2 tag."""
+    if len(payload) < 36 or payload[:4] != b"MHC2":
+        fail("MHC2 payload is invalid")
+    entries = struct.unpack_from(">I", payload, 8)[0]
+    offsets = struct.unpack_from(">III", payload, 24)
+    curves = []
+    for offset in offsets:
+        if (entries < 2 or offset <= 0
+                or offset + 8 + entries * 4 > len(payload)
+                or payload[offset:offset + 4] != b"sf32"):
+            fail("MHC2 adjustment curve offset is invalid")
+        curves.append([
+            read_s15fixed16(payload, offset + 8 + index * 4)
+            for index in range(entries)
+        ])
+    return curves
 
 
 def mhc2_shadow_probe_weight(source_code):
@@ -4911,7 +4926,7 @@ def build(payload, output_dir):
     if mhc2_profile_rows is not profile_rows:
         mhc2_fit_rows = [
             row for row in mhc2_profile_rows
-            if str(row.get("name", "")) not in MHC2_FINAL_FEEDBACK_NAMES
+            if not is_profile_response_feedback_name(row.get("name", ""))
         ]
         if not mhc2_fit_rows:
             mhc2_fit_rows = mhc2_profile_rows
@@ -5513,11 +5528,11 @@ def build(payload, output_dir):
                 profile, b2a_reference_luts, b2a_corrected_luts,
                 final_neutral_gains, source_limit=0.45)
 
-        # Windows system handling gets its own measured response solve. Its
-        # variants were measured from the unmodified provisional profile, so
-        # start from that same B2A-derived baseline. Re-reading the corrected
-        # cLUT here would stack the independent cLUT and MHC2 edits.
-        matching_luts = [list(curve) for curve in b2a_reference_luts]
+        # Windows system handling gets its own measured response solve. Keep
+        # the independently fitted active-path curves as its baseline. Cloning
+        # B2A here erases the measured MHC2 shadow correction before feedback
+        # and is exactly the coupling this split-path stage exists to avoid.
+        matching_luts = mhc2_adjustment_luts(final_mhc2)
         apply_profile_curve_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white, "ICC MHC2 Curve Feedback")
