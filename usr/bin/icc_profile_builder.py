@@ -2364,6 +2364,97 @@ def windows_hdr_b2a_neutral_evaluator(profile):
     return evaluate
 
 
+def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
+                                      neutral_gains,
+                                      source_limit=0.35):
+    """Put an applied-path shadow residual into B2A's neutral corridor.
+
+    The final MHC2 feedback pass measures the cloned B2A response, so its
+    bounded shadow correction is valid for both handling paths.  Rewrite only
+    the one-cell neutral corridor touched by an exactly neutral trilinear
+    lookup. Nearby colours outside that corridor retain the fitted 3D table.
+    """
+    if (len(reference_luts) != 3 or len(corrected_luts) != 3
+            or any(len(reference_luts[channel]) != len(corrected_luts[channel])
+                   for channel in range(3))
+            or len(neutral_gains) != 3
+            or min(neutral_gains) <= 1e-6):
+        fail("Windows HDR shadow matching received invalid correction curves")
+    tags = dict(read_icc_tags(profile))
+    lumi = tags.get(b"lumi")
+    if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
+        fail("Windows HDR shadow matching requires profile luminance metadata")
+    white_nits = read_s15fixed16(lumi, 12)
+    if white_nits <= 0.0:
+        fail("Windows HDR shadow matching requires positive profile luminance")
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+    d50 = (0.9642, 1.0, 0.8249)
+    replacements = {}
+    for signature, payload in read_icc_tags(profile):
+        if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        if len(payload) < 52 or payload[:4] != b"mft2":
+            continue
+        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+        if input_channels != 3 or output_channels != 3 or grid < 2:
+            continue
+        input_start = 52
+        clut_start = input_start + input_channels * input_entries * 2
+        clut_values = grid ** input_channels * output_channels
+        output_start = clut_start + clut_values * 2
+        if output_start + output_channels * output_entries * 2 > len(payload):
+            fail("Windows HDR shadow matching found a truncated B2A table")
+        input_tables = []
+        output_tables = []
+        for channel in range(3):
+            offset = input_start + channel * input_entries * 2
+            input_tables.append([value / 65535.0 for value in struct.unpack_from(
+                ">{}H".format(input_entries), payload, offset)])
+            offset = output_start + channel * output_entries * 2
+            output_tables.append([value / 65535.0 for value in struct.unpack_from(
+                ">{}H".format(output_entries), payload, offset)])
+        updated = bytearray(payload)
+        denominator = float(grid - 1)
+        for red in range(grid):
+            for green in range(max(0, red - 1), min(grid, red + 2)):
+                for blue in range(max(0, red - 1), min(grid, red + 2)):
+                    if max(red, green, blue) - min(red, green, blue) > 1:
+                        continue
+                    estimates = []
+                    for channel, node in enumerate((red, green, blue)):
+                        encoded_xyz = invert_table(
+                            input_tables[channel], node / denominator)
+                        pcs = encoded_xyz / xyz_to_mft
+                        relative = max(0.0, pcs / d50[channel])
+                        estimates.append(nits_to_pq(relative * white_nits))
+                    source_code = sorted(estimates)[1]
+                    if source_code > source_limit:
+                        continue
+                    node_offset = (((red * grid + green) * grid + blue) * 3)
+                    for channel in range(3):
+                        curve_input = nits_to_pq(
+                            pq_to_nits(source_code) * neutral_gains[channel])
+                        correction = (
+                            sample_table(corrected_luts[channel], curve_input)
+                            - sample_table(reference_luts[channel], curve_input))
+                        node_value = struct.unpack_from(
+                            ">H", payload,
+                            clut_start + (node_offset + channel) * 2)[0] / 65535.0
+                        old_output = sample_table(
+                            output_tables[channel], node_value)
+                        desired = max(0.0, min(1.0,
+                                              old_output + correction))
+                        encoded = invert_table(output_tables[channel],
+                                               desired)
+                        struct.pack_into(">H", updated,
+                                         clut_start + (node_offset + channel) * 2,
+                                         max(0, min(65535,
+                                             int(round(encoded * 65535.0)))))
+        replacements[signature] = bytes(updated)
+    return rebuild_icc(profile, replacements) if replacements else profile
+
+
 def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
                                      raw_measurement_model=False):
     """Build neutral B2A output curves from the raw measured forward model.
@@ -5064,6 +5155,39 @@ def build(payload, output_dir):
             fail("Windows HDR cLUT matching requires an MHC2 tag")
         matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
             profile, final_mhc2)
+        reference_matching_luts = [list(curve) for curve in matching_luts]
+        # The applied-path feedback pass measures this exact cloned profile at
+        # the four shadow anchors and at peak.  Apply those residuals only
+        # after cloning B2A; doing it earlier lets the clone silently discard
+        # the closed-loop result.  Older saved characterizations without the
+        # feedback rows remain a pure deterministic B2A clone.
+        matrix_offset = struct.unpack_from(">I", final_mhc2, 20)[0]
+        final_matrix = [
+            [read_s15fixed16(
+                final_mhc2, matrix_offset + row * 16 + column * 4)
+             for column in range(3)]
+            for row in range(3)
+        ]
+        final_wire = mhc2_wire_matrix(profile_type)
+        final_rgb_adjustment = mat_mul(
+            mat_inv(final_wire), mat_mul(final_matrix, final_wire))
+        final_neutral_gains = mat_vec_mul(
+            final_rgb_adjustment, (1.0, 1.0, 1.0))
+        shadow_corrected = apply_mhc2_active_shadow_feedback(
+            matching_luts, mhc2_profile_rows, final_neutral_gains,
+            calibrated_white)
+        if shadow_corrected:
+            profile = windows_hdr_b2a_with_shadow_luts(
+                profile, reference_matching_luts, matching_luts,
+                final_neutral_gains)
+            # Quantization of the rewritten one-cell corridor is now the
+            # authoritative cLUT response. Re-clone it so MHC2 follows those
+            # exact saved values, then apply only the independent peak probe.
+            matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
+                profile, final_mhc2)
+        apply_mhc2_final_peak_feedback(
+            matching_luts, mhc2_profile_rows, final_neutral_gains,
+            calibrated_white)
         final_mhc2 = mhc2_with_adjustment_luts(final_mhc2, matching_luts)
         profile = rebuild_icc(profile, {b"MHC2": final_mhc2})
         with open(output_path, "wb") as handle:
