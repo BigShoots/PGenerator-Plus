@@ -1851,7 +1851,7 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
 
 
 def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
-                                       calibrated_peak):
+                                       calibrated_peak, damping=0.5):
     """Close the residual measured through the provisional MHC2 profile."""
     probe_pattern = re.compile(
         r"^ICC MHC2 Shadow Jacobian (\d+) ([RGB])([+-])$")
@@ -1899,7 +1899,13 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
         # A local linear solve is only a residual correction. Bound it to a
         # small move so noisy near-black measurements cannot reshape a panel
         # that was already close to target.
-        anchors.append((source_code, [max(-0.02, min(0.02, value))
+        # The probes describe the differential response around the current
+        # neutral, but the saved correction is evaluated through a quantized
+        # 3D-table corridor and the display response is not perfectly linear.
+        # Apply half of the one-step Newton move. This keeps the first closed
+        # loop stable while a display that is already accurate receives a
+        # correspondingly negligible change.
+        anchors.append((source_code, [max(-0.02, min(0.02, value * damping))
                                      for value in delta]))
     if not anchors:
         return False
