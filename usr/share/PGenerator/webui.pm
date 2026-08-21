@@ -13865,7 +13865,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
         </div>
         <div class="meter-xyz-toggle-row" id="meterSeriesBeepToggleWrap">
          <label class="meter-toggle meter-field-label" title="Play a short beep when a manually started Read Series or Read Selection finishes. Single reads, continuous reads, AutoCal runs and Display Profiler series never beep.">
-          <input type="checkbox" id="meterSeriesBeepEnabled" onchange="meterSeriesBeepToggleChanged()"> Beep when series completes
+          <input type="checkbox" id="meterSeriesBeepEnabled" onchange="meterSeriesBeepToggleChanged()"> Series Complete Beep
          </label>
         </div>
         <div class="meter-target-white-row">
