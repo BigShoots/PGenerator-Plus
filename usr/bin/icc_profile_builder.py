@@ -401,6 +401,12 @@ MHC2_SDR_LUT_ENTRIES = 256
 # inverse scale into the curves. The represented correction is unchanged;
 # only its location inside the MHC2 pipeline moves away from the clamp.
 MHC2_HDR_NEUTRAL_HEADROOM = 0.95
+# Closed-loop shadow verification uses actual temporary profile variants.
+# One variant raises a single final curve by this amount through the reliable
+# 10-35% PQ band, so the measured XYZ difference is the derivative of the
+# profile edit itself rather than a source-patch approximation.
+MHC2_CURVE_FEEDBACK_DELTA = 4.0 / 1023.0
+MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 
 
 def mhc2_lut_entries(profile_type):
@@ -1961,6 +1967,159 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
     return True
 
 
+def profile_curve_feedback_anchors(rows, label, calibrated_peak,
+                                   probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
+    """Solve bounded shadow corrections from measured ICC profile variants.
+
+    The derivatives here come from changing the actual profile curve used by
+    the selected presentation path. They therefore include Windows, the
+    Companion and the display response, unlike source-patch RGB Jacobians.
+    """
+    if not math.isfinite(probe_delta) or probe_delta <= 1e-6:
+        return []
+    by_name = {str(row.get("name", "")): row for row in rows}
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+
+    def error_metric(xyz, target_y):
+        total = sum(xyz)
+        if total <= 1e-9 or xyz[1] <= 1e-9 or target_y <= 1e-9:
+            return float("inf")
+        chroma = math.hypot(xyz[0] / total - 0.3127,
+                            xyz[1] / total - 0.3290) / 0.0015
+        luminance = abs(math.log(xyz[1] / target_y)) / 0.04
+        return chroma + luminance
+
+    anchors = []
+    for code in MHC2_CURVE_FEEDBACK_CODES:
+        names = {
+            "base": "{} Base {}".format(label, code),
+            "R": "{} R+ {}".format(label, code),
+            "G": "{} G+ {}".format(label, code),
+            "B": "{} B+ {}".format(label, code),
+        }
+        if any(name not in by_name for name in names.values()):
+            continue
+        measured = {key: by_name[name]["xyz"]
+                    for key, name in names.items()}
+        base = measured["base"]
+        source_code = code / 1023.0
+        target_y = min(pq_to_nits(source_code), calibrated_peak)
+        if (not all(math.isfinite(value) for value in base)
+                or base[1] < target_y * 0.50
+                or base[1] > target_y * 1.60):
+            continue
+        base_total = sum(base)
+        if base_total <= 1e-9:
+            continue
+        chroma_error = math.hypot(
+            base[0] / base_total - 0.3127,
+            base[1] / base_total - 0.3290)
+        luminance_error = abs(base[1] / target_y - 1.0)
+        if chroma_error < 0.0007 and luminance_error < 0.02:
+            continue
+
+        valid = True
+        columns = []
+        for channel in "RGB":
+            probe = measured[channel]
+            if (not all(math.isfinite(value) for value in probe)
+                    or probe[1] < base[1] * 0.65
+                    or probe[1] > base[1] * 1.35):
+                valid = False
+                break
+            column = [(probe[axis] - base[axis]) / probe_delta
+                      for axis in range(3)]
+            if max(abs(value) for value in column) < max(1e-5,
+                                                          base[1] * 0.02):
+                valid = False
+                break
+            columns.append(column)
+        if not valid:
+            continue
+        jacobian = [[columns[column][axis] for column in range(3)]
+                    for axis in range(3)]
+        try:
+            inverse = mat_inv(jacobian)
+        except ValueError:
+            continue
+        norm = max(sum(abs(jacobian[row][column]) for row in range(3))
+                   for column in range(3))
+        inverse_norm = max(sum(abs(inverse[row][column]) for row in range(3))
+                           for column in range(3))
+        if not math.isfinite(norm * inverse_norm) or norm * inverse_norm > 80.0:
+            continue
+        target = [target_y * d65[axis] for axis in range(3)]
+        solved = mat_vec_mul(inverse, [target[axis] - base[axis]
+                                      for axis in range(3)])
+        if not all(math.isfinite(value) for value in solved):
+            continue
+        solved = [max(-0.012, min(0.012, value * 0.85))
+                  for value in solved]
+        current_error = error_metric(base, target_y)
+        best = None
+        for scale in (1.0, 0.75, 0.5, 0.25, 0.125):
+            delta = [value * scale for value in solved]
+            predicted = [
+                base[axis] + sum(jacobian[axis][channel] * delta[channel]
+                                 for channel in range(3))
+                for axis in range(3)
+            ]
+            predicted_error = error_metric(predicted, target_y)
+            if predicted_error < current_error * 0.92:
+                best = delta
+                break
+        if best is not None and max(abs(value) for value in best) >= 0.00015:
+            anchors.append((source_code, best))
+    return anchors
+
+
+def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
+                                 label,
+                                 probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
+    """Apply independently validated profile-variant shadow corrections."""
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(luts[0]) < 2 or len(neutral_gains) != 3
+            or min(neutral_gains) <= 1e-6):
+        return False
+    anchors = profile_curve_feedback_anchors(
+        rows, label, calibrated_peak, probe_delta)
+    if not anchors:
+        return False
+    start = max(0.0, anchors[0][0] - 0.035)
+    end = min(1.0, anchors[-1][0] + 0.055)
+    points = [(start, [0.0, 0.0, 0.0])] + anchors + [
+        (end, [0.0, 0.0, 0.0])]
+
+    def correction(source_code, channel):
+        if source_code <= points[0][0] or source_code >= points[-1][0]:
+            return 0.0
+        for index in range(1, len(points)):
+            x0, values0 = points[index - 1]
+            x1, values1 = points[index]
+            if source_code <= x1:
+                fraction = ((source_code - x0) / (x1 - x0)
+                            if x1 > x0 else 0.0)
+                weight = smoothstep(fraction)
+                return (values0[channel] * (1.0 - weight)
+                        + values1[channel] * weight)
+        return 0.0
+
+    entries = len(luts[0])
+    for channel in range(3):
+        gain = neutral_gains[channel]
+        updated = []
+        for index, old in enumerate(luts[channel]):
+            curve_input = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            updated.append(max(0.0, min(1.0,
+                old + correction(source_code, channel))))
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return True
+
+
 def apply_mhc2_final_peak_feedback(luts, rows, neutral_gains,
                                     calibrated_peak, probe_delta=0.01):
     """Close peak white through the finished Windows MHC2 pipeline.
@@ -3359,9 +3518,18 @@ def mhc2_with_adjustment_luts(payload, luts):
     return bytes(result)
 
 
-def mhc2_profile_with_curve_probe(profile, channel, delta=0.01):
-    """Return a profile with one MHC2 highlight shoulder raised for probing."""
-    if channel not in (0, 1, 2) or not math.isfinite(delta) or delta <= 0.0:
+def mhc2_shadow_probe_weight(source_code):
+    """Return the generic 10-35% PQ curve-probe envelope."""
+    return (smoothstep((source_code - 0.07) / 0.03)
+            * (1.0 - smoothstep((source_code - 0.38) / 0.07)))
+
+
+def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
+                                  shadow_delta=MHC2_CURVE_FEEDBACK_DELTA):
+    """Raise one MHC2 curve in the shadow band and highlight shoulder."""
+    if (channel not in (0, 1, 2)
+            or not math.isfinite(peak_delta) or peak_delta <= 0.0
+            or not math.isfinite(shadow_delta) or shadow_delta <= 0.0):
         fail("MHC2 final feedback probe is invalid")
     tags = dict(read_icc_tags(profile))
     payload = tags.get(b"MHC2")
@@ -3379,15 +3547,63 @@ def mhc2_profile_with_curve_probe(profile, channel, delta=0.01):
             read_s15fixed16(payload, offset + 8 + index * 4)
             for index in range(entries)
         ])
+    matrix_offset = struct.unpack_from(">I", payload, 20)[0]
+    matrix = [
+        [read_s15fixed16(payload, matrix_offset + row * 16 + column * 4)
+         for column in range(3)]
+        for row in range(3)
+    ]
+    wire = mhc2_wire_matrix("windows-hdr")
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    gain = neutral_gains[channel]
+    if gain <= 1e-6:
+        fail("MHC2 final feedback probe has an invalid neutral response")
     for index, old in enumerate(curves[channel]):
         position = index / float(entries - 1)
-        weight = smoothstep((position - 0.70) / 0.05)
-        curves[channel][index] = max(0.0, min(1.0, old + delta * weight))
+        source_code = nits_to_pq(pq_to_nits(position) / gain)
+        shadow_weight = mhc2_shadow_probe_weight(source_code)
+        peak_weight = smoothstep((source_code - 0.70) / 0.05)
+        curves[channel][index] = max(0.0, min(1.0,
+            old + shadow_delta * shadow_weight
+            + peak_delta * peak_weight))
     curves[channel] = isotonic_curve(curves[channel])
     curves[channel][0] = 0.0
     return rebuild_icc(profile, {
         b"MHC2": mhc2_with_adjustment_luts(payload, curves)
     })
+
+
+def b2a_profile_with_curve_probe(profile, mhc2, channel,
+                                 delta=MHC2_CURVE_FEEDBACK_DELTA):
+    """Raise one cLUT neutral-corridor output for profile-response probing."""
+    if channel not in (0, 1, 2) or not math.isfinite(delta) or delta <= 0.0:
+        fail("cLUT final feedback probe is invalid")
+    matrix_offset = struct.unpack_from(">I", mhc2, 20)[0]
+    matrix = [
+        [read_s15fixed16(mhc2, matrix_offset + row * 16 + column * 4)
+         for column in range(3)]
+        for row in range(3)
+    ]
+    wire = mhc2_wire_matrix("windows-hdr")
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    reference_luts = windows_hdr_mhc2_luts_from_final_b2a(profile, mhc2)
+    corrected_luts = [list(curve) for curve in reference_luts]
+    entries = len(corrected_luts[channel])
+    gain = neutral_gains[channel]
+    if gain <= 1e-6:
+        fail("cLUT final feedback probe has an invalid neutral response")
+    for index, old in enumerate(corrected_luts[channel]):
+        curve_input = index / float(entries - 1)
+        source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+        corrected_luts[channel][index] = max(0.0, min(1.0,
+            old + delta * mhc2_shadow_probe_weight(source_code)))
+    corrected_luts[channel] = isotonic_curve(corrected_luts[channel])
+    corrected_luts[channel][0] = 0.0
+    return windows_hdr_b2a_with_shadow_luts(
+        profile, reference_luts, corrected_luts, neutral_gains,
+        source_limit=0.45)
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
@@ -5188,15 +5404,6 @@ def build(payload, output_dir):
         final_mhc2 = dict(read_icc_tags(profile)).get(b"MHC2")
         if not final_mhc2:
             fail("Windows HDR cLUT matching requires an MHC2 tag")
-        matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
-            profile, final_mhc2)
-        # Patch-domain RGB Jacobians measure how the display reacts to source
-        # code changes. They do not measure how either ICC implementation
-        # reacts to edits of its inverse curves. Applying those rows here can
-        # over-correct alternating shadow anchors and make a deterministic
-        # rebuild worse than its measured B2A fit. Keep the cloned B2A neutral
-        # response intact. The independently measured profile-variant probes
-        # below remain valid for the exact-white shoulder.
         matrix_offset = struct.unpack_from(">I", final_mhc2, 20)[0]
         final_matrix = [
             [read_s15fixed16(
@@ -5209,6 +5416,30 @@ def build(payload, output_dir):
             mat_inv(final_wire), mat_mul(final_matrix, final_wire))
         final_neutral_gains = mat_vec_mul(
             final_rgb_adjustment, (1.0, 1.0, 1.0))
+
+        # Correct the explicit cLUT path only from variants that changed its
+        # actual B2A neutral corridor. A profile that already meets the target
+        # either lands inside the deadband or fails the improvement gate and
+        # remains byte-for-byte unchanged here.
+        b2a_reference_luts = windows_hdr_mhc2_luts_from_final_b2a(
+            profile, final_mhc2)
+        b2a_corrected_luts = [list(curve) for curve in b2a_reference_luts]
+        if apply_profile_curve_feedback(
+                b2a_corrected_luts, mhc2_profile_rows,
+                final_neutral_gains, calibrated_white,
+                "ICC cLUT Curve Feedback"):
+            profile = windows_hdr_b2a_with_shadow_luts(
+                profile, b2a_reference_luts, b2a_corrected_luts,
+                final_neutral_gains, source_limit=0.45)
+
+        # Windows system handling gets its own measured response solve. Start
+        # from the now-final B2A neutral path so the two paths stay close, but
+        # do not force parity when their measured implementations differ.
+        matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
+            profile, final_mhc2)
+        apply_profile_curve_feedback(
+            matching_luts, mhc2_profile_rows, final_neutral_gains,
+            calibrated_white, "ICC MHC2 Curve Feedback")
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
@@ -5242,7 +5473,14 @@ def build(payload, output_dir):
             and str(payload.get("stage", "")) == "mhc2-feedback-provisional"):
         with open(output_path, "rb") as handle:
             feedback_base = handle.read()
-        mhc2_feedback_profiles = {"base": filename, "delta": 0.01}
+        mhc2_feedback_profiles = {
+            "base": filename,
+            "delta": 0.01,
+            "shadow_delta": MHC2_CURVE_FEEDBACK_DELTA,
+        }
+        feedback_mhc2 = dict(read_icc_tags(feedback_base)).get(b"MHC2")
+        if not feedback_mhc2:
+            fail("Final feedback profile requires an MHC2 tag")
         for channel, label in enumerate(("R", "G", "B")):
             probe_name = unique_profile_filename(
                 output_dir,
@@ -5250,10 +5488,22 @@ def build(payload, output_dir):
             )
             probe_path = os.path.join(output_dir, probe_name)
             probe_profile = mhc2_profile_with_curve_probe(
-                feedback_base, channel, 0.01)
+                feedback_base, channel, 0.01,
+                MHC2_CURVE_FEEDBACK_DELTA)
             with open(probe_path, "wb") as handle:
                 handle.write(probe_profile)
             mhc2_feedback_profiles[label] = probe_name
+            clut_probe_name = unique_profile_filename(
+                output_dir,
+                "{}-cLUT-Final-Feedback-{}-Probe.icc".format(stem, label),
+            )
+            clut_probe_path = os.path.join(output_dir, clut_probe_name)
+            clut_probe_profile = b2a_profile_with_curve_probe(
+                feedback_base, feedback_mhc2, channel,
+                MHC2_CURVE_FEEDBACK_DELTA)
+            with open(clut_probe_path, "wb") as handle:
+                handle.write(clut_probe_profile)
+            mhc2_feedback_profiles["clut_" + label] = clut_probe_name
 
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)

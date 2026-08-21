@@ -2567,9 +2567,13 @@ function meterIccMhc2PeakStep(name,r,g,b){
  return {ire:100*(r+g+b)/(3*1023),r:r,g:g,b:b,input_max:1023,name:name};
 }
 
-function meterIccMhc2ShadowFeedbackSteps(){
- return [102,153,205,256].map(code=>meterIccMhc2PeakStep(
-  'ICC MHC2 Shadow Feedback '+code,code,code,code));
+function meterIccCurveFeedbackSteps(label,variant,includePeak){
+ const namePart=variant?(variant+'+ '):'Base ';
+ const steps=[102,153,205,256,307,358].map(code=>meterIccMhc2PeakStep(
+  label+' '+namePart+code,code,code,code));
+ if(includePeak) steps.push(...meterIccMhc2FinalFeedbackStep(
+  'ICC MHC2 Final Feedback '+(variant?(variant+'+'):'Base')));
+ return steps;
 }
 
 function meterIccMhc2FinalFeedbackStep(name){
@@ -3095,37 +3099,73 @@ async function meterIccPoll(){
     await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-base'){
     const feedbackReadings=meterIccProfileReadings(state.readings);
-    if(feedbackReadings.length!==5) throw new Error('The Windows MHC2 base verification is incomplete');
+    if(feedbackReadings.length!==7) throw new Error('The Windows MHC2 base verification is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...feedbackReadings];
-    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback R+');
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','R',true);
     meterIccRunConfig.stage='mhc2-feedback-r';
     meterIccRunConfig.steps=step;
     await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.R);
     await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-r'){
     const readings=meterIccProfileReadings(state.readings);
-    if(readings.length!==1) throw new Error('The Windows MHC2 red feedback probe is incomplete');
+    if(readings.length!==7) throw new Error('The Windows MHC2 red feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
-    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback G+');
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','G',true);
     meterIccRunConfig.stage='mhc2-feedback-g';
     meterIccRunConfig.steps=step;
     await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.G);
     await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-g'){
     const readings=meterIccProfileReadings(state.readings);
-    if(readings.length!==1) throw new Error('The Windows MHC2 green feedback probe is incomplete');
+    if(readings.length!==7) throw new Error('The Windows MHC2 green feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
-    const step=meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback B+');
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','B',true);
     meterIccRunConfig.stage='mhc2-feedback-b';
     meterIccRunConfig.steps=step;
     await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.B);
     await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-b'){
     const readings=meterIccProfileReadings(state.readings);
-    if(readings.length!==1) throw new Error('The Windows MHC2 blue feedback probe is incomplete');
+    if(readings.length!==7) throw new Error('The Windows MHC2 blue feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-base';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.base,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-base'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT base verification is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','R',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-r';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_R,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-r'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT red feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','G',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-g';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_G,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-g'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT green feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','B',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-b';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_B,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-b'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT blue feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
     meterIccRunConfig.stage='mhc2-final';
-    if(status) status.textContent='Applied Windows MHC2 response verified. Building the final ICC profile...';
+    if(status) status.textContent='Windows MHC2 and cLUT responses verified. Building the final ICC profile...';
     await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
@@ -3232,9 +3272,10 @@ async function meterIccBuild(readings){
   }
   if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-provisional'){
    const profiles=response.mhc2_feedback_profiles;
-   if(!profiles||!profiles.base||!profiles.R||!profiles.G||!profiles.B)
+   if(!profiles||!profiles.base||!profiles.R||!profiles.G||!profiles.B
+      ||!profiles.clut_R||!profiles.clut_G||!profiles.clut_B)
     throw new Error('The provisional build did not create the final MHC2 feedback profiles');
-   const steps=[...meterIccMhc2FinalFeedbackStep('ICC MHC2 Final Feedback Base'),...meterIccMhc2ShadowFeedbackSteps()];
+   const steps=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','',true);
    meterIccRunConfig.mhc2_feedback_profiles=profiles;
    meterIccRunConfig.stage='mhc2-feedback-base';
    meterIccRunConfig.steps=steps;
