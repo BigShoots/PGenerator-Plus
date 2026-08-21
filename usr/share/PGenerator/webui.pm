@@ -12572,6 +12572,7 @@ display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
 #meterCard.meter-config-collapsed .meter-config-toggle{transform:rotate(-90deg)}
 #meterCard.meter-config-collapsed > .meter-card-header-row,#meterCard.meter-config-collapsed > #meterResetRow,#meterCard.meter-config-collapsed > #meterSettingsGrid{display:none!important}
 #meterCard.meter-patterns-only .meter-config-toggle{display:none}
+#meterNoMeterBanner.meter-banner-sim-active{border-left-color:var(--accent)}
 .meter-card-header-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px 14px;margin:0 0 10px;width:100%;max-width:100%}
 .meter-card-header-col{display:flex;flex-direction:column;gap:2px;min-width:0}
 .meter-card-header-col-meter{flex:1 1 220px;max-width:360px}
@@ -13710,8 +13711,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
  </div>
 
 <!-- Calibration -->
- <div class="card span2 meter-patterns-only" data-widget="meter" data-desktop-workspace="calibration" data-desktop-order="10" draggable="true" id="meterCard">
-  <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Test Patterns</span></span><button type="button" id="meterConfigToggle" class="meter-config-toggle" data-no-collapse aria-expanded="true" aria-controls="meterSettingsGrid" title="Collapse meter and target settings" onclick="meterToggleConfiguration(event)">&#9662;</button></h2>
+ <div class="card span2" data-widget="meter" data-desktop-workspace="calibration" data-desktop-order="10" draggable="true" id="meterCard">
+  <h2 id="meterCardTitle"><span class="meter-card-header-title"><span class="drag-handle">&#9776;</span><span id="meterCardTitleText">Calibration</span></span><button type="button" id="meterConfigToggle" class="meter-config-toggle" data-no-collapse aria-expanded="true" aria-controls="meterSettingsGrid" title="Collapse meter and target settings" onclick="meterToggleConfiguration(event)">&#9662;</button></h2>
   <div class="meter-card-header-row">
    <div class="meter-card-header-col meter-card-header-col-meter">
     <label class="meter-header-label">Meter</label>
@@ -13771,6 +13772,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
   <div id="meterResetRow" style="display:none;background:#3a2020;border-radius:6px;padding:8px 12px;margin-bottom:10px;align-items:center;gap:10px">
    <span style="color:var(--orange);font-size:.85rem">&#9888; Meter disconnected &mdash; USB may need a reset</span>
    <button class="btn btn-sm" style="margin-left:auto" onclick="meterResetUSB()">&#128260; Reset USB</button>
+  </div>
+  <div id="meterNoMeterBanner" style="display:none;background:var(--surface-inset);border:1px solid var(--border);border-left:3px solid var(--orange);border-radius:6px;padding:10px 12px;margin-bottom:10px;align-items:center;gap:12px;flex-wrap:wrap">
+   <span id="meterNoMeterBannerText" style="font-size:.82rem;color:var(--text);line-height:1.45;flex:1 1 320px"></span>
+   <button class="btn btn-sm btn-secondary" id="meterSimToggleBtn" style="white-space:nowrap" onclick="meterToggleSimulatedMeter()">Use Simulated Meter</button>
   </div>
   <div class="grid" id="meterSettingsGrid" style="margin-bottom:10px">
   <div class="field field-display">
@@ -18443,29 +18448,22 @@ function pgSyncDesktopPanels(){
  });
 }
 function pgSyncMeterDesktopWorkspaceAvailability(){
- const available=!!meterDetected;
  const desktop=document.body.classList.contains('layout-desktop');
- // Both of these workspaces exist only to drive a meter, so neither the nav
- // entry nor the panel means anything without one. The series tab buttons are
- // gated in every layout, not just desktop -- they are how tablet mode reaches
- // the same screens, and they were still offering them with no meter attached.
+ // The 3D LUT and Display Profiler workspaces stay visible even with no meter
+ // attached: the operator should be able to see every feature, and the
+ // no-meter banner offers the simulated meter for actual readings.
  const workspaces=[
   {target:'3d-lut',panel:'meter3dLutWorkspaceCard',tab:'3dlut'},
   {target:'icc-profile',panel:'meterIccWorkspaceCard',tab:'icc'}
  ];
- let strandedOn='';
  workspaces.forEach(function(entry){
   const nav=document.querySelector('.desktop-nav-btn[data-workspace-target="'+entry.target+'"]');
   const panel=document.getElementById(entry.panel);
-  const show=available||!desktop;
-  if(nav){ nav.hidden=!show; nav.setAttribute('aria-hidden',show?'false':'true'); }
-  if(panel) panel.style.display=(available||!desktop)?'':'none';
-  if(desktop&&!available&&pgDesktopWorkspace===entry.target) strandedOn=entry.target;
+  if(nav){ nav.hidden=false; nav.setAttribute('aria-hidden','false'); }
+  if(panel) panel.style.display='';
  });
  if(!desktop) return;
- // Do not leave the operator looking at a workspace that just disappeared.
- if(strandedOn) pgSelectDesktopWorkspace('calibration');
- else pgSyncDesktopPanels();
+ pgSyncDesktopPanels();
 }
 function pgRefreshVisibleWorkspace(options){
  const layoutOnly=!!(options&&options.layoutOnly);
@@ -28343,6 +28341,7 @@ async function meterCheckStatus(){
  if(r&&r.detected){
   meterStatusMisses=0;
   meterDetected=true;
+  meterSimulatedActive=!!r.simulated;
   pgSyncMeterDesktopWorkspaceAvailability();
   meterPopulateRoleSelects(r.meters||[],r.port_num);
   const selectedMeter=meterFindByPort(meterSelectedMeasurementPort());
@@ -28372,6 +28371,7 @@ async function meterCheckStatus(){
    meterUpdateReadButtons();
   } else {
    meterDetected=false;
+   meterSimulatedActive=false;
     pgSyncMeterDesktopWorkspaceAvailability();
     meterPopulateRoleSelects([]);
    // Card stays visible in Patterns mode — always show series buttons + thumbs.
@@ -31881,7 +31881,10 @@ function meterAutoCalSeriesAvailable(){
  const lgPaired=(typeof meterGreyTvControlsActive==='function')&&meterGreyTvControlsActive();
  const sm=(getVal('signal_mode')||'sdr');
  const signalAllowed=(sm!=='hlg');
- return !!(lgPaired&&signalAllowed&&meterDetected);
+ // Meter presence no longer hides the tab: AutoCal stays discoverable and the
+ // start paths refuse to launch without a real meter (the simulated meter is
+ // also blocked because AutoCal writes calibration data into the TV).
+ return !!(lgPaired&&signalAllowed);
 }
 
 // Standalone Tone Map series is HDR10-only (PQ peak + LG HDR tone-map
@@ -31903,8 +31906,12 @@ function meterUpdateReadButtons(){
  const isColorSeries=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
  const hasSelection=isColorSeries ? !!meterCurrentPatchStep : meterSelectedThumbIre!=null;
  const hasSeries=meterSeriesSteps&&meterSeriesSteps.length>0;
- const show=hasSeries&&hasSelection&&meterDetected;
- const showSeries=hasSeries&&meterDetected;
+ // Read controls stay VISIBLE without a meter (disabled, with a tooltip) so
+ // every feature is discoverable; the no-meter banner offers the simulated
+ // meter for real interaction.
+ const show=hasSeries&&hasSelection;
+ const showSeries=hasSeries;
+ const noMeterTitle='No meter connected. Connect a USB meter or enable the simulated meter.';
  const settingsDirty=hasUnsavedSettings();
  const continuousUiActive=meterContinuousActive||meterContinuousSuspendedForLgWrite;
  const busy=!!window._configApplyPending||meterActionPending||meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||continuousUiActive;
@@ -31920,7 +31927,7 @@ function meterUpdateReadButtons(){
  const has3dLutSeries=typeof meter3dLutTabHasSelectedSeries==='function'&&meter3dLutTabHasSelectedSeries();
  const empty3dLutTab=on3dLutTab&&!has3dLutSeries;
  // Clear Chart is meaningless on an empty 3D LUT tab (and would expose leftover ColorChecker data).
- const showClear=hasData&&meterDetected&&!empty3dLutTab;
+ const showClear=hasData&&!empty3dLutTab;
  const clearBtn=document.getElementById('meterClearChartBtn');
  const calibrateBtn=document.getElementById('meterCalibrateBtn');
  const readSeriesBtn=document.getElementById('meterReadSeriesBtn');
@@ -31955,7 +31962,7 @@ function meterUpdateReadButtons(){
  if(readSeriesBtn){
   if(!meterSeriesRunning&&!meterActionPending) readSeriesBtn.innerHTML=meterReadSeriesButtonLabel();
   readSeriesBtn.disabled=!seriesControlsOk||!meterDetected||settingsDirty||busy;
-  readSeriesBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':(on3dLutTab&&!has3dLutSeries?'Select a 3D LUT series first':'');
+  readSeriesBtn.title=!meterDetected?noMeterTitle:window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':(on3dLutTab&&!has3dLutSeries?'Select a 3D LUT series first':'');
  }
  if(readOnceBtn) readOnceBtn.style.display=(show&&!continuousUiActive&&!on3dLutTab)?'':'none';
  if(continuousBtn) continuousBtn.style.display=(show&&!on3dLutTab)?'':'none';
@@ -31966,8 +31973,9 @@ function meterUpdateReadButtons(){
   const showSelection=selectionCount>1&&showSeries&&!continuousUiActive&&!hideSeriesControlsForAutoCal&&!toneMapSeriesActive;
   readSelectionBtn.style.display=showSelection?'':'none';
   readSelectionBtn.innerHTML='&#9654; Read Selection ('+selectionCount+')';
-  readSelectionBtn.disabled=!showSelection||settingsDirty||busy;
-  readSelectionBtn.title=window._configApplyPending?'Applying settings...'
+  readSelectionBtn.disabled=!showSelection||!meterDetected||settingsDirty||busy;
+  readSelectionBtn.title=!meterDetected?noMeterTitle
+   :window._configApplyPending?'Applying settings...'
    :settingsDirty?'Apply & Restart first so measurements match the live signal mode'
    :busy?'Meter operation already in progress'
    :'Read only the selected patches in thumbnail order';
@@ -32052,11 +32060,11 @@ function meterUpdateReadButtons(){
  if(autoCalTarget) autoCalTarget.disabled=busy&&meterAutoCalPhase!=='confirm';
  if(readOnceBtn){
   readOnceBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
-  readOnceBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+  readOnceBtn.title=!meterDetected?noMeterTitle:window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(continuousBtn){
     continuousBtn.disabled=!hasSelection||!meterDetected||settingsDirty||busy;
-    continuousBtn.title=window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
+    continuousBtn.title=!meterDetected?noMeterTitle:window._configApplyPending?'Applying settings...':settingsDirty?'Apply & Restart first so measurements match the live signal mode':busy?'Meter operation already in progress':'';
  }
  if(stopBtn){
     const showStop=meterSeriesRunning||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||!!window._meterToneMapBusy||continuousUiActive||meterSeriesAwaitingReady||meterManualPromptAwaiting;
@@ -32090,12 +32098,80 @@ function meterUpdateCardMode(){
  const card=document.getElementById('meterCard');
  const title=document.getElementById('meterCardTitleText');
  if(!card||!title) return;
- if(meterDetected){
-  card.classList.remove('meter-patterns-only');
-  title.textContent=meterCalibrationModeTitle();
+ // The calibration card always shows its full content. Without a meter the
+ // read actions are disabled and the banner below the header explains the
+ // options (connect a meter or enable the simulated one).
+ card.classList.remove('meter-patterns-only');
+ title.textContent=meterCalibrationModeTitle();
+ meterUpdateNoMeterBanner();
+}
+
+// AutoCal writes calibration data into a real TV, so every AutoCal entry
+// point refuses to start on the simulated meter (the server enforces the
+// same rule on its launch endpoints).
+function meterBlockAutoCalForSimulation(){
+ if(!meterSimulatedActive) return false;
+ toast('AutoCal is not available with the Simulated Meter. Connect a real meter to calibrate a display.',true);
+ return true;
+}
+
+// "No meter" banner + simulated-meter toggle. meterSimulatedActive mirrors
+// the "simulated":true field of /api/meter/status.
+let meterSimulatedActive=false;
+let meterSimulateTogglePending=false;
+function meterUpdateNoMeterBanner(){
+ const banner=document.getElementById('meterNoMeterBanner');
+ if(!banner) return;
+ const text=document.getElementById('meterNoMeterBannerText');
+ const btn=document.getElementById('meterSimToggleBtn');
+ if(meterDetected&&!meterSimulatedActive){
+  banner.style.display='none';
+  return;
+ }
+ banner.style.display='flex';
+ if(meterSimulatedActive){
+  banner.classList.add('meter-banner-sim-active');
+  if(text) text.innerHTML='<strong>Simulated meter active.</strong> Readings are synthetic (an intentionally imperfect virtual display) and are for exploring and testing only.';
+  if(btn){ btn.textContent='Disable Simulated Meter'; btn.disabled=meterSimulateTogglePending; }
  } else {
-  card.classList.add('meter-patterns-only');
-  title.textContent='Test Patterns';
+  banner.classList.remove('meter-banner-sim-active');
+  if(text) text.innerHTML='<strong>No meter connected.</strong> Connect a USB meter to measure, or use the simulated meter to explore measurements, series reads and charts with synthetic readings.';
+  if(btn){ btn.textContent='Use Simulated Meter'; btn.disabled=meterSimulateTogglePending; }
+ }
+}
+
+async function meterToggleSimulatedMeter(){
+ if(meterSimulateTogglePending) return;
+ const enable=!meterSimulatedActive;
+ meterSimulateTogglePending=true;
+ meterUpdateNoMeterBanner();
+ try{
+  const r=await fetchJSON('/api/meter/simulate',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({enabled:enable}),_timeoutMs:8000});
+  if(!r||r.status!=='ok'){
+   toast((r&&r.message)?r.message:'Could not change the simulated meter state',true);
+   return;
+  }
+  meterSimulatedActive=!!enable;
+  if(!enable) meterDetected=false;
+  await meterCheckStatus();
+  if(enable){
+   // Preselect the virtual instrument so Read Once / series work immediately.
+   const sel=document.getElementById('meterMeasurementPort');
+   if(sel&&Array.from(sel.options).some(o=>o.value==='99')&&sel.value!=='99'){
+    sel.value='99';
+    try{ sel.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+   }
+   toast('Simulated meter enabled. Readings are synthetic.');
+  } else {
+   toast('Simulated meter disabled');
+  }
+ }catch(e){
+  toast('Could not change the simulated meter state: '+String((e&&e.message)||e||'unknown error'),true);
+ }finally{
+  meterSimulateTogglePending=false;
+  meterUpdateNoMeterBanner();
+  meterUpdateReadButtons();
  }
 }
 function meterResetSeriesButtons(){
@@ -32446,10 +32522,9 @@ function meterUpdateSeriesTabUi(){
   const tabKey=btn.dataset.seriesTab||'';
   let visible=true;
   if(tabKey==='autocal') visible=autoCalSignalAllowed&&autoCalSeriesAvailable;
-  // Both of these drive a meter and do nothing without one. This loop is the
-  // authoritative renderer for the row and runs after any other visibility
-  // pass, so the test has to live here or it gets overwritten.
-  else if(tabKey==='3dlut'||tabKey==='icc') visible=!!meterDetected;
+  // 3D LUT and Display Profiler stay visible without a meter so operators can
+  // see what the tools offer; the no-meter banner explains how to get
+  // readings (connect a meter or enable the simulated meter).
   btn.style.display=visible?'':'none';
   btn.hidden=!visible;
   btn.disabled=!visible;
@@ -32982,6 +33057,7 @@ function meterSelectAutoCalDvProfile(){
 // must not tear down a wizard that does not exist, and completion reports
 // directly instead of opening the post-cal report overlay.
 async function meterStartDvProfileStandalone(){
+ if(meterBlockAutoCalForSimulation()) return;
  if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning||meterDvProfileStandaloneRunning||meterDvAutoCalProfileRunning){
   toast('Meter operation already in progress',true); return;
  }
@@ -33257,6 +33333,7 @@ async function meterToneMapMeasurePeakFast(){
 // Standalone HDR tone-map: quick peak measure, then upload via the same
 // /api/lg/hdr-tone-map/upload path used by Full AutoCal / greyscale wizard.
 async function meterStartToneMapMeasureUpload(){
+ if(meterBlockAutoCalForSimulation()) return;
  if(window._meterToneMapBusy) return;
  const sig=String((typeof getVal==='function'?getVal('signal_mode'):'')||(typeof meterLgAutoCalRequestedSignalMode==='function'?meterLgAutoCalRequestedSignalMode():'')||'').toLowerCase();
  if(sig!=='hdr10'&&!(typeof meterChartIsHdr==='function'&&meterChartIsHdr())){
@@ -42722,6 +42799,7 @@ async function meterFullAutoCalSkipPostReport(){
 }
 
 async function meterStartFullAutoCal(){
+ if(meterBlockAutoCalForSimulation()) return;
  if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning){toast('Meter operation already in progress',true);return;}
  if(!(await meterEnsureDetected())){toast('No meter detected',true);return;}
  if(!meterFullAutoCalAvailable()){toast('Connect an LG TV before starting Full Auto Cal',true);return;}
@@ -43981,6 +44059,7 @@ async function meterStartAutoCal(options){
   }
   return false;
  };
+	 if(meterSimulatedActive) return fail('AutoCal is not available with the Simulated Meter. Connect a real meter to calibrate a display.');
 	 if(meterActionPending||meterAutoCalRunning||meterLg3dAutoCalRunning||(!fullWorkflow&&meterFullAutoCalRunning)) return fail('Meter operation already in progress');
 	 if(!(await meterEnsureDetected())) return fail('No meter detected');
  if(fullWorkflow||(meterSeriesTab==='autocal'&&meterAutoCalSeriesChoice==='greyscale')){
@@ -44937,6 +45016,7 @@ function meterLg3dModalProfileSourceChanged(){
 }
 
 function meterOpenLg3dAutoCalModal(){
+ if(meterBlockAutoCalForSimulation()) return;
  if(meterActionPending||meterLg3dAutoCalRunning||meterAutoCalRunning||meterFullAutoCalRunning){
   toast('Meter operation already in progress',true);
   return;
