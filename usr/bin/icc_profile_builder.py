@@ -2074,6 +2074,25 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
     return anchors
 
 
+def validate_profile_curve_feedback_complete(rows):
+    """Require every measured profile variant consumed by the final build."""
+    names = {str(row.get("name", "")) for row in rows}
+    required = {
+        "{} {} {}".format(label, variant, code)
+        for label in ("ICC MHC2 Curve Feedback", "ICC cLUT Curve Feedback")
+        for variant in ("Base", "R+", "G+", "B+")
+        for code in MHC2_CURVE_FEEDBACK_CODES
+    }
+    required.update(
+        "ICC MHC2 Final Feedback " + variant
+        for variant in ("Base", "R+", "G+", "B+")
+    )
+    missing = required.difference(names)
+    if missing:
+        fail("Final HDR MHC2 build requires the complete measured MHC2 and "
+             "cLUT curve-feedback set")
+
+
 def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
                                  label,
                                  probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
@@ -4871,6 +4890,11 @@ def build(payload, output_dir):
             mhc2_fit_rows = mhc2_profile_rows
         validate_hdr_neutral_response_continuity(mhc2_fit_rows)
         validate_mhc2_active_shadow_coverage(mhc2_fit_rows)
+        if (profile_type == "windows-hdr"
+                and calibration_mode == "profile"
+                and PROFILE_MODELS[profile_model]["family"] == "clut"
+                and str(payload.get("stage", "")) == "mhc2-final"):
+            validate_profile_curve_feedback_complete(mhc2_profile_rows)
     else:
         mhc2_fit_rows = mhc2_profile_rows
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))

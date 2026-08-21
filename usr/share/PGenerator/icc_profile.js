@@ -410,7 +410,10 @@ async function meterIccPreviousReusableReadings(signature,type){
     savedCounts.set(key,count);
     if(count>(liveCounts.get(key)||0)) combined.push(reading);
    });
-   return {readings:combined,legacy:false,savedProfile:String(saved.profile||''),build_config:saved.build_config&&typeof saved.build_config==='object'?saved.build_config:null};
+   const savedMhc2=Array.isArray(saved.mhc2_readings)
+    ?saved.mhc2_readings.map(reading=>Object.assign({},reading))
+    :[];
+   return {readings:combined,legacy:false,savedProfile:String(saved.profile||''),build_config:saved.build_config&&typeof saved.build_config==='object'?saved.build_config:null,mhc2_readings:savedMhc2};
   }
  }catch(error){}
  if(liveExact.length) return {readings:liveExact,legacy:false};
@@ -2576,6 +2579,20 @@ function meterIccCurveFeedbackSteps(label,variant,includePeak){
  return steps;
 }
 
+function meterIccHasCompleteCurveFeedback(readings){
+ const names=new Set((Array.isArray(readings)?readings:[]).map(
+  reading=>String(reading&&reading.name||'')));
+ for(const label of ['ICC MHC2 Curve Feedback','ICC cLUT Curve Feedback']){
+  for(const variant of ['Base','R+','G+','B+']){
+   for(const code of [102,153,205,256,307,358]){
+    if(!names.has(label+' '+variant+' '+code)) return false;
+   }
+  }
+ }
+ return ['Base','R+','G+','B+'].every(
+  variant=>names.has('ICC MHC2 Final Feedback '+variant));
+}
+
 function meterIccMhc2FinalFeedbackStep(name){
  return [meterIccMhc2PeakStep(name,1023,1023,1023)];
 }
@@ -2718,8 +2735,31 @@ async function meterIccRetryBuild(){
   };
   const avgDeviation=meterIccAvgDeviationValue();
   if(avgDeviation) meterIccRunConfig.avg_deviation=avgDeviation;
+  const savedMhc2=Array.isArray(reusable.mhc2_readings)?reusable.mhc2_readings:[];
+  const canResumeMhc2=(type==='windows-hdr'
+   &&meterIccRunConfig.calibration_mode==='profile'
+   &&family==='clut'&&patternProvider==='companion'
+   &&savedMhc2.length>=48&&meterIccReadingsHaveRequiredAnchors(savedMhc2));
+  if(canResumeMhc2){
+   meterIccRunConfig.mhc2_readings=savedMhc2;
+   meterIccRunConfig.raw_profile_readings=readings;
+   if(meterIccHasCompleteCurveFeedback(savedMhc2)){
+    meterIccRunConfig.stage='mhc2-final';
+   }else{
+    // Legacy saved runs have the active-path characterization but not the
+    // final per-profile response probes. Build the provisional variants and
+    // measure only those probes instead of repeating the characterization.
+    meterIccRunConfig.stage='mhc2-feedback-provisional';
+    if(!await meterIccRefreshCompanionStatus())
+     throw new Error('Run PGenerator+ Patch Companion on the target computer to finish the saved MHC2 response measurements');
+    meterIccCompanionProfileRestoreMode=meterIccCompanionCorrectionValue();
+    meterIccCompanionCorrectionInitialized=true;
+   }
+  }
   const status=document.getElementById('meterIccStatus');
-  if(status) status.textContent='Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' table resolution. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.';
+  if(status) status.textContent=(meterIccRunConfig.stage==='mhc2-feedback-provisional')
+   ?('Rebuilding '+readings.length+' saved measurements, then measuring only the 52 missing final MHC2 and cLUT response patches.')
+   :('Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' table resolution. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.');
   await meterIccBuild(readings);
  }catch(error){
   const status=document.getElementById('meterIccStatus');
