@@ -2571,15 +2571,31 @@ function meterIccMhc2PeakStep(name,r,g,b){
 }
 
 function meterIccCurveFeedbackSteps(label,variant,includePeak){
- const namePart=variant?(variant+'+ '):'Base ';
+ const signedVariant=String(variant||'');
+ const namePart=signedVariant
+  ?(signedVariant+(/[+-]$/.test(signedVariant)?' ':'+ ')):'Base ';
  const steps=[102,153,205,256,307,358].map(code=>meterIccMhc2PeakStep(
   label+' '+namePart+code,code,code,code));
  if(includePeak) steps.push(...meterIccMhc2FinalFeedbackStep(
-  'ICC MHC2 Final Feedback '+(variant?(variant+'+'):'Base')));
+  'ICC MHC2 Final Feedback '+(signedVariant?(signedVariant+'+'):'Base')));
  return steps;
 }
 
 function meterIccHasCompleteCurveFeedback(readings){
+ const names=new Set((Array.isArray(readings)?readings:[]).map(
+ reading=>String(reading&&reading.name||'')));
+ for(const label of ['ICC MHC2 Curve Feedback','ICC cLUT Curve Feedback']){
+  for(const variant of ['Base','R+','G+','B+','R-','G-','B-']){
+   for(const code of [102,153,205,256,307,358]){
+    if(!names.has(label+' '+variant+' '+code)) return false;
+   }
+  }
+ }
+ return ['Base','R+','G+','B+'].every(
+ variant=>names.has('ICC MHC2 Final Feedback '+variant));
+}
+
+function meterIccHasPositiveCurveFeedback(readings){
  const names=new Set((Array.isArray(readings)?readings:[]).map(
   reading=>String(reading&&reading.name||'')));
  for(const label of ['ICC MHC2 Curve Feedback','ICC cLUT Curve Feedback']){
@@ -3168,10 +3184,39 @@ async function meterIccPoll(){
     const readings=meterIccProfileReadings(state.readings);
     if(readings.length!==7) throw new Error('The Windows MHC2 blue feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
-    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','',false);
-    meterIccRunConfig.stage='mhc2-feedback-clut-base';
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','R-',false);
+    meterIccRunConfig.stage='mhc2-feedback-r-minus';
     meterIccRunConfig.steps=step;
-    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.base,'clut');
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.R_minus);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-r-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The Windows MHC2 negative red feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','G-',false);
+    meterIccRunConfig.stage='mhc2-feedback-g-minus';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.G_minus);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-g-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The Windows MHC2 negative green feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','B-',false);
+    meterIccRunConfig.stage='mhc2-feedback-b-minus';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.B_minus);
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-b-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The Windows MHC2 negative blue feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const resumeNegative=meterIccHasPositiveCurveFeedback(meterIccRunConfig.mhc2_readings);
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback',resumeNegative?'R-':'',false);
+    meterIccRunConfig.stage=resumeNegative?'mhc2-feedback-clut-r-minus':'mhc2-feedback-clut-base';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(
+     resumeNegative?meterIccRunConfig.mhc2_feedback_profiles.clut_R_minus:meterIccRunConfig.mhc2_feedback_profiles.base,'clut');
     await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-base'){
     const readings=meterIccProfileReadings(state.readings);
@@ -3203,6 +3248,33 @@ async function meterIccPoll(){
    }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-b'){
     const readings=meterIccProfileReadings(state.readings);
     if(readings.length!==6) throw new Error('The cLUT blue feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','R-',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-r-minus';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_R_minus,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-r-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT negative red feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','G-',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-g-minus';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_G_minus,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-g-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT negative green feedback probe is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
+    const step=meterIccCurveFeedbackSteps('ICC cLUT Curve Feedback','B-',false);
+    meterIccRunConfig.stage='mhc2-feedback-clut-b-minus';
+    meterIccRunConfig.steps=step;
+    await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_feedback_profiles.clut_B_minus,'clut');
+    await meterIccLaunchMeasurementSeries(step,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-clut-b-minus'){
+    const readings=meterIccProfileReadings(state.readings);
+    if(readings.length!==6) throw new Error('The cLUT negative blue feedback probe is incomplete');
     meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...readings];
     meterIccRunConfig.stage='mhc2-final';
     if(status) status.textContent='Windows MHC2 and cLUT responses verified. Building the final ICC profile...';
@@ -3313,15 +3385,20 @@ async function meterIccBuild(readings){
   if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-feedback-provisional'){
    const profiles=response.mhc2_feedback_profiles;
    if(!profiles||!profiles.base||!profiles.R||!profiles.G||!profiles.B
-      ||!profiles.clut_R||!profiles.clut_G||!profiles.clut_B)
+      ||!profiles.R_minus||!profiles.G_minus||!profiles.B_minus
+      ||!profiles.clut_R||!profiles.clut_G||!profiles.clut_B
+      ||!profiles.clut_R_minus||!profiles.clut_G_minus||!profiles.clut_B_minus)
     throw new Error('The provisional build did not create the final MHC2 feedback profiles');
-   const steps=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback','',true);
    meterIccRunConfig.mhc2_feedback_profiles=profiles;
-   meterIccRunConfig.stage='mhc2-feedback-base';
+   const resumeNegative=meterIccHasPositiveCurveFeedback(meterIccRunConfig.mhc2_readings);
+   const steps=meterIccCurveFeedbackSteps('ICC MHC2 Curve Feedback',resumeNegative?'R-':'',!resumeNegative);
+   meterIccRunConfig.stage=resumeNegative?'mhc2-feedback-r-minus':'mhc2-feedback-base';
    meterIccRunConfig.steps=steps;
-   if(status) status.textContent='Applying the provisional final MHC2 profile for closed-loop verification...';
+   if(status) status.textContent=resumeNegative
+    ?'Applying the first negative MHC2 response probe...'
+    :'Applying the provisional final MHC2 profile for closed-loop verification...';
    meterIccSetProgress('Applying provisional final MHC2 profile',0,steps.length);
-   await meterIccApplyProfileForActiveMhc2(profiles.base);
+   await meterIccApplyProfileForActiveMhc2(resumeNegative?profiles.R_minus:profiles.base);
    meterIccSetProgress('Measuring applied MHC2 response',0,steps.length);
    await meterIccLaunchMeasurementSeries(steps,meterIccRunConfig.profile_type,'companion');
    continuedWithActiveMhc2=true;

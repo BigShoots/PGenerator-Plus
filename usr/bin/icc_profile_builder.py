@@ -1969,11 +1969,13 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
 
 def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                                    probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
-    """Solve bounded shadow corrections from measured ICC profile variants.
+    """Solve bounded shadow corrections from symmetric profile variants.
 
     The derivatives here come from changing the actual profile curve used by
     the selected presentation path. They therefore include Windows, the
     Companion and the display response, unlike source-patch RGB Jacobians.
+    Both signs are measured because a one-sided positive probe cannot safely
+    predict the negative common correction needed by an over-bright shadow.
     """
     if not math.isfinite(probe_delta) or probe_delta <= 1e-6:
         return []
@@ -1994,9 +1996,12 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
     for code in MHC2_CURVE_FEEDBACK_CODES:
         names = {
             "base": "{} Base {}".format(label, code),
-            "R": "{} R+ {}".format(label, code),
-            "G": "{} G+ {}".format(label, code),
-            "B": "{} B+ {}".format(label, code),
+            "R+": "{} R+ {}".format(label, code),
+            "G+": "{} G+ {}".format(label, code),
+            "B+": "{} B+ {}".format(label, code),
+            "R-": "{} R- {}".format(label, code),
+            "G-": "{} G- {}".format(label, code),
+            "B-": "{} B- {}".format(label, code),
         }
         if any(name not in by_name for name in names.values()):
             continue
@@ -2022,13 +2027,15 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
         valid = True
         columns = []
         for channel in "RGB":
-            probe = measured[channel]
-            if (not all(math.isfinite(value) for value in probe)
-                    or probe[1] < base[1] * 0.65
-                    or probe[1] > base[1] * 1.35):
+            low = measured[channel + "-"]
+            high = measured[channel + "+"]
+            if (not all(math.isfinite(value) for probe in (low, high)
+                        for value in probe)
+                    or min(low[1], high[1]) < base[1] * 0.65
+                    or max(low[1], high[1]) > base[1] * 1.35):
                 valid = False
                 break
-            column = [(probe[axis] - base[axis]) / probe_delta
+            column = [(high[axis] - low[axis]) / (2.0 * probe_delta)
                       for axis in range(3)]
             if max(abs(value) for value in column) < max(1e-5,
                                                           base[1] * 0.02):
@@ -2054,9 +2061,18 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                                       for axis in range(3)])
         if not all(math.isfinite(value) for value in solved):
             continue
-        solved = [max(-0.012, min(0.012, value * 0.85))
-                  for value in solved]
+        # Preserve the solved RGB direction. Independent channel clamps turn
+        # a chromatic correction into a common lift or cut. Limit the entire
+        # vector to two measured probe steps, then use the prediction gate to
+        # select a smaller step when needed.
+        solved = [value * 0.75 for value in solved]
+        largest = max(abs(value) for value in solved)
+        limit = 2.0 * probe_delta
+        if largest > limit:
+            scale = limit / largest
+            solved = [value * scale for value in solved]
         current_error = error_metric(base, target_y)
+        current_luminance_error = abs(math.log(base[1] / target_y))
         best = None
         for scale in (1.0, 0.75, 0.5, 0.25, 0.125):
             delta = [value * scale for value in solved]
@@ -2066,7 +2082,14 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                 for axis in range(3)
             ]
             predicted_error = error_metric(predicted, target_y)
-            if predicted_error < current_error * 0.92:
+            predicted_luminance_error = (
+                abs(math.log(predicted[1] / target_y))
+                if predicted[1] > 1e-9 else float("inf"))
+            if (predicted_error < current_error * 0.92
+                    and predicted[1] >= target_y * 0.65
+                    and predicted[1] <= target_y * 1.35
+                    and predicted_luminance_error
+                    <= current_luminance_error + 0.01):
                 best = delta
                 break
         if best is not None and max(abs(value) for value in best) >= 0.00015:
@@ -2080,7 +2103,7 @@ def validate_profile_curve_feedback_complete(rows):
     required = {
         "{} {} {}".format(label, variant, code)
         for label in ("ICC MHC2 Curve Feedback", "ICC cLUT Curve Feedback")
-        for variant in ("Base", "R+", "G+", "B+")
+        for variant in ("Base", "R+", "G+", "B+", "R-", "G-", "B-")
         for code in MHC2_CURVE_FEEDBACK_CODES
     }
     required.update(
@@ -3575,10 +3598,11 @@ def mhc2_shadow_probe_weight(source_code):
 
 def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
                                   shadow_delta=MHC2_CURVE_FEEDBACK_DELTA):
-    """Raise one MHC2 curve in the shadow band and highlight shoulder."""
+    """Move one MHC2 curve in the shadow band and highlight shoulder."""
     if (channel not in (0, 1, 2)
-            or not math.isfinite(peak_delta) or peak_delta <= 0.0
-            or not math.isfinite(shadow_delta) or shadow_delta <= 0.0):
+            or not math.isfinite(peak_delta) or peak_delta < 0.0
+            or not math.isfinite(shadow_delta)
+            or abs(shadow_delta) <= 1e-9):
         fail("MHC2 final feedback probe is invalid")
     tags = dict(read_icc_tags(profile))
     payload = tags.get(b"MHC2")
@@ -3625,8 +3649,9 @@ def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
 
 def b2a_profile_with_curve_probe(profile, mhc2, channel,
                                  delta=MHC2_CURVE_FEEDBACK_DELTA):
-    """Raise one cLUT neutral-corridor output for profile-response probing."""
-    if channel not in (0, 1, 2) or not math.isfinite(delta) or delta <= 0.0:
+    """Move one cLUT neutral-corridor output for response probing."""
+    if (channel not in (0, 1, 2) or not math.isfinite(delta)
+            or abs(delta) <= 1e-9):
         fail("cLUT final feedback probe is invalid")
     matrix_offset = struct.unpack_from(">I", mhc2, 20)[0]
     matrix = [
@@ -5486,11 +5511,11 @@ def build(payload, output_dir):
                 profile, b2a_reference_luts, b2a_corrected_luts,
                 final_neutral_gains, source_limit=0.45)
 
-        # Windows system handling gets its own measured response solve. Start
-        # from the now-final B2A neutral path so the two paths stay close, but
-        # do not force parity when their measured implementations differ.
-        matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
-            profile, final_mhc2)
+        # Windows system handling gets its own measured response solve. Its
+        # variants were measured from the unmodified provisional profile, so
+        # start from that same B2A-derived baseline. Re-reading the corrected
+        # cLUT here would stack the independent cLUT and MHC2 edits.
+        matching_luts = [list(curve) for curve in b2a_reference_luts]
         apply_profile_curve_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white, "ICC MHC2 Curve Feedback")
@@ -5558,6 +5583,33 @@ def build(payload, output_dir):
             with open(clut_probe_path, "wb") as handle:
                 handle.write(clut_probe_profile)
             mhc2_feedback_profiles["clut_" + label] = clut_probe_name
+            negative_probe_name = unique_profile_filename(
+                output_dir,
+                "{}-MHC2-Final-Feedback-{}-Minus-Probe.icc".format(
+                    stem, label),
+            )
+            negative_probe_path = os.path.join(
+                output_dir, negative_probe_name)
+            negative_probe_profile = mhc2_profile_with_curve_probe(
+                feedback_base, channel, 0.0,
+                -MHC2_CURVE_FEEDBACK_DELTA)
+            with open(negative_probe_path, "wb") as handle:
+                handle.write(negative_probe_profile)
+            mhc2_feedback_profiles[label + "_minus"] = negative_probe_name
+            negative_clut_name = unique_profile_filename(
+                output_dir,
+                "{}-cLUT-Final-Feedback-{}-Minus-Probe.icc".format(
+                    stem, label),
+            )
+            negative_clut_path = os.path.join(
+                output_dir, negative_clut_name)
+            negative_clut_profile = b2a_profile_with_curve_probe(
+                feedback_base, feedback_mhc2, channel,
+                -MHC2_CURVE_FEEDBACK_DELTA)
+            with open(negative_clut_path, "wb") as handle:
+                handle.write(negative_clut_profile)
+            mhc2_feedback_profiles[
+                "clut_" + label + "_minus"] = negative_clut_name
 
     ti3_filename = filename[:-4] + ".ti3"
     ti3_path = os.path.join(output_dir, ti3_filename)
