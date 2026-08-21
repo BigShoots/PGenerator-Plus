@@ -24817,6 +24817,30 @@ function meterPerceptualRgbBalanceGain(reading){
  return 1+19*Math.pow(1-normalized,4);
 }
 
+// Row object for the per-reading balance target lookup. The eotf-mode bars
+// must grade against the SAME absolute luminance target the per-point tooltip
+// uses (meterTargetXYZForReading -> meterGreyscaleTargetYFromYn on the
+// worker-stamped target_Yn). Passing the stamp through lets
+// meterGreyTargetLuminanceForChartPoint take its metadata path instead of
+// re-deriving the signal from the rounded slot IRE. On a full-range 10-bit
+// series the wire code and the displayed IRE differ (code 106 -> 10.358%
+// shown as "10.4"), so ire/100 vs code/input_max shifts the target by up to
+// ~1% luminance at low IRE -- enough for the tooltip to report "Y too high"
+// while every R/G/B bar reads "too low" on the same patch. SDR26 rows are
+// unaffected (their branch runs first inside the lookup); custom greyscale
+// keeps its nominal-slot target; HDR/DV keep their existing signal paths.
+function meterBalanceTargetRow(reading,ire){
+ const row={stimulus:ire,code:(reading&&reading.r_code!=null)?reading.r_code:null};
+ try{
+  if(!meterChartIsDv()&&!meterChartIsHdr()
+   &&!(typeof meterGreyscaleCustomTargetActive==='function'&&meterGreyscaleCustomTargetActive())
+   &&reading&&reading.target_Yn!=null){
+   row.target_Yn=Number(reading.target_Yn);
+  }
+ }catch(e){}
+ return row;
+}
+
 // L* RGB balance shared by the weighted Perceptual mode and the unweighted
 // Absolute mode. The ire>0 branch builds a luminance-compensated target
 // (chroma-only) in 'absolute'/'relative' grey-reference modes, or an absolute
@@ -24859,7 +24883,7 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel,shadowWeigh
   // Non-SDR26 modes fall straight back to meterGreyTargetLuminance(ire,...,code).
   const tgtLum=(meterReadingIsPeakHeadroom(reading)&&mode!=='eotf') ? readingXYZ.Y :
    ((typeof meterGreyTargetLuminanceForChartPoint==='function')
-    ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,{stimulus:ire,code:reading.r_code})
+    ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,meterBalanceTargetRow(reading,ire))
     : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code));
   const targetNormY=(mode==='eotf')?whiteXYZ.Y:Lw;
   const tYn=(targetNormY>0)?tgtLum/targetNormY:0;
@@ -24932,7 +24956,7 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel){
   // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
   // avoids the limited-only meterGreyCodeRange skewing full-range gamma error.
   const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
-   ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, {stimulus:targetIre,code:reading.r_code})
+   ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, meterBalanceTargetRow(reading,targetIre))
    : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
   fact = (tgtY>0 && readingXYZ.Y>=0) ? readingXYZ.Y / tgtY : 1.0;
  }
