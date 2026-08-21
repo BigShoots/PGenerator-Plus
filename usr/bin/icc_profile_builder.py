@@ -2286,6 +2286,84 @@ def mft2_a2b_evaluator(profile):
     return evaluate
 
 
+def mft2_b2a_evaluator(profile):
+    """Return a relative-PCS XYZ to device RGB evaluator for B2A0.
+
+    This deliberately matches the Patch Companion's explicit cLUT path:
+    matrix, input tables in the ICC lut16 XYZ encoding, trilinear cLUT, then
+    output tables.  Keeping one evaluator for both the builder's MHC2 clone
+    and the Companion prevents the two Windows handling choices from growing
+    different neutral responses.
+    """
+    payload = dict(read_icc_tags(profile)).get(b"B2A0")
+    if not payload or len(payload) < 52 or payload[:4] != b"mft2":
+        fail("Windows HDR cLUT matching requires an mft2 B2A0 transform")
+    input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+    input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+    if input_channels != 3 or output_channels != 3 or grid < 2:
+        fail("Windows HDR cLUT matching requires a three-channel B2A0 transform")
+    input_start = 52
+    clut_start = input_start + input_channels * input_entries * 2
+    clut_values = grid ** input_channels * output_channels
+    output_start = clut_start + clut_values * 2
+    required = output_start + output_channels * output_entries * 2
+    if required > len(payload):
+        fail("ICC B2A0 table is truncated")
+    matrix = [value / 65536.0 for value in struct.unpack_from(">9i", payload, 12)]
+    input_tables = []
+    output_tables = []
+    for channel in range(3):
+        offset = input_start + channel * input_entries * 2
+        input_tables.append([value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(input_entries), payload, offset)])
+        offset = output_start + channel * output_entries * 2
+        output_tables.append([value / 65535.0 for value in struct.unpack_from(
+            ">{}H".format(output_entries), payload, offset)])
+    clut = [value / 65535.0 for value in struct.unpack_from(
+        ">{}H".format(clut_values), payload, clut_start)]
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+
+    def evaluate(xyz):
+        mapped = [
+            sum(matrix[row * 3 + column] * xyz[column] for column in range(3))
+            for row in range(3)
+        ]
+        shaped = [sample_table(input_tables[channel], mapped[channel] * xyz_to_mft)
+                  for channel in range(3)]
+        encoded = _sample_mft2_clut(clut, grid, shaped)
+        return [sample_table(output_tables[channel], encoded[channel])
+                for channel in range(3)]
+
+    return evaluate
+
+
+def windows_hdr_b2a_neutral_evaluator(profile):
+    """Evaluate the exact neutral HDR source path used by explicit cLUT mode."""
+    tags = dict(read_icc_tags(profile))
+    lumi = tags.get(b"lumi")
+    if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
+        fail("Windows HDR cLUT matching requires profile luminance metadata")
+    white_nits = read_s15fixed16(lumi, 12)
+    if white_nits <= 0.0:
+        fail("Windows HDR cLUT matching requires positive profile luminance")
+    evaluate_b2a = mft2_b2a_evaluator(profile)
+    adaptation = bradford_adaptation(
+        (0.9504559, 1.0, 1.0890578), (0.9642, 1.0, 0.8249))
+    bt2020_xyz = (
+        (0.6369580, 0.1446169, 0.1688810),
+        (0.2627002, 0.6779981, 0.0593017),
+        (0.0, 0.0280727, 1.0609851),
+    )
+
+    def evaluate(code):
+        linear = pq_to_nits(max(0.0, min(1.0, code))) / white_nits
+        source_xyz = [linear * sum(row) for row in bt2020_xyz]
+        pcs_xyz = mat_vec_mul(adaptation, source_xyz)
+        return evaluate_b2a(pcs_xyz)
+
+    return evaluate
+
+
 def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
                                      raw_measurement_model=False):
     """Build neutral B2A output curves from the raw measured forward model.
@@ -3089,6 +3167,47 @@ def windows_hdr_commuting_adjustment_luts(matrix, modeled_luts, black, white,
                 * common_factor(source_position))
             previous = max(previous, max(0.0, min(1.0, value)))
             values.append(previous)
+        values[0] = 0.0
+        luts.append(values)
+    return luts
+
+
+def windows_hdr_mhc2_luts_from_final_b2a(profile, mhc2):
+    """Clone the finished explicit-cLUT neutral path into Windows MHC2.
+
+    The cLUT and system paths are two presentations of the same calibrated
+    profile.  Building both from separate inverse models lets small fit and
+    shoulder decisions accumulate into visibly different greyscale.  At the
+    end of the build B2A0 is authoritative, so sample its exact HDR neutral
+    response and express that response in the coordinate seen by each MHC2
+    curve after the tag matrix.  This is display-independent: a B2A that needs
+    no per-channel correction produces matching curves without an added one.
+    """
+    if len(mhc2) < 84 or mhc2[:4] != b"MHC2":
+        fail("Windows HDR cLUT matching requires an MHC2 profile")
+    entries = struct.unpack_from(">I", mhc2, 8)[0]
+    matrix_offset = struct.unpack_from(">I", mhc2, 20)[0]
+    if entries < 2 or entries > 4096 or matrix_offset + 48 > len(mhc2):
+        fail("Windows HDR cLUT matching found an invalid MHC2 tag")
+    matrix = [
+        [read_s15fixed16(mhc2, matrix_offset + row * 16 + column * 4)
+         for column in range(3)]
+        for row in range(3)
+    ]
+    wire = mhc2_wire_matrix("windows-hdr")
+    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    if min(neutral_gains) <= 1e-6:
+        fail("Windows HDR cLUT matching found an invalid MHC2 neutral response")
+    evaluate = windows_hdr_b2a_neutral_evaluator(profile)
+    luts = []
+    for channel, gain in enumerate(neutral_gains):
+        values = []
+        for index in range(entries):
+            curve_input = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            values.append(max(0.0, min(1.0, evaluate(source_code)[channel])))
+        values = isotonic_curve(values)
         values[0] = 0.0
         luts.append(values)
     return luts
@@ -4932,6 +5051,30 @@ def build(payload, output_dir):
         )
         with open(output_path, "wb") as handle:
             handle.write(profile)
+    if (profile_type == "windows-hdr"
+            and calibration_mode == "profile"
+            and PROFILE_MODELS[profile_model]["family"] == "clut"):
+        # B2A construction and any active-profile feedback are now complete.
+        # Make Windows system handling reproduce that exact final neutral
+        # transform instead of shipping a separately modelled greyscale.
+        with open(output_path, "rb") as handle:
+            profile = handle.read()
+        final_mhc2 = dict(read_icc_tags(profile)).get(b"MHC2")
+        if not final_mhc2:
+            fail("Windows HDR cLUT matching requires an MHC2 tag")
+        matching_luts = windows_hdr_mhc2_luts_from_final_b2a(
+            profile, final_mhc2)
+        final_mhc2 = mhc2_with_adjustment_luts(final_mhc2, matching_luts)
+        profile = rebuild_icc(profile, {b"MHC2": final_mhc2})
+        with open(output_path, "wb") as handle:
+            handle.write(profile)
+        mhc2_validation = validate_mhc2_profile(
+            profile, final_mhc2,
+            measured_primary_matrix(
+                mhc2_black, mhc2_white, mhc2_primaries),
+            mhc2_wire_matrix(profile_type), luminance, profile_type,
+            expect_calibration=True,
+        )
     association = profile_association_tag(profile_type)
     calibration_contract = profile_calibration_contract_tag(
         profile_type, calibration_mode, profile_model,
