@@ -106,7 +106,7 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.26"
+#define APP_VERSION "1.4.27"
 #define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 #define RESPONSE_CAPACITY 32768
@@ -3823,6 +3823,50 @@ static bool apply_display_settings(bool fullscreen, int patch_size)
 
 static void queue_status(const char *text);
 
+#ifdef _WIN32
+typedef struct {
+    HANDLE previous_output;
+    HANDLE previous_error;
+    bool allocated;
+    bool active;
+} CompanionBuildConsole;
+
+static bool companion_build_console_open(CompanionBuildConsole *console)
+{
+    static const char message[] =
+        "\r\nPGenerator+ is building your ICC profile.\r\n"
+        "This calculation was offloaded from PGenerator+.\r\n"
+        "Please do not close this window. It will close automatically when the build finishes.\r\n\r\n";
+    HANDLE output;
+    DWORD written = 0;
+
+    memset(console, 0, sizeof(*console));
+    console->previous_output = GetStdHandle(STD_OUTPUT_HANDLE);
+    console->previous_error = GetStdHandle(STD_ERROR_HANDLE);
+    if (GetConsoleWindow() == NULL) {
+        if (!AllocConsole()) return false;
+        console->allocated = true;
+    }
+    console->active = true;
+    SetConsoleTitleA("PGenerator+ ICC Profile Build");
+    output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (output != NULL && output != INVALID_HANDLE_VALUE)
+        WriteFile(output, message, (DWORD)(sizeof(message) - 1), &written, NULL);
+    return true;
+}
+
+static void companion_build_console_close(CompanionBuildConsole *console)
+{
+    if (!console->active) return;
+    if (console->allocated) {
+        FreeConsole();
+        SetStdHandle(STD_OUTPUT_HANDLE, console->previous_output);
+        SetStdHandle(STD_ERROR_HANDLE, console->previous_error);
+    }
+    console->active = false;
+}
+#endif
+
 /* Tell the generator the fit failed so it falls back to its own colprof
  * instead of waiting out the build timeout. */
 static void companion_report_build_error(const char *reason)
@@ -4071,6 +4115,9 @@ static void companion_run_build(const char *poll_response)
     FILE *handle;
     int status;
     bool built = false;
+#ifdef _WIN32
+    CompanionBuildConsole build_console;
+#endif
 
     if (strstr(poll_response, "\"operation\":\"targen\"")) {
         companion_run_targen(poll_response);
@@ -4101,6 +4148,9 @@ static void companion_run_build(const char *poll_response)
         SDL_snprintf(icc_path, sizeof(icc_path), "%sfit.icc", directory);
     }
     remove(icc_path);
+#ifdef _WIN32
+    companion_build_console_open(&build_console);
+#endif
 
     {   /* Fetch the characterization: too large for the poll response buffer. */
         char path[512];
@@ -4108,6 +4158,9 @@ static void companion_run_build(const char *poll_response)
         status = http_binary(&app.config, "GET", path, "text/plain", NULL, 0, &ti3, &ti3_length);
         if (status != 200 || !ti3 || ti3_length < 32) {
             if (ti3) SDL_free(ti3);
+#ifdef _WIN32
+            companion_build_console_close(&build_console);
+#endif
             companion_report_build_error("could not fetch the characterization");
             return;
         }
@@ -4116,6 +4169,9 @@ static void companion_run_build(const char *poll_response)
     if (!handle || fwrite(ti3, 1, ti3_length, handle) != ti3_length) {
         if (handle) fclose(handle);
         SDL_free(ti3);
+#ifdef _WIN32
+        companion_build_console_close(&build_console);
+#endif
         companion_report_build_error("could not stage the characterization");
         return;
     }
@@ -4150,22 +4206,31 @@ static void companion_run_build(const char *poll_response)
             if (!companion_quote_append(cleaned, sizeof(cleaned), &out, argument)) { out = 0; break; }
         }
         if (!out) {
+#ifdef _WIN32
+            companion_build_console_close(&build_console);
+#endif
             companion_report_build_error("the fit arguments could not be read");
             return;
         }
         cleaned[out] = '\0';
 #ifdef _WIN32
-        /* A GUI-subsystem process launches system() in a visible console. Use
-           that console as progress UI instead of presenting an unexplained
-           colprof window that looks safe to close. colprof's own progress is
-           left visible below these instructions until the fit completes. */
-        SDL_snprintf(command, sizeof(command),
-                     "title PGenerator+ ICC Profile Build & "
-                     "echo. & echo PGenerator+ is building your ICC profile. & "
-                     "echo This calculation was offloaded from PGenerator+. & "
-                     "echo Please do not close this window. It will close automatically when the build finishes. & "
-                     "echo. & \"%s\" %s -O \"%s\" \"%s\"",
-                     tool, cleaned, icc_path, base_path);
+        if (build_console.active) {
+            /* system() routes the command through cmd.exe. A command whose
+             * first character is a quote loses that quote in cmd's special
+             * executable-path parsing when the tool lives below a directory
+             * containing spaces. Keep a harmless command in front so the
+             * quoted colprof path is parsed as an ordinary command segment. */
+            SDL_snprintf(command, sizeof(command), "title PGenerator+ ICC Profile Build & \"%s\" %s -O \"%s\" \"%s\"",
+                         tool, cleaned, icc_path, base_path);
+        } else {
+            SDL_snprintf(command, sizeof(command),
+                         "title PGenerator+ ICC Profile Build & "
+                         "echo. & echo PGenerator+ is building your ICC profile. & "
+                         "echo This calculation was offloaded from PGenerator+. & "
+                         "echo Please do not close this window. It will close automatically when the build finishes. & "
+                         "echo. & \"%s\" %s -O \"%s\" \"%s\"",
+                         tool, cleaned, icc_path, base_path);
+        }
 #else
         SDL_snprintf(command, sizeof(command), "\"%s\" %s -O \"%s\" \"%s\"",
                      tool, cleaned, icc_path, base_path);
@@ -4174,6 +4239,9 @@ static void companion_run_build(const char *poll_response)
     queue_status("PGenerator+ Patch Companion | Building ICC profile...");
     status = system(command);
     (void)status;
+#ifdef _WIN32
+    companion_build_console_close(&build_console);
+#endif
 
     handle = fopen(icc_path, "rb");
     if (handle) {
