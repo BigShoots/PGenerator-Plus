@@ -13708,6 +13708,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
           </div>
          </span>
         </div>
+        <div class="meter-xyz-toggle-row" id="meterSeriesBeepToggleWrap">
+         <label class="meter-toggle meter-field-label" title="Play a short beep when a manually started Read Series or Read Selection finishes. Single reads, continuous reads, AutoCal runs and Display Profiler series never beep.">
+          <input type="checkbox" id="meterSeriesBeepEnabled" onchange="meterSeriesBeepToggleChanged()"> Beep when series completes
+         </label>
+        </div>
         <div class="meter-target-white-row">
          <label class="meter-target-inline-label">Target White <span class="meter-help-tip" title="Sets the white-peak luminance used to anchor the top of the target EOTF curve. Use measured follows the series white reading; Measure displays white and stores a fixed value." aria-label="Target white luminance help">?</span></label>
          <input type="number" id="meterTargetWhite" min="0" step="0.01" inputmode="decimal" title="White-peak luminance (cd/m^2) used as the top of the target EOTF curve. Disabled when 'Use measured' is checked." onchange="meterSetTargetLevels()" onkeydown="if(event.key==='Enter')this.blur()" disabled>
@@ -15935,6 +15940,7 @@ function applyConfigState(nextConfig){
  // the operator's last selection (e.g. 3-read averaging for 1.4% IRE)
  // persists across page loads.
  try{ meterRestoreLowLightHandler(); }catch(e){}
+ try{ meterRestoreSeriesBeepPref(); }catch(e){}
  try{ meterRestoreTargetLevels(); }catch(e){}
 	 // DV settings
 	 setVal('dv_transport',dvTransportMode(config.dv_transport));
@@ -28261,6 +28267,7 @@ async function meterCheckStatus(){
     if(!serverRunning && !localStartPending && (meterSeriesRunning || meterSeriesPolling)){
      if(meterSeriesPolling) clearInterval(meterSeriesPolling);
      meterSeriesRunning=false;
+     meterSeriesBeepArmed=false;
      meterSeriesPolling=null;
      if(typeof meterApplyClearedState==='function'){
       meterApplyClearedState(false);
@@ -29769,6 +29776,73 @@ function meterLowLightReadState(){
   const base=String(mode.value||'off');
   return {enabled:true,mode:base,trigger:Number(trigger.value)||5.0};
  }catch(e){ return null; }
+}
+
+// Completion beep for manually started series reads. Armed only by the
+// operator's Read Series / Read Selection actions in meterRunSeries; single
+// reads, continuous reads, Full AutoCal report series (which share the same
+// series worker/poll) and the Build 3D LUT flow never arm it, and the
+// Display Profiler drives its own worker via icc_profile.js so it never
+// reaches the calibration-card poll at all.
+const METER_SERIES_BEEP_KEY='pgen.meter.seriesBeep';
+let meterSeriesBeepArmed=false;
+let meterSeriesBeepAudioCtx=null;
+function meterSeriesBeepEnabled(){
+ const el=document.getElementById('meterSeriesBeepEnabled');
+ return !!(el&&el.checked);
+}
+function meterSeriesBeepAudioContext(){
+ try{
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  if(!Ctx) return null;
+  if(!meterSeriesBeepAudioCtx) meterSeriesBeepAudioCtx=new Ctx();
+  return meterSeriesBeepAudioCtx;
+ }catch(e){ return null; }
+}
+// Browsers gate audio behind a user gesture. Priming from the start click
+// (and from checking the box) resumes the context so the later completion
+// beep is allowed to sound.
+function meterSeriesBeepPrime(){
+ const ctx=meterSeriesBeepAudioContext();
+ if(ctx&&ctx.state==='suspended'){ try{ ctx.resume().catch(()=>{}); }catch(e){} }
+}
+function meterSeriesBeepPlay(){
+ const ctx=meterSeriesBeepAudioContext();
+ if(!ctx) return;
+ const play=()=>{
+  try{
+   const t=ctx.currentTime+0.01;
+   const tone=(freq,start,dur)=>{
+    const osc=ctx.createOscillator();
+    const gain=ctx.createGain();
+    osc.type='sine';
+    osc.frequency.value=freq;
+    gain.gain.setValueAtTime(0.0001,start);
+    gain.gain.exponentialRampToValueAtTime(0.25,start+0.015);
+    gain.gain.setValueAtTime(0.25,start+dur-0.06);
+    gain.gain.exponentialRampToValueAtTime(0.0001,start+dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start+dur+0.02);
+   };
+   tone(880,t,0.18);
+   tone(1318.5,t+0.2,0.22);
+  }catch(e){}
+ };
+ if(ctx.state==='suspended'){ try{ ctx.resume().then(play).catch(()=>{}); }catch(e){} }
+ else play();
+}
+function meterSeriesBeepToggleChanged(){
+ const el=document.getElementById('meterSeriesBeepEnabled');
+ try{ localStorage.setItem(METER_SERIES_BEEP_KEY,(el&&el.checked)?'1':'0'); }catch(e){}
+ // Preview the beep on enable; the gesture also unlocks the audio context.
+ if(el&&el.checked) meterSeriesBeepPlay();
+}
+function meterRestoreSeriesBeepPref(){
+ const el=document.getElementById('meterSeriesBeepEnabled');
+ if(!el) return;
+ try{ el.checked=localStorage.getItem(METER_SERIES_BEEP_KEY)==='1'; }catch(e){}
 }
 
 // Calibration-card low-light handler: applies the selected spotread mode
@@ -45812,6 +45886,7 @@ function meterClearSeriesRunUiState(){
   meterSeriesPolling=null;
  }
  meterSeriesRunning=false;
+ meterSeriesBeepArmed=false;
  const wasSelectionRun=meterSeriesSelectionRunActive;
  meterSeriesSelectionRunActive=false;
  if(wasSelectionRun) meterRestoreSelectionRunPatches();
@@ -46141,6 +46216,11 @@ async function meterRunSeries(options){
  _selectedColorReadingName=null;
  _colorDetailPinned=false;
  meterSeriesRunning=true;
+ // Completion beep only for operator-started Read Series / Read Selection.
+ // Full AutoCal report series and the Build 3D LUT flow share this start
+ // path but must stay silent.
+ meterSeriesBeepArmed=!meterInternalSeriesWorkflow&&!meterBuild3dLutPending;
+ if(meterSeriesBeepArmed&&meterSeriesBeepEnabled()) meterSeriesBeepPrime();
  meterSeriesAwaitingReady=false;
  meterSeriesSpectroSetupActive=false;
  meterReadySignalPending=false;
@@ -46196,6 +46276,7 @@ async function meterRunSeries(options){
   const proceed=await meterShowChoiceModal({title:'Start large series?',body:'This series has '+runStepCount+' patches and will take roughly '+estimate+' to measure. Start the run?',acceptLabel:'Start',cancelLabel:'Cancel'});
   if(!proceed){
    meterSeriesRunning=false;
+   meterSeriesBeepArmed=false;
    meterSeriesSelectionRunActive=false;
    meterRestoreSelectionRunPatches();
  meterClearSelectionBaseline();
@@ -46283,6 +46364,7 @@ async function meterRunSeries(options){
    if(await recoverStartedSeries()) return true;
 	   toast(r&&r.message?r.message:'Failed to start series',true);
 	   meterSeriesRunning=false;
+	   meterSeriesBeepArmed=false;
 	   meterSeriesSelectionRunActive=false;
    meterRestoreSelectionRunPatches();
  meterClearSelectionBaseline();
@@ -46304,6 +46386,7 @@ async function meterRunSeries(options){
   if(await recoverStartedSeries()) return true;
   toast((e&&e.message)?('Failed to start series: '+e.message):'Failed to start series',true);
   meterSeriesRunning=false;
+  meterSeriesBeepArmed=false;
   meterSeriesSelectionRunActive=false;
   meterRestoreSelectionRunPatches();
   meterSeriesWaitingForWhiteReference=false;
@@ -46605,6 +46688,14 @@ async function meterPollSeries(){
   if(!(meterInternalSeriesWorkflow&&meterFullAutoCalRunning)){
    document.getElementById('meterProgress').style.display='none';
   }
+  // Completion beep: only for operator-started Read Series / Read Selection
+  // (armed at start). AutoCal report series, the Build 3D LUT flow and any
+  // recovered/adopted run never armed the flag, so they stay silent.
+  if(r.status==='complete'&&meterSeriesBeepArmed&&meterSeriesBeepEnabled()
+   &&!meterInternalSeriesWorkflow&&!meterFullAutoCalRunning&&!meterBuild3dLutPending){
+   try{ meterSeriesBeepPlay(); }catch(e){}
+  }
+  meterSeriesBeepArmed=false;
   toast(r.status==='complete'?'Series complete!':r.status==='error'?'Series error: '+(r.current_name||'process died'):'Series cancelled');
  }
  meterUpdateReadButtons();
