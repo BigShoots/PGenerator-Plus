@@ -2399,19 +2399,6 @@ def windows_hdr_b2a_source_evaluator(profile):
     return evaluate
 
 
-def windows_hdr_b2a_correction_mapper(profile):
-    """Map a source-code correction into the B2A device-output domain."""
-    evaluate = windows_hdr_b2a_source_evaluator(profile)
-
-    def map_correction(source_code, delta):
-        base = evaluate((source_code, source_code, source_code))
-        shifted = evaluate(tuple(max(0.0, min(1.0, source_code + value))
-                                 for value in delta))
-        return [shifted[channel] - base[channel] for channel in range(3)]
-
-    return map_correction
-
-
 def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
                                       neutral_gains,
                                       source_limit=0.35):
@@ -5221,10 +5208,9 @@ def build(payload, output_dir):
             mat_inv(final_wire), mat_mul(final_matrix, final_wire))
         final_neutral_gains = mat_vec_mul(
             final_rgb_adjustment, (1.0, 1.0, 1.0))
-        correction_mapper = windows_hdr_b2a_correction_mapper(profile)
         shadow_corrected = apply_mhc2_active_shadow_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, output_mapper=correction_mapper)
+            calibrated_white)
         if shadow_corrected:
             profile = windows_hdr_b2a_with_shadow_luts(
                 profile, reference_matching_luts, matching_luts,
