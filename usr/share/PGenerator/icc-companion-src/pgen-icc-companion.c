@@ -106,7 +106,7 @@ static int reap_profile_loader(void *opaque)
 }
 #endif
 
-#define APP_VERSION "1.4.27"
+#define APP_VERSION "1.4.28"
 #define APP_BUILD "1"
 #define APP_TITLE "PGenerator+ Patch Companion " APP_VERSION " (build " APP_BUILD ")"
 #define RESPONSE_CAPACITY 32768
@@ -579,6 +579,7 @@ typedef struct {
 #ifdef _WIN32
     wchar_t correction_profile_path[32768];
     bool windows_correction_isolated;
+    bool windows_startup_restore_complete;
     bool windows_restore_attempted;
     int windowed_x;
     int windowed_y;
@@ -1673,7 +1674,8 @@ static bool windows_set_correction_isolation_internal(bool isolate, bool force)
     bool accepted = false;
     const char *directory;
     if (!force && app.windows_correction_isolated == isolate) return true;
-    if (!app.windows_monitor_path[0] || !app.correction_profile_path[0] ||
+    if (!app.windows_monitor_path[0] ||
+        (isolate && !app.correction_profile_path[0]) ||
         !companion_tool_path("PGenProfileLoader", loader, sizeof(loader)))
         return false;
     if (!WideCharToMultiByte(CP_UTF8, 0, app.windows_monitor_path, -1,
@@ -4744,6 +4746,33 @@ static void poll_server(void)
         json_string(response, "correction_mode", correction_mode, sizeof(correction_mode));
         json_string(response, "correction_signal_mode", correction_signal_mode, sizeof(correction_signal_mode));
 #ifdef _WIN32
+        /* A previous Companion can exit while explicit cLUT handling has the
+         * loader's persisted per-display isolation enabled. The new process
+         * cannot infer that state from its zeroed in-memory flag, and system
+         * mode would otherwise report the selected profile while Windows is
+         * still serving the system fallback. Make the loader restore its
+         * persisted state once before accepting any correction mode. Restore
+         * does not require a profile argument; the loader owns the exact
+         * profile and monitor state that must be recovered. */
+        if (!app.windows_startup_restore_complete) {
+            if (!windows_restore_correction_state()) {
+                app.correction_ready = false;
+                SDL_strlcpy(app.correction_error,
+                            "Could not recover Windows profile handling left by a previous session",
+                            sizeof(app.correction_error));
+                app.next_poll_ms = SDL_GetTicks() + 1000;
+                return;
+            }
+            app.windows_startup_restore_complete = true;
+            active_profile[0] = '\0';
+            active_profile_path[0] = L'\0';
+            windows_active_profile(app.window, active_profile,
+                                   sizeof(active_profile), active_profile_path,
+                                   SDL_arraysize(active_profile_path),
+                                   reported_hdr_active,
+                                   app.windows_monitor_path,
+                                   SDL_arraysize(app.windows_monitor_path));
+        }
         bool explicit_hdr_requested =
             (!strcmp(correction_mode, "none") ||
              !strcmp(correction_mode, "clut") ||
