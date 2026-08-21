@@ -1215,7 +1215,7 @@ function meterIccSyncUi(){
  const retry=document.getElementById('meterIccRetryBuildBtn');
  const retryCount=Number(retry&&retry.dataset?retry.dataset.measurementCount:0);
  if(retry&&retryCount>0){
-  retry.textContent='Rebuild with '+retryCount+' Measurements';
+  retry.textContent='Rebuild Last Run ('+retryCount+' Measurements)';
  }
  meterIccRememberUiSettings();
 }
@@ -2511,8 +2511,8 @@ async function meterIccRefreshRecoveryAvailability(){
    meterIccApplyPatchPreset(inferred);
   }
   const calculationQuality=String((document.getElementById('meterIccProfileQuality')||{}).value||(saved&&saved.profile_quality)||'medium');
-  retry.textContent='Rebuild with '+profileCount+' Measurements';
-  retry.title='Rebuild exactly these saved measurements using the selected algorithm type and table resolution. No larger patch set will be generated or measured.';
+  retry.textContent='Rebuild Last Run ('+profileCount+' Measurements)';
+  retry.title='Rebuild the profile from the '+profileCount+' measurements saved by the previous run, using the selected algorithm type and table resolution. The patch preset above does not apply here: no new patches are generated or measured. Use Start Profiling to measure the selected preset.';
   }
   return available;
  }catch(error){
