@@ -2189,12 +2189,42 @@ def apply_mhc2_final_peak_feedback(luts, rows, neutral_gains,
     if not all(math.isfinite(value) for value in delta):
         return False
 
-    # This is a residual correction, not a new calibration model.  Limit one
-    # pass so a noisy OLED read or a screen-cleaning frame cannot reshape a
-    # profile.  The 0.9 damping also keeps a display already near target from
-    # crossing to the opposite side due to meter repeatability.
-    delta = [max(-0.035, min(0.035, value * 0.9)) for value in delta]
-    if max(abs(value) for value in delta) < 0.00025:
+    # MHC2 curves must stay monotonic, so express the solve as raises relative
+    # to its weakest channel.  Clamp the vector as a whole: clamping each
+    # channel independently can turn a large, meaningful RGB solve into three
+    # identical raises.  Those identical post-PQ raises are not neutral after
+    # MHC2's unequal matrix gains and can spoil an already-good white point.
+    weakest = min(delta)
+    delta = [max(0.0, (value - weakest) * 0.9) for value in delta]
+    largest = max(delta)
+    if largest < 0.00025:
+        return False
+    if largest > 0.035:
+        scale = 0.035 / largest
+        delta = [value * scale for value in delta]
+
+    # The measured variants are the authority for this one-pass residual.
+    # Reject a noisy or poorly conditioned direction unless it predicts a
+    # material xy improvement without giving away more than five percent of
+    # peak luminance.  Returning False preserves the measured provisional
+    # profile byte-for-byte at the peak.
+    predicted = [
+        base[axis] + sum(jacobian[axis][channel] * delta[channel]
+                         for channel in range(3))
+        for axis in range(3)
+    ]
+    predicted_total = sum(predicted)
+    if predicted_total <= 1e-9 or predicted[1] <= 1e-9:
+        return False
+    predicted_xy = (predicted[0] / predicted_total,
+                    predicted[1] / predicted_total)
+    current_distance = math.hypot(base_xy[0] - 0.3127,
+                                  base_xy[1] - 0.3290)
+    predicted_distance = math.hypot(predicted_xy[0] - 0.3127,
+                                    predicted_xy[1] - 0.3290)
+    if (predicted_distance >= current_distance * 0.92
+            or predicted[1] < base[1] * 0.95
+            or predicted[1] > base[1] * 1.05):
         return False
 
     neutral = sorted((sum(row["rgb"]) / 3.0, row["xyz"][1])
