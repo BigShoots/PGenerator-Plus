@@ -2532,11 +2532,24 @@ function meterIccProfileReadings(readings){
  });
 }
 
+// Transform-stability sentinels repeated at the start and end of the active
+// characterization. Codes 102 and 153 are the most transform-discriminating
+// neutral stimuli: the observed mid-series transform change moved them almost
+// 2x while codes 205 and up stayed within 2%. The builder excludes sentinel
+// rows from every fit by name; they exist only to prove series integrity.
+function meterIccActiveMhc2SentinelSteps(position){
+ return [102,153].map(code=>({
+  ire:100*code/1023,r:code,g:code,b:code,input_max:1023,
+  name:'ICC MHC2 Active Sentinel '+position+' '+code
+ }));
+}
+
 function meterIccActiveMhc2Steps(){
  const neutralCodes=[0,20,25,30,35,40,45,51,61,72,82,92,102,128,153,205,256,307,358,409,460,512,563,614,665,716,767,818,870,921,972,1023];
  const axisCodes=[20,62,135,251,441,648,778,934,1023];
  const shadowCodes=[102,153,205,256];
- const steps=neutralCodes.map(code=>({
+ const steps=meterIccActiveMhc2SentinelSteps('Pre');
+ neutralCodes.forEach(code=>steps.push({
   ire:100*code/1023,r:code,g:code,b:code,input_max:1023,
   name:'ICC MHC2 Active Grey '+code
  }));
@@ -2561,7 +2574,30 @@ function meterIccActiveMhc2Steps(){
   input_max:1023,
   name:'ICC MHC2 Shadow Jacobian '+code+' '+channel+(delta<0?'-':'+')
  }))));
+ steps.push(...meterIccActiveMhc2SentinelSteps('Post'));
  return steps;
+}
+
+// Pre-vs-post sentinel drift limit for the active characterization series.
+// Hardware evidence: benign meter/panel drift measured about 4-6% over five
+// minutes at these codes, the full series spans about eleven minutes, and the
+// mid-series transform-change failure mode reads 85-95% off. 15% clears the
+// worst benign accumulation with margin while catching any transform change.
+const METER_ICC_ACTIVE_SENTINEL_DRIFT_LIMIT=0.15;
+
+function meterIccVerifyActiveSentinelDrift(readings){
+ const byName=name=>(Array.isArray(readings)?readings:[]).find(row=>String(row&&row.name||'')===name);
+ for(const code of [102,153]){
+  const pre=byName('ICC MHC2 Active Sentinel Pre '+code);
+  const post=byName('ICC MHC2 Active Sentinel Post '+code);
+  if(!pre||!post) throw new Error('The active characterization is missing its transform sentinels at code '+code+'. Measure the active Windows path again.');
+  const preY=Number(pre.Y);
+  const postY=Number(post.Y);
+  if(!(preY>0)||!(postY>0)) throw new Error('The transform sentinels at code '+code+' returned no light. Measure the active Windows path again.');
+  const drift=Math.abs(postY-preY)/preY;
+  if(drift>METER_ICC_ACTIVE_SENTINEL_DRIFT_LIMIT)
+   throw new Error('The applied Windows transform changed during the active characterization: neutral code '+code+' moved from Y '+preY.toFixed(4)+' to '+postY.toFixed(4)+' cd/m2 ('+Math.round(drift*100)+'%). Reinstall the seed profile, let it settle, and measure the active path again.');
+ }
 }
 
 function meterIccMhc2PeakStep(name,r,g,b){
@@ -2676,8 +2712,89 @@ function meterIccNeedsActiveMhc2Stage(config){
   &&config.pattern_provider==='companion'&&meterIccCompanionConnected;
 }
 
+async function meterIccCompanionStatusSnapshot(){
+ try{ return await fetchJSON('/api/icc/companion/status',{_quiet:true,_timeoutMs:5000}); }catch(_error){ return null; }
+}
+
+// "Applied" from the install job only means Windows accepted the profile
+// association. Hardware evidence showed the effective transform can lag that
+// report by minutes, so require the Companion to confirm the exact file is
+// active with a rebuilt transform on a hardware overlay, and that its
+// settings revision moved past the value captured before the install.
+async function meterIccAwaitAppliedTransform(file,baselineRevision){
+ const deadline=Date.now()+90000;
+ while(Date.now()<deadline){
+  const state=await meterIccCompanionStatusSnapshot();
+  if(state
+   &&String(state.active_profile||'')===String(file)
+   &&state.transform_ready===true
+   &&String(state.presentation_mode||'')==='hardware-overlay'
+   &&Number(state.settings_revision)>Number(baselineRevision||0)) return;
+  await new Promise(resolve=>setTimeout(resolve,1000));
+ }
+ throw new Error('Patch Companion did not report the installed profile as active with a ready transform on a hardware overlay. Keep the Companion fullscreen on the target display and retry.');
+}
+
+// Measured settling verification. The Companion reported transform_ready
+// during the run where the transform demonstrably changed minutes later, so
+// status flags alone are not sufficient: read a neutral sentinel patch until
+// three consecutive reads (two consecutive pairs) agree within 3%. A stable
+// applied transform measured well under 3% over this interval; the failure
+// mode reads near 2x.
+const METER_ICC_INSTALL_SENTINEL_TOLERANCE=0.03;
+const METER_ICC_INSTALL_SENTINEL_INTERVAL_MS=20000;
+const METER_ICC_INSTALL_SENTINEL_DEADLINE_MS=300000;
+
+function meterIccInstallSentinelStep(){
+ return {ire:100*153/1023,r:153,g:153,b:153,input_max:1023,name:'ICC MHC2 Install Sentinel 153'};
+}
+
+async function meterIccReadInstallSentinel(profileType){
+ const body=meterIccMeasurementSeriesBody([meterIccInstallSentinelStep()],profileType,'companion');
+ const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
+ if(!response||response.status!=='started') throw new Error(response&&response.message?response.message:'Could not start the install sentinel measurement');
+ const deadline=Date.now()+180000;
+ while(Date.now()<deadline){
+  await new Promise(resolve=>setTimeout(resolve,1500));
+  const state=await fetchJSON('/api/meter/series/status',{_quiet:true,_timeoutMs:120000});
+  const status=String(state&&state.status||'').toLowerCase();
+  if(status==='complete'){
+   const row=(Array.isArray(state.readings)?state.readings:[]).find(reading=>String(reading&&reading.name||'')==='ICC MHC2 Install Sentinel 153');
+   const y=Number(row&&row.Y);
+   if(!(y>0)) throw new Error('The install sentinel read returned no light. Check the meter position and the Companion window, then retry.');
+   return y;
+  }
+  if(['cancelled','error','cleared'].includes(status))
+   throw new Error(state&&state.current_name?('Install sentinel measurement failed: '+state.current_name):'The install sentinel measurement failed');
+ }
+ throw new Error('The install sentinel measurement timed out');
+}
+
+async function meterIccVerifyInstalledTransformSettled(){
+ const profileType=String((meterIccRunConfig&&meterIccRunConfig.profile_type)||'windows-hdr');
+ const readings=[];
+ let stablePairs=0;
+ const deadline=Date.now()+METER_ICC_INSTALL_SENTINEL_DEADLINE_MS;
+ while(true){
+  readings.push(await meterIccReadInstallSentinel(profileType));
+  const count=readings.length;
+  if(count>=2){
+   const previous=readings[count-2];
+   const drift=Math.abs(readings[count-1]-previous)/Math.max(previous,1e-6);
+   stablePairs=drift<=METER_ICC_INSTALL_SENTINEL_TOLERANCE?stablePairs+1:0;
+   if(stablePairs>=2) return;
+  }
+  if(Date.now()>=deadline)
+   throw new Error('The applied profile transform did not settle: repeated neutral sentinel reads kept moving more than '+Math.round(METER_ICC_INSTALL_SENTINEL_TOLERANCE*100)+'%. Wait for Windows to finish applying the profile, then retry the run.');
+  await new Promise(resolve=>setTimeout(resolve,METER_ICC_INSTALL_SENTINEL_INTERVAL_MS));
+ }
+}
+
 async function meterIccApplyProfileForActiveMhc2(file,correctionMode='system'){
  await meterIccPushCompanionDisplaySettings(false,correctionMode,'fullscreen');
+ const baseline=await meterIccCompanionStatusSnapshot();
+ if(!baseline) throw new Error('Could not read the Patch Companion status before the profile install');
+ const baselineRevision=Number(baseline.settings_revision)||0;
  const queued=await fetchJSON('/api/icc/companion/profile-install',{
   method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({file}),_timeoutMs:10000
@@ -2693,6 +2810,10 @@ async function meterIccApplyProfileForActiveMhc2(file,correctionMode='system'){
    // cLUT request after install when the next stage must measure B2A itself.
    if(correctionMode!=='system')
     await meterIccPushCompanionDisplaySettings(false,correctionMode,'fullscreen');
+   await meterIccAwaitAppliedTransform(file,baselineRevision);
+   const status=document.getElementById('meterIccStatus');
+   if(status) status.textContent='Profile applied. Verifying the effective transform is stable before measuring...';
+   await meterIccVerifyInstalledTransformSettled();
    return;
   }
   if(state&&state.status==='error') throw new Error(state.message||'MHC2 seed profile installation failed');
@@ -2816,7 +2937,7 @@ function meterIccSetRunning(running){
  meterUpdateReadButtons();
 }
 
-async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
+function meterIccMeasurementSeriesBody(steps,type,patternProvider){
  const mode=meterIccProfileInfo(type).mode;
  const body=meterMeasurementSignalContext({
   type:'colors',points:990001,custom_series:true,custom_steps:steps,
@@ -2850,6 +2971,11 @@ async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
  }
  const lowLight=meterLowLightReadState();
  if(lowLight) body.low_light=lowLight;
+ return body;
+}
+
+async function meterIccLaunchMeasurementSeries(steps,type,patternProvider){
+ const body=meterIccMeasurementSeriesBody(steps,type,patternProvider);
  const response=await fetchJSON('/api/meter/series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),_timeoutMs:12000});
  if(!response||response.status!=='started') throw new Error(response&&response.message?response.message:'Could not start the meter series');
  meterSharedSeriesId=String(response.series_id||'');
@@ -3140,6 +3266,10 @@ async function meterIccPoll(){
     const activeReadings=meterIccProfileReadings(state.readings);
     if(activeReadings.length!==meterIccActiveMhc2Steps().length)
      throw new Error('The active Windows MHC2 characterization is incomplete');
+    // Reject the whole series when the applied transform moved between the
+    // opening and closing sentinel reads. Fitting rows measured through two
+    // different transforms produced the 2x shadow incoherence this guards.
+    meterIccVerifyActiveSentinelDrift(activeReadings);
     meterIccRunConfig.mhc2_readings=activeReadings;
     meterIccRunConfig.stage='mhc2-provisional';
     if(status) status.textContent='Active Windows path measured. Building the peak probe profile...';

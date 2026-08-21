@@ -949,6 +949,100 @@ def validate_mhc2_active_shadow_coverage(rows):
              "instead of extrapolated")
 
 
+MHC2_ACTIVE_SENTINEL_PREFIX = "ICC MHC2 Active Sentinel "
+MHC2_INSTALL_SENTINEL_PREFIX = "ICC MHC2 Install Sentinel "
+
+
+def is_mhc2_sentinel_name(name):
+    """Return whether a row is a transform-stability sentinel read.
+
+    Sentinel rows exist only to prove the applied Windows transform did not
+    change while a series ran.  They repeat stimuli that the characterization
+    already contains, so letting them into any fit would double-weight those
+    codes and, after a detected drift, blend two different transforms.
+    """
+    name = str(name)
+    return (name.startswith(MHC2_ACTIVE_SENTINEL_PREFIX)
+            or name.startswith(MHC2_INSTALL_SENTINEL_PREFIX))
+
+
+# Both thresholds are generic and sized from hardware evidence, not from any
+# panel constant.  A stable applied transform showed 0.9-2.2% per-channel
+# pair-mean spread inside one signed probe block and roughly 4-6% benign
+# meter/panel drift over five minutes at these neutral codes; the observed
+# failure mode was a mid-series transform change of 1.85-1.95x.  The ladder
+# row and its probe block are measured up to about eight minutes apart in an
+# eleven-minute series, so 15% clears worst-case benign drift with margin
+# while sitting far below the failure signature.  A probe block spans under
+# one minute, so 10% is already generous for its internal spread.
+MHC2_ACTIVE_LADDER_CENTROID_LIMIT = 0.15
+MHC2_ACTIVE_PROBE_SPREAD_LIMIT = 0.10
+
+
+def validate_mhc2_active_response_coherence(rows):
+    """Reject active-path rows that were not measured through one transform.
+
+    Every signed shadow probe block centers on a neutral code that the active
+    grey ladder also measured.  Under a single applied transform the block's
+    six-probe luminance centroid must agree with the ladder row, and the three
+    per-channel pair means inside the block must agree with each other.  A
+    violation means the effective Windows/Companion transform changed during
+    the series; fitting such rows blends two transforms into one correction.
+    """
+    probe_pattern = re.compile(r"^ICC MHC2 Shadow Jacobian (\d+) ([RGB])([+-])$")
+    groups = {}
+    for row in rows:
+        match = probe_pattern.match(str(row.get("name", "")))
+        if match:
+            groups.setdefault(int(match.group(1)), {})[
+                match.group(2) + match.group(3)] = row
+    for code in sorted(groups):
+        probes = groups[code]
+        if any(channel + sign not in probes
+               for channel in "RGB" for sign in "-+"):
+            continue
+        pair_means = [
+            0.5 * (probes[channel + "-"]["xyz"][1]
+                   + probes[channel + "+"]["xyz"][1])
+            for channel in "RGB"
+        ]
+        centroid = sum(pair_means) / 3.0
+        if centroid <= 0:
+            fail("Active Windows path shadow probes at neutral code "
+                 "{} returned no light; remeasure the active path".format(code))
+        spread = (max(pair_means) - min(pair_means)) / centroid
+        if spread > MHC2_ACTIVE_PROBE_SPREAD_LIMIT:
+            fail("Active Windows path shadow probes at neutral code {} "
+                 "disagree between channels by {:.0f}% (R/G/B pair means "
+                 "{:.4f}/{:.4f}/{:.4f} cd/m2). The applied transform drifted "
+                 "while the probe block ran; reinstall the seed profile and "
+                 "remeasure the active characterization".format(
+                     code, spread * 100.0, pair_means[0], pair_means[1],
+                     pair_means[2]))
+        normalized = code / float(probes["R+"]["input_max"])
+        ladder = sorted(
+            row["xyz"][1] for row in rows
+            if max(row["rgb"]) - min(row["rgb"]) <= 0.002
+            and abs(sum(row["rgb"]) / 3.0 - normalized) <= 0.0005
+            and not probe_pattern.match(str(row.get("name", ""))))
+        if not ladder:
+            continue
+        middle = len(ladder) // 2
+        ladder_y = (ladder[middle] if len(ladder) % 2 else
+                    0.5 * (ladder[middle - 1] + ladder[middle]))
+        if ladder_y <= 0:
+            fail("Active Windows path neutral code {} measured no light in "
+                 "the grey ladder; remeasure the active path".format(code))
+        ratio = centroid / ladder_y
+        if max(ratio, 1.0 / ratio) - 1.0 > MHC2_ACTIVE_LADDER_CENTROID_LIMIT:
+            fail("Active Windows path response is incoherent: neutral code "
+                 "{} measured Y {:.4f} cd/m2 in the grey ladder but {:.4f} "
+                 "cd/m2 at its signed shadow probes ({:.2f}x). The applied "
+                 "transform changed between those reads; reinstall the seed "
+                 "profile, wait for it to settle, and remeasure the active "
+                 "characterization".format(code, ladder_y, centroid, ratio))
+
+
 def windows_hdr_adjustment_luts(rows, black, white, primaries, entries, wire, adjustment,
                                 hold_plateau=True):
     """Invert the measured neutral response in the post-PQ MHC2 stage.
@@ -2353,8 +2447,8 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     # the same rows used by the provisional profile. The finished-profile
     # response probes are consumed only by the final output stage.
     fit_rows = [row for row in rows
-                if not is_profile_response_feedback_name(
-                    row.get("name", ""))]
+                if not is_profile_response_feedback_name(row.get("name", ""))
+                and not is_mhc2_sentinel_name(row.get("name", ""))]
     if not fit_rows:
         fit_rows = rows
     profile_type = "windows-hdr"
@@ -4956,8 +5050,13 @@ def build(payload, output_dir):
         mhc2_payload_input = dict(payload)
         mhc2_payload_input["readings"] = supplied_mhc2_readings
         mhc2_rows = normalize_measurements(mhc2_payload_input)
+        # Transform-stability sentinels are series-integrity evidence, not
+        # characterization samples. Drop them from every fit by name; the
+        # raw-measurement rows that own A2B/B2A never carry them.
         mhc2_profile_rows = [
-            row for row in mhc2_rows if row["name"] not in metadata_white_names
+            row for row in mhc2_rows
+            if row["name"] not in metadata_white_names
+            and not is_mhc2_sentinel_name(row["name"])
         ]
     if profile_type in ("kde-hdr", "windows-hdr"):
         validate_hdr_neutral_response_continuity(profile_rows)
@@ -4970,6 +5069,10 @@ def build(payload, output_dir):
             mhc2_fit_rows = mhc2_profile_rows
         validate_hdr_neutral_response_continuity(mhc2_fit_rows)
         validate_mhc2_active_shadow_coverage(mhc2_fit_rows)
+        # Fail closed before any MHC2 fit when the active rows were measured
+        # through more than one effective transform. This guards manual
+        # payloads too and never touches the raw-measurement A2B/B2A path.
+        validate_mhc2_active_response_coherence(mhc2_fit_rows)
         if (profile_type == "windows-hdr"
                 and calibration_mode == "profile"
                 and PROFILE_MODELS[profile_model]["family"] == "clut"
