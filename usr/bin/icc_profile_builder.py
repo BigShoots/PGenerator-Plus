@@ -2063,11 +2063,13 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
             continue
         # Preserve the solved RGB direction. Independent channel clamps turn
         # a chromatic correction into a common lift or cut. Limit the entire
-        # vector to two measured probe steps, then use the prediction gate to
-        # select a smaller step when needed.
+        # vector to the measured probe span, then use the prediction gate to
+        # select a smaller step when needed. Going beyond one probe step is
+        # unsafe in the steep PQ toe even when the central derivative predicts
+        # a further improvement.
         solved = [value * 0.75 for value in solved]
         largest = max(abs(value) for value in solved)
-        limit = 2.0 * probe_delta
+        limit = probe_delta
         if largest > limit:
             scale = limit / largest
             solved = [value * scale for value in solved]
