@@ -2041,25 +2041,45 @@ def apply_mhc2_final_peak_feedback(luts, rows, neutral_gains,
     return True
 
 
+MHC2_FINAL_FEEDBACK_NAMES = frozenset((
+    "ICC MHC2 Final Feedback Base",
+    "ICC MHC2 Final Feedback R+",
+    "ICC MHC2 Final Feedback G+",
+    "ICC MHC2 Final Feedback B+",
+))
+
+
 def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
                                          primaries, target_transfer):
     """Fit MHC2 for the measured Windows path without changing raw cLUT."""
+    # The final applied-profile probes are response measurements of temporary
+    # MHC2 variants, not samples of the display characterization.  Letting
+    # their four full-white rows participate in the ordinary neutral fit
+    # changes the inferred peak, lumi tag and B2A normalization.  That made a
+    # peak-only feedback pass reshape the entire cLUT and discarded the
+    # already-closed shadow/midtone result.  Keep the characterization fit on
+    # the same rows used by the provisional profile, then consume the probes
+    # only in apply_mhc2_final_peak_feedback below.
+    fit_rows = [row for row in rows
+                if str(row.get("name", "")) not in MHC2_FINAL_FEEDBACK_NAMES]
+    if not fit_rows:
+        fit_rows = rows
     profile_type = "windows-hdr"
     wire = mhc2_wire_matrix(profile_type)
     _, matrix, seed_luts, _ = mhc2_payload(
-        profile_type, black, white, primaries, rows,
+        profile_type, black, white, primaries, fit_rows,
         target_transfer or "srgb", apply_calibration=True,
         hdr_neutral_headroom=True)
     fallback = vcgt_from_mhc2(matrix, seed_luts, wire)
     adjustment_luts = windows_hdr_profile_adjustment_luts(
-        profile, rows, fallback, black, white, matrix)
+        profile, fit_rows, fallback, black, white, matrix)
     rgb_adjustment = mat_mul(
         mat_inv(wire), mat_mul(matrix, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
     balanced_peak = apply_mhc2_balanced_peak_cap(
-        adjustment_luts, rows, black, white, primaries, neutral_gains)
+        adjustment_luts, fit_rows, black, white, primaries, neutral_gains)
     mhc2, matrix, adjustment_luts, calibrated_peak = mhc2_payload(
-        profile_type, black, white, primaries, rows,
+        profile_type, black, white, primaries, fit_rows,
         target_transfer or "srgb", apply_calibration=True,
         adjustment_luts_override=adjustment_luts,
         hdr_neutral_headroom=True,
@@ -2068,12 +2088,12 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
         mat_inv(wire), mat_mul(matrix, wire))
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
     apply_mhc2_active_neutral_luminance(
-        adjustment_luts, rows, black, primaries, neutral_gains,
+        adjustment_luts, fit_rows, black, primaries, neutral_gains,
         calibrated_peak)
     apply_mhc2_active_shadow_jacobians(
-        adjustment_luts, rows, neutral_gains, calibrated_peak)
+        adjustment_luts, fit_rows, neutral_gains, calibrated_peak)
     apply_mhc2_active_shadow_feedback(
-        adjustment_luts, rows, neutral_gains, calibrated_peak)
+        adjustment_luts, fit_rows, neutral_gains, calibrated_peak)
     apply_mhc2_final_peak_feedback(
         adjustment_luts, rows, neutral_gains, calibrated_peak)
     mhc2 = mhc2_with_adjustment_luts(mhc2, adjustment_luts)
@@ -4352,8 +4372,16 @@ def build(payload, output_dir):
     if profile_type in ("kde-hdr", "windows-hdr"):
         validate_hdr_neutral_response_continuity(profile_rows)
     if mhc2_profile_rows is not profile_rows:
-        validate_hdr_neutral_response_continuity(mhc2_profile_rows)
-        validate_mhc2_active_shadow_coverage(mhc2_profile_rows)
+        mhc2_fit_rows = [
+            row for row in mhc2_profile_rows
+            if str(row.get("name", "")) not in MHC2_FINAL_FEEDBACK_NAMES
+        ]
+        if not mhc2_fit_rows:
+            mhc2_fit_rows = mhc2_profile_rows
+        validate_hdr_neutral_response_continuity(mhc2_fit_rows)
+        validate_mhc2_active_shadow_coverage(mhc2_fit_rows)
+    else:
+        mhc2_fit_rows = mhc2_profile_rows
     patch_set = effective_patch_set(patch_set, profile_model, payload, len(profile_rows))
     if profile_type == "windows-hdr" and not metadata_white_rows:
         fail("HDR MHC2 profiling requires an HDR metadata white measurement")
@@ -4361,7 +4389,7 @@ def build(payload, output_dir):
     # describe the panel, not an already calibrated signal.
     black, white, primaries = profile_measurement_summary(profile_rows)
     mhc2_black, mhc2_white, mhc2_primaries = (
-        profile_measurement_summary(mhc2_profile_rows)
+        profile_measurement_summary(mhc2_fit_rows)
         if mhc2_profile_rows is not profile_rows
         else (black, white, primaries)
     )
