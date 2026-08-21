@@ -1663,9 +1663,103 @@ def apply_mhc2_balanced_peak_cap(luts, rows, black, white, primaries,
     return balanced_peak
 
 
+def apply_mhc2_active_neutral_luminance(luts, rows, black, primaries,
+                                         neutral_gains, calibrated_peak):
+    """Put modeled RGB balance on the directly measured neutral PQ curve.
+
+    The raw A2B model provides useful level-dependent channel offsets, but its
+    common drive is not the Windows Advanced Color response measured through
+    the null MHC2 seed.  Preserve those offsets while moving their mean to the
+    device code that the active neutral ramp measured at the requested PQ
+    luminance.  An already accurate ramp maps back to the same code.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(neutral_gains) != 3 or min(neutral_gains) <= 1e-6):
+        fail("Active HDR MHC2 luminance correction has invalid calibration data")
+
+    grouped = {}
+    for row in rows:
+        if max(row["rgb"]) - min(row["rgb"]) > 0.002:
+            continue
+        code = sum(row["rgb"]) / 3.0
+        grouped.setdefault(round(code, 7), []).append(row["xyz"][1])
+    neutral = []
+    previous = max(0.0, black["xyz"][1])
+    for code in sorted(grouped):
+        values = sorted(grouped[code])
+        middle = len(values) // 2
+        measured = (values[middle] if len(values) % 2 else
+                    0.5 * (values[middle - 1] + values[middle]))
+        previous = max(previous, measured)
+        neutral.append((code, previous))
+    if len(neutral) < 9 or neutral[0][0] > 0.002 or neutral[-1][0] < 0.998:
+        fail("Active HDR MHC2 luminance correction requires a full neutral ramp")
+
+    def invert_neutral_luminance(target):
+        target = max(neutral[0][1], min(neutral[-1][1], target))
+        for index in range(1, len(neutral)):
+            code0, y0 = neutral[index - 1]
+            code1, y1 = neutral[index]
+            if target <= y1 + 1e-9:
+                if y1 <= y0 + 1e-9:
+                    return code0
+                return code0 + (target - y0) * (code1 - code0) / (y1 - y0)
+        return neutral[-1][0]
+
+    # Estimate the small luminance contribution of the retained unequal RGB
+    # offsets from the measured primary ramps.  The neutral ramp remains the
+    # source of truth for the common, potentially non-additive display drive.
+    axis_samples = [
+        monotonic_channel_samples(rows, black, primaries[channel], channel)
+        for channel in range(3)
+    ]
+    black_y = max(0.0, black["xyz"][1])
+    axis_y = [max(0.0, primary["xyz"][1] - black_y)
+              for primary in primaries]
+    entries = len(luts[0])
+    original = [list(curve) for curve in luts]
+    updated = [[] for _channel in range(3)]
+    peak = max(float(calibrated_peak), black_y + 0.0001)
+
+    for channel in range(3):
+        gain = neutral_gains[channel]
+        for index in range(entries):
+            curve_input = index / float(entries - 1)
+            source_nits = pq_to_nits(curve_input) / gain
+            source_code = nits_to_pq(source_nits)
+            outputs = []
+            for other in range(3):
+                other_input = nits_to_pq(source_nits * neutral_gains[other])
+                outputs.append(sample_table(original[other], other_input))
+            mean_output = sum(outputs) / 3.0
+            offsets = [value - mean_output for value in outputs]
+            target_y = min(source_nits, peak)
+            base = invert_neutral_luminance(target_y)
+            for _iteration in range(3):
+                delta_y = 0.0
+                for other in range(3):
+                    shifted = max(0.0, min(1.0, base + offsets[other]))
+                    delta_y += axis_y[other] * (
+                        sample_channel_response(axis_samples[other], shifted)
+                        - sample_channel_response(axis_samples[other], base))
+                base = invert_neutral_luminance(max(black_y, target_y - delta_y))
+            corrected = max(0.0, min(1.0, base + offsets[channel]))
+            # Leave the measured peak-cap transition alone.  The common drive
+            # is fully measured through the HDR body, then fades out before
+            # the separately probed shoulder owns the response.
+            weight = 1.0 - smoothstep((target_y / peak - 0.65) / 0.25)
+            updated[channel].append(
+                original[channel][index] * (1.0 - weight) + corrected * weight)
+
+    for channel in range(3):
+        updated[channel] = isotonic_curve(updated[channel])
+        updated[channel][0] = 0.0
+        luts[channel][:] = updated[channel]
+
+
 def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
                                          primaries, target_transfer):
-    """Fit MHC2 for the Windows path without changing the raw cLUT model."""
+    """Fit MHC2 for the measured Windows path without changing raw cLUT."""
     profile_type = "windows-hdr"
     wire = mhc2_wire_matrix(profile_type)
     _, matrix, seed_luts, _ = mhc2_payload(
@@ -1680,12 +1774,20 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
     balanced_peak = apply_mhc2_balanced_peak_cap(
         adjustment_luts, rows, black, white, primaries, neutral_gains)
-    return mhc2_payload(
+    mhc2, matrix, adjustment_luts, calibrated_peak = mhc2_payload(
         profile_type, black, white, primaries, rows,
         target_transfer or "srgb", apply_calibration=True,
         adjustment_luts_override=adjustment_luts,
         hdr_neutral_headroom=True,
         calibrated_peak_override=balanced_peak)
+    rgb_adjustment = mat_mul(
+        mat_inv(wire), mat_mul(matrix, wire))
+    neutral_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
+    apply_mhc2_active_neutral_luminance(
+        adjustment_luts, rows, black, primaries, neutral_gains,
+        calibrated_peak)
+    mhc2 = mhc2_with_adjustment_luts(mhc2, adjustment_luts)
+    return mhc2, matrix, adjustment_luts, calibrated_peak
 
 
 def smoothstep(value):
@@ -4606,6 +4708,11 @@ def build(payload, output_dir):
         "black_nits": black["xyz"][1],
         "mhc2_matrix": matrix,
         "mhc2_lut_entries": len(adjustment_luts[0]) if adjustment_luts else None,
+        "mhc2_peak_codes": ([int(round(max(0.0, min(1.0, curve[-1]))
+                                       * int(payload.get("code_max", 255))))
+                             for curve in adjustment_luts]
+                            if (profile_type == "windows-hdr"
+                                and adjustment_luts) else None),
         "validation": validation,
     }
 

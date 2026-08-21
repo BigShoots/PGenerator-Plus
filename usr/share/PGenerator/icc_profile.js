@@ -2529,6 +2529,114 @@ function meterIccProfileReadings(readings){
  });
 }
 
+function meterIccActiveMhc2Steps(){
+ const neutralCodes=[0,20,25,30,35,40,45,51,61,72,82,92,102,128,153,205,256,307,358,409,460,512,563,614,665,716,767,818,870,921,972,1023];
+ const axisCodes=[20,62,135,251,441,648,778,934,1023];
+ const steps=neutralCodes.map(code=>({
+  ire:100*code/1023,r:code,g:code,b:code,input_max:1023,
+  name:'ICC MHC2 Active Grey '+code
+ }));
+ ['R','G','B'].forEach(channel=>axisCodes.forEach(code=>steps.push({
+  ire:100*code/(3*1023),
+  r:channel==='R'?code:0,g:channel==='G'?code:0,b:channel==='B'?code:0,
+  input_max:1023,name:'ICC MHC2 Active Axis '+channel+' '+code
+ })));
+ ['R','G','B'].forEach(channel=>[-12,12].forEach(delta=>steps.push({
+  ire:100*(767+delta)/1023,
+  r:767+(channel==='R'?delta:0),
+  g:767+(channel==='G'?delta:0),
+  b:767+(channel==='B'?delta:0),
+  input_max:1023,
+  name:'ICC Neutral Jacobian 0767 '+channel+(delta<0?'-':'+')
+ })));
+ return steps;
+}
+
+function meterIccMhc2PeakStep(name,r,g,b){
+ const clamp=value=>Math.max(0,Math.min(1023,Math.round(Number(value)||0)));
+ r=clamp(r);g=clamp(g);b=clamp(b);
+ return {ire:100*(r+g+b)/(3*1023),r:r,g:g,b:b,input_max:1023,name:name};
+}
+
+function meterIccMhc2PeakCandidateSteps(codes){
+ if(!Array.isArray(codes)||codes.length!==3) throw new Error('The provisional MHC2 profile did not return a peak probe');
+ const r=Math.round(Number(codes[0])),g=Math.round(Number(codes[1])),b=Math.round(Number(codes[2]));
+ if(![r,g,b].every(Number.isFinite)) throw new Error('The provisional MHC2 peak probe is invalid');
+ return [
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate',r,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R-',r-4,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R+',r+4,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G-',r,g-4,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G+',r,g+4,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B-',r,g,b-4),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B+',r,g,b+4)
+ ];
+}
+
+function meterIccMhc2PeakRefineSteps(readings){
+ const rows=meterIccProfileReadings(readings);
+ const byName=name=>rows.find(row=>String(row.name||'')===name);
+ const center=byName('ICC MHC2 Peak Candidate');
+ const pairs=[['R','r_code'],['G','g_code'],['B','b_code']].map(([channel,key])=>{
+  const low=byName('ICC MHC2 Peak Candidate '+channel+'-');
+  const high=byName('ICC MHC2 Peak Candidate '+channel+'+');
+  if(!low||!high) return null;
+  const span=Number(high[key])-Number(low[key]);
+  if(!(span>0)) return null;
+  return ['X','Y','Z'].map(axis=>(Number(high[axis])-Number(low[axis]))/span);
+ });
+ if(!center||pairs.some(pair=>!pair)) throw new Error('The MHC2 peak candidate measurements are incomplete');
+ const origin=['X','Y','Z'].map(axis=>Number(center[axis]));
+ let best={error:Infinity,delta:[0,0,0]};
+ for(let dr=-16;dr<=16;dr++) for(let dg=-16;dg<=16;dg++) for(let db=-16;db<=16;db++){
+  const delta=[dr,dg,db];
+  const xyz=origin.map((value,axis)=>value+pairs[0][axis]*dr+pairs[1][axis]*dg+pairs[2][axis]*db);
+  const sum=xyz[0]+xyz[1]+xyz[2];
+  if(!(sum>0)||xyz[1]<origin[1]*0.80) continue;
+  const dx=xyz[0]/sum-0.3127,dy=xyz[1]/sum-0.3290;
+  const error=Math.hypot(dx,dy)+1e-8*(Math.abs(dr)+Math.abs(dg)+Math.abs(db));
+  if(error<best.error) best={error:error,delta:delta};
+ }
+ const r=Number(center.r_code)+best.delta[0];
+ const g=Number(center.g_code)+best.delta[1];
+ const b=Number(center.b_code)+best.delta[2];
+ return [
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine A',r,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine B',r-1,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine C',r+1,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine D',r,g-1,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine E',r,g+1,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine F',r,g,b-1),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine G',r,g,b+1)
+ ];
+}
+
+function meterIccNeedsActiveMhc2Stage(config){
+ return !!config&&config.stage!=='mhc2-final'&&!Array.isArray(config.mhc2_readings)
+  &&config.profile_type==='windows-hdr'
+  &&meterIccCalibrationMode(config)==='profile'
+  &&meterIccProfileModelInfo(config.profile_model).family==='clut'
+  &&config.pattern_provider==='companion'&&meterIccCompanionConnected;
+}
+
+async function meterIccApplyProfileForActiveMhc2(file){
+ await meterIccPushCompanionDisplaySettings(false,'system','fullscreen');
+ const queued=await fetchJSON('/api/icc/companion/profile-install',{
+  method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({file}),_timeoutMs:10000
+ });
+ if(!queued||queued.status!=='ok'||!queued.job)
+  throw new Error(queued&&queued.message?queued.message:'Could not queue the MHC2 seed profile installation');
+ const deadline=Date.now()+120000;
+ while(Date.now()<deadline){
+  await new Promise(resolve=>setTimeout(resolve,750));
+  const state=await fetchJSON('/api/icc/companion/profile-install-status?job='+encodeURIComponent(queued.job),{_quiet:true,_timeoutMs:5000});
+  if(state&&state.status==='ok'&&/applied/i.test(String(state.message||''))) return;
+  if(state&&state.status==='error') throw new Error(state.message||'MHC2 seed profile installation failed');
+ }
+ throw new Error('Patch Companion did not finish applying the MHC2 seed profile');
+}
+
 function meterIccReadingsHaveRequiredAnchors(readings){
  const values=meterIccProfileReadings(readings);
  const targets=[[0,0,0],[1,1,1],[1,0,0],[0,1,0],[0,0,1]];
@@ -2936,6 +3044,31 @@ async function meterIccPoll(){
     meterActionPending=true;
     meterIccSyncUi();
     await meterIccContinueAfterPreRead(state.readings,status);
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-active'){
+    const activeReadings=meterIccProfileReadings(state.readings);
+    if(activeReadings.length!==meterIccActiveMhc2Steps().length)
+     throw new Error('The active Windows MHC2 characterization is incomplete');
+    meterIccRunConfig.mhc2_readings=activeReadings;
+    meterIccRunConfig.stage='mhc2-provisional';
+    if(status) status.textContent='Active Windows path measured. Building the peak probe profile...';
+    await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-peak'){
+    const peakReadings=meterIccProfileReadings(state.readings);
+    if(peakReadings.length!==7) throw new Error('The Windows MHC2 peak probes are incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...peakReadings];
+    const refineSteps=meterIccMhc2PeakRefineSteps(peakReadings);
+    meterIccRunConfig.stage='mhc2-refine';
+    meterIccRunConfig.steps=refineSteps;
+    if(status) status.textContent='Peak response measured. Refining the neutral shoulder...';
+    meterIccSetProgress('Starting MHC2 peak refinement',0,refineSteps.length);
+    await meterIccLaunchMeasurementSeries(refineSteps,meterIccRunConfig.profile_type,'companion');
+   }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-refine'){
+    const refineReadings=meterIccProfileReadings(state.readings);
+    if(refineReadings.length!==7) throw new Error('The Windows MHC2 peak refinement is incomplete');
+    meterIccRunConfig.mhc2_readings=[...(meterIccRunConfig.mhc2_readings||[]),...refineReadings];
+    meterIccRunConfig.stage='mhc2-final';
+    if(status) status.textContent='Active Windows path measured. Building the final ICC profile...';
+    await meterIccBuild(meterIccRunConfig.raw_profile_readings||[]);
    }else{
     await meterIccBuild([...(meterIccRunConfig&&Array.isArray(meterIccRunConfig.reused_readings)?meterIccRunConfig.reused_readings:[]),...meterIccProfileReadings(state.readings)]);
    }
@@ -2976,23 +3109,66 @@ async function meterIccBuild(readings){
  meterIccBuildPending=true;
  meterActionPending=true;
  meterIccSyncUi();
- const total=(meterIccRunConfig&&meterIccRunConfig.steps.length)||readings.length;
- meterIccSetProgress('Building ICC profile',total,total);
  const profileReadings=meterIccProfileReadings(readings);
+ const total=profileReadings.length;
+ meterIccSetProgress('Building ICC profile',total,total);
  meterIccRememberLastRunConfig(meterIccRunConfig,profileReadings.length);
  const buildClock=meterIccStartBuildClock(status,meterIccRunConfig,profileReadings.length);
  let buildElapsed=0;
+ let continuedWithActiveMhc2=false;
  try{
+  const needsActiveMhc2=meterIccNeedsActiveMhc2Stage(meterIccRunConfig);
   const payload=Object.assign({},meterIccRunConfig,{readings:profileReadings,client_time:Math.floor(Date.now()/1000)});
+  if(needsActiveMhc2){
+   payload.name=String(meterIccRunConfig.name||'PGenerator+ display profile')+' Null MHC2 Seed';
+   // The active-path readings characterize Windows and the display, not an
+   // earlier correction that the final MHC2 tag will replace. Install the
+   // same fitted profile with identity MHC2 for this intermediate pass.
+   payload.calibration_mode='none';
+   payload.include_vcgt=false;
+  }else if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-provisional'){
+   payload.name=String(meterIccRunConfig.name||'PGenerator+ display profile')+' MHC2 Peak Probe';
+  }
   delete payload.steps;
   delete payload.reused_readings;
   delete payload.precondition_reused_readings;
   delete payload.reuse_source_readings;
+  delete payload.raw_profile_readings;
+  delete payload.mhc2_seed_file;
+  delete payload.mhc2_provisional_file;
   // Stay beyond the server's four-hour runaway guard. Ultra cLUT fitting on
   // the Pi can legitimately exceed two hours when desktop offload is absent.
   const response=await fetchJSON('/api/icc/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15010000});
   if(!response||response.status!=='ok') throw new Error(response&&response.message?response.message:'Profile build failed');
   buildElapsed=meterIccStopBuildClock(buildClock,true);
+  if(needsActiveMhc2){
+   const activeSteps=meterIccActiveMhc2Steps();
+   meterIccRunConfig.raw_profile_readings=profileReadings;
+   meterIccRunConfig.mhc2_seed_file=response.file;
+   meterIccRunConfig.stage='mhc2-active';
+   meterIccRunConfig.steps=activeSteps;
+   if(status) status.textContent='Initial profile built. Applying it to measure the active Windows MHC2 path...';
+   meterIccSetProgress('Applying initial MHC2 profile',0,activeSteps.length);
+   await meterIccApplyProfileForActiveMhc2(response.file);
+   if(status) status.textContent='Initial profile applied. Measuring '+activeSteps.length+' active Windows MHC2 patches...';
+   meterIccSetProgress('Starting active Windows MHC2 characterization',0,activeSteps.length);
+   await meterIccLaunchMeasurementSeries(activeSteps,meterIccRunConfig.profile_type,'companion');
+   continuedWithActiveMhc2=true;
+   return;
+  }
+  if(meterIccRunConfig&&meterIccRunConfig.stage==='mhc2-provisional'){
+   const peakSteps=meterIccMhc2PeakCandidateSteps(response.mhc2_peak_codes);
+   meterIccRunConfig.mhc2_provisional_file=response.file;
+   meterIccRunConfig.stage='mhc2-peak';
+   meterIccRunConfig.steps=peakSteps;
+   if(status) status.textContent='Peak probe profile built. Measuring the proposed neutral shoulder...';
+   meterIccSetProgress('Applying null MHC2 profile for peak probes',0,peakSteps.length);
+   await meterIccApplyProfileForActiveMhc2(meterIccRunConfig.mhc2_seed_file);
+   meterIccSetProgress('Starting MHC2 peak probes',0,peakSteps.length);
+   await meterIccLaunchMeasurementSeries(peakSteps,meterIccRunConfig.profile_type,'companion');
+   continuedWithActiveMhc2=true;
+   return;
+  }
   if(status){
    const windowsMhc=meterIccRunConfig&&(meterIccRunConfig.profile_type==='windows-sdr'||meterIccRunConfig.profile_type==='windows-hdr');
    const transferText=response.target_transfer?(' Target response curve: '+meterIccTargetTransferInfo(response.target_transfer).label+'.'):'';
@@ -3014,6 +3190,14 @@ async function meterIccBuild(readings){
   if(retry) retry.style.display='';
   toast('ICC profile created');
   await meterIccLoadProfiles();
+  if(meterIccRunConfig&&meterIccRunConfig.mhc2_seed_file){
+   try{
+    await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_seed_file}),_quiet:true,_timeoutMs:5000});
+    if(meterIccRunConfig.mhc2_provisional_file)
+     await fetchJSON('/api/icc/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:meterIccRunConfig.mhc2_provisional_file}),_quiet:true,_timeoutMs:5000});
+    await meterIccLoadProfiles();
+   }catch(_error){}
+  }
   // The profile and profcheck are complete before the self-check modal opens.
   // Clear every ICC-owned busy flag now so the workspace cannot remain stuck
   // on "Building" behind the modal if another browser starts a meter read.
@@ -3033,17 +3217,22 @@ async function meterIccBuild(readings){
  }finally{
   meterIccStopBuildClock(buildClock,false);
   meterIccBuildPending=false;
-  meterIccStarting=false;
-  meterActionPending=false;
-  meterIccSetRunning(false);
-  const stopButton=document.getElementById('meterIccStopBtn');
-  if(stopButton) stopButton.style.display='none';
-  meterIccSyncUi();
-  meterUpdateReadButtons();
-  await meterIccRestoreCompanionCorrectionAfterProfile();
-  // The session is over: hand the desktop back instead of leaving the patch
-  // window covering the display until the next run re-applies fullscreen.
-  meterIccPushCompanionDisplaySettings(false,undefined,'window');
+  if(continuedWithActiveMhc2){
+   meterIccSyncUi();
+   meterUpdateReadButtons();
+  }else{
+   meterIccStarting=false;
+   meterActionPending=false;
+   meterIccSetRunning(false);
+   const stopButton=document.getElementById('meterIccStopBtn');
+   if(stopButton) stopButton.style.display='none';
+   meterIccSyncUi();
+   meterUpdateReadButtons();
+   await meterIccRestoreCompanionCorrectionAfterProfile();
+   // The session is over: hand the desktop back instead of leaving the patch
+   // window covering the display until the next run re-applies fullscreen.
+   meterIccPushCompanionDisplaySettings(false,undefined,'window');
+  }
  }
 }
 
