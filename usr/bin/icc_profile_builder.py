@@ -5678,16 +5678,9 @@ def build(payload, output_dir):
             final_rgb_adjustment, (1.0, 1.0, 1.0))
 
         if str(payload.get("stage", "")) == "mhc2-final":
-            try:
-                validate_profile_curve_feedback_recoverable(
-                    mhc2_profile_rows, "ICC MHC2 Curve Feedback",
-                    calibrated_white)
-            except ValueError as exc:
-                # Preserve the diagnostic while allowing this explicitly
-                # requested hardware-validation build to be measured. The
-                # final acceptance gate, not a self-check, decides whether
-                # this candidate is shippable.
-                print("WARNING: %s" % exc, file=sys.stderr)
+            validate_profile_curve_feedback_recoverable(
+                mhc2_profile_rows, "ICC MHC2 Curve Feedback",
+                calibrated_white)
 
         # Correct the explicit cLUT path only from variants that changed its
         # actual B2A neutral corridor. A profile that already meets the target
