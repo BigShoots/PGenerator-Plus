@@ -408,6 +408,10 @@ MHC2_HDR_NEUTRAL_HEADROOM = 0.95
 MHC2_CURVE_FEEDBACK_DELTA = 4.0 / 1023.0
 MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
+# Shadow chroma closer to D65 than this is treated as already neutral. Near
+# black the measured chromaticity carries real meter noise, and solving inside
+# that noise trades an invisible error for a visible tint.
+MHC2_SHADOW_CHROMA_DEADBAND = 0.003
 
 
 def mhc2_lut_entries(profile_type):
@@ -1899,29 +1903,43 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
         jacobian = [[columns[column][axis] for column in range(3)]
                     for axis in range(3)]
         source_code = code / float(probes["R+"]["input_max"])
-        target_y = min(pq_to_nits(source_code), calibrated_peak)
         d65 = (0.3127 / 0.3290, 1.0,
                (1.0 - 0.3127 - 0.3290) / 0.3290)
+        # Luminance in this region is already owned by the measured neutral
+        # ramp in apply_mhc2_active_neutral_luminance.  Solving the absolute
+        # PQ target here as well double-counts the common drive, which is what
+        # drove codes 205/307 outside their probe hull on the coherent chain.
+        # Target D65 chromaticity at the luminance the panel actually produced,
+        # so this stage contributes a pure chroma rotation and the two stages
+        # stay separable.
+        center_y = center_xyz[1]
+        if center_y <= 1e-9:
+            continue
+        center_total = sum(center_xyz)
+        if center_total <= 1e-9:
+            continue
+        center_error = math.hypot(center_xyz[0] / center_total - 0.3127,
+                                  center_xyz[1] / center_total - 0.3290)
+        # An already neutral corridor must be left alone.  Near black the
+        # measured chroma carries real meter noise, and solving inside that
+        # noise injects a visible tint where there was none.
+        if center_error <= MHC2_SHADOW_CHROMA_DEADBAND:
+            continue
         delta = mat_vec_mul(mat_inv(jacobian), [
-            target_y * d65[axis] - center_xyz[axis] for axis in range(3)
+            center_y * d65[axis] - center_xyz[axis] for axis in range(3)
         ])
         center_code = [
             0.5 * (probes[channel + "-"]["rgb"][index]
                    + probes[channel + "+"]["rgb"][index])
             for index, channel in enumerate("RGB")
         ]
-        # The neutral luminance fit above has already moved the common drive
-        # onto the measured active ramp.  Applying the full absolute-D65
-        # Jacobian move here then double-counts the chroma residual in the
-        # overlapping shadow region.  The fresh coherent chain exposed this
-        # at code 205/307: the full move drove x/y to .2978/.3180 and
-        # .3001/.3017, outside the measured +/-4-code hull.  Keep the local
-        # correction bounded to half the measured move; the signed feedback
-        # stages close the remaining residual without extrapolating.
-        damped_delta = [0.25 * value for value in delta]
+        # With the target corrected to pure chroma this is a well aimed
+        # one-step Newton move, so apply it in full and let the bound below
+        # cap any pathological solve.  Damping a correctly aimed move only
+        # leaves a residual too large for the feedback hull to close.
         target_codes = [max(center_code[channel] - 0.03,
                             min(center_code[channel] + 0.03,
-                                center_code[channel] + damped_delta[channel]))
+                                center_code[channel] + delta[channel]))
                         for channel in range(3)]
         current = []
         source_nits = pq_to_nits(source_code)
