@@ -50568,6 +50568,12 @@ function drawColorSeriesAverages(readings,colorRefMode){
  let html='';
  if(isSat){
   order.forEach(k=>{html+=rowFor(k,groups[k],false);});
+ } else if(groups['Out of gamut']){
+  // Reference patches the solve gamut cannot reach carry an unavoidable
+  // error; show them on their own row so the in-gamut figure reflects what
+  // the display was actually asked to do.
+  if(groups['All']) html+=rowFor('In gamut',groups['All'],false);
+  html+=rowFor('Out of gamut '+METER_OUT_OF_GAMUT_MARK,groups['Out of gamut'],false);
  }
  const overall={de:[],dx:[],dy:[],Y:[],color:'#888'};
  Object.keys(groups).forEach(k=>{
