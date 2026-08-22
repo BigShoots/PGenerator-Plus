@@ -2533,8 +2533,8 @@ function meterIccProfileReadings(readings){
 }
 
 // Transform-stability sentinels repeated at the start and end of the active
-// characterization. Codes 102 and 153 are the most transform-discriminating
-// neutral stimuli: the observed mid-series transform change moved them almost
+// characterization. Codes 102 and 153 are the most regime-discriminating
+// neutral stimuli: the observed mid-series regime change moved them almost
 // 2x while codes 205 and up stayed within 2%. The builder excludes sentinel
 // rows from every fit by name; they exist only to prove series integrity.
 function meterIccActiveMhc2SentinelSteps(position){
@@ -2544,21 +2544,51 @@ function meterIccActiveMhc2SentinelSteps(position){
  }));
 }
 
+// Panel near-black history normalization. Hardware evidence from series
+// colors_1787357420877_244362 (2026-08-22, QD-OLED): with one PROVEN stable
+// Windows transform (pre/post sentinels agreed within 0.6%), neutral codes at
+// or below 153 read up to 1.85x low after minutes of sustained near-black
+// content, and recovered within seconds once content reached a few cd/m2
+// (codes 205 and up stayed within 2% throughout the same series). Every dark
+// row is therefore preceded by a short mid-grey flush patch so low-luminance
+// rows are always measured in the same recovered state that verification
+// reads and real content see. Flush rows repeat a stimulus the ladder already
+// contains and are excluded from every fit and check by name.
+const METER_ICC_FLUSH_CODE=256;
+const METER_ICC_FLUSH_MAX_CODE=160;
+
+function meterIccActiveMhc2FlushStep(index){
+ return {
+  ire:100*METER_ICC_FLUSH_CODE/1023,
+  r:METER_ICC_FLUSH_CODE,g:METER_ICC_FLUSH_CODE,b:METER_ICC_FLUSH_CODE,
+  input_max:1023,name:'ICC MHC2 Flush '+index
+ };
+}
+
 function meterIccActiveMhc2Steps(){
  const neutralCodes=[0,20,25,30,35,40,45,51,61,72,82,92,102,128,153,205,256,307,358,409,460,512,563,614,665,716,767,818,870,921,972,1023];
  const axisCodes=[20,62,135,251,441,648,778,934,1023];
  const shadowCodes=[102,153,205,256];
- const steps=meterIccActiveMhc2SentinelSteps('Pre');
- neutralCodes.forEach(code=>steps.push({
+ const steps=[];
+ let flushIndex=0;
+ const pushWithFlush=step=>{
+  if(Math.max(step.r,step.g,step.b)<=METER_ICC_FLUSH_MAX_CODE){
+   flushIndex+=1;
+   steps.push(meterIccActiveMhc2FlushStep(flushIndex));
+  }
+  steps.push(step);
+ };
+ meterIccActiveMhc2SentinelSteps('Pre').forEach(pushWithFlush);
+ neutralCodes.forEach(code=>pushWithFlush({
   ire:100*code/1023,r:code,g:code,b:code,input_max:1023,
   name:'ICC MHC2 Active Grey '+code
  }));
- ['R','G','B'].forEach(channel=>axisCodes.forEach(code=>steps.push({
+ ['R','G','B'].forEach(channel=>axisCodes.forEach(code=>pushWithFlush({
   ire:100*code/(3*1023),
   r:channel==='R'?code:0,g:channel==='G'?code:0,b:channel==='B'?code:0,
   input_max:1023,name:'ICC MHC2 Active Axis '+channel+' '+code
  })));
- ['R','G','B'].forEach(channel=>[-12,12].forEach(delta=>steps.push({
+ ['R','G','B'].forEach(channel=>[-12,12].forEach(delta=>pushWithFlush({
   ire:100*(767+delta)/1023,
   r:767+(channel==='R'?delta:0),
   g:767+(channel==='G'?delta:0),
@@ -2566,7 +2596,7 @@ function meterIccActiveMhc2Steps(){
   input_max:1023,
   name:'ICC Neutral Jacobian 0767 '+channel+(delta<0?'-':'+')
  })));
- shadowCodes.forEach(code=>['R','G','B'].forEach(channel=>[-4,4].forEach(delta=>steps.push({
+ shadowCodes.forEach(code=>['R','G','B'].forEach(channel=>[-4,4].forEach(delta=>pushWithFlush({
   ire:100*(3*code+delta)/(3*1023),
   r:code+(channel==='R'?delta:0),
   g:code+(channel==='G'?delta:0),
@@ -2574,7 +2604,7 @@ function meterIccActiveMhc2Steps(){
   input_max:1023,
   name:'ICC MHC2 Shadow Jacobian '+code+' '+channel+(delta<0?'-':'+')
  }))));
- steps.push(...meterIccActiveMhc2SentinelSteps('Post'));
+ meterIccActiveMhc2SentinelSteps('Post').forEach(pushWithFlush);
  return steps;
 }
 

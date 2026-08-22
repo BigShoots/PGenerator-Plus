@@ -951,19 +951,25 @@ def validate_mhc2_active_shadow_coverage(rows):
 
 MHC2_ACTIVE_SENTINEL_PREFIX = "ICC MHC2 Active Sentinel "
 MHC2_INSTALL_SENTINEL_PREFIX = "ICC MHC2 Install Sentinel "
+MHC2_FLUSH_PREFIX = "ICC MHC2 Flush "
 
 
 def is_mhc2_sentinel_name(name):
-    """Return whether a row is a transform-stability sentinel read.
+    """Return whether a row is a measurement-protocol row, not a fit input.
 
     Sentinel rows exist only to prove the applied Windows transform did not
-    change while a series ran.  They repeat stimuli that the characterization
-    already contains, so letting them into any fit would double-weight those
-    codes and, after a detected drift, blend two different transforms.
+    change while a series ran.  Flush rows exist only to normalize the
+    panel's near-black history before a dark patch is read (QD-OLED panels
+    were measured reading up to 1.85x low at codes <= 153 after minutes of
+    sustained near-black content, with full recovery seconds after mid-grey
+    content).  Both repeat stimuli the characterization already contains, so
+    letting them into any fit would double-weight those codes or blend
+    different panel history states.
     """
     name = str(name)
     return (name.startswith(MHC2_ACTIVE_SENTINEL_PREFIX)
-            or name.startswith(MHC2_INSTALL_SENTINEL_PREFIX))
+            or name.startswith(MHC2_INSTALL_SENTINEL_PREFIX)
+            or name.startswith(MHC2_FLUSH_PREFIX))
 
 
 # Both thresholds are generic and sized from hardware evidence, not from any
