@@ -5682,7 +5682,7 @@ def build(payload, output_dir):
                 validate_profile_curve_feedback_recoverable(
                     mhc2_profile_rows, "ICC MHC2 Curve Feedback",
                     calibrated_white)
-            except RuntimeError as exc:
+            except ValueError as exc:
                 # Preserve the diagnostic while allowing this explicitly
                 # requested hardware-validation build to be measured. The
                 # final acceptance gate, not a self-check, decides whether
