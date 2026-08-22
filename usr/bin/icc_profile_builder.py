@@ -1910,9 +1910,18 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
                    + probes[channel + "+"]["rgb"][index])
             for index, channel in enumerate("RGB")
         ]
+        # The neutral luminance fit above has already moved the common drive
+        # onto the measured active ramp.  Applying the full absolute-D65
+        # Jacobian move here then double-counts the chroma residual in the
+        # overlapping shadow region.  The fresh coherent chain exposed this
+        # at code 205/307: the full move drove x/y to .2978/.3180 and
+        # .3001/.3017, outside the measured +/-4-code hull.  Keep the local
+        # correction bounded to half the measured move; the signed feedback
+        # stages close the remaining residual without extrapolating.
+        damped_delta = [0.5 * value for value in delta]
         target_codes = [max(center_code[channel] - 0.03,
                             min(center_code[channel] + 0.03,
-                                center_code[channel] + delta[channel]))
+                                center_code[channel] + damped_delta[channel]))
                         for channel in range(3)]
         current = []
         source_nits = pq_to_nits(source_code)
