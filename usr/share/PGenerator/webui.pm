@@ -4907,9 +4907,14 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      }
      my @codes=map { int($min_code+$_*$span_code+.5) } @source_signal;
      my @linear=map { $decode_linear->($span_code>0?(($_-$min_code)/$span_code):0) } @codes;
-     my $X=$RGB_TO_XYZ[0][0]*$linear[0]+$RGB_TO_XYZ[0][1]*$linear[1]+$RGB_TO_XYZ[0][2]*$linear[2];
-     my $Y=$RGB_TO_XYZ[1][0]*$linear[0]+$RGB_TO_XYZ[1][1]*$linear[1]+$RGB_TO_XYZ[1][2]*$linear[2];
-     my $Z=$RGB_TO_XYZ[2][0]*$linear[0]+$RGB_TO_XYZ[2][1]*$linear[1]+$RGB_TO_XYZ[2][2]*$linear[2];
+     # These fixed-code libraries are specific authored colors: the Rec.709
+     # interpretation of their video RGB percentages. Their targets must stay
+     # constant across target colorspaces; only primaries, secondaries and sat
+     # sweeps follow the selected gamut.
+     my @FIXED=@{$primaries{bt709}{RGB_TO_XYZ}};
+     my $X=$FIXED[0][0]*$linear[0]+$FIXED[0][1]*$linear[1]+$FIXED[0][2]*$linear[2];
+     my $Y=$FIXED[1][0]*$linear[0]+$FIXED[1][1]*$linear[1]+$FIXED[1][2]*$linear[2];
+     my $Z=$FIXED[2][0]*$linear[0]+$FIXED[2][1]*$linear[1]+$FIXED[2][2]*$linear[2];
      my $sum=$X+$Y+$Z;
      return (\@codes,$sum>0?$X/$sum:$target_wx,$sum>0?$Y/$sum:$target_wy,$Y,$Y);
     };
@@ -23890,7 +23895,7 @@ function meterHcfrGcdColorCheckerSource(){
 function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
  const steps=[];
  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
- const gamut=meterAnalysisGamut(),wp=meterTargetWhitePoint();
+ const wp=meterTargetWhitePoint();
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const signalMode=String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
  const hcfrSeries=/^hcfr(?:-|$)/.test(String(seriesMode||'').toLowerCase());
@@ -23927,7 +23932,11 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
    codes=(signalMode==='sdr')
     ?sourceSignal.map(v=>Math.round(min+v*span))
     :linear.map(v=>meterEncodeColorCheckerLinear(v));
-   xyz=linRgbToXyz(linear[0],linear[1],linear[2],gamut.rgbToXyz);
+   // These fixed-code libraries are specific authored colors: the Rec.709
+   // interpretation of their video RGB percentages. Their targets must stay
+   // constant across target colorspaces; only primaries, secondaries and sat
+   // sweeps follow the selected gamut.
+   xyz=linRgbToXyz(linear[0],linear[1],linear[2],GAMUT_PRESETS.bt709.rgbToXyz);
    nominalY=xyz.Y;
   }
   const sum=xyz.X+xyz.Y+xyz.Z;
