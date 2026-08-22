@@ -2640,8 +2640,15 @@ function meterIccCurveFeedbackSteps(label,variant,includePeak){
  const signedVariant=String(variant||'');
  const namePart=signedVariant
   ?(signedVariant+(/[+-]$/.test(signedVariant)?' ':'+ ')):'Base ';
- const steps=[102,153,205,256,307,358].map(code=>meterIccMhc2PeakStep(
-  label+' '+namePart+code,code,code,code));
+ const steps=[];
+ let flushIndex=0;
+ [102,153,205,256,307,358].forEach(code=>{
+  if(code<=METER_ICC_FLUSH_MAX_CODE){
+   flushIndex+=1;
+   steps.push(meterIccActiveMhc2FlushStep(flushIndex));
+  }
+  steps.push(meterIccMhc2PeakStep(label+' '+namePart+code,code,code,code));
+ });
  if(includePeak) steps.push(...meterIccMhc2FinalFeedbackStep(
   'ICC MHC2 Final Feedback '+(signedVariant?(signedVariant+'+'):'Base')));
  return steps;
