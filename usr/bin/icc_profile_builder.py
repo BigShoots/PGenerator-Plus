@@ -2200,7 +2200,11 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                                  predicted)
                     if best is None or candidate[:2] < best[:2]:
                         best = candidate
-        accepted = (best is not None and best[0] < current_error * 0.92
+        # The flushed feedback chain can leave a small residual outside the
+        # strict 8% improvement gate after the neutral fit has already moved
+        # the same anchor. Preserve the convex-hull requirement, but permit a
+        # measured local closure when it improves the chroma error at least 2%.
+        accepted = (best is not None and best[0] < current_error * 0.98
                     and max(abs(value) for value in best[2]) >= 0.00015)
         predicted_chroma_error = float("inf")
         if best is not None:
