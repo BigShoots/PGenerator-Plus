@@ -758,7 +758,7 @@ for field in (
 	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
     "series_target_white_y", "lg_target_white_y", "series_target_black_y",
 	"series_type", "series_color", "sat_pct", "point_role", "series_mode",
-	"series_white_reference",
+	"series_white_reference", "reference_out_of_gamut",
 	"icc_reuse_signature",
     "autocal_code", "autocal_white_reference", "autocal_reference_only",
     "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",

@@ -3390,7 +3390,13 @@ sub webui_meter_gamut_definitions (@) {
     label=>'BT.709 / D65',
     WHITE=>['0.3127','0.3290'],
     PRIMARIES=>{R=>['0.64','0.33'],G=>['0.30','0.60'],B=>['0.15','0.06']},
-    M=>[['3.2406','-1.5372','-0.4986'],['-0.9689','1.8758','0.0415'],['0.0557','-0.2040','1.0570']],
+    # Exact inverse of RGB_TO_XYZ. The former 4-decimal sRGB matrix was not
+    # the inverse of the 7-decimal forward matrix (identity error 2e-4), so a
+    # Rec.709 RGB -> XYZ -> RGB round trip did not return the input: a
+    # clipped zero channel came back non-zero (up to ~1e-4 linear, code 18-21
+    # at gamma 2.4) and in-gamut reference colours were falsely flagged out of
+    # gamut. The other presets are mutually inverse to 1e-10.
+    M=>[['3.2404548360','-1.5371388501','-0.4985315469'],['-0.9692663899','1.8760109288','0.0415560823'],['0.0556434196','-0.2040258543','1.0572251625']],
     RGB_TO_XYZ=>[['0.4124564','0.3575761','0.1804375'],['0.2126729','0.7151522','0.0721750'],['0.0193339','0.1191920','0.9503041']]
    },
    bt2020=>{
@@ -3442,6 +3448,26 @@ sub webui_meter_gamut_js_literal (@) {
    " }";
  }
  return "{\n".join(",\n",@blocks)."\n}";
+}
+
+# Bradford chromatic adaptation of XYZ from one white (xy) to another. Mirrors
+# meterBradfordAdaptXyz in the WebUI: reference ColorChecker colours are
+# D65-referred and must be adapted to the target white so their appearance
+# relative to white (what the relative-colorimetric dE scores) is unchanged.
+sub webui_meter_bradford_adapt_xyz (@) {
+ my ($X,$Y,$Z,$fx,$fy,$tx,$ty)=@_;
+ return ($X,$Y,$Z) unless($fx>0 && $fy>0 && $tx>0 && $ty>0);
+ return ($X,$Y,$Z) if(abs($fx-$tx)<1e-7 && abs($fy-$ty)<1e-7);
+ my @M=([0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]);
+ my @MI=([0.9869929,-0.1470543,0.1599627],[0.4323053,0.5183603,0.0492912],[-0.0085287,0.0400428,0.9684867]);
+ my $mul=sub { my ($m,$v)=@_; return map { my $r=$_; $$m[$r][0]*$$v[0]+$$m[$r][1]*$$v[1]+$$m[$r][2]*$$v[2] } (0,1,2); };
+ my @ws=($fx/$fy,1,(1-$fx-$fy)/$fy);
+ my @wd=($tx/$ty,1,(1-$tx-$ty)/$ty);
+ my @cs=$mul->(\@M,\@ws);
+ my @cd=$mul->(\@M,\@wd);
+ my @c=$mul->(\@M,[$X,$Y,$Z]);
+ my @scaled=map { $c[$_]*($cs[$_]!=0 ? $cd[$_]/$cs[$_] : 1) } (0,1,2);
+ return $mul->(\@MI,\@scaled);
 }
 
 sub _webui_meter_lg_autocal_norm_text (@) {
@@ -3741,6 +3767,14 @@ sub webui_custom_series_steps_from_body (@) {
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
   $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  # ColorChecker-style steps record whether their reference colour lies
+  # outside the solve gamut (reference_out_of_gamut, emitted as a boolean by
+  # the client and by the server-built Classic series). Recorded either way
+  # so the reading is self-describing and the chart does not have to re-derive
+  # the answer from whichever target colourspace is selected at view time.
+  if($obj=~/"reference_out_of_gamut"\s*:\s*(true|false|1|0)\b/) {
+   $step.=",\"reference_out_of_gamut\":".(($1 eq "true" || $1 eq "1")?"true":"false");
+  }
   $step.="}";
   push @out,$step;
  }
@@ -4092,6 +4126,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   if($signal_mode eq "dv") {
    return &webui_pattern_pq_encode_normalized($v*10000) if($dv_map_mode eq "1");
    return $v;
+  }
+  if($signal_mode eq "hlg") {
+   # ITU-R BT.2100 HLG OETF, mirroring the WebUI hlgOetf /
+   # meterTargetLinearToSignal. Without this branch HLG falls through to the
+   # SDR target-gamma encode below.
+   my $x=$v*12;
+   return ($x<=1) ? 0.5*sqrt($x) : 0.17883277*log($x-0.28466892)+0.55991073;
   }
   if($target_gamma eq "srgb") {
    return ($v<=0.0031308) ? 12.92*$v : 1.055*($v**(1/2.4))-0.055;
@@ -4864,6 +4905,84 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       ["Magenta","hcfr_rgb",73.06,32.88,57.08],["Cyan","hcfr_rgb",0,52.05,63.93]
      );
     }
+    # Shared reference-colour solver (mirrors meterBuildColorCheckerStepsJS):
+    # a D65-referred reference xyY is adapted (Bradford) to the target white,
+    # solved into the active solve gamut, flagged reference_out_of_gamut when a channel
+    # clipped below 0 or had to be renormalised (target_Yn follows the
+    # renormalisation), encoded for the signal mode, and the adapted
+    # reference stays the target. Returns
+    # (r,g,b,target_x,target_y,target_Yn,reference_Yn,reference_out_of_gamut).
+    my $build_reference_color=sub {
+     my ($target_x,$target_y,$Yn)=@_;
+     $Yn=0 if(!defined $Yn || $Yn<0);
+     if($target_y>0) {
+      my ($aX,$aY,$aZ)=&webui_meter_bradford_adapt_xyz($target_x/$target_y*$Yn,$Yn,(1-$target_x-$target_y)/$target_y*$Yn,0.3127,0.3290,$target_wx,$target_wy);
+      my $asum=$aX+$aY+$aZ;
+      ($target_x,$target_y)=($asum>0?$aX/$asum:$target_wx,$asum>0?$aY/$asum:$target_wy);
+      $Yn=$aY>0?$aY:0;
+     }
+      my ($emit_x,$emit_y)=($target_x,$target_y);
+      ($emit_x,$emit_y)=$remap_relative_dv_color_xy->($emit_x,$emit_y);
+      # Absolute DV uses the requested ColorChecker chromaticity directly.
+      # The former inward pre-compression moved every patch toward white
+      # before RGB solving, so a correctly tracking display necessarily
+      # measured undersaturated against the uncompressed chart target.
+        my $X=$emit_y>0 ? $emit_x/$emit_y*$Yn : 0;
+     my $Y=$Yn;
+        my $Z=$emit_y>0 ? (1-$emit_x-$emit_y)/$emit_y*$Yn : 0;
+     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
+     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
+     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
+     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
+     my $mn=$rl;$mn=$gl if $gl<$mn;$mn=$bl if $bl<$mn;
+     my $oog=($mn < -1e-6) ? 1 : 0;
+     my $stimulus_scale=1;
+     if($mx>1+1e-6){$rl/=$mx;$gl/=$mx;$bl/=$mx;$stimulus_scale=1/$mx;$oog=1;}
+     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
+      # BT.2408 HDR ColorChecker: all reflectance patches anchor to 203
+      # cd/m^2 in HDR10 and DV-Absolute. SDR / DV-Relative / HLG keep the
+      # original behavior.
+      my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+      my $r;
+      my $g;
+      my $b;
+      my $scaled_Yn=$Yn*$stimulus_scale;
+      my $target_Yn_for_step=$scaled_Yn;
+      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
+       # HDR10 and DV-Absolute chromatic patches anchor to 203 cd/m^2
+       # (BT.2408 HDR Reference White) and use PQ code values.
+       # so the chart stimulus is the recognized HDR reference rather than
+       # the measured white. Bake target_Yn so target_Yn * measured_white
+       # still equals the absolute luminance the stimulus drives (Yn * 203).
+       $r=$encode_linear->($rl,$bt2408_ref_white_nits);
+       $g=$encode_linear->($gl,$bt2408_ref_white_nits);
+       $b=$encode_linear->($bl,$bt2408_ref_white_nits);
+       $target_Yn_for_step=$scaled_Yn*$bt2408_ref_white_nits/$cc_white;
+      } else {
+       # SDR / HLG / DV-Relative use their mode-specific encoder. Relative DV
+       # retains the classic 0.68 scale and gamma-2.2 patch tunnel.
+       $r=$encode_linear->($rl);
+       $g=$encode_linear->($gl);
+       $b=$encode_linear->($bl);
+       if($signal_mode eq "dv" && $span_code>0) {
+        my $r_norm=($r-$min_code)/$span_code;
+        my $g_norm=($g-$min_code)/$span_code;
+        my $b_norm=($b-$min_code)/$span_code;
+        $r_norm=0 if($r_norm < 0); $r_norm=1 if($r_norm > 1);
+        $g_norm=0 if($g_norm < 0); $g_norm=1 if($g_norm > 1);
+        $b_norm=0 if($b_norm < 0); $b_norm=1 if($b_norm > 1);
+       my $r_lin=$decode_linear->($r_norm);
+       my $g_lin=$decode_linear->($g_norm);
+       my $b_lin=$decode_linear->($b_norm);
+        $target_Yn_for_step=
+         $RGB_TO_XYZ[1][0]*$r_lin+
+         $RGB_TO_XYZ[1][1]*$g_lin+
+         $RGB_TO_XYZ[1][2]*$b_lin;
+        $target_Yn_for_step=0 if($target_Yn_for_step < 0);
+       }
+      }
+     return ($r,$g,$b,$target_x,$target_y,$target_Yn_for_step,$Yn,$oog);
+    };
     my $build_hcfr_fixed_rgb=sub {
      my ($r_pct,$g_pct,$b_pct)=@_;
      my @source_signal=map { my $v=($_+0)/100; $v=0 if($v<0); $v=1 if($v>1); $v } ($r_pct,$g_pct,$b_pct);
@@ -4897,7 +5016,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       my $tY=$DST[1][0]*$decoded[0]+$DST[1][1]*$decoded[1]+$DST[1][2]*$decoded[2];
       my $tZ=$DST[2][0]*$decoded[0]+$DST[2][1]*$decoded[1]+$DST[2][2]*$decoded[2];
       my $sum=$tX+$tY+$tZ;
-      my $tx=$sum>0?$tX/$sum:$target_wx; my $ty=$sum>0?$tY/$sum:$target_wy;
+      # Neutral rows target the active white point, as the reference solver does.
+      my $hcfr_neutral=(abs($source_signal[0]-$source_signal[1])<1e-9 && abs($source_signal[1]-$source_signal[2])<1e-9) ? 1 : 0;
+      my $tx=($hcfr_neutral || $sum<=0)?$target_wx:$tX/$sum; my $ty=($hcfr_neutral || $sum<=0)?$target_wy:$tY/$sum;
       my $target_Yn=$tY;
       if($signal_mode eq "hdr10") {
        my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
@@ -4905,25 +5026,62 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
       }
       return (\@codes,$tx,$ty,$target_Yn,$Y);
      }
-     my @codes=map { int($min_code+$_*$span_code+.5) } @source_signal;
-     my @linear=map { $decode_linear->($span_code>0?(($_-$min_code)/$span_code):0) } @codes;
-     # These fixed-code libraries are specific authored colors: the Rec.709
-     # interpretation of their video RGB percentages. Their targets must stay
-     # constant across target colorspaces; only primaries, secondaries and sat
-     # sweeps follow the selected gamut.
+     # SDR and relative DV: these fixed-code libraries are specific colours --
+     # the Rec.709 interpretation of their authored video codes. Decode (SDR
+     # at the target transfer, relative DV at gamma 2.4), take the Rec.709 XYZ
+     # as the reference and hand it to the shared reference solver, which
+     # adapts to the target white, re-solves the stimulus into the active
+     # solve gamut and keeps the reference as the target. In BT.709 SDR at D65
+     # this reproduces the authored codes; with a custom white or a wider
+     # colourspace the codes change and the colour does not.
+     my @linear=($signal_mode eq "sdr")
+      ? (map { $target_signal_to_linear->($_) } @source_signal)
+      : (map { $_**2.4 } @source_signal);
      my @FIXED=@{$primaries{bt709}{RGB_TO_XYZ}};
      my $X=$FIXED[0][0]*$linear[0]+$FIXED[0][1]*$linear[1]+$FIXED[0][2]*$linear[2];
      my $Y=$FIXED[1][0]*$linear[0]+$FIXED[1][1]*$linear[1]+$FIXED[1][2]*$linear[2];
      my $Z=$FIXED[2][0]*$linear[0]+$FIXED[2][1]*$linear[1]+$FIXED[2][2]*$linear[2];
+     my $neutral=(abs($source_signal[0]-$source_signal[1])<1e-9 && abs($source_signal[1]-$source_signal[2])<1e-9) ? 1 : 0;
+     if($neutral && ($source_signal[0]>=1-1e-9 || $source_signal[0]<=1e-9)) {
+      # Full-scale / zero rows are the library's video endpoints: full or
+      # minimum code, unit-relative target, exactly like the Classic
+      # White/Black endpoint steps.
+      my $code=($source_signal[0]>=1-1e-9)?$max_code:$min_code;
+      my $level=($source_signal[0]>=1-1e-9)?1:0;
+      return ([$code,$code,$code],$target_wx,$target_wy,$level,$level,0);
+     }
+     if($neutral || $Y<=0) {
+      # Neutral: the authored wire code is kept exactly in SDR; the target is
+      # the target white at the decoded luminance. HDR10 / Absolute DV anchor
+      # to the BT.2408 reference white and Relative DV re-decodes the emitted
+      # code, exactly as the Classic gray branch below does.
+      my $level=$Y>0?$Y:0;
+      my $absolute_hdr=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 1 : 0;
+      my $code=($signal_mode eq "sdr")
+       ? int($min_code+$source_signal[0]*$span_code+.5)
+       : ($absolute_hdr ? $encode_linear->($level,$bt2408_ref_white_nits) : $encode_linear->($level));
+      my $target_Yn=$level;
+      if($absolute_hdr) {
+       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+       $target_Yn=$cc_white>0 ? $level*$bt2408_ref_white_nits/$cc_white : 0;
+      } elsif($signal_mode eq "dv" && $span_code>0) {
+       my $norm=($code-$min_code)/$span_code;
+       $norm=0 if($norm<0); $norm=1 if($norm>1);
+       $target_Yn=$decode_linear->($norm);
+       $target_Yn=0 if($target_Yn<0);
+      }
+      return ([$code,$code,$code],$target_wx,$target_wy,$target_Yn,$level,0);
+     }
      my $sum=$X+$Y+$Z;
-     return (\@codes,$sum>0?$X/$sum:$target_wx,$sum>0?$Y/$sum:$target_wy,$Y,$Y);
+     my ($r,$g,$b,$tx,$ty,$target_Yn,$nominal_Y,$oog)=$build_reference_color->($X/$sum,$Y/$sum,$Y);
+     return ([$r,$g,$b],$tx,$ty,$target_Yn,$nominal_Y,$oog);
     };
     if($points==29) {
      foreach my $endpoint (["White",100,100,100],["Black",0,0,0]) {
       my ($name,$rp,$gp,$bp)=@$endpoint;
-      my ($codes,$tx,$ty,$target_Yn,$nominal_Y)=$build_hcfr_fixed_rgb->($rp,$gp,$bp);
+      my ($codes,$tx,$ty,$target_Yn,$nominal_Y,$oog)=$build_hcfr_fixed_rgb->($rp,$gp,$bp);
       my $ire=int($nominal_Y*100+.5);
-      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\"}";
+      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\",\"reference_out_of_gamut\":".($oog?"true":"false")."}";
      }
     } else {
      push @steps, "{\"ire\":100,\"r\":$max_code,\"g\":$max_code,\"b\":$max_code,\"name\":\"White\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":1,\"input_max\":$chroma_input_max}";
@@ -4932,9 +5090,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     foreach my $src (@classic) {
      my ($name,$kind,@vals)=@$src;
 	     if($kind eq "hcfr_rgb") {
-	      my ($codes,$tx,$ty,$target_Yn,$nominal_Y)=$build_hcfr_fixed_rgb->(@vals[0..2]);
+	      my ($codes,$tx,$ty,$target_Yn,$nominal_Y,$oog)=$build_hcfr_fixed_rgb->(@vals[0..2]);
 	      my $ire=int($nominal_Y*100+.5);
-	      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\"}";
+	      push @steps, "{\"ire\":$ire,\"r\":$$codes[0],\"g\":$$codes[1],\"b\":$$codes[2],\"name\":\"$name\",\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn,\"input_max\":$chroma_input_max,\"series_mode\":\"hcfr-gcd-$signal_mode\",\"reference_out_of_gamut\":".($oog?"true":"false")."}";
 	      next;
 	     }
 	     if($kind eq "gray") {
@@ -4958,66 +5116,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      next;
 	     }
       my ($target_x,$target_y,$Yn)=@vals;
-      my ($emit_x,$emit_y)=($target_x,$target_y);
-      ($emit_x,$emit_y)=$remap_relative_dv_color_xy->($emit_x,$emit_y);
-      # Absolute DV uses the requested ColorChecker chromaticity directly.
-      # The former inward pre-compression moved every patch toward white
-      # before RGB solving, so a correctly tracking display necessarily
-      # measured undersaturated against the uncompressed chart target.
-        my $X=$emit_x/$emit_y*$Yn;
-     my $Y=$Yn;
-        my $Z=(1-$emit_x-$emit_y)/$emit_y*$Yn;
-     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
-     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
-     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
-     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
-     if($mx>1){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
-     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-      # BT.2408 HDR ColorChecker: all reflectance patches, including the four
-      # neutrals above, anchor to 203 cd/m^2 in HDR10 and DV-Absolute.
-      # SDR / DV-Relative / HLG keep the original behavior.
-      my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      my $dv_peak=(($max_luma+0)>0)?($max_luma+0):10000;
-      my $r;
-      my $g;
-      my $b;
-      my $target_Yn_for_step=$Yn;
-      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
-       # HDR10 and DV-Absolute chromatic patches anchor to 203 cd/m^2
-       # (BT.2408 HDR Reference White) and use PQ code values.
-       # so the chart stimulus is the recognized HDR reference rather than
-       # the measured white. Bake target_Yn so target_Yn * measured_white
-       # still equals the absolute luminance the stimulus drives (Yn * 203).
-       $r=$encode_linear->($rl,$bt2408_ref_white_nits);
-       $g=$encode_linear->($gl,$bt2408_ref_white_nits);
-       $b=$encode_linear->($bl,$bt2408_ref_white_nits);
-       $target_Yn_for_step=$Yn*$bt2408_ref_white_nits/$cc_white;
-      } else {
-       # SDR / HLG / DV-Relative use their mode-specific encoder. Relative DV
-       # retains the classic 0.68 scale and gamma-2.2 patch tunnel.
-       $r=$encode_linear->($rl);
-       $g=$encode_linear->($gl);
-       $b=$encode_linear->($bl);
-       if($signal_mode eq "dv" && $span_code>0) {
-        my $r_norm=($r-$min_code)/$span_code;
-        my $g_norm=($g-$min_code)/$span_code;
-        my $b_norm=($b-$min_code)/$span_code;
-        $r_norm=0 if($r_norm < 0); $r_norm=1 if($r_norm > 1);
-        $g_norm=0 if($g_norm < 0); $g_norm=1 if($g_norm > 1);
-        $b_norm=0 if($b_norm < 0); $b_norm=1 if($b_norm > 1);
-       my $r_lin=$decode_linear->($r_norm);
-       my $g_lin=$decode_linear->($g_norm);
-       my $b_lin=$decode_linear->($b_norm);
-        $target_Yn_for_step=
-         $RGB_TO_XYZ[1][0]*$r_lin+
-         $RGB_TO_XYZ[1][1]*$g_lin+
-         $RGB_TO_XYZ[1][2]*$b_lin;
-        $target_Yn_for_step=0 if($target_Yn_for_step < 0);
-       }
-      }
-      my $ire=int($Yn*100 + .5);
-      my ($chart_tx,$chart_ty)=($target_x,$target_y);
-       push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+      my ($r,$g,$b,$chart_tx,$chart_ty,$target_Yn_for_step,$nominal_Yn,$oog)=$build_reference_color->($target_x,$target_y,$Yn);
+      my $ire=int($nominal_Yn*100 + .5);
+       push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max,\"reference_out_of_gamut\":".($oog?"true":"false")."}";
      }
   # Endpoint names describe the selected target gamut. In HDR10 that is
   # normally P3-D65 carried in a BT.2020 container, so derive the endpoint xy
@@ -14032,8 +14133,10 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800024">Classic (24)</option>
        <option value="29">HCFR GCD + Primaries (30)</option>
        <option value="800124">HCFR GCD Classic (24)</option>
-       <option value="800096">ColorChecker SG (96)</option>
-       <option value="800019">SG Skin Tones (19)</option>
+       <option value="800296">ColorChecker SG (96)</option>
+       <option value="800219">SG Skin Tones (19)</option>
+       <option value="800096">CalMAN/HCFR SG Codes (96)</option>
+       <option value="800019">CalMAN/HCFR SG Skin Codes (19)</option>
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
@@ -14045,7 +14148,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification patch series, or choose Custom Series to load, create, edit, import or export a custom colour series. Classic uses xyY reference colours adapted to the selected target gamut. HCFR GCD preserves its standardized video codes in SDR. In HDR10 and HLG, HCFR GCD uses HCFR's Rec.709-to-BT.2020 conversion, gamma 2.22 source decoding and 8-bit legal-video quantization. Its HDR10 version uses HCFR's 94.37844 cd/m2 reference. ColorChecker SG and SG Skin Tones use PGenerator+'s normal mode-aware conversion, not the HCFR-specific path. HCFR does not define Dolby Vision versions, so Dolby Vision uses a PGenerator+ adaptation. Sat Sweep is the native fixed-maximum-channel sweep. HCFR Constant Luminance Sat Sweep measures 0%, 25%, 50%, 75% and 100% for every hue while keeping that hue's Y fixed. Its HDR10 patterns use HCFR's 94.37844 cd/m2 diffuse-white reference and HCFR legal-video quantization. The Cone-Opponent Polar 2D and 3D views are dedicated to the MacLeod-Boynton Hue Circle series. Selecting Hue Circle opens that chart automatically, and that chart locks this list to Hue Circle. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification series, or Custom Series to load, create, import or export your own. ColorChecker-style series are fixed reference colours: targets (adapted to the target white) do not change with the colourspace; only the wire codes are re-solved into the selected gamut and signal mode, and patches the gamut cannot reach are marked out of gamut and excluded from the in-gamut average. Primaries, secondaries, sat sweeps and the MacLeod-Boynton series are relative to the colourspace. Classic, ColorChecker SG and SG Skin Tones use xyY chart references (SG: X-Rite post-2014, D50 to D65 adapted). HCFR GCD Classic and the CalMAN/HCFR SG code libraries are the Rec.709 interpretation of their authored codes: unchanged in BT.709 SDR at D65, re-solved elsewhere (HCFR only does this in PQ/HLG). In HDR10/HLG, HCFR GCD keeps HCFR's conversion, 2.22 decode, 8-bit legal quantisation and 94.37844 cd/m2 PQ reference (its White patch is that reference, not panel peak); all other HDR10 and Absolute DV ColorChecker patches anchor to BT.2408 203 cd/m2. Each preset keeps a separate measurement cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -20443,6 +20546,34 @@ function xyToUnitXyz(x,y){
  return {X:x/y,Y:1,Z:(1-x-y)/y};
 }
 
+// Bradford chromatic adaptation of an XYZ triple from one white (xy) to
+// another. Reference ColorChecker colours are authored relative to D65; when
+// the operator targets a different white (P3-DCI, custom D65 override) the
+// reference must be adapted so its appearance relative to white -- which is
+// what the relative-colorimetric dE path scores (meterColorLabWhite) -- is
+// unchanged. Identity when the whites coincide.
+const METER_BRADFORD_M=[[0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]];
+const METER_BRADFORD_MI=[[0.9869929,-0.1470543,0.1599627],[0.4323053,0.5183603,0.0492912],[-0.0085287,0.0400428,0.9684867]];
+function meterBradfordAdaptXyz(X,Y,Z,fromWhite,toWhite){
+ const fx=Number(fromWhite&&fromWhite.x),fy=Number(fromWhite&&fromWhite.y);
+ const tx=Number(toWhite&&toWhite.x),ty=Number(toWhite&&toWhite.y);
+ if(!(fx>0&&fy>0&&tx>0&&ty>0)) return {X:X,Y:Y,Z:Z};
+ if(Math.abs(fx-tx)<1e-7&&Math.abs(fy-ty)<1e-7) return {X:X,Y:Y,Z:Z};
+ const mul=(M,v)=>[M[0][0]*v[0]+M[0][1]*v[1]+M[0][2]*v[2],M[1][0]*v[0]+M[1][1]*v[1]+M[1][2]*v[2],M[2][0]*v[0]+M[2][1]*v[1]+M[2][2]*v[2]];
+ const ws=xyToUnitXyz(fx,fy),wd=xyToUnitXyz(tx,ty);
+ const cs=mul(METER_BRADFORD_M,[ws.X,ws.Y,ws.Z]);
+ const cd=mul(METER_BRADFORD_M,[wd.X,wd.Y,wd.Z]);
+ const c=mul(METER_BRADFORD_M,[X,Y,Z]);
+ const scaled=[c[0]*(cs[0]!==0?cd[0]/cs[0]:1),c[1]*(cs[1]!==0?cd[1]/cs[1]:1),c[2]*(cs[2]!==0?cd[2]/cs[2]:1)];
+ const out=mul(METER_BRADFORD_MI,scaled);
+ return {X:out[0],Y:out[1],Z:out[2]};
+}
+// Adapt a D65-referred reference XYZ to the active target white.
+function meterAdaptReferenceXyzToTargetWhite(X,Y,Z){
+ const wp=(typeof meterTargetWhitePoint==='function')?meterTargetWhitePoint():D65;
+ return meterBradfordAdaptXyz(X,Y,Z,D65,wp);
+}
+
 // Black-floor epsilon (cd/m²): a black (0%) read at or below this luminance is
 // treated as true zero (normalized to {0,0,0}) instead of reporting the small
 // ambient-leakage value a spectro picks up on a true-black OLED. Set just above
@@ -20788,7 +20919,11 @@ function meterStimulusSolveGamut(){
  // the wire. Relative DV retains its established target-gamut tunnel path.
  if(meterChartIsDv() && meterDvMapModeValue()==='1') return meterContainerGamut();
  if(meterChartIsDv()) return meterAnalysisGamut();
- return meterChartIsPq() ? meterContainerGamut() : meterAnalysisGamut();
+ // HLG, like HDR10, carries RGB in the BT.2020 container, and the server
+ // builder ($solve_key in webui_meter_series_start) solves HLG into the
+ // container; this mirror must agree or client-built steps carry
+ // target-gamut coefficients on a BT.2020 wire.
+ return (meterChartIsPq()||meterChartIsHlg()) ? meterContainerGamut() : meterAnalysisGamut();
 }
 
 function meterTargetSolveGamut(){
@@ -23892,18 +24027,71 @@ function meterHcfrGcdColorCheckerSource(){
  ];
 }
 
+// Fixed-code libraries (HCFR GCD Classic, CalMAN/HCFR ColorChecker SG and
+// SG Skin codes) are authored as Rec.709 video RGB and describe specific
+// colours -- the Rec.709 interpretation of those codes -- not stimuli that are
+// relative to the selected colourspace. Convert each row to a reference
+// source for meterBuildColorCheckerStepsJS: decode (SDR at the target EOTF,
+// other modes at gamma 2.4), convert to Rec.709 XYZ, and hand it over as xyY
+// (chromatic rows), a grey (neutral rows, keeping the authored SDR code) or a
+// White/Black endpoint (full-scale / zero rows). The solver then re-solves
+// the stimulus into the active solve gamut, adapts to the target white, keeps
+// the reference as the target and flags patches the gamut cannot reach.
+// Signal mode as the ColorChecker builders see it: the active-series snapshot
+// when one exists (the same source meterChartIsPq/IsDv/IsHlg resolve through),
+// otherwise the live chart selection.
+function meterColorCheckerBuilderSignalMode(){
+ const fn=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode:((typeof meterChartSignalMode==='function')?meterChartSignalMode:null);
+ return String((fn?fn():'sdr')||'sdr').toLowerCase();
+}
+
+function meterFixedVideoCodeRowsToReferenceSource(rows,seriesMode){
+ const signalMode=meterColorCheckerBuilderSignalMode();
+ const M709=GAMUT_PRESETS.bt709.rgbToXyz;
+ return (Array.isArray(rows)?rows:[]).map((row,idx)=>{
+  const name=row[0]||('Patch '+(idx+1));
+  const sourceSignal=[row[1],row[2],row[3]].map(v=>Math.max(0,Math.min(100,Number(v)||0))/100);
+  // SDR decodes at the target EOTF (a fixed code is a different colour at
+  // 2.2 than at 2.4, so the target must follow the display transfer). Other
+  // modes decode the authored codes at gamma 2.4.
+  const linear=(signalMode==='sdr')
+   ?sourceSignal.map(v=>meterDecodeColorCheckerSignal(v))
+   :sourceSignal.map(v=>Math.pow(v,2.4));
+  const neutral=Math.abs(sourceSignal[0]-sourceSignal[1])<1e-9&&Math.abs(sourceSignal[1]-sourceSignal[2])<1e-9;
+  // Full-scale and zero rows are the library's video endpoints: emit them as
+  // the same White/Black endpoint steps Classic uses (full/min code, the
+  // series white reference) rather than as reflectance greys.
+  if(neutral&&sourceSignal[0]>=1-1e-9) return {name:name,endpoint:'white'};
+  if(neutral&&sourceSignal[0]<=1e-9) return {name:name,endpoint:'black'};
+  const xyz=linRgbToXyz(linear[0],linear[1],linear[2],M709);
+  if(neutral||!(xyz.Y>0)){
+   return {name:name,gray:Math.max(0,xyz.Y),fixed_signal:sourceSignal[0]};
+  }
+  const sum=xyz.X+xyz.Y+xyz.Z;
+  return {name:name,x:xyz.X/sum,y:xyz.Y/sum,Yn:xyz.Y};
+ });
+}
+
+// HCFR GCD in HDR10/HLG follows HCFR's own conversion (2.22 source decode,
+// BT.2020 container solve, 94.37844 cd/m2 PQ reference, 8-bit legal
+// quantisation, re-decoded chromatic target) and is unchanged by the shared
+// solver; every other fixed-code series and mode goes through it.
 function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
+ const signalMode=meterColorCheckerBuilderSignalMode();
+ const hcfrSeries=/^hcfr(?:-|$)/.test(String(seriesMode||'').toLowerCase());
+ if(!(hcfrSeries&&(signalMode==='hdr10'||signalMode==='hlg'))){
+  const source=meterFixedVideoCodeRowsToReferenceSource(rows,seriesMode);
+  return meterBuildColorCheckerStepsJS(false,source,{seriesMode:(seriesMode||'fixed-video')+'-'+signalMode,whiteBlack:false});
+ }
  const steps=[];
  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
  const wp=meterTargetWhitePoint();
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
- const signalMode=String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase();
- const hcfrSeries=/^hcfr(?:-|$)/.test(String(seriesMode||'').toLowerCase());
  const add=(name,rPct,gPct,bPct,ire)=>{
   const sourceSignal=[rPct,gPct,bPct].map(v=>Math.max(0,Math.min(100,Number(v)||0))/100);
   let nominalY=null;
   let codes,xyz;
-  if(hcfrSeries&&(signalMode==='hdr10'||signalMode==='hlg')){
+  {
    // HCFR fixed-code libraries are authored as Rec.709 video RGB. HCFR
    // linearizes them with 2.22, preserves their Rec.709 XYZ, converts that
    // XYZ into the BT.2020 HDR container, then applies the HDR transfer. PQ
@@ -23923,31 +24111,19 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
     return (Math.exp((v-0.55991073)/0.17883277)+0.28466892)/12;
    });
    xyz=linRgbToXyz(decoded[0],decoded[1],decoded[2],GAMUT_PRESETS.bt2020.rgbToXyz);
-  } else {
-   // Preserve the source legal-video codes in SDR. Dolby Vision has no HCFR
-   // generator equivalent and retains PGenerator's existing adaptation.
-   const linear=(signalMode==='sdr')
-    ?sourceSignal.map(v=>meterDecodeColorCheckerSignal(v))
-    :sourceSignal.map(v=>Math.pow(v,2.4));
-   codes=(signalMode==='sdr')
-    ?sourceSignal.map(v=>Math.round(min+v*span))
-    :linear.map(v=>meterEncodeColorCheckerLinear(v));
-   // These fixed-code libraries are specific authored colors: the Rec.709
-   // interpretation of their video RGB percentages. Their targets must stay
-   // constant across target colorspaces; only primaries, secondaries and sat
-   // sweeps follow the selected gamut.
-   xyz=linRgbToXyz(linear[0],linear[1],linear[2],GAMUT_PRESETS.bt709.rgbToXyz);
-   nominalY=xyz.Y;
   }
   const sum=xyz.X+xyz.Y+xyz.Z;
   let targetYn=Math.max(0,xyz.Y);
-  if(hcfrSeries&&signalMode==='hdr10'){
+  if(signalMode==='hdr10'){
    const whiteRef=Number(meterColorSeriesReferenceNits());
    if(whiteRef>0) targetYn=xyz.Y*10000/whiteRef;
   }
+  // Neutral rows target the active white point (as Classic and the
+  // reference solver do) rather than the container's D65.
+  const neutral=Math.abs(sourceSignal[0]-sourceSignal[1])<1e-9&&Math.abs(sourceSignal[1]-sourceSignal[2])<1e-9;
   steps.push({ire:ire!=null?ire:Math.round(Math.max(0,nominalY||0)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
-   target_x:sum>0?xyz.X/sum:wp.x,target_y:sum>0?xyz.Y/sum:wp.y,target_Yn:targetYn,
-   input_max:inputMax,series_mode:(seriesMode||'fixed-video')+'-'+signalMode});
+   target_x:(neutral||!(sum>0))?wp.x:xyz.X/sum,target_y:(neutral||!(sum>0))?wp.y:xyz.Y/sum,target_Yn:targetYn,
+   input_max:inputMax,series_mode:(seriesMode||'fixed-video')+'-'+signalMode,reference_out_of_gamut:false});
  };
  (Array.isArray(rows)?rows:[]).forEach((row,idx)=>add(row[0]||('Patch '+(idx+1)),row[1],row[2],row[3]));
  return steps;
@@ -23964,7 +24140,26 @@ function meterBuildHcfrColorCheckerStepsJS(includePrimaries){
  return steps;
 }
 
-function meterBuildColorCheckerStepsJS(includePrimaries){
+// Shared reference-colour solver. `source` rows are neutral ({name, gray:
+// linear Y, optional fixed_signal: an authored SDR code to keep verbatim}),
+// chromatic ({name, x, y, Yn} D65-referred) or endpoints ({name, endpoint:
+// 'white'|'black'}). Classic (24) uses the default table; the reference
+// ColorChecker SG series and the fixed-code libraries (via
+// meterFixedVideoCodeRowsToReferenceSource) pass theirs, so every
+// ColorChecker-style series shares one stimulus/target model:
+//  - the reference xyY is adapted (Bradford) to the active target white, so
+//    a P3-DCI or custom-white target scores the colour at the same appearance
+//    relative to white instead of splitting greys (target white) from
+//    colours (D65);
+//  - the stimulus is solved into meterStimulusSolveGamut() and encoded by the
+//    active signal mode, so the wire codes follow the selected colourspace
+//    while the target does not;
+//  - the target stays the reference colour. A patch the solve gamut cannot
+//    reach (a negative channel, or a channel above 1 that had to be
+//    renormalised) is emitted with reference_out_of_gamut:true and, when
+//    renormalised, a target_Yn scaled by the same factor as the stimulus.
+function meterBuildColorCheckerStepsJS(includePrimaries,source,opts){
+	 opts=opts||{};
 	 const steps=[];
 	 const min=meterChromaPatchRangeMin();
 	 const max=min+meterChromaPatchRangeSpan();
@@ -23979,33 +24174,63 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const solveGamut=meterStimulusSolveGamut();
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
 	 const hdrColorCheckerRefNits=203;
-	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
-	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
-	 meterColorCheckerClassicSource().forEach(src=>{
+	 const seriesMode=opts.seriesMode?String(opts.seriesMode):null;
+	 const stamp=step=>{ if(seriesMode) step.series_mode=seriesMode; return step; };
+	 const rows=Array.isArray(source)?source:meterColorCheckerClassicSource();
+	 if(opts.whiteBlack!==false){
+	  steps.push(stamp({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax,reference_out_of_gamut:false}));
+	  steps.push(stamp({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax,reference_out_of_gamut:false}));
+	 }
+	 rows.forEach(src=>{
+	  if(src.endpoint==='white'){
+	   steps.push(stamp({ire:100,r:max,g:max,b:max,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax,reference_out_of_gamut:false}));
+	   return;
+	  }
+	  if(src.endpoint==='black'){
+	   steps.push(stamp({ire:0,r:min,g:min,b:min,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax,reference_out_of_gamut:false}));
+	   return;
+	  }
 	  if(src.gray!=null){
-	   const ire=Math.round(src.gray*100);
-	   const code=meterEncodeColorCheckerLinear(src.gray,absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined);
-	   let targetYn=absoluteHdrColorChecker?(src.gray*hdrColorCheckerRefNits/seriesWhite):src.gray;
+	   const gray=Math.max(0,Math.min(1,Number(src.gray)||0));
+	   const ire=Math.round(gray*100);
+	   let code;
+	   if(src.fixed_signal!=null&&meterColorCheckerBuilderSignalMode()==='sdr'){
+	    // Fixed-code neutral in SDR: keep the authored wire code exactly
+	    // rather than round-tripping it through decode/encode.
+	    const signal=Math.max(0,Math.min(1,Number(src.fixed_signal)||0));
+	    code=Math.round(min+signal*(max-min));
+	   } else {
+	    code=meterEncodeColorCheckerLinear(gray,absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined);
+	   }
+	   let targetYn=absoluteHdrColorChecker?(gray*hdrColorCheckerRefNits/seriesWhite):gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
+	   steps.push(stamp({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,reference_out_of_gamut:false}));
 	   return;
 	  }
-    let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(src.x,src.y,solveGamut);
+	  // Reference colour, D65-referred, adapted to the active target white.
+	  const refUnit=xyToUnitXyz(src.x,src.y);
+	  const refYn=Math.max(0,Number(src.Yn)||0);
+	  const adapted=meterAdaptReferenceXyzToTargetWhite(refUnit.X*refYn,refUnit.Y*refYn,refUnit.Z*refYn);
+	  const adaptedSum=adapted.X+adapted.Y+adapted.Z;
+	  const target={x:adaptedSum>0?adapted.X/adaptedSum:wp.x,y:adaptedSum>0?adapted.Y/adaptedSum:wp.y,Yn:Math.max(0,adapted.Y)};
+    let emitXY=meterRemapRelativeDvChromaticityToSolveGamut(target.x,target.y,solveGamut);
     // Do not pre-compress Absolute-DV ColorChecker chromaticity. Targets and
     // emitted RGB must describe the same xy point; otherwise the display is
     // scored against a saturation it was never asked to produce.
-    const X=(emitXY.x/emitXY.y)*src.Yn;
-  const Y=src.Yn;
-    const Z=((1-emitXY.x-emitXY.y)/emitXY.y)*src.Yn;
+    const X=(emitXY.x/emitXY.y)*target.Yn;
+  const Y=target.Yn;
+    const Z=((1-emitXY.x-emitXY.y)/emitXY.y)*target.Yn;
   let rl=solveGamut.xyzToRgb[0][0]*X+solveGamut.xyzToRgb[0][1]*Y+solveGamut.xyzToRgb[0][2]*Z;
   let gl=solveGamut.xyzToRgb[1][0]*X+solveGamut.xyzToRgb[1][1]*Y+solveGamut.xyzToRgb[1][2]*Z;
   let bl=solveGamut.xyzToRgb[2][0]*X+solveGamut.xyzToRgb[2][1]*Y+solveGamut.xyzToRgb[2][2]*Z;
   const mx=Math.max(rl,gl,bl);
-  if(mx>1){rl/=mx;gl/=mx;bl/=mx;}
+  let outOfGamut=(Math.min(rl,gl,bl)<-1e-6);
+  let stimulusScale=1;
+  if(mx>1+1e-6){rl/=mx;gl/=mx;bl/=mx;stimulusScale=1/mx;outOfGamut=true;}
   rl=Math.max(0,rl);
   gl=Math.max(0,gl);
   bl=Math.max(0,bl);
@@ -24013,7 +24238,10 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	  const rCode=meterEncodeColorCheckerLinear(rl,colorRef);
 	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
 	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
-	  let targetYn=absoluteHdrColorChecker?(src.Yn*hdrColorCheckerRefNits/seriesWhite):src.Yn;
+	  // The stimulus luminance follows any renormalisation; the chromaticity
+	  // target stays the reference colour.
+	  const scaledYn=target.Yn*stimulusScale;
+	  let targetYn=absoluteHdrColorChecker?(scaledYn*hdrColorCheckerRefNits/seriesWhite):scaledYn;
 	  if(meterChartIsDv()&&!dvAbsolute){
     const min=meterChromaPatchRangeMin();
     const span=meterChromaPatchRangeSpan();
@@ -24030,17 +24258,19 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
      targetGamut.rgbToXyz[1][2]*bLin;
     if(!(targetYn>=0)) targetYn=0;
   }
-  steps.push({
-   ire:Math.round(src.Yn*100),
+  const step={
+   ire:Math.round(target.Yn*100),
    r:rCode,
    g:gCode,
    b:bCode,
    name:src.name,
-   target_x:src.x,
-   target_y:src.y,
+   target_x:target.x,
+   target_y:target.y,
    target_Yn:targetYn,
    input_max:inputMax
-  });
+  };
+  step.reference_out_of_gamut=outOfGamut;
+  steps.push(stamp(step));
  });
  if(includePrimaries!==false) [
   ['100% Red','Red'],
@@ -24052,7 +24282,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
  ].forEach(([name,colorName])=>{
   const rgb=meterBuildColorCheckerEndpointStepRgb(colorName);
   const target=meterBuildColorCheckerEndpointTargetStepMeta(colorName);
-  steps.push({
+  steps.push(stamp({
    ire:100,
    r:rgb[0],
    g:rgb[1],
@@ -24062,7 +24292,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
    sat_pct:100,
    input_max:inputMax,
    ...target
-  });
+  }));
  });
  return steps;
 }
@@ -28725,6 +28955,7 @@ function meterStampReadingStepMeta(reading,step){
  }
  if(step.series_type!=null) reading.series_type=step.series_type;
  if(step.series_white_reference!=null) reading.series_white_reference=step.series_white_reference;
+ if(step.reference_out_of_gamut!=null) reading.reference_out_of_gamut=!!step.reference_out_of_gamut;
  if(!alternateStimulus&&step.stimulus!=null) reading.stimulus=step.stimulus;
  if(!alternateStimulus&&step.input_max!=null) reading.input_max=step.input_max;
 	 if(!alternateStimulus&&step.signal_r_pct!=null) reading.signal_r_pct=step.signal_r_pct;
@@ -34141,28 +34372,44 @@ const METER_BUILTIN_3D_PROFILE_SERIES=[
 
 // Built-in display-verification libraries use reserved high ids so every
 // sequence has its own cache key without entering the editable custom-series
-// manager. Fixed-code libraries retain their standard wire codes in SDR and are
-// converted through relative linear light in HDR/DV. Classic xyY sets are
-// solved into the active signal mode and target gamut by the existing builder.
+// manager. Every ColorChecker-style series is a set of specific reference
+// colours solved by meterBuildColorCheckerStepsJS (except HCFR GCD in
+// HDR10/HLG, which keeps HCFR's own conversion): the reference xyY (adapted
+// to the target white) is the target in every colourspace, and only the wire
+// codes are re-solved into the active signal mode and solve gamut. Fixed-code
+// libraries (HCFR GCD, CalMAN/HCFR SG codes) define their reference as the
+// Rec.709 interpretation of their authored video codes, so in BT.709 SDR at
+// D65 they emit those codes unchanged. ColorChecker SG (96) / SG Skin Tones
+// (19) are X-Rite's post-November-2014 chart references; the CalMAN/HCFR SG
+// code libraries (ids 800096/800019, which HCFR CHC import/export maps to its
+// ColorChecker modes 6 and 4) are kept for parity with the codes HCFR emits
+// in SDR. Those codes appear to have been derived without D50->D65
+// adaptation and are clipped to Rec.709, so they do not reproduce the
+// physical chart.
 const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800024,name:'Classic (24)',category:'color',mode:'any',kind:'verification',preset:'classic-24',builtin_verification:true,patches:[]},
  {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'any',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
- {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'any',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
- {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
+ {id:800296,name:'ColorChecker SG (96)',category:'color',mode:'any',kind:'verification',preset:'sg-ref-96',builtin_verification:true,patches:[]},
+ {id:800219,name:'SG Skin Tones (19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-ref-19',builtin_verification:true,patches:[]},
+ {id:800096,name:'CalMAN/HCFR SG Codes (96)',category:'color',mode:'any',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
+ {id:800019,name:'CalMAN/HCFR SG Skin Codes (19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
  {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'any',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
  {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'any',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]},
  {id:800064,name:'MacLeod-Boynton OSA-UCS Map (64)',category:'color',mode:'any',kind:'verification',preset:'mb-osa-ucs-64',builtin_verification:true,patches:[]}
 ];
 
+// X-Rite column-first labels (B2 = column B, row 2). Slot order is the
+// CalMAN/HCFR SG sequence order: video white, the 13 inner neutrals, video
+// black, then the 81 chromatic patches row by row.
 const METER_COLORCHECKER_SG_NAMES=[
- 'White','6J','5F','6I','6K','5G','6H','5H','7K','6G','5I','6F','8K','5J','Black',
- '2B','2C','2D','2E','2F','2G','2H','2I','2J','2K','2L','2M',
- '3B','3C','3D','3E','3F','3G','3H','3I','3J','3K','3L','3M',
- '4B','4C','4D','4E','4F','4G','4H','4I','4J','4K','4L','4M',
- '5B','5C','5D','5K','5L','5M','6B','6C','6D','6L','6M',
- '7B','7C','7D','7E','7F','7G','7H','7I','7J','7L','7M',
- '8B','8C','8D','8E','8F','8G','8H','8I','8J','8L','8M',
- '9B','9C','9D','9E','9F','9G','9H','9I','9J','9K','9L','9M'
+ 'White','J6','F5','I6','K6','G5','H6','H5','K7','G6','I5','F6','K8','J5','Black',
+ 'B2','C2','D2','E2','F2','G2','H2','I2','J2','K2','L2','M2',
+ 'B3','C3','D3','E3','F3','G3','H3','I3','J3','K3','L3','M3',
+ 'B4','C4','D4','E4','F4','G4','H4','I4','J4','K4','L4','M4',
+ 'B5','C5','D5','K5','L5','M5','B6','C6','D6','L6','M6','B7',
+ 'C7','D7','E7','F7','G7','H7','I7','J7','L7','M7','B8','C8',
+ 'D8','E8','F8','G8','H8','I8','J8','L8','M8','B9','C9','D9',
+ 'E9','F9','G9','H9','I9','J9','K9','L9','M9'
 ];
 const METER_COLORCHECKER_SG_LEGAL8=[
  [235,235,235],[207,207,207],[185,185,185],[174,174,174],[163,163,163],[150,150,150],[139,139,139],[117,117,117],
@@ -34179,7 +34426,7 @@ const METER_COLORCHECKER_SG_LEGAL8=[
  [66,154,110],[121,150,64],[60,134,38],[80,161,51],[189,130,53],[152,145,38],[158,176,16],[82,53,38]
 ];
 const METER_COLORCHECKER_SG_SKIN_NAMES=[
- 'White','Black','2E','2F','2K','5D','7E','7F','7G','7H','7I','7J','8D','8E','8F','8G','8H','8I','8J'
+ 'White','Black','E2','F2','K2','D5','E7','F7','G7','H7','I7','J7','D8','E8','F8','G8','H8','I8','J8'
 ];
 const METER_COLORCHECKER_SG_SKIN_LEGAL8=[
  [235,235,235],[16,16,16],[112,71,49],[191,134,104],[235,187,147],[235,187,163],[228,163,123],
@@ -34192,6 +34439,123 @@ function meterBuiltinFixedLegal8Rows(names,codes){
  return (Array.isArray(codes)?codes:[]).map((rgb,idx)=>[
   (Array.isArray(names)&&names[idx])||('Patch '+(idx+1)),pct(rgb[0]),pct(rgb[1]),pct(rgb[2])
  ]);
+}
+
+// X-Rite ColorChecker Digital SG (post-November-2014 reference), Bradford
+// adapted ICC D50 -> D65. Luminance is absolute reflectance (perfect diffuser
+// = 1.0, so the chart's inner white E5 is 0.9186), the same convention as the
+// Classic (24) table (its Gray 80 = 0.591 is neutral 8's reflectance). Labels
+// are X-Rite's column-first names. The 15 inner neutrals are solved as greys
+// on the target white; the 81 chromatic patches carry their reference xyY.
+const METER_COLORCHECKER_SG_REFERENCE=[
+ {name:'E5',gray:0.918627},
+ {name:'J6',gray:0.738493},
+ {name:'F5',gray:0.560535},
+ {name:'I6',gray:0.488456},
+ {name:'K6',gray:0.416094},
+ {name:'G5',gray:0.343255},
+ {name:'H6',gray:0.281666},
+ {name:'H5',gray:0.181706},
+ {name:'K7',gray:0.146361},
+ {name:'G6',gray:0.109838},
+ {name:'I5',gray:0.084207},
+ {name:'F6',gray:0.063663},
+ {name:'K8',gray:0.030719},
+ {name:'J5',gray:0.019899},
+ {name:'E6',gray:0.008944},
+ {name:'B2',x:0.419779,y:0.224765,Yn:0.074078},
+ {name:'C2',x:0.293332,y:0.206545,Yn:0.029287},
+ {name:'D2',x:0.295451,y:0.312724,Yn:0.642564},
+ {name:'E2',x:0.460904,y:0.374827,Yn:0.072904},
+ {name:'F2',x:0.398165,y:0.356455,Yn:0.322744},
+ {name:'G2',x:0.236975,y:0.251239,Yn:0.154034},
+ {name:'H2',x:0.353439,y:0.485475,Yn:0.101867},
+ {name:'I2',x:0.262633,y:0.244017,Yn:0.198229},
+ {name:'J2',x:0.250668,y:0.356356,Yn:0.39239},
+ {name:'K2',x:0.361871,y:0.357505,Yn:0.668797},
+ {name:'L2',x:0.487634,y:0.294919,Yn:0.037097},
+ {name:'M2',x:0.511889,y:0.272214,Yn:0.124343},
+ {name:'B3',x:0.318049,y:0.261208,Yn:0.297363},
+ {name:'C3',x:0.245426,y:0.198792,Yn:0.125677},
+ {name:'D3',x:0.336036,y:0.319374,Yn:0.667403},
+ {name:'E3',x:0.531608,y:0.415253,Yn:0.299474},
+ {name:'F3',x:0.192201,y:0.157657,Yn:0.090356},
+ {name:'G3',x:0.507866,y:0.312738,Yn:0.160213},
+ {name:'H3',x:0.285864,y:0.168194,Yn:0.032298},
+ {name:'I3',x:0.383041,y:0.513957,Yn:0.427069},
+ {name:'J3',x:0.493335,y:0.458274,Yn:0.404756},
+ {name:'K3',x:0.300447,y:0.354275,Yn:0.749888},
+ {name:'L3',x:0.622836,y:0.325508,Yn:0.134834},
+ {name:'M3',x:0.413811,y:0.235546,Yn:0.024956},
+ {name:'B4',x:0.287035,y:0.148621,Yn:0.065714},
+ {name:'C4',x:0.170573,y:0.161565,Yn:0.032086},
+ {name:'D4',x:0.28233,y:0.340969,Yn:0.654026},
+ {name:'E4',x:0.15884,y:0.09569,Yn:0.032753},
+ {name:'F4',x:0.298084,y:0.530578,Yn:0.207852},
+ {name:'G4',x:0.632664,y:0.30877,Yn:0.090406},
+ {name:'H4',x:0.457674,y:0.489699,Yn:0.583021},
+ {name:'I4',x:0.393183,y:0.233182,Yn:0.171687},
+ {name:'J4',x:0.177343,y:0.24881,Yn:0.168097},
+ {name:'K4',x:0.309705,y:0.313234,Yn:0.652604},
+ {name:'L4',x:0.393386,y:0.302509,Yn:0.288063},
+ {name:'M4',x:0.590761,y:0.302683,Yn:0.111815},
+ {name:'B5',x:0.176945,y:0.198705,Yn:0.187432},
+ {name:'C5',x:0.215079,y:0.25627,Yn:0.288425},
+ {name:'D5',x:0.34676,y:0.334725,Yn:0.661952},
+ {name:'K5',x:0.279372,y:0.318726,Yn:0.636835},
+ {name:'L5',x:0.429874,y:0.331795,Yn:0.301385},
+ {name:'M5',x:0.589737,y:0.333851,Yn:0.203742},
+ {name:'B6',x:0.20553,y:0.275108,Yn:0.293951},
+ {name:'C6',x:0.164179,y:0.227546,Yn:0.030297},
+ {name:'D6',x:0.34226,y:0.398326,Yn:0.644907},
+ {name:'L6',x:0.570992,y:0.400692,Yn:0.310097},
+ {name:'M6',x:0.492583,y:0.452888,Yn:0.592258},
+ {name:'B7',x:0.189995,y:0.3236,Yn:0.030764},
+ {name:'C7',x:0.23334,y:0.247973,Yn:0.2911},
+ {name:'D7',x:0.458947,y:0.379863,Yn:0.302398},
+ {name:'E7',x:0.394208,y:0.362097,Yn:0.515719},
+ {name:'F7',x:0.399951,y:0.380373,Yn:0.317694},
+ {name:'G7',x:0.435166,y:0.389216,Yn:0.139587},
+ {name:'H7',x:0.376886,y:0.35592,Yn:0.370988},
+ {name:'I7',x:0.498942,y:0.401312,Yn:0.143126},
+ {name:'J7',x:0.424367,y:0.366306,Yn:0.323171},
+ {name:'L7',x:0.43332,y:0.519076,Yn:0.456786},
+ {name:'M7',x:0.46869,y:0.491549,Yn:0.601842},
+ {name:'B8',x:0.213432,y:0.323642,Yn:0.288973},
+ {name:'C8',x:0.189934,y:0.333886,Yn:0.191326},
+ {name:'D8',x:0.398465,y:0.353858,Yn:0.326249},
+ {name:'E8',x:0.415878,y:0.356322,Yn:0.460703},
+ {name:'F8',x:0.380346,y:0.358233,Yn:0.330344},
+ {name:'G8',x:0.381003,y:0.354223,Yn:0.336881},
+ {name:'H8',x:0.388827,y:0.357502,Yn:0.333811},
+ {name:'I8',x:0.456836,y:0.394625,Yn:0.089487},
+ {name:'J8',x:0.418881,y:0.372755,Yn:0.356648},
+ {name:'L8',x:0.438228,y:0.467241,Yn:0.303651},
+ {name:'M8',x:0.414928,y:0.52327,Yn:0.429977},
+ {name:'B9',x:0.381196,y:0.394349,Yn:0.028686},
+ {name:'C9',x:0.273622,y:0.435563,Yn:0.287831},
+ {name:'D9',x:0.224457,y:0.442361,Yn:0.189632},
+ {name:'E9',x:0.246236,y:0.432281,Yn:0.030886},
+ {name:'F9',x:0.24383,y:0.396727,Yn:0.283721},
+ {name:'G9',x:0.337258,y:0.489497,Yn:0.288478},
+ {name:'H9',x:0.288807,y:0.568503,Yn:0.1947},
+ {name:'I9',x:0.291827,y:0.546695,Yn:0.299583},
+ {name:'J9',x:0.460734,y:0.430174,Yn:0.299273},
+ {name:'K9',x:0.396246,y:0.493092,Yn:0.304725},
+ {name:'L9',x:0.382795,y:0.53309,Yn:0.444141},
+ {name:'M9',x:0.447375,y:0.377059,Yn:0.034409}
+];
+// SG Skin Tones subset: the chart's inner white/black plus the 17 patches
+// CalMAN's SG skin-tone sequence uses, by X-Rite label.
+const METER_COLORCHECKER_SG_SKIN_REFERENCE_LABELS=['E5','E6','E2','F2','K2','D5','E7','F7','G7','H7','I7','J7','D8','E8','F8','G8','H8','I8','J8'];
+function meterColorCheckerSgReferenceSource(labels){
+ const byName=new Map(METER_COLORCHECKER_SG_REFERENCE.map(src=>[src.name,src]));
+ if(!Array.isArray(labels)) return METER_COLORCHECKER_SG_REFERENCE.map(src=>({...src}));
+ return labels.map(label=>{
+  const src=byName.get(label);
+  if(!src) throw new Error('ColorChecker SG reference label missing: '+label);
+  return {...src};
+ });
 }
 
 // A common MacLeod-Boynton experiment samples an equal-luminance hue circle
@@ -34480,6 +34844,11 @@ function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
  if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
  if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
+ // Reference SG series follow the Classic (24) convention: the N chart
+ // patches plus the full-code White (series white reference) and Black
+ // endpoints, since E5 is a reflectance grey (0.9186), not video white.
+ if(preset==='sg-ref-96') return meterBuildColorCheckerStepsJS(false,meterColorCheckerSgReferenceSource(),{seriesMode:'colorchecker-sg-reference'});
+ if(preset==='sg-skin-ref-19') return meterBuildColorCheckerStepsJS(false,meterColorCheckerSgReferenceSource(METER_COLORCHECKER_SG_SKIN_REFERENCE_LABELS),{seriesMode:'colorchecker-sg-skin-reference'});
  if(preset==='sg-96') return meterBuildFixedVideoCodeColorSteps(
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg');
  if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
@@ -37378,13 +37747,13 @@ function meterDefaultTargetsForColorSeries(type,points){
 
 const METER_HCFR_FIXED_CODES_KEY='pgen.meter.hcfrFixedGcdCodes';
 const METER_COLORCHECKER_SERIES_KEY='pgen.meter.colorCheckerSeries';
-const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800096,800019,800137,800008,800064];
+const METER_COLORCHECKER_SERIES_IDS=[30,800024,29,800124,800296,800219,800096,800019,800137,800008,800064];
 // Everything the Series select can show. Deliberately separate from
 // METER_COLORCHECKER_SERIES_IDS: that list feeds
 // meterColorCheckerSeriesStoredValue(), which the HCFR CHC export uses to pick a
 // COLOUR series, so a saturation id in it would make the export write a
 // saturation sweep as its ColorChecker.
-const METER_SERIES_SELECT_IDS=[30,800024,29,800124,800096,800019,24,25,800137,800008,800064];
+const METER_SERIES_SELECT_IDS=[30,800024,29,800124,800296,800219,800096,800019,24,25,800137,800008,800064];
 function meterHcfrFixedCodesAvailable(){
  // The stored definitions remain exact in SDR. HDR10 and HLG follow HCFR's
  // source-light conversion; Dolby Vision uses PGenerator's documented fallback.
@@ -37410,7 +37779,7 @@ function meterColorCheckerSeriesStoredValue(){
  return METER_COLORCHECKER_SERIES_IDS.includes(id)?id:30;
 }
 function meterColorCheckerSeriesUsesFullDeltaE(id){
- return [29,800124,800096,800019,800137,800008,800064].includes(Math.round(Number(id)));
+ return [29,800124,800296,800219,800096,800019,800137,800008,800064].includes(Math.round(Number(id)));
 }
 // Compatibility for saved pages and local regression harnesses that still
 // call the former gate. No built-in verification series is SDR-only now.
@@ -46582,7 +46951,8 @@ async function meterRunSeries(options){
 		   name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,
 		   custom_target_nits:step.custom_target_nits,
 		   series_color:step.series_color,sat_pct:step.sat_pct,stimulus:step.stimulus,
-		   signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct
+		   signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct,
+		   reference_out_of_gamut:(step.reference_out_of_gamut!=null)?!!step.reference_out_of_gamut:undefined
 		  });
 		  if(meterSeriesSelectionRunActive&&Array.isArray(selectedRunSteps)){
 		   _seriesBody.custom_series=true;
@@ -50045,6 +50415,25 @@ function drawDeltaE2000Preset(gsSteps){
 //     CIE Chromaticity + Color Charts       //
 ///////////////////////////////////////////////
 
+// A ColorChecker-style reading whose REFERENCE colour lies outside the solve
+// gamut: the builder clipped a negative channel or renormalised a channel
+// above 1, so the stimulus sits on the gamut boundary and the target is
+// unreachable. Distinct from the MacLeod-Boynton builders' out_of_gamut, whose
+// target is the clipped (reachable) stimulus. The flag is stamped on the
+// reading at measurement time (reference_out_of_gamut, boolean); only
+// readings recorded before the flag existed fall back to the canonical series
+// step of the same name, which reflects the colourspace selected at view time.
+function meterReadingIsOutOfGamut(rd){
+ if(!rd) return false;
+ const own=rd.reference_out_of_gamut;
+ if(own!==undefined&&own!==null) return own===true||own===1||own==='1'||own==='true';
+ try{
+  const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(rd):null;
+  return !!(step&&step!==rd&&step.reference_out_of_gamut===true);
+ }catch(e){ return false; }
+}
+const METER_OUT_OF_GAMUT_MARK='<span title="Reference colour lies outside the selected colourspace; the stimulus was clipped to the gamut boundary and this patch is excluded from the in-gamut average" style="color:#ff9800;margin-left:4px;font-weight:600">&#8856;</span>';
+
 function drawColorReadingsTable(readings){
  const wrap=document.getElementById('colorReadingsTableWrap');
  const tbody=document.querySelector('#colorReadingsTable tbody');
@@ -50065,10 +50454,11 @@ function drawColorReadingsTable(readings){
  const heads=document.querySelectorAll('#colorReadingsTable thead th');
  if(heads.length>=5){heads[1].textContent='Tgt '+axis.x;heads[2].textContent=axis.x;heads[3].textContent='Tgt '+axis.y;heads[4].textContent=axis.y;}
  let html='';
- let deSum=0,deCount=0;
+ let deSum=0,deCount=0,deSumAll=0,deCountAll=0,oogCount=0;
  readings.forEach(rd=>{
   if(meterIsWhiteReferenceReading(rd)) return;
   if(!meterReadingHasLuminance(rd)) return;
+  const outOfGamut=meterReadingIsOutOfGamut(rd);
   const hasChroma=meterReadingHasChromaticity(rd);
   const targetXYZ=meterTargetXYZForReading(rd);
   const tgt=(targetXYZ&&targetXYZ.Y>0)?meterCieChartCoordFromXYZ(targetXYZ):null;
@@ -50078,12 +50468,13 @@ function drawColorReadingsTable(readings){
   const pc=meterPreviewColorForReading(rd,'target');
   const de=meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm);
    const hasDe=Number.isFinite(de);
-   if(hasDe){deSum+=de;deCount++;}
+   if(outOfGamut) oogCount++;
+   if(hasDe){deSumAll+=de;deCountAll++;if(!outOfGamut){deSum+=de;deCount++;}}
    const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
   const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
   const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
-  html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer\" onclick=\"colorTableRowClick(this)\">';
-  html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+'</td>';
+  html+='<tr data-name=\"'+(rd.name||'').replace(/"/g,'&quot;')+'\" style=\"border-bottom:1px solid #1a1a28;cursor:pointer'+(outOfGamut?';opacity:0.75':'')+'\" onclick=\"colorTableRowClick(this)\">';
+  html+='<td style="padding:5px 8px;text-align:left"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+pc+';vertical-align:middle;margin-right:5px"></span>'+(rd.name||'')+(outOfGamut?METER_OUT_OF_GAMUT_MARK:'')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.x.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right">'+(measured?measured.x.toFixed(4):'--')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:#888">'+(tgt?tgt.y.toFixed(4):'--')+'</td>';
@@ -50099,8 +50490,19 @@ function drawColorReadingsTable(readings){
   const avg=deSum/deCount;
   const avgCol=avg<1?'#4caf50':avg<3?'#ff9800':'#f44';
   html+='<tr style="border-top:2px solid #333;font-weight:600">';
-  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="9">Average</td>';
+  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="9">'+(oogCount>0?'Average (in gamut, '+deCount+' patches)':'Average')+'</td>';
   html+='<td style="padding:5px 6px;text-align:right;color:'+avgCol+'">'+avg.toFixed(2)+'</td>';
+  html+='</tr>';
+ }
+ if(oogCount>0&&deCountAll>0){
+  // Out-of-gamut patches carry an unavoidable error no calibration can
+  // remove; report the all-patch average separately so it cannot be
+  // mistaken for a display fault.
+  const avgAll=deSumAll/deCountAll;
+  const avgAllCol=avgAll<1?'#4caf50':avgAll<3?'#ff9800':'#f44';
+  html+='<tr style="font-weight:600">';
+  html+='<td style="padding:5px 8px;text-align:left;color:#aaa" colspan="9">Average (all, incl. '+oogCount+' out of gamut '+METER_OUT_OF_GAMUT_MARK+')</td>';
+  html+='<td style="padding:5px 6px;text-align:right;color:'+avgAllCol+'">'+avgAll.toFixed(2)+'</td>';
   html+='</tr>';
  }
  tbody.innerHTML=html;
@@ -50130,6 +50532,9 @@ function drawColorSeriesAverages(readings,colorRefMode){
    const sat=meterParseSaturationReading(rd);
    key=sat&&sat.color?sat.color:(rd.name||'Other');
   }
+  // Out-of-gamut reference patches are averaged on their own row so the
+  // in-gamut figure reflects what the display can actually be asked to do.
+  if(!isSat&&meterReadingIsOutOfGamut(rd)) key='Out of gamut';
   if(!groups[key]){groups[key]={de:[],dx:[],dy:[],Y:[],color:meterPreviewColorForReading(rd,'target')};order.push(key);}
   const targetXYZ=meterTargetXYZForReading(rd);
   const tgt=meterReadingHasChromaticity(rd)?meterCieChartCoordFromXYZ(targetXYZ):null;
@@ -51713,6 +52118,7 @@ function drawCIEChart3DLegacy(readings,opts){
    prims.push({z:pT.z+0.02, draw:()=>{
     const sq=3.2*pT.persp*markerScale;
     ctx.save();
+    if(meterReadingIsOutOfGamut(rd)) ctx.setLineDash([2,2]);
     ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(0.5,(selected?1.8:1.4)*markerScale);
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
     ctx.restore();
@@ -52354,6 +52760,9 @@ function drawCIEChart(readings){
    const pc=meterCiePlotColor(meterPreviewColorForStep(s));
    const sq=meterCieLightMode()?4.2:3.5;
    ctx.save();
+   // Out-of-gamut reference: dashed square, the reachable stimulus lies on
+   // the gamut boundary rather than at this target.
+   if(meterReadingIsOutOfGamut(s)) ctx.setLineDash([2,2]);
    ctx.strokeStyle=pc;ctx.lineWidth=meterCieLightMode()?2:1.4;ctx.strokeRect(toX(tgt.x)-sq,toY(tgt.y)-sq,sq*2,sq*2);
    ctx.restore();
   });
@@ -52385,10 +52794,12 @@ function drawCIEChart(readings){
    ctx.strokeStyle=meterColorWithAlpha(targetColor,0.78);ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(px,py);ctx.stroke();
    ctx.restore();
   }
-  // Target: crisp hollow square
+  // Target: crisp hollow square (dashed when the reference is outside the
+  // selected colourspace and the stimulus was clipped to the boundary)
   if(tgt){
    const sq=meterCieLightMode()?4.2:3.5;
    ctx.save();
+   if(meterReadingIsOutOfGamut(rd)) ctx.setLineDash([2,2]);
    ctx.strokeStyle=targetStrokeColor;ctx.lineWidth=meterCieLightMode()?2:1.4;ctx.strokeRect(tx-sq,ty-sq,sq*2,sq*2);
    ctx.restore();
   }
@@ -53117,12 +53528,14 @@ function meterBuildReportSummaryCards(){
  } else {
     const colorRefMode=meterColorRefMode();
   const colorForm=meterColorDeltaEForm();
-    const deVals=valid.map(rd=>meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm)).filter(v=>isFinite(v));
+    const inGamut=valid.filter(rd=>!meterReadingIsOutOfGamut(rd));
+    const oogCount=valid.length-inGamut.length;
+    const deVals=inGamut.map(rd=>meterSeriesDeltaEForDisplay(rd,colorRefMode,colorForm)).filter(v=>isFinite(v));
   const avgDe=deVals.length?(deVals.reduce((s,v)=>s+v,0)/deVals.length):0;
   const peak=Math.max(...valid.map(r=>r.Y!=null?r.Y:(r.luminance||0)),0);
   const avgY=valid.length?(valid.reduce((s,r)=>s+(r.Y!=null?r.Y:(r.luminance||0)),0)/valid.length):0;
   cards=[
-   {label:'Average '+meterDeltaEFormLabel(colorForm),value:isFinite(avgDe)?avgDe.toFixed(2):'--'},
+   {label:'Average '+meterDeltaEFormLabel(colorForm)+(oogCount>0?' (in gamut, '+oogCount+' out of gamut excluded)':''),value:(deVals.length&&isFinite(avgDe))?avgDe.toFixed(2):'--'},
    {label:'Peak Luminance',value:isFinite(peak)?peak.toFixed(1)+' cd/m²':'--'},
    {label:'Average Luminance',value:isFinite(avgY)?avgY.toFixed(1)+' cd/m²':'--'},
    {label:'Readings',value:String(valid.length)}
@@ -53559,6 +53972,13 @@ function meterBuildHcfrExportModel(){
   // as a Free Measurement rather than assigning false Classic slot meanings.
   free.push(...colors);
   warnings.push('MacLeod-Boynton hue-circle readings were exported as HCFR Free Measurements because CHC has no matching built-in series mode.');
+ }else if(colorPoints===800296||colorPoints===800219){
+  // HCFR's ColorChecker SG modes (6 and 4) describe the CalMAN/HCFR SG code
+  // sequences, not X-Rite's chart reference: the reference-based SG series
+  // drive different stimuli, so their readings must not be placed in those
+  // slots where HCFR would score them against its own code targets.
+  free.push(...colors);
+  warnings.push('ColorChecker SG reference readings were exported as HCFR Free Measurements; HCFR\'s ColorChecker SG modes only describe the CalMAN/HCFR SG code sequences.');
  }else if(colorCheckerMode===6){
   colorCheckerItems=indexedByNames(METER_COLORCHECKER_SG_NAMES).slice(0,96);
  }else if(colorCheckerMode===4){
