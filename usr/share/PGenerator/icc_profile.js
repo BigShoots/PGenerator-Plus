@@ -2568,7 +2568,11 @@ function meterIccActiveMhc2FlushStep(index){
 function meterIccActiveMhc2Steps(){
  const neutralCodes=[0,20,25,30,35,40,45,51,61,72,82,92,102,128,153,205,256,307,358,409,460,512,563,614,665,716,767,818,870,921,972,1023];
  const axisCodes=[20,62,135,251,441,648,778,934,1023];
- const shadowCodes=[102,153,205,256];
+ // Must span the whole corrected band. With anchors stopping at 256 the
+ // builder's correction faded to zero around code 328, so code 307 was
+ // dragged through an uncontrolled ramp and measured worse than the
+ // uncorrected panel. These match the curve feedback codes exactly.
+ const shadowCodes=[102,153,205,256,307,358];
  const steps=[];
  let flushIndex=0;
  const pushWithFlush=step=>{
