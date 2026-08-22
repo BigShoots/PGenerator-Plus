@@ -1918,7 +1918,7 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
         # .3001/.3017, outside the measured +/-4-code hull.  Keep the local
         # correction bounded to half the measured move; the signed feedback
         # stages close the remaining residual without extrapolating.
-        damped_delta = [0.5 * value for value in delta]
+        damped_delta = [0.25 * value for value in delta]
         target_codes = [max(center_code[channel] - 0.03,
                             min(center_code[channel] + 0.03,
                                 center_code[channel] + damped_delta[channel]))
