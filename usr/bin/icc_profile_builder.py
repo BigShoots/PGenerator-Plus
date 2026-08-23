@@ -420,6 +420,14 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # These codes were verified against the profile's measured output, not the
 # null-seed ladder, which overestimates response above the knee.
 MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
+# The MHC2 curves have the same hole the cLUT corridor had: shadow anchors fade
+# out by code 414 to 429 and the peak stages only begin near 763, so codes 409
+# to 716 were left to the unconstrained model and measured chroma dE 10.9 at
+# 409 and 7.1 at 716 while their covered neighbours read 0.6 or better. These
+# extra anchors close that band. The recoverability validator deliberately
+# stays on MHC2_CURVE_FEEDBACK_CODES so new anchors cannot fail a build closed;
+# every anchor is in-hull by construction anyway.
+MHC2_MIDBAND_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
@@ -4065,7 +4073,9 @@ def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
     for index, old in enumerate(curves[channel]):
         position = index / float(entries - 1)
         source_code = nits_to_pq(pq_to_nits(position) / gain)
-        shadow_weight = mhc2_shadow_probe_weight(source_code)
+        shadow_weight = mhc2_shadow_probe_weight(
+            source_code, MHC2_CLUT_PROBE_FADE_START,
+            MHC2_CLUT_PROBE_FADE_SPAN)
         peak_weight = smoothstep((source_code - 0.70) / 0.05)
         curves[channel][index] = max(0.0, min(1.0,
             old + shadow_delta * shadow_weight
@@ -5990,7 +6000,8 @@ def build(payload, output_dir):
         matching_luts = mhc2_adjustment_luts(final_mhc2)
         apply_profile_curve_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, "ICC MHC2 Curve Feedback")
+            calibrated_white, "ICC MHC2 Curve Feedback",
+            codes=MHC2_MIDBAND_FEEDBACK_CODES)
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)

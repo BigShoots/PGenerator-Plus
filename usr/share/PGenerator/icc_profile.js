@@ -2645,7 +2645,7 @@ function meterIccMhc2PeakStep(name,r,g,b){
 // also probes 767 and 921; without them the cLUT top end kept a flat +.0028
 // dy offset, about 1.5 chroma dE where MHC2 reached 0.54. Measuring them on
 // the cLUT variants keeps cLUT transform provenance.
-const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358];
+const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358,460,563,665];
 const METER_ICC_CLUT_FEEDBACK_CODES=[102,153,205,256,307,358,460,563,665,716];
 
 function meterIccCurveFeedbackCodes(label){
