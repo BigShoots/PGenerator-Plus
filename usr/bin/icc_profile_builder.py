@@ -2906,7 +2906,7 @@ def windows_hdr_b2a_grey_ladder(rows):
     return ladder if len(ladder) >= 9 else None
 
 
-def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.14,
+def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
                                      source_limit=0.74, max_shift=0.008):
     """Pull the neutral corridor onto the measured grey ladder, common mode.
 
@@ -2928,8 +2928,15 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.14,
 
     Bounds matter. The measured need is about 4 counts, so max_shift is held
     near 8 counts; a 20 count bound let a noisy near-black ladder inversion
-    overshoot code 51 to +42.6%. source_start keeps the trim out of the
-    shadow band entirely for the same reason.
+    overshoot code 51 to +42.6%.
+
+    source_start is 0.38, just above code 358. Measured per-code: from 409
+    upward the trim helps at every point, 460 to +2.8%, 512 to -1.6%, 614 to
+    -0.6%, 716 to +0.5% and the whole top end inside +/-0.5%. At 153 and 358
+    it hurt, 153 from 1.963 to 2.503 dE ITP and 358 from 2.391 to 4.958,
+    because the ladder over-reads there relative to what the panel delivers
+    through the finished profile, so inverting it under-drives. Those codes
+    are already owned by the shadow stages.
     """
     ladder = windows_hdr_b2a_grey_ladder(rows)
     if not ladder:
