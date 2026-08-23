@@ -2572,7 +2572,14 @@ function meterIccActiveMhc2Steps(){
  // builder's correction faded to zero around code 328, so code 307 was
  // dragged through an uncontrolled ramp and measured worse than the
  // uncorrected panel. These match the curve feedback codes exactly.
- const shadowCodes=[102,153,205,256,307,358];
+ // Extended into the mid-band. The MHC2 curves had no measured chroma
+ // anchor between 360 and 745, giving chroma dE 10.9 at code 409 and 7.1 at
+ // 716. Widening the curve-feedback probe envelope to cover it collided with
+ // the peak stages and regressed peak-white four-fold, so close it here
+ // instead: these probes are measured against the null seed, so they cannot
+ // interact with the peak candidate or final peak feedback stages, and the
+ // builder's fade then ends near code 737, below where those stages begin.
+ const shadowCodes=[102,153,205,256,307,358,460,563,665];
  const steps=[];
  let flushIndex=0;
  const pushWithFlush=step=>{
