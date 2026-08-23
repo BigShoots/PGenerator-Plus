@@ -2911,114 +2911,40 @@ def windows_hdr_b2a_grey_ladder(rows):
     return ladder if len(ladder) >= 9 else None
 
 
-def windows_hdr_b2a_closed_loop_base_luminance(rows):
-    """Finished-profile Base Y at each feedback code, preferring cLUT rows."""
-    clut = {}
-    mhc2 = {}
-    for row in rows:
-        name = str(row.get("name", ""))
-        match = re.match(r"^ICC cLUT Curve Feedback Base (\d+)$", name)
-        dest = None
-        if match:
-            dest = clut
-        else:
-            match = re.match(r"^ICC MHC2 Curve Feedback Base (\d+)$", name)
-            if match:
-                dest = mhc2
-        if dest is None:
-            continue
-        xyz = row.get("xyz")
-        if not xyz:
-            continue
-        dest.setdefault(int(match.group(1)), []).append(float(xyz[1]))
-    points = []
-    for code in sorted(set(clut) | set(mhc2)):
-        values = sorted(clut.get(code) or mhc2[code])
-        middle = len(values) // 2
-        measured = (values[middle] if len(values) % 2 else
-                    0.5 * (values[middle - 1] + values[middle]))
-        if measured > 0.0:
-            points.append((code, measured))
-    return points
-
-
-def windows_hdr_b2a_ladder_dlnY_dcode(ladder, code):
-    """Local d ln Y / d code on the measured grey ladder."""
-    if not ladder or len(ladder) < 2:
-        return None
-    points = [(frac * 1023.0, nits) for frac, nits in ladder]
-    target = float(code)
-    index = 1
-    if target >= points[-1][0]:
-        index = len(points) - 1
-    else:
-        while index < len(points) and points[index][0] < target:
-            index += 1
-    code0, y0 = points[index - 1]
-    code1, y1 = points[index]
-    delta_code = code1 - code0
-    if delta_code <= 1e-9 or y0 <= 1e-12 or y1 <= 1e-12:
-        return None
-    return (math.log(y1) - math.log(y0)) / delta_code
-
-
-def windows_hdr_b2a_closed_loop_shifts(rows, ladder):
-    """Common-mode drive shift vs source code from closed-loop Base Y."""
-    if not ladder:
-        return None
-    bases = windows_hdr_b2a_closed_loop_base_luminance(rows)
-    if not bases:
-        return None
-    points = []
-    for code, measured in bases:
-        target = pq_to_nits(code / 1023.0)
-        slope = windows_hdr_b2a_ladder_dlnY_dcode(ladder, code)
-        if (target <= 0.0 or measured <= 0.0
-                or slope is None or abs(slope) < 1e-9):
-            continue
-        shift = (-math.log(measured / target) / slope) / 1023.0
-        if math.isfinite(shift):
-            points.append((code / 1023.0, shift))
-    return points if points else None
-
-
-def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.09,
+def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
                                      source_limit=0.74, max_shift=0.008):
-    """Pull the neutral corridor onto the PQ target, common mode.
+    """Pull the neutral corridor onto the measured grey ladder, common mode.
+
+    Measured on hardware: the corridor emitted a device code 2 to 6 counts
+    above what the null-seed grey ladder says the PQ target needs, +4.3 at
+    code 460, +4.7 at 512, +2.3 at 563, +6.3 at 614 and +4.6 at 665, a mean
+    of about +4.4 counts. At roughly 0.9% luminance per count that is the
+    +3 to +5% mid-band excess seen on both paths.
+
+    The in-hull probe solve cannot fix it: a luminance move is common mode
+    and the L1 <= 1 bound caps that at one third of a probe delta, which
+    measured 0.04% to 0.86% of authority above code 460 against errors of
+    2 to 5%. So correct it here instead, from the ladder.
 
     The shift is applied equally to all three channels, so channel ratios and
     therefore the chroma corrections already achieved are preserved; only the
     common drive moves. Stops below the plateau, which
     windows_hdr_b2a_with_peak_drive owns.
 
-    Prefer the closed-loop Base rows from the finished profile
-    (ICC cLUT Curve Feedback Base N, then ICC MHC2 Curve Feedback Base N).
-    Those measure what the finished profile actually emits, so the trim aims
-    the right way. The open-loop null-seed grey ladder does not: at code 358
-    it reads 18.84 nits against a PQ target of 18.42, so inverting it reduces
-    drive, but the finished profile's own Base there is 8.7% too dim and
-    needs more drive. Ladder-driven trimming took 358 from 2.391 to 4.958
-    dE ITP, which is why source_start used to sit at 0.38 to exclude it.
-
-    Convert each Base relative error into a drive shift with the local
-    slope of the measured grey ladder, d ln Y / d code, then interpolate
-    those per-code shifts piecewise-linearly and hold the end values.
-
-    When the Base rows are absent, invert the null-seed grey ladder as
-    before so non-feedback builds still work.
-
     Bounds matter. The measured need is about 4 counts, so max_shift is held
     near 8 counts; a 20 count bound let a noisy near-black ladder inversion
     overshoot code 51 to +42.6%.
 
-    source_start is 0.09, just below code 102. The Base data covers 102
-    upward and points the right way at 358, so that whole band is in play.
-    Code 51 stays out: it has no Base row and the coherence gate says it is
-    meter noise.
+    source_start is 0.38, just above code 358. Measured per-code: from 409
+    upward the trim helps at every point, 460 to +2.8%, 512 to -1.6%, 614 to
+    -0.6%, 716 to +0.5% and the whole top end inside +/-0.5%. At 153 and 358
+    it hurt, 153 from 1.963 to 2.503 dE ITP and 358 from 2.391 to 4.958,
+    because the ladder over-reads there relative to what the panel delivers
+    through the finished profile, so inverting it under-drives. Those codes
+    are already owned by the shadow stages.
     """
     ladder = windows_hdr_b2a_grey_ladder(rows)
-    closed_loop = windows_hdr_b2a_closed_loop_shifts(rows, ladder)
-    if not closed_loop and not ladder:
+    if not ladder:
         return profile
 
     def ladder_drive(target):
@@ -3035,20 +2961,6 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.09,
                     return code0
                 return code0 + (pt - p0) * (code1 - code0) / (p1 - p0)
         return ladder[-1][0]
-
-    def closed_loop_shift(source_code):
-        if source_code <= closed_loop[0][0]:
-            return closed_loop[0][1]
-        for index in range(1, len(closed_loop)):
-            code0, shift0 = closed_loop[index - 1]
-            code1, shift1 = closed_loop[index]
-            if source_code <= code1:
-                if code1 <= code0 + 1e-12:
-                    return shift0
-                return (shift0
-                        + (source_code - code0) * (shift1 - shift0)
-                        / (code1 - code0))
-        return closed_loop[-1][1]
 
     tags = dict(read_icc_tags(profile))
     lumi = tags.get(b"lumi")
@@ -3103,9 +3015,10 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.09,
                         estimates.append(nits_to_pq(relative * white_nits))
                     source_code = sorted(estimates)[1]
                     # Stay inside the band this trim is valid for. Below
-                    # source_start there is no closed-loop Base row and the
-                    # open-loop inversion is noisy: trimming from 0.0 drove
-                    # code 51 to +42.6%. Code 51 stays with the shadow stages.
+                    # source_start the ladder's luminances are tiny and its
+                    # inversion is noisy: trimming from 0.0 drove code 51 to
+                    # +42.6% and code 358 to -7.6%. The shadow stages already
+                    # own that region and read 0.4 to 1.7 chroma there.
                     if source_code < source_start or source_code >= source_limit:
                         continue
                     target_y = pq_to_nits(source_code)
@@ -3120,10 +3033,7 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.09,
                         current.append(sample_table(output_tables[channel],
                                                     node_value))
                     mean_drive = sum(current) / 3.0
-                    if closed_loop:
-                        shift = closed_loop_shift(source_code)
-                    else:
-                        shift = ladder_drive(target_y) - mean_drive
+                    shift = ladder_drive(target_y) - mean_drive
                     if not math.isfinite(shift) or abs(shift) < 1e-6:
                         continue
                     shift = max(-max_shift, min(max_shift, shift))
