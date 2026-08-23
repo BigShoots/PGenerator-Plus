@@ -2906,8 +2906,8 @@ def windows_hdr_b2a_grey_ladder(rows):
     return ladder if len(ladder) >= 9 else None
 
 
-def windows_hdr_b2a_with_ladder_trim(profile, rows, source_limit=0.74,
-                                     max_shift=0.02):
+def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.14,
+                                     source_limit=0.74, max_shift=0.008):
     """Pull the neutral corridor onto the measured grey ladder, common mode.
 
     Measured on hardware: the corridor emitted a device code 2 to 6 counts
@@ -2925,6 +2925,11 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_limit=0.74,
     therefore the chroma corrections already achieved are preserved; only the
     common drive moves. Stops below the plateau, which
     windows_hdr_b2a_with_peak_drive owns.
+
+    Bounds matter. The measured need is about 4 counts, so max_shift is held
+    near 8 counts; a 20 count bound let a noisy near-black ladder inversion
+    overshoot code 51 to +42.6%. source_start keeps the trim out of the
+    shadow band entirely for the same reason.
     """
     ladder = windows_hdr_b2a_grey_ladder(rows)
     if not ladder:
@@ -2997,7 +3002,12 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_limit=0.74,
                         relative = max(0.0, pcs / d50[channel])
                         estimates.append(nits_to_pq(relative * white_nits))
                     source_code = sorted(estimates)[1]
-                    if source_code <= 0.0 or source_code >= source_limit:
+                    # Stay inside the band this trim is valid for. Below
+                    # source_start the ladder's luminances are tiny and its
+                    # inversion is noisy: trimming from 0.0 drove code 51 to
+                    # +42.6% and code 358 to -7.6%. The shadow stages already
+                    # own that region and read 0.4 to 1.7 chroma there.
+                    if source_code < source_start or source_code >= source_limit:
                         continue
                     target_y = pq_to_nits(source_code)
                     if target_y <= 0.0:
