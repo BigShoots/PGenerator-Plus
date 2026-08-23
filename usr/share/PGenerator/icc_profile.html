@@ -321,7 +321,21 @@
    </div>
   </div>
 
-  <div id="meterIccFineTuneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10023;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+  <div id="meterIccFineTuneModeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10023;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
+   <div style="width:min(560px,100%);background:#111723;border:1px solid #2a3140;border-radius:10px;padding:18px;box-sizing:border-box">
+    <div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:8px">Fine-tune mode</div>
+    <div id="meterIccFineTuneModeFile" class="meter-icc-note" style="margin-bottom:10px"></div>
+    <div id="meterIccFineTuneModeMessage" class="meter-icc-note" style="line-height:1.55;margin-bottom:14px">Choose how to refine this Windows HDR cLUT profile.</div>
+    <div id="meterIccFineTuneModeClosedLoopReason" class="meter-icc-note" style="line-height:1.55;margin-bottom:14px;display:none"></div>
+    <div class="btn-row" style="justify-content:flex-end;margin:0;flex-wrap:wrap">
+     <button type="button" class="btn btn-sm btn-secondary" onclick="meterIccResolveFineTuneMode('cancel')">Cancel</button>
+     <button type="button" class="btn btn-sm btn-secondary" id="meterIccFineTuneModeGreyBtn" onclick="meterIccResolveFineTuneMode('grey-color')">Grey and colour loop</button>
+     <button type="button" class="btn btn-sm btn-primary" id="meterIccFineTuneModeClosedLoopBtn" onclick="meterIccResolveFineTuneMode('closed-loop')">Closed-loop MHC2 refine</button>
+    </div>
+   </div>
+  </div>
+
+  <div id="meterIccFineTuneModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10024;align-items:center;justify-content:center;padding:18px;box-sizing:border-box">
    <div style="width:min(620px,100%);max-height:90vh;overflow:auto;background:#111723;border:1px solid #2a3140;border-radius:10px;padding:18px;box-sizing:border-box">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px">
      <div>
