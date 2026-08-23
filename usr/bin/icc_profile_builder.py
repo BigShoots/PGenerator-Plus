@@ -2883,6 +2883,151 @@ def windows_hdr_b2a_measured_peak_drive(rows):
     return best
 
 
+def windows_hdr_b2a_grey_ladder(rows):
+    """Measured neutral grey ladder as sorted (code fraction, nits)."""
+    grouped = {}
+    for row in rows:
+        match = re.match(r"^ICC MHC2 Active Grey (\d+)$", str(row.get("name", "")))
+        if not match:
+            continue
+        xyz = row.get("xyz")
+        if not xyz:
+            continue
+        grouped.setdefault(int(match.group(1)), []).append(xyz[1])
+    ladder = []
+    previous = 0.0
+    for code in sorted(grouped):
+        values = sorted(grouped[code])
+        middle = len(values) // 2
+        measured = (values[middle] if len(values) % 2 else
+                    0.5 * (values[middle - 1] + values[middle]))
+        previous = max(previous, measured)
+        ladder.append((code / 1023.0, previous))
+    return ladder if len(ladder) >= 9 else None
+
+
+def windows_hdr_b2a_with_ladder_trim(profile, rows, source_limit=0.74,
+                                     max_shift=0.02):
+    """Pull the neutral corridor onto the measured grey ladder, common mode.
+
+    Measured on hardware: the corridor emitted a device code 2 to 6 counts
+    above what the null-seed grey ladder says the PQ target needs, +4.3 at
+    code 460, +4.7 at 512, +2.3 at 563, +6.3 at 614 and +4.6 at 665, a mean
+    of about +4.4 counts. At roughly 0.9% luminance per count that is the
+    +3 to +5% mid-band excess seen on both paths.
+
+    The in-hull probe solve cannot fix it: a luminance move is common mode
+    and the L1 <= 1 bound caps that at one third of a probe delta, which
+    measured 0.04% to 0.86% of authority above code 460 against errors of
+    2 to 5%. So correct it here instead, from the ladder.
+
+    The shift is applied equally to all three channels, so channel ratios and
+    therefore the chroma corrections already achieved are preserved; only the
+    common drive moves. Stops below the plateau, which
+    windows_hdr_b2a_with_peak_drive owns.
+    """
+    ladder = windows_hdr_b2a_grey_ladder(rows)
+    if not ladder:
+        return profile
+
+    def ladder_drive(target):
+        if target <= ladder[0][1]:
+            return ladder[0][0]
+        for index in range(1, len(ladder)):
+            code0, y0 = ladder[index - 1]
+            code1, y1 = ladder[index]
+            if target <= y1:
+                p0 = nits_to_pq(y0)
+                p1 = nits_to_pq(y1)
+                pt = nits_to_pq(target)
+                if p1 <= p0 + 1e-12:
+                    return code0
+                return code0 + (pt - p0) * (code1 - code0) / (p1 - p0)
+        return ladder[-1][0]
+
+    tags = dict(read_icc_tags(profile))
+    lumi = tags.get(b"lumi")
+    if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
+        return profile
+    white_nits = read_s15fixed16(lumi, 12)
+    if white_nits <= 0.0:
+        return profile
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+    d50 = (0.9642, 1.0, 0.8249)
+    replacements = {}
+    for signature, payload in read_icc_tags(profile):
+        if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        if len(payload) < 52 or payload[:4] != b"mft2":
+            continue
+        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+        if input_channels != 3 or output_channels != 3 or grid < 2:
+            continue
+        input_start = 52
+        clut_start = input_start + input_channels * input_entries * 2
+        clut_values = grid ** input_channels * output_channels
+        output_start = clut_start + clut_values * 2
+        if output_start + output_channels * output_entries * 2 > len(payload):
+            continue
+        input_tables = []
+        output_tables = []
+        for channel in range(3):
+            offset = input_start + channel * input_entries * 2
+            input_tables.append([value / 65535.0 for value in
+                                 struct.unpack_from(">{}H".format(input_entries),
+                                                    payload, offset)])
+            offset = output_start + channel * output_entries * 2
+            output_tables.append([value / 65535.0 for value in
+                                  struct.unpack_from(">{}H".format(output_entries),
+                                                     payload, offset)])
+        updated = bytearray(payload)
+        denominator = float(grid - 1)
+        touched = 0
+        for red in range(grid):
+            for green in range(max(0, red - 1), min(grid, red + 2)):
+                for blue in range(max(0, red - 1), min(grid, red + 2)):
+                    if max(red, green, blue) - min(red, green, blue) > 1:
+                        continue
+                    estimates = []
+                    for channel, node in enumerate((red, green, blue)):
+                        encoded_xyz = invert_table(input_tables[channel],
+                                                   node / denominator)
+                        pcs = encoded_xyz / xyz_to_mft
+                        relative = max(0.0, pcs / d50[channel])
+                        estimates.append(nits_to_pq(relative * white_nits))
+                    source_code = sorted(estimates)[1]
+                    if source_code <= 0.0 or source_code >= source_limit:
+                        continue
+                    target_y = pq_to_nits(source_code)
+                    if target_y <= 0.0:
+                        continue
+                    node_offset = (((red * grid + green) * grid + blue) * 3)
+                    current = []
+                    for channel in range(3):
+                        node_value = struct.unpack_from(
+                            ">H", payload,
+                            clut_start + (node_offset + channel) * 2)[0] / 65535.0
+                        current.append(sample_table(output_tables[channel],
+                                                    node_value))
+                    mean_drive = sum(current) / 3.0
+                    shift = ladder_drive(target_y) - mean_drive
+                    if not math.isfinite(shift) or abs(shift) < 1e-6:
+                        continue
+                    shift = max(-max_shift, min(max_shift, shift))
+                    for channel in range(3):
+                        desired = max(0.0, min(1.0, current[channel] + shift))
+                        encoded = invert_table(output_tables[channel], desired)
+                        struct.pack_into(">H", updated,
+                                         clut_start + (node_offset + channel) * 2,
+                                         max(0, min(65535,
+                                             int(round(encoded * 65535.0)))))
+                    touched += 1
+        if touched:
+            replacements[signature] = bytes(updated)
+    return rebuild_icc(profile, replacements) if replacements else profile
+
+
 def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
     """Drive the B2A plateau with the directly measured best peak triplet.
 
@@ -5981,6 +6126,9 @@ def build(payload, output_dir):
         # no measurable response and extrapolating the last anchor is
         # wrong-signed. Drive it from the directly measured best peak triplet
         # instead, which is the same selection the MHC2 balanced peak cap uses.
+        # Common-mode luminance trim first, then the absolute plateau drive.
+        # The two operate on disjoint source ranges, below and above 0.74.
+        profile = windows_hdr_b2a_with_ladder_trim(profile, mhc2_profile_rows)
         profile = windows_hdr_b2a_with_peak_drive(profile, mhc2_profile_rows)
 
         # Windows system handling gets its own measured response solve. Keep
