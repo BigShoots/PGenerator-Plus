@@ -3067,41 +3067,120 @@ def windows_hdr_b2a_grey_ladder(rows):
     return ladder if len(ladder) >= 9 else None
 
 
-def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
-                                     source_limit=0.74, max_shift=0.008):
-    """Pull the neutral corridor onto the measured grey ladder, common mode.
+def windows_hdr_b2a_probe_luminance_shifts(rows):
+    """Common-mode B2A shift vs source code from the profile's own probes.
 
-    Measured on hardware: the corridor emitted a device code 2 to 6 counts
-    above what the null-seed grey ladder says the PQ target needs, +4.3 at
-    code 460, +4.7 at 512, +2.3 at 563, +6.3 at 614 and +4.6 at 665, a mean
-    of about +4.4 counts. At roughly 0.9% luminance per count that is the
-    +3 to +5% mid-band excess seen on both paths.
+    Sensitivity is the finished profile's local dY per code, not the
+    null-seed grey-ladder slope. Attempt 3 converted a luminance error with
+    that ladder slope, about 0.9 percent per code. At code 358 the profile's
+    own probes measure 2.77 percent per code, so that pass applied about 8
+    codes where 3.1 were needed and overshot to +17.8 percent.
 
-    The in-hull probe solve cannot fix it: a luminance move is common mode
-    and the L1 <= 1 bound caps that at one third of a probe delta, which
-    measured 0.04% to 0.86% of authority above code 460 against errors of
-    2 to 5%. So correct it here instead, from the ladder.
+    Per-code common-mode sensitivity is the sum over R, G and B of
+    0.5 * abs(Y_plus - Y_minus), divided by the probe code delta (4) and
+    by Base Y. The wanted shift is then -error_fraction / that slope,
+    clamped to +/- 5 codes and stored in the 0..1 output domain.
+    Prefers ICC cLUT Curve Feedback rows and falls back to the MHC2 label.
+    """
+    by_name = {}
+    for row in rows:
+        xyz = row.get("xyz")
+        if not xyz:
+            continue
+        measured = float(xyz[1])
+        if not math.isfinite(measured) or measured <= 0.0:
+            continue
+        by_name.setdefault(str(row.get("name", "")), []).append(measured)
+
+    def median(values):
+        values = sorted(values)
+        middle = len(values) // 2
+        return (values[middle] if len(values) % 2 else
+                0.5 * (values[middle - 1] + values[middle]))
+
+    probe_codes = MHC2_CURVE_FEEDBACK_DELTA * 1023.0
+    if probe_codes <= 1e-9:
+        return None
+
+    def collect(label):
+        points = []
+        for code in MHC2_CLUT_FEEDBACK_CODES:
+            base_values = by_name.get("{} Base {}".format(label, code))
+            if not base_values:
+                continue
+            base_y = median(base_values)
+            acc = 0.0
+            complete = True
+            for channel in "RGB":
+                plus_values = by_name.get(
+                    "{} {}+ {}".format(label, channel, code))
+                minus_values = by_name.get(
+                    "{} {}- {}".format(label, channel, code))
+                if not plus_values or not minus_values:
+                    complete = False
+                    break
+                acc += 0.5 * abs(median(plus_values) - median(minus_values))
+            if not complete or base_y <= 1e-12 or acc <= 1e-12:
+                continue
+            target_y = pq_to_nits(code / 1023.0)
+            if target_y <= 1e-12:
+                continue
+            frac_dy_per_code = (acc / probe_codes) / base_y
+            if frac_dy_per_code <= 1e-12:
+                continue
+            error_frac = (base_y - target_y) / target_y
+            shift_codes = -error_frac / frac_dy_per_code
+            if not math.isfinite(shift_codes):
+                continue
+            shift_codes = max(-5.0, min(5.0, shift_codes))
+            points.append((code / 1023.0, shift_codes / 1023.0))
+        return points
+
+    points = collect("ICC cLUT Curve Feedback")
+    if not points:
+        points = collect("ICC MHC2 Curve Feedback")
+    return points or None
+
+
+def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
+                                     source_limit=0.74, max_shift=None):
+    """Pull the neutral corridor onto the PQ target, common mode.
 
     The shift is applied equally to all three channels, so channel ratios and
     therefore the chroma corrections already achieved are preserved; only the
     common drive moves. Stops below the plateau, which
     windows_hdr_b2a_with_peak_drive owns.
 
-    Bounds matter. The measured need is about 4 counts, so max_shift is held
-    near 8 counts; a 20 count bound let a noisy near-black ladder inversion
-    overshoot code 51 to +42.6%.
+    Prefer a piecewise-linear shift built from the finished profile's own
+    probe rows (ICC cLUT Curve Feedback, then ICC MHC2 Curve Feedback).
+    Those measure both the Base luminance error and the local common-mode
+    sensitivity, so the trim aims the right way and with the right size.
+    Attempt 3 used the null-seed ladder slope instead, about 0.9 percent
+    per code against a true 2.77 percent per code at 358, and overshot.
 
-    source_start is 0.38, just above code 358. Measured per-code: from 409
-    upward the trim helps at every point, 460 to +2.8%, 512 to -1.6%, 614 to
-    -0.6%, 716 to +0.5% and the whole top end inside +/-0.5%. At 153 and 358
-    it hurt, 153 from 1.963 to 2.503 dE ITP and 358 from 2.391 to 4.958,
-    because the ladder over-reads there relative to what the panel delivers
-    through the finished profile, so inverting it under-drives. Those codes
-    are already owned by the shadow stages.
+    When the Base and probe rows are absent, invert the null-seed grey
+    ladder as before so non-feedback builds still work. That fallback keeps
+    the old 0.38 start: opening the ladder from 0.14 helped 205, 256 and
+    307 but drove 358 to -7.7 percent.
+
+    Bounds matter. Probe-derived shifts are clamped to +/- 5 codes, and
+    max_shift matches that bound. A 20 count bound let a noisy near-black
+    ladder inversion overshoot code 51 to +42.6%.
     """
-    ladder = windows_hdr_b2a_grey_ladder(rows)
-    if not ladder:
+    probe_shifts = windows_hdr_b2a_probe_luminance_shifts(rows)
+    ladder = None if probe_shifts else windows_hdr_b2a_grey_ladder(rows)
+    if not probe_shifts and not ladder:
         return profile
+    if probe_shifts:
+        if source_start is None:
+            source_start = 0.09
+        if max_shift is None:
+            max_shift = 5.0 / 1023.0
+    else:
+        if source_start is None:
+            source_start = 0.38
+        if max_shift is None:
+            max_shift = 0.008
 
     def ladder_drive(target):
         if target <= ladder[0][1]:
@@ -3117,6 +3196,20 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
                     return code0
                 return code0 + (pt - p0) * (code1 - code0) / (p1 - p0)
         return ladder[-1][0]
+
+    def probe_shift(source_code):
+        if source_code <= probe_shifts[0][0]:
+            return probe_shifts[0][1]
+        for index in range(1, len(probe_shifts)):
+            code0, shift0 = probe_shifts[index - 1]
+            code1, shift1 = probe_shifts[index]
+            if source_code <= code1:
+                if code1 <= code0 + 1e-12:
+                    return shift0
+                return (shift0
+                        + (source_code - code0) * (shift1 - shift0)
+                        / (code1 - code0))
+        return probe_shifts[-1][1]
 
     tags = dict(read_icc_tags(profile))
     lumi = tags.get(b"lumi")
@@ -3170,11 +3263,10 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
                         relative = max(0.0, pcs / d50[channel])
                         estimates.append(nits_to_pq(relative * white_nits))
                     source_code = sorted(estimates)[1]
-                    # Stay inside the band this trim is valid for. Below
-                    # source_start the ladder's luminances are tiny and its
-                    # inversion is noisy: trimming from 0.0 drove code 51 to
-                    # +42.6% and code 358 to -7.6%. The shadow stages already
-                    # own that region and read 0.4 to 1.7 chroma there.
+                    # Stay inside the band this trim is valid for. Probe
+                    # shifts start just below code 102. The ladder fallback
+                    # stays at 0.38 because opening it into the shadow band
+                    # under-drove 358. Code 51 has no Base row.
                     if source_code < source_start or source_code >= source_limit:
                         continue
                     target_y = pq_to_nits(source_code)
@@ -3189,7 +3281,10 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=0.38,
                         current.append(sample_table(output_tables[channel],
                                                     node_value))
                     mean_drive = sum(current) / 3.0
-                    shift = ladder_drive(target_y) - mean_drive
+                    if probe_shifts:
+                        shift = probe_shift(source_code)
+                    else:
+                        shift = ladder_drive(target_y) - mean_drive
                     if not math.isfinite(shift) or abs(shift) < 1e-6:
                         continue
                     shift = max(-max_shift, min(max_shift, shift))
