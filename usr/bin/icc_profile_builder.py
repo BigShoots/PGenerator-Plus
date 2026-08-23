@@ -419,11 +419,11 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 0.45% against a 2% validity floor, so every anchor was correctly rejected.
 # These codes were verified against the profile's measured output, not the
 # null-seed ladder, which overestimates response above the knee.
-# Code 51 is deliberately absent. It cannot be probed on this display: the
-# coherence gate measured 11.16% channel spread there at 0.054 nits, which is
-# meter noise, and extrapolating the 102 anchor down to it instead measured
-# worse, cLUT 1.654 to 1.733 with code 51 itself going 4.044 to 4.656. Its
-# residual appears to be irreducible by both available mechanisms.
+# Code 51 is deliberately absent from the probe sets. Direct probes fail the
+# coherence gate (11.16% channel spread at 0.054 nits) and holding the 102
+# correction down to black measured worse (cLUT 1.654 to 1.733, code 51 from
+# 4.044 to 4.656). The grey-ladder borrowed-Jacobian path in
+# apply_mhc2_active_shadow_jacobians is the remaining way to reach it.
 MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
@@ -1905,9 +1905,8 @@ def apply_mhc2_active_neutral_luminance(luts, rows, black, primaries,
         luts[channel][:] = updated[channel]
 
 
-def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
-                                        calibrated_peak):
-    """Close measured shadow RGB residuals with local active-path probes."""
+def mhc2_shadow_probe_groups(rows):
+    """Group complete-looking MHC2 shadow Jacobian probe rows by code."""
     groups = {}
     pattern = re.compile(r"^ICC MHC2 Shadow Jacobian (\d+) ([RGB])([+-])$")
     for row in rows:
@@ -1915,81 +1914,152 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
         if match:
             groups.setdefault(int(match.group(1)), {})[
                 match.group(2) + match.group(3)] = row
+    return groups
+
+
+def mhc2_active_grey_rows(rows):
+    """Return the named active grey-ladder rows, last write wins per code."""
+    greys = {}
+    pattern = re.compile(r"^ICC MHC2 Active Grey (\d+)$")
+    for row in rows:
+        match = pattern.match(str(row.get("name", "")))
+        if not match:
+            continue
+        xyz = row.get("xyz")
+        rgb = row.get("rgb")
+        if (not xyz or not rgb or len(xyz) != 3 or len(rgb) != 3
+                or not all(math.isfinite(value) for value in xyz)
+                or not all(math.isfinite(value) for value in rgb)):
+            continue
+        greys[int(match.group(1))] = row
+    return greys
+
+
+def mhc2_complete_shadow_probes(probes):
+    return probes and all(channel + sign in probes
+                          for channel in "RGB" for sign in "-+")
+
+
+def mhc2_shadow_probe_jacobian(probes):
+    """Build a local dXYZ/dRGB Jacobian from a complete signed probe set."""
+    if not mhc2_complete_shadow_probes(probes):
+        return None
+    midpoints = []
+    columns = []
+    for channel in "RGB":
+        low = probes[channel + "-"]
+        high = probes[channel + "+"]
+        span = high["rgb"]["RGB".index(channel)] - low["rgb"]["RGB".index(channel)]
+        if span <= 1e-9:
+            return None
+        midpoints.append([0.5 * (low["xyz"][axis] + high["xyz"][axis])
+                          for axis in range(3)])
+        columns.append([(high["xyz"][axis] - low["xyz"][axis]) / span
+                        for axis in range(3)])
+    if len(columns) != 3:
+        return None
+    center_xyz = [sum(value[axis] for value in midpoints) / 3.0
+                  for axis in range(3)]
+    jacobian = [[columns[column][axis] for column in range(3)]
+                for axis in range(3)]
+    center_code = [
+        0.5 * (probes[channel + "-"]["rgb"][index]
+               + probes[channel + "+"]["rgb"][index])
+        for index, channel in enumerate("RGB")
+    ]
+    input_max = float(probes["R+"]["input_max"])
+    if input_max <= 1e-9:
+        return None
+    return {
+        "jacobian": jacobian,
+        "center_xyz": center_xyz,
+        "center_code": center_code,
+        "input_max": input_max,
+    }
+
+
+def shadow_chroma_lut_delta(center_xyz, center_code, jacobian, source_code,
+                            luts, neutral_gains):
+    """Solve D65 chromaticity at the measured luminance into a LUT delta.
+
+    Luminance in this region is already owned by the measured neutral ramp in
+    apply_mhc2_active_neutral_luminance. Solving the absolute PQ target here
+    as well double-counts the common drive, which is what drove codes 205/307
+    outside their probe hull on the coherent chain. Target D65 chromaticity at
+    the luminance the panel actually produced, so this stage contributes a
+    pure chroma rotation and the two stages stay separable.
+    """
+    center_y = center_xyz[1]
+    if center_y <= 1e-9:
+        return None
+    center_total = sum(center_xyz)
+    if center_total <= 1e-9:
+        return None
+    center_error = math.hypot(center_xyz[0] / center_total - 0.3127,
+                              center_xyz[1] / center_total - 0.3290)
+    # An already neutral corridor must be left alone.  Near black the
+    # measured chroma carries real meter noise, and solving inside that
+    # noise injects a visible tint where there was none.
+    if center_error <= MHC2_SHADOW_CHROMA_DEADBAND:
+        return None
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    delta = mat_vec_mul(mat_inv(jacobian), [
+        center_y * d65[axis] - center_xyz[axis] for axis in range(3)
+    ])
+    if not all(math.isfinite(value) for value in delta):
+        return None
+    # With the target corrected to pure chroma this is a well aimed
+    # one-step Newton move, so apply it in full and let the bound below
+    # cap any pathological solve.  Damping a correctly aimed move only
+    # leaves a residual too large for the feedback hull to close.
+    target_codes = [max(center_code[channel] - 0.03,
+                        min(center_code[channel] + 0.03,
+                            center_code[channel] + delta[channel]))
+                    for channel in range(3)]
+    source_nits = pq_to_nits(source_code)
+    current = []
+    for channel in range(3):
+        curve_input = nits_to_pq(source_nits * neutral_gains[channel])
+        current.append(sample_table(luts[channel], curve_input))
+    return [target_codes[channel] - current[channel] for channel in range(3)]
+
+
+def borrowed_shadow_grey_anchors(luts, rows, neutral_gains, probed, groups):
+    """Chroma anchors for greys below the lowest viable probe.
+
+    Direct probes at these codes are meter noise, and reusing the lowest
+    probed correction value itself was measured to make the cast worse. Use
+    each grey row's own measured XYZ as the error and borrow only the
+    nearest viable Jacobian for direction and scale.
+    """
+    if not probed:
+        return []
+    lowest_probed = min(probed)
     anchors = []
-    for code in sorted(groups):
-        probes = groups[code]
-        if any(channel + sign not in probes
-               for channel in "RGB" for sign in "-+"):
+    for code, row in sorted(mhc2_active_grey_rows(rows).items()):
+        if code >= lowest_probed:
             continue
-        midpoints = []
-        columns = []
-        for channel in "RGB":
-            low = probes[channel + "-"]
-            high = probes[channel + "+"]
-            span = high["rgb"]["RGB".index(channel)] - low["rgb"]["RGB".index(channel)]
-            if span <= 1e-9:
-                break
-            midpoints.append([0.5 * (low["xyz"][axis] + high["xyz"][axis])
-                              for axis in range(3)])
-            columns.append([(high["xyz"][axis] - low["xyz"][axis]) / span
-                            for axis in range(3)])
-        if len(columns) != 3:
+        if mhc2_complete_shadow_probes(groups.get(code)):
             continue
-        center_xyz = [sum(value[axis] for value in midpoints) / 3.0
-                      for axis in range(3)]
-        jacobian = [[columns[column][axis] for column in range(3)]
-                    for axis in range(3)]
-        source_code = code / float(probes["R+"]["input_max"])
-        d65 = (0.3127 / 0.3290, 1.0,
-               (1.0 - 0.3127 - 0.3290) / 0.3290)
-        # Luminance in this region is already owned by the measured neutral
-        # ramp in apply_mhc2_active_neutral_luminance.  Solving the absolute
-        # PQ target here as well double-counts the common drive, which is what
-        # drove codes 205/307 outside their probe hull on the coherent chain.
-        # Target D65 chromaticity at the luminance the panel actually produced,
-        # so this stage contributes a pure chroma rotation and the two stages
-        # stay separable.
-        center_y = center_xyz[1]
-        if center_y <= 1e-9:
+        input_max = float(row.get("input_max") or 0.0)
+        if input_max <= 1e-9:
             continue
-        center_total = sum(center_xyz)
-        if center_total <= 1e-9:
-            continue
-        center_error = math.hypot(center_xyz[0] / center_total - 0.3127,
-                                  center_xyz[1] / center_total - 0.3290)
-        # An already neutral corridor must be left alone.  Near black the
-        # measured chroma carries real meter noise, and solving inside that
-        # noise injects a visible tint where there was none.
-        if center_error <= MHC2_SHADOW_CHROMA_DEADBAND:
-            continue
-        delta = mat_vec_mul(mat_inv(jacobian), [
-            center_y * d65[axis] - center_xyz[axis] for axis in range(3)
-        ])
-        center_code = [
-            0.5 * (probes[channel + "-"]["rgb"][index]
-                   + probes[channel + "+"]["rgb"][index])
-            for index, channel in enumerate("RGB")
-        ]
-        # With the target corrected to pure chroma this is a well aimed
-        # one-step Newton move, so apply it in full and let the bound below
-        # cap any pathological solve.  Damping a correctly aimed move only
-        # leaves a residual too large for the feedback hull to close.
-        target_codes = [max(center_code[channel] - 0.03,
-                            min(center_code[channel] + 0.03,
-                                center_code[channel] + delta[channel]))
-                        for channel in range(3)]
-        current = []
-        source_nits = pq_to_nits(source_code)
-        for channel in range(3):
-            curve_input = nits_to_pq(source_nits * neutral_gains[channel])
-            current.append(sample_table(luts[channel], curve_input))
-        anchors.append((source_code, [target_codes[channel] - current[channel]
-                                     for channel in range(3)]))
+        nearest = min(probed, key=lambda candidate: (
+            abs(candidate - code), candidate))
+        source_code = code / input_max
+        lut_delta = shadow_chroma_lut_delta(
+            list(row["xyz"]), list(row["rgb"]),
+            probed[nearest]["jacobian"], source_code, luts, neutral_gains)
+        if lut_delta is not None:
+            anchors.append((source_code, lut_delta))
+    return anchors
+
+
+def apply_interpolated_lut_anchors(luts, anchors, neutral_gains, start, end):
+    """Add interpolated RGB deltas to MHC2 or B2A 1D curves."""
     if not anchors:
         return False
-
-    start = max(0.0, anchors[0][0] - 0.04)
-    end = min(1.0, anchors[-1][0] + 0.07)
     points = [(start, [0.0, 0.0, 0.0])] + anchors + [
         (end, [0.0, 0.0, 0.0])]
 
@@ -2019,6 +2089,79 @@ def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
         updated[0] = 0.0
         luts[channel][:] = updated
     return True
+
+
+def apply_mhc2_active_shadow_jacobians(luts, rows, neutral_gains,
+                                        calibrated_peak):
+    """Close measured shadow RGB residuals with local active-path probes."""
+    groups = mhc2_shadow_probe_groups(rows)
+    probed = {}
+    anchors = []
+    for code in sorted(groups):
+        built = mhc2_shadow_probe_jacobian(groups[code])
+        if built is None:
+            continue
+        source_code = code / built["input_max"]
+        probed[code] = {
+            "jacobian": built["jacobian"],
+            "source_code": source_code,
+        }
+        lut_delta = shadow_chroma_lut_delta(
+            built["center_xyz"], built["center_code"], built["jacobian"],
+            source_code, luts, neutral_gains)
+        if lut_delta is not None:
+            anchors.append((source_code, lut_delta))
+    borrowed = borrowed_shadow_grey_anchors(
+        luts, rows, neutral_gains, probed, groups)
+    if borrowed:
+        anchors.extend(borrowed)
+        lowest_source = probed[min(probed)]["source_code"]
+        if not any(abs(source - lowest_source) <= 1e-12
+                   for source, _delta in anchors):
+            # Keep a probed code's own (zero) correction. A borrowed grey
+            # must not drag its edit through a code that already had probes.
+            anchors.append((lowest_source, [0.0, 0.0, 0.0]))
+    anchors.sort(key=lambda item: item[0])
+    if not anchors:
+        return False
+
+    start = max(0.0, anchors[0][0] - 0.04)
+    end = min(1.0, anchors[-1][0] + 0.07)
+    return apply_interpolated_lut_anchors(
+        luts, anchors, neutral_gains, start, end)
+
+
+def apply_mhc2_borrowed_shadow_greys(luts, rows, neutral_gains):
+    """Apply only borrowed grey-ladder chroma anchors below the first probe.
+
+    The explicit cLUT path does not consume apply_mhc2_active_shadow_jacobians,
+    so without this pass code 51's measured cast never reaches B2A. Fade the
+    borrowed edit out at the lowest probed code so every code that already
+    has its own probes keeps the correction it already had. The curve
+    feedback fade is left untouched.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(luts[0]) < 2 or len(neutral_gains) != 3
+            or min(neutral_gains) <= 1e-6):
+        return False
+    groups = mhc2_shadow_probe_groups(rows)
+    probed = {}
+    for code in sorted(groups):
+        built = mhc2_shadow_probe_jacobian(groups[code])
+        if built is None:
+            continue
+        probed[code] = {
+            "jacobian": built["jacobian"],
+            "source_code": code / built["input_max"],
+        }
+    borrowed = borrowed_shadow_grey_anchors(
+        luts, rows, neutral_gains, probed, groups)
+    if not borrowed:
+        return False
+    start = max(0.0, borrowed[0][0] - 0.04)
+    end = probed[min(probed)]["source_code"]
+    return apply_interpolated_lut_anchors(
+        luts, borrowed, neutral_gains, start, end)
 
 
 def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
@@ -6122,6 +6265,12 @@ def build(payload, output_dir):
         b2a_reference_luts = windows_hdr_mhc2_luts_from_final_b2a(
             profile, final_mhc2)
         b2a_corrected_luts = [list(curve) for curve in b2a_reference_luts]
+        # Code 51 has a clean grey-ladder XYZ but no viable local probe set.
+        # Borrow the nearest Jacobian so the independent cLUT corridor can
+        # use that measured chroma error. Fade out at the first probed code
+        # so curve feedback still owns 102 and above unchanged.
+        borrowed_clut = apply_mhc2_borrowed_shadow_greys(
+            b2a_corrected_luts, mhc2_profile_rows, final_neutral_gains)
         if apply_profile_curve_feedback(
                 b2a_corrected_luts, mhc2_profile_rows,
                 final_neutral_gains, calibrated_white,
@@ -6136,7 +6285,7 @@ def build(payload, output_dir):
                 # plateau properly needs its own measured stage, the cLUT
                 # analogue of apply_mhc2_final_peak_feedback.
                 "ICC cLUT Curve Feedback",
-                codes=MHC2_CLUT_FEEDBACK_CODES, hold_top=True):
+                codes=MHC2_CLUT_FEEDBACK_CODES, hold_top=True) or borrowed_clut:
             # The corridor rewrite has to reach the top now that measured
             # cLUT anchors exist above the shadow band; 0.45 confined every
             # correction to the bottom 45% of the range.
