@@ -419,7 +419,7 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 0.45% against a 2% validity floor, so every anchor was correctly rejected.
 # These codes were verified against the profile's measured output, not the
 # null-seed ladder, which overestimates response above the knee.
-MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
+MHC2_CLUT_FEEDBACK_CODES = (51,) + MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
@@ -2343,17 +2343,7 @@ def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
         rows, label, calibrated_peak, probe_delta, codes=codes)
     if not anchors:
         return False
-    # Hold the lowest anchor's correction down to black rather than fading it
-    # out. Code 51 sits below the old fade-in at anchors[0] - 0.035, code 66,
-    # so it received exactly zero correction and measured 4.044 dE ITP, of
-    # which 3.978 was chroma, the largest single term on the cLUT path.
-    # Probing 51 directly is not viable: the coherence gate measured 11.16%
-    # channel spread there at 0.054 nits, which is meter noise, so a Jacobian
-    # solved from it would be noise driven. The panel's shadow cast just below
-    # code 102 is far better estimated by the measured 102 anchor than by an
-    # extrapolation to zero. isotonic_curve and the forced zero first entry
-    # keep black at black.
-    start = 0.0
+    start = max(0.0, anchors[0][0] - 0.035)
     if hold_top:
         # Above the knee the device is clipping, so every code from the last
         # anchor to full scale renders the same physical output and needs the
@@ -2361,11 +2351,11 @@ def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
         # top end with a flat +.0028 dy offset, about 1.5 chroma dE, while the
         # MHC2 path reached 0.54. Hold the last anchor instead of inventing a
         # ramp the hardware never measured.
-        points = ([(start, list(anchors[0][1]))] + anchors
+        points = ([(start, [0.0, 0.0, 0.0])] + anchors
                   + [(1.0, list(anchors[-1][1]))])
     else:
         end = min(1.0, anchors[-1][0] + 0.055)
-        points = [(start, list(anchors[0][1]))] + anchors + [
+        points = [(start, [0.0, 0.0, 0.0])] + anchors + [
             (end, [0.0, 0.0, 0.0])]
 
     def correction(source_code, channel):
