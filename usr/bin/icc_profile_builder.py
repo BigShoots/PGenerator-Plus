@@ -5791,16 +5791,18 @@ def build(payload, output_dir):
         if apply_profile_curve_feedback(
                 b2a_corrected_luts, mhc2_profile_rows,
                 final_neutral_gains, calibrated_white,
-                # hold_top is deliberately off. Measured: the last usable
-                # anchor at code 716 solves to B -0.00277, i.e. less blue,
-                # which is correct there and leaves 716 at 0.152 chroma. The
-                # plateau needs the opposite sign, more blue to raise Z and
-                # pull y down from .3319 toward .3290, so extending the 716
-                # correction upward made the peak worse, 1.567 to 1.645.
-                # The plateau needs its own measured stage, analogous to
-                # apply_mhc2_final_peak_feedback, not an extrapolated anchor.
+                # hold_top stays on because the hardware says so, even
+                # though it is wrong-signed at the very peak. The last usable
+                # anchor at 716 solves to B -0.00277, less blue, correct there
+                # and leaving 716 at 0.152 chroma, while the plateau needs
+                # more blue to pull y from .3319 toward .3290. Disabling the
+                # hold to avoid that mis-sign measured WORSE overall, cLUT
+                # average 1.232 against 1.185 and peak 1.678 against 1.645,
+                # because the hold still helps codes 767 to 818. Fixing the
+                # plateau properly needs its own measured stage, the cLUT
+                # analogue of apply_mhc2_final_peak_feedback.
                 "ICC cLUT Curve Feedback",
-                codes=MHC2_CLUT_FEEDBACK_CODES):
+                codes=MHC2_CLUT_FEEDBACK_CODES, hold_top=True):
             # The corridor rewrite has to reach the top now that measured
             # cLUT anchors exist above the shadow band; 0.45 confined every
             # correction to the bottom 45% of the range.
