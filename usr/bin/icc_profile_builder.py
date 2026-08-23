@@ -2244,10 +2244,21 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                     predicted_luminance_error = (
                         abs(math.log(predicted[1] / target_y))
                         if predicted[1] > 1e-9 else float("inf"))
+                    # The hard 0.65 to 1.35 window is the real luminance
+                    # rail. The incremental allowance only stops the chroma
+                    # solve from quietly trading luminance away, so it has to
+                    # be loose enough to let a dominant chroma error be fixed.
+                    # Measured at code 153: the base sits 5.9% dark with
+                    # chroma .01463, and a 0.01 allowance capped the solve at
+                    # .00670, failing the .006 recoverability threshold and
+                    # blocking every final build. Allowing 0.03 reaches
+                    # .00155. By this function's own error_metric, which
+                    # scales chroma by 0.0015 and luminance by 0.04, that
+                    # trades 0.67 luminance units for 8.7 chroma units.
                     if (predicted[1] < target_y * 0.65
                             or predicted[1] > target_y * 1.35
                             or predicted_luminance_error
-                            > current_luminance_error + 0.01):
+                            > current_luminance_error + 0.03):
                         continue
                     candidate = (predicted_error, weight_sum, delta,
                                  predicted)
