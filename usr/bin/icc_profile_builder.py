@@ -425,6 +425,9 @@ MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # black the measured chromaticity carries real meter noise, and solving inside
 # that noise trades an invisible error for a visible tint.
 MHC2_SHADOW_CHROMA_DEADBAND = 0.003
+# Fraction of an output table's ceiling below which the peak remap leaves the
+# table alone. 0.90 disturbed codes 614 and 716; 0.97 does not.
+MHC2_PEAK_TABLE_KNEE = 0.97
 
 
 def mhc2_lut_entries(profile_type):
@@ -2946,6 +2949,48 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
         updated = bytearray(payload)
         denominator = float(grid - 1)
         touched = 0
+
+        # Stretch each output table's upper end so its maximum reaches the
+        # measured drive, and do it BEFORE writing any corridor node. The
+        # submitted peak drive on the cLUT path is exactly the output table
+        # maximum, measured on both this builder's output and the known-good
+        # reference, so a corridor write above that ceiling is silently
+        # clamped by invert_table and lost. Blue sat 23 codes short at 795
+        # against a needed 818, which is why extreme corridor writes had no
+        # effect on codes 870 and up.
+        #
+        # Only the region above the knee moves, so the shadow and midtone
+        # corridor stays untouched. The knee is deliberately high: at 0.90 the
+        # remap reached down far enough to disturb codes 614 and 716, giving
+        # dE2000 max 2.869, while 0.97 leaves them alone.
+        stretched = []
+        for channel in range(3):
+            table = list(output_tables[channel])
+            ceiling = max(table)
+            knee = ceiling * MHC2_PEAK_TABLE_KNEE
+            target = drive[channel]
+            if ceiling <= knee:
+                stretched.append(table)
+                continue
+            remapped = []
+            for value in table:
+                if value <= knee:
+                    remapped.append(value)
+                else:
+                    fraction = (value - knee) / (ceiling - knee)
+                    remapped.append(knee + fraction * (target - knee))
+            for index in range(1, len(remapped)):
+                if remapped[index] < remapped[index - 1]:
+                    remapped[index] = remapped[index - 1]
+            for index, value in enumerate(remapped):
+                struct.pack_into(">H", updated,
+                                 output_start + channel * output_entries * 2
+                                 + index * 2,
+                                 max(0, min(65535,
+                                     int(round(value * 65535.0)))))
+            stretched.append(remapped)
+        output_tables = stretched
+
         # Walk the one-cell neutral corridor, not just the exact diagonal. An
         # exactly neutral trilinear lookup interpolates across the surrounding
         # cell, so writing only (n,n,n) is diluted by untouched neighbours:
