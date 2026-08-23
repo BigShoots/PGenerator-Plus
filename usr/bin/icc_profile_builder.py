@@ -3076,10 +3076,15 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
     own probes measure 2.77 percent per code, so that pass applied about 8
     codes where 3.1 were needed and overshot to +17.8 percent.
 
-    Per-code common-mode sensitivity is the sum over R, G and B of
-    0.5 * abs(Y_plus - Y_minus), divided by the probe code delta (4) and
-    by Base Y. The wanted shift is then -error_fraction / that slope,
-    clamped to +/- 5 codes and stored in the 0..1 output domain.
+    The slope is one-sided, in the direction the shift will actually move.
+    A two-sided average understates the upward response when the panel is
+    lopsided: at code 358, G+ moved Y by +2.57 nits while G- moved it by
+    only -0.21 nits, so a +3.1 code shift computed from the symmetric
+    slope delivered +12.1 percent. Too dim uses the plus probes only,
+    too bright the minus probes only. If that side is non-finite, at or
+    below zero, or weaker than a quarter of the symmetric estimate, the
+    code is left untrimmed. The wanted shift is -error_fraction / that
+    slope, clamped to +/- 5 codes and stored in the 0..1 output domain.
     Prefers ICC cLUT Curve Feedback rows and falls back to the MHC2 label.
     """
     by_name = {}
@@ -3109,7 +3114,9 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
             if not base_values:
                 continue
             base_y = median(base_values)
-            acc = 0.0
+            plus_acc = 0.0
+            minus_acc = 0.0
+            symmetric_acc = 0.0
             complete = True
             for channel in "RGB":
                 plus_values = by_name.get(
@@ -3119,16 +3126,29 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
                 if not plus_values or not minus_values:
                     complete = False
                     break
-                acc += 0.5 * abs(median(plus_values) - median(minus_values))
-            if not complete or base_y <= 1e-12 or acc <= 1e-12:
+                plus_y = median(plus_values)
+                minus_y = median(minus_values)
+                plus_acc += plus_y - base_y
+                minus_acc += base_y - minus_y
+                symmetric_acc += 0.5 * abs(plus_y - minus_y)
+            if not complete or base_y <= 1e-12:
                 continue
             target_y = pq_to_nits(code / 1023.0)
             if target_y <= 1e-12:
                 continue
-            frac_dy_per_code = (acc / probe_codes) / base_y
-            if frac_dy_per_code <= 1e-12:
-                continue
             error_frac = (base_y - target_y) / target_y
+            if not math.isfinite(error_frac) or error_frac == 0.0:
+                continue
+            if error_frac < 0.0:
+                side_acc = plus_acc
+            else:
+                side_acc = minus_acc
+            frac_dy_per_code = (side_acc / probe_codes) / base_y
+            symmetric_slope = (symmetric_acc / probe_codes) / base_y
+            if (not math.isfinite(frac_dy_per_code)
+                    or frac_dy_per_code <= 0.0
+                    or frac_dy_per_code < 0.25 * abs(symmetric_slope)):
+                continue
             shift_codes = -error_frac / frac_dy_per_code
             if not math.isfinite(shift_codes):
                 continue
