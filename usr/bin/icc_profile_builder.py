@@ -419,7 +419,12 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 0.45% against a 2% validity floor, so every anchor was correctly rejected.
 # These codes were verified against the profile's measured output, not the
 # null-seed ladder, which overestimates response above the knee.
-MHC2_CLUT_FEEDBACK_CODES = (51,) + MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
+# Code 51 is deliberately absent. It cannot be probed on this display: the
+# coherence gate measured 11.16% channel spread there at 0.054 nits, which is
+# meter noise, and extrapolating the 102 anchor down to it instead measured
+# worse, cLUT 1.654 to 1.733 with code 51 itself going 4.044 to 4.656. Its
+# residual appears to be irreducible by both available mechanisms.
+MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
