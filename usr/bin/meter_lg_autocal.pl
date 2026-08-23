@@ -202,11 +202,17 @@ sub read_file {
 
 sub write_file {
  my ($path,$data)=@_;
- open(my $fh,">",$path) or return 0;
- print $fh $data;
+ # Atomic (tmp + rename), matching the 3D worker's writer: the status file
+ # is regex/decode-read concurrently by the WebUI (hand-off guard, status
+ # route, same-run check), and a truncate-in-place write let those readers
+ # see torn documents.
+ return 0 if(!defined($path) || $path eq "");
+ my $tmp="$path.tmp";
+ open(my $fh,">",$tmp) or return 0;
+ print $fh (defined($data) ? $data : "");
  close($fh);
- chmod(0666,$path);
- return 1;
+ chmod(0666,$tmp);
+ return rename($tmp,$path) ? 1 : 0;
 }
 
 sub decode_json_safe {
@@ -26826,17 +26832,33 @@ eval {
 	  $state->{"message"}="Finishing TV and pattern cleanup";
 	  write_state($state);
 	 }
+	 # /api/lg/calibration-mode is fail-closed (lg_calibration_mode_workflow
+	 # already treats a non-HASH/timed-out CAL_END response as an error), so
+	 # end_calibration_mode's result is truthful. Only a confirmed end may
+	 # clear the state flag: the died-watchdog promotion to "complete" and
+	 # the follow-on stage guards key off calibration_mode:false, and a TV
+	 # still holding the session must stay visible to them.
+	 my $cal_end_unconfirmed=0;
 			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $calibration_mode_active) {
 			  # Some LG DDC write paths can leave the TV's calibration-mode
 			  # flag active even after the worker state believes CAL_END ran.
-			  end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
-			  $calibration_mode_active=0;
-			  set_state_calibration_mode($state,0,"");
+			  my $end_result=end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
+			  if(ref($end_result) eq "HASH" && ($end_result->{"status"}||"") ne "error") {
+			   $calibration_mode_active=0;
+			   set_state_calibration_mode($state,0,"");
+			  }
+			  # On failure fall through: the block below retries CAL_END on a
+			  # fresh helper socket before giving up.
 			 }
 	 if($calibration_mode_active) {
-	  end_calibration_mode($active_picture_mode_for_cleanup);
-	  $calibration_mode_active=0;
-	  set_state_calibration_mode($state,0,"");
+	  my $end_result=end_calibration_mode($active_picture_mode_for_cleanup);
+	  if(ref($end_result) eq "HASH" && ($end_result->{"status"}||"") ne "error") {
+	   $calibration_mode_active=0;
+	   set_state_calibration_mode($state,0,"");
+	  } else {
+	   $cal_end_unconfirmed=1;
+	   $state->{"calibration_mode_end_unconfirmed"}=JSON::PP::true;
+	  }
 	 }
 	 write_state($state);
 	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
@@ -26848,7 +26870,9 @@ eval {
 	  $state->{"status"}="complete";
 	  $state->{"phase"}="complete";
 	  $state->{"current_name"}="Auto Cal complete";
-	  $state->{"message"}="Auto Cal complete";
+	  $state->{"message"}=$cal_end_unconfirmed
+	   ? "Auto Cal complete, but the TV did not confirm calibration-mode end; the session may still be held. Run a picture-mode Reset (or restart the TV) before the next stage."
+	   : "Auto Cal complete";
 	  $state->{"completed_at"}=int(time()*1000);
 	  $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
 	  $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);

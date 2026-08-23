@@ -382,6 +382,9 @@ my $_meter_lg_autocal_stop_file="/tmp/meter_lg_autocal.stop";
 my $_meter_lg_autocal_log_file="/tmp/meter_lg_autocal.log";
 my $_meter_lg_3d_autocal_file="/tmp/meter_lg_3d_autocal.json";
 my $_meter_lg_3d_autocal_config_file="/tmp/meter_lg_3d_autocal_config.json";
+# Package-visible (not my) so tests can point the exact-LUT whitelist at a
+# temp directory and execute the retry/recovery endpoints for real.
+our $_meter_lg_3d_autocal_luts_dir="/var/lib/PGenerator/lg/luts";
 my $_meter_lg_3d_autocal_stop_file="/tmp/meter_lg_3d_autocal.stop";
 my $_meter_lg_3d_autocal_log_file="/tmp/meter_lg_3d_autocal.log";
 my $_meter_lg_3d_autocal_start_lock :shared = 0;
@@ -3171,7 +3174,12 @@ sub webui_meter_read (@) {
 			 # stable across reads even when this value flips every read.
 			 my $avg_mode="";
 			 $avg_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
-			 $avg_mode="" if($avg_mode eq "off");
+			 # An EXPLICIT per-read "off" must reach the READ command as "off",
+			 # not be coerced to ""/"-" (inherit): "-" inherits whatever mode the
+			 # running spotread was last respawned with, so a worker that only
+			 # ever sends the averaging transitions IN would latch averaging on
+			 # for reads that must not average (the 3D profile's peak reads).
+			 # Callers that genuinely want inherit simply omit low_light.
 			 # Operator's STATIC low_light setting (the calibration card
 			 # value, NOT the per-read active mode). This stays the same for
 			 # every read in a run, so the session-level METER_AVERAGING
@@ -5666,8 +5674,21 @@ sub webui_meter_lg_autocal_handoff_guard (@) {
  return undef if(!&webui_meter_lg_autocal_running());
  my $state="";
  if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $state=<$fh>; close($fh); }
- my $finishing=($state=~/"phase"\s*:\s*"finalising"/i
-  || $state=~/"status"\s*:\s*"(?:complete|cancelled|error)"/i) ? 1 : 0;
+ # Decode and inspect only the TOP-LEVEL status/phase. The state document
+ # embeds nested helper responses (upload_probe etc.) that legitimately
+ # carry their own "status":"error" -- an unanchored regex classified a
+ # genuinely running AutoCal as "finishing" whenever one appeared. The
+ # worker writes this file atomically (tmp + rename), so an undecodable
+ # document means corruption, not a torn read: treat that as active, not
+ # finishing.
+ my $decoded=eval { require JSON::PP; JSON::PP::decode_json($state); };
+ my ($top_status,$top_phase)=("","");
+ if(ref($decoded) eq "HASH") {
+  $top_status=lc($decoded->{"status"}||"");
+  $top_phase=lc($decoded->{"phase"}||"");
+ }
+ my $finishing=($top_phase eq "finalising"
+  || $top_status eq "complete" || $top_status eq "cancelled" || $top_status eq "error") ? 1 : 0;
  if($finishing) {
   return '{"status":"retry","error_code":"lg-autocal-finishing","retryable":true,"retry_after_ms":600,"message":"LG Auto Cal is finishing TV and pattern cleanup"}';
  }
@@ -6371,7 +6392,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
-  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}';
+  # retryable:false: a DIFFERENT run's worker is alive. The busy regex must
+  # not treat this as a transient hand-off wait (see the run-id check in the
+  # browser's adoption probe).
+  return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}';
  }
  &webui_meter_stop();
  system("mkdir -p /var/lib/PGenerator/lg/luts 2>/dev/null");
@@ -6488,7 +6512,16 @@ sub webui_meter_lg_3d_autocal_start (@) {
  } else {
   return '{"status":"error","message":"Unable to prepare LG 3D LUT AutoCal config"}';
 	 }
-	 my $init='{"status":"running","autocal3d":true,"autocal_3d":true,"current_step":0,"total_steps":0,"current_name":"Starting LG 3D LUT AutoCal...","message":"Starting","readings":[]}';
+	 # Stamp the Full AutoCal run id (if the body carries one) into the initial
+	 # status: the worker only writes it on its FIRST write_state, and the
+	 # browser's adoption probe requires a run-id match -- without this stamp
+	 # the spawn-to-first-write window would refuse to adopt our own worker.
+	 # Mirrors webui_meter_lg_dv_profile_start.
+	 my $_ac3_run_id="";
+	 $_ac3_run_id=$1 if($body=~/"full_autocal_run_id"\s*:\s*"([^"\\]{1,200})"/);
+	 my $init=($_ac3_run_id ne "")
+	  ? '{"status":"running","autocal3d":true,"autocal_3d":true,"full_autocal_run_id":"'.$_ac3_run_id.'","current_step":0,"total_steps":0,"current_name":"Starting LG 3D LUT AutoCal...","message":"Starting","readings":[]}'
+	  : '{"status":"running","autocal3d":true,"autocal_3d":true,"current_step":0,"total_steps":0,"current_name":"Starting LG 3D LUT AutoCal...","message":"Starting","readings":[]}';
 	 if(open(my $sf,">",$_meter_lg_3d_autocal_file)) { print $sf $init; close($sf); chmod(0666,$_meter_lg_3d_autocal_file); }
 	 my $log_file=&webui_prepare_tmp_worker_log($_meter_lg_3d_autocal_log_file,"meter_lg_3d_autocal");
 	 my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_3d_autocal.pl '$_meter_lg_3d_autocal_config_file' '$_meter_lg_3d_autocal_file' '$_meter_lg_3d_autocal_stop_file' </dev/null >'$log_file' 2>&1 &";
@@ -6529,7 +6562,11 @@ sub webui_meter_lg_3d_autocal_retry_upload (@) {
   $state->{"upload_retry_available"}=JSON::PP::false;
   $state->{"upload_retry_dismissed"}=JSON::PP::true;
   my $tmp=$_meter_lg_3d_autocal_file.".dismiss.$$";
-  if(open(my $sf,">",$tmp) && (print $sf $encoder->encode($state)) && close($sf) && chmod(0666,$tmp) && rename($tmp,$_meter_lg_3d_autocal_file)) {
+  # The handle lexical must be declared before the statement that writes
+  # through it: `open(my $sf,...) && print $sf ...` in one expression leaves
+  # `print` looking at the not-yet-visible name and dies at runtime.
+  my $sf;
+  if(open($sf,">",$tmp) && (print $sf $encoder->encode($state)) && close($sf) && chmod(0666,$tmp) && rename($tmp,$_meter_lg_3d_autocal_file)) {
    return '{"status":"ok","message":"3D LUT upload retry dismissed"}';
   }
   unlink($tmp);
@@ -6543,8 +6580,8 @@ sub webui_meter_lg_3d_autocal_retry_upload (@) {
  my $cube_path=$export->{"cube_path"}||"";
  my $payload_path=$export->{"payload_path"}||"";
  return '{"status":"error","message":"The exact generated LUT files are no longer available"}'
-  if($cube_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.cube$}
-   || $payload_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.bin$}
+  if($cube_path !~ m{^\Q$_meter_lg_3d_autocal_luts_dir\E/[A-Za-z0-9._-]+\.cube$}
+   || $payload_path !~ m{^\Q$_meter_lg_3d_autocal_luts_dir\E/[A-Za-z0-9._-]+\.bin$}
    || !-f $cube_path || !-f $payload_path || -s $payload_path != (33**3*3*2));
  my $upload_request=ref($state->{"upload_request"}) eq "HASH" ? $state->{"upload_request"} : {};
  my $probe=ref($state->{"upload_probe"}) eq "HASH" ? $state->{"upload_probe"} : {};
@@ -6592,7 +6629,10 @@ sub webui_meter_lg_3d_autocal_retry_upload (@) {
  # inherit a half-applied transaction.
  my $config_tmp=$_meter_lg_3d_autocal_config_file.".retry.$$";
  my $state_tmp=$_meter_lg_3d_autocal_file.".retry.$$";
- if(!open(my $cf,">",$config_tmp)) {
+ # Same scoping trap as the dismiss branch above: a `my` inside the if
+ # condition is not in scope for the `print` on the next statement.
+ my $cf;
+ if(!open($cf,">",$config_tmp)) {
   return '{"status":"error","message":"Unable to prepare the 3D LUT upload retry"}';
  }
  my $config_written=(print $cf $encoder->encode($config)) && close($cf);
@@ -6649,6 +6689,10 @@ sub webui_meter_lg_3d_autocal_compact_status_json (@) {
  # verification metadata, but do not send the huge raw payload through the UI
  # status poller.
  $json=~s/"data"\s*:\s*"[^"]{1024,}"/"data":"(omitted from status)"/g;
+ # The corrected shadow DPG is a 3072-element ARRAY the string elision above
+ # cannot catch (~18KB in every 1.5s poll). Only the webui retry endpoint
+ # reads it, and that reads the state FILE, not this projection.
+ $json=~s/"hdr20_postcal_shadow_dpg_data"\s*:\s*\[[-0-9.eE,\s]{256,}\]/"hdr20_postcal_shadow_dpg_data":"(omitted from status)"/g;
  return $json;
 }
 
@@ -6669,8 +6713,8 @@ sub webui_meter_lg_3d_autocal_recover_unverified_complete (@) {
  my $export=ref($state->{"export"}) eq "HASH" ? $state->{"export"} : {};
  my $cube_path=$export->{"cube_path"}||"";
  my $payload_path=$export->{"payload_path"}||"";
- return $raw if($cube_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.cube$}
-  || $payload_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.bin$}
+ return $raw if($cube_path !~ m{^\Q$_meter_lg_3d_autocal_luts_dir\E/[A-Za-z0-9._-]+\.cube$}
+  || $payload_path !~ m{^\Q$_meter_lg_3d_autocal_luts_dir\E/[A-Za-z0-9._-]+\.bin$}
   || !-f $cube_path || !-f $payload_path || -s $payload_path != (33**3*3*2));
  my $detail=$state->{"upload_message"}||"the TV did not verify the generated payload";
  my $reason="A previous 3D LUT run was marked complete without a verified TV upload: $detail";
@@ -33474,7 +33518,11 @@ async function meterStartDvProfileStandalone(){
  try{
   started=await fetchJSON('/api/lg/dv-profile/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15000});
  }catch(e){ started=null; }
- if(!started||started.status==='error'){
+ if(!started||started.status!=='started'){
+  // Anything other than a confirmed 'started' is a failure here -- including
+  // the hand-off guard's {status:'retry'} (greyscale AutoCal still finishing
+  // cleanup), which previously slipped past an ==='error' check and left this
+  // path polling a worker that was never launched.
   meterDvProfileFail((started&&started.message)||'Could not start the Dolby Vision profile measurement');
   return;
  }
@@ -39796,6 +39844,16 @@ async function meterStopCalibrationPattern(){
  meterPatternDisplayQueue=meterPatternDisplayQueue.catch(()=>null).then(send);
  return meterPatternDisplayQueue;
 }
+// /api/lg/autocal/run/end runs the terminal calibration-mode failsafe
+// (lg_close_calibration_mode_at_run_end): when the TV refuses/ignores that
+// CAL_END it returns error_code lg-calibration-session-stuck with a
+// restart-the-TV instruction. Every caller here is fire-and-forget by
+// design, but that one instruction must reach the operator -- route all
+// run/end responses through this so it is never silently discarded.
+function meterReportLgRunEnd(r){
+ if(r&&r.error_code==='lg-calibration-session-stuck'&&r.message){ toast(r.message,true); }
+ return r;
+}
 async function meterAutoCalCloseCompleteAction(){
  try{ await fetchJSON('/api/pattern',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'stop'}),_quiet:true,_timeoutMs:5000}); }catch(e){}
  // Tell the backend the run is over so it clears the full-workflow +
@@ -39805,7 +39863,7 @@ async function meterAutoCalCloseCompleteAction(){
  // meterFullAutoCalAbort). Without it a standalone HDR10 greyscale run
  // leaves hdr20_1d_tonemap_pending=true on the server, and a fresh
  // browser session re-fires the "Upload HDR tone map" popup forever.
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000})); }catch(e){}
  meterAutoCalCloseComplete();
 }
 
@@ -42478,7 +42536,7 @@ function meterFullAutoCalAbort(message,isError){
  if(wasDvSignal){
   try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
- try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}).catch(function(){}); }catch(e){}
+ try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:text}),_quiet:true,_timeoutMs:8000}).then(meterReportLgRunEnd).catch(function(){}); }catch(e){}
  meterFullAutoCalResetState(false);
  meterActionPending=false;
  meterAutoCalRunning=false;
@@ -43590,6 +43648,10 @@ async function meterDvAutoCalStartProfile(firstStatus){
   ...((typeof meterPatternInsertionPayload==='function')?meterPatternInsertionPayload():{}),
   upload:false,
   keep_calibration_mode:true,
+  // Identity for the adoption probe below: a timed-out POST may still have
+  // launched OUR worker, but a worker without this run's id must never be
+  // adopted -- it belongs to a standalone run or another tab.
+  full_autocal_run_id:meterFullAutoCalRunId||undefined,
   calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
  };
  let started=null;
@@ -43605,10 +43667,14 @@ async function meterDvAutoCalStartProfile(firstStatus){
  }
  if(!started||started.status!=='started'){
   // A timed-out POST may still have launched the profile worker. Adopt it
-  // instead of offering a second run or discarding a successful hand-off.
+  // instead of offering a second run or discarding a successful hand-off --
+  // but only a worker carrying THIS run's id. A running worker without a
+  // matching id (a standalone measurement, or another tab's run) must not
+  // be adopted: its measurements would be uploaded as this run's DV profile.
   let probe=null;
   try{ probe=await fetchJSON('/api/lg/dv-profile/status',{_quiet:true,_timeoutMs:8000}); }catch(e){}
-  if(probe&&probe.status==='running') started={status:'started',message:probe.message||'Dolby Vision profile measurement already running'};
+  const probeRun=(probe&&probe.full_autocal_run_id)||null;
+  if(probe&&probe.status==='running'&&meterFullAutoCalRunId&&probeRun===meterFullAutoCalRunId) started={status:'started',message:probe.message||'Dolby Vision profile measurement already running'};
  }
  if(!started||started.status!=='started'){
   meterFullAutoCalAbort((started&&started.message)||'Full Auto Cal could not start the Dolby Vision profile measurement',true);
@@ -43723,7 +43789,7 @@ async function meterStopDvAutoCalProfile(){
  try{
   await fetchJSON('/api/lg/dv-profile/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Dolby Vision profile measurement stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Dolby Vision profile measurement stopped'}),_quiet:true,_timeoutMs:8000})); }catch(e){}
  finally{
   meterActionPending=false;
   meterStopModalHide();
@@ -44171,7 +44237,7 @@ function meterFullAutoCalComplete(touchupStatus,options){
  // subsequent verification series -- greyscale, ColorChecker, saturation --
  // computes its target luminance against the correct EOTF instead of 2.2.
  try{ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(); }catch(e){}
- try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}).catch(function(){}); }catch(e){}
+ try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'complete'}),_quiet:true,_timeoutMs:8000}).then(meterReportLgRunEnd).catch(function(){}); }catch(e){}
 }
 
 async function meterPollAutoCal(options){
@@ -45149,7 +45215,7 @@ async function meterStopAutoCal(){
  // Always clear full-workflow server metadata on stop (even standalone
  // greyscale may leave hdr20/full keys). Prevents refresh from re-firing
  // the Full Auto Cal complete / Generate Report popup.
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Auto Cal stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'Auto Cal stopped'}),_quiet:true,_timeoutMs:8000})); }catch(e){}
  finally{
   meterActionPending=false;
   meterStopModalHide();
@@ -46012,11 +46078,11 @@ async function meterCloseLg3dUploadRetry(){
  meterHideWorkflowProgress();
  meterClearDisplayPattern();
  try{
-  await fetchJSON('/api/lg/autocal/run/end',{
+  meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({status:'aborted',note:'3D LUT upload retry dismissed'}),
    _quiet:true,_timeoutMs:8000
-  });
+  }));
  }catch(_e){}
  toast('3D LUT upload remains uncommitted');
 }
@@ -46466,7 +46532,8 @@ refresh_rate:getMeterRefreshRate()||undefined,
    if(r&&r.status==='started') break;
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
-   await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
+   const _startRetryAfter=Number(r&&r.retry_after_ms);
+   await new Promise(resolve=>setTimeout(resolve,Number.isFinite(_startRetryAfter)&&_startRetryAfter>=250?Math.min(_startRetryAfter,3000):(900+(attempt*400))));
    }
    if(!r||r.status!=='started'){
     // The start handler always spawns the worker before returning 'started',
@@ -46476,11 +46543,17 @@ refresh_rate:getMeterRefreshRate()||undefined,
     // so the POST can come back null/error while the worker is in fact
     // running -- the operator then sees "unable to start" followed by
     // "already running" on the next click for the same run. Probe the live
-    // status once: if a 3D autocal is running, adopt it and fall through into
-    // the normal polling path instead of erroring.
+    // status once: if OUR 3D autocal is running, adopt it and fall through
+    // into the normal polling path instead of erroring. Adoption requires
+    // identity: a full-workflow start only adopts a worker carrying this
+    // run's id, and a standalone start never adopts a full-workflow worker.
     let _probe=null;
     try{ _probe=await fetchJSON('/api/meter/lg-3d-autocal/status',{_quiet:true,_timeoutMs:8000}); }catch(_e){}
-    if(_probe&&_probe.status==='running'){
+    const _probeRun=(_probe&&(_probe.full_autocal_run_id||_probe.run_id))||null;
+    const _adoptable=_probe&&_probe.status==='running'&&(fullWorkflow
+     ? (meterFullAutoCalRunId&&_probeRun===meterFullAutoCalRunId)
+     : !_probeRun);
+    if(_adoptable){
      r={status:'started',message:_probe.current_name||'LG 3D LUT AutoCal already running',max_bpc_promoted:false};
     }
    }
@@ -46551,7 +46624,7 @@ async function meterStopLg3dAutoCal(){
  try{
   await fetchJSON('/api/meter/lg-3d-autocal/stop',{method:'POST',_quiet:true,_timeoutMs:10000});
  }catch(e){}
- try{ await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'3D LUT AutoCal stopped'}),_quiet:true,_timeoutMs:8000}); }catch(e){}
+ try{ meterReportLgRunEnd(await fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'aborted',note:wasFullWorkflow?'Full Auto Cal stopped':'3D LUT AutoCal stopped'}),_quiet:true,_timeoutMs:8000})); }catch(e){}
  finally{
   meterActionPending=false;
   meterStopModalHide();

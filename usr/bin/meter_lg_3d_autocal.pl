@@ -2864,12 +2864,14 @@ sub read_step_once {
  # Per-read low_light mode: hard-guarded so the panel-peak profile reads
  # (W/R/G/B at IRE 100) NEVER average, and the noise-floor black read ALWAYS
  # gets the strongest averaging (aaa, 5 reads) regardless of the operator's
- # selected mode. See low_light_mode_for_reading().
+ # selected mode. See low_light_mode_for_reading(). ALWAYS send the mode,
+ # including "off": an omitted low_light means "inherit the running
+ # spotread's mode" downstream, so sending only the averaging transitions IN
+ # latched the strongest mode used so far onto every later read -- the peak
+ # reads then averaged, the exact opposite of the guarantee above.
  my $active_mode=low_light_mode_for_reading($config,$step);
  $lg_low_light_active_mode=$active_mode;
- if($active_mode ne "off") {
-  $payload->{"low_light"}={ mode => $active_mode, enabled => json_true() };
- }
+ $payload->{"low_light"}={ mode => $active_mode, enabled => ($active_mode ne "off") ? json_true() : json_false() };
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");

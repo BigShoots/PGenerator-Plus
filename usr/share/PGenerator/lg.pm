@@ -98,7 +98,11 @@ sub lg_public_api_json (@) {
  my $raw=shift;
  return $raw if(!defined($raw) || $raw eq "");
  my $decoded=eval { JSON::PP::decode_json($raw) };
- return $raw if(!defined($decoded));
+ # Fail CLOSED: an undecodable body must never pass through raw -- leaking
+ # the pairing key is the one failure this boundary exists to prevent. The
+ # envelope is a fixed literal on purpose; echoing any part of $raw would
+ # leak what it was written to contain.
+ return '{"status":"error","message":"LG response could not be prepared for the public API"}' if(!defined($decoded));
  my $redact;
  $redact=sub {
   my ($value)=@_;
@@ -136,7 +140,21 @@ sub lg_save_clients (@) {
  $clients={} if(ref($clients) ne "HASH");
  return 0 if(!&lg_ensure_data_dir());
  my $file=&lg_clients_file();
- &write_file("$file.tmp",$file,&lg_encode_json($clients),1);
+ # Checked write instead of the global write_file(), which ignores every
+ # open/print/rename error: this store carries the held-calibration-session
+ # flag, and lg_prepare_held_calibration_mode's fail-closed gate is dead
+ # code if a full or read-only filesystem can "succeed" silently here.
+ my $tmp="$file.tmp";
+ my $fh;
+ return 0 if(!open($fh,">",$tmp));
+ my $written=(print $fh &lg_encode_json($clients));
+ $written=0 if(!close($fh));
+ if(!$written) { unlink($tmp); return 0; }
+ if(!rename($tmp,$file)) { unlink($tmp); return 0; }
+ # &sync() lives in command.pm; both load into main (no package decls) and
+ # PGeneratord.pl loads command.pm before lg.pm. A test loading lg.pm alone
+ # must stub main::sync before calling this.
+ &sync();
  return 1;
 }
 
@@ -1525,6 +1543,10 @@ sub lg_prepare_held_calibration_mode (@) {
 sub lg_record_calibration_mode_result (@) {
  my ($clients,$result,$active,$fallback_picture_mode)=@_;
  return $result if(ref($result) ne "HASH" || ($result->{"status"}||"") ne "ok");
+ # A reset that opened its own CAL_START but could not confirm the matching
+ # CAL_END reports this key: the TV may still hold that session, so the
+ # persisted flag must survive for the stuck-session recovery paths.
+ return $result if(!$active && $result->{"calibration_session_unconfirmed"});
  my $picture_mode=$result->{"calibration_picture_mode"}
   || $result->{"active_picture_mode"}
   || $fallback_picture_mode
@@ -1536,10 +1558,16 @@ sub lg_record_calibration_mode_result (@) {
 }
 
 sub lg_autocal_worker_running (@) {
+ # $strict picks the fail direction when a liveness check itself dies:
+ # guards protecting an irreversible action (apply-to-all-inputs) pass 1 so
+ # unknown blocks; the reset path leaves it unset so unknown cannot lock the
+ # operator out of their own recovery route.
+ my ($strict)=@_;
  foreach my $name (qw(webui_meter_lg_autocal_running webui_meter_lg_3d_autocal_running)) {
   no strict 'refs';
   next if(!defined(&{"main::$name"}));
   my $running=eval { &{"main::$name"}() };
+  return 1 if($@ && $strict);
   return 1 if($running);
  }
  return 0;
@@ -1966,6 +1994,25 @@ sub webui_lg_picture_apply_all_inputs (@) {
  if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
   return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing first by entering the PIN shown on the TV.", needs_repair => &lg_json_true() });
  }
+ # Applying to all inputs is irreversible on the TV. Refuse while an AutoCal
+ # worker is alive (it would copy a half-converged mode onto every input and
+ # stall the single serialised request lane its own meter/DDC calls use) and
+ # while a calibration session is still held/unconfirmed (same reasoning as
+ # the reset endpoints' lg_clear_stale_calibration_mode_for_reset).
+ if(&lg_autocal_worker_running(1)) {
+  return &lg_encode_json({
+   status => "error",
+   message => "LG Auto Cal is still running. Stop it before applying picture settings to all inputs.",
+   error_code => "lg-calibration-session-active",
+  });
+ }
+ if($clients->{"calibration_mode"}) {
+  return &lg_encode_json({
+   status => "error",
+   message => "A LG calibration session is still held on the TV. Run Reset picture mode first, then apply to all inputs.",
+   error_code => "lg-calibration-session-held",
+  });
+ }
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if(&lg_clients_disconnected($clients));
  my $ip=&lg_target_ip($payload,$clients);
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if($ip eq "");
@@ -2380,8 +2427,11 @@ sub webui_meter_lg_dv_profile_start (@) {
  return '{"status":"error","message":"Dolby Vision profile payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
  return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
- return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
- return '{"status":"error","message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
+ # retryable:false so the Full AutoCal busy loop does not treat a FOREIGN
+ # worker's rejection as a transient hand-off wait and then adopt that
+ # worker (the adoption probe additionally requires a run-id match).
+ return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
+ return '{"status":"error","retryable":false,"message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
  my $_dv_display_model=&webui_lg_display_model_name({});
  if($_dv_display_model ne "" && $body!~/"display_model"\s*:/) {
   $_dv_display_model=~s/\\/\\\\/g; $_dv_display_model=~s/"/\\"/g;
@@ -2428,7 +2478,15 @@ sub webui_meter_lg_dv_profile_start (@) {
  } else {
   return '{"status":"error","message":"Unable to prepare the Dolby Vision profile config"}';
  }
- my $init='{"status":"running","message":"Starting Dolby Vision profile measurement","steps":[]}';
+ # Stamp the Full AutoCal run id (if any) into the initial status so the
+ # browser's adoption probe can tell THIS run's worker from a foreign one
+ # from the very first poll. The worker's own rewrites drop the key;
+ # webui_meter_lg_dv_profile_status re-injects it from the config file.
+ my $_dv_run_id="";
+ $_dv_run_id=$1 if($body=~/"full_autocal_run_id"\s*:\s*"([^"\\]{1,200})"/);
+ my $init=($_dv_run_id ne "")
+  ? '{"status":"running","full_autocal_run_id":"'.$_dv_run_id.'","message":"Starting Dolby Vision profile measurement","steps":[]}'
+  : '{"status":"running","message":"Starting Dolby Vision profile measurement","steps":[]}';
  if(open(my $sf,">",$_meter_lg_dv_profile_file)) { print $sf $init; close($sf); chmod(0666,$_meter_lg_dv_profile_file); }
  my $log_file=&webui_prepare_tmp_worker_log($_meter_lg_dv_profile_log_file,"meter_lg_dv_profile");
  my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_dv_profile.pl '$_meter_lg_dv_profile_config_file' '$_meter_lg_dv_profile_file' '$_meter_lg_dv_profile_stop_file' </dev/null >'$log_file' 2>&1 &";
@@ -2452,6 +2510,17 @@ sub webui_meter_lg_dv_profile_status (@) {
    $json=~s/"message"\s*:\s*"[^"]*"/"message":"Dolby Vision profile measurement process ended unexpectedly"/;
   } else {
    $json=~s/\}\s*\z/,"message":"Dolby Vision profile measurement process ended unexpectedly"}/;
+  }
+ }
+ # The worker's status rewrites do not carry the Full AutoCal run id, but
+ # the config written at start does. Re-inject it so the adoption probe can
+ # verify worker identity for the whole run, not just the start window.
+ if($json!~/"full_autocal_run_id"/ && $json=~/^\s*\{\s*"/ && -f $_meter_lg_dv_profile_config_file) {
+  my $cfg="";
+  if(open(my $cf,"<",$_meter_lg_dv_profile_config_file)) { local $/; $cfg=<$cf>; close($cf); }
+  if($cfg=~/"full_autocal_run_id"\s*:\s*"([^"\\]{1,200})"/) {
+   my $run=$1;
+   $json=~s/^\s*\{/{"full_autocal_run_id":"$run",/;
   }
  }
  return $json;
@@ -3744,6 +3813,9 @@ const LG_PICTURE_MODES_BY_SIGNAL={
   ['dolbyVisionGame','DV Game Optimizer'],
   ['dolbyVisionVivid','DV Vivid'],
   ['dolbyVisionStandard','DV Standard'],
+  // Personalised Picture is NOT part of the 2026-07-24 operator
+  // confirmation above -- added later for current-generation menus that
+  // expose it; readback-verified selection still gates it like any other.
   ['dolbyVisionPersonalized','DV Personalised Picture']
  ]
 };

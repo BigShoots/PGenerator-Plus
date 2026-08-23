@@ -1924,6 +1924,7 @@ foreach my $attempt (@panel_payloads) {
 	 # the autocal starts the 100% luminance setup.
 	 my $ui_data_reset_attempts=[];
 	 my $ui_data_reset_ok=0;
+	 my $ui_data_cal_session_unconfirmed=0;
 	 # The CAL_START payload includes picMode so the LG TV resolves the
 	 # correct calibration mode (cinema->cinema, etc). Without picMode the
 	 # C2 firmware rejects the call with "500 Application error". The
@@ -1961,13 +1962,18 @@ foreach my $attempt (@panel_payloads) {
 	  ) {
 	   my ($ui_command,$ui_value)=@{$ui_item};
 	   my $ui_response=&lg_calibration_request($session,"picture_reset_".lc($ui_command),$ui_command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$ui_value])),1,$active_picture_mode,$connect_timeout + 4);
-	   my ($ui_failed,$ui_message)=&response_is_app_failure($ui_response);
+	   my ($ui_failed,$ui_message)=&response_is_app_failure_or_missing($ui_response);
 	   push(@{$ui_data_reset_attempts},{ command => $ui_command, value => $ui_value, response => $ui_response, failed => &json_bool($ui_failed), message => $ui_message||"" });
 	   $ui_data_reset_ok=1 if(!$ui_failed);
 	  }
 	  my $ui_data_end=&lg_calibration_request($session,"picture_reset_ui_data_cal_end","CAL_END",$ui_data_cal_payload,1,$active_picture_mode,$connect_timeout + 4);
-	  my ($ui_data_end_failed,$ui_data_end_message)=&response_is_app_failure($ui_data_end);
+	  my ($ui_data_end_failed,$ui_data_end_message)=&response_is_app_failure_or_unacknowledged($ui_data_end);
 	  push(@{$ui_data_reset_attempts},{ command => "CAL_END", response => $ui_data_end, failed => &json_bool($ui_data_end_failed), message => $ui_data_end_message||"" });
+	  # This bracket OPENED a CAL_START; if its CAL_END was not acknowledged
+	  # the TV may still hold that session, and the caller must not clear the
+	  # persisted calibration-mode flag on the strength of this reset
+	  # (lg_record_calibration_mode_result checks this key).
+	  $ui_data_cal_session_unconfirmed=1 if($ui_data_end_failed);
 	 }
 	 @panel_reset_attempts=(@panel_reset_attempts,@{$ui_data_reset_attempts});
 	 # UI_DATA CAL path above writes BRIGHTNESS/CONTRAST/BACKLIGHT/COLOR.
@@ -2262,6 +2268,7 @@ foreach my $attempt (@panel_payloads) {
 		  white_balance_reset_keys_failed => \%white_balance_reset_keys_failed,
 		  clean_picture_mode_reset => &json_bool($basic_picture_reset_ok),
 		  panel_light_ui_data_reset_ok => &json_bool($ui_data_reset_ok),
+		  calibration_session_unconfirmed => &json_bool($ui_data_cal_session_unconfirmed),
 		  panel_light_attempts => \@panel_reset_attempts,
   ddc_attempted => &json_bool($ddc_attempted),
   ddc_skipped => &json_bool($reset_ddc_state ? 0 : 1),
@@ -2347,6 +2354,41 @@ sub response_is_app_failure (@) {
 	 $msg.=" (errorCode=".$payload->{"errorCode"}.")" if(defined($payload->{"errorCode"}) && $msg !~ /errorCode/i);
 	 return (1,$msg);
 	}
+ return (0,"");
+}
+
+# response_is_app_failure() deliberately reports a non-HASH response (recv
+# timeout, dead socket) as "not failed" because some call sites treat a
+# missing reply as tolerable. The reset workflows must not: a step whose
+# reply never arrived was not acknowledged, and counting it as ok lets a
+# socket that dies mid-reset turn the whole workflow into a false success --
+# which then clears the persisted calibration-session flag
+# (lg_record_calibration_mode_result) that every stuck-session recovery path
+# depends on. Same criteria as lg_calibration_end_confirmed: only a real
+# WebOS response envelope with returnValue=true is an acknowledgement.
+sub response_is_app_failure_or_unacknowledged (@) {
+ my $response=shift;
+ my ($failed,$message)=&response_is_app_failure($response);
+ return ($failed,$message) if($failed);
+ return (1,"The LG TV did not acknowledge the command (no response before the timeout)") if(ref($response) ne "HASH");
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ return (1,"The LG TV did not acknowledge the command (reply was not a confirmation)")
+  if(($response->{"type"}||"") ne "response" || !$payload->{"returnValue"});
+ return (0,"");
+}
+
+# Weaker sibling for the reset workflows' DATA/UI steps: fail when the reply
+# never arrived (undef/non-HASH = recv timeout, dead socket) but do NOT
+# additionally require type=response + returnValue=true. The strict criterion
+# above is hardware-proven for CAL_END (lg_calibration_end_confirmed, live-
+# proved on the G5); for the identity data writes it would be an untested new
+# assumption on every generation. This closes the dead-socket false-success
+# hole -- the actual bug -- without changing which real TV replies pass.
+sub response_is_app_failure_or_missing (@) {
+ my $response=shift;
+ my ($failed,$message)=&response_is_app_failure($response);
+ return ($failed,$message) if($failed);
+ return (1,"The LG TV did not acknowledge the command (no response before the timeout)") if(ref($response) ne "HASH");
  return (0,"");
 }
 
@@ -3641,8 +3683,11 @@ sub lg_3d_lut_upload_workflow_inner (@) {
 # Only pairing/permission and input errors (missing key, bad payload,
 # unmapped picture mode) return immediately; every other failure -- socket,
 # CAL_START/CAL_END, write, readback -- is retried with bounded exponential
-# backoff. The loop also stops early rather than start an attempt that the
-# caller's `timeout` wrapper would kill mid-write (see $LG_3D_LUT_UPLOAD_DEADLINE).
+# backoff. The loop also estimates (from the longest completed attempt)
+# whether another attempt can finish before the caller's `timeout` wrapper
+# fires, and stops early when it cannot -- an estimate, not a guarantee: a
+# fast-failing first attempt followed by a slow retry can still overrun
+# (see $LG_3D_LUT_UPLOAD_DEADLINE).
 our $LG_3D_LUT_UPLOAD_RETRY_DELAY=0.75;
 our $LG_3D_LUT_UPLOAD_DEADLINE=0;
 sub LG_3D_LUT_UPLOAD_ATTEMPTS () { return 4; }
@@ -3653,7 +3698,10 @@ sub lg_3d_lut_upload_retryable_failure (@) {
  return 0 if(($result->{"status"}||"") eq "ok" && $result->{"upload_verified"});
  return 0 if($result->{"needs_pin_pairing"} || $result->{"needs_repair"});
  my $message=$result->{"message"}||"";
- return 0 if($message =~ /(?:payload must be|requires an exported payload|not mapped for picture mode|connect\s*\/\s*pair .* before|PIN pairing)/i);
+ # "insufficient permissions" is the TV refusing the paired key, not a
+ # transport blip -- retrying burns full 33^3 uploads against a refusal
+ # that only re-pairing can fix.
+ return 0 if($message =~ /(?:payload must be|requires an exported payload|not mapped for picture mode|connect\s*\/\s*pair .* before|PIN pairing|insufficient permissions)/i);
  return 1;
 }
 
@@ -3717,6 +3765,15 @@ sub lg_3d_lut_upload_workflow (@) {
   $result->{"status"}="error";
   $result->{"error_code"}="3d-lut-upload-not-verified";
   $result->{"message"}="LG 3D LUT upload was not verified after all permitted attempts: ".($result->{"message"}||"the TV did not return an exact readback");
+ }
+ # When every attempt verified the WRITE but the TV never confirmed the
+ # calibration-session end, say so: "upload not verified" would send the
+ # operator chasing the wrong problem. The LUT is on the TV; the session
+ # close is what failed.
+ if(($result->{"status"}||"") eq "error" && $result->{"upload_write_verified"} && !$result->{"upload_verified"}
+    && scalar(@transport_attempts) >= $max_attempts) {
+  $result->{"message"}=($result->{"message"}||"LG TV did not confirm calibration mode end after the 3D LUT write.")
+   ." The LUT write itself was verified by readback on every attempt; the TV would not confirm the calibration-session end. Restart the TV if this repeats.";
  }
  $result->{"transport_attempt_count"}=scalar(@transport_attempts);
  $result->{"transport_retry_count"}=scalar(@transport_attempts)>0 ? scalar(@transport_attempts)-1 : 0;
@@ -3901,7 +3958,7 @@ sub lg_hdr_calman_reset_workflow (@) {
  ) {
  my ($command,$value)=@{$item};
   my $response=&lg_calibration_request($session,"hdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
-  my ($failed,$message)=&response_is_app_failure($response);
+  my ($failed,$message)=&response_is_app_failure_or_missing($response);
   push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
  }
 
@@ -3921,21 +3978,21 @@ sub lg_hdr_calman_reset_workflow (@) {
 
  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
  my $matrix_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
- my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure_or_missing($matrix_response);
  push(@steps,{ command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
 
  my $unity3d=&lg_unity_3d_lut(33);
  my $lut3d_response=&lg_calibration_request($session,"hdr_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
- my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure_or_missing($lut3d_response);
  push(@steps,{ command => "BT2020_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
 
  my $unity1d=&lg_unity_1d_lut();
  my $lut1d_response=&lg_calibration_request($session,"hdr_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
- my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure_or_missing($lut1d_response);
  push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
 
  my $end=&lg_calibration_request($session,"hdr_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
- my ($end_failed,$end_message)=&response_is_app_failure($end);
+ my ($end_failed,$end_message)=&response_is_app_failure_or_unacknowledged($end);
  push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
  &websocket_close($session);
 
@@ -4012,7 +4069,7 @@ sub lg_dv_calman_reset_workflow (@) {
  ) {
  my ($command,$value)=@{$item};
   my $response=&lg_calibration_request($session,"dv_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
-  my ($failed,$message)=&response_is_app_failure($response);
+  my ($failed,$message)=&response_is_app_failure_or_missing($response);
   push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
  }
 
@@ -4032,21 +4089,21 @@ sub lg_dv_calman_reset_workflow (@) {
 
  my $matrix=&lg_force_pic_mode_payload(&lg_bt2020_identity_3x3_payload());
  my $matrix_response=&lg_calibration_request($session,"dv_calman_reset_bt2020_3by3","BT2020_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
- my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure_or_missing($matrix_response);
  push(@steps,{ command => "BT2020_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
 
  my $unity3d=&lg_unity_3d_lut(33);
  my $lut3d_response=&lg_calibration_request($session,"dv_calman_reset_bt2020_3d_lut","BT2020_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
- my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure_or_missing($lut3d_response);
  push(@steps,{ command => "BT2020_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
 
  my $unity1d=&lg_unity_1d_lut();
  my $lut1d_response=&lg_calibration_request($session,"dv_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
- my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure_or_missing($lut1d_response);
  push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
 
  my $end=&lg_calibration_request($session,"dv_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
- my ($end_failed,$end_message)=&response_is_app_failure($end);
+ my ($end_failed,$end_message)=&response_is_app_failure_or_unacknowledged($end);
  push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
  &websocket_close($session);
 
@@ -4168,11 +4225,11 @@ foreach my $item (
    ) {
    my ($command,$value)=@{$item};
    my $response=&lg_calibration_request($session,"sdr_calman_reset_".lc($command),$command,&lg_force_pic_mode_payload(&lg_typed_uint16_payload([$value])),1,$cal_mode,$connect_timeout + 4);
-   my ($failed,$message)=&response_is_app_failure($response);
+   my ($failed,$message)=&response_is_app_failure_or_missing($response);
    push(@steps,{ command => $command, value => $value, response => $response, failed => &json_bool($failed), message => $message||"" });
   }
  my $end=&lg_calibration_request($session,"sdr_calman_reset_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
- my ($end_failed,$end_message)=&response_is_app_failure($end);
+ my ($end_failed,$end_message)=&response_is_app_failure_or_unacknowledged($end);
  push(@steps,{ command => "CAL_END", response => $end, failed => &json_bool($end_failed), message => $end_message||"" });
 
  # --- Outside cal mode: identity 3D LUT + identity 1D DPG + BT.709 3x3 matrix.
@@ -4182,17 +4239,17 @@ foreach my $item (
  # writes are applied directly without re-entering calibration mode.
  my $unity3d=&lg_unity_3d_lut(33);
  my $lut3d_response=&lg_calibration_request($session,"sdr_calman_reset_bt709_3d_lut","BT709_3D_LUT_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity3d)),1,$cal_mode,$connect_timeout + 18);
- my ($lut3d_failed,$lut3d_message)=&response_is_app_failure($lut3d_response);
+ my ($lut3d_failed,$lut3d_message)=&response_is_app_failure_or_missing($lut3d_response);
  push(@steps,{ command => "BT709_3D_LUT_DATA", response => $lut3d_response, failed => &json_bool($lut3d_failed), message => $lut3d_message||"" });
 
  my $unity1d=&lg_unity_1d_lut();
  my $lut1d_response=&lg_calibration_request($session,"sdr_calman_reset_1d_dpg","1D_DPG_DATA",&lg_force_pic_mode_payload(&lg_typed_uint16_payload($unity1d)),1,$cal_mode,$connect_timeout + 10);
- my ($lut1d_failed,$lut1d_message)=&response_is_app_failure($lut1d_response);
+ my ($lut1d_failed,$lut1d_message)=&response_is_app_failure_or_missing($lut1d_response);
  push(@steps,{ command => "1D_DPG_DATA", response => $lut1d_response, failed => &json_bool($lut1d_failed), message => $lut1d_message||"" });
 
  my $matrix=&lg_force_pic_mode_payload(&lg_bt709_identity_3x3_payload());
  my $matrix_response=&lg_calibration_request($session,"sdr_calman_reset_bt709_3by3","BT709_3BY3_GAMUT_DATA",$matrix,1,$cal_mode,$connect_timeout + 6);
- my ($matrix_failed,$matrix_message)=&response_is_app_failure($matrix_response);
+ my ($matrix_failed,$matrix_message)=&response_is_app_failure_or_missing($matrix_response);
  push(@steps,{ command => "BT709_3BY3_GAMUT_DATA", response => $matrix_response, failed => &json_bool($matrix_failed), message => $matrix_message||"" });
 
  &websocket_close($session);
@@ -5358,7 +5415,11 @@ sub lg_generation_info (@) {
 # inventories, and absent from C8, C9 and CX. Return 1/0 when the TV can be
 # classified, or -1 when it cannot; an unknown TV may still prove support by
 # accepting the public settings request, but must not use the unacknowledged
-# Luna fallback.
+# Luna fallback. The single-digit series fallback below ASSUMES a series
+# letter+digit 1-7 with no platform_year means 2021-or-newer (C1/G1 and on);
+# it deliberately excludes 8/9 (2018/19), but an uncaptured 2016/17 set
+# (B7/C7) would also match -- accepted risk, as those sets predate the
+# capture set and the failure mode is a rejected settings request.
 sub lg_apply_all_inputs_generation_support (@) {
  my $generation=shift;
  return -1 if(ref($generation) ne "HASH");
@@ -7208,13 +7269,19 @@ sub main (@) {
   $result=&lg_calibration_mode_workflow($ip,$client_key,$connect_timeout,$enable,$picture_mode,$signal_mode);
  } elsif($action eq "3d_lut_probe") {
   $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe,$signal_mode);
- } elsif($action eq "3d_lut_upload") {
+ } elsif($action eq "3d_lut_upload" || $action eq "3d_lut_reset") {
   # lg_helper_run wraps this process in `timeout <helper_timeout>s`; keep a
-  # margin so a retry never starts unless it can finish before that kill.
+  # margin so a retry is unlikely to start unless it can finish before that
+  # SIGTERM (the estimate uses the longest completed attempt). The reset
+  # action funnels into the same retrying upload wrapper, so it needs the
+  # same deadline -- without it the loop can start a final attempt seconds
+  # before the wrapper fires and leave CAL_START held over a partial write.
   $LG_3D_LUT_UPLOAD_DEADLINE=$^T+int($request->{"helper_timeout"}||0)-10 if(int($request->{"helper_timeout"}||0) > 0);
-  $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
-	 } elsif($action eq "3d_lut_reset") {
-	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
+  if($action eq "3d_lut_upload") {
+   $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
+  } else {
+   $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
+  }
 	 } elsif($action eq "hdr_picture_reset" || $action eq "hdr_calman_reset") {
 	  $result=&lg_hdr_calman_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$tv_input);
 	 } elsif($action eq "dv_calman_reset") {

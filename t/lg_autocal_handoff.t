@@ -24,7 +24,10 @@ ok($finalising_at>=0,'greyscale worker exposes a finalising phase');
 ok($cleanup_at>$finalising_at,'TV and pattern cleanup follows the finalising state');
 ok($complete_at>$cleanup_at,'complete is not published until cleanup finishes');
 
-like($webui,qr/sub webui_meter_lg_autocal_handoff_guard \(@\).*?"phase"\\s\*:\\s\*"finalising".*?"retryable":true.*?"retryable":false/s,
+# Behavioural coverage lives in t/lg_autocal_handoff_guard.t (executed with
+# fixtures); this only pins that the guard still inspects the decoded
+# top-level phase and emits both retryable outcomes.
+like($webui,qr/sub webui_meter_lg_autocal_handoff_guard \(@\).*?\$top_phase eq "finalising".*?"retryable":true.*?"retryable":false/s,
  'the server distinguishes a retryable cleanup hand-off from a genuinely active AutoCal');
 like($webui,qr/sub webui_meter_lg_3d_autocal_start \(@\).*?webui_meter_lg_autocal_handoff_guard\(\)/s,
  'the greyscale-to-3D LUT boundary uses the hand-off guard');
