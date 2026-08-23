@@ -879,6 +879,16 @@ function meterIccPatchesToSteps(patches,profileType,includeMetadataWhite){
  return steps;
 }
 
+function meterIccWantsBaseActiveMhc2Steps(profileType,profileModel){
+ return String(profileType||'')==='windows-hdr'
+  &&meterIccProfileModelInfo(profileModel).family==='clut';
+}
+
+function meterIccAppendBaseActiveMhc2Steps(steps,profileType,profileModel){
+ if(!meterIccWantsBaseActiveMhc2Steps(profileType,profileModel)) return Array.isArray(steps)?steps:[];
+ return (Array.isArray(steps)?steps:[]).concat(meterIccActiveMhc2Steps());
+}
+
 async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite,profileModel){
  settings=settings||meterIccPatchSettings();
  const payload=Object.assign({},settings,{profile_type:profileType});
@@ -887,7 +897,10 @@ async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite,p
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:920000
  });
  if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not generate the optimized patch set');
- return meterIccPatchesToSteps(response.patches,profileType,includeMetadataWhite);
+ const steps=meterIccPatchesToSteps(response.patches,profileType,includeMetadataWhite);
+ // Pre-read calls omit profileModel. The final characterization series
+ // includes the uncorrected MHC2 active-path rows in the same pass.
+ return profileModel?meterIccAppendBaseActiveMhc2Steps(steps,profileType,profileModel):steps;
 }
 
 async function meterIccGeneratePreconditionedSteps(readings,runConfig){
@@ -906,7 +919,7 @@ async function meterIccGeneratePreconditionedSteps(readings,runConfig){
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:930000
  });
  if(!response||response.status!=='ok'||!Array.isArray(response.patches)) throw new Error(response&&response.message?response.message:'Could not create the display-aware patch set');
- return meterIccPatchesToSteps(response.patches,runConfig.profile_type);
+ return meterIccAppendBaseActiveMhc2Steps(meterIccPatchesToSteps(response.patches,runConfig.profile_type),runConfig.profile_type,runConfig.profile_model);
 }
 
 function meterIccMissingPreconditionAnchors(error){
@@ -1077,7 +1090,8 @@ function meterIccSyncUi(){
  const effectiveIccVersion=meterIccEffectiveVersion(type);
  const cicp=meterIccCicpSettings();
  const patchSettings=meterIccPatchSettings();
- const count=patchSettings.patch_count+(type==='windows-hdr'?1:0);
+ const mhc2Extra=meterIccWantsBaseActiveMhc2Steps(type,profileModel)?meterIccActiveMhc2Steps().length:0;
+ const count=patchSettings.patch_count+(type==='windows-hdr'?1:0)+mhc2Extra;
  const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
  const patchMinimum=meterIccStructuredPatchEstimate(patchSettings);
  const invalidPatchSet=patchSettings.patch_count<patchMinimum;
@@ -1171,7 +1185,7 @@ function meterIccSyncUi(){
   const label=String(option.value).charAt(0).toUpperCase()+String(option.value).slice(1);
   const preset=(METER_ICC_PATCH_PRESETS[profileModelInfo.family]||{})[String(option.value)];
   option.textContent=preset
-   ?(label+', '+(preset.patch_count+(type==='windows-hdr'?1:0))+' patches, '+meterIccNeutralPatchCount(preset)+' neutral')
+   ?(label+', '+(preset.patch_count+(type==='windows-hdr'?1:0)+mhc2Extra)+' patches, '+meterIccNeutralPatchCount(preset)+' neutral')
    :(label+', '+count+' patches');
  });
  const patchCountLabel=document.getElementById('meterIccPatchCountLabel');
