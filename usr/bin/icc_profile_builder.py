@@ -2859,6 +2859,108 @@ def windows_hdr_b2a_source_evaluator(profile):
     return evaluate
 
 
+def windows_hdr_b2a_measured_peak_drive(rows):
+    """Return the measured best neutral peak drive, or None."""
+    best = None
+    for row in rows:
+        name = str(row.get("name", ""))
+        if not (re.match(r"^ICC MHC2 Peak Candidate(?: [RGB][+-])?$", name)
+                or re.match(r"^ICC MHC2 Peak Refine [A-Z]+$", name)):
+            continue
+        xyz = row.get("xyz")
+        rgb = row.get("rgb")
+        if not xyz or not rgb or len(rgb) != 3:
+            continue
+        total = sum(xyz)
+        if total <= 1e-9:
+            continue
+        error = math.hypot(xyz[0] / total - 0.3127, xyz[1] / total - 0.3290)
+        if best is None or error < best[0]:
+            best = (error, [max(0.0, min(1.0, float(v))) for v in rgb])
+    return best
+
+
+def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.78):
+    """Drive the B2A plateau with the directly measured best peak triplet.
+
+    The top of the cube is degenerate: its input tables saturate, so several
+    nodes decode to one plateau level. That level was being driven at roughly
+    768/782/792 while the peak candidate stage had directly measured
+    767/773/818 as the best neutral drive at dxy .00031. Blue 26 codes low
+    starves Z and pushes y to .3319 against a .3290 target, which is the flat
+    1.5 chroma dE the cLUT path carried from code 818 upward while the MHC2
+    path, which does use this triplet, reached 0.54.
+
+    This uses raw device-response provenance, the same rows the MHC2 balanced
+    peak cap selects from, so it does not borrow MHC2-path feedback.
+    """
+    best = windows_hdr_b2a_measured_peak_drive(rows)
+    if best is None:
+        return profile
+    drive = best[1]
+    tags = dict(read_icc_tags(profile))
+    lumi = tags.get(b"lumi")
+    if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
+        return profile
+    white_nits = read_s15fixed16(lumi, 12)
+    if white_nits <= 0.0:
+        return profile
+    xyz_to_mft = 65536.0 / (2.0 * 65535.0)
+    d50 = (0.9642, 1.0, 0.8249)
+    replacements = {}
+    for signature, payload in read_icc_tags(profile):
+        if signature not in (b"B2A0", b"B2A1") or signature in replacements:
+            continue
+        if len(payload) < 52 or payload[:4] != b"mft2":
+            continue
+        input_channels, output_channels, grid = payload[8], payload[9], payload[10]
+        input_entries, output_entries = struct.unpack_from(">HH", payload, 48)
+        if input_channels != 3 or output_channels != 3 or grid < 2:
+            continue
+        input_start = 52
+        clut_start = input_start + input_channels * input_entries * 2
+        clut_values = grid ** input_channels * output_channels
+        output_start = clut_start + clut_values * 2
+        if output_start + output_channels * output_entries * 2 > len(payload):
+            continue
+        input_tables = []
+        output_tables = []
+        for channel in range(3):
+            offset = input_start + channel * input_entries * 2
+            input_tables.append([value / 65535.0 for value in
+                                 struct.unpack_from(">{}H".format(input_entries),
+                                                    payload, offset)])
+            offset = output_start + channel * output_entries * 2
+            output_tables.append([value / 65535.0 for value in
+                                  struct.unpack_from(">{}H".format(output_entries),
+                                                     payload, offset)])
+        updated = bytearray(payload)
+        denominator = float(grid - 1)
+        touched = 0
+        for node in range(grid):
+            estimates = []
+            for channel in range(3):
+                encoded_xyz = invert_table(input_tables[channel],
+                                           node / denominator)
+                pcs = encoded_xyz / xyz_to_mft
+                relative = max(0.0, pcs / d50[channel])
+                estimates.append(nits_to_pq(relative * white_nits))
+            source_code = sorted(estimates)[1]
+            if source_code < plateau_start:
+                continue
+            node_offset = (((node * grid + node) * grid + node) * 3)
+            for channel in range(3):
+                encoded = invert_table(output_tables[channel], drive[channel])
+                struct.pack_into(">H", updated,
+                                 clut_start + (node_offset + channel) * 2,
+                                 max(0, min(65535,
+                                     int(round(encoded * 65535.0)))))
+            touched += 1
+        if touched:
+            replacements[signature] = bytes(updated)
+    return rebuild_icc(profile, replacements) if replacements else profile
+
+
 def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
                                       neutral_gains,
                                       source_limit=0.35):
@@ -5809,6 +5911,12 @@ def build(payload, output_dir):
             profile = windows_hdr_b2a_with_shadow_luts(
                 profile, b2a_reference_luts, b2a_corrected_luts,
                 final_neutral_gains, source_limit=1.0)
+
+        # The corridor feedback cannot reach the plateau: probes there produce
+        # no measurable response and extrapolating the last anchor is
+        # wrong-signed. Drive it from the directly measured best peak triplet
+        # instead, which is the same selection the MHC2 balanced peak cap uses.
+        profile = windows_hdr_b2a_with_peak_drive(profile, mhc2_profile_rows)
 
         # Windows system handling gets its own measured response solve. Keep
         # the independently fitted active-path curves as its baseline. Cloning
