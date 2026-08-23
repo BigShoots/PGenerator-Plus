@@ -3838,10 +3838,25 @@ def mhc2_adjustment_luts(payload):
     return curves
 
 
-def mhc2_shadow_probe_weight(source_code):
-    """Return the generic 10-35% PQ curve-probe envelope."""
+def mhc2_shadow_probe_weight(source_code, fade_start=0.38, fade_span=0.07):
+    """Return the PQ curve-probe envelope, 10-35% band by default.
+
+    The cLUT corridor needs anchors nearer the knee than the MHC2 path does,
+    because MHC2 gets its top end from the peak candidate and final peak
+    feedback stages while B2A has no equivalent. Measured consequence of the
+    default envelope: probes at codes 460 through 716 carried zero amplitude,
+    so their response was 0.00 to 1.13 nits against a 2% floor of 1.15 to
+    12.65 and every anchor was rejected as unmeasurable.
+    """
     return (smoothstep((source_code - 0.07) / 0.03)
-            * (1.0 - smoothstep((source_code - 0.38) / 0.07)))
+            * (1.0 - smoothstep((source_code - fade_start) / fade_span)))
+
+
+# Envelope for the cLUT corridor probes. Reaches zero near source 0.79, which
+# keeps codes 460 through 716 inside the measurable band while still dying out
+# before the shoulder plateau where no probe can produce a response.
+MHC2_CLUT_PROBE_FADE_START = 0.72
+MHC2_CLUT_PROBE_FADE_SPAN = 0.07
 
 
 def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
@@ -3920,12 +3935,16 @@ def b2a_profile_with_curve_probe(profile, mhc2, channel,
         curve_input = index / float(entries - 1)
         source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
         corrected_luts[channel][index] = max(0.0, min(1.0,
-            old + delta * mhc2_shadow_probe_weight(source_code)))
+            old + delta * mhc2_shadow_probe_weight(
+                source_code, MHC2_CLUT_PROBE_FADE_START,
+                MHC2_CLUT_PROBE_FADE_SPAN)))
     corrected_luts[channel] = isotonic_curve(corrected_luts[channel])
     corrected_luts[channel][0] = 0.0
+    # The corridor rewrite has to span the same range as the envelope above,
+    # otherwise the widened probe is discarded when the table is written.
     return windows_hdr_b2a_with_shadow_luts(
         profile, reference_luts, corrected_luts, neutral_gains,
-        source_limit=0.45)
+        source_limit=1.0)
 
 
 def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid_size=65):
