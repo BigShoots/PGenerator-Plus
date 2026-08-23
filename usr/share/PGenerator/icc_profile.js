@@ -2640,13 +2640,26 @@ function meterIccMhc2PeakStep(name,r,g,b){
  return {ire:100*(r+g+b)/(3*1023),r:r,g:g,b:b,input_max:1023,name:name};
 }
 
+// The MHC2 path gets its top end from the peak candidate and final peak
+// feedback stages. The B2A corridor has no equivalent, so the cLUT series
+// also probes 767 and 921; without them the cLUT top end kept a flat +.0028
+// dy offset, about 1.5 chroma dE where MHC2 reached 0.54. Measuring them on
+// the cLUT variants keeps cLUT transform provenance.
+const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358];
+const METER_ICC_CLUT_FEEDBACK_CODES=[102,153,205,256,307,358,767,921];
+
+function meterIccCurveFeedbackCodes(label){
+ return String(label||'').indexOf('cLUT')>=0
+  ?METER_ICC_CLUT_FEEDBACK_CODES:METER_ICC_CURVE_FEEDBACK_CODES;
+}
+
 function meterIccCurveFeedbackSteps(label,variant,includePeak){
  const signedVariant=String(variant||'');
  const namePart=signedVariant
   ?(signedVariant+(/[+-]$/.test(signedVariant)?' ':'+ ')):'Base ';
  const steps=[];
  let flushIndex=0;
- [102,153,205,256,307,358].forEach(code=>{
+ meterIccCurveFeedbackCodes(label).forEach(code=>{
   if(code<=METER_ICC_FLUSH_MAX_CODE){
    flushIndex+=1;
    steps.push(meterIccActiveMhc2FlushStep(flushIndex));
@@ -2665,7 +2678,7 @@ function meterIccHasCompleteCurveFeedback(readings){
  reading=>String(reading&&reading.name||'')));
  for(const label of ['ICC MHC2 Curve Feedback','ICC cLUT Curve Feedback']){
   for(const variant of ['Base','R+','G+','B+','R-','G-','B-']){
-   for(const code of [102,153,205,256,307,358]){
+   for(const code of meterIccCurveFeedbackCodes(label)){
     if(!names.has(label+' '+variant+' '+code)) return false;
    }
   }
@@ -2679,7 +2692,7 @@ function meterIccHasPositiveCurveFeedback(readings){
   reading=>String(reading&&reading.name||'')));
  for(const label of ['ICC MHC2 Curve Feedback','ICC cLUT Curve Feedback']){
   for(const variant of ['Base','R+','G+','B+']){
-   for(const code of [102,153,205,256,307,358]){
+   for(const code of meterIccCurveFeedbackCodes(label)){
     if(!names.has(label+' '+variant+' '+code)) return false;
    }
   }

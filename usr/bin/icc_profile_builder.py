@@ -407,6 +407,14 @@ MHC2_HDR_NEUTRAL_HEADROOM = 0.95
 # profile edit itself rather than a source-patch approximation.
 MHC2_CURVE_FEEDBACK_DELTA = 4.0 / 1023.0
 MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
+# The cLUT corridor needs anchors above the shadow band as well. The MHC2 path
+# gets its top end from the peak candidate and final peak feedback stages, but
+# the B2A has no equivalent, so its neutral corridor was left uncorrected above
+# roughly code 414 and carried a flat +.0028 dy offset from 767 to 1023, about
+# 1.5 chroma dE, where the MHC2 path reached 0.54. These extra codes are
+# measured by the same signed cLUT variant series, so they keep cLUT transform
+# provenance instead of borrowing the MHC2 peak feedback rows.
+MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (767, 921)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
@@ -2113,7 +2121,7 @@ def apply_mhc2_active_shadow_feedback(luts, rows, neutral_gains,
 
 def profile_curve_feedback_anchors(rows, label, calibrated_peak,
                                    probe_delta=MHC2_CURVE_FEEDBACK_DELTA,
-                                   return_diagnostics=False):
+                                   return_diagnostics=False, codes=None):
     """Choose bounded shadow corrections inside the measured response hull.
 
     The responses here come from changing the actual profile curve used by
@@ -2140,7 +2148,7 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
 
     anchors = []
     diagnostics = {}
-    for code in MHC2_CURVE_FEEDBACK_CODES:
+    for code in (codes or MHC2_CURVE_FEEDBACK_CODES):
         names = {
             "base": "{} Base {}".format(label, code),
             "R+": "{} R+ {}".format(label, code),
@@ -2289,6 +2297,11 @@ def validate_profile_curve_feedback_complete(rows):
         for code in MHC2_CURVE_FEEDBACK_CODES
     }
     required.update(
+        "ICC cLUT Curve Feedback {} {}".format(variant, code)
+        for variant in ("Base", "R+", "G+", "B+", "R-", "G-", "B-")
+        for code in MHC2_CLUT_FEEDBACK_CODES
+    )
+    required.update(
         "ICC MHC2 Final Feedback " + variant
         for variant in ("Base", "R+", "G+", "B+")
     )
@@ -2300,14 +2313,15 @@ def validate_profile_curve_feedback_complete(rows):
 
 def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
                                  label,
-                                 probe_delta=MHC2_CURVE_FEEDBACK_DELTA):
+                                 probe_delta=MHC2_CURVE_FEEDBACK_DELTA,
+                                 codes=None):
     """Apply independently validated profile-variant shadow corrections."""
     if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
             or len(luts[0]) < 2 or len(neutral_gains) != 3
             or min(neutral_gains) <= 1e-6):
         return False
     anchors = profile_curve_feedback_anchors(
-        rows, label, calibrated_peak, probe_delta)
+        rows, label, calibrated_peak, probe_delta, codes=codes)
     if not anchors:
         return False
     start = max(0.0, anchors[0][0] - 0.035)
@@ -5732,10 +5746,14 @@ def build(payload, output_dir):
         if apply_profile_curve_feedback(
                 b2a_corrected_luts, mhc2_profile_rows,
                 final_neutral_gains, calibrated_white,
-                "ICC cLUT Curve Feedback"):
+                "ICC cLUT Curve Feedback",
+                codes=MHC2_CLUT_FEEDBACK_CODES):
+            # The corridor rewrite has to reach the top now that measured
+            # cLUT anchors exist above the shadow band; 0.45 confined every
+            # correction to the bottom 45% of the range.
             profile = windows_hdr_b2a_with_shadow_luts(
                 profile, b2a_reference_luts, b2a_corrected_luts,
-                final_neutral_gains, source_limit=0.45)
+                final_neutral_gains, source_limit=1.0)
 
         # Windows system handling gets its own measured response solve. Keep
         # the independently fitted active-path curves as its baseline. Cloning
