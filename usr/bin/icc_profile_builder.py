@@ -419,7 +419,7 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 0.45% against a 2% validity floor, so every anchor was correctly rejected.
 # These codes were verified against the profile's measured output, not the
 # null-seed ladder, which overestimates response above the knee.
-MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
+MHC2_CLUT_FEEDBACK_CODES = (51,) + MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside

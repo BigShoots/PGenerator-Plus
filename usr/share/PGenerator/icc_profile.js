@@ -2579,7 +2579,7 @@ function meterIccActiveMhc2Steps(){
  // instead: these probes are measured against the null seed, so they cannot
  // interact with the peak candidate or final peak feedback stages, and the
  // builder's fade then ends near code 737, below where those stages begin.
- const shadowCodes=[102,153,205,256,307,358,460,563,665];
+ const shadowCodes=[51,102,153,205,256,307,358,460,563,665];
  const steps=[];
  let flushIndex=0;
  const pushWithFlush=step=>{
@@ -2653,7 +2653,7 @@ function meterIccMhc2PeakStep(name,r,g,b){
 // dy offset, about 1.5 chroma dE where MHC2 reached 0.54. Measuring them on
 // the cLUT variants keeps cLUT transform provenance.
 const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358];
-const METER_ICC_CLUT_FEEDBACK_CODES=[102,153,205,256,307,358,460,563,665,716];
+const METER_ICC_CLUT_FEEDBACK_CODES=[51,102,153,205,256,307,358,460,563,665,716];
 
 function meterIccCurveFeedbackCodes(label){
  return String(label||'').indexOf('cLUT')>=0
