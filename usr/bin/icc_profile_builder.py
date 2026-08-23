@@ -414,7 +414,12 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 1.5 chroma dE, where the MHC2 path reached 0.54. These extra codes are
 # measured by the same signed cLUT variant series, so they keep cLUT transform
 # provenance instead of borrowing the MHC2 peak feedback rows.
-MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (767, 921)
+# 767 and above are unusable: the profile's own shoulder puts them on the peak
+# plateau, where a four code probe moved the measured output by only 0.02% to
+# 0.45% against a 2% validity floor, so every anchor was correctly rejected.
+# These codes were verified against the profile's measured output, not the
+# null-seed ladder, which overestimates response above the knee.
+MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
@@ -2314,7 +2319,7 @@ def validate_profile_curve_feedback_complete(rows):
 def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
                                  label,
                                  probe_delta=MHC2_CURVE_FEEDBACK_DELTA,
-                                 codes=None):
+                                 codes=None, hold_top=False):
     """Apply independently validated profile-variant shadow corrections."""
     if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
             or len(luts[0]) < 2 or len(neutral_gains) != 3
@@ -2325,9 +2330,19 @@ def apply_profile_curve_feedback(luts, rows, neutral_gains, calibrated_peak,
     if not anchors:
         return False
     start = max(0.0, anchors[0][0] - 0.035)
-    end = min(1.0, anchors[-1][0] + 0.055)
-    points = [(start, [0.0, 0.0, 0.0])] + anchors + [
-        (end, [0.0, 0.0, 0.0])]
+    if hold_top:
+        # Above the knee the device is clipping, so every code from the last
+        # anchor to full scale renders the same physical output and needs the
+        # same chroma correction. Fading to zero there is what left the cLUT
+        # top end with a flat +.0028 dy offset, about 1.5 chroma dE, while the
+        # MHC2 path reached 0.54. Hold the last anchor instead of inventing a
+        # ramp the hardware never measured.
+        points = ([(start, [0.0, 0.0, 0.0])] + anchors
+                  + [(1.0, list(anchors[-1][1]))])
+    else:
+        end = min(1.0, anchors[-1][0] + 0.055)
+        points = [(start, [0.0, 0.0, 0.0])] + anchors + [
+            (end, [0.0, 0.0, 0.0])]
 
     def correction(source_code, channel):
         if source_code <= points[0][0] or source_code >= points[-1][0]:
@@ -5747,7 +5762,7 @@ def build(payload, output_dir):
                 b2a_corrected_luts, mhc2_profile_rows,
                 final_neutral_gains, calibrated_white,
                 "ICC cLUT Curve Feedback",
-                codes=MHC2_CLUT_FEEDBACK_CODES):
+                codes=MHC2_CLUT_FEEDBACK_CODES, hold_top=True):
             # The corridor rewrite has to reach the top now that measured
             # cLUT anchors exist above the shadow band; 0.45 confined every
             # correction to the bottom 45% of the range.
