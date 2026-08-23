@@ -430,6 +430,14 @@ MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # black the measured chromaticity carries real meter noise, and solving inside
 # that noise trades an invisible error for a visible tint.
 MHC2_SHADOW_CHROMA_DEADBAND = 0.003
+# Minimum measured luminance for a borrowed grey-ladder chroma anchor. The
+# ladder runs down to code 20 at about 0.001 nits, and anchoring there feeds
+# meter noise straight into the correction. Code 51 measured 0.054 nits and
+# its borrowed anchor made that code worse, 4.044 to 5.042 dE ITP, while the
+# anchors just above it improved codes 102, 153 and 205. The active-response
+# coherence gate independently rejects probes at 51 for 11.16% channel
+# spread, so 0.054 nits is demonstrably below the usable floor on this panel.
+MHC2_BORROWED_GREY_MIN_NITS = 0.08
 # Fraction of an output table's ceiling below which the peak remap leaves the
 # table alone. 0.90 disturbed codes 614 and 716; 0.97 does not.
 MHC2_PEAK_TABLE_KNEE = 0.97
@@ -2044,6 +2052,11 @@ def borrowed_shadow_grey_anchors(luts, rows, neutral_gains, probed, groups):
             continue
         input_max = float(row.get("input_max") or 0.0)
         if input_max <= 1e-9:
+            continue
+        measured = row.get("xyz")
+        if (not measured or len(measured) != 3
+                or not math.isfinite(measured[1])
+                or measured[1] < MHC2_BORROWED_GREY_MIN_NITS):
             continue
         nearest = min(probed, key=lambda candidate: (
             abs(candidate - code), candidate))
