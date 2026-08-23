@@ -2185,11 +2185,17 @@ def profile_curve_feedback_anchors(rows, label, calibrated_peak,
         current_error = error_metric(base, target_y)
         current_luminance_error = abs(math.log(base[1] / target_y))
         best = None
-        # Eighth-step weights give a dense, deterministic search of the
+        # Twenty-fourth-step weights give a dense, deterministic search of the
         # three-dimensional signed response simplex without an optimizer
         # dependency. The L1 bound is what keeps every result in the convex
         # hull of Base and the six actual probe measurements.
-        weights = [value / 8.0 for value in range(-8, 9)]
+        #
+        # An eighth-step grid was coarse enough to be the accuracy limit
+        # rather than the measurements: it left code 153 predicting .00631
+        # against the .006 recoverability threshold and failed an otherwise
+        # good build, while a finer grid of the same constrained problem
+        # reaches .00555 there and improves every other code as well.
+        weights = [value / 24.0 for value in range(-24, 25)]
         for red in weights:
             for green in weights:
                 for blue in weights:
