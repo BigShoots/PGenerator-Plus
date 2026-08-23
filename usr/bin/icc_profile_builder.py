@@ -2937,25 +2937,36 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.78):
         updated = bytearray(payload)
         denominator = float(grid - 1)
         touched = 0
-        for node in range(grid):
-            estimates = []
-            for channel in range(3):
-                encoded_xyz = invert_table(input_tables[channel],
-                                           node / denominator)
-                pcs = encoded_xyz / xyz_to_mft
-                relative = max(0.0, pcs / d50[channel])
-                estimates.append(nits_to_pq(relative * white_nits))
-            source_code = sorted(estimates)[1]
-            if source_code < plateau_start:
-                continue
-            node_offset = (((node * grid + node) * grid + node) * 3)
-            for channel in range(3):
-                encoded = invert_table(output_tables[channel], drive[channel])
-                struct.pack_into(">H", updated,
-                                 clut_start + (node_offset + channel) * 2,
-                                 max(0, min(65535,
-                                     int(round(encoded * 65535.0)))))
-            touched += 1
+        # Walk the one-cell neutral corridor, not just the exact diagonal. An
+        # exactly neutral trilinear lookup interpolates across the surrounding
+        # cell, so writing only (n,n,n) is diluted by untouched neighbours:
+        # that measured only 1.613 peak chroma against a drive whose own
+        # measurement is dxy .00031. This mirrors the corridor walk already
+        # used by windows_hdr_b2a_with_shadow_luts.
+        for red in range(grid):
+            for green in range(max(0, red - 1), min(grid, red + 2)):
+                for blue in range(max(0, red - 1), min(grid, red + 2)):
+                    if max(red, green, blue) - min(red, green, blue) > 1:
+                        continue
+                    estimates = []
+                    for channel, node in enumerate((red, green, blue)):
+                        encoded_xyz = invert_table(input_tables[channel],
+                                                   node / denominator)
+                        pcs = encoded_xyz / xyz_to_mft
+                        relative = max(0.0, pcs / d50[channel])
+                        estimates.append(nits_to_pq(relative * white_nits))
+                    source_code = sorted(estimates)[1]
+                    if source_code < plateau_start:
+                        continue
+                    node_offset = (((red * grid + green) * grid + blue) * 3)
+                    for channel in range(3):
+                        encoded = invert_table(output_tables[channel],
+                                               drive[channel])
+                        struct.pack_into(">H", updated,
+                                         clut_start + (node_offset + channel) * 2,
+                                         max(0, min(65535,
+                                             int(round(encoded * 65535.0)))))
+                    touched += 1
         if touched:
             replacements[signature] = bytes(updated)
     return rebuild_icc(profile, replacements) if replacements else profile
