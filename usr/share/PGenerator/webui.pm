@@ -1843,6 +1843,11 @@ sub webui_handle_request (@) {
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
+   elsif($path eq "/api/icc/measurements") {
+    my $result=&webui_icc_profile_measurements($request_query);
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
    elsif($path eq "/api/icc/validation") {
     my $result=&webui_icc_profile_validation($request_query);
     my $len=length($result);

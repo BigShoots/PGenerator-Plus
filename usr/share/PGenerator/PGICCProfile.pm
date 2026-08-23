@@ -32,6 +32,7 @@ sub webui_icc_profile_list (@) {
    # helpers to call here.
    my $validation=(-f "$_icc_profile_dir/$file.validation.json")?"true":"false";
    my $finetune=(-f "$_icc_profile_dir/$file.finetune.json")?"true":"false";
+   my $has_measurements=(-f "$_icc_profile_dir/$file.measurements.json")?"true":"false";
    # Fine-tuning needs the embedded characterization plus a stage it can
    # edit: the BToA corridor for cLUT profiles or the MHC2 adjustment curves
    # for Windows-class profiles. Decide from the tag table, not the file
@@ -85,12 +86,12 @@ sub webui_icc_profile_list (@) {
     }
     close($ph);
    }
-   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color,$has_clut,$has_mhc2];
+   push @profiles,[$file,(($st[7]||0)+0),(($st[9]||0)+0),$validation,$finetune,$tunable,$tune_mode,$tune_color,$has_clut,$has_mhc2,$has_measurements];
   }
   closedir($dh);
  }
  foreach my $profile (sort { $b->[2] <=> $a->[2] || $a->[0] cmp $b->[0] } @profiles) {
-  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7].",\"has_clut\":".$profile->[8].",\"has_mhc2\":".$profile->[9]."}";
+  push @out,"{\"name\":\"".&_webui_json_escape($profile->[0])."\",\"size\":".$profile->[1].",\"mtime\":".$profile->[2].",\"validation\":".$profile->[3].",\"finetune\":".$profile->[4].",\"tunable\":".$profile->[5].",\"tune_mode\":\"".$profile->[6]."\",\"tune_color\":".$profile->[7].",\"has_clut\":".$profile->[8].",\"has_mhc2\":".$profile->[9].",\"has_measurements\":".$profile->[10]."}";
  }
  return "{\"status\":\"ok\",\"profiles\":[".join(",",@out)."]}";
 }
@@ -344,6 +345,20 @@ sub webui_icc_precondition_patch_generate (@) {
  $result=~s/^\s+|\s+$//g;
  return $result if($result=~/^\{/ && ($exit==0 || $result=~/"status"\s*:\s*"error"/));
  return '{"status":"error","message":"ICC preconditioned patch generation failed"}';
+}
+
+sub webui_icc_profile_measurements (@) {
+ my ($query)=@_;
+ my $file="";
+ $file=$1 if(defined($query) && $query=~/(?:^|&)file=([A-Za-z0-9._()-]+\.icc)(?:&|$)/i);
+ return '{"status":"error","message":"Invalid ICC profile name"}' if($file eq "" || $file=~m{/} || $file=~/\.\./);
+ my $path="$_icc_profile_dir/$file.measurements.json";
+ my $bytes=-s $path;
+ return '{"status":"none","readings":[],"mhc2_readings":[]}' unless(-f $path && defined($bytes) && $bytes>0 && $bytes<=16*1024*1024);
+ my $data="";
+ if(open(my $fh,"<",$path)) { local $/; $data=<$fh>||""; close($fh); }
+ return '{"status":"error","message":"Saved measurements are invalid"}' unless($data=~/^\s*\{/ && $data=~/"readings"\s*:\s*\[/);
+ return $data;
 }
 
 sub webui_icc_profile_validation (@) {
