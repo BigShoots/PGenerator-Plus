@@ -2546,6 +2546,22 @@ function meterIccProfileReadings(readings){
  });
 }
 
+function meterIccIsBaseActiveMhc2ReadingName(name){
+ const text=String(name||'');
+ return text.indexOf('ICC MHC2 ')===0||text.indexOf('ICC Neutral Jacobian ')===0;
+}
+
+function meterIccSplitProfileAndMhc2Readings(readings){
+ const rows=meterIccProfileReadings(readings);
+ const profile=[];
+ const mhc2=[];
+ rows.forEach(row=>{
+  if(meterIccIsBaseActiveMhc2ReadingName(row.name)) mhc2.push(row);
+  else profile.push(row);
+ });
+ return {profile,mhc2};
+}
+
 // Transform-stability sentinels repeated at the start and end of the active
 // characterization. Codes 102 and 153 are the most regime-discriminating
 // neutral stimuli: the observed mid-series regime change moved them almost
@@ -2645,13 +2661,13 @@ function meterIccVerifyActiveSentinelDrift(readings){
  for(const code of [102,153]){
   const pre=byName('ICC MHC2 Active Sentinel Pre '+code);
   const post=byName('ICC MHC2 Active Sentinel Post '+code);
-  if(!pre||!post) throw new Error('The active characterization is missing its transform sentinels at code '+code+'. Measure the active Windows path again.');
+  if(!pre||!post) throw new Error('The active characterization is missing its transform sentinels at code '+code+'. Measure the active characterization again.');
   const preY=Number(pre.Y);
   const postY=Number(post.Y);
-  if(!(preY>0)||!(postY>0)) throw new Error('The transform sentinels at code '+code+' returned no light. Measure the active Windows path again.');
+  if(!(preY>0)||!(postY>0)) throw new Error('The transform sentinels at code '+code+' returned no light. Measure the active characterization again.');
   const drift=Math.abs(postY-preY)/preY;
   if(drift>METER_ICC_ACTIVE_SENTINEL_DRIFT_LIMIT)
-   throw new Error('The applied Windows transform changed during the active characterization: neutral code '+code+' moved from Y '+preY.toFixed(4)+' to '+postY.toFixed(4)+' cd/m2 ('+Math.round(drift*100)+'%). Reinstall the seed profile, let it settle, and measure the active path again.');
+   throw new Error('The measured response drifted during the active characterization: neutral code '+code+' moved from Y '+preY.toFixed(4)+' to '+postY.toFixed(4)+' cd/m2 ('+Math.round(drift*100)+'%). Let the display settle and measure the series again.');
  }
 }
 
@@ -2780,7 +2796,14 @@ function meterIccMhc2PeakRefineSteps(readings){
 }
 
 function meterIccNeedsActiveMhc2Stage(config){
- return !!config&&config.stage!=='mhc2-final'&&!Array.isArray(config.mhc2_readings)
+ // A base characterization is one uncorrected series. Do not apply a
+ // profile and remeasure; that path cannot run on Pi HDMI and is the
+ // wrong design for a first build. Closed-loop MHC2 stages still use
+ // the handlers below when an explicit mhc2-* stage is already set.
+ if(!config) return false;
+ const stage=String(config.stage||'');
+ if(!stage||stage==='profile'||stage==='precondition') return false;
+ return stage!=='mhc2-final'&&!Array.isArray(config.mhc2_readings)
   &&config.profile_type==='windows-hdr'
   &&meterIccCalibrationMode(config)==='profile'
   &&meterIccProfileModelInfo(config.profile_model).family==='clut'
@@ -2950,6 +2973,7 @@ async function meterIccRetryBuild(){
   const avgDeviation=meterIccAvgDeviationValue();
   if(avgDeviation) meterIccRunConfig.avg_deviation=avgDeviation;
   const savedMhc2=Array.isArray(reusable.mhc2_readings)?reusable.mhc2_readings:[];
+  if(savedMhc2.length) meterIccRunConfig.mhc2_readings=savedMhc2;
   const canResumeMhc2=(type==='windows-hdr'
    &&meterIccRunConfig.calibration_mode==='profile'
    &&family==='clut'&&patternProvider==='companion'
@@ -2972,13 +2996,8 @@ async function meterIccRetryBuild(){
    }
   }
   const status=document.getElementById('meterIccStatus');
-  const freshActiveMhc2=(type==='windows-hdr'
-   &&meterIccRunConfig.calibration_mode==='profile'
-   &&family==='clut'&&patternProvider==='companion'&&!canResumeMhc2);
   if(status) status.textContent=(meterIccRunConfig.stage==='mhc2-feedback-provisional')
    ?('Rebuilding '+readings.length+' saved measurements, then measuring only the 52 missing final MHC2 and cLUT response patches.')
-   :freshActiveMhc2
-    ?('Rebuilding '+readings.length+' saved raw measurements, then remeasuring the active Windows path because the saved response chain has no current transform provenance.')
    :('Rebuilding exactly '+readings.length+' saved measurements at '+profileQuality+' table resolution. No '+((METER_ICC_PATCH_PRESETS[family]||{}).medium||{}).patch_count+'-patch set is being generated or measured.');
   await meterIccBuild(readings);
  }catch(error){
@@ -3532,7 +3551,13 @@ async function meterIccBuild(readings){
  meterIccBuildPending=true;
  meterActionPending=true;
  meterIccSyncUi();
- const profileReadings=meterIccProfileReadings(readings);
+ const splitReadings=meterIccSplitProfileAndMhc2Readings(readings);
+ const profileReadings=splitReadings.profile;
+ if(splitReadings.mhc2.length&&meterIccRunConfig&&!Array.isArray(meterIccRunConfig.mhc2_readings)){
+  if(splitReadings.mhc2.some(row=>String(row.name||'').indexOf('ICC MHC2 Active Sentinel ')===0))
+   meterIccVerifyActiveSentinelDrift(splitReadings.mhc2);
+  meterIccRunConfig.mhc2_readings=splitReadings.mhc2;
+ }
  const total=profileReadings.length;
  meterIccSetProgress('Building ICC profile',total,total);
  meterIccRememberLastRunConfig(meterIccRunConfig,profileReadings.length);
