@@ -2880,7 +2880,7 @@ def windows_hdr_b2a_measured_peak_drive(rows):
     return best
 
 
-def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.78):
+def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
     """Drive the B2A plateau with the directly measured best peak triplet.
 
     The top of the cube is degenerate: its input tables saturate, so several
@@ -2893,6 +2893,15 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.78):
 
     This uses raw device-response provenance, the same rows the MHC2 balanced
     peak cap selects from, so it does not borrow MHC2-path feedback.
+
+    plateau_start must sit just below the white node. Measured on a 65 cube
+    whose lumi white is 984.17 nits: every neutral request from code 767 to
+    1023 clamps to that white and lands on nodes 47 to 49, whose source_code
+    is about 0.751, while nodes 55 to 64 carry source_code 0.8297, roughly
+    1900 nits, and are never reached by a neutral lookup. A 0.78 threshold
+    therefore wrote only unreachable overflow nodes. 0.74 covers everything
+    from about 900 nits up while still excluding code 716 at 620 nits, which
+    the corridor feedback already handles well at 0.152 chroma.
     """
     best = windows_hdr_b2a_measured_peak_drive(rows)
     if best is None:
