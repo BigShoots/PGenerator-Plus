@@ -2448,6 +2448,16 @@ sub build_imported_lut {
   imported_cube_path => $path,
   imported_cube_size => $cube->{"size"},
  };
+ if($config->{"retry_upload_only"} && ref($state) eq "HASH") {
+  foreach my $key (qw(white_y chromatic_white_y wrgb_white_ratio wrgb_comp_source
+   wrgb_mid_sat_matrix_blend_strength drift neutral_axis_source)) {
+   $model->{$key}=$state->{$key} if(exists($state->{$key}));
+  }
+  foreach my $key (qw(wrgb_chroma_luma_comp wrgb_mid_sat_matrix_blend
+   neutral_axis_identity neutral_neighborhood_identity_enabled)) {
+   $model->{$key}=$state->{$key} ? json_true() : json_false() if(exists($state->{$key}));
+  }
+ }
  # Export cube: R-SLOWEST fill to match generate_lut_cube — cube_text
  # emits through a transposed walk and assumes that memory order.
  my @cube_u16;
@@ -2457,13 +2467,38 @@ sub build_imported_lut {
   push @cube_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
  }}}
  # LG payload (33^3): R-FASTEST fill to match generate_lut_lg_payload.
+ # A failed commit retry supplies the exact exported binary from the original
+ # solve.  Reuse those bytes instead of reconstructing the payload from the
+ # smaller downloadable cube; the exported .cube (17-point by default) cannot
+ # reproduce every 33-point node exactly and a retry must be byte-for-byte
+ # identical to the first attempt.
  my @payload_u16;
  my $psize=33;
- for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
-  my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
-  push @payload_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
- }}}
- log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize payload=$psize");
+ my $exact_payload_path=$config->{"imported_payload_path"}||"";
+ if($exact_payload_path ne "") {
+  die "Imported LG payload not found: $exact_payload_path\n" if(!-f $exact_payload_path);
+  my $raw=read_file($exact_payload_path);
+  my $expected_values=$psize**3*3;
+  my $expected_bytes=$expected_values*2;
+  die "Imported LG payload has ".length($raw)." bytes, expected $expected_bytes\n"
+   if(length($raw) != $expected_bytes);
+  @payload_u16=unpack("v*",$raw);
+  die "Imported LG payload has ".scalar(@payload_u16)." values, expected $expected_values\n"
+   if(scalar(@payload_u16) != $expected_values);
+  foreach my $value (@payload_u16) {
+   die "Imported LG payload contains a value outside the 12-bit range\n" if($value < 0 || $value > 4095);
+  }
+  $model->{"imported_payload_path"}=$exact_payload_path;
+  $model->{"exact_payload_reused"}=json_true();
+  $state->{"retry_payload_reused"}=json_true();
+  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize; exact 33-point payload reused from $exact_payload_path");
+ } else {
+  for(my $b=0;$b<$psize;$b++) { for(my $g=0;$g<$psize;$g++) { for(my $r=0;$r<$psize;$r++) {
+   my $v=imported_cube_sample($cube,$r/($psize-1),$g/($psize-1),$b/($psize-1));
+   push @payload_u16,map { int(clamp($_,0,1)*4095+0.5) } @{$v};
+  }}}
+  log_line("imported cube: path=$path size=".$cube->{"size"}." resampled to cube=$csize payload=$psize");
+ }
  return ($model,\@cube_u16,\@payload_u16);
 }
 
@@ -3178,6 +3213,49 @@ sub post_check_steps {
 sub upload_requested {
  my ($config)=@_;
  return ($config->{"upload"} || ($config->{"output"}||"") eq "upload") ? 1 : 0;
+}
+
+# A measured/exported LUT is not a successful AutoCal when the operator asked
+# for it to be committed to the TV.  Keep this check side-effect free so
+# both the worker and regression tests can exercise every terminal contract.
+sub autocal3d_commit_error {
+ my ($config,$state)=@_;
+ return "" if(ref($config) ne "HASH" || ref($state) ne "HASH");
+ return "" if(!upload_requested($config) || $config->{"fixture_mode"});
+ if(!$state->{"upload_verified"}) {
+  my $detail=$state->{"upload_message"}
+   || ((ref($state->{"upload_probe"}) eq "HASH") ? ($state->{"upload_probe"}{"message"}||"") : "")
+   || "the TV did not verify the uploaded payload";
+  my $attempts=$state->{"upload_attempt_count"}||0;
+  my $attempt_text=$attempts ? " after $attempts attempt".($attempts==1?"":"s") : "";
+  return "3D LUT upload was not verified$attempt_text: $detail";
+ }
+ my $full_hdr=$config->{"full_workflow"} && lc($config->{"signal_mode"}||"") eq "hdr10";
+ if($full_hdr && (($state->{"tone_map_upload_status"}||"") ne "ok" || !$state->{"tone_map_uploaded"})) {
+  my $detail=$state->{"tone_map_upload_message"}||"the HDR tone-map commit was not confirmed";
+  return "HDR tone-map upload failed after the 3D LUT was verified: $detail";
+ }
+ if($full_hdr && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}) {
+  my $shadow=ref($state->{"hdr20_postcal_shadow"}) eq "HASH" ? $state->{"hdr20_postcal_shadow"} : {};
+  my $shadow_status=$shadow->{"status"}||"";
+  return "HDR shadow correction did not reach a valid terminal state: ".($shadow->{"note"}||$shadow_status||"not completed")
+   if($shadow_status !~ /^(?:self_gated|converged|reverted)$/);
+  return "HDR shadow correction did not re-establish the calibrated TV session: ".($shadow->{"note"}||"the reset/DPG staging acknowledgement was missing")
+   if(!$shadow->{"reestablished"});
+  my $lut_status=$state->{"postcal_shadow_recommit_lut_status"}||"";
+  my $tone_status=$state->{"postcal_shadow_recommit_tonemap_status"}||"";
+  my $lut_response=ref($state->{"postcal_shadow_recommit_lut_detail"}) eq "HASH"
+   ? $state->{"postcal_shadow_recommit_lut_detail"} : {};
+  my $lut_verified=$lut_response->{"upload_verified"} ? 1 : 0;
+  if($lut_status ne "ok" || !$lut_verified || $tone_status ne "ok") {
+   my $lut_detail=$lut_response->{"message"}||$lut_status||"not attempted";
+   $lut_detail.=" (readback not verified)" if($lut_status eq "ok" && !$lut_verified);
+   my $tone_detail=ref($state->{"postcal_shadow_recommit_tonemap_detail"}) eq "HASH"
+    ? ($state->{"postcal_shadow_recommit_tonemap_detail"}{"message"}||$tone_status||"not attempted") : ($tone_status||"not attempted");
+   return "HDR shadow finalisation did not verify both commits (3D LUT: $lut_detail; tone map: $tone_detail)";
+  }
+ }
+ return "";
 }
 
 sub lg_generation_legacy_neutral_guard_enabled {
@@ -4280,14 +4358,17 @@ sub run_hdr20_postcal_shadow_correction {
      $baseline_lifts{$idx}=$lift_for{$idx} if(defined($lift_for{$idx}));
     }
     # Self-gating: if pass 1 (counts=0 -> correction=base) is already
-    # inside tol across all anchors, do nothing. The 8-bit run lands
-    # here; no upload, no further reads.
+    # inside tol across all anchors, apply no correction. The 8-bit run
+    # lands here; no further shadow reads.
     if($worst <= $tol) {
      $status->{"status"}="self_gated";
      $status->{"lift_after"}=$first_lift if(defined($first_lift));
      $status->{"m_counts"}=0;
      $status->{"note"}=($status->{"note"}||"")." baseline already within tol on all anchors; no correction needed.";
-     return 1;
+     # Leave the pass loop, not the subroutine. The common finaliser below
+     # must still re-establish the held CAL session before the real 3D LUT and
+     # tone map are committed.
+     last;
     }
    }
 
@@ -4405,7 +4486,9 @@ sub run_hdr20_postcal_shadow_correction {
   # Revert-if-worse: if no pass's worst beat the baseline worst
   # (pass-1 worst), keep corrected=base. The panel is already on base
   # DPG from the baseline BIND, so no rollback is needed.
-  if(!$improved || $best_worst+0 >= $baseline_worst+0) {
+  if(($status->{"status"}||"") eq "self_gated") {
+   $corrected=[ @{$dpg_base} ];
+  } elsif(!$improved || $best_worst+0 >= $baseline_worst+0) {
    $status->{"reverted"}=json_true();
    $status->{"status"}="reverted" if(($status->{"status"}||"") ne "converged");
    $status->{"note"}=($status->{"note"}||"")."best pass worst (".sprintf("%.3f",$best_worst).") did not improve on baseline (".sprintf("%.3f",$baseline_worst)."); corrected=base DPG.";
@@ -4441,6 +4524,7 @@ sub run_hdr20_postcal_shadow_correction {
  # the held session the re-establish just staged.
  $config->{"full_workflow_dpg_data"}=$corrected;
  $config->{"hdr20_1d_dpg_data"}=$corrected;
+ $state->{"hdr20_postcal_shadow_dpg_data"}=$corrected;
 
  # ALWAYS RE-ESTABLISH the held cal session before returning. The
  # sub BROKE the held session at the baseline BIND; without this, the
@@ -4535,27 +4619,40 @@ my @steps=($method eq "matrix") ? build_matrix_steps($config)
  : ($method eq "imported") ? ()
  : build_ramp_steps($config);
 my $started_at=int(time()*1000);
+my $retry_upload_only=$config->{"retry_upload_only"} ? 1 : 0;
+my $prior_state=$retry_upload_only ? decode_json_safe(read_file($state_file),{}) : {};
+my $state_method=$retry_upload_only ? lc($config->{"retry_parent_method"}||$prior_state->{"method"}||"imported") : $method;
 my $profile_patch_count=($method eq "ramp") ? 65
  : (is_volume_profile_method($method) ? scalar(@steps)
  : ($method eq "imported" ? 0 : 5));
 
 my $state={
+ ($retry_upload_only && ref($prior_state) eq "HASH" ? %{$prior_state} : ()),
  status => "running",
  autocal3d => json_true(),
- started_at => $started_at,
- method => $method,
+ started_at => ($retry_upload_only && ($prior_state->{"started_at"}||0) > 0 ? $prior_state->{"started_at"}+0 : $started_at),
+ method => $state_method,
  current_step => 0,
- total_steps => scalar(@steps),
- profile_patch_count => $profile_patch_count,
- current_name => "Preparing LG 3D LUT Auto Cal...",
- message => "Starting",
- readings => [],
- steps => \@steps,
+ total_steps => ($retry_upload_only ? 1 : scalar(@steps)),
+ profile_patch_count => ($retry_upload_only ? ($prior_state->{"profile_patch_count"}||0) : $profile_patch_count),
+ current_name => ($retry_upload_only ? "Retrying LG 3D LUT upload..." : "Preparing LG 3D LUT Auto Cal..."),
+ message => ($retry_upload_only ? "Reusing the exact generated payload; no measurements will be repeated" : "Starting"),
+ readings => ($retry_upload_only && ref($prior_state->{"readings"}) eq "ARRAY" ? $prior_state->{"readings"} : []),
+ steps => ($retry_upload_only && ref($prior_state->{"steps"}) eq "ARRAY" ? $prior_state->{"steps"} : \@steps),
  signal_mode => $config->{"signal_mode"},
  target_gamut => $config->{"target_gamut"},
  target_gamma => $config->{"target_gamma"},
  observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 };
+if($retry_upload_only) {
+ $state->{"retry_upload_only"}=json_true();
+ $state->{"retry_started_at"}=$started_at;
+ $state->{"retry_attempt_number"}=($prior_state->{"retry_attempt_number"}||0)+1;
+ $state->{"upload_retry_available"}=json_false();
+ delete $state->{"completed_at"};
+ delete $state->{"elapsed_ms"};
+ delete $state->{"terminal_commit_verified"};
+}
 if($config->{"full_workflow"}) {
  $state->{"full_workflow"}=json_true();
  $state->{"full_autocal_run_id"}=$config->{"full_autocal_run_id"} if(defined($config->{"full_autocal_run_id"}) && $config->{"full_autocal_run_id"} ne "");
@@ -4822,7 +4919,16 @@ eval {
 
  if($upload_requested && !$config->{"fixture_mode"}) {
   my $probe=undef;
-  if(ref($unity_reset) eq "HASH" && ($unity_reset->{"status"}||"") eq "ok" && $unity_reset->{"upload_verified"}) {
+  if($retry_upload_only && ($config->{"upload_command"}||"") ne "") {
+   $probe={
+    status => "ok",
+    upload_supported => json_true(),
+    upload_command => $config->{"upload_command"},
+    get_command => $config->{"get_command"}||"",
+    message => "Reusing the upload contract verified by the original run.",
+    retry_upload_only => json_true(),
+   };
+  } elsif(ref($unity_reset) eq "HASH" && ($unity_reset->{"status"}||"") eq "ok" && $unity_reset->{"upload_verified"}) {
    $probe={
     status => "ok",
     upload_supported => json_true(),
@@ -4866,7 +4972,7 @@ eval {
     # HDR OLED DPG flow (relay capture) uses a single CAL_START across the
     # DPG, the 3D LUT, and the tone map -- same pattern.
     ($full_workflow_upload
-     ? (keep_calibration_mode=>json_true(),calibration_mode_active=>json_true())
+     ? (keep_calibration_mode=>json_true(),calibration_mode_active=>json_bool(!$retry_upload_only))
      : ()),
    };
    $state->{"upload_supported"}=json_true();
@@ -4877,11 +4983,16 @@ eval {
    $state->{"upload_completed_at"}=int(time()*1000);
    $state->{"upload_status"}=(ref($upload) eq "HASH" && ($upload->{"status"}||"") ne "") ? ($upload->{"status"}||"") : "invalid-response";
    $state->{"upload_message"}=(ref($upload) eq "HASH") ? ($upload->{"message"}||"") : "";
-   $state->{"upload_supported"}=(ref($upload) eq "HASH" && $upload->{"status"} eq "ok") ? json_true() : json_false();
+   # upload_supported describes the verified command capability. A transient
+   # connection/write failure does not make the model unsupported.
+   $state->{"upload_supported"}=json_true();
    $state->{"upload_verified"}=(ref($upload) eq "HASH" && $upload->{"upload_verified"}) ? json_true() : json_false();
    $state->{"upload_verify_contract"}=(ref($upload) eq "HASH") ? ($upload->{"upload_verify_contract"}||"") : "";
    $state->{"upload_readback_unavailable"}=(ref($upload) eq "HASH" && $upload->{"readback_unavailable"}) ? json_true() : json_false();
    $state->{"upload_readback_unavailable_reason"}=(ref($upload) eq "HASH") ? ($upload->{"readback_unavailable_reason"}||"") : "";
+   $state->{"upload_attempt_count"}=(ref($upload) eq "HASH") ? ($upload->{"transport_attempt_count"}||1)+0 : 1;
+   $state->{"upload_retry_count"}=(ref($upload) eq "HASH") ? ($upload->{"transport_retry_count"}||0)+0 : 0;
+   $state->{"upload_retry_exhausted"}=(ref($upload) eq "HASH" && $upload->{"retry_exhausted"}) ? json_true() : json_false();
    my $upload_message=$state->{"upload_message"}||"";
    $state->{"upload_api_timeout"}=($upload_message=~/Web UI API timed out/i) ? json_true() : json_false();
    $state->{"upload_helper_timeout"}=($upload_message=~/did not finish .* within \d+s|timed out/i && $upload_message!~/Web UI API timed out/i) ? json_true() : json_false();
@@ -4896,7 +5007,7 @@ eval {
     # (the WebUI passes them through full_workflow_peak_luminance /
     # full_workflow_dpg_data so the 3D worker doesn't have to read the
     # greyscale state file directly).
-    if($full_workflow_upload && ($state->{"upload_status"}||"") eq "ok") {
+    if($full_workflow_upload && ($state->{"upload_status"}||"") eq "ok" && $state->{"upload_verified"}) {
      my $tone_peak=0;
      my $tone_dpg=undef;
      if(ref($config) eq "HASH") {
@@ -4945,7 +5056,7 @@ eval {
      }
     }
    } else {
-    $state->{"upload_supported"}=json_false();
+    $state->{"upload_supported"}=(ref($probe) eq "HASH" && $probe->{"upload_supported"}) ? json_true() : json_false();
     $state->{"message"}="3D LUT upload probe did not verify; export kept";
    }
   }
@@ -4962,9 +5073,18 @@ eval {
  # that session and re-sends the tone map with the corrected DPG --
  # CAL_END lands everything. Eval-guarded: a shadow failure leaves the
  # already-committed base calibration intact.
+ if($retry_upload_only && $config->{"retry_shadow_finalisation_only"}) {
+  $state->{"postcal_shadow_recommit_lut_status"}=($state->{"upload_verified"} ? "ok" : ($state->{"upload_status"}||"error"));
+  $state->{"postcal_shadow_recommit_lut_detail"}=$state->{"upload"} if(ref($state->{"upload"}) eq "HASH");
+  $state->{"postcal_shadow_recommit_tonemap_status"}=$state->{"tone_map_upload_status"}||"error";
+  $state->{"postcal_shadow_recommit_tonemap_detail"}=$state->{"tone_map_upload"} if(ref($state->{"tone_map_upload"}) eq "HASH");
+  $state->{"postcal_shadow_retry_reused_dpg"}=json_true();
+  write_state($state);
+ }
  if(lc(($config->{"signal_mode"}||"")) eq "hdr10"
    && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
    && $config->{"full_workflow"}
+   && !$config->{"retry_shadow_finalisation_only"}
    && ($state->{"tone_map_upload_status"}||"") eq "ok"
    && ref($export) eq "HASH" && ($export->{"payload_path"}||"") ne "" && -f $export->{"payload_path"}) {
   eval {
@@ -4981,9 +5101,9 @@ eval {
    # container staged). Upload the real cube into it, then the tone map
    # with the corrected DPG (the sub stored it in full_workflow_dpg_data).
    # Re-commit the calibrated 3D LUT into the held shadow session, then the
-   # corrected tone map. Retry the LUT once on failure (a held CAL session can
-   # drop transiently during the long shadow zone-probe window); capture the
-   # full response detail (status/message/contract/verified) for BOTH uploads
+   # corrected tone map. The upload endpoint retries transport failures on a
+   # fresh socket itself; capture the full response detail
+   # (status/message/contract/verified) for BOTH uploads
    # so a failure is diagnosable instead of a bare status=error. Flag a
    # LUT-failed/tonemap-ok mismatch loudly — that leaves the panel with a
    # shadow-adjusted tone map over a stale LUT, which visibly degrades the
@@ -5015,13 +5135,8 @@ eval {
    };
    my $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",$_lut_req->(),240);
    my $sl_detail=$_shadow_upload_detail->($shadow_lut);
-   if(($sl_detail->{status}||"") ne "ok") {
-    log_line("HDR20 shadow-after re-commit: 3D LUT upload failed (".($sl_detail->{message}||$sl_detail->{status})."); retrying once after settle");
-    select(undef,undef,undef,2.0);
-    $shadow_lut=api_json("POST","/api/lg/3d-lut/upload",$_lut_req->(),240);
-    $sl_detail=$_shadow_upload_detail->($shadow_lut);
-   }
    my $sl_status=$sl_detail->{status}||"";
+   $sl_status="error" if($sl_status eq "ok" && !$sl_detail->{upload_verified});
    $state->{"postcal_shadow_recommit_lut_status"}=$sl_status;
    $state->{"postcal_shadow_recommit_lut_detail"}=$sl_detail;
    log_line("HDR20 shadow-after re-commit: 3D LUT upload status=".$sl_status.(($sl_status ne "ok" && ($sl_detail->{message}||"") ne "")?(" (".$sl_detail->{message}.")"):""));
@@ -5062,10 +5177,29 @@ eval {
    $state->{"hdr20_postcal_shadow"}->{"note"}=($state->{"hdr20_postcal_shadow"}->{"note"}||"")." eval error: ".$shadow_err;
    write_state($state);
    log_line("HDR20 post-cal shadow correction (after commit) eval error: ".$shadow_err);
-  };
+ };
  }
 
- if($config->{"post_check"} && !$config->{"fixture_mode"}) {
+ # Never advance to post-cal reads (or report success) when a requested TV
+ # commit is incomplete. The generated files remain on disk and the UI can
+ # restart only this commit/finalisation phase without re-measuring the panel.
+ my $commit_error=autocal3d_commit_error($config,$state);
+ if($commit_error ne "") {
+  my $retry_export=ref($state->{"export"}) eq "HASH" ? $state->{"export"} : {};
+  my $can_retry=(-f ($retry_export->{"cube_path"}||"") && -f ($retry_export->{"payload_path"}||"")) ? 1 : 0;
+  $state->{"upload_retry_available"}=json_bool($can_retry);
+  $state->{"upload_retry_reason"}=$commit_error;
+  $state->{"phase"}="upload_failed";
+  $state->{"current_name"}="3D LUT was not committed to the TV";
+  $state->{"message"}=$commit_error;
+  write_state($state);
+  die "$commit_error\n";
+ }
+ $state->{"terminal_commit_verified"}=json_true() if($upload_requested && !$config->{"fixture_mode"});
+ write_state($state);
+
+ if($config->{"post_check"} && !$config->{"fixture_mode"}
+   && (!$upload_requested || $state->{"upload_verified"})) {
   my @post=post_check_steps($config);
   $state->{"phase"}="post_check";
   $state->{"post_check_total"}=scalar(@post);
@@ -5187,6 +5321,7 @@ eval {
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
  $state->{"message"}=$state->{"upload_verified"} ? "3D LUT exported, uploaded, and verified" : "3D LUT exported";
+ $state->{"upload_retry_available"}=json_false();
  $state->{"completed_at"}=int(time()*1000);
  $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
  $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
@@ -5219,7 +5354,43 @@ eval {
  $state->{"phase"}=$state->{"status"};
  $state->{"current_name"}=$state->{"status"} eq "cancelled" ? "LG 3D LUT Auto Cal cancelled" : "LG 3D LUT Auto Cal error";
  $state->{"message"}=$state->{"status"} eq "cancelled" ? "3D LUT Auto Cal stopped" : $err;
+ $state->{"completed_at"}=int(time()*1000);
+ $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
+ $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
+ my $retry_export=ref($state->{"export"}) eq "HASH" ? $state->{"export"} : {};
+ my $can_retry=($state->{"status"} eq "error" && $upload_requested
+  && !$state->{"terminal_commit_verified"}
+  && -f ($retry_export->{"cube_path"}||"") && -f ($retry_export->{"payload_path"}||"")) ? 1 : 0;
+ $state->{"upload_retry_available"}=json_bool($can_retry);
+ $state->{"upload_retry_reason"}=$err if($can_retry && ($state->{"upload_retry_reason"}||"") eq "");
+ # A dropped upload can strand a held CAL_START session. On every error or
+ # cancel exit of an upload run, make a best-effort CAL_END before handing
+ # control back to the operator.
+ if($upload_requested && !$config->{"fixture_mode"}) {
+  my $cleanup=api_json("POST","/api/lg/calibration-mode",{
+   enabled => json_false(),
+   picture_mode => $config->{"picture_mode"}||"",
+   signal_mode => $config->{"signal_mode"}||"",
+  },45);
+  $state->{"calibration_mode_cleanup"}=$cleanup;
+  log_line("terminal CAL_END cleanup: ".((ref($cleanup) eq "HASH") ? ($cleanup->{"message"}||$cleanup->{"status"}||"done") : "invalid response"));
+ }
  write_state($state);
  log_line($err);
+ if($PGAC_LOADED) {
+  eval {
+   my $rid = (ref($config) eq 'HASH' ? $config->{'run_id'} : '') || PGAutoCalRun::current();
+   if(defined($rid) && $rid ne '') {
+    PGAutoCalRun::run_snapshot($rid, '3d-state.json', $state_file, 0);
+    PGAutoCalRun::run_snapshot($rid, '3d-log.txt', '/tmp/meter_lg_3d_autocal.log', 0);
+    PGAutoCalRun::run_stage($rid, '3d_generate', {
+     ok            => JSON::PP::false,
+     tv_message    => $state->{'message'} || '',
+     worker_status => $state->{'status'} || 'error',
+    });
+   }
+   1;
+  };
+ }
 };
 }

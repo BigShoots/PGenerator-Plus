@@ -43,3 +43,5 @@ tools/image-targets/*/src/pattern_generator/obj/
 tools/image-targets/*/build/
 data/
 local-deployer/
+
+.DS_Store

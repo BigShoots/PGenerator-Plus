@@ -17,7 +17,6 @@ eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
 $|=1;
 $SIG{PIPE}="IGNORE";
 
-# Mirror of usr/share/PGenerator/command.pm
 # sub map_picture_mode_label_to_ddc_name — translate any user-friendly
 # LG picture-mode label (front-end DisplayCard dropdown, REST body, URL
 # parameter, legacy underscore form, current WebOS camelCase form, or a
@@ -56,9 +55,21 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "filmMaker" => "filmMaker",
   "game" => "game",
   "gameoptimizer" => "game",
-  "standard" => "standard",
+  # The SDR "Standard" preset is spelt "normal" in every webOS pictureMode
+  # enum captured so far (C8, C9, CX, C1, C2, G3, G4, G5 settings
+  # inventories); "standard" appears in none of them. The spellings are
+  # stable across generations but the set of modes is not: filmMaker is
+  # CX+, personalized*/hdrEco are C2+, C8/C9 carry a technicolor* family.
+  "standard" => "normal",
+  "normal" => "normal",
+  "personalized" => "personalized",
+  "personalised" => "personalized",
+  "personalizedpicture" => "personalized",
+  "personalisedpicture" => "personalized",
+  "photo" => "photo",
   "vivid" => "vivid",
-  "technicolorexpert" => "technicolorExpert",
+  "technicolor" => "technicolor",
+  "technicolorexpert" => "technicolor",
   "isfexpert1" => "expert1",
   "isfexpertbright" => "expert1",
   "expertbright" => "expert1",
@@ -87,8 +98,30 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "hdr_standard" => "hdrStandard",
   "hdrvivid" => "hdrVivid",
   "hdr_vivid" => "hdrVivid",
-  "hdrtechnicolorexpert" => "hdrTechnicolorExpert",
-  "hdr_technicolorexpert" => "hdrTechnicolorExpert",
+  "hdreco" => "hdrEco",
+  "hdr_eco" => "hdrEco",
+  "hdrautopowersave" => "hdrEco",
+  "hdrtechnicolor" => "hdrTechnicolor",
+  "hdrtechnicolorexpert" => "hdrTechnicolor",
+  "hdr_technicolorexpert" => "hdrTechnicolor",
+  # Personalised Picture (C2+ wizard preset) has its own token in each
+  # signal family. These must be explicit: without them the sdr/hdr prefix
+  # stripper below folds "hdrPersonalized" onto the SDR token.
+  "hdrpersonalized" => "hdrPersonalized",
+  "hdrpersonalised" => "hdrPersonalized",
+  "hdr_personalized" => "hdrPersonalized",
+  "hdr_personalised" => "hdrPersonalized",
+  "hdrpersonalizedpicture" => "hdrPersonalized",
+  "hdrpersonalisedpicture" => "hdrPersonalized",
+  "dolbyvisionpersonalized" => "dolbyHdrPersonalized",
+  "dolbyvisionpersonalised" => "dolbyHdrPersonalized",
+  "dolbyhdrpersonalized" => "dolbyHdrPersonalized",
+  "dolbyhdrpersonalised" => "dolbyHdrPersonalized",
+  "dolby_hdr_personalized" => "dolbyHdrPersonalized",
+  "dolbypersonalized" => "dolbyHdrPersonalized",
+  "dolbypersonalised" => "dolbyHdrPersonalized",
+  "dolbyvisionpersonalizedpicture" => "dolbyHdrPersonalized",
+  "dolbyvisionpersonalisedpicture" => "dolbyHdrPersonalized",
   # OUTPUT values below are the RAW WebOS setSystemSettings enum spelling
   # ("dolbyHdr*"), not the WebUI's own "dolbyVision*" canonical spelling --
   # this function's contract (see header comment) is to produce whatever
@@ -150,10 +183,10 @@ sub map_picture_mode_label_to_ddc_name (@) {
   "dolby_hdr_standard" => "dolbyHdrStandard",
   "dolbyhdrstandard" => "dolbyHdrStandard",
   "dolbystandard" => "dolbyHdrStandard",
-  "aps" => "standard",
-  "eco" => "standard",
-  "normal" => "standard",
-  "sports" => "vivid",
+  "aps" => "eco",
+  "autopowersave" => "eco",
+  "eco" => "eco",
+  "sports" => "sports",
  );
   if($map{$token}) {
    my $resolved=$map{$token};
@@ -1002,8 +1035,64 @@ sub lg_picture_response_settings (@) {
  return {};
 }
 
+sub lg_current_input_info (@) {
+ my ($session,$timeout)=@_;
+ my $response=&lg_request($session,"get_foreground_app","com.webos.applicationManager/getForegroundAppInfo",{},$timeout);
+ my ($failed,$message)=&response_is_app_failure($response);
+ return {
+  current_input_checked => &json_true(),
+  current_input_available => &json_false(),
+  current_input_message => $message||"LG TV did not report its current input.",
+ } if($failed || ref($response) ne "HASH" || ref($response->{"payload"}) ne "HASH");
+
+ my $payload=$response->{"payload"};
+ my $app_id=$payload->{"appId"}||$payload->{"app_id"}||$payload->{"id"}||"";
+ my $title=$payload->{"title"}||$payload->{"name"}||"";
+ my ($number)=($app_id =~ /(?:^|[._-])hdmi[_-]?([1-4])(?:$|[._-])/i);
+ my $input_id=defined($number) ? "HDMI_$number" : "";
+ my $input_key=defined($number) ? "hdmi$number" : "";
+ my $input_label="";
+
+ if($input_id ne "") {
+  my $inputs_response=&lg_request($session,"get_external_inputs_for_current","tv/getExternalInputList",{},$timeout);
+  my $inputs_payload=(ref($inputs_response) eq "HASH" && ref($inputs_response->{"payload"}) eq "HASH") ? $inputs_response->{"payload"} : {};
+  my $devices=(ref($inputs_payload->{"devices"}) eq "ARRAY") ? $inputs_payload->{"devices"} : [];
+  foreach my $device (@{$devices}) {
+   next if(ref($device) ne "HASH");
+   my $device_id=$device->{"id"}||$device->{"inputId"}||"";
+   my $device_app=$device->{"appId"}||"";
+   next if(lc($device_id) ne lc($input_id) && lc($device_app) ne lc($app_id));
+   $input_label=$device->{"label"}||$device->{"name"}||"";
+   last;
+  }
+ }
+
+ my $display_name="";
+ if(defined($number)) {
+  $display_name="HDMI $number";
+  my $normal_label=lc($input_label);
+  $normal_label=~s/[\s_-]+//g;
+  $display_name.=" - $input_label" if($input_label ne "" && $normal_label ne "hdmi$number");
+ } elsif($title ne "") {
+  $display_name="App - $title";
+ } elsif($app_id ne "") {
+  $display_name="App - $app_id";
+ }
+
+ return {
+  current_input_checked => &json_true(),
+  current_input_available => $display_name ne "" ? &json_true() : &json_false(),
+  current_input => $input_key,
+  current_input_id => $input_id,
+  current_input_label => $input_label,
+  current_input_display => $display_name,
+  current_app_id => $app_id,
+  current_input_message => $display_name ne "" ? "" : "LG TV returned no foreground source.",
+ };
+}
+
 sub lg_picture_get_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode)=@_;
+ my ($ip,$client_key,$connect_timeout,$keys,$requested_picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input)=@_;
  $keys=[] if(ref($keys) ne "ARRAY");
  $requested_picture_mode="" if(!defined($requested_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
@@ -1016,6 +1105,7 @@ sub lg_picture_get_workflow (@) {
  return $auth if(($auth->{"status"}||"") ne "ok");
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my $current_input=$include_current_input ? &lg_current_input_info($session,$connect_timeout + 2) : {};
  my $capability_payload=sub {
   my ($settings,$response,$requested_keys)=@_;
   $settings={} if(ref($settings) ne "HASH");
@@ -1131,6 +1221,7 @@ sub lg_picture_get_workflow (@) {
 	   system_info => $auth->{"system_info"},
 	   software_info => $auth->{"software_info"},
    lg_generation => $generation,
+   %{$current_input},
    virtual_picture_settings => &json_true(),
    message => "LG white-balance settings are represented through PGenerator DDC state on this LG generation.",
   });
@@ -1162,6 +1253,7 @@ sub lg_picture_get_workflow (@) {
   system_info => $auth->{"system_info"},
   software_info => $auth->{"software_info"},
  lg_generation => $generation,
+ %{$current_input},
  });
 }
 
@@ -2230,6 +2322,9 @@ sub response_is_app_failure (@) {
  my $response=shift;
  return (0,"") if(ref($response) ne "HASH");
  my $type=$response->{"type"}||"";
+ # websocket_recv_json hands a peer close frame back as a HASH so callers
+ # can tell it from a timeout; it is never an acknowledgement of anything.
+ return (1,$response->{"error"}||"Connection closed") if($type eq "close");
  if($type eq "error") {
   my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
   my $msg=$response->{"error"}||"LG TV returned an error envelope";
@@ -2412,6 +2507,10 @@ sub lg_picture_mode_for_calibration (@) {
   "isfexpert1" => "expert1",
   "isfexpert2" => "expert2",
   "game" => "game",
+  # The public pictureMode setting names this C8/C9 preset
+  # "technicolor"; the calibration protocol retains its older
+  # technicolorExpert namespace.
+  "technicolor" => "technicolorExpert",
   "technicolorexpert" => "technicolorExpert",
   "filmmaker" => "filmMaker",
   "filmmakermode" => "filmMaker",
@@ -2426,6 +2525,7 @@ sub lg_picture_mode_for_calibration (@) {
   "hdrcinemahome" => "hdr_cinema_bright",
   "hdrcinemabright" => "hdr_cinema_bright",
   "hdrgame" => "hdr_game",
+  "hdrtechnicolor" => "hdr_technicolorExpert",
   "hdrtechnicolorexpert" => "hdr_technicolorExpert",
   "hdrfilmmaker" => "hdr_filmMaker",
   "hdrfilmmakermode" => "hdr_filmMaker",
@@ -3264,7 +3364,7 @@ sub lg_3d_lut_probe_workflow (@) {
  });
 }
 
-sub lg_3d_lut_upload_workflow (@) {
+sub lg_3d_lut_upload_workflow_inner (@) {
  my ($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode)=@_;
  $keep_calibration_mode=$keep_calibration_mode ? 1 : 0;
  $calibration_mode_active=$calibration_mode_active ? 1 : 0;
@@ -3303,6 +3403,7 @@ sub lg_3d_lut_upload_workflow (@) {
  my $start_tolerated=$start_failed
   && &lg_dv_calibration_session_rejection_is_tolerable($start,$start_message,$cal_mode);
  if(($start_failed && !$start_tolerated) || ref($start) ne "HASH") {
+  my $end_cleanup=&lg_calibration_request($session,"3d_lut_upload_cal_end_after_start_fail","CAL_END",undef,1,$cal_mode,$connect_timeout + 4);
   &diag_log_append("3d_lut_upload:failure",{
    ip => $ip,
    picture_mode => $active_picture_mode,
@@ -3311,7 +3412,12 @@ sub lg_3d_lut_upload_workflow (@) {
    message => $start_message||"LG TV rejected calibration mode start for 3D LUT upload.",
   });
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $start });
+  return &json_error($start_message||"LG TV rejected calibration mode start for 3D LUT upload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   raw_response => $start,
+   cal_end_cleanup_response => $end_cleanup,
+  });
  }
  # Disable gamma LUTs inside the active CAL_START on first entry, matching
  # Reference's relay capture (1D_2_2_EN=0, 1D_0_45_EN=0).
@@ -3465,6 +3571,28 @@ sub lg_3d_lut_upload_workflow (@) {
    cal_end_tolerated => &json_bool($end_tolerated),
   });
  }
+ if(!$keep_calibration_mode && !&lg_calibration_end_confirmed($end,$end_failed,$end_tolerated)) {
+  &diag_log_append("3d_lut_upload:failure",{
+   ip => $ip,
+   picture_mode => $active_picture_mode,
+   payload_path => $payload_path,
+   stage => "cal_end",
+   message => $end_message||"LG TV did not confirm calibration mode end after the 3D LUT write.",
+  });
+  return &json_error($end_message||"LG TV did not confirm calibration mode end after the 3D LUT write.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   payload_path => $payload_path,
+   upload_write_verified => &json_true(),
+   upload_verified => &json_false(),
+   attempts => \@attempts,
+   bt2020_matrix_steps => \@bt2020_matrix_steps,
+   cal_start_response => $start,
+   cal_end_response => $end,
+   cal_end_tolerated => &json_bool($end_tolerated),
+  });
+ }
  &diag_log_append("3d_lut_upload:ok",{
   ip => $ip,
   picture_mode => $active_picture_mode,
@@ -3504,6 +3632,97 @@ sub lg_3d_lut_upload_workflow (@) {
   cal_end_tolerated => &json_bool($end_tolerated),
   message => $selected->{"readback_unavailable"} ? "LG 3D LUT upload write accepted; readback unavailable on this generation." : "LG 3D LUT upload verified.",
  });
+}
+
+# A 33^3 payload is expensive to measure and solve, while a WebOS websocket
+# can disappear for a few seconds during a long calibration.  Treat the
+# transport as recoverable: every retry calls the complete upload workflow,
+# which opens and authenticates a fresh socket and verifies the write again.
+# Only pairing/permission and input errors (missing key, bad payload,
+# unmapped picture mode) return immediately; every other failure -- socket,
+# CAL_START/CAL_END, write, readback -- is retried with bounded exponential
+# backoff. The loop also stops early rather than start an attempt that the
+# caller's `timeout` wrapper would kill mid-write (see $LG_3D_LUT_UPLOAD_DEADLINE).
+our $LG_3D_LUT_UPLOAD_RETRY_DELAY=0.75;
+our $LG_3D_LUT_UPLOAD_DEADLINE=0;
+sub LG_3D_LUT_UPLOAD_ATTEMPTS () { return 4; }
+
+sub lg_3d_lut_upload_retryable_failure (@) {
+ my $result=shift;
+ return 1 if(ref($result) ne "HASH");
+ return 0 if(($result->{"status"}||"") eq "ok" && $result->{"upload_verified"});
+ return 0 if($result->{"needs_pin_pairing"} || $result->{"needs_repair"});
+ my $message=$result->{"message"}||"";
+ return 0 if($message =~ /(?:payload must be|requires an exported payload|not mapped for picture mode|connect\s*\/\s*pair .* before|PIN pairing)/i);
+ return 1;
+}
+
+sub lg_calibration_end_confirmed (@) {
+ my ($response,$failed,$tolerated)=@_;
+ return 0 if(ref($response) ne "HASH");
+ # Dolby Vision's exact, generation-specific driver-error fingerprint is the
+ # only non-response envelope callers may tolerate.  Every normal CAL_END must
+ # be a real WebOS response with returnValue=true; empty/skipped/close hashes
+ # are diagnostics, not commit acknowledgements.
+ return 1 if($failed && $tolerated);
+ return 0 if($failed);
+ return 0 if(($response->{"type"}||"") ne "response");
+ my $payload=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : undef;
+ return 0 if(ref($payload) ne "HASH" || !$payload->{"returnValue"});
+ return 1;
+}
+
+sub lg_3d_lut_upload_workflow (@) {
+ my @args=@_;
+ my $max_attempts=LG_3D_LUT_UPLOAD_ATTEMPTS();
+ my @transport_attempts=();
+ my $result;
+ my $longest_attempt=0;
+ for(my $attempt=1;$attempt<=$max_attempts;$attempt++) {
+  my $attempt_started=time();
+  $result=&lg_3d_lut_upload_workflow_inner(@args);
+  my $attempt_elapsed=time()-$attempt_started;
+  $longest_attempt=$attempt_elapsed if($attempt_elapsed > $longest_attempt);
+  my $status=(ref($result) eq "HASH") ? ($result->{"status"}||"") : "invalid-response";
+  my $verified=(ref($result) eq "HASH" && $result->{"upload_verified"}) ? 1 : 0;
+  my $message=(ref($result) eq "HASH") ? ($result->{"message"}||"") : "Invalid LG helper response";
+  push(@transport_attempts,{
+   attempt => $attempt,
+   status => $status,
+   upload_verified => &json_bool($verified),
+   message => $message,
+  });
+  if($status eq "ok" && $verified) {
+   $result->{"transport_attempt_count"}=$attempt;
+   $result->{"transport_retry_count"}=$attempt-1;
+   $result->{"transport_attempts"}=\@transport_attempts;
+   return $result;
+  }
+  last if($attempt >= $max_attempts || !&lg_3d_lut_upload_retryable_failure($result));
+  my $delay=($LG_3D_LUT_UPLOAD_RETRY_DELAY > 0) ? $LG_3D_LUT_UPLOAD_RETRY_DELAY*(2**($attempt-1)) : 0;
+  if($LG_3D_LUT_UPLOAD_DEADLINE > 0 && time()+$delay+$longest_attempt > $LG_3D_LUT_UPLOAD_DEADLINE) {
+   &diag_log_append("3d_lut_upload:retry_skipped",{ attempt => $attempt, message => "helper timeout budget exhausted" });
+   last;
+  }
+  &diag_log_append("3d_lut_upload:retry",{
+   attempt => $attempt,
+   next_attempt => $attempt+1,
+   max_attempts => $max_attempts,
+   message => $message,
+  });
+  select(undef,undef,undef,$delay) if($delay > 0);
+ }
+ $result=&json_error("LG 3D LUT upload returned an invalid response.",{}) if(ref($result) ne "HASH");
+ if(($result->{"status"}||"") eq "ok" && !$result->{"upload_verified"}) {
+  $result->{"status"}="error";
+  $result->{"error_code"}="3d-lut-upload-not-verified";
+  $result->{"message"}="LG 3D LUT upload was not verified after all permitted attempts: ".($result->{"message"}||"the TV did not return an exact readback");
+ }
+ $result->{"transport_attempt_count"}=scalar(@transport_attempts);
+ $result->{"transport_retry_count"}=scalar(@transport_attempts)>0 ? scalar(@transport_attempts)-1 : 0;
+ $result->{"transport_attempts"}=\@transport_attempts;
+ $result->{"retry_exhausted"}=&json_true() if(scalar(@transport_attempts) >= $max_attempts && &lg_3d_lut_upload_retryable_failure($result));
+ return $result;
 }
 
 sub lg_3d_lut_reset_workflow (@) {
@@ -3645,8 +3864,27 @@ sub lg_hdr_calman_reset_workflow (@) {
  my ($start_failed,$start_message)=&response_is_app_failure($start);
  push(@steps,{ command => "CAL_START", response => $start, failed => &json_bool($start_failed), message => $start_message||"" });
  if($start_failed || ref($start) ne "HASH") {
+  # A failed full-workflow upload can leave the panel's external-PQ driver in
+  # a held CAL_START even when the WebUI process has lost its state. Pair the
+  # failed start with a best-effort CAL_END so the caller's normal retry can
+  # recover without power-cycling the TV. If the CAL_START rejection carries
+  # LG's driver-error fingerprint (errorCode 20), tell the operator a cold
+  # restart may be needed.
+  my $end_cleanup=&lg_calibration_request($session,"hdr_calman_reset_cal_end_after_start_fail","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+  my $driver_stuck=&lg_externalpq_error_is_expected_driver_rejection($start,$start_message);
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected HDR calibration reset start.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, steps => \@steps });
+  my $message=$driver_stuck
+   ? "The LG TV calibration driver is still locked from the previous session. PGenerator sent CAL_END cleanup; retry once, then cold-restart the TV if error 20 remains."
+   : ($start_message||"LG TV rejected HDR calibration reset start.");
+  return &json_error($message,{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   steps => \@steps,
+   cal_end_cleanup_response => $end_cleanup,
+   error_code => $driver_stuck ? "lg-calibration-driver-stuck" : "lg-calibration-start-failed",
+   tv_restart_may_be_required => &json_bool($driver_stuck),
+  });
  }
 
  # LG calibration workspace / UI-default setup: reset the 1D 2.2 /
@@ -4071,7 +4309,22 @@ sub lg_hdr_tone_map_upload_workflow (@) {
   });
  }
  my $end=&lg_calibration_request($session,"hdr_tone_map_cal_end","CAL_END",$cal_payload,1,$cal_mode,$connect_timeout + 4);
+ my ($end_failed,$end_message)=&response_is_app_failure($end);
  &websocket_close($session);
+ if(!&lg_calibration_end_confirmed($end,$end_failed,0)) {
+  return &json_error($end_message||"LG TV did not confirm calibration mode end after the HDR tone-map upload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   command => "1D_TONEMAP_PARAM",
+   tone_map_write_accepted => &json_true(),
+   tone_map_uploaded => &json_false(),
+   upload_response => $upload,
+   dpg_upload_response => $dpg_upload,
+   cal_start_response => $start,
+   cal_end_response => $end,
+  });
+ }
  return &json_ok({
   tone_map_uploaded => &json_true(),
   peak_luminance => $peak,
@@ -4256,8 +4509,16 @@ sub lg_1d_dpg_upload_workflow_inner (@) {
  my $start_tolerated=$start_failed && $effective_signal eq "dv"
   && &lg_dv_calibration_session_rejection_is_tolerable($start,$start_message,$cal_mode);
  if(($start_failed && !$start_tolerated) || ref($start) ne "HASH") {
+  my $end_cleanup=&lg_calibration_request($session,"1d_dpg_upload_cal_end_after_start_fail","CAL_END",$cal_end_payload,1,$cal_mode,$connect_timeout + 4);
   &websocket_close($session);
-  return &json_error($start_message||"LG TV rejected calibration mode start for 1D DPG upload.",{ ip => $ip, active_picture_mode => $active_picture_mode, calibration_picture_mode => $cal_mode, signal_mode => $effective_signal, raw_response => $start });
+  return &json_error($start_message||"LG TV rejected calibration mode start for 1D DPG upload.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   signal_mode => $effective_signal,
+   raw_response => $start,
+   cal_end_cleanup_response => $end_cleanup,
+  });
  }
  # Explicitly disable the 1D 2.2 degamma and 0.45 regamma LUTs inside the
  # active CAL_START session, exactly as the reference does (reference relay capture
@@ -4320,6 +4581,21 @@ sub lg_1d_dpg_upload_workflow_inner (@) {
    cal_start_response => $start,
    cal_end_response => $end,
    cal_start_tolerated => &json_bool($start_tolerated),
+   cal_end_tolerated => &json_bool($end_tolerated),
+  });
+ }
+ if(!$keep_calibration_mode && !&lg_calibration_end_confirmed($end,$end_failed,$end_tolerated)) {
+  return &json_error($end_message||"LG TV did not confirm calibration mode end after the 1D DPG write.",{
+   ip => $ip,
+   active_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $cal_mode,
+   signal_mode => $effective_signal,
+   command => "1D_DPG_DATA",
+   dpg_write_accepted => &json_true(),
+   dpg_uploaded => &json_false(),
+   upload_response => $upload,
+   cal_start_response => $start,
+   cal_end_response => $end,
    cal_end_tolerated => &json_bool($end_tolerated),
   });
  }
@@ -5078,6 +5354,26 @@ sub lg_generation_info (@) {
  };
 }
 
+# applyToAllInput is present in the captured C1 and newer settings
+# inventories, and absent from C8, C9 and CX. Return 1/0 when the TV can be
+# classified, or -1 when it cannot; an unknown TV may still prove support by
+# accepting the public settings request, but must not use the unacknowledged
+# Luna fallback.
+sub lg_apply_all_inputs_generation_support (@) {
+ my $generation=shift;
+ return -1 if(ref($generation) ne "HASH");
+ my $year=int($generation->{"platform_year"}||0);
+ return 1 if($year >= 2021);
+ return 0 if($year > 0 && $year < 2021);
+ my $series=uc($generation->{"series"}||"");
+ return 1 if($series =~ /^[A-Z][1-9]$/ && $series !~ /^[A-Z](?:8|9)$/);
+ return 0 if($series =~ /^[A-Z](?:8|9|X)$/);
+ my $webos_major=int($generation->{"webos_major"}||0);
+ return 1 if($webos_major >= 6);
+ return 0 if($webos_major > 0 && $webos_major < 6);
+ return -1;
+}
+
 sub lg_picture_key_forbidden_on_ddc_only (@) {
  my $key=shift;
  $key="" if(!defined($key));
@@ -5648,21 +5944,28 @@ sub lg_picture_set_workflow (@) {
    my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
    $picture_settings->{"pictureMode"}=$active_picture_mode;
    &websocket_close($session);
+   my $message=$palm_verified
+    ? "LG picture mode switched to '$active_picture_mode'."
+    : "LG accepted the '$active_picture_mode' picture-mode command but cannot report the active mode on this generation. Confirm the mode on the TV before calibration.";
    return &json_ok({
     ip => $ip,
     client_key => $auth->{"client_key"},
     picture_settings => $picture_settings,
     applied => { pictureMode => $active_picture_mode },
-    active_picture_mode => $active_picture_mode,
+    requested_picture_mode => $active_picture_mode,
+    calibration_picture_mode => $active_picture_mode,
     palm_picture_mode => &json_true(),
     picture_mode_transport => $palm_attempted,
     picture_mode_readback => $palm_after,
     picture_mode_verified => &json_bool($palm_verified),
+    picture_mode_changed => &json_true(),
+    manual_confirmation_required => &json_bool(!$palm_verified),
+    ($palm_verified ? (active_picture_mode => $active_picture_mode) : ()),
     lg_generation => $generation,
     hello_info => $auth->{"hello_info"},
     system_info => $auth->{"system_info"},
     software_info => $auth->{"software_info"},
-    message => "LG picture mode switched to '$active_picture_mode'.",
+    message => $message,
    });
   }
   my $picture_settings=&lg_ddc_virtual_picture_settings($ip,$active_picture_mode);
@@ -5673,13 +5976,55 @@ sub lg_picture_set_workflow (@) {
    client_key => $auth->{"client_key"},
    picture_settings => $picture_settings,
    applied => { pictureMode => $active_picture_mode },
-   active_picture_mode => $active_picture_mode,
+   requested_picture_mode => $active_picture_mode,
+   calibration_picture_mode => $active_picture_mode,
+   picture_mode_verified => &json_false(),
+   manual_confirmation_required => &json_true(),
    virtual_picture_settings => &json_true(),
    lg_generation => $generation,
    hello_info => $auth->{"hello_info"},
    system_info => $auth->{"system_info"},
    software_info => $auth->{"software_info"},
    message => "This LG generation does not expose WebOS picture-mode switching through the normal settings key; PGenerator will use '$active_picture_mode' as the LG DDC target picture mode.",
+  });
+ }
+ if($picture_mode_only) {
+  my $select=&lg_picture_mode_select($session,$ip,$active_picture_mode,$connect_timeout + 2);
+  &websocket_close($session);
+  if(!$select->{"verified"}) {
+   my $failure=&lg_picture_mode_select_failure($caller_picture_mode,$select);
+   # Only a post-write readback is "what the TV is on now"; the pre-write
+   # value is reported separately so the UI does not pin a stale mode.
+   my $extra={
+    ip => $ip,
+    requested_picture_mode => $caller_picture_mode,
+    active_picture_mode => $select->{"after"},
+    picture_mode_verified => &json_bool(($select->{"after"}||"") ne ""),
+    picture_mode_before => $select->{"before"},
+    error_code => $failure->{"error_code"},
+    attempts => $select->{"attempts"},
+   };
+   $extra->{"repair_hint"}=$failure->{"repair_hint"} if($failure->{"repair_hint"} ne "");
+   return &json_error($failure->{"message"},$extra);
+  }
+  my $changed=($select->{"route"} ne "already-active") ? 1 : 0;
+  return &json_ok({
+   ip => $ip,
+   client_key => $auth->{"client_key"},
+   picture_settings => { pictureMode => $active_picture_mode },
+   applied => { pictureMode => $active_picture_mode },
+   active_picture_mode => $active_picture_mode,
+   picture_mode_transport => $select->{"route"},
+   picture_mode_readback => $select->{"after"},
+   picture_mode_verified => &json_true(),
+   picture_mode_changed => &json_bool($changed),
+   lg_generation => $generation,
+   hello_info => $auth->{"hello_info"},
+   system_info => $auth->{"system_info"},
+   software_info => $auth->{"software_info"},
+   message => $changed
+    ? "LG picture mode switched to '$active_picture_mode'."
+    : "LG TV is already on '$active_picture_mode'.",
   });
  }
  if($active_picture_mode eq "") {
@@ -5706,12 +6051,10 @@ sub lg_picture_set_workflow (@) {
  $force_ddc_white_balance=0 if(!$can_ddc_white_balance);
  my $native_white_balance=($has_white_balance_write && !$generation->{"ddc_only_white_balance"} && !$force_ddc_white_balance) ? 1 : 0;
  my $ddc_white_balance_only=($can_ddc_white_balance && ($generation->{"ddc_only_white_balance"} || $force_ddc_white_balance)) ? 1 : 0;
- if(!$picture_mode_only) {
-  if($native_white_balance && $active_picture_mode ne "") {
-   $settings_to_apply->{"pictureMode"}=$active_picture_mode;
-  } else {
-   delete($settings_to_apply->{"pictureMode"});
-  }
+ if($native_white_balance && $active_picture_mode ne "") {
+  $settings_to_apply->{"pictureMode"}=$active_picture_mode;
+ } else {
+  delete($settings_to_apply->{"pictureMode"});
  }
  if(!%{$settings_to_apply}) {
   &websocket_close($session);
@@ -5726,7 +6069,7 @@ sub lg_picture_set_workflow (@) {
  }
  my $mode_lc=lc(&lg_picture_mode_for_calibration($active_picture_mode) || $active_picture_mode);
  my $mode_writable=($mode_lc ne "" && $mode_lc =~ /$WRITABLE_PICTURE_MODES_RE/) ? 1 : 0;
- if(($ddc_white_balance_only || $native_white_balance) && !$picture_mode_only && !$panel_light_only && $active_picture_mode ne "" && !$mode_writable) {
+ if(($ddc_white_balance_only || $native_white_balance) && !$panel_light_only && $active_picture_mode ne "" && !$mode_writable) {
   &websocket_close($session);
   &diag_log_append("picture_set:preflight",{ ip => $ip, picture_mode => $active_picture_mode, blocked => "non-writable picture mode" });
   return {
@@ -5743,20 +6086,8 @@ sub lg_picture_set_workflow (@) {
 	  category => "picture",
 	  settings => $settings_to_apply,
 	 };
- if($picture_mode_only) {
-  # Bind the Luna write to the foreground HDMI application. A bare
-  # pictureMode database write changes the reported preset but can leave the
-  # active Dolby Vision video pipeline detached on the C2. current_app alone
-  # is insufficient there; the input dimension identifies the live pipeline
-  # that must perform the mode transition.
-  $set_payload->{"current_app"}=&json_true();
-  $set_payload->{"dimension"}={
-   input => $tv_input,
-   "_3dStatus" => "2d",
-  } if($tv_input ne "");
- }
  my $panel_light_category=($panel_light_only && $tv_input ne "" && $active_picture_mode ne "") ? "picture\$".$tv_input.".".$active_picture_mode.".2d.x" : "";
- $set_payload->{"dimension"}={ pictureMode => $active_picture_mode } if($active_picture_mode ne "" && !$picture_mode_only && !$panel_light_only);
+ $set_payload->{"dimension"}={ pictureMode => $active_picture_mode } if($active_picture_mode ne "" && !$panel_light_only);
 
  &diag_log_append("picture_set:request",{
   ip => $ip,
@@ -5870,55 +6201,13 @@ sub lg_picture_set_workflow (@) {
   return &json_error($ddc_message,$extra);
  }
 
- # Picture-mode transitions must use the internal Luna settings service.
- # The public SSAP route can update/read back pictureMode without making the
- # corresponding active HDMI pipeline transition on some Dolby Vision modes.
- # Other picture controls continue to use the normal SSAP route.
- my $response=$picture_mode_only
-  ? &lg_luna_request($session,"set_picture_mode_active_app","com.webos.settingsservice/setSystemSettings",$set_payload,$connect_timeout + 2)
-  : &lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
+ my $response=&lg_request($session,"set_picture_settings","settings/setSystemSettings",$set_payload,$connect_timeout + 2);
  if(ref($response) ne "HASH") {
   &websocket_close($session);
   &diag_log_append("picture_set:no-response",{ ip => $ip, picture_mode => $active_picture_mode });
   return &json_error("LG TV did not acknowledge picture settings update",{ ip => $ip });
  }
  my ($failed,$failure_message)=&response_is_app_failure($response);
- select(undef,undef,undef,0.65) if(!$failed && $picture_mode_only);
- # A Dolby Vision compound-word preset name (e.g. "FilmMaker",
- # "TechnicolorExpert") may not have the same internal capitalization on
- # the TV's own webOS pictureMode enum as our "dolbyHdr"-prefixed guess --
- # unlike the single-word presets (Cinema, CinemaBright, Game, Vivid,
- # Standard), which this hw generation confirmed match exactly. Rather than
- # fail outright (or require yet another hand-guessed table entry per TV
- # generation), retry once with the second word lowercased before giving up
- # (operator-reported 2026-07-24: "dolbyHdrFilmMaker" rejected by this C2's
- # webOS 4.1.0 with "No matched extended item: pictureMode").
- if($failed && $picture_mode_only && $failure_message =~ /no\s+matched\s+extended\s+item/i
-    && $active_picture_mode =~ /^dolbyHdr([A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+)$/) {
-  my $suffix=$1;
-  (my $alt_suffix=$suffix) =~ s/(?<=[a-z0-9])([A-Z])(?=[a-z])/lc($1)/ge;
-  my $alt_mode="dolbyHdr".$alt_suffix;
-  if($alt_mode ne $active_picture_mode) {
-   my $alt_settings={ %{$settings_to_apply} };
-   $alt_settings->{"pictureMode"}=$alt_mode;
-   my $alt_payload={ %{$set_payload} };
-   $alt_payload->{"settings"}=$alt_settings;
-   $alt_payload->{"dimension"}={ pictureMode => $alt_mode } if(ref($set_payload->{"dimension"}) eq "HASH");
-   my $alt_response=&lg_request($session,"set_picture_settings_alt_case","settings/setSystemSettings",$alt_payload,$connect_timeout + 2);
-   my ($alt_failed,$alt_failure_message)=&response_is_app_failure($alt_response);
-   if(!$alt_failed && ref($alt_response) eq "HASH") {
-    &diag_log_append("picture_set:alt-case-ok",{ ip => $ip, picture_mode => $active_picture_mode, alt_picture_mode => $alt_mode, response => $alt_response });
-    $response=$alt_response;
-    $failed=0;
-    $failure_message="";
-    $active_picture_mode=$alt_mode;
-    $settings_to_apply=$alt_settings;
-    $set_payload=$alt_payload;
-   } else {
-    &diag_log_append("picture_set:alt-case-failure",{ ip => $ip, picture_mode => $active_picture_mode, alt_picture_mode => $alt_mode, response => $alt_response, message => $alt_failure_message });
-   }
-  }
- }
 	  if($failed) {
 	  &diag_log_append("picture_set:failure",{ ip => $ip, picture_mode => $active_picture_mode, response => $response, message => $failure_message });
 	  if($panel_light_only) {
@@ -5982,7 +6271,7 @@ sub lg_picture_set_workflow (@) {
 	    &diag_log_append($fallback->{"fail_label"},{ ip => $ip, picture_mode => $active_picture_mode, tv_input => $tv_input, category => $category, response => $fallback_response, message => $fallback_message });
 	   }
 	  }
-	  if($failed && !$picture_mode_only && !$panel_light_only && $tv_input ne "" && $active_picture_mode ne "" && $failure_message =~ /(?:doesn'?t support the key|not support|undefined|-1000|Application error)/i) {
+	  if($failed && !$panel_light_only && $tv_input ne "" && $active_picture_mode ne "" && $failure_message =~ /(?:doesn'?t support the key|not support|undefined|-1000|Application error)/i) {
 	   my $full_dimension={ input => $tv_input, pictureMode => $active_picture_mode, "_3dStatus" => "2d" };
 	   my $scoped_category="picture\$".$tv_input.".".$active_picture_mode.".2d.x";
 	   my @picture_fallbacks=(
@@ -6032,7 +6321,7 @@ sub lg_picture_set_workflow (@) {
 	    &diag_log_append($fallback->{"fail_label"},{ ip => $ip, picture_mode => $active_picture_mode, tv_input => $tv_input, category => $category, response => $fallback_response, message => $fallback_message });
 	   }
 	  }
-  if($failed && !$picture_mode_only && !$panel_light_only && ($failure_message =~ /401\s+insufficient permissions/i || $failure_message =~ /insufficient permissions/i)) {
+  if($failed && !$panel_light_only && ($failure_message =~ /401\s+insufficient permissions/i || $failure_message =~ /insufficient permissions/i)) {
    my $luna_payload=$set_payload;
    if($tv_input ne "" && $active_picture_mode ne "") {
     $luna_payload={
@@ -6055,18 +6344,6 @@ sub lg_picture_set_workflow (@) {
   } elsif($failed) {
    &websocket_close($session);
    return &json_error("LG TV rejected the panel-light control for this picture mode.",{ ip => $ip, active_picture_mode => $active_picture_mode, raw_error => $failure_message, raw_response => $response }) if($panel_light_only);
-   if($picture_mode_only && $failure_message =~ /no\s+matched\s+extended\s+item/i) {
-    &diag_log_append("picture_set:mode-not-supported",{ ip => $ip, requested_picture_mode => $caller_picture_mode, raw_error => $failure_message, raw_response => $response });
-    return &json_error("LG TV rejected the picture-mode change to '$caller_picture_mode' (WebOS setSystemSettings reports 'No matched extended item: pictureMode' on this generation). Use the LG Magic Remote or the on-screen Settings menu to switch the picture mode, then click Refresh on the Display card.",{
-     ip => $ip,
-     active_picture_mode => $active_picture_mode,
-     requested_picture_mode => $caller_picture_mode,
-     error_code => "picture-mode-change-not-supported",
-     repair_hint => "Use the LG Magic Remote to change the picture mode on the TV, then click Refresh.",
-     raw_error => $failure_message,
-     raw_response => $response,
-    });
-   }
    return &json_error($failure_message,{ ip => $ip, active_picture_mode => $active_picture_mode, raw_response => $response });
   }
  }
@@ -6115,7 +6392,7 @@ sub lg_picture_set_workflow (@) {
 	   }
 	  } else {
 	   my $readback_category="picture";
-		   if(!$native_white_balance && !$picture_mode_only && $tv_input ne "" && $active_picture_mode ne "") {
+		   if(!$native_white_balance && $tv_input ne "" && $active_picture_mode ne "") {
 	    $readback_category="picture\$".$tv_input.".".$active_picture_mode.".2d.x";
 	   }
 	   my $followup_payload={
@@ -6291,13 +6568,320 @@ sub lg_remote_control_workflow (@) {
 }
 
 sub lg_current_picture_mode (@) {
- my ($session,$timeout)=@_;
- my $response=&lg_request($session,"get_calibration_picture_mode","settings/getSystemSettings",{
+ my ($session,$timeout,$id)=@_;
+ $id="get_calibration_picture_mode" if(!defined($id) || $id eq "");
+ my $response=&lg_request($session,$id,"settings/getSystemSettings",{
   category => "picture",
   keys => ["pictureMode"],
  },$timeout);
  return "" if(ref($response) ne "HASH" || ref($response->{"payload"}) ne "HASH" || ref($response->{"payload"}{"settings"}) ne "HASH");
  return $response->{"payload"}{"settings"}{"pictureMode"}||"";
+}
+
+# Select a picture mode and prove it.
+#
+# The only proof that a mode transition happened is the TV reading the
+# requested token back, so every route is followed by a readback poll and
+# the result is "verified" only when the readback matches. The public
+# settings route goes first because it answers with a real error envelope
+# ("No matched extended item: pictureMode" when the token is not in the
+# signal family the TV is currently showing). The Luna alert bridge is
+# fire-and-forget -- its reply is the alert-close acknowledgement, never
+# the settings service's (see lg_luna_request) -- so it is a fallback only
+# and is never trusted without a matching readback. A token the settings
+# service rejected as unmatched is not retried over Luna: the token is
+# wrong, not the transport.
+#
+# Plain {category, settings} payload on both routes. The current_app/
+# dimension scoping was added on 2026-07-25 for a C2 Dolby Vision report
+# ("a bare pictureMode write leaves the DV pipeline detached") that was
+# never confirmed by readback; on the G5 (OLED83G54LW, webOS 25,
+# 2026-08-23) the scoped write was acknowledged, read back the OLD mode,
+# and the helper still reported success -- which is why the Display-card
+# dropdown never switched that TV. The pre-2022 palm path keeps its own
+# scoped form. If a C2 ever shows a matching readback with a detached DV
+# pipeline, that needs a proof other than pictureMode readback.
+#
+# Timing: the G5 reads the new token back within the first one or two
+# polls; 12 x 0.25 s per route covers an HDMI re-sync. Each readback uses
+# a short timeout and a unique request id, so a late reply to a timed-out
+# poll cannot be consumed as the next poll's answer, and a wall-clock
+# deadline keeps the whole select (both routes) inside the browser's
+# request timeout and the helper's 45 s budget even when every readback
+# is slow.
+$PICTURE_MODE_SELECT_POLLS=12;
+$PICTURE_MODE_SELECT_POLL_INTERVAL=0.25;
+$PICTURE_MODE_SELECT_READBACK_TIMEOUT=3;
+$PICTURE_MODE_SELECT_DEADLINE=20;
+sub lg_picture_mode_select (@) {
+ my ($session,$ip,$picture_mode,$timeout)=@_;
+ my $payload={ category => "picture", settings => { pictureMode => $picture_mode } };
+ my $readback_timeout=($timeout < $PICTURE_MODE_SELECT_READBACK_TIMEOUT) ? $timeout : $PICTURE_MODE_SELECT_READBACK_TIMEOUT;
+ my $deadline=time() + $PICTURE_MODE_SELECT_DEADLINE;
+ my $before=&lg_current_picture_mode($session,$readback_timeout,"get_picture_mode_before");
+ my @attempts=();
+ my $result={ verified => 0, route => "", before => $before, after => "", polls => 0, readbacks => 0, attempts => \@attempts };
+ if(lc($before) eq lc($picture_mode)) {
+  @{$result}{qw(verified route after)}=(1,"already-active",$before);
+  return $result;
+ }
+ my @routes=(
+  [ "ssap", sub { &lg_request($session,"set_picture_mode_ssap","settings/setSystemSettings",$payload,$timeout) } ],
+  [ "luna", sub { &lg_luna_request($session,"set_picture_mode_luna","com.webos.settingsservice/setSystemSettings",$payload,$timeout) } ],
+ );
+ foreach my $route (@routes) {
+  my ($label,$send)=@{$route};
+  my $response=$send->();
+  my ($failed,$message)=&response_is_app_failure($response);
+  if(ref($response) ne "HASH") {
+   $failed=1;
+   $message="no response from TV";
+  }
+  # Luna fires the write from the alert's close handler, so a failed
+  # closeAlert may still have switched the mode: poll there regardless.
+  my $after="";
+  if(!$failed || $label eq "luna") {
+   for my $poll (1..$PICTURE_MODE_SELECT_POLLS) {
+    last if(time() > $deadline);
+    select(undef,undef,undef,$PICTURE_MODE_SELECT_POLL_INTERVAL);
+    $result->{"polls"}++;
+    my $read=&lg_current_picture_mode($session,$readback_timeout,"get_picture_mode_poll_".$result->{"polls"});
+    if($read ne "") {
+     $after=$read;
+     $result->{"readbacks"}++;
+    }
+    last if(lc($after) eq lc($picture_mode));
+   }
+  }
+  push(@attempts,{ route => $label, failed => &json_bool($failed), error => $message||"", readback => $after });
+  &diag_log_append("picture_set:mode-select",{ ip => $ip, route => $label, requested => $picture_mode, before => $before, after => $after, failed => &json_bool($failed), error => $message||"", raw_response => $response });
+  $result->{"after"}=$after if($after ne "");
+  if(lc($after) eq lc($picture_mode)) {
+   $result->{"verified"}=1;
+   $result->{"route"}=$label;
+   last;
+  }
+  last if($failed && $message =~ /no\s+matched\s+extended\s+item/i);
+  last if(time() > $deadline);
+ }
+ return $result;
+}
+
+# Turn an unverified lg_picture_mode_select result into what the operator
+# is told. Three causes get three different messages, because the fix is
+# different for each: the TV stopped answering after the write went out
+# (connection, not signal), every route that answered rejected the token
+# (wrong signal family, or a mode this set will not switch over the
+# network -- the remote still works), or the TV answered but stayed on
+# another mode. Returns { message, error_code, repair_hint }.
+sub lg_picture_mode_select_failure (@) {
+ my ($requested,$select)=@_;
+ $select={} if(ref($select) ne "HASH");
+ my @attempts=(ref($select->{"attempts"}) eq "ARRAY") ? @{$select->{"attempts"}} : ();
+ my $after=defined($select->{"after"}) ? $select->{"after"} : "";
+ my $before=defined($select->{"before"}) ? $select->{"before"} : "";
+ my $polls=$select->{"polls"}||0;
+ my $readbacks=$select->{"readbacks"}||0;
+ my $where=($after ne "") ? " (TV still reports '$after')"
+         : ($before ne "") ? " (it was on '$before' before the request)" : "";
+ if($polls > 0 && $readbacks == 0) {
+  return {
+   message => "LG TV stopped answering the picture-mode readback after the change to '$requested' was sent".(($before ne "") ? " (it was on '$before' before the request)" : "").". Check the TV connection, then click Refresh to see which mode it is on.",
+   error_code => "picture-mode-readback-lost",
+   repair_hint => "Check the TV connection, then click Refresh.",
+  };
+ }
+ my @unmatched=grep { ($_->{"error"}||"") =~ /no\s+matched\s+extended\s+item/i } @attempts;
+ if(@attempts && scalar(@unmatched) == scalar(@attempts)) {
+  my $error=$unmatched[0]->{"error"};
+  return {
+   message => "LG TV rejected picture mode '$requested'$where: $error. Either the TV is not showing the matching SDR/HDR/Dolby Vision signal on the active input, or this set will not switch to that mode over the network -- use the LG Magic Remote to select it, then click Refresh.",
+   error_code => "picture-mode-not-applied",
+   repair_hint => "Use the LG Magic Remote to change the picture mode on the TV, then click Refresh.",
+  };
+ }
+ my @parts=();
+ foreach my $attempt (@attempts) {
+  my $route=($attempt->{"route"}||"") eq "luna" ? "alert-bridge fallback" : "settings route";
+  my $error=$attempt->{"error"}||"";
+  if($attempt->{"failed"}) {
+   push(@parts,"$route: ".($error ne "" ? $error : "failed"));
+  } else {
+   push(@parts,"$route accepted the change but the mode did not take");
+  }
+ }
+ return {
+  message => "LG TV did not switch to picture mode '$requested'$where".(@parts ? "; ".join("; ",@parts) : "").". Check the TV is showing the matching SDR/HDR/Dolby Vision signal on the active input.",
+  error_code => "picture-mode-not-applied",
+  repair_hint => "",
+ };
+}
+
+# "Apply to All Inputs" from the TV's Picture menu: the TV copies the
+# settings of the picture mode active on the current input to the same mode
+# on every other input. The command carries no mode or input of its own, so
+# the active mode is read first for the operator-facing result when the TV
+# exposes it. A missing read must not block the command itself.
+#
+# Routes: the public settings route is tried first because it answers with
+# a real error envelope; the G5 (OLED83G54LW, webOS 25, 2026-08-23) rejects
+# the key there ("Some keys are not allowed for the request"), which leaves
+# the Luna bridge -- the route the published LG preset scripts use for this
+# key. Luna's reply proves only the alert lifecycle (see lg_luna_request).
+#
+# Proof: applyToAllInput is itself a picture key with the enum [picture,
+# done] in the captured C1 and newer settings inventories (and is absent
+# from C8, C9 and CX), so after dispatch it is polled over the public route
+# until it reads "done".
+# Caveat: the key also rests at "done" between runs, so a "done" readback
+# proves the TV's all-inputs action has settled, not that a fresh copy
+# ran; it still catches a TV that never took the trigger (the read stays
+# "picture") or dropped the session. The G5 (webOS 25, 2026-08-23) refuses
+# the read outright on both the public and the palm:// service route
+# ("Some keys are not allowed for the request"), so a rejected read ends
+# the poll at once and is reported as "this set cannot report it". A bare
+# "done" read can be the resting value from an earlier action, so a fresh
+# action is confirmed only when this poll observes "picture" followed by
+# "done"; the public route's successful reply remains an acknowledgement.
+# Another
+# input's settings cannot be read on these sets either (an input/
+# pictureMode dimension is ignored and the active values come back), so
+# byte-level proof of the copy is out of reach over the network.
+$APPLY_ALL_INPUTS_POLLS=12;
+$APPLY_ALL_INPUTS_POLL_INTERVAL=0.5;
+$APPLY_ALL_INPUTS_READBACK_SECONDS=8;
+$APPLY_ALL_INPUTS_READ_TIMEOUT=2;
+# Returns ($value,$error): $value is the applyToAllInput reading ("" when
+# absent), $error the TV's rejection text when the key cannot be read.
+sub lg_apply_all_inputs_state (@) {
+ my ($session,$timeout,$id)=@_;
+ my $response=&lg_request($session,$id,"settings/getSystemSettings",{
+  category => "picture",
+  keys => ["applyToAllInput"],
+ },$timeout);
+ return ("","") if(ref($response) ne "HASH");
+ my ($failed,$message)=&response_is_app_failure($response);
+ return ("",$message||"read rejected") if($failed);
+ return ("","") if(ref($response->{"payload"}) ne "HASH" || ref($response->{"payload"}{"settings"}) ne "HASH");
+ my $value=$response->{"payload"}{"settings"}{"applyToAllInput"};
+ return (defined($value) ? "$value" : "","");
+}
+
+# The operator-facing result of an apply-all dispatch. Pure so it can be
+# unit-tested: $route is "ssap" or "luna", $readback the last
+# applyToAllInput value read (or ""), $readback_error the TV's rejection
+# of the read (or ""), and $transition_seen records a fresh "picture"
+# state during this dispatch.
+sub lg_apply_all_inputs_outcome (@) {
+ my ($active,$route,$readback,$readback_error,$transition_seen)=@_;
+ $readback="" if(!defined($readback));
+ $readback_error="" if(!defined($readback_error));
+ $transition_seen=$transition_seen ? 1 : 0;
+ my $confirmed=($transition_seen && $readback eq "done") ? 1 : 0;
+ my $acknowledged=($route eq "ssap") ? 1 : 0;
+ my $read=($readback ne "") ? "read back '$readback'"
+        : ($readback_error ne "") ? "this set does not allow the applyToAllInput readback: $readback_error"
+        : "no readback";
+ my $subject=($active ne "") ? "'$active'" : "the active picture mode";
+ my $message;
+ if($confirmed) {
+  $message="LG TV accepted Apply to All Inputs for $subject and reports the all-inputs action as done.";
+ } elsif($acknowledged) {
+  $message="LG TV accepted Apply to All Inputs for $subject but did not report the action as done ($read); check another input to confirm.";
+ } else {
+  $message="Apply to All Inputs for $subject was dispatched over the alert bridge, but the TV did not report the action as done ($read); check another input to confirm.";
+ }
+ return ($confirmed,$acknowledged,$message);
+}
+
+sub lg_picture_apply_all_inputs_workflow (@) {
+ my ($ip,$client_key,$connect_timeout)=@_;
+ my $auth=&lg_authenticated_session($ip,$client_key,$connect_timeout,$DEFAULT_PAIR_TIMEOUT,0);
+ return $auth if(($auth->{"status"}||"") ne "ok");
+ my $session=$auth->{"session"};
+ my $timeout=$connect_timeout + 2;
+ my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
+ my $generation_support=&lg_apply_all_inputs_generation_support($generation);
+ if($generation_support == 0) {
+  &websocket_close($session);
+  return &json_error("Apply to All Inputs is not available on this LG generation.",{
+   ip => $ip,
+   error_code => "apply-all-inputs-unsupported",
+   lg_generation => $generation,
+  });
+ }
+ my $active=&lg_current_picture_mode($session,$timeout);
+ my $payload={ category => "picture", settings => { applyToAllInput => "picture" } };
+ my $response=&lg_request($session,"apply_all_inputs_ssap","settings/setSystemSettings",$payload,$timeout);
+ my ($failed,$message)=&response_is_app_failure($response);
+ if(ref($response) ne "HASH") {
+  $failed=1;
+  $message="no response from TV";
+ }
+ my $route="ssap";
+ my $ssap_error=$failed ? $message : "";
+ if($failed) {
+  if($generation_support != 1) {
+   &websocket_close($session);
+   &diag_log_append("apply_all_inputs:unsupported",{ ip => $ip, picture_mode => $active, ssap_error => $ssap_error, generation => $generation });
+   return &json_error("LG TV rejected Apply to All Inputs, and its generation could not be verified for the alert-bridge fallback (settings route: $ssap_error).",{
+    ip => $ip,
+    error_code => "apply-all-inputs-support-unknown",
+    active_picture_mode => $active,
+    ssap_error => $ssap_error,
+    lg_generation => $generation,
+    raw_response => $response,
+   });
+  }
+  $route="luna";
+  $response=&lg_luna_request($session,"apply_all_inputs_luna","com.webos.settingsservice/setSystemSettings",$payload,$timeout);
+  my ($luna_failed,$luna_error)=&response_is_app_failure($response);
+  if(ref($response) ne "HASH") {
+   $luna_failed=1;
+   $luna_error="no response from TV";
+  }
+  if($luna_failed) {
+   &websocket_close($session);
+   &diag_log_append("apply_all_inputs:failure",{ ip => $ip, picture_mode => $active, ssap_error => $ssap_error, luna_error => $luna_error });
+   return &json_error("LG TV rejected Apply to All Inputs (settings route: $ssap_error; alert bridge: $luna_error).",{
+    ip => $ip,
+    active_picture_mode => $active,
+    ssap_error => $ssap_error,
+    luna_error => $luna_error,
+    lg_generation => $generation,
+    raw_response => $response,
+   });
+  }
+ }
+ my ($readback,$readback_error)=("","");
+ my $transition_seen=0;
+ my $readback_deadline=time()+$APPLY_ALL_INPUTS_READBACK_SECONDS;
+ for my $poll (1..$APPLY_ALL_INPUTS_POLLS) {
+  last if(time() >= $readback_deadline);
+  select(undef,undef,undef,$APPLY_ALL_INPUTS_POLL_INTERVAL);
+  last if(time() >= $readback_deadline);
+  my $read_timeout=$timeout;
+  $read_timeout=$APPLY_ALL_INPUTS_READ_TIMEOUT if($read_timeout > $APPLY_ALL_INPUTS_READ_TIMEOUT);
+  ($readback,$readback_error)=&lg_apply_all_inputs_state($session,$read_timeout,"apply_all_inputs_poll_$poll");
+  $transition_seen=1 if($readback eq "picture");
+  last if($readback eq "done" || $readback_error ne "");
+ }
+ &websocket_close($session);
+ my ($confirmed,$acknowledged,$outcome)=&lg_apply_all_inputs_outcome($active,$route,$readback,$readback_error,$transition_seen);
+ &diag_log_append("apply_all_inputs:".($confirmed ? "done" : "unconfirmed"),{ ip => $ip, picture_mode => $active, route => $route, ssap_error => $ssap_error, readback => $readback, readback_error => $readback_error, transition_seen => &json_bool($transition_seen) });
+ return &json_ok({
+  ip => $ip,
+  client_key => $auth->{"client_key"},
+  active_picture_mode => $active,
+  transport => $route,
+  acknowledged => &json_bool($acknowledged),
+  confirmed => &json_bool($confirmed),
+  readback => $readback,
+  readback_error => $readback_error,
+  transition_seen => &json_bool($transition_seen),
+  lg_generation => $generation,
+  message => $outcome,
+ });
 }
 
 sub lg_calibration_mode_workflow (@) {
@@ -6598,6 +7182,7 @@ sub main (@) {
  my $peak_luminance=$request->{"peak_luminance"};
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
+ my $include_current_input=$request->{"include_current_input"} ? 1 : 0;
  my $dpg_data=$request->{"dpg_data"};
  my $result;
 
@@ -6608,11 +7193,13 @@ sub main (@) {
  } elsif($action eq "connect" || $action eq "pair") {
   $result=&lg_connect_workflow($ip,$client_key,$connect_timeout,$pair_timeout);
 	 } elsif($action eq "picture_get") {
-	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode);
+	  $result=&lg_picture_get_workflow($ip,$client_key,$connect_timeout,$keys,$picture_mode,$tv_input,$force_ddc_white_balance,$signal_mode,$include_current_input);
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
   $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state);
+ } elsif($action eq "picture_apply_all_inputs") {
+  $result=&lg_picture_apply_all_inputs_workflow($ip,$client_key,$connect_timeout);
    } elsif($action eq "remote_enter") {
     $result=&lg_remote_enter_workflow($ip,$client_key,$connect_timeout);
  } elsif($action eq "remote_control") {
@@ -6622,6 +7209,9 @@ sub main (@) {
  } elsif($action eq "3d_lut_probe") {
   $result=&lg_3d_lut_probe_workflow($ip,$client_key,$connect_timeout,$picture_mode,$write_probe,$signal_mode);
  } elsif($action eq "3d_lut_upload") {
+  # lg_helper_run wraps this process in `timeout <helper_timeout>s`; keep a
+  # margin so a retry never starts unless it can finish before that kill.
+  $LG_3D_LUT_UPLOAD_DEADLINE=$^T+int($request->{"helper_timeout"}||0)-10 if(int($request->{"helper_timeout"}||0) > 0);
   $result=&lg_3d_lut_upload_workflow($ip,$client_key,$connect_timeout,$picture_mode,$payload_path,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
 	 } elsif($action eq "3d_lut_reset") {
 	  $result=&lg_3d_lut_reset_workflow($ip,$client_key,$connect_timeout,$picture_mode,$upload_command,$get_command,$keep_calibration_mode,$calibration_mode_active,$signal_mode);
@@ -6688,4 +7278,5 @@ sub main (@) {
  print &json_encode($result);
 }
 
-&main();
+# Run as a script; a test harness that `do`s this file gets the subs only.
+&main() if(!caller());

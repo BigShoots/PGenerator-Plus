@@ -384,6 +384,7 @@ my $_meter_lg_3d_autocal_file="/tmp/meter_lg_3d_autocal.json";
 my $_meter_lg_3d_autocal_config_file="/tmp/meter_lg_3d_autocal_config.json";
 my $_meter_lg_3d_autocal_stop_file="/tmp/meter_lg_3d_autocal.stop";
 my $_meter_lg_3d_autocal_log_file="/tmp/meter_lg_3d_autocal.log";
+my $_meter_lg_3d_autocal_start_lock :shared = 0;
 my $_meter_wrapper="/usr/bin/spotread_wrapper.sh";
 my $_meter_session="/usr/bin/meter_session.sh";
 our $_meter_read_file="/tmp/meter_read.json";
@@ -1617,6 +1618,7 @@ sub webui_handle_request (@) {
    }
     elsif($path=~/^\/api\/lg\//) {
      my $result=&webui_lg_api($path,$method,$body);
+     $result=&lg_public_api_json($result) if(defined(&lg_public_api_json));
      my $len=length($result);
      print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
     }
@@ -1775,6 +1777,11 @@ sub webui_handle_request (@) {
    }
    elsif($path eq "/api/meter/lg-3d-autocal/status") {
     my $result=&webui_meter_lg_3d_autocal_status();
+    my $len=length($result);
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
+   }
+   elsif($path eq "/api/meter/lg-3d-autocal/retry-upload" && $method eq "POST") {
+    my $result=&webui_meter_lg_3d_autocal_retry_upload($body);
     my $len=length($result);
     print $client "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: $len\r\n$cors\r\n$result";
    }
@@ -5651,6 +5658,22 @@ sub webui_meter_lg_autocal_running (@) {
  return ($alive=~/\d/) ? 1 : 0;
 }
 
+# A completed greyscale worker may remain alive briefly while it exits
+# calibration mode, clears the pattern and archives its state. Follow-on
+# stages must wait for that process rather than treating the safe overlap
+# rejection as a failed Full AutoCal run.
+sub webui_meter_lg_autocal_handoff_guard (@) {
+ return undef if(!&webui_meter_lg_autocal_running());
+ my $state="";
+ if(open(my $fh,"<",$_meter_lg_autocal_file)) { local $/; $state=<$fh>; close($fh); }
+ my $finishing=($state=~/"phase"\s*:\s*"finalising"/i
+  || $state=~/"status"\s*:\s*"(?:complete|cancelled|error)"/i) ? 1 : 0;
+ if($finishing) {
+  return '{"status":"retry","error_code":"lg-autocal-finishing","retryable":true,"retry_after_ms":600,"message":"LG Auto Cal is finishing TV and pattern cleanup"}';
+ }
+ return '{"status":"error","error_code":"lg-autocal-active","retryable":false,"message":"LG Auto Cal is already running"}';
+}
+
 sub webui_meter_lg_autocal_same_run_running (@) {
  my ($body)=@_;
  return 0 if(!defined($body) || $body eq "" || !-f $_meter_lg_autocal_file);
@@ -6337,13 +6360,15 @@ sub webui_meter_lg_3d_autocal_kill (@) {
 
 sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
+ lock($_meter_lg_3d_autocal_start_lock);
  return '{"status":"error","message":"LG 3D LUT AutoCal payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
  if(&webui_meter_autocal_blocked_for_simulation($body)) {
   return '{"status":"error","message":"AutoCal is not available with the Simulated Meter. Connect a real meter to calibrate a display."}';
  }
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
- return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
+ my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
+ return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  if(&webui_meter_lg_3d_autocal_running()) {
   return '{"status":"started","message":"LG 3D LUT AutoCal already running"}' if(&webui_meter_lg_3d_autocal_same_run_running($body));
   return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}';
@@ -6475,6 +6500,148 @@ sub webui_meter_lg_3d_autocal_start (@) {
 	 return $resp;
 	}
 
+# Retry only the TV commit/finalisation phase after a failed commit (3D LUT,
+# tone map or shadow finalisation). The original solved cube and exact
+# 33-point binary stay on disk, so this path neither re-runs the meter nor
+# reconstructs the payload from a smaller export cube. {dismiss:true} retires
+# the offer instead.
+sub webui_meter_lg_3d_autocal_retry_upload (@) {
+ my ($body)=@_;
+ lock($_meter_lg_3d_autocal_start_lock);
+ return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
+ return '{"status":"error","message":"No failed 3D LUT upload is available to retry"}'
+  if(!-f $_meter_lg_3d_autocal_file || !-f $_meter_lg_3d_autocal_config_file);
+ my ($state_raw,$config_raw)=("","");
+ if(open(my $sf,"<",$_meter_lg_3d_autocal_file)) { local $/; $state_raw=<$sf>; close($sf); }
+ if(open(my $cf,"<",$_meter_lg_3d_autocal_config_file)) { local $/; $config_raw=<$cf>; close($cf); }
+ my $state=eval { require JSON::PP; JSON::PP::decode_json($state_raw); };
+ my $config=eval { require JSON::PP; JSON::PP::decode_json($config_raw); };
+ my $request=eval { require JSON::PP; JSON::PP::decode_json($body||'{}'); };
+ $request={} if(ref($request) ne "HASH");
+ return '{"status":"error","message":"The saved 3D LUT retry state is invalid"}'
+  if(ref($state) ne "HASH" || ref($config) ne "HASH");
+ return '{"status":"error","message":"The 3D LUT run is not waiting for an upload retry"}'
+  if(($state->{"status"}||"") ne "error" || !$state->{"upload_retry_available"});
+ my $encoder=JSON::PP->new->canonical(1);
+ if($request->{"dismiss"}) {
+  # Operator closed the retry box: retire the offer on disk so the next page
+  # load does not re-raise it. The generated files stay where they are.
+  $state->{"upload_retry_available"}=JSON::PP::false;
+  $state->{"upload_retry_dismissed"}=JSON::PP::true;
+  my $tmp=$_meter_lg_3d_autocal_file.".dismiss.$$";
+  if(open(my $sf,">",$tmp) && (print $sf $encoder->encode($state)) && close($sf) && chmod(0666,$tmp) && rename($tmp,$_meter_lg_3d_autocal_file)) {
+   return '{"status":"ok","message":"3D LUT upload retry dismissed"}';
+  }
+  unlink($tmp);
+  return '{"status":"error","message":"Unable to dismiss the 3D LUT upload retry"}';
+ }
+ my $requested_run=$request->{"run_id"}||"";
+ my $saved_run=$state->{"full_autocal_run_id"}||$config->{"full_autocal_run_id"}||$config->{"run_id"}||"";
+ return '{"status":"error","message":"The retry belongs to a different AutoCal run"}'
+  if($requested_run ne "" && $saved_run ne "" && $requested_run ne $saved_run);
+ my $export=ref($state->{"export"}) eq "HASH" ? $state->{"export"} : {};
+ my $cube_path=$export->{"cube_path"}||"";
+ my $payload_path=$export->{"payload_path"}||"";
+ return '{"status":"error","message":"The exact generated LUT files are no longer available"}'
+  if($cube_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.cube$}
+   || $payload_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.bin$}
+   || !-f $cube_path || !-f $payload_path || -s $payload_path != (33**3*3*2));
+ my $upload_request=ref($state->{"upload_request"}) eq "HASH" ? $state->{"upload_request"} : {};
+ my $probe=ref($state->{"upload_probe"}) eq "HASH" ? $state->{"upload_probe"} : {};
+ my $parent_method=$state->{"method"}||$config->{"method"}||"matrix";
+ $config->{"retry_upload_only"}=JSON::PP::true;
+ $config->{"retry_parent_method"}=$parent_method;
+ $config->{"method"}="imported";
+ $config->{"imported_cube_path"}=$cube_path;
+ $config->{"imported_payload_path"}=$payload_path;
+ $config->{"upload"}=JSON::PP::true;
+ $config->{"output"}="upload";
+ $config->{"post_check"}=JSON::PP::false;
+ $config->{"upload_command"}=$upload_request->{"upload_command"}||$probe->{"upload_command"}||$config->{"upload_command"}||"";
+ $config->{"get_command"}=$upload_request->{"get_command"}||$probe->{"get_command"}||$config->{"get_command"}||"";
+ my $shadow=ref($state->{"hdr20_postcal_shadow"}) eq "HASH" ? $state->{"hdr20_postcal_shadow"} : {};
+ my $shadow_dpg=$state->{"hdr20_postcal_shadow_dpg_data"};
+ my $shadow_complete=(ref($shadow_dpg) eq "ARRAY" && scalar(@{$shadow_dpg}) == 3072
+   && ($shadow->{"status"}||"") =~ /^(?:self_gated|converged|reverted)$/
+   && $shadow->{"reestablished"}) ? 1 : 0;
+ my $shadow_measurements_pending=($config->{"full_workflow"}
+  && lc($config->{"signal_mode"}||"") eq "hdr10"
+  && $config->{"lg_autocal_hdr20_postcal_shadow_enable"}
+  && !$shadow_complete) ? 1 : 0;
+ if($shadow_complete) {
+  $config->{"full_workflow_dpg_data"}=$shadow_dpg;
+  $config->{"hdr20_1d_dpg_data"}=$shadow_dpg;
+  $config->{"retry_shadow_finalisation_only"}=JSON::PP::true;
+ }
+ delete $config->{"solve_only"};
+ delete $config->{"fixture_mode"};
+ my $retry_message=$shadow_measurements_pending
+  ? "Reusing the exact generated payload; unfinished shadow validation measurements will still run"
+  : "Reusing the exact generated payload; no measurements will be repeated";
+ $state->{"status"}="running";
+ $state->{"phase"}="upload_retry";
+ $state->{"current_name"}="Retrying LG 3D LUT upload";
+ $state->{"message"}=$retry_message;
+ $state->{"upload_retry_available"}=JSON::PP::false;
+ $state->{"retry_requested_at"}=int(time()*1000);
+ $state->{"retry_shadow_measurements_pending"}=$shadow_measurements_pending ? JSON::PP::true : JSON::PP::false;
+ delete $state->{"terminal_commit_verified"};
+ # Prepare both documents before replacing either live file. The worker is
+ # launched only after both renames succeed. If the state rename fails after
+ # the config rename, restore the original config so a later retry cannot
+ # inherit a half-applied transaction.
+ my $config_tmp=$_meter_lg_3d_autocal_config_file.".retry.$$";
+ my $state_tmp=$_meter_lg_3d_autocal_file.".retry.$$";
+ if(!open(my $cf,">",$config_tmp)) {
+  return '{"status":"error","message":"Unable to prepare the 3D LUT upload retry"}';
+ }
+ my $config_written=(print $cf $encoder->encode($config)) && close($cf);
+ $config_written=0 if(!chmod(0666,$config_tmp));
+ my $state_written=0;
+ if(open(my $sf,">",$state_tmp)) {
+  $state_written=(print $sf $encoder->encode($state)) && close($sf);
+  $state_written=0 if(!chmod(0666,$state_tmp));
+ }
+ if(!$config_written || !$state_written) {
+  unlink($config_tmp);
+  unlink($state_tmp);
+  return '{"status":"error","message":"Unable to prepare the 3D LUT upload retry state"}';
+ }
+ if(!rename($config_tmp,$_meter_lg_3d_autocal_config_file)) {
+  unlink($config_tmp);
+  unlink($state_tmp);
+  return '{"status":"error","message":"Unable to save the 3D LUT upload retry config"}';
+ }
+ if(!rename($state_tmp,$_meter_lg_3d_autocal_file)) {
+  my $rollback_tmp=$_meter_lg_3d_autocal_config_file.".rollback.$$";
+  my $rolled_back=0;
+  if(open(my $rf,">",$rollback_tmp)) {
+   my $rollback_written=(print $rf $config_raw) && close($rf);
+   chmod(0666,$rollback_tmp);
+   $rolled_back=rename($rollback_tmp,$_meter_lg_3d_autocal_config_file) if($rollback_written);
+  }
+  unlink($rollback_tmp);
+  unlink($state_tmp);
+  return $rolled_back
+   ? '{"status":"error","message":"Unable to save the 3D LUT retry state; the original config was restored"}'
+   : '{"status":"error","message":"Unable to save the 3D LUT retry state or restore its original config"}';
+ }
+ unlink($_meter_lg_3d_autocal_stop_file);
+ if(open(my $lf,">>",$_meter_lg_3d_autocal_log_file)) {
+  print $lf "\n--- manual 3D LUT upload retry ".time()." ---\n";
+  close($lf);
+ }
+ my $cmd="setsid /usr/bin/perl /usr/bin/meter_lg_3d_autocal.pl '$_meter_lg_3d_autocal_config_file' '$_meter_lg_3d_autocal_file' '$_meter_lg_3d_autocal_stop_file' </dev/null >>'$_meter_lg_3d_autocal_log_file' 2>&1 &";
+ system($cmd);
+ return JSON::PP::encode_json({
+  status => "started",
+  message => $retry_message,
+  profile_measurements_reused => JSON::PP::true,
+  shadow_measurements_pending => $shadow_measurements_pending ? JSON::PP::true : JSON::PP::false,
+  payload_reused => JSON::PP::true,
+ });
+}
+
 sub webui_meter_lg_3d_autocal_compact_status_json (@) {
  my $json=shift;
  return $json if(!defined($json) || $json eq "");
@@ -6485,11 +6652,54 @@ sub webui_meter_lg_3d_autocal_compact_status_json (@) {
  return $json;
 }
 
+# Older workers could write status=complete after an upload failure. Recover
+# only those impossible "success" records where the saved run explicitly
+# requested a TV upload and both exact generated files are still present.
+# Genuine export-only completions remain untouched.
+sub webui_meter_lg_3d_autocal_recover_unverified_complete (@) {
+ my ($raw)=@_;
+ return $raw if(!defined($raw) || $raw eq "" || $raw!~/"status"\s*:\s*"complete"/);
+ my $state=eval { require JSON::PP; JSON::PP::decode_json($raw); };
+ return $raw if(ref($state) ne "HASH" || $state->{"upload_verified"});
+ return $raw if(!-f $_meter_lg_3d_autocal_config_file);
+ my $config_raw="";
+ if(open(my $cf,"<",$_meter_lg_3d_autocal_config_file)) { local $/; $config_raw=<$cf>; close($cf); }
+ my $config=eval { require JSON::PP; JSON::PP::decode_json($config_raw); };
+ return $raw if(ref($config) ne "HASH" || (!$config->{"upload"} && ($config->{"output"}||"") ne "upload") || $config->{"fixture_mode"});
+ my $export=ref($state->{"export"}) eq "HASH" ? $state->{"export"} : {};
+ my $cube_path=$export->{"cube_path"}||"";
+ my $payload_path=$export->{"payload_path"}||"";
+ return $raw if($cube_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.cube$}
+  || $payload_path !~ m{^/var/lib/PGenerator/lg/luts/[A-Za-z0-9._-]+\.bin$}
+  || !-f $cube_path || !-f $payload_path || -s $payload_path != (33**3*3*2));
+ my $detail=$state->{"upload_message"}||"the TV did not verify the generated payload";
+ my $reason="A previous 3D LUT run was marked complete without a verified TV upload: $detail";
+ $state->{"status"}="error";
+ $state->{"phase"}="upload_failed";
+ $state->{"current_name"}="3D LUT was not committed to the TV";
+ $state->{"message"}=$reason;
+ $state->{"upload_retry_reason"}=$reason;
+ $state->{"upload_retry_available"}=JSON::PP::true;
+ $state->{"legacy_unverified_complete_recovered"}=JSON::PP::true;
+ my $encoder=JSON::PP->new->canonical(1);
+ my $recovered=$encoder->encode($state);
+ my $tmp=$_meter_lg_3d_autocal_file.".recover.$$";
+ if(open(my $sf,">",$tmp)) {
+  print $sf $recovered;
+  close($sf);
+  chmod(0666,$tmp);
+  if(rename($tmp,$_meter_lg_3d_autocal_file)) { return $recovered; }
+  unlink($tmp);
+ }
+ return $raw;
+}
+
 sub webui_meter_lg_3d_autocal_status (@) {
  if(-f $_meter_lg_3d_autocal_file) {
   my $json="";
   if(open(my $fh,"<",$_meter_lg_3d_autocal_file)) { local $/; $json=<$fh>; close($fh); }
   if($json ne "") {
+    $json=&webui_meter_lg_3d_autocal_recover_unverified_complete($json);
     if($json=~/"status"\s*:\s*"running"/) {
      # Debounce "process died" (see the 1D monitor for rationale): the worker
      # is momentarily out of pgrep's view during meter-session teardown/restart
@@ -6516,12 +6726,14 @@ sub webui_meter_lg_3d_autocal_status (@) {
       # persisted. The worker was just killed at the very end (e.g. a meter read
       # stall during finalize) before it could write status=complete. Report
       # that as complete instead of a spurious "process died". Only fall back to
-      # the died/error path when the LUT did not verify (a genuine failure) or
-      # the worker left its own specific error message.
+      # the died/error path when the LUT did not verify (a genuine failure), the
+      # worker left its own specific error message, or the worker never recorded
+      # terminal_commit_verified (set only after the commit gate passes).
       my $_uv=($json=~/"upload_verified"\s*:\s*true/) ? 1 : 0;
+      my $_terminal_commit=($json=~/"terminal_commit_verified"\s*:\s*true/) ? 1 : 0;
       my $_tm_status=($json=~/"tone_map_upload_status"\s*:\s*"([^"]*)"/) ? $1 : "";
       my $_tm_ok=($_tm_status eq "" || $_tm_status eq "ok" || $_tm_status eq "skipped") ? 1 : 0;
-      if($_uv && $_tm_ok) {
+      if($_uv && $_tm_ok && $_terminal_commit) {
        my $now=$_now;
        $json=~s/"status"\s*:\s*"running"/"status":"complete"/;
        $json=~s/"current_name"\s*:\s*"[^"]*"/"current_name":"LG 3D LUT Auto Cal complete"/ if($json=~/"current_name"\s*:\s*"[^"]*"/);
@@ -15398,6 +15610,11 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 	    <strong style="color:#e8f5c8">Next step on the TV:</strong> open Advanced picture settings for this picture mode and use <strong>Apply to all inputs</strong> so every HDMI input gets the calibrated settings (SDR and HDR Full Auto Cal alike).
 	   </div>
 	  </div>
+	  <div id="meterAutoCalUploadRetryBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid #a34a4a;border-radius:6px;background:#1a1012">
+	   <div style="font-size:.9rem;color:#ffd7d7;font-weight:700;margin-bottom:6px">3D LUT was not committed</div>
+	   <div style="font-size:.8rem;color:var(--text);line-height:1.45">Post-calibration reads have been paused because the TV did not verify the generated LUT. Retry reuses the exact saved payload. If shadow finalisation was unfinished, only its remaining validation measurements will run.</div>
+	   <div id="meterAutoCalUploadRetryDetail" style="font-size:.72rem;color:var(--text2);line-height:1.45;margin-top:8px"></div>
+	  </div>
 	  <div id="meterFullAutoCalConfirmBox" class="meter-autocal-step-box" style="display:none;margin:-2px 0 12px 0;padding:12px;border:1px solid var(--border);border-radius:6px;background:#0d0d15">
 	   <div id="meterFullAutoCalConfirmTitle" style="font-size:.9rem;color:var(--text);font-weight:700;margin-bottom:6px">Full Auto Cal</div>
 		   <div id="meterFullAutoCalConfirmMessage" class="fac-summary">Resets the active LG greyscale DDC state and 3D LUT baseline, then runs the full calibration in one pass:
@@ -15455,6 +15672,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
 		   <button class="btn btn-sm btn-success" id="meterFullAutoCalContinueBtn" onclick="meterFullAutoCalResolveConfirm(true)" style="display:none">&#9654; Continue</button>
 	   <button class="btn btn-sm btn-primary" id="meterFullAutoCalPostReportBtn" onclick="meterFullAutoCalGeneratePostReport()" style="display:none">&#128196; Generate Post-Cal Report</button>
 	   <button class="btn btn-sm btn-secondary" id="meterFullAutoCalSkipReportBtn" onclick="meterAutoCalCloseCompleteAction()" style="display:none">Close</button>
+	   <button class="btn btn-sm btn-secondary" id="meterAutoCalUploadRetryCloseBtn" onclick="meterCloseLg3dUploadRetry()" style="display:none">Close</button>
+	   <button class="btn btn-sm btn-success" id="meterAutoCalUploadRetryBtn" onclick="meterRetryLg3dUpload()" style="display:none">Retry upload</button>
 	   <button class="btn btn-sm btn-danger" id="meterAutoCalStopOverlayBtn" onclick="meterStopAutoCal()">&#9632; Stop</button>
 	  </div>
  </div>
@@ -17015,7 +17234,7 @@ const uiBlockingOverlayIds=[
  'meterBuild3dLutMeasureModal','lutSolveDoneModal','meterLg3dStartModal',
  'meterLg3dSelectSeriesModal','meterLatticeGenModal','meterCcssCreateModal',
  'customCcssEditorModal','meterSpectroSetupModal','meterReportOverlay',
- 'lgDisplayControlModal'
+ 'lgDisplayControlModal','lgApplyAllInputsModal'
 ];
 let uiLockedScrollTop=0;
 
@@ -18031,6 +18250,10 @@ async function cecCmd(cmd){
  }
  cecCommandBusyUntil=Date.now()+5000;
  scheduleCecStatusFollowup(cmd);
+ if((cmd==='active'||cmd==='input')&&typeof lgRefreshPictureMode==='function'){
+  setTimeout(()=>lgRefreshPictureMode(true),1500);
+  setTimeout(()=>lgRefreshPictureMode(true),3500);
+ }
 }
 
 async function cecScan(){
@@ -19295,6 +19518,7 @@ let meterLg3dAutoCalRunning=false;
 let meterLg3dAutoCalPolling=null;
 let meterLg3dAutoCalPollInFlight=false;
 let meterLg3dAutoCalPollErrors=0;
+let meterLg3dUploadRetryStatus=null;
 let meterDvAutoCalProfileRunning=false;
 // True while the DV panel-profile measurement is running as its own pass
 // (AutoCal -> DV Config), i.e. NOT as the colour stage of a Full Auto Cal.
@@ -39656,6 +39880,8 @@ function meterAutoCalSetOverlay(active,status){
  const lumBox=document.getElementById('meterAutoCalLuminanceBox');
  const confirmBox=document.getElementById('meterAutoCalConfirmBox');
  const resultsBox=document.getElementById('meterAutoCalResultsBox');
+ const uploadRetryBox=document.getElementById('meterAutoCalUploadRetryBox');
+ const uploadRetryDetail=document.getElementById('meterAutoCalUploadRetryDetail');
  const fullConfirmBox=document.getElementById('meterFullAutoCalConfirmBox');
  const useCaseBox=document.getElementById('meterAutoCalUseCaseBox');
  const gammaBox=document.getElementById('meterAutoCalGammaBox');
@@ -39673,6 +39899,8 @@ function meterAutoCalSetOverlay(active,status){
  const fullContinueBtn=document.getElementById('meterFullAutoCalContinueBtn');
  const postReportBtn=document.getElementById('meterFullAutoCalPostReportBtn');
  const skipReportBtn=document.getElementById('meterFullAutoCalSkipReportBtn');
+ const uploadRetryBtn=document.getElementById('meterAutoCalUploadRetryBtn');
+ const uploadRetryCloseBtn=document.getElementById('meterAutoCalUploadRetryCloseBtn');
  const stopBtn=document.getElementById('meterAutoCalStopOverlayBtn');
  const fullSkipBtn=document.getElementById('meterFullAutoCalSkipBtn');
  const phase=(status&&status.phase)||meterAutoCalPhase||'';
@@ -39684,6 +39912,7 @@ function meterAutoCalSetOverlay(active,status){
  const showUseCase=phase==='usecase';
  const showGamma=phase==='gammatarget';
  const showDisplayType=phase==='displaytype';
+ const showUploadRetry=statusName==='error'&&!!(status&&status.upload_retry_available);
  // Success popup only — never for cancelled/error, and never from a
  // stale phase=complete left behind after Stop (status may be cancelled
  // while phase still says complete for one paint).
@@ -39692,11 +39921,13 @@ function meterAutoCalSetOverlay(active,status){
  if(lumBox) lumBox.style.display=showLuminance?'':'none';
  if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
  if(resultsBox) resultsBox.style.display=showComplete?'':'none';
+ if(uploadRetryBox) uploadRetryBox.style.display=showUploadRetry?'':'none';
+ if(uploadRetryDetail&&showUploadRetry) uploadRetryDetail.textContent=String(status.upload_retry_reason||status.message||'The TV did not verify the upload.');
  if(fullConfirmBox) fullConfirmBox.style.display='none';
  if(useCaseBox) useCaseBox.style.display=showUseCase?'':'none';
  if(gammaBox) gammaBox.style.display=showGamma?'':'none';
  if(displayTypeBox) displayTypeBox.style.display=showDisplayType?'':'none';
- if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete||showUseCase||showGamma||showDisplayType)?'none':'';
+ if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete||showUploadRetry||showUseCase||showGamma||showDisplayType)?'none':'';
  if(resetBtn){
   resetBtn.style.display=(showDisclaimer&&!meterAutoCalPreflightResetDone)?'':'none';
   resetBtn.disabled=!!meterAutoCalResetInProgress;
@@ -39718,9 +39949,16 @@ function meterAutoCalSetOverlay(active,status){
  const postReportAvailable=!!(showComplete&&status&&status.full_autocal);
  if(postReportBtn) postReportBtn.style.display=postReportAvailable?'':'none';
  if(skipReportBtn) skipReportBtn.style.display=showComplete?'':'none';
+ if(uploadRetryBtn){
+  uploadRetryBtn.style.display=showUploadRetry?'':'none';
+  uploadRetryBtn.disabled=!!meterActionPending;
+  uploadRetryBtn.textContent=meterActionPending?'Retrying…':'Retry upload';
+ }
+ if(uploadRetryCloseBtn) uploadRetryCloseBtn.style.display=showUploadRetry?'':'none';
  if(skipReportBtn&&showComplete) skipReportBtn.textContent='Close';
  if(postReportBtn&&postReportAvailable) postReportBtn.textContent='\uD83D\uDCC4 Generate Post-Cal Report';
- if(stopBtn) stopBtn.style.display=showComplete?'none':'';
+ if(stopBtn) stopBtn.style.display=(showComplete||showUploadRetry)?'none':'';
+ if(showUploadRetry) meterLg3dUploadRetryStatus=status;
  if(showComplete){
   // Restore the Measurement Port SELECT to the port the operator had
   // selected when they kicked off the autocal. See the 2026-06-29 comment
@@ -42341,8 +42579,10 @@ function meterFullAutoCalNewRunId(){
  return 'full-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
 }
 
-function meterFullAutoCalTransitionBusy(message){
- return /already running|operation already in progress/i.test(String(message||''));
+function meterFullAutoCalTransitionBusy(response){
+ const message=(response&&typeof response==='object')?response.message:response;
+ if(response&&typeof response==='object'&&Object.prototype.hasOwnProperty.call(response,'retryable')) return response.retryable===true;
+ return /already running|operation already in progress|finishing (?:tv and pattern )?cleanup/i.test(String(message||''));
 }
 
 function meterFullAutoCalResolveConfirm(accepted){
@@ -42416,7 +42656,7 @@ function meterFullAutoCalConfirmDialog(options){
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
  const skipBtn=document.getElementById('meterFullAutoCalSkipBtn');
  const continueBtn=document.getElementById('meterFullAutoCalContinueBtn');
- ['meterAutoCalDisclaimerBox','meterAutoCalLuminanceBox','meterAutoCalConfirmBox','meterAutoCalResultsBox','meterAutoCalResetBtn','meterAutoCalDisclaimerContinueBtn','meterAutoCalContinueBtn','meterAutoCalStartConfirmBtn','meterAutoCalBackBtn','meterFullAutoCalPostReportBtn','meterFullAutoCalSkipReportBtn'].forEach(id=>{
+ ['meterAutoCalDisclaimerBox','meterAutoCalLuminanceBox','meterAutoCalConfirmBox','meterAutoCalResultsBox','meterAutoCalUploadRetryBox','meterAutoCalResetBtn','meterAutoCalDisclaimerContinueBtn','meterAutoCalContinueBtn','meterAutoCalStartConfirmBtn','meterAutoCalBackBtn','meterFullAutoCalPostReportBtn','meterFullAutoCalSkipReportBtn','meterAutoCalUploadRetryBtn','meterAutoCalUploadRetryCloseBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });
@@ -43353,10 +43593,24 @@ async function meterDvAutoCalStartProfile(firstStatus){
   calibration_mode_active:!!(window.lgStatusState&&window.lgStatusState.calibrationMode)
  };
  let started=null;
- try{
-  started=await fetchJSON('/api/lg/dv-profile/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15000});
- }catch(e){ started=null; }
- if(!started||started.status==='error'){
+ for(let attempt=0;attempt<6;attempt++){
+  try{
+   started=await fetchJSON('/api/lg/dv-profile/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),_timeoutMs:15000});
+  }catch(e){ started=null; }
+  if(started&&started.status==='started') break;
+  if(!meterFullAutoCalTransitionBusy(started)) break;
+  meterSetWorkflowProgress({status:'running',current_step:0,total_steps:5,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
+  const retryAfter=Number(started&&started.retry_after_ms);
+  await meterFullAutoCalSleep(Number.isFinite(retryAfter)&&retryAfter>=250?Math.min(retryAfter,3000):(700+(attempt*350)));
+ }
+ if(!started||started.status!=='started'){
+  // A timed-out POST may still have launched the profile worker. Adopt it
+  // instead of offering a second run or discarding a successful hand-off.
+  let probe=null;
+  try{ probe=await fetchJSON('/api/lg/dv-profile/status',{_quiet:true,_timeoutMs:8000}); }catch(e){}
+  if(probe&&probe.status==='running') started={status:'started',message:probe.message||'Dolby Vision profile measurement already running'};
+ }
+ if(!started||started.status!=='started'){
   meterFullAutoCalAbort((started&&started.message)||'Full Auto Cal could not start the Dolby Vision profile measurement',true);
   return;
  }
@@ -43630,7 +43884,7 @@ function meterFullAutoCalTouchupTargetY(){
     _timeoutMs:10000
    });
    if(r&&r.status==='started') break;
-   if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
+   if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
@@ -43803,7 +44057,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     _timeoutMs:10000
    });
    if(r&&r.status==='started') break;
-   if(!meterFullAutoCalTransitionBusy(r&&r.message)) break;
+   if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
@@ -45705,6 +45959,68 @@ function meterLg3dLutCommandPayload(signalMode){
  return mode==='hdr10' ? {upload_command:'BT2020_3D_LUT_DATA',get_command:'GET_3D_LUT_DATA'} : {};
 }
 
+async function meterRetryLg3dUpload(){
+ if(meterActionPending||meterLg3dAutoCalRunning) return;
+ const failed=meterLg3dUploadRetryStatus||{};
+ meterActionPending=true;
+ meterAutoCalSetOverlay(true,failed);
+ try{
+  const runId=failed.full_autocal_run_id||failed.run_id||meterFullAutoCalRunId||'';
+  const r=await fetchJSON('/api/meter/lg-3d-autocal/retry-upload',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({run_id:runId}),_timeoutMs:10000
+  });
+  if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start the 3D LUT upload retry');
+  meterLg3dUploadRetryStatus=null;
+  meterAutoCalPhase='running';
+  meterLg3dAutoCalRunning=true;
+  meterLg3dAutoCalPollErrors=0;
+  meterAutoCalSetOverlay(true,{status:'running',phase:'upload_retry',current_name:'Retrying LG 3D LUT upload',message:r.message||'Reusing the exact generated payload',current_step:0,total_steps:1});
+  if(meterLg3dAutoCalPolling) clearInterval(meterLg3dAutoCalPolling);
+  meterLg3dAutoCalPolling=setInterval(meterPollLg3dAutoCal,1500);
+  toast('3D LUT upload retry started');
+  await meterPollLg3dAutoCal();
+ }catch(e){
+  const message=(e&&e.message)||'Unable to retry the 3D LUT upload';
+  meterLg3dAutoCalRunning=false;
+  meterAutoCalPhase='error';
+  const retryState={...failed,status:'error',phase:'upload_failed',upload_retry_available:true,message:message};
+  meterLg3dUploadRetryStatus=retryState;
+  meterAutoCalSetOverlay(true,retryState);
+  toast(message,true);
+ }finally{
+  meterActionPending=false;
+  if(meterLg3dUploadRetryStatus) meterAutoCalSetOverlay(true,meterLg3dUploadRetryStatus);
+  meterUpdateReadButtons();
+ }
+}
+
+async function meterCloseLg3dUploadRetry(){
+ const wasFullWorkflow=!!meterFullAutoCalRunning;
+ try{
+  await fetchJSON('/api/meter/lg-3d-autocal/retry-upload',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({dismiss:true}),_quiet:true,_timeoutMs:8000
+  });
+ }catch(_e){}
+ meterLg3dUploadRetryStatus=null;
+ meterAutoCalPhase='';
+ meterLg3dAutoCalRunning=false;
+ meterActionPending=false;
+ if(wasFullWorkflow) meterFullAutoCalResetState(false);
+ meterAutoCalSetOverlay(false,null);
+ meterHideWorkflowProgress();
+ meterClearDisplayPattern();
+ try{
+  await fetchJSON('/api/lg/autocal/run/end',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({status:'aborted',note:'3D LUT upload retry dismissed'}),
+   _quiet:true,_timeoutMs:8000
+  });
+ }catch(_e){}
+ toast('3D LUT upload remains uncommitted');
+}
+
 async function meterPollLg3dAutoCal(options){
  if(meterLg3dAutoCalPollInFlight) return;
  if(meterFullAutoCalReportPhaseActive()){
@@ -45727,7 +46043,7 @@ async function meterPollLg3dAutoCal(options){
    meterUpdateReadButtons();
    return;
   }
-  if(r.full_workflow&&!meterFullAutoCalStatusMatchesRun(r)) return;
+  if(r.full_workflow&&!meterFullAutoCalStatusMatchesRun(r)&&!(r.status==='error'&&r.upload_retry_available)) return;
   if(r.status==='complete'&&r.full_workflow&&meterFullAutoCalCompletionHandled(r)){
    if(meterLg3dAutoCalPolling){clearInterval(meterLg3dAutoCalPolling);meterLg3dAutoCalPolling=null;}
    meterLg3dAutoCalRunning=false;
@@ -45737,7 +46053,8 @@ async function meterPollLg3dAutoCal(options){
   if(watchdog&&r.status!=='running') return;
   meterLg3dAutoCalPollErrors=0;
   const full3dActive=full3dPhase||meterFullAutoCalEnsureStatusPhase(r,'3d-lut');
-  const localActive=!!(meterLg3dAutoCalRunning||meterActionPending||meterLg3dAutoCalPolling||full3dActive);
+  const retryWaiting=!!(r.status==='error'&&r.upload_retry_available);
+  const localActive=!!(meterLg3dAutoCalRunning||meterActionPending||meterLg3dAutoCalPolling||full3dActive||retryWaiting);
   if(initial&&r.status!=='running'&&!localActive){
    meterLg3dAutoCalRunning=false;
    return;
@@ -45784,6 +46101,7 @@ async function meterPollLg3dAutoCal(options){
    // no standalone run switched them — full workflow never snapshots).
    try{ meterLg3dRestoreTargetsAfterRun(); }catch(_e){}
 	   if(r.status==='complete'){
+	    meterLg3dUploadRetryStatus=null;
 	    if(meterFullAutoCalEnsureStatusPhase(r,'3d-lut')){
 	     await meterFullAutoCalStartTouchup(r);
 	     return;
@@ -45840,11 +46158,13 @@ async function meterPollLg3dAutoCal(options){
    }else if(r.status==='error'){
     meterClearDisplayPattern();
     try{ meterLutSolveProgressHide(); }catch(_e){}
-    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
+    if(meterFullAutoCalRunning&&!r.upload_retry_available) meterFullAutoCalResetState(false);
     meterAutoCalPhase='error';
-    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:'running',current_name:r.current_name||'LG 3D LUT AutoCal error',message:r.message||'3D LUT AutoCal failed'});
+    if(r.upload_retry_available) meterLg3dUploadRetryStatus=r;
+    meterAutoCalSetOverlay(true,{...r,autocal3d:true,phase:r.upload_retry_available?'upload_failed':'running',current_name:r.current_name||'LG 3D LUT AutoCal error',message:r.message||'3D LUT AutoCal failed'});
     toast(r.message||'LG 3D LUT AutoCal failed',true);
    }else if(r.status==='cancelled'){
+    meterLg3dUploadRetryStatus=null;
     meterClearDisplayPattern();
     if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
     meterAutoCalSetOverlay(false,null);
@@ -46144,7 +46464,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
     _timeoutMs:10000
    });
    if(r&&r.status==='started') break;
-   if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r&&r.message)) break;
+   if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for greyscale AutoCal cleanup'},{workflow:'full',label:'Waiting for greyscale AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
    }

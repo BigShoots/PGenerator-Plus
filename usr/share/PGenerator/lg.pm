@@ -91,6 +91,30 @@ sub lg_encode_json (@) {
  return JSON::PP::encode_json($data);
 }
 
+# Helper responses carry the WebOS client key so the daemon can persist a
+# newly paired connection. The browser never needs that credential. Redact it
+# recursively at the public API boundary while retaining client_key_present.
+sub lg_public_api_json (@) {
+ my $raw=shift;
+ return $raw if(!defined($raw) || $raw eq "");
+ my $decoded=eval { JSON::PP::decode_json($raw) };
+ return $raw if(!defined($decoded));
+ my $redact;
+ $redact=sub {
+  my ($value)=@_;
+  if(ref($value) eq "HASH") {
+   delete($value->{"client_key"});
+   delete($value->{"client-key"});
+   delete($value->{"clientKey"});
+   $redact->($_) foreach(values(%{$value}));
+  } elsif(ref($value) eq "ARRAY") {
+   $redact->($_) foreach(@{$value});
+  }
+ };
+ $redact->($decoded);
+ return JSON::PP::encode_json($decoded);
+}
+
 ###############################################
 #             LG Persistence                  #
 ###############################################
@@ -995,8 +1019,9 @@ sub lg_helper_run (@) {
  $request={} if(ref($request) ne "HASH");
  my $helper=&lg_helper_path();
  return { status => "error", message => "LG WebOS helper is not installed" } if(!-x $helper);
- my $payload=MIME::Base64::encode_base64(&lg_encode_json($request),"");
  my $timeout=&lg_helper_timeout($request);
+ $request->{"helper_timeout"}=$timeout;
+ my $payload=MIME::Base64::encode_base64(&lg_encode_json($request),"");
  my $cmd="timeout ${timeout}s env PGEN_LG_REQUEST_B64=".&lg_shell_quote($payload)." ".&lg_shell_quote($helper)." 2>&1";
  my $raw=`$cmd`;
  my $exit_status=$? >> 8;
@@ -1030,6 +1055,7 @@ sub lg_helper_timeout (@) {
  }
  return 180 if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return 130 if($action eq "picture_reset");
+ return 60 if($action eq "picture_apply_all_inputs");
  return 75 if($action eq "calibration_mode" || $action eq "hdr_tone_map_upload" || $action eq "hdr_calman_reset" || $action eq "1d_dpg_read");
  return 80 if($action eq "1d_dpg_upload");
  return 60 if($action eq "picture_get");
@@ -1040,13 +1066,19 @@ sub lg_helper_timeout_message (@) {
  my ($request,$timeout)=@_;
  $request={} if(ref($request) ne "HASH");
  my $action=$request->{"action"}||"";
- return "LG TV did not finish the white-balance write within ${timeout}s." if($action eq "picture_set");
+ if($action eq "picture_set") {
+  my $settings=$request->{"settings"};
+  my @keys=(ref($settings) eq "HASH") ? keys(%{$settings}) : ();
+  return "LG TV did not finish the picture-mode change within ${timeout}s." if(scalar(@keys) == 1 && $keys[0] eq "pictureMode");
+  return "LG TV did not finish the white-balance write within ${timeout}s.";
+ }
  return "LG TV did not finish the 3D LUT command within ${timeout}s." if($action eq "3d_lut_probe" || $action eq "3d_lut_upload" || $action eq "3d_lut_reset");
  return "LG TV did not finish the HDR tone-map upload within ${timeout}s." if($action eq "hdr_tone_map_upload");
  return "LG TV did not finish the HDR20 1D DPG upload within ${timeout}s." if($action eq "1d_dpg_upload");
  return "LG TV did not finish the HDR20 1D DPG readback within ${timeout}s." if($action eq "1d_dpg_read");
  return "LG TV did not finish the HDR calibration reset within ${timeout}s." if($action eq "hdr_calman_reset");
  return "LG TV did not finish the picture-mode reset within ${timeout}s." if($action eq "picture_reset");
+ return "LG TV did not finish Apply to All Inputs within ${timeout}s." if($action eq "picture_apply_all_inputs");
  return "LG TV did not answer the picture-settings request within ${timeout}s." if($action eq "picture_get");
  return "LG TV command timed out after ${timeout}s.";
 }
@@ -1454,6 +1486,110 @@ sub lg_picture_needs_repair (@) {
  return ($message =~ /insufficient permissions/i) ? 1 : 0;
 }
 
+# Persist the held-CAL_START flag (and its picture mode) in the client store.
+# A full AutoCal deliberately holds CAL_START open across its greyscale,
+# 3D-LUT and tone-map stages, so the flag must survive a dead worker or
+# socket; lg_clear_stale_calibration_mode_for_reset sends CAL_END first when
+# it is still "on". Skips the write when nothing changed: the greyscale
+# solver uploads a DPG on every inner iteration.
+sub lg_store_calibration_mode_state (@) {
+ my ($clients,$active,$picture_mode)=@_;
+ return 0 if(ref($clients) ne "HASH");
+ $picture_mode="" if(!defined($picture_mode));
+ my $stored_mode=$clients->{"calibration_picture_mode"}||"";
+ return 1 if((($clients->{"calibration_mode"})?1:0) == ($active?1:0)
+  && (!$active || $picture_mode eq "" || $picture_mode eq $stored_mode));
+ $clients->{"calibration_mode"}=$active ? &lg_json_true() : &lg_json_false();
+ if($active) {
+  $clients->{"calibration_picture_mode"}=$picture_mode if($picture_mode ne "");
+ } else {
+  delete($clients->{"calibration_picture_mode"});
+ }
+ return &lg_save_clients($clients);
+}
+
+# Before an endpoint can open CAL_START and deliberately leave it held for a
+# later stage, persist that intent. If the write then fails midway, terminal
+# cleanup and the next Reset still know that CAL_END may be required.
+sub lg_prepare_held_calibration_mode (@) {
+ my ($clients,$keep,$already_active,$picture_mode)=@_;
+ return undef if(!$keep || $already_active);
+ return undef if(&lg_store_calibration_mode_state($clients,1,$picture_mode||""));
+ return {
+  status => "error",
+  error_code => "lg-calibration-state-not-persisted",
+  message => "Unable to record the LG calibration session before starting the TV write.",
+ };
+}
+
+sub lg_record_calibration_mode_result (@) {
+ my ($clients,$result,$active,$fallback_picture_mode)=@_;
+ return $result if(ref($result) ne "HASH" || ($result->{"status"}||"") ne "ok");
+ my $picture_mode=$result->{"calibration_picture_mode"}
+  || $result->{"active_picture_mode"}
+  || $fallback_picture_mode
+  || "";
+ &lg_store_calibration_mode_state($clients,$active,$picture_mode);
+ $result->{"calibration_mode"}=$active ? &lg_json_true() : &lg_json_false();
+ $result->{"calibration_picture_mode"}=$picture_mode if($active && $picture_mode ne "");
+ return $result;
+}
+
+sub lg_autocal_worker_running (@) {
+ foreach my $name (qw(webui_meter_lg_autocal_running webui_meter_lg_3d_autocal_running)) {
+  no strict 'refs';
+  next if(!defined(&{"main::$name"}));
+  my $running=eval { &{"main::$name"}() };
+  return 1 if($running);
+ }
+ return 0;
+}
+
+# Clear a persisted held session before the picture / HDR / DV / SDR reset
+# actions. Never end a session while an AutoCal worker is genuinely alive;
+# that would interrupt a valid cross-stage commit. A rejected cleanup does NOT
+# block the reset: the TV may already have dropped the session (power cycle),
+# and the reset's own CAL_START/CAL_END is the authority. The flag is only
+# cleared once that reset succeeds, so a genuinely stuck driver keeps
+# surfacing through the reset's error path (see lg_hdr_calman_reset_workflow).
+sub lg_clear_stale_calibration_mode_for_reset (@) {
+ my ($clients,$ip,$client_key,$picture_mode,$signal_mode)=@_;
+ return undef if(ref($clients) ne "HASH" || !$clients->{"calibration_mode"});
+ if(&lg_autocal_worker_running()) {
+  return {
+   status => "error",
+   message => "LG Auto Cal is still running. Stop it before resetting the picture mode.",
+   calibration_mode => &lg_json_true(),
+   error_code => "lg-calibration-session-active",
+  };
+ }
+ my $cleanup=&lg_helper_run({
+  action => "calibration_mode",
+  ip => $ip,
+  client_key => $client_key,
+  enable => 0,
+  picture_mode => $picture_mode||$clients->{"calibration_picture_mode"}||"",
+  signal_mode => $signal_mode||"",
+  helper_timeout => 75,
+  connect_timeout => 5,
+ });
+ if(ref($cleanup) ne "HASH" || ($cleanup->{"status"}||"") ne "ok") {
+  my $detail=(ref($cleanup) eq "HASH" ? ($cleanup->{"message"}||"") : "")
+   || "the TV did not acknowledge CAL_END";
+  return {
+   status => "ok",
+   message => "The previous LG calibration session could not be closed ($detail); continuing with the reset.",
+   stale_calibration_mode => &lg_json_true(),
+   stale_calibration_mode_cleared => &lg_json_false(),
+   error_code => "lg-calibration-session-stuck",
+   cleanup_response => $cleanup,
+  };
+ }
+ &lg_store_calibration_mode_state($clients,0,"");
+ $cleanup->{"stale_calibration_mode_cleared"}=&lg_json_true();
+ return $cleanup;
+}
+
 ###############################################
 #              LG API Helpers                 #
 ###############################################
@@ -1652,6 +1788,7 @@ my $result=&lg_helper_run({
 	  picture_mode => $picture_mode,
 	  signal_mode => $payload->{"signal_mode"}||"",
 	  tv_input => &lg_input_from_cec(),
+	  include_current_input => $payload->{"include_current_input"} ? &lg_json_true() : &lg_json_false(),
 	  force_ddc_white_balance => $payload->{"force_ddc_white_balance"} ? &lg_json_true() : &lg_json_false(),
 	  helper_timeout => int($payload->{"helper_timeout"}||0),
 	  connect_timeout => 5,
@@ -1706,6 +1843,10 @@ sub webui_lg_picture_settings_set (@) {
 	  : (($clients->{"calibration_mode"}||$ddc_white_balance) ? 1 : 0);
  my $calibration_mode_active=($payload->{"calibration_mode_active"}||($ddc_white_balance&&$keep_calibration_mode&&$clients->{"calibration_mode"})) ? 1 : 0;
  $calibration_mode_active=0 if($payload->{"reset_ddc_baseline"}||$payload->{"clear_ddc_baseline"});
+	 my $held_prepare=$ddc_white_balance
+	  ? &lg_prepare_held_calibration_mode($clients,$keep_calibration_mode,$calibration_mode_active,$picture_mode)
+	  : undef;
+	 return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  &lg_calmode_trace("picture_set: ddc_wb=$ddc_white_balance keep=$keep_calibration_mode active=$calibration_mode_active force=".($payload->{"force_ddc_white_balance"}?1:0)." method=".($settings->{"whiteBalanceMethod"}||"")." pmode=$picture_mode skip_readback=".($payload->{"skip_readback"}?1:0)); # TEMP DEBUG CALMODE
  my $result=&lg_helper_run({
   action => "picture_set",
@@ -1735,11 +1876,15 @@ sub webui_lg_picture_settings_set (@) {
  # ddc_only) the helper answers virtual_picture_settings: it records the DDC
  # target mode and never asks the TV to switch, so there is no HDMI link
  # reset to recover from -- restarting the renderer there is a black-out for
- # nothing on every picture-mode selection.
+ # nothing on every picture-mode selection. Likewise when the helper found
+ # the TV already on the requested mode (picture_mode_changed false): no
+ # write went out, so there is nothing to resync.
+ my $mode_changed=exists($result->{"picture_mode_changed"}) ? ($result->{"picture_mode_changed"} ? 1 : 0) : 1;
  if(($result->{"status"}||"") eq "ok"
     && exists($settings->{"pictureMode"})
     && scalar(keys(%{$settings})) == 1
-    && !$result->{"virtual_picture_settings"}) {
+    && !$result->{"virtual_picture_settings"}
+    && $mode_changed) {
   &pattern_generator_stop();
   &pattern_generator_start();
   $result->{"renderer_resynced"}=&pattern_generator_is_running() ? &lg_json_true() : &lg_json_false();
@@ -1789,17 +1934,50 @@ sub webui_lg_picture_reset (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting picture settings." }) if($client_key eq "");
+ my $picture_mode=$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
+ my $stale_cleanup=&lg_clear_stale_calibration_mode_for_reset($clients,$ip,$client_key,$picture_mode,$payload->{"signal_mode"}||"");
+ return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "picture_reset",
 	  ip => $ip,
 	  client_key => $client_key,
-	  picture_mode => $payload->{"picture_mode"}||"",
+	  picture_mode => $picture_mode,
 	  signal_mode => $payload->{"signal_mode"}||"",
 	  require_white_balance_reset => $payload->{"require_white_balance_reset"} ? &lg_json_true() : &lg_json_false(),
 	  reset_ddc_state => $payload->{"require_white_balance_reset"} ? 1 : 0,
 	  tv_input => &lg_input_from_cec(),
 	  connect_timeout => 5,
 	 });
+ $result->{"stale_calibration_mode_cleanup"}=$stale_cleanup if(ref($result) eq "HASH" && ref($stale_cleanup) eq "HASH");
+ &lg_record_calibration_mode_result($clients,$result,0,$picture_mode);
+ &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ if(&lg_picture_needs_repair($result)) {
+  $result->{"message"}="The saved LG client key does not have picture-control permission. Use Display -> Pair With PIN once, enter the TV PIN, then reconnects will use the saved key without another PIN.";
+  $result->{"repair_hint"}="Use Display -> Pair With PIN once, then submit the PIN shown on the TV.";
+ }
+ return &lg_encode_json($result);
+}
+
+sub webui_lg_picture_apply_all_inputs (@) {
+ my $body=shift;
+ my $payload=&lg_decode_json($body);
+ my $clients=&lg_load_clients();
+ ($clients,my $pin_state)=&lg_reconcile_pin_pairing($clients);
+ if(ref($pin_state) eq "HASH" && ($pin_state->{"status"}||"") eq "pending") {
+  return &lg_encode_json({ status => "error", message => "Complete LG PIN pairing first by entering the PIN shown on the TV.", needs_repair => &lg_json_true() });
+ }
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if(&lg_clients_disconnected($clients));
+ my $ip=&lg_target_ip($payload,$clients);
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if($ip eq "");
+ my $client=&lg_primary_client($clients);
+ my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
+ return &lg_encode_json({ status => "error", message => "Connect the LG TV before applying picture settings to all inputs." }) if($client_key eq "");
+ my $result=&lg_helper_run({
+  action => "picture_apply_all_inputs",
+  ip => $ip,
+  client_key => $client_key,
+  connect_timeout => 5,
+ });
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have picture-control permission. Use Display -> Pair With PIN once, enter the TV PIN, then reconnects will use the saved key without another PIN.";
@@ -1891,6 +2069,11 @@ sub webui_lg_3d_lut_upload (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading a 3D LUT." }) if($client_key eq "");
+ my $held_prepare=&lg_prepare_held_calibration_mode(
+  $clients,$payload->{"keep_calibration_mode"},$payload->{"calibration_mode_active"},
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
+ return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "3d_lut_upload",
   ip => $ip,
@@ -1905,6 +2088,10 @@ sub webui_lg_3d_lut_upload (@) {
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
+ &lg_record_calibration_mode_result(
+  $clients,$result,$payload->{"keep_calibration_mode"} ? 1 : 0,
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the 3D LUT upload again.";
@@ -1927,6 +2114,11 @@ sub webui_lg_3d_lut_reset (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting the 3D LUT." }) if($client_key eq "");
+ my $held_prepare=&lg_prepare_held_calibration_mode(
+  $clients,$payload->{"keep_calibration_mode"},$payload->{"calibration_mode_active"},
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
+ return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "3d_lut_reset",
   ip => $ip,
@@ -1940,6 +2132,10 @@ sub webui_lg_3d_lut_reset (@) {
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
+ &lg_record_calibration_mode_result(
+  $clients,$result,$payload->{"keep_calibration_mode"} ? 1 : 0,
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  return &lg_encode_json($result);
 }
@@ -1985,6 +2181,7 @@ sub webui_lg_hdr_tone_map_upload (@) {
    helper_timeout => int($payload->{"helper_timeout"}||0),
    connect_timeout => 5,
   });
+ &lg_record_calibration_mode_result($clients,$result,0,$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"");
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR tone-map upload again.";
@@ -2037,6 +2234,11 @@ sub webui_lg_1d_dpg_upload (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before uploading the HDR20 1D DPG." }) if($client_key eq "");
+ my $held_prepare=&lg_prepare_held_calibration_mode(
+  $clients,$payload->{"keep_calibration_mode"},$payload->{"calibration_mode_active"},
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
+ return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
  my $result=&lg_helper_run({
   action => "1d_dpg_upload",
   ip => $ip,
@@ -2049,6 +2251,10 @@ sub webui_lg_1d_dpg_upload (@) {
   keep_calibration_mode => ($payload->{"keep_calibration_mode"} ? 1 : 0),
   calibration_mode_active => ($payload->{"calibration_mode_active"} ? 1 : 0),
  });
+ &lg_record_calibration_mode_result(
+  $clients,$result,$payload->{"keep_calibration_mode"} ? 1 : 0,
+  $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||""
+ );
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  # Durable history snapshot, opt-in via archive_history. NOT unconditional: the
  # greyscale solver uploads a DPG on every inner iteration, so archiving each
@@ -2172,7 +2378,8 @@ sub webui_meter_lg_dv_profile_kill (@) {
 sub webui_meter_lg_dv_profile_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Dolby Vision profile payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
- return '{"status":"error","message":"LG Auto Cal is already running"}' if(&webui_meter_lg_autocal_running());
+ my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
+ return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
  return '{"status":"error","message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
  my $_dv_display_model=&webui_lg_display_model_name({});
@@ -2274,15 +2481,20 @@ sub webui_lg_hdr_calman_reset (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting HDR calibration state." }) if($client_key eq "");
+ my $picture_mode=$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
+ my $stale_cleanup=&lg_clear_stale_calibration_mode_for_reset($clients,$ip,$client_key,$picture_mode,"hdr10");
+ return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "hdr_calman_reset",
   ip => $ip,
   client_key => $client_key,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  picture_mode => $picture_mode,
   ddc_layout => $payload->{"ddc_layout"}||"hdr20",
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
+ $result->{"stale_calibration_mode_cleanup"}=$stale_cleanup if(ref($result) eq "HASH" && ref($stale_cleanup) eq "HASH");
+ &lg_record_calibration_mode_result($clients,$result,0,$picture_mode);
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the HDR calibration reset again.";
@@ -2308,15 +2520,20 @@ sub webui_lg_dv_calman_reset (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting Dolby Vision calibration state." }) if($client_key eq "");
+ my $picture_mode=$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
+ my $stale_cleanup=&lg_clear_stale_calibration_mode_for_reset($clients,$ip,$client_key,$picture_mode,"dv");
+ return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "dv_calman_reset",
   ip => $ip,
   client_key => $client_key,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  picture_mode => $picture_mode,
   ddc_layout => $payload->{"ddc_layout"}||"hdr20",
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
+ $result->{"stale_calibration_mode_cleanup"}=$stale_cleanup if(ref($result) eq "HASH" && ref($stale_cleanup) eq "HASH");
+ &lg_record_calibration_mode_result($clients,$result,0,$picture_mode);
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the Dolby Vision calibration reset again.";
@@ -2348,15 +2565,20 @@ sub webui_lg_sdr_calman_reset (@) {
  my $client=&lg_primary_client($clients);
  my $client_key=$client->{"client_key"}||$client->{"client-key"}||"";
  return &lg_encode_json({ status => "error", message => "Connect the LG TV before resetting SDR calibration state." }) if($client_key eq "");
+ my $picture_mode=$payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"";
+ my $stale_cleanup=&lg_clear_stale_calibration_mode_for_reset($clients,$ip,$client_key,$picture_mode,"sdr");
+ return &lg_encode_json($stale_cleanup) if(ref($stale_cleanup) eq "HASH" && ($stale_cleanup->{"status"}||"") ne "ok");
  my $result=&lg_helper_run({
   action => "sdr_calman_reset",
   ip => $ip,
   client_key => $client_key,
-  picture_mode => $payload->{"picture_mode"}||$clients->{"calibration_picture_mode"}||"",
+  picture_mode => $picture_mode,
   ddc_layout => $payload->{"ddc_layout"}||"sdr26",
   helper_timeout => int($payload->{"helper_timeout"}||0),
   connect_timeout => 5,
  });
+ $result->{"stale_calibration_mode_cleanup"}=$stale_cleanup if(ref($result) eq "HASH" && ref($stale_cleanup) eq "HASH");
+ &lg_record_calibration_mode_result($clients,$result,0,$picture_mode);
  &lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
  if(&lg_picture_needs_repair($result)) {
   $result->{"message"}="The saved LG client key does not have calibration permission. Use Display -> Pair With PIN once, enter the TV PIN, then try the SDR calibration reset again.";
@@ -3035,6 +3257,9 @@ sub webui_lg_api (@) {
  if($path eq "/api/lg/picture-settings/reset" && $method eq "POST") {
   return &webui_lg_picture_reset($body);
  }
+ if($path eq "/api/lg/picture-settings/apply-all-inputs" && $method eq "POST") {
+  return &webui_lg_picture_apply_all_inputs($body);
+ }
  if($path eq "/api/lg/forget" && $method eq "POST") {
   return &webui_lg_forget($body);
  }
@@ -3103,7 +3328,66 @@ sub webui_lg_autocal_run_end (@) {
  if(defined &webui_meter_lg_autocal_clear_full_workflow_state) {
   eval { &webui_meter_lg_autocal_clear_full_workflow_state(); };
  }
- return &lg_encode_json({ status => "ok" });
+ my $clients=&lg_load_clients();
+ my $cleanup=&lg_close_calibration_mode_at_run_end($clients,$payload);
+ return &lg_encode_json($cleanup);
+}
+
+# A normal worker commit closes CAL_START itself. This is the terminal
+# failsafe for an aborted/crashed stage: if persistence still says the TV is
+# in calibration mode, attempt one explicit CAL_END and only clear the flag
+# after the TV acknowledges it.
+sub lg_close_calibration_mode_at_run_end (@) {
+ my ($clients,$payload)=@_;
+ $clients={} if(ref($clients) ne "HASH");
+ $payload={} if(ref($payload) ne "HASH");
+ return { status => "ok", calibration_cleanup_needed => &lg_json_false() }
+  if(!$clients->{"calibration_mode"});
+ if(&lg_autocal_worker_running()) {
+  return {
+   status => "error",
+   error_code => "lg-calibration-session-active",
+   calibration_mode => &lg_json_true(),
+   message => "LG Auto Cal is still running, so its calibration session was not closed underneath it.",
+  };
+ }
+ my $ip=&lg_target_ip($payload,$clients);
+ my $client=&lg_primary_client($clients);
+ my $client_key=(ref($client) eq "HASH") ? ($client->{"client_key"}||$client->{"client-key"}||"") : "";
+ if($ip eq "" || $client_key eq "") {
+  return {
+   status => "error",
+   error_code => "lg-calibration-session-stuck",
+   calibration_mode => &lg_json_true(),
+   message => "The run ended while LG calibration mode was still recorded, but no paired TV was available for CAL_END. Reconnect the TV and use Reset Picture Mode.",
+  };
+ }
+ my $cleanup=&lg_helper_run({
+  action => "calibration_mode",
+  ip => $ip,
+  client_key => $client_key,
+  enable => 0,
+  picture_mode => $clients->{"calibration_picture_mode"}||"",
+  signal_mode => $payload->{"signal_mode"}||"",
+  helper_timeout => 75,
+  connect_timeout => 5,
+ });
+ if(ref($cleanup) ne "HASH" || ($cleanup->{"status"}||"") ne "ok") {
+  my $detail=(ref($cleanup) eq "HASH" ? ($cleanup->{"message"}||"") : "")
+   || "the TV did not acknowledge CAL_END";
+  return {
+   status => "error",
+   error_code => "lg-calibration-session-stuck",
+   calibration_mode => &lg_json_true(),
+   cleanup_response => $cleanup,
+   message => "The run ended, but LG calibration mode could not be closed: $detail. Restart the TV before another calibration.",
+  };
+ }
+ &lg_store_calibration_mode_state($clients,0,"");
+ $cleanup->{"calibration_mode"}=&lg_json_false();
+ $cleanup->{"stale_calibration_mode_cleared"}=&lg_json_true();
+ $cleanup->{"message"}="The run ended and its remaining LG calibration session was closed.";
+ return $cleanup;
 }
 
 ###############################################
@@ -3175,6 +3459,12 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel::-webkit-scrollbar-track{background:linear-gradient(90deg,#20202d 0%,#272736 100%);border-radius:999px;border:1px solid #3a3a4a}
 	   #lgDisplayControlPanel::-webkit-scrollbar-thumb{background:linear-gradient(90deg,#58586c 0%,#38384a 100%);border-radius:999px;border:1px solid #6c6c82;box-shadow:inset 1px 0 0 rgba(255,255,255,.12)}
 	   #lgDisplayControlPanel::-webkit-scrollbar-thumb:hover{background:linear-gradient(90deg,#67677c 0%,#434356 100%)}
+	   #lgApplyAllInputsModal{display:none;position:fixed;inset:0;z-index:10010;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgApplyAllInputsPanel{width:min(520px,calc(100vw - 36px));max-height:calc(100vh - 36px);overflow:auto;background:var(--card);border:1px solid var(--orange);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px 18px;box-sizing:border-box}
+	   #lgApplyAllInputsPanel h2{margin:0 0 8px;font-size:1rem;color:var(--orange);display:flex;align-items:center;gap:8px}
+	   #lgApplyAllInputsPanel p{margin:0 0 8px;font-size:.8rem;line-height:1.5;color:var(--text)}
+	   #lgApplyAllInputsPanel ul{margin:0 0 12px 18px;padding:0;font-size:.78rem;line-height:1.5;color:var(--text2)}
+	   #lgApplyAllInputsMode{font-weight:600;color:var(--text)}
 	   #lgDisplayControlGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
 	   .lg-display-control-item{border:1px solid var(--border);border-radius:6px;padding:9px;background:#10131d;min-height:74px}
 	   .lg-display-control-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
@@ -3190,6 +3480,7 @@ sub webui_lg_card_html (@) {
 	   #lgDisplayControlPanel .lg-display-control-row select option{background:#0d0d15;color:var(--text)}
 	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
 	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
+	   .lg-current-input-value{display:flex;align-items:center;min-height:34px;padding:7px 10px;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem}
 	  </style>
 	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span><span class="lg-card-title-label">LG Display</span><span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><span class="lg-card-title-actions"><button class="btn btn-sm btn-secondary" id="lgCalHistoryOpenBtn" type="button" onclick="lgOpenCalHistoryModal()">History</button><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" type="button" onclick="lgOpenDisplayControl()">Display Control</button></span></h2>
   <button class="btn btn-sm btn-secondary lg-display-control-open-desktop" type="button" onclick="lgOpenDisplayControl()">Display Control</button>
@@ -3210,6 +3501,10 @@ sub webui_lg_card_html (@) {
     <select id="lgPictureMode" onchange="lgSetPictureMode()" disabled>
      <option value="">Connect display</option>
     </select>
+   </div>
+   <div class="field">
+    <label>Current Input</label>
+    <div id="lgCurrentInput" class="lg-current-input-value" role="status" aria-live="polite">Checking...</div>
    </div>
    <div class="field">
     <label style="display:flex;align-items:center;gap:8px;margin-top:20px">
@@ -3266,8 +3561,24 @@ sub webui_lg_card_html (@) {
 	  <div class="btn-row" style="margin-bottom:10px">
 	   <button class="btn btn-sm btn-primary" id="lgDisplayControlRefreshBtn" onclick="lgDisplayControlRefresh(true)">Refresh Settings</button>
 	   <button class="btn btn-sm btn-warning" id="lgDisplayControlResetBtn" onclick="lgResetPictureMode()" disabled>&#8634; Reset Picture Mode</button>
+	   <button class="btn btn-sm btn-secondary" id="lgApplyAllInputsBtn" onclick="lgApplyAllInputs()" disabled title="Copy the active picture mode's settings to the same mode on every input (the TV's Picture &gt; Apply to All Inputs)">Apply to All Inputs</button>
 	  </div>
 	  <div id="lgDisplayControlGrid"></div>
+  </div>
+ </div>
+ <div id="lgApplyAllInputsModal" onclick="if(event.target===this) lgApplyAllInputsClose()">
+  <div id="lgApplyAllInputsPanel" role="alertdialog" aria-labelledby="lgApplyAllInputsTitle">
+   <h2 id="lgApplyAllInputsTitle">&#9888; Apply to All Inputs</h2>
+   <p>The TV will copy the settings of <span id="lgApplyAllInputsMode">the active picture mode</span> from this input to the same picture mode on <strong>every other input</strong>, exactly like Picture &gt; Apply to All Inputs on the TV.</p>
+   <ul>
+    <li>Whatever those inputs currently hold for this mode is overwritten and cannot be recovered.</li>
+    <li>Do this only after calibration, when you are happy with this mode as it is now.</li>
+    <li>At best the TV acknowledges the request and reports the action as done; it never says which inputs changed. Check another input if you want confirmation.</li>
+   </ul>
+   <div class="btn-row" style="justify-content:flex-end">
+    <button class="btn btn-sm btn-secondary" type="button" onclick="lgApplyAllInputsClose()">Cancel</button>
+    <button class="btn btn-sm btn-warning" type="button" id="lgApplyAllInputsConfirmBtn" onclick="lgApplyAllInputsConfirmed()">Apply to All Inputs</button>
+   </div>
   </div>
  </div>
 LG_CARD
@@ -3279,6 +3590,7 @@ let lgStatusPending=false;
 let lgLastPinPending=false;
 let lgDetectedPromptShown=false;
 let lgPictureModePending=false;
+let lgApplyAllInputsPending=false;
 let lgPictureModeValue='';
 let lgPictureModeSignalMode='';
 let lgPictureModeRefreshTimer=null;
@@ -3295,6 +3607,42 @@ function lgStatusConnected(state){
  state=state||{};
  if(Object.prototype.hasOwnProperty.call(state,'connected')) return !!state.connected&&!state.pinPending;
  return !!(lgStatusHasSavedKey(state)&&!state.pinPending&&!state.disconnected);
+}
+
+function lgRenderCurrentInput(){
+ const el=document.getElementById('lgCurrentInput');
+ if(!el) return;
+ const state=window.lgStatusState||{};
+ if(!lgStatusConnected(state)){
+  el.textContent='Connect display';
+  el.style.color='var(--text2)';
+  el.title='';
+  return;
+ }
+ if(!state.currentInputChecked){
+  el.textContent='Checking...';
+  el.style.color='var(--text2)';
+  el.title='';
+  return;
+ }
+ el.textContent=state.currentInputDisplay||'Not reported by TV';
+ el.style.color=state.currentInputDisplay?'var(--text)':'var(--orange)';
+ el.title=state.currentAppId?('WebOS app: '+state.currentAppId):'';
+}
+
+function lgUpdateCurrentInput(r){
+ if(!r||!r.current_input_checked) return;
+ const state=window.lgStatusState||{};
+ state.currentInputChecked=true;
+ state.currentInputDisplay=String(r.current_input_display||'').trim();
+ state.currentInput=String(r.current_input||'').trim();
+ state.currentInputId=String(r.current_input_id||'').trim();
+ state.currentInputLabel=String(r.current_input_label||'').trim();
+ state.currentAppId=String(r.current_app_id||'').trim();
+ state.currentInputMessage=String(r.current_input_message||'').trim();
+ state.currentInputUpdatedAt=Date.now();
+ window.lgStatusState=state;
+ lgRenderCurrentInput();
 }
 
 function lgIsPGeneratorDisplayName(name){
@@ -3346,32 +3694,43 @@ function renderLgTopStatus(r){
  if(typeof syncTopStatusStack==='function') syncTopStatusStack();
 }
 
+// Values are the raw webOS pictureMode tokens. Their spellings are stable
+// across the captured C8..G5 settings inventories (the SDR "Standard"
+// preset is "normal", "Auto Power Save" is "eco") but the set grows per
+// generation: filmMaker is CX+, personalized*/hdrEco are C2+. Labels
+// abbreviate the TV's own menu names (G3 menu, 30 July 2026).
 const LG_PICTURE_MODES_BY_SIGNAL={
  sdr:[
   ['expert1','SDR Expert Bright'],
   ['expert2','SDR Expert Dark'],
   ['cinema','SDR Cinema'],
   ['filmMaker','SDR Filmmaker'],
-  ['technicolorExpert','SDR Technicolor Expert'],
   ['game','SDR Game Optimizer'],
-  ['standard','SDR Standard'],
-  ['vivid','SDR Vivid']
+  ['normal','SDR Standard'],
+  ['eco','SDR Auto Power Save'],
+  ['sports','SDR Sports'],
+  ['vivid','SDR Vivid'],
+  ['personalized','SDR Personalised Picture']
  ],
  hdr10:[
   ['hdrCinema','HDR Cinema'],
+  ['hdrCinemaBright','HDR Cinema Home'],
   ['hdrFilmMaker','HDR Filmmaker'],
-  ['hdrGame','HDR Game Optimizer'],
+ ['hdrGame','HDR Game Optimizer'],
   ['hdrStandard','HDR Standard'],
+  ['hdrEco','HDR Auto Power Save'],
   ['hdrVivid','HDR Vivid'],
-  ['hdrTechnicolorExpert','HDR Technicolor Expert']
+  ['hdrPersonalized','HDR Personalised Picture']
  ],
  hlg:[
   ['hdrCinema','HLG Cinema'],
+  ['hdrCinemaBright','HLG Cinema Home'],
   ['hdrFilmMaker','HLG Filmmaker'],
   ['hdrGame','HLG Game Optimizer'],
   ['hdrStandard','HLG Standard'],
+  ['hdrEco','HLG Auto Power Save'],
   ['hdrVivid','HLG Vivid'],
-  ['hdrTechnicolorExpert','HLG Technicolor Expert']
+  ['hdrPersonalized','HLG Personalised Picture']
  ],
  // Operator-confirmed real preset list for this generation's Dolby Vision
  // menu (2026-07-24, LG C2/webOS4.1.0): Cinema Home, Filmmaker, Game
@@ -3384,14 +3743,65 @@ const LG_PICTURE_MODES_BY_SIGNAL={
   ['dolbyVisionFilmMaker','DV Filmmaker'],
   ['dolbyVisionGame','DV Game Optimizer'],
   ['dolbyVisionVivid','DV Vivid'],
-  ['dolbyVisionStandard','DV Standard']
+  ['dolbyVisionStandard','DV Standard'],
+  ['dolbyVisionPersonalized','DV Personalised Picture']
  ]
 };
 
-// LG's 2019-2021 OLED menus predate the 2022+ Dolby Vision Filmmaker naming.
-// C9/CX/C1 call their dark DV reference preset Cinema. Keep the proven
+// C8/C9 use the older Technicolor family and do not expose Filmmaker or
+// Personalised Picture. Their dark DV reference preset is called Cinema.
+const LG_2018_2019_PICTURE_MODES_BY_SIGNAL={
+ sdr:[
+  ['expert1','SDR Expert Bright'],
+  ['expert2','SDR Expert Dark'],
+  ['cinema','SDR Cinema'],
+  ['technicolor','SDR Technicolor Expert'],
+  ['game','SDR Game'],
+  ['normal','SDR Standard'],
+  ['eco','SDR Auto Power Save'],
+  ['sports','SDR Sports'],
+  ['vivid','SDR Vivid']
+ ],
+ hdr10:[
+  ['hdrCinema','HDR Cinema'],
+  ['hdrCinemaBright','HDR Cinema Home'],
+  ['hdrTechnicolor','HDR Technicolor Expert'],
+  ['hdrGame','HDR Game'],
+  ['hdrStandard','HDR Standard'],
+  ['hdrVivid','HDR Vivid']
+ ],
+ hlg:[
+  ['hdrCinema','HLG Cinema'],
+  ['hdrCinemaBright','HLG Cinema Home'],
+  ['hdrTechnicolor','HLG Technicolor Expert'],
+  ['hdrGame','HLG Game'],
+  ['hdrStandard','HLG Standard'],
+  ['hdrVivid','HLG Vivid']
+ ],
+ dv:[
+  ['dolbyVisionFilmMaker','DV Cinema'],
+  ['dolbyVisionCinemaBright','DV Cinema Home'],
+  ['dolbyVisionGame','DV Game'],
+  ['dolbyVisionStandard','DV Standard'],
+  ['dolbyVisionVivid','DV Vivid']
+ ]
+};
+
+// CX/C1 predate the C2+ Personalised Picture and HDR Auto Power Save modes.
+// They also call their dark DV reference preset Cinema. Keep the proven
 // dark-reference calibration value and change only its visible UI label.
 const LG_PRE2022_PICTURE_MODES_BY_SIGNAL={
+ sdr:[
+  ['expert1','SDR Expert Bright'],
+  ['expert2','SDR Expert Dark'],
+  ['cinema','SDR Cinema'],
+  ['filmMaker','SDR Filmmaker'],
+  ['game','SDR Game Optimizer'],
+  ['normal','SDR Standard'],
+  ['eco','SDR Auto Power Save'],
+  ['sports','SDR Sports'],
+  ['vivid','SDR Vivid']
+ ],
  hdr10:[
   ['hdrCinema','HDR Cinema'],
   ['hdrCinemaBright','HDR Cinema Home'],
@@ -3472,11 +3882,20 @@ function lgSignalModeKey(){
 function lgUsesPre2022PictureModeMap(){
  const state=window.lgStatusState||{};
  const model=String(state.modelName||state.model_name||state.displayName||'').toUpperCase();
- return /OLED\d*(?:A|B|C|E|G|R|W|Z)(?:9|X|1)/.test(model);
+ return /OLED\d*(?:A|B|C|E|G|R|W|Z)(?:8|9|X|1)/.test(model);
+}
+
+function lgUses2018Or2019PictureModeMap(){
+ const state=window.lgStatusState||{};
+ const model=String(state.modelName||state.model_name||state.displayName||'').toUpperCase();
+ return /OLED\d*(?:A|B|C|E|G|R|W|Z)(?:8|9)/.test(model);
 }
 
 function lgPictureModesForSignal(signalMode){
  const signal=String(signalMode||'sdr');
+ if(lgUses2018Or2019PictureModeMap()&&LG_2018_2019_PICTURE_MODES_BY_SIGNAL[signal]){
+  return LG_2018_2019_PICTURE_MODES_BY_SIGNAL[signal];
+ }
  if(lgUsesPre2022PictureModeMap()&&LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal]){
   return LG_PRE2022_PICTURE_MODES_BY_SIGNAL[signal];
  }
@@ -3488,6 +3907,10 @@ function lgPictureModeEntries(){
   ...LG_PICTURE_MODES_BY_SIGNAL.sdr,
   ...LG_PICTURE_MODES_BY_SIGNAL.hdr10,
   ...LG_PICTURE_MODES_BY_SIGNAL.dv,
+  ...LG_2018_2019_PICTURE_MODES_BY_SIGNAL.sdr,
+  ...LG_2018_2019_PICTURE_MODES_BY_SIGNAL.hdr10,
+  ...LG_2018_2019_PICTURE_MODES_BY_SIGNAL.dv,
+  ...LG_PRE2022_PICTURE_MODES_BY_SIGNAL.sdr,
   ...LG_PRE2022_PICTURE_MODES_BY_SIGNAL.hdr10,
   ...LG_PRE2022_PICTURE_MODES_BY_SIGNAL.dv
  ];
@@ -3514,7 +3937,6 @@ function lgPictureModeCanonicalValue(value){
   isfdark:'expert2',
   darkroom:'expert2',
   brightroom:'expert1',
-  technicolorexpert:'technicolorExpert',
   filmmaker:'filmMaker',
   filmmakermode:'filmMaker',
   filmlmakermode:'filmMaker',
@@ -3523,6 +3945,7 @@ function lgPictureModeCanonicalValue(value){
   filmlmamaker:'filmMaker',
   filmamker:'filmMaker',
   gameoptimizer:'game',
+  technicolorexpert:'technicolor',
   hdrcinema:'hdrCinema',
   hdr_cinema:'hdrCinema',
   hdrfilmamker:'hdrFilmMaker',
@@ -3535,10 +3958,13 @@ function lgPictureModeCanonicalValue(value){
   hdrgameoptimizer:'hdrGame',
   hdrstandard:'hdrStandard',
   hdr_standard:'hdrStandard',
+  hdreco:'hdrEco',
+  hdr_eco:'hdrEco',
+  hdrautopowersave:'hdrEco',
   hdrvivid:'hdrVivid',
   hdr_vivid:'hdrVivid',
-  hdrtechnicolorexpert:'hdrTechnicolorExpert',
-  hdr_technicolorexpert:'hdrTechnicolorExpert',
+  hdrtechnicolorexpert:'hdrTechnicolor',
+  hdr_technicolorexpert:'hdrTechnicolor',
   dolbyvisioncinema:lgUsesPre2022PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
   dolby_hdr_cinema:lgUsesPre2022PictureModeMap()?'dolbyVisionFilmMaker':'dolbyVisionCinema',
   // The dark-reference mode is called Cinema on C9/CX/C1 and Filmmaker on
@@ -3576,10 +4002,23 @@ function lgPictureModeCanonicalValue(value){
   dolbyvisionstandard:'dolbyVisionStandard',
   dolbyhdrstandard:'dolbyVisionStandard',
   dolby_hdr_standard:'dolbyVisionStandard',
-  aps:'standard',
-  eco:'standard',
-  normal:'standard',
-  sports:'vivid'
+  standard:'normal',
+  aps:'eco',
+  autopowersave:'eco',
+  personalised:'personalized',
+  personalizedpicture:'personalized',
+  personalisedpicture:'personalized',
+  hdrpersonalised:'hdrPersonalized',
+  hdr_personalized:'hdrPersonalized',
+  hdr_personalised:'hdrPersonalized',
+  hdrpersonalizedpicture:'hdrPersonalized',
+  hdrpersonalisedpicture:'hdrPersonalized',
+  dolbyvisionpersonalised:'dolbyVisionPersonalized',
+  dolbyhdrpersonalized:'dolbyVisionPersonalized',
+  dolbyhdrpersonalised:'dolbyVisionPersonalized',
+  dolby_hdr_personalized:'dolbyVisionPersonalized',
+  dolbypersonalized:'dolbyVisionPersonalized',
+  dolbypersonalised:'dolbyVisionPersonalized'
  };
  if(aliases[token]) return aliases[token];
  const normalized=lgPictureModeEntries().find(item=>lgPictureModeToken(item[0])===token);
@@ -3612,7 +4051,11 @@ function lgPictureModeSignalForValue(value){
  const token=lgPictureModeToken(mode);
  if(token.indexOf('dolbyhdr')===0) return 'dv';
  if(token.indexOf('hdr')===0) return 'hdr10';
- return '';
+ // Every HDR10/HLG token starts with "hdr" and every Dolby Vision token
+ // with "dolby" on all captured firmware, so anything else the TV reports
+ // (e.g. "photo", or a token newer than this list) is an SDR preset.
+ // Returning '' here blanks the dropdown and wipes the cached mode.
+ return 'sdr';
 }
 
 function lgPictureModeMatchesSignal(value,signalMode){
@@ -4115,8 +4558,11 @@ function lgDisplayControlRender(){
  const grid=document.getElementById('lgDisplayControlGrid');
  const refreshBtn=document.getElementById('lgDisplayControlRefreshBtn');
  const resetBtn=document.getElementById('lgDisplayControlResetBtn');
+ const applyAllBtn=document.getElementById('lgApplyAllInputsBtn');
  if(refreshBtn) refreshBtn.disabled=lgDisplayControlPending||!lgDisplayControlConnected();
- if(resetBtn) resetBtn.disabled=lgDisplayControlPending||!lgDisplayControlConnected()||lgPictureModePending||lgCalibrationModePending;
+ const modeActionsDisabled=lgDisplayControlPending||!lgDisplayControlConnected()||lgPictureModePending||lgCalibrationModePending||lgApplyAllInputsPending;
+ if(resetBtn) resetBtn.disabled=modeActionsDisabled;
+ if(applyAllBtn) applyAllBtn.disabled=modeActionsDisabled;
  if(!grid) return;
  const connected=lgDisplayControlConnected();
  if(!connected){
@@ -4283,7 +4729,8 @@ function renderLgStatus(r){
 	 const clientKeyPresent=!!r.client_key_present;
 	 const disconnected=!!r.disconnected;
 	 const connected=Object.prototype.hasOwnProperty.call(r,'connected')?!!r.connected:!!((paired||clientKeyPresent)&&!pinPending&&!disconnected);
-	 const previousPaired=!!(window.lgStatusState&&window.lgStatusState.paired);
+	 const previousState=window.lgStatusState||{};
+	 const previousPaired=!!previousState.paired;
 	 const promptKey=lgDetectedPromptKey(r);
 	 window.lgStatusState={
 		  paired:paired,
@@ -4299,9 +4746,18 @@ function renderLgStatus(r){
 		  ip:r.manual_ip||r.stored_ip||r.auto_ip||'',
 		  modelName:lgDisplayNameFromStatus(r),
 		  displayName:lgDisplayNameFromStatus(r),
-		  tvPower:r.tv_power||''
+		  tvPower:r.tv_power||'',
+		  currentInputChecked:connected&&!!previousState.currentInputChecked,
+		  currentInputDisplay:connected?(previousState.currentInputDisplay||''):'',
+		  currentInput:connected?(previousState.currentInput||''):'',
+		  currentInputId:connected?(previousState.currentInputId||''):'',
+		  currentInputLabel:connected?(previousState.currentInputLabel||''):'',
+		  currentAppId:connected?(previousState.currentAppId||''):'',
+		  currentInputMessage:connected?(previousState.currentInputMessage||''):'',
+		  currentInputUpdatedAt:connected?(previousState.currentInputUpdatedAt||0):0
 		 };
 	 renderLgTopStatus(r);
+	 lgRenderCurrentInput();
 	 if(pinPending){
     badge.textContent=promptStyle==='controller-pin'?'Enter PIN':'Pairing';
    badge.style.background='var(--orange)';
@@ -4718,7 +5174,8 @@ async function lgRefreshPictureMode(force){
 		 }
 	 if(typeof lgIsCommandBusy==='function'&&lgIsCommandBusy()) return;
 	 if(lgPictureModePending) return;
- if(!force&&lgPictureModeValue&&lgPictureModeSignalMode===configured
+	 const currentInputFresh=!!(state.currentInputChecked&&state.currentInputUpdatedAt&&(Date.now()-state.currentInputUpdatedAt)<15000);
+	 if(!force&&currentInputFresh&&lgPictureModeValue&&lgPictureModeSignalMode===configured
     && lgPictureModeMatchesSignal(lgPictureModeValue,configured)){
   lgPopulatePictureModeSelect(lgPictureModeValue);
   return;
@@ -4729,11 +5186,12 @@ async function lgRefreshPictureMode(force){
   const r=await fetchJSON('/api/lg/picture-settings',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
+   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true,include_current_input:true}),
    _quiet:true,
    _timeoutMs:9000
   });
   if(r&&r.status==='ok'&&r.picture_settings){
+   lgUpdateCurrentInput(r);
    const mode=lgPictureModeCanonicalValue(r.picture_settings.pictureMode||'');
    // Only accept a TV readback that matches the configured output signal.
    // When HDMI is DV but the TV still reports SDR "cinema" (wrong input,
@@ -4772,7 +5230,6 @@ async function lgSetPictureMode(){
   lgPopulatePictureModeSelect(lgPictureModeValue);
   return;
 	 }
- lgRememberPictureMode(value,signal);
 	 lgPictureModePending=true;
 	 select.disabled=true;
 	 const commandHandle=lgBeginCommand('Changing LG picture mode');
@@ -4781,20 +5238,26 @@ async function lgSetPictureMode(){
    method:'POST',
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({settings:{pictureMode:value},picture_mode:value,signal_mode:lgSignalModeKey(),readback_keys:['pictureMode']}),
-   _timeoutMs:15000
+   // Above the helper's own 45 s budget: the readback-verified select can
+   // poll both routes for ~20 s on a slow HDMI re-sync, and giving up here
+   // first leaves the helper switching the TV after the UI said it failed.
+   _timeoutMs:50000
   });
   if(r&&r.status==='ok'){
    const mode=(r.picture_settings&&r.picture_settings.pictureMode)||value;
    lgPictureModeValue=mode;
    lgPictureModeSignalMode=signal;
-   lgRememberPictureMode(mode,signal);
+   // Keep an unverified legacy selection as this session's DDC target, but
+   // never persist it as the TV's active mode. Reset and future calibration
+   // must not silently trust a mode the TV could not read back.
+   if(r.picture_mode_verified===true) lgRememberPictureMode(mode,signal);
    // A pre-2022 set (webOS <= 6) does not expose picture-mode switching over
    // the settings API: the daemon only records the mode as the DDC calibration
    // target and the TV stays on whatever the operator last selected with the
    // remote. Saying "set to X" there reads as though the TV switched, which is
    // how this got mistaken for a broken picture-mode control -- say what
    // actually happened and what the operator still has to do.
-   if(r.virtual_picture_settings){
+   if(r.manual_confirmation_required||r.virtual_picture_settings){
     toast(r.message||('PGenerator will calibrate '+lgPictureModeLabel(mode)+', but this LG generation cannot be switched over the network -- select '+lgPictureModeLabel(mode)+' on the TV with the remote.'),true);
    }else{
     toast('LG picture mode set to '+lgPictureModeLabel(mode));
@@ -4806,14 +5269,112 @@ async function lgSetPictureMode(){
 	   lgDisplayControlInvalidate();
 	   lgDisplayControlRefresh(true);
 	  }else{
-   toast(r&&r.message?r.message:'Unable to change LG picture mode','err');
+   // The helper refuses unless the TV reads the requested mode back, and
+   // reports what the TV is actually on -- show that rather than the
+   // selection that did not take.
+   if(r&&r.active_picture_mode&&r.picture_mode_verified===true){
+    lgPictureModeValue=lgPictureModeCanonicalValue(r.active_picture_mode);
+    lgPictureModeSignalMode=lgPictureModeEffectiveSignal(lgPictureModeValue);
+    lgRememberPictureMode(lgPictureModeValue,lgPictureModeSignalMode);
+   }
+   let msg=r&&(r.message||r.repair_hint);
+   // fetchJSON answers null when the request timed out; the helper may
+   // still be switching the TV, so do not call that a failure outright.
+   if(!r) msg='No reply from the LG helper within 50 s; the TV may still change. Click Refresh to see which mode it is on.';
+   toast(msg||'Unable to change LG picture mode','err');
   }
 	 }catch(e){
-	  toast('Unable to change LG picture mode','err');
+	  toast((e&&e.message)?e.message:'Unable to change LG picture mode','err');
 	 }finally{
 	  lgEndCommand(commandHandle);
 	  lgPictureModePending=false;
 	 lgPopulatePictureModeSelect(lgPictureModeValue);
+	 lgDisplayControlRender();
+ }
+}
+
+async function lgApplyAllInputs(){
+ if(lgApplyAllInputsPending) return;
+ const state=window.lgStatusState||{};
+ if(!lgStatusConnected(state)){
+  toast('Connect the LG TV first','err');
+  return;
+ }
+ // The TV copies whatever mode it is actually on, not the dropdown's
+ // selection (stale after a Magic Remote change). Ask the TV before naming
+ // the preset in an irreversible-action warning; fall back to a generic
+ // label rather than a possibly wrong one.
+ const button=document.getElementById('lgApplyAllInputsBtn');
+ if(button) button.disabled=true;
+ let mode='';
+ try{
+  const r=await fetchJSON('/api/lg/picture-settings',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({keys:['pictureMode'],picture_mode:'',signal_mode:lgSignalModeKey(),ignore_calibration_picture_mode:true}),
+   _quiet:true,
+   _timeoutMs:9000
+  });
+  if(r&&r.status==='ok'&&r.picture_settings&&r.picture_settings.pictureMode){
+   mode=lgPictureModeCanonicalValue(r.picture_settings.pictureMode);
+   if(mode&&mode!==lgPictureModeValue){
+    lgPictureModeValue=mode;
+    lgPictureModeSignalMode=lgPictureModeEffectiveSignal(mode);
+    lgPopulatePictureModeSelect(mode);
+   }
+  }
+ }catch(e){
+  mode='';
+ }finally{
+  lgDisplayControlRender();
+ }
+ const modeEl=document.getElementById('lgApplyAllInputsMode');
+ if(modeEl) modeEl.textContent=mode?lgPictureModeLabel(mode):'the active picture mode (the TV did not report it)';
+ const modal=document.getElementById('lgApplyAllInputsModal');
+ if(!modal) return;
+ modal.style.display='flex';
+ const confirmBtn=document.getElementById('lgApplyAllInputsConfirmBtn');
+ if(confirmBtn){ confirmBtn.disabled=false; confirmBtn.focus(); }
+ if(typeof uiSyncBodyScrollLock==='function') uiSyncBodyScrollLock();
+}
+
+function lgApplyAllInputsClose(){
+ const modal=document.getElementById('lgApplyAllInputsModal');
+ if(modal) modal.style.display='none';
+ if(typeof uiSyncBodyScrollLock==='function') uiSyncBodyScrollLock();
+}
+
+async function lgApplyAllInputsConfirmed(){
+ if(lgApplyAllInputsPending) return;
+ lgApplyAllInputsPending=true;
+ const confirmBtn=document.getElementById('lgApplyAllInputsConfirmBtn');
+ if(confirmBtn) confirmBtn.disabled=true;
+ lgApplyAllInputsClose();
+ const button=document.getElementById('lgApplyAllInputsBtn');
+ if(button) button.disabled=true;
+ const commandHandle=lgBeginCommand('Applying picture settings to all inputs');
+ try{
+  const r=await fetchJSON('/api/lg/picture-settings/apply-all-inputs',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({}),
+   _timeoutMs:75000
+  });
+  if(r&&r.status==='ok'){
+   // Green only when the TV reported the action done or accepted the
+   // request outright; a bare alert-bridge dispatch is a warning, not a
+   // result.
+   toast(r.message||'Applied picture settings to all inputs',!(r.confirmed||r.acknowledged));
+  }else{
+   toast(r&&r.message?r.message:'Unable to apply picture settings to all inputs','err');
+  }
+ }catch(e){
+  console.error('apply-all-inputs',e);
+  toast((e&&e.message)?e.message:'Unable to apply picture settings to all inputs','err');
+ }finally{
+  lgEndCommand(commandHandle);
+  lgApplyAllInputsPending=false;
+  lgDisplayControlRender();
  }
 }
 

@@ -3336,6 +3336,24 @@ sub max_defined_delta {
  return $max;
 }
 
+# A headline "final max" is the maximum of each anchor's final committed
+# best, not the first/biggest value encountered while that anchor converged.
+sub autocal_committed_max {
+ my ($current,$final)=@_;
+ $current=0 if(!defined($current));
+ return $current if(!defined($final));
+ return ($final+0 > $current+0) ? ($final+0) : ($current+0);
+}
+
+sub autocal_dpg_terminal_error {
+ my ($label,$upload_failed,$white_converged,$detail)=@_;
+ $label||="1D DPG";
+ $detail||="";
+ return "$label upload failed".($detail ne "" ? ": $detail" : "") if($upload_failed);
+ return "$label white reference did not converge; the generated curve was not committed" if(!$white_converged);
+ return undef;
+}
+
 sub committed_polish_far_from_target {
  my ($de,$target_delta)=@_;
  return 0 if(!defined($de));
@@ -14682,8 +14700,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	# noise floor: the best-so-far revert budget lets a noisy patch try a little
 	# longer than the default 3 reverts. Trimmed to 4 (from 12) toward the SDR26
 	# revert budget -- 12 reverts mostly thrashed noise-limited reads and cost
-	# time without lowering dE. Paired with the -Y aaa averaging upgrade in
-	# lg_low_light_mode_for_reading.
+	# time without lowering dE. The operator's Low Light averaging mode is
+	# held stable for the session so this budget never triggers a USB respawn.
 	my $very_low_ire_threshold=defined($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}) ? ($config->{"lg_autocal_hdr20_dpg_very_low_ire_threshold"}+0) : 2.0;
 	$very_low_ire_threshold=0.5 if($very_low_ire_threshold < 0.5);
 	$very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
@@ -14961,7 +14979,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		$state->{"message"}="Uploading test-mode 1D DPG snapshot (post-2% state) for single-anchor calibration";
 		write_state($state);
 		my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-		log_line("HDR20 1D DPG greyscale: TEST MODE snapshot upload failed (continuing): ".$bmsg) if(!$bok);
+		return "HDR20 1D DPG test snapshot upload failed: ".$bmsg if(!$bok);
 	} else {
 		# Full autocal only: upload identity BT2020 gamut + identity 3D LUT
 		# BEFORE the DPG loop, inside the same CAL_START session. The 3D LUT
@@ -14985,7 +15003,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				$cal_active=1;
 				log_line("HDR20 1D DPG greyscale: identity 3D LUT + BT2020 gamut container uploaded (CAL_START active)");
 			} else {
-				log_line("HDR20 1D DPG greyscale: 3D LUT container upload failed (continuing): ".((ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : "unknown"));
+				my $detail=(ref($resp) eq "HASH" && $resp->{message}) ? $resp->{message} : "unknown error";
+				return "HDR20 1D DPG identity 3D LUT container upload failed: ".$detail;
 			}
 		}
 		$state->{"current_name"}="HDR20 1D DPG (identity baseline)";
@@ -14994,7 +15013,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		write_state($state);
 		{
 			my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-			log_line("HDR20 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+			return "HDR20 1D DPG identity baseline upload failed: ".$bmsg if(!$bok);
 		}
 	}
 
@@ -15079,14 +15098,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $total_inner_iters=0;
 	# $max_de_overall tracks the full trajectory including reverted overshoots
 	# and is useful for diagnostic logs (it shows the worst move the worker
-	# tried). $max_de_overall_committed is the parallel accumulator used for
-	# the reported headline max dE: it is updated ONLY inside the new-best
-	# branch and on convergence of any calibrate_anchor closure, so a single
-	# noise outlier landing on a reverted iter cannot become the headline max
-	# and propagate to $state->{hdr20_1d_dpg_final_de} and the run summary
-	# "final max dE=..." log line. The wire state ($best_dpg/$best_anchors)
-	# is unaffected -- it is already restored correctly at the end of each
-	# anchor's loop.
+	# tried). $max_de_overall_committed is updated once per anchor from its
+	# final best measurement. A first-read error or reverted overshoot can
+	# therefore never become the reported final maximum.
 	my $max_de_overall=0;
 	my $max_de_overall_committed=0;
 	my $exit_reason="converged";
@@ -15381,10 +15395,8 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			$state->{"current_delta_e"}=defined($de)?$de:undef;
 			# Trajectory max (kept as-is, includes reverted overshoots). Useful in
 			# transient / per-iter logs so the operator can see the worst move the
-			# worker tried. The HEADLINE max dE reported to $state's
-			# hdr20_1d_dpg_final_de + run summary is driven by
-			# $max_de_overall_committed (updated only inside the new-best /
-			# converged branches below), NOT by this value.
+			# worker tried. The headline max dE is updated from $best_de only
+			# after this anchor has reached its final committed state.
 			$max_de_overall=$de+0 if(defined($de) && $de+0 > $max_de_overall+0);
 			write_state($state);
 			# Refine gamma_effective from the previous iter's measured Y/DPG
@@ -15459,14 +15471,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			# the gain_* / damp_* fields become 0.0000 / damp-default.
 			my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
 			$converged=1 if($conv_now);
-			# Committed-max accumulator -- convergence path. A converging iter
-			# that tied the existing best (i.e. $de == $best_de so the new-best
-			# branch below does NOT fire) would otherwise miss the headline
-			# accumulator: this explicit convergence feed closes that gap. The
-			# value is the same one the new-best branch will write (the dedup
-			# is intentional), so when the new-best branch fires on a
-			# converging iter this is a no-op-equivalent update.
-			$max_de_overall_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_overall_committed+0);
 			# Best-so-far with revert runs ONLY at low IRE (< low_ire_threshold,
 			# default 5%): it was built to break the constant-amplitude
 			# oscillation at 1.4%/4% IRE. At mid/high IRE (incl. 100% white)
@@ -15484,16 +15488,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					$best_anchors=[map { +{ %$_ } } @done];
 					$best_reading=(ref($reading) eq "HASH") ? { %{$reading} } : undef;
 					$consecutive_reverts=0;
-					# Committed-max accumulator -- new-best path. A new best means
-					# this dE is the trajectory landmark for the anchor -- it is by
-					# construction WORSE than the previous best was, but it is the
-					# new committed worst case (so far). Feed it into the headline
-					# accumulator so the caller's "$max_de_overall_committed"
-					# reflects the worst case among committed (best-tracking)
-					# iters only across all anchors. A reverted iter downstream of
-					# this new best will NOT lower this value, so a single noise
-					# outlier on a reverted iter cannot poison it.
-					$max_de_overall_committed=$de+0 if(defined($de) && $de+0 > $max_de_overall_committed+0);
 					# Gentle step-size recovery instead of a hard reset to full.
 					# At very low IRE the signal sits in the meter noise floor, so a
 					# "new best" is frequently just a lucky read; snapping the step
@@ -15974,6 +15968,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				@{$current_dpg}=@{$best_dpg};
 				@done=@{$best_anchors};
 				my ($bok,$bmsg)=$upload_dpg->($current_dpg);
+				if(!$bok) {
+					$upload_failed=1;
+					$exit_reason="restore_upload_failed";
+				}
 				# Chart the reading that PRODUCED the best, rather than spending a
 				# fresh read on the restored state. Re-uploading $best_dpg puts the
 				# panel back into exactly the state $best_reading was measured in, so
@@ -16016,6 +16014,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				log_line("HDR20 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")").($_restored_ok?" (charted best reading, no re-read)":" (no best reading to chart)"));
 			}
 		}
+		$max_de_overall_committed=autocal_committed_max($max_de_overall_committed,$best_de);
 		return ($converged,$last_reading);
 	};
 
@@ -16201,6 +16200,13 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	$state->{"message"}=sprintf("HDR20 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall_committed,$target_de,$exit_reason);
 	write_state($state);
 	log_line("HDR20 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall_committed)." (committed; trajectory=".sprintf("%.3f",$max_de_overall)."), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
+	my $terminal_error=autocal_dpg_terminal_error(
+		"HDR20 1D DPG",
+		$upload_failed,
+		$state->{"hdr20_1d_dpg_white_converged"},
+		$exit_reason,
+	);
+	return $terminal_error if(defined($terminal_error));
 	return undef;
 }
 
@@ -16579,13 +16585,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $upload_fail_streak=0;
  # Per-anchor max-dE accumulator (committed-only). $max_de_anchor tracks the
  # full trajectory including reverted overshoots and is useful for diagnostic
- # logs (it shows the worst move the worker tried). $max_de_anchor_committed
- # is the parallel accumulator used for the reported headline max dE: it is
- # updated ONLY inside the new-best branch and on convergence, so a single
- # noise outlier landing on a reverted iter cannot become the per-anchor max
- # and propagate to the caller's "$max_de_overall" / "$state final_de" /
- # run summary. The wire state ($best_dpg/$best_anchors) is unaffected -- it
- # is already restored correctly at the end of the loop.
+ # logs (it shows the worst move the worker tried). The committed value is
+ # assigned once from the anchor's final best measurement before returning.
  my $max_de_anchor=0;
  my $max_de_anchor_committed=0;
 
@@ -16712,9 +16713,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    # Trajectory max (kept as-is, includes reverted overshoots). Useful in
    # transient / per-iter logs so the operator can see the worst move the
    # worker tried. The HEADLINE max dE reported to the caller (and ultimately
-   # to the WebUI / state file / "final max dE" log line) is driven by
-   # $max_de_anchor_committed (updated only inside the new-best / converged
-   # branches below), NOT by this value.
+   # to the WebUI / state file / "final max dE" log line) is assigned from
+   # $best_de after this anchor reaches its final committed state.
    $max_de_anchor=$de+0 if(defined($de) && $de+0 > $max_de_anchor+0);
    write_state($state);
    # Refine gamma_effective from the previous iter's measured Y/DPG change
@@ -16785,13 +16785,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    $dpg_b_prev=$current_dpg_ref->[$idx+2048];
    my $conv_now=defined($de) && $de+0 <= $_effective_target_de+0;
    $converged=1 if($conv_now);
-   # Committed-max accumulator -- convergence path. A converging iter that
-   # tied the existing best (i.e. $de == $best_de so the new-best branch
-   # below does NOT fire) would otherwise miss the headline accumulator: this
-   # explicit convergence feed closes that gap. The value is the same one the
-   # new-best branch will write (the dedup is intentional), so when the new-
-   # best branch fires on a converging iter this is a no-op-equivalent update.
-   $max_de_anchor_committed=$de+0 if($conv_now && defined($de) && $de+0 > $max_de_anchor_committed+0);
   # Best-so-far + mid-loop revert: HDR-style tiered policy.
   # - Always track best_de/best_dpg for final-state restore.
   # - Mid IRE [low_ire, high_ire): NO mid-loop revert. Eager best_de-based
@@ -16808,14 +16801,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     $best_anchors=[map { +{ %$_ } } @{$done_ref}];
     $best_reading=(ref($reading) eq "HASH") ? { %{$reading} } : undef;
     $consecutive_reverts=0;
-    # Committed-max accumulator: a new best means this dE is the trajectory
-    # landmark for the anchor -- it is by construction WORSE than the
-    # previous best was, but it is the new committed worst case (so far).
-    # Feed it into the headline accumulator so the caller's "$max_de_overall"
-    # reflects the worst case among committed (best-tracking) iters only.
-    # A reverted iter downstream of this new best will NOT lower this value,
-    # so a single noise outlier on a reverted iter cannot poison it.
-    $max_de_anchor_committed=$de+0 if(defined($de) && $de+0 > $max_de_anchor_committed+0);
     # Gentle step-size recovery instead of a hard reset to
     # $initial_move_scaling. At very low IRE the measured signal sits in the
     # meter noise floor, so a "new best" is frequently just a lucky read.
@@ -17325,6 +17310,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     @{$done_ref}=@{$best_anchors};
    }
    my ($bok,$bmsg)=($_differs || $panel_out_of_sync) ? $upload_dpg->($current_dpg_ref) : (1,undef);
+   $upload_failed=1 if(!$bok);
    # Recompute the anchor's $tl the same way the iter loop does (legal-peak
    # uses its own measured Y; body uses the 2.2 curve via white_ref + black_y).
    my $_is_legal_peak_restore=lg_autocal_sdr26_dpg_is_peak_ire($_anchor_ire) ? 1 : 0;
@@ -17347,6 +17333,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
    log_line("SDR26 1D DPG greyscale: ".$label." final-state restore to best dE=".sprintf("%.4f",$best_de).((($_differs || $panel_out_of_sync))?($bok?" (re-uploaded)":" (re-upload FAILED: ".($bmsg//"unknown").")"):" (already at best)").$_reread_suffix);
   }
  }
+ $max_de_anchor_committed=autocal_committed_max(0,$best_de);
  # Return the headline-committed max (not the trajectory max). The caller
  # binds this to its own $max_de_overall, which then feeds $state's final_de
  # and the run summary's "final max dE=..." log line. The trajectory max
@@ -17825,7 +17812,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale {
   write_state($state);
   {
    my ($bok,$bmsg)=$upload_dpg->($current_dpg);
-   log_line("SDR26 1D DPG greyscale: identity baseline upload failed (continuing): ".$bmsg) if(!$bok);
+   return "SDR26 1D DPG identity baseline upload failed: ".$bmsg if(!$bok);
   }
 
   # Headroom pre-curve is YCbCr-Limited-only. It seeds idx 940 (legal 100%)
@@ -18108,6 +18095,13 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  $state->{"message"}=sprintf("SDR26 1D DPG greyscale complete: %d inner iters across %d anchors, final max dE=%.3f, target<=%.2f, exit=%s",$total_inner_iters,scalar(@done),$max_de_overall,$target_de,$exit_reason);
  write_state($state);
  log_line("SDR26 1D DPG greyscale: ".$total_inner_iters." inner iters across ".scalar(@done)." anchors, final max dE=".sprintf("%.3f",$max_de_overall)." (committed; per-anchor trajectory available in sdr_1d_dpg_anchor_history), target=".$target_de.", exit=".$exit_reason.", cal_held=".$cal_active);
+ my $terminal_error=autocal_dpg_terminal_error(
+  "SDR26 1D DPG",
+  $upload_failed,
+  $state->{"sdr_1d_dpg_white_converged"},
+  $exit_reason,
+ );
+ return $terminal_error if(defined($terminal_error));
  return undef;
 }
 
@@ -21795,53 +21789,6 @@ sub autocal_ddc_reset_diag_log (@) {
  };
 }
 
-# Tracks whether the NEXT autocal read should engage the operator's Low Light
-# Handler averaging. It is recomputed after every successful read from that
-# read's MEASURED luminance vs the operator's cd/m2 trigger: averaging is armed
-# only once a read lands below the trigger, and disarmed again once a read
-# comes back at/above it. Default "off" so the first read of a patch is a fast
-# single-shot until the panel proves it is in low-light territory.
-our $lg_low_light_active_mode="off";
-
-# Decide the averaging mode ("off"/"a"/"aa"/"aaa") for the NEXT read given the
-# luminance just measured. Returns "off" unless the handler is enabled, a real
-# averaging mode is selected, and the measured Y is below the operator trigger.
-# $rs is the AUTOCAL step hash for the NEXT read (NOT the read just taken).
-# A hard guard forces "off" at high IRE so the Low Light Handler cannot
-# engage averaging on the panel's peak: a stale white reference (e.g. a
-# previous step's bright read bleeding into the trigger) can otherwise
-# drive $Y below the trigger at 100% IRE and silently average the peak
-# white measurement, which is exactly the opposite of what the handler
-# is for.
-sub lg_low_light_mode_for_reading {
- my ($config,$reading,$rs)=@_;
- # Hard guard: 100% (and any IRE >= 80) is the panel's peak; the
- # Low Light Handler is only meaningful for dim patches. Never engage
- # averaging at high IRE even if the measured Y briefly dips below
- # the trigger (e.g. due to a stale white reference).
- if(ref($rs) eq "HASH") {
-  my $step_ire_guard=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-  return "off" if(defined($step_ire_guard) && $step_ire_guard+0 >= 80.0);
- }
- return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
- my $mode=lc($config->{"low_light"}{"mode"}||"off");
- return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- my $trigger=($config->{"low_light"}{"trigger"}||0)+0;
- $trigger=5.0 if($trigger <= 0);
- my $Y=luminance($reading);
-  return "off" if(!defined($Y) || $Y < 0);
-  # Very-low IRE (default <2%, e.g. 1.4% ~0.066 nits) is at the meter's
-  # noise floor: default to the strongest averaging (-Y aaa) so the read is
-  # reliable, regardless of the operator's selected mode. Everything else
-  # uses whatever the meter settings specify (the operator's $mode below).
-  if(ref($rs) eq "HASH") {
-   my $step_ire=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-   my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.5)+0;
-   return "aaa" if(defined($step_ire) && $step_ire+0 < $vlow);
-  }
-  return ($Y < $trigger) ? $mode : "off";
-}
-
 sub read_step_once {
 		 my ($config,$step,$attempt,$opts)=@_;
 		 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"";
@@ -21907,11 +21854,10 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
-		 # Also send the operator's STATIC low_light config (stable across
-		 # reads) so the WebUI/meter session can pick a session-level
-		 # METER_AVERAGING that does NOT churn on every per-read mode flip.
-		 # $config->{"low_light"}{"mode"} is the operator's card setting;
-		 # the per-read $lg_low_light_active_mode is decoupled from it.
+		 # Keep the operator's Low Light setting stable for the whole AutoCal
+		 # session. Changing spotread's averaging flags requires a USB process
+		 # restart; deriving that change from the previous patch caused repeated
+		 # respawns and intermittent meter claim failures between reads.
 		 my $session_ll_mode="off";
 		 my $session_ll_enabled=JSON::PP::false;
 		 if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
@@ -21922,14 +21868,6 @@ sub read_step_once {
 		  }
 		 }
 		 $payload->{"low_light_session"}={ mode => $session_ll_mode, enabled => $session_ll_enabled };
-		 # Route the operator's Low Light Handler (Meter Settings) to autocal
-		 # reads, but ONLY when the previous read armed it (measured below the
-		 # operator's cd/m2 trigger). $lg_low_light_active_mode is recomputed
-		 # after every read, so averaging engages on the read that follows a
-		 # sub-trigger result and disengages once a read climbs back above it.
-		 if($lg_low_light_active_mode ne "off") {
-		  $payload->{"low_light"}={ mode => $lg_low_light_active_mode, enabled => JSON::PP::true };
-		 }
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
 			 my $insert_error=apply_pattern_insert_before_read($config,$step,$step_key);
@@ -21984,10 +21922,6 @@ sub read_step_once {
 		   $reading->{"signal_b_pct"}=$step->{"signal_b_pct"} if(defined($step->{"signal_b_pct"}));
 	   $reading->{"read_delay_ms"}=$delay_ms;
 	   $reading->{"display_type"}=$payload->{"display_type"};
-	   # Re-arm/disarm the Low Light Handler for the NEXT read from THIS read's
-	   # measured luminance: below the operator trigger -> average next read;
-	   # at/above -> single-shot next read.
-	   $lg_low_light_active_mode=lg_low_light_mode_for_reading($config,$reading,$step);
 	   reset_meter_session_success();
 	   return ($reading,undef);
 	  }
@@ -22033,8 +21967,9 @@ $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 $LG_AUTOCAL_DARK_DETAIL=$config->{"dark_detail"} ? 1 : 0;
 if($LG_AUTOCAL_DARK_DETAIL) {
  my @dd=ddc_dark_detail_fillers_for_layout($LG_AUTOCAL_DDC_LAYOUT);
+ my @layout_slots=ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT);
  log_line("Dark Detail enabled: layout=$LG_AUTOCAL_DDC_LAYOUT adds ".scalar(@dd)." patches (".join(", ",@dd).") -> "
-  .scalar(ddc_slots_for_layout($LG_AUTOCAL_DDC_LAYOUT))." slots total; spline anchors unchanged");
+  .scalar(@layout_slots)." slots total; spline anchors unchanged");
 }
 my $max_iterations=defined($config->{"max_iterations"}) ? int($config->{"max_iterations"}) : 80;
 my $min_iterations=autocal_config_is_touchup($config) ? 4 : 12;
@@ -26880,25 +26815,20 @@ eval {
 						  }
 						 }
 		 }
-				 if(cancelled()) {
-		  $state->{"status"}="cancelled";
-	  $state->{"current_name"}="Auto Cal cancelled";
-	  $state->{"message"}="Auto Cal stopped";
-	 } else {
-	 $state->{"status"}="complete";
-	 $state->{"current_name"}="Auto Cal complete";
-	 $state->{"message"}="Auto Cal complete";
-	 $state->{"completed_at"}=int(time()*1000);
-	 $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
-	 $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
+	 # Keep the worker non-terminal until CAL_END and pattern cleanup have
+	 # finished. Publishing "complete" here used to let the browser start the
+	 # next Full AutoCal stage while this process was still alive; the server
+	 # correctly rejected that overlap and the browser aborted the whole run.
+	 if(!cancelled()) {
+	  $state->{"status"}="running";
+	  $state->{"phase"}="finalising";
+	  $state->{"current_name"}="Finalising Auto Cal";
+	  $state->{"message"}="Finishing TV and pattern cleanup";
+	  write_state($state);
 	 }
-	 log_line(sprintf("autocal eval returning success path (status=%s current_name=%s)", $state->{"status"}||"?", $state->{"current_name"}||"?"));
-	 write_state($state);
 			 if(ref($config) eq "HASH" && $config->{"lg_autocal_26"} && $calibration_mode_active) {
 			  # Some LG DDC write paths can leave the TV's calibration-mode
 			  # flag active even after the worker state believes CAL_END ran.
-			  # Write the terminal state first so a final cleanup hiccup cannot
-			  # strand a successful verified LUT upload as "running".
 			  end_calibration_mode($active_picture_mode_for_cleanup || $picture_mode);
 			  $calibration_mode_active=0;
 			  set_state_calibration_mode($state,0,"");
@@ -26910,6 +26840,21 @@ eval {
 	 }
 	 write_state($state);
 	 autocal_completion_pattern_cleanup($config,$state) if(!cancelled());
+	 if(cancelled()) {
+	  $state->{"status"}="cancelled";
+	  $state->{"current_name"}="Auto Cal cancelled";
+	  $state->{"message"}="Auto Cal stopped";
+	 } else {
+	  $state->{"status"}="complete";
+	  $state->{"phase"}="complete";
+	  $state->{"current_name"}="Auto Cal complete";
+	  $state->{"message"}="Auto Cal complete";
+	  $state->{"completed_at"}=int(time()*1000);
+	  $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);
+	  $state->{"elapsed_ms"}=0 if($state->{"elapsed_ms"}<0);
+	 }
+	 log_line(sprintf("autocal eval returning success path (status=%s current_name=%s)", $state->{"status"}||"?", $state->{"current_name"}||"?"));
+	 write_state($state);
 
  if($PGAC_LOADED) {
   eval {
