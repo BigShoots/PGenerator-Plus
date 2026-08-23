@@ -1814,7 +1814,23 @@ def apply_mhc2_active_neutral_luminance(luts, rows, black, primaries,
             if target <= y1 + 1e-9:
                 if y1 <= y0 + 1e-9:
                     return code0
-                return code0 + (target - y0) * (code1 - code0) / (y1 - y0)
+                # Interpolate in the PQ domain, not in linear luminance. The
+                # measured ladder is sparse and its luminance spans orders of
+                # magnitude, so a linear-in-Y segment is a poor fit and leaves
+                # a slope discontinuity at every knot. Because each channel
+                # samples this inversion at its own gain-scaled level, those
+                # kinks land at slightly different curve indices per channel
+                # and show up as a pure chroma error at the ladder codes.
+                # Hardware evidence: the R curve lost 24% of its slope at
+                # codes 410-420 and 710-720, both ladder knots, giving 9.9 and
+                # 7.1 chroma dE while luminance stayed within 1.2%. PQ is very
+                # nearly linear in code, so this removes the kink.
+                p0 = nits_to_pq(y0)
+                p1 = nits_to_pq(y1)
+                pt = nits_to_pq(target)
+                if p1 <= p0 + 1e-12:
+                    return code0
+                return code0 + (pt - p0) * (code1 - code0) / (p1 - p0)
         return neutral[-1][0]
 
     # Estimate the small luminance contribution of the retained unequal RGB
