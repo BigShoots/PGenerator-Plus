@@ -451,6 +451,10 @@ class Runner:
         comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
         if comport:
             cmd.extend(["-c", comport])
+        if self.args.high_resolution:
+            # ArgyllCMS enables reconstructed high-resolution spectral sampling
+            # on supported reference spectrophotometers with uppercase -H.
+            cmd.append("-H")
         # NOTE: do NOT pass "-Y R:<rate>" here. On the i1 Pro 2 the refresh-rate
         # override puts ccxxmake into a mode where it rejects the instrument with
         # "Instrument has no CCSS capability". CCSS only captures spectral shape,
@@ -567,6 +571,7 @@ def main():
     parser.add_argument("--patch-size", default="18")
     parser.add_argument("--refresh-rate", default="")
     parser.add_argument("--ccxxmake-bin", default="")
+    parser.add_argument("--high-resolution", action="store_true")
     parser.add_argument("--comport", default="")
     parser.add_argument("--target-comport", default="")
     parser.add_argument("--target-label", default="target colorimeter")

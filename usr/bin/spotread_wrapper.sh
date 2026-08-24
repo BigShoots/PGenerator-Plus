@@ -28,9 +28,11 @@ json_escape() {
 # Known USB meter IDs
 declare -A KNOWN_METERS=(
  ["0765:5020"]="Calibrite/X-Rite i1Display Pro Plus"
- ["0765:5001"]="X-Rite i1 Pro"
- ["0971:2000"]="X-Rite i1 Pro"
- ["0971:2007"]="X-Rite i1 Display Pro / ColorMunki Display"
+ ["0765:5001"]="X-Rite HueyL"
+ ["0765:6008"]="X-Rite i1Studio / ColorChecker Studio"
+ ["0765:6009"]="X-Rite i1Pro 3"
+ ["0971:2000"]="X-Rite i1Pro / i1Pro 2"
+ ["0971:2007"]="X-Rite ColorMunki Photo / Design"
  ["085c:0500"]="Datacolor Spyder 5"
  ["085c:0a00"]="Datacolor SpyderX"
  ["04db:0100"]="ColorVision Spyder"
@@ -39,9 +41,11 @@ declare -A KNOWN_METERS=(
 
 declare -A KNOWN_METER_TYPES=(
  ["0765:5020"]="colorimeter"
- ["0765:5001"]="spectro"
+ ["0765:5001"]="colorimeter"
+ ["0765:6008"]="spectro"
+ ["0765:6009"]="spectro"
  ["0971:2000"]="spectro"
- ["0971:2007"]="colorimeter"
+ ["0971:2007"]="spectro"
  ["085c:0500"]="colorimeter"
  ["085c:0a00"]="colorimeter"
  ["04db:0100"]="colorimeter"
@@ -51,10 +55,10 @@ declare -A KNOWN_METER_TYPES=(
 meter_type_from_name() {
  local name
  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
- if [[ "$name" =~ (^|[^[:alnum:]])(jeti|specbos|spectro|spectroradi|i1[[:space:]]*pro|i1pro|cs-1000|cs-150|cs-2000|cr-2[0-9]{2}|cr-3[0-9]{2}|fd-5|fd-7|myiro)([^[:alnum:]]|$) ]]; then
-  echo "spectro"
- elif [[ "$name" =~ (spyder|display[[:space:]]*pro|i1display|i1[[:space:]]*display|colormunki[[:space:]]*display|klein|sequel[[:space:]]*chroma) ]]; then
+ if [[ "$name" =~ (spyder|display[[:space:]]*pro|i1display|i1[[:space:]]*display|colormunki[[:space:]]*display|colorchecker[[:space:]]*display|huey|klein|sequel[[:space:]]*chroma) ]]; then
   echo "colorimeter"
+ elif [[ "$name" =~ (^|[^[:alnum:]])(jeti|specbos|spectro|spectroradi|i1[[:space:]]*pro|i1pro|i1[[:space:]]*studio|i1studio|colorchecker[[:space:]]*studio|colormunki([[:space:]]*(photo|design))?|cs-1000|cs-150|cs-2000|cr-2[0-9]{2}|cr-3[0-9]{2}|fd-5|fd-7|myiro)([^[:alnum:]]|$) ]]; then
+  echo "spectro"
  else
   echo "unknown"
  fi
