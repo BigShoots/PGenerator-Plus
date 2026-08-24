@@ -3,6 +3,14 @@ use warnings;
 use Test::More;
 use FindBin qw($Bin);
 
+# This test exercises pure classification and readback helpers. Keep it
+# loadable on the minimal CI Perl image without the production TLS dependency.
+BEGIN {
+ package IO::Socket::SSL;
+ sub import { }
+ $INC{'IO/Socket/SSL.pm'}=__FILE__;
+}
+
 my $helper="$Bin/../usr/sbin/pgenerator-lg";
 do $helper;
 die $@ if($@);
