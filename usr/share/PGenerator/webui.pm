@@ -3177,33 +3177,20 @@ sub webui_meter_read (@) {
 			 # per-read mode flows via the READ command so the SESSION-LEVEL
 			 # METER_AVERAGING (and the want_config 7th field) can stay
 			 # stable across reads even when this value flips every read.
-			 my $avg_mode="";
-			 $avg_mode=lc($1) if($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
+			 my $avg_mode="off";
+			 my $avg_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"enabled"\s*:\s*true/i) ? 1 : 0;
+			 $avg_mode=lc($1) if($avg_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(a|aa|aaa)"/);
+			 $avg_mode="off" unless($avg_enabled && ($avg_mode eq "a" || $avg_mode eq "aa" || $avg_mode eq "aaa"));
 			 # An EXPLICIT per-read "off" must reach the READ command as "off",
 			 # not be coerced to ""/"-" (inherit): "-" inherits whatever mode the
 			 # running spotread was last respawned with, so a worker that only
 			 # ever sends the averaging transitions IN would latch averaging on
 			 # for reads that must not average (the 3D profile's peak reads).
-			 # Callers that genuinely want inherit simply omit low_light.
-			 # Operator's STATIC low_light setting (the calibration card
-			 # value, NOT the per-read active mode). This stays the same for
-			 # every read in a run, so the session-level METER_AVERAGING
-			 # and want_config 7th field can use it without churning the
-			 # session when the per-read $avg_mode flips. Defaults to "off"
-			 # when the body omits it (manual/single-read paths), so the
-			 # single-read convention is preserved.
-			 my $session_avg_mode="";
-			 $session_avg_mode=lc($1) if($body=~/"low_light_session"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(off|a|aa|aaa|x|x_a|x_aa|x_aaa)"/);
-			 $session_avg_mode="" if($session_avg_mode eq "off");
-			 # Fall back to the per-read mode, then to the literal "off". The "off"
-			 # default is REQUIRED, not cosmetic: meter_session.sh writes its config
-			 # 7th field as ${METER_AVERAGING:-off}, so a null averaging arg becomes
-			 # "off" there. If want_config kept this field empty instead, the strict
-			 # config_matches ($cur eq $want) comparison would see "...|off" vs
-			 # "...|" and never match, so the session start/wait loop would time out
-			 # and the read would fail with "Meter session failed to start" whenever
-			 # the Low Light Handler is OFF. Keeping "off" here aligns both strings.
-			 $session_avg_mode=($avg_mode ne "") ? $avg_mode : "off" if($session_avg_mode eq "");
+			 # Keep the wrapper/session identity stable at explicit off. Averaging is
+			 # a property of the spotread child for this read, carried by READ below.
+			 # Copying the per-read mode into METER_AVERAGING makes the whole wrapper
+			 # session effectively averaged and defeats the luminance trigger.
+			 my $session_avg_mode="off";
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -3260,11 +3247,8 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- # $session_avg_mode is the operator's STATIC low_light setting, so the 7th
- # field (session-level METER_AVERAGING) stays stable across reads within a
- # run. The per-read $avg_mode flows through the READ command line, not the
- # session config -- otherwise the persistent session respawns (35-90s on
- # OLED) every time the per-read mode flips at the 5 cd/m2 trigger.
+ # The 7th field stays at off for the wrapper's whole life. Only the spotread
+ # child changes mode through the per-read READ field below.
  my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer|$pattern_provider";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
@@ -3306,10 +3290,8 @@ sub webui_meter_read (@) {
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
-  # $session_avg_mode (operator's static low_light) is the SESSION-LEVEL
-  # METER_AVERAGING, not the per-read $avg_mode -- they have to match the
-  # 7th field of want_config so the new session doesn't immediately look
-  # like a config-changed session to the next request.
+  # Session-level averaging is always off. Per-read averaging is applied by
+  # respawning only the spotread child after the explicit READ mode is parsed.
   if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer,$pattern_provider)) {
     return &webui_meter_session_start_error_json($want_config);
   }
@@ -3328,14 +3310,14 @@ sub webui_meter_read (@) {
  # Send the READ command to the daemon. The session helper applies this
  # settle delay before each reading, even when the current patch is reused.
  # The trailing 15th field is the PER-READ low_light mode: meter_session.sh
- # uses it to decide whether to respawn spotread with -Y/-x flags for this
+ # uses it to decide whether to respawn spotread with -Y averaging flags for this
  # specific read (the session-level METER_AVERAGING stays put).
 			 my $read_command=$calibrate_only ? "CALIBRATE" : "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
 			 my $cmd_request_id=($request_id ne "") ? $request_id : "-";
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
-			 my $cmd_low_light_mode=($avg_mode ne "") ? $avg_mode : "-";
+			 my $cmd_low_light_mode=$avg_mode;
 			 my $cmd_continuous=$is_continuous ? "1" : "0";
 			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous" if(!$calibrate_only);
 		 $read_command.="\n";
@@ -3880,19 +3862,18 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # Low-light handler from the calibration card. When
- # enabled, the server appends the selected spotread flag set to
- # meter_session.sh's SR_CMD. The mode is a string the client picks
- # from the dropdown; invalid values fall through to off (no flag).
- my $low_light_mode="";
- if($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
+ # Low-light handler configuration for the series worker. The selected mode
+ # and trigger remain separate so meter_series.sh can choose the effective
+ # child mode from each serialized step's expected target luminance.
+ my $low_light_mode="off";
+ my $low_light_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"enabled"\s*:\s*true/i) ? 1 : 0;
+ if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
   $low_light_mode=lc($1);
-  # If the field was present but the value is unknown, fall through to
-  # "off" (no flag). Keep "" when the field is absent so the env-var
-  # prefix below stays empty and the launched command is identical to
-  # the pre-low-light-handler invocation.
-  $low_light_mode="off" unless($low_light_mode eq "off" || $low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa" || $low_light_mode eq "x" || $low_light_mode eq "x_a" || $low_light_mode eq "x_aa" || $low_light_mode eq "x_aaa");
+  $low_light_mode="off" unless($low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa");
  }
+ my $low_light_trigger="";
+ $low_light_trigger=$1+0 if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"trigger"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/i);
+ $low_light_trigger="" if($low_light_trigger ne "" && $low_light_trigger<=0);
  my $measurement_meter_usb_id="";
  $measurement_meter_usb_id=lc($1) if($body=~/"measurement_meter_usb_id"\s*:\s*"([0-9a-fA-F]{4}:[0-9a-fA-F]{4})"/);
  if($measurement_meter_usb_id eq "" && $measurement_meter_port ne "") {
@@ -5510,7 +5491,9 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # LOW_LIGHT_MODE is passed as the FINAL positional argument, not as an
+ # Low-light mode and trigger are positional arguments, not environment
+ # prefixes. The mode remains the operator-selected a/aa/aaa value; the
+ # series worker starts spotread at off and applies the trigger per step.
  # Precompute the mode-correct insertion codes via the shared helper so the
  # worker just SENDS them rather than recomputing. Without this, the
  # insertion flash used a hard-coded linear 0..255 formula and was wrong on
@@ -5541,9 +5524,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # any env-prefixed form (e.g. an "env KEY=VAL" prefix on the bash
  # command) makes the sudo invocation match no rule, so sudo demands a
  # password and the launch silently fails ("Process died unexpectedly").
- # A trailing arg keeps the authorized command intact. Empty value ->
- # meter_series.sh coerces to off (single long read).
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' </dev/null >/dev/null 2>&1 &";
+ # Trailing args keep the authorized command intact.
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -30310,6 +30292,62 @@ function meterConfirmReferenceWhiteRead(requestedStep,whiteStep){
  return window.confirm('No measured 100% white reference is available for this greyscale chart.\n\nRead '+whiteLabel+' first, then return to '+targetLabel+'?\n\nCancel will read '+targetLabel+' without a reference white.');
 }
 
+// Resolve the current step's expected target luminance through the same target
+// helpers used by the charts. A neutral step needs a real stimulus/IRE (or
+// explicit target metadata); otherwise a missing target could look like black.
+function meterExpectedTargetYForReadStep(step){
+ if(!step||typeof step!=='object') return null;
+ try{
+  if(step.target_Y!=null){
+   const direct=Number(step.target_Y);
+   if(Number.isFinite(direct)&&direct>=0) return direct;
+   return null;
+  }
+  if(step.dv_absolute_target_y!=null){
+   const direct=Number(step.dv_absolute_target_y);
+   if(Number.isFinite(direct)&&direct>=0) return direct;
+   return null;
+  }
+  if(step.custom_target_nits!=null){
+   const custom=Number(step.custom_target_nits);
+   if(Number.isFinite(custom)&&custom>0) return custom;
+   return null;
+  }
+  if(typeof meterSeriesStepIsGreyscale==='function'&&meterSeriesStepIsGreyscale(step)){
+   const targetPosition=[step.target_ire,step.analysis_ire,step.stimulus,step.ire]
+    .map(Number).find(Number.isFinite);
+   const targetYn=(step.target_Yn!=null)?Number(step.target_Yn):NaN;
+   if(!Number.isFinite(targetPosition)&&!(Number.isFinite(targetYn)&&targetYn>=0)) return null;
+   if(typeof meterGreyChartTargetXYZForReading!=='function') return null;
+   const target=meterGreyChartTargetXYZForReading(step);
+   const y=Number(target&&target.Y);
+   if(y===0&&((Number.isFinite(targetYn)&&targetYn>0)||(Number.isFinite(targetPosition)&&targetPosition>0))) return null;
+   return (Number.isFinite(y)&&y>=0)?y:null;
+  }
+  const hasTargetMeta=(step.target_Yn!=null&&Number.isFinite(Number(step.target_x))&&Number.isFinite(Number(step.target_y))
+   &&Number(step.target_y)>0&&Number.isFinite(Number(step.target_Yn))&&Number(step.target_Yn)>=0)
+   ||(step.dv_absolute_target_y!=null&&Number.isFinite(Number(step.dv_absolute_target_y)));
+  if(!hasTargetMeta||typeof meterTargetXYZForReading!=='function') return null;
+  const target=meterTargetXYZForReading(step);
+  const y=Number(target&&target.Y);
+  if(y===0&&((step.target_Yn!=null&&Number(step.target_Yn)>0)||(step.dv_absolute_target_y!=null&&Number(step.dv_absolute_target_y)>0))) return null;
+  return (Number.isFinite(y)&&y>=0)?y:null;
+ }catch(e){ return null; }
+}
+
+// Return an explicit per-read mode. The selected a/aa/aaa mode is used only
+// when expected target Y is valid and strictly below the configured trigger.
+function meterEffectiveLowLightReadState(step){
+ const selected=meterLowLightReadState();
+ const trigger=Number(selected&&selected.trigger);
+ const mode=String((selected&&selected.mode)||'off');
+ const off={enabled:false,mode:'off',trigger:Number.isFinite(trigger)?trigger:0};
+ if(!selected||!selected.enabled||!['a','aa','aaa'].includes(mode)||!(Number.isFinite(trigger)&&trigger>0)) return off;
+ const expectedY=meterExpectedTargetYForReadStep(step);
+ if(!(Number.isFinite(expectedY)&&expectedY>=0)) return off;
+ return expectedY<trigger?{enabled:true,mode:mode,trigger:trigger}:off;
+}
+
 function meterBuildManualReadPayload(step,ctx){
  const opts=ctx||{};
  const readPayload=meterMeasurementSignalContext({
@@ -30330,14 +30368,10 @@ function meterBuildManualReadPayload(step,ctx){
   if(opts.patternSignalRange!=null) readPayload.signal_range=opts.patternSignalRange;
  }
  readPayload.require_device_ready=!!opts.requireDeviceReady;
- // Pass the calibration-card low-light handler through to the server.
- // The trigger check (expected target luminance < trigger) is done
- // at the calibration level, not at the meter_session.sh level, so we
- // pass the effective mode (default off, low-light when enabled AND
- // target < trigger). All reads use this path: autocal, series read,
- // single read.
- const lowLight=meterLowLightReadState();
- if(lowLight) readPayload.low_light=lowLight;
+ // Manual, single, and continuous reads always carry an explicit effective
+ // mode selected from the current step's chart target. AutoCal and series
+ // persist the raw card configuration separately and resolve their own steps.
+ readPayload.low_light=meterEffectiveLowLightReadState(step);
  return readPayload;
 }
 

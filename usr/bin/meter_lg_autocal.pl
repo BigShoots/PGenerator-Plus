@@ -1965,6 +1965,60 @@ sub target_luminance_for_autocal_step {
 			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 		}
 
+sub autocal_low_light_number {
+ my ($value)=@_;
+ return undef if(!defined($value) || ref($value));
+ return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
+ my $number=$value+0;
+ return undef if($number != $number);
+ return $number;
+}
+
+# Resolve expected Y for the step about to be read. This deliberately uses the
+# current step metadata and the same target-luminance helper as the solver. It
+# never derives the next mode from the previous measured Y.
+sub autocal_expected_target_y_for_low_light {
+ my ($config,$step)=@_;
+ return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
+ foreach my $key (qw(target_Y target_luminance)) {
+  next if(!exists($step->{$key}));
+  my $direct=autocal_low_light_number($step->{$key});
+  return (defined($direct) && $direct >= 0) ? $direct : undef;
+ }
+ my $state=(ref($LG_AUTOCAL_STATE) eq "HASH") ? $LG_AUTOCAL_STATE : {};
+ my $white_y;
+ foreach my $candidate (
+  $_target_white_override,
+  $state->{"calibrated_white_luminance"},
+  $state->{"target_luminance"},
+  $config->{"target_luminance"},
+  $state->{"setup_luminance_reference"},
+  $config->{"setup_luminance_reference"}
+ ) {
+  my $number=autocal_low_light_number($candidate);
+  if(defined($number) && $number > 0) { $white_y=$number; last; }
+ }
+ return undef if(!defined($white_y));
+ my $black_y=autocal_state_black_luminance($state);
+ my $target=target_luminance_for_autocal_step(
+  $white_y,$step,$config->{"target_gamma"}||"bt1886",$config->{"signal_mode"}||"sdr",$black_y
+ );
+ $target=autocal_low_light_number($target);
+ return (defined($target) && $target >= 0) ? $target : undef;
+}
+
+sub autocal_low_light_mode_for_step {
+ my ($config,$step)=@_;
+ return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
+ my $mode=lc($config->{"low_light"}{"mode"}||"off");
+ return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
+ my $trigger=autocal_low_light_number($config->{"low_light"}{"trigger"});
+ return "off" if(!defined($trigger) || $trigger <= 0);
+ my $expected_y=autocal_expected_target_y_for_low_light($config,$step);
+ return "off" if(!defined($expected_y) || $expected_y < 0);
+ return ($expected_y < $trigger) ? $mode : "off";
+}
+
 sub body_luma_bias_display_allowed {
 	 my ($config)=@_;
 	 return 0 if(ref($config) ne "HASH");
@@ -21926,20 +21980,14 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
-		 # Keep the operator's Low Light setting stable for the whole AutoCal
-		 # session. Changing spotread's averaging flags requires a USB process
-		 # restart; deriving that change from the previous patch caused repeated
-		 # respawns and intermittent meter claim failures between reads.
-		 my $session_ll_mode="off";
-		 my $session_ll_enabled=JSON::PP::false;
-		 if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
-		  my $_m=lc($config->{"low_light"}{"mode"}||"off");
-		  if($_m eq "a" || $_m eq "aa" || $_m eq "aaa" || $_m eq "x" || $_m eq "x_a" || $_m eq "x_aa" || $_m eq "x_aaa") {
-		   $session_ll_mode=$_m;
-		   $session_ll_enabled=JSON::PP::true;
-		  }
-		 }
-		 $payload->{"low_light_session"}={ mode => $session_ll_mode, enabled => $session_ll_enabled };
+		 # Keep the persistent wrapper/session at off. Only its spotread child
+		 # changes when the current step crosses the target-Y trigger.
+		 $payload->{"low_light_session"}={ mode => "off", enabled => JSON::PP::false };
+		 my $active_low_light=autocal_low_light_mode_for_step($config,$step);
+		 $payload->{"low_light"}={
+		  mode => $active_low_light,
+		  enabled => ($active_low_light ne "off") ? JSON::PP::true : JSON::PP::false,
+		 };
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
 			 my $insert_error=apply_pattern_insert_before_read($config,$step,$step_key);

@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level] [low_light_mode] [insert_patch_code] [insert_time_code] [color_format] [meter_usb_id] [observer] [pattern_provider] [min_luma] [max_cll] [max_fall] [low_light_trigger]
 
 set -o pipefail
 
@@ -41,11 +41,14 @@ PATCH_INSERT_TIME_ENABLED="${24:-0}"
 PATCH_INSERT_TIME_FREQUENCY_MS="${25:-5000}"
 PATCH_INSERT_TIME_DURATION_MS="${26:-5000}"
 PATCH_INSERT_TIME_LEVEL="${27:-25}"
-# Low-light handler mode (positional arg 28). Passed as an argument rather
-# than an env-var prefix so the daemon's sudo NOPASSWD command match for
-# "/bin/bash /usr/bin/meter_series.sh *" stays intact. Falls back to the
-# LOW_LIGHT_MODE env (legacy) then off. The case statement below consumes it.
+# Operator-selected low-light averaging mode. It is not the initial spotread
+# mode: the child always starts at off and changes only for a step below the
+# trigger.
 LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
+case "$LOW_LIGHT_MODE" in
+ a|aa|aaa) ;;
+ *) LOW_LIGHT_MODE="off" ;;
+esac
 # Precomputed pattern-insertion codes (mode-correct). The webui derives them
 # from the same closure the greyscale ladder uses, so an insertion patch at
 # the user-configured level lands on the same code a step at that stimulus
@@ -75,6 +78,10 @@ PATTERN_PROVIDER="${34:-local}"
 MIN_LUMA="${35:-0.005}"
 MAX_CLL="${36:-$MAX_LUMA}"
 MAX_FALL="${37:-400}"
+LOW_LIGHT_TRIGGER="${38:-}"
+if ! [[ "$LOW_LIGHT_TRIGGER" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+ LOW_LIGHT_TRIGGER=""
+fi
 COMPANION_COMMAND_FILE="/var/lib/PGenerator/icc-companion/command.json"
 COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
@@ -687,6 +694,141 @@ print(steps[$idx].get('$field',''))
 " 2>/dev/null
 }
 
+# Persist a measured white reference into step metadata once it is available.
+# The per-step selector below consumes only serialized target metadata; it does
+# not use the previous patch's measured luminance as the next patch's decision.
+apply_series_white_reference_to_steps() {
+ local white_y="$1"
+ [[ -f "$STEPS_FILE" ]] || return 1
+ [[ "$white_y" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]] || return 1
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
+import json, math, os, tempfile
+
+path = os.environ.get("STEPS_FILE", "")
+try:
+    white_y = float(os.environ.get("WHITE_Y", ""))
+except Exception:
+    raise SystemExit(1)
+if not math.isfinite(white_y) or white_y <= 0:
+    raise SystemExit(1)
+try:
+    with open(path) as fh:
+        steps = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(steps, list):
+    raise SystemExit(1)
+changed = False
+for step in steps:
+    if not isinstance(step, dict):
+        continue
+    if "series_target_white_y" not in step and "lg_target_white_y" not in step:
+        step["series_target_white_y"] = white_y
+        changed = True
+if not changed:
+    raise SystemExit(0)
+directory = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(steps, fh, separators=(",", ":"))
+        fh.write("\n")
+    os.rename(tmp, path)
+    os.chmod(path, int("644", 8))
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY
+}
+
+# Return off or the operator-selected a/aa/aaa mode for one serialized step.
+# Direct absolute targets win; otherwise target_Yn is resolved against the
+# serialized white reference and floored at the serialized black reference.
+effective_low_light_mode_for_step() {
+ local idx="$1"
+ STEPS_FILE="$STEPS_FILE" STEP_INDEX="$idx" SELECTED_MODE="$LOW_LIGHT_MODE" LOW_LIGHT_TRIGGER_VALUE="$LOW_LIGHT_TRIGGER" python - <<'PY' 2>/dev/null
+import json, math, os
+
+def number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    return value if math.isfinite(value) else None
+
+mode = os.environ.get("SELECTED_MODE", "off")
+if mode not in ("a", "aa", "aaa"):
+    print("off")
+    raise SystemExit(0)
+trigger = number(os.environ.get("LOW_LIGHT_TRIGGER_VALUE"))
+if trigger is None or trigger <= 0:
+    print("off")
+    raise SystemExit(0)
+try:
+    with open(os.environ.get("STEPS_FILE", "")) as fh:
+        steps = json.load(fh)
+    step = steps[int(os.environ.get("STEP_INDEX", "-1"))]
+except Exception:
+    print("off")
+    raise SystemExit(0)
+if not isinstance(step, dict):
+    print("off")
+    raise SystemExit(0)
+
+expected = None
+absolute_present = False
+for key in ("target_Y", "dv_absolute_target_y"):
+    if key in step:
+        absolute_present = True
+        expected = number(step.get(key))
+        if expected is None or expected < 0:
+            print("off")
+            raise SystemExit(0)
+        break
+if not absolute_present and "custom_target_nits" in step:
+    absolute_present = True
+    expected = number(step.get("custom_target_nits"))
+    if expected is None or expected <= 0:
+        print("off")
+        raise SystemExit(0)
+if not absolute_present:
+    target_yn = number(step.get("target_Yn"))
+    black_y = number(step.get("series_target_black_y"))
+    if black_y is None or black_y < 0:
+        black_y = 0.0
+    if target_yn is not None and target_yn >= 0:
+        if target_yn == 0:
+            expected = black_y
+        else:
+            white_y = None
+            for key in ("dv_absolute_white_y", "series_target_white_y", "lg_target_white_y"):
+                candidate = number(step.get(key))
+                if candidate is not None and candidate > 0:
+                    white_y = candidate
+                    break
+            if white_y is not None:
+                expected = max(black_y, target_yn * white_y)
+if expected is None or expected < 0 or not math.isfinite(expected):
+    print("off")
+else:
+    print(mode if expected < trigger else "off")
+PY
+}
+
+ensure_spotread_low_light_for_step() {
+ local idx="$1" desired
+ # Spectrophotometers can require a physical white-tile prompt after a child
+ # restart. Do not abort an otherwise valid series to change averaging mode
+ # when the operator must remain in control of that setup sequence.
+ [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 0
+ desired=$(effective_low_light_mode_for_step "$idx")
+ case "$desired" in a|aa|aaa) ;; *) desired="off" ;; esac
+ [[ "$desired" == "${CURRENT_LOW_LIGHT_MODE:-off}" ]] && return 0
+ restart_spotread_session "$desired"
+}
+
 build_step_reading_json() {
  local idx="$1" parsed_json="${2:-}"
  [[ -n "$parsed_json" ]] || parsed_json="{}"
@@ -1240,14 +1382,22 @@ EOJSON
 # shows "reset full-speed USB device"; 261 timeouts logged on one rig) and the
 # in-flight read never returns. Retrying on the dead session burns the retry
 # timeout, and every LATER step then fails the same way to the end of the run.
-# Bounce the session instead: kill the wedged reader, respawn the SAME
-# spotread command (SR_CMD is final once the run starts), wait for the reading
-# prompt. Colorimeters only — a spectro restart would re-prompt for its white
+# Bounce the session instead: kill the wedged reader, respawn the spotread
+# child from its stable base command, wait for the reading prompt. Colorimeters
+# only: a spectro restart would re-prompt for its white
 # tile, which cannot be answered mid-run headlessly.
 restart_spotread_session() {
  [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 1
- [[ -z "$SR_CMD" ]] && return 1
- echo "[$(date '+%H:%M:%S.%3N')] restarting spotread session: step=${STEP_NUM:-?} name=${NAME:-?}" >> /tmp/meter_series_debug.log
+ [[ -z "$SR_CMD_BASE" ]] && return 1
+ local requested_mode="${1:-${CURRENT_LOW_LIGHT_MODE:-off}}"
+ case "$requested_mode" in a|aa|aaa) ;; *) requested_mode="off" ;; esac
+ SR_CMD="$SR_CMD_BASE"
+ case "$requested_mode" in
+  a) SR_CMD="$SR_CMD -Y a" ;;
+  aa) SR_CMD="$SR_CMD -Y aa" ;;
+  aaa) SR_CMD="$SR_CMD -Y aaa" ;;
+ esac
+ echo "[$(date '+%H:%M:%S.%3N')] restarting spotread child: step=${STEP_NUM:-?} name=${NAME:-?} low_light=${CURRENT_LOW_LIGHT_MODE:-off}->$requested_mode" >> /tmp/meter_series_debug.log
  if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
   exec 3>&-
   METER_SERIES_FD_OPEN=0
@@ -1268,6 +1418,7 @@ restart_spotread_session() {
   series_stop_requested && series_cancel_exit
   clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
   if echo "$clean" | grep -q "to take a reading:"; then
+   CURRENT_LOW_LIGHT_MODE="$requested_mode"
    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
    return 0
   fi
@@ -1404,24 +1555,11 @@ EOJSON
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
- # Low-light handler (reference-style) flag set. OFF maps to no -Y flag: spotread
- # uses its default adaptive integration. When the handler is ON, the
- # operator-selected a/aa/aaa averaging is used (multiple internal reads).
- # (Refresh-rate calibration is skipped separately via -Y R:rate above.)
- LOW_LIGHT_FLAGS=""
- case "${LOW_LIGHT_MODE:-off}" in
-  a)     LOW_LIGHT_FLAGS="-Y a" ;;
-  aa)    LOW_LIGHT_FLAGS="-Y aa" ;;
-  aaa)   LOW_LIGHT_FLAGS="-Y aaa" ;;
-  x)     LOW_LIGHT_FLAGS="-x" ;;
-  x_a)   LOW_LIGHT_FLAGS="-x -Y a" ;;
-  x_aa)  LOW_LIGHT_FLAGS="-x -Y aa" ;;
-  x_aaa) LOW_LIGHT_FLAGS="-x -Y aaa" ;;
-  off|*) LOW_LIGHT_FLAGS="" ;;
- esac
- if [[ -n "$LOW_LIGHT_FLAGS" ]]; then
-  SR_CMD="$SR_CMD $LOW_LIGHT_FLAGS"
- fi
+ # The wrapper and initial child start at explicit off. Per-step selection
+ # below rebuilds only this spotread command from the stable base.
+ SR_CMD_BASE="$SR_CMD"
+ SR_CMD="$SR_CMD_BASE"
+ CURRENT_LOW_LIGHT_MODE="off"
  # Disable AIO mode for i1D3 meters if requested
  if [[ "$DISABLE_AIO" == "1" ]]; then
   export I1D3_DISABLE_AIO=1
@@ -1956,6 +2094,13 @@ print(json.dumps(r))
 EOJSON
 fi
 
+if [[ "$WHITE_READING" != "null" ]]; then
+ WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
+ if [[ -n "$WHITE_REFERENCE_Y" ]]; then
+  apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+ fi
+fi
+
 READINGS=""
 READING_COUNT=0
 START_INDEX=0
@@ -1999,6 +2144,16 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
   BAD_STEP_MESSAGE=$(json_escape "Invalid series step $i")
   write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$BAD_STEP_MESSAGE","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+ series_quit_spotread
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+ exit 1
+ fi
+
+ if ! ensure_spotread_low_light_for_step "$i"; then
+  LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed at step $STEP_NUM")
+  write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
   series_quit_spotread
   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
@@ -2300,6 +2455,10 @@ EOJSON
  if [[ "$SERIES_WHITE_REFERENCE" == "True" || "$SERIES_WHITE_REFERENCE" == "true" || "$SERIES_WHITE_REFERENCE" == "1"
        || "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
   WHITE_READING="$READING"
+  WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
+  if [[ -n "$WHITE_REFERENCE_Y" ]]; then
+   apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+  fi
  fi
 
  # Accumulate
@@ -2338,6 +2497,15 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
  FIRST_NAME=$(get_step_field 0 name)
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  if ! ensure_spotread_low_light_for_step 0; then
+   LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed for final white refresh")
+   write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   series_quit_spotread
+   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+   exit 1
+  fi
   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON

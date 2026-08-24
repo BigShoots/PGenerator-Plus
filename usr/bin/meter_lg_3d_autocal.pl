@@ -2609,8 +2609,6 @@ sub export_lut {
  };
 }
 
-our $lg_low_light_active_mode="off";
-
 # Per-step read deadline for the 3D profile (W/R/G/B at IRE 100, Black at IRE 0).
 # Mirrors the IRE-bucketed table in meter_lg_autocal.pl but with the 3D set
 # in mind: peak (>=80 IRE) gets the standard 110s, low IRE/black gets the long
@@ -2628,26 +2626,83 @@ sub read_timeout_for_step {
  return 120;
 }
 
-# Pick the per-read Low Light Handler mode based on the AUTOCAL step's IRE.
-# Same hard guards as the 1D worker: IRE >= 80 NEVER engages averaging (peak
-# panels can't be averaged meaningfully), IRE < very_low_ire_threshold (default
-# 2%) ALWAYS engages the strongest averaging (aaa, 5 reads) so a noise-floor
-# black read is reliable. Middle band uses the operator's selected mode if the
-# trigger allows it.
-sub low_light_mode_for_reading {
- my ($config,$rs)=@_;
- return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
- if(ref($rs) eq "HASH") {
-  my $step_ire_guard=(defined($rs->{"ire"}) ? ($rs->{"ire"}+0) : (defined($rs->{"stimulus"}) ? ($rs->{"stimulus"}+0) : undef));
-  return "off" if(defined($step_ire_guard) && $step_ire_guard+0 >= 80.0);
-  my $vlow=($config->{"low_light"}{"very_low_ire_threshold"}//2.0)+0;
-  if(defined($step_ire_guard) && $step_ire_guard+0 < $vlow) {
-   return "aaa";
-  }
+sub autocal3d_low_light_number {
+ my ($value)=@_;
+ return undef if(!defined($value) || ref($value));
+ return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
+ my $number=$value+0;
+ return undef if($number != $number);
+ return $number;
+}
+
+# Shared profile target math. Fixture reads and Low Light Handler selection use
+# this same path so there is no second transfer-function implementation.
+sub profile_target_xyz_for_step {
+ my ($step,$config,$white_y,$black_y)=@_;
+ return undef if(ref($step) ne "HASH" || ref($config) ne "HASH");
+ return undef if(!defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0 || $black_y >= $white_y);
+ my $range_y=$white_y-$black_y;
+ my $target_gamut=$config->{"target_gamut"}||"bt709";
+ my $black=rgb_to_xyz_for_gamut($target_gamut,1,1,1,$black_y);
+ my $level=($step->{"level"}||0)/100;
+ my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
+ my $kind=$step->{"kind"}||"black";
+ if($kind eq "node") {
+  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
+  return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
+   $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
  }
+ return $black if($kind eq "black");
+ return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,$gamma,$gamma,$range_y)) if($kind eq "white");
+ return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,0,0,$range_y)) if($kind eq "red");
+ return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,$gamma,0,$range_y)) if($kind eq "green");
+ return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,0,$gamma,$range_y));
+}
+
+sub autocal3d_expected_target_y_for_low_light {
+ my ($config,$step)=@_;
+ return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
+ foreach my $key (qw(target_Y dv_absolute_target_y custom_target_nits)) {
+  next if(!exists($step->{$key}));
+  my $direct=autocal3d_low_light_number($step->{$key});
+  return (defined($direct) && $direct >= 0) ? $direct : undef;
+ }
+ my $black_y=0;
+ foreach my $candidate (
+  $config->{"low_light_expected_black_y"},
+  (!$config->{"target_black_use_measured"} ? $config->{"target_black_luminance"} : undef),
+  $config->{"fixture_black_y"}
+ ) {
+  my $number=autocal3d_low_light_number($candidate);
+  if(defined($number) && $number >= 0) { $black_y=$number; last; }
+ }
+ return $black_y if(($step->{"kind"}||"") eq "black");
+ my $white_y;
+ foreach my $candidate (
+  $config->{"low_light_expected_white_y"},
+  (!$config->{"target_white_use_measured"} ? $config->{"target_white_luminance"} : undef),
+  $config->{"fixture_white_y"}
+ ) {
+  my $number=autocal3d_low_light_number($candidate);
+  if(defined($number) && $number > 0) { $white_y=$number; last; }
+ }
+ return undef if(!defined($white_y));
+ my $target=profile_target_xyz_for_step($step,$config,$white_y,$black_y);
+ my $target_y=(ref($target) eq "ARRAY") ? autocal3d_low_light_number($target->[1]) : undef;
+ return (defined($target_y) && $target_y >= 0) ? $target_y : undef;
+}
+
+sub autocal3d_low_light_mode_for_step {
+ my ($config,$step)=@_;
+ return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- return $mode;
+ my $trigger=autocal3d_low_light_number($config->{"low_light"}{"trigger"});
+ return "off" if(!defined($trigger) || $trigger <= 0);
+ my $expected_y=autocal3d_expected_target_y_for_low_light($config,$step);
+ return "off" if(!defined($expected_y) || $expected_y < 0);
+ return ($expected_y < $trigger) ? $mode : "off";
 }
 
 sub read_request_id {
@@ -2870,31 +2925,10 @@ sub read_step_once {
  $read_timeout=10 if($read_timeout < 10);
  $read_timeout=300 if($read_timeout > 300);
  $payload->{"read_timeout"}=int($read_timeout);
- # Operator's STATIC low_light config (stable across reads so the session-level
- # METER_AVERAGING does not churn on every per-read flip). When the operator's
- # low_light handler is enabled, the WebUI picks the session-level averaging
- # mode from this field and the per-read low_light field below selects the
- # spotread -Y flag for THIS specific read.
- my $session_ll_mode="off";
- my $session_ll_enabled=json_false();
- if(ref($config->{"low_light"}) eq "HASH" && $config->{"low_light"}{"enabled"}) {
-  my $_m=lc($config->{"low_light"}{"mode"}||"off");
-  if($_m eq "a" || $_m eq "aa" || $_m eq "aaa" || $_m eq "x" || $_m eq "x_a" || $_m eq "x_aa" || $_m eq "x_aaa") {
-   $session_ll_mode=$_m;
-   $session_ll_enabled=json_true();
-  }
- }
- $payload->{"low_light_session"}={ mode => $session_ll_mode, enabled => $session_ll_enabled };
- # Per-read low_light mode: hard-guarded so the panel-peak profile reads
- # (W/R/G/B at IRE 100) NEVER average, and the noise-floor black read ALWAYS
- # gets the strongest averaging (aaa, 5 reads) regardless of the operator's
- # selected mode. See low_light_mode_for_reading(). ALWAYS send the mode,
- # including "off": an omitted low_light means "inherit the running
- # spotread's mode" downstream, so sending only the averaging transitions IN
- # latched the strongest mode used so far onto every later read -- the peak
- # reads then averaged, the exact opposite of the guarantee above.
- my $active_mode=low_light_mode_for_reading($config,$step);
- $lg_low_light_active_mode=$active_mode;
+ # Keep the wrapper/session at off and always send the effective child mode,
+ # including off, for the target Y of this exact step.
+ $payload->{"low_light_session"}={ mode => "off", enabled => json_false() };
+ my $active_mode=autocal3d_low_light_mode_for_step($config,$step);
  $payload->{"low_light"}={ mode => $active_mode, enabled => ($active_mode ne "off") ? json_true() : json_false() };
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
@@ -2927,30 +2961,11 @@ sub read_step_once {
 sub fixture_reading_for_step {
  my ($step,$config)=@_;
  return undef if(!$config->{"fixture_mode"});
- my $level=($step->{"level"}||0)/100;
  my $white_y=$config->{"fixture_white_y"} || 100;
  my $black_y=$config->{"fixture_black_y"} || 0;
- my $target_gamut=$config->{"target_gamut"}||"bt709";
  $white_y=100 if($white_y <= 0);
  $black_y=0 if($black_y < 0 || $black_y >= $white_y);
- my $range_y=$white_y-$black_y;
- my $black=rgb_to_xyz_for_gamut($target_gamut,1,1,1,$black_y);
- my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
- my $kind=$step->{"kind"}||"black";
- my $xyz;
- if($kind eq "node") {
-  # Lattice interior node: ideal additive display in the target gamut —
-  # per-channel gamma-decoded drives. Makes the lattice-profiled solve's
-  # residual grid ~zero in fixture mode (identity gate, like solve_only's).
-  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
-  $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
-   $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
- }
- elsif($kind eq "black") { $xyz=$black; }
- elsif($kind eq "white") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,$gamma,$gamma,$range_y)); }
- elsif($kind eq "red") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$gamma,0,0,$range_y)); }
- elsif($kind eq "green") { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,$gamma,0,$range_y)); }
- else { $xyz=vec_add($black,rgb_to_xyz_for_gamut($target_gamut,0,0,$gamma,$range_y)); }
+ my $xyz=profile_target_xyz_for_step($step,$config,$white_y,$black_y);
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
@@ -4726,6 +4741,8 @@ eval {
   eval {
    my $a=capture_volume_drift_anchor($config,$state,$volume_black,$label);
    push @volume_drift_anchors,$a;
+   $config->{"low_light_expected_white_y"}=$a->{"white_y"}+0
+    if(defined($a->{"white_y"}) && ($a->{"white_y"}+0) > 0);
    $last_anchor_t=$a->{"time"}||time();
    $last_anchor_i=defined($step_index) ? $step_index : $last_anchor_i;
    log_line(sprintf("volume drift anchor #%d %s white_y=%.3f",
@@ -4765,6 +4782,13 @@ eval {
   write_state($state);
   my ($reading,$error)=read_step($config,$step,$state);
   die "$error\n" if($error);
+  my $measured_xyz=reading_xyz($reading);
+  if(ref($measured_xyz) eq "ARRAY" && ($step->{"kind"}||"") eq "white" && ($step->{"level"}||0)+0 >= 99.9 && ($measured_xyz->[1]||0) > 0) {
+   $config->{"low_light_expected_white_y"}=$measured_xyz->[1]+0;
+  }
+  if(ref($measured_xyz) eq "ARRAY" && ($step->{"kind"}||"") eq "black" && ($measured_xyz->[1]||0) >= 0) {
+   $config->{"low_light_expected_black_y"}=$measured_xyz->[1]+0;
+  }
   my $entry={ step=>$step, reading=>$reading, read_time=>time() };
   push @profile_readings,$entry if(($step->{"phase"}||"") ne "post_check");
   push @{$state->{"readings"}},{ %{$reading}, name=>$step->{"name"}, phase=>$step->{"phase"}, kind=>$step->{"kind"}, level=>$step->{"level"} };
@@ -5238,6 +5262,11 @@ eval {
  $state->{"terminal_commit_verified"}=json_true() if($upload_requested && !$config->{"fixture_mode"});
  write_state($state);
 
+ $config->{"low_light_expected_white_y"}=$model->{"white_y"}+0
+  if(ref($model) eq "HASH" && defined($model->{"white_y"}) && ($model->{"white_y"}+0) > 0);
+ $config->{"low_light_expected_black_y"}=$model->{"black"}[1]+0
+  if(ref($model) eq "HASH" && ref($model->{"black"}) eq "ARRAY" && defined($model->{"black"}[1]) && ($model->{"black"}[1]+0) >= 0);
+
  if($config->{"post_check"} && !$config->{"fixture_mode"}
    && (!$upload_requested || $state->{"upload_verified"})) {
   my @post=post_check_steps($config);
@@ -5252,12 +5281,15 @@ eval {
   $state->{"current_name"}=$step->{"name"};
   $state->{"message"}="Post-check ".($i+1)."/".scalar(@post);
   write_state($state);
+   my $expected_post_target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",$model->{"chromatic_white_y"});
+   $step->{"target_Y"}=$expected_post_target->[1]
+    if(ref($expected_post_target) eq "ARRAY" && defined($expected_post_target->[1]));
    my ($reading,$error)=read_step($config,$step,$state);
    die "$error\n" if($error);
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
-   my $target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",$model->{"chromatic_white_y"});
+   my $target=$expected_post_target;
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
    $post_entry->{"target_Z"}=$target->[2];
