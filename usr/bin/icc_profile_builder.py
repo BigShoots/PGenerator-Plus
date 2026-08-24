@@ -3190,10 +3190,10 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
     Attempt 3 used the null-seed ladder slope instead, about 0.9 percent
     per code against a true 2.77 percent per code at 358, and overshot.
 
-    When the Base and probe rows are absent, invert the null-seed grey
-    ladder as before so non-feedback builds still work. That fallback keeps
-    the old 0.38 start: opening the ladder from 0.14 helped 205, 256 and
-    307 but drove 358 to -7.7 percent.
+    When the Base and probe rows are absent, invert the null-seed grey ladder
+    so non-feedback builds still work. Apply that inverse in the B2A output
+    curves, where exact neutral requests are evaluated, rather than at sparse
+    cLUT nodes whose interpolation displaced shadow knots by up to 2.52 codes.
 
     Bounds matter. Probe-derived shifts are clamped to +/- 5 codes, and
     max_shift matches that bound. A 20 count bound let a noisy near-black
@@ -3210,7 +3210,7 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
             max_shift = 5.0 / 1023.0
     else:
         if source_start is None:
-            source_start = 0.38
+            source_start = 0.09
         if max_shift is None:
             max_shift = 0.008
 
@@ -3280,6 +3280,82 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
                                   struct.unpack_from(">{}H".format(output_entries),
                                                      payload, offset)])
         updated = bytearray(payload)
+
+        if ladder:
+            # The calibration lives in the dense output curves. Correct it in
+            # that same domain: cLUT-node shifts are sampled through surrounding
+            # off-diagonal nodes and did not reproduce their requested shift at
+            # the exact neutral ladder knots.
+            matrix = [value / 65536.0 for value in
+                      struct.unpack_from(">9i", payload, 12)]
+            clut = [value / 65535.0 for value in struct.unpack_from(
+                ">{}H".format(clut_values), payload, clut_start)]
+            adaptation = bradford_adaptation(
+                (0.9504559, 1.0, 1.0890578), (0.9642, 1.0, 0.8249))
+            bt2020_xyz = (
+                (0.6369580, 0.1446169, 0.1688810),
+                (0.2627002, 0.6779981, 0.0593017),
+                (0.0, 0.0280727, 1.0609851),
+            )
+            anchors = [[] for _channel in range(3)]
+            for source_code, _measured_y in ladder:
+                if source_code < source_start or source_code >= source_limit:
+                    continue
+                source_nits = pq_to_nits(source_code)
+                linear = [source_nits / white_nits] * 3
+                pcs_xyz = mat_vec_mul(
+                    adaptation, mat_vec_mul(bt2020_xyz, linear))
+                mapped = [
+                    sum(matrix[row * 3 + column] * pcs_xyz[column]
+                        for column in range(3))
+                    for row in range(3)
+                ]
+                shaped = [
+                    sample_table(input_tables[channel],
+                                 mapped[channel] * xyz_to_mft)
+                    for channel in range(3)
+                ]
+                encoded = _sample_mft2_clut(clut, grid, shaped)
+                current = [sample_table(output_tables[channel], encoded[channel])
+                           for channel in range(3)]
+                shift = ladder_drive(source_nits) - sum(current) / 3.0
+                shift = max(-max_shift, min(max_shift, shift))
+                for channel in range(3):
+                    anchors[channel].append((encoded[channel], shift))
+
+            touched = 0
+            for channel in range(3):
+                points = sorted(anchors[channel])
+                if len(points) < 2:
+                    continue
+
+                def output_shift(position):
+                    if position < points[0][0] or position > points[-1][0]:
+                        return 0.0
+                    for point_index in range(1, len(points)):
+                        x0, shift0 = points[point_index - 1]
+                        x1, shift1 = points[point_index]
+                        if position <= x1:
+                            fraction = (0.0 if x1 <= x0 else
+                                        (position - x0) / (x1 - x0))
+                            return shift0 + fraction * (shift1 - shift0)
+                    return 0.0
+
+                table = isotonic_curve([
+                    max(0.0, min(1.0,
+                        value + output_shift(index / float(output_entries - 1))))
+                    for index, value in enumerate(output_tables[channel])
+                ])
+                for index, value in enumerate(table):
+                    struct.pack_into(
+                        ">H", updated,
+                        output_start + channel * output_entries * 2 + index * 2,
+                        max(0, min(65535, int(round(value * 65535.0)))))
+                touched += 1
+            if touched:
+                replacements[signature] = bytes(updated)
+            continue
+
         denominator = float(grid - 1)
         touched = 0
         for red in range(grid):
@@ -3295,10 +3371,9 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
                         relative = max(0.0, pcs / d50[channel])
                         estimates.append(nits_to_pq(relative * white_nits))
                     source_code = sorted(estimates)[1]
-                    # Stay inside the band this trim is valid for. Probe
-                    # shifts start just below code 102. The ladder fallback
-                    # stays at 0.38 because opening it into the shadow band
-                    # under-drove 358. Code 51 has no Base row.
+                    # Stay inside the band where the profile-response probes
+                    # measured this common-mode correction. Code 51 has no
+                    # Base row.
                     if source_code < source_start or source_code >= source_limit:
                         continue
                     target_y = pq_to_nits(source_code)
