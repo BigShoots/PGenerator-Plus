@@ -3175,7 +3175,7 @@ def windows_hdr_b2a_probe_luminance_shifts(rows, label=None, codes=None):
 
 
 def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
-                                     source_limit=0.74, max_shift=None):
+                                     source_limit=0.76, max_shift=None):
     """Pull the neutral corridor onto the PQ target, common mode.
 
     The shift is applied equally to all three channels, so channel ratios and
@@ -3397,7 +3397,7 @@ def apply_mhc2_probe_luminance_trim(luts, rows, neutral_gains,
     return touched
 
 
-def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
+def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.76):
     """Drive the B2A plateau with the directly measured best peak triplet.
 
     The top of the cube is degenerate: its input tables saturate, so several
@@ -3411,14 +3411,11 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
     This uses raw device-response provenance, the same rows the MHC2 balanced
     peak cap selects from, so it does not borrow MHC2-path feedback.
 
-    plateau_start must sit just below the white node. Measured on a 65 cube
-    whose lumi white is 984.17 nits: every neutral request from code 767 to
-    1023 clamps to that white and lands on nodes 47 to 49, whose source_code
-    is about 0.751, while nodes 55 to 64 carry source_code 0.8297, roughly
-    1900 nits, and are never reached by a neutral lookup. A 0.78 threshold
-    therefore wrote only unreachable overflow nodes. 0.74 covers everything
-    from about 900 nits up while still excluding code 716 at 620 nits, which
-    the corridor feedback already handles well at 0.152 chroma.
+    plateau_start must exclude code 767 (source 0.7498), whose 981-nit PQ
+    target is still below the measured panel peak, while including code 818
+    (source 0.7996), whose target exceeds it.  A 0.76 boundary keeps 75% on
+    the measured corridor and caps the unreachable upper requests without
+    opening a gap with the common-mode ladder trim.
     """
     best = windows_hdr_b2a_measured_peak_drive(rows)
     if best is None:
@@ -3614,6 +3611,12 @@ def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
                         correction = (
                             sample_table(corrected_luts[channel], curve_input)
                             - sample_table(reference_luts[channel], curve_input))
+                        # Inverting a flat output-table value chooses its far
+                        # edge. Rewriting a zero correction therefore expanded
+                        # the peak plateau down into code 767 even though the
+                        # requested node value was unchanged.
+                        if abs(correction) < 1e-9:
+                            continue
                         node_value = struct.unpack_from(
                             ">H", payload,
                             clut_start + (node_offset + channel) * 2)[0] / 65535.0
@@ -6511,7 +6514,7 @@ def build(payload, output_dir):
         # wrong-signed. Drive it from the directly measured best peak triplet
         # instead, which is the same selection the MHC2 balanced peak cap uses.
         # Common-mode luminance trim first, then the absolute plateau drive.
-        # The two operate on disjoint source ranges, below and above 0.74.
+        # The two operate on disjoint source ranges, below and above 0.76.
         profile = windows_hdr_b2a_with_ladder_trim(profile, mhc2_profile_rows)
         profile = windows_hdr_b2a_with_peak_drive(profile, mhc2_profile_rows)
 
