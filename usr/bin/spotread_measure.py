@@ -16,9 +16,11 @@ os.environ.setdefault("I1D3_ESCAPE", "c9bfafe002871166")
 
 KNOWN_METERS = {
     "0765:5020": "Calibrite/X-Rite i1Display Pro Plus",
-    "0765:5001": "X-Rite i1 Pro",
-    "0971:2000": "X-Rite i1 Pro",
-    "0971:2007": "X-Rite i1 Display Pro / ColorMunki Display",
+    "0765:5001": "X-Rite HueyL",
+    "0765:6008": "X-Rite i1Studio / ColorChecker Studio",
+    "0765:6009": "X-Rite i1Pro 3",
+    "0971:2000": "X-Rite i1Pro / i1Pro 2",
+    "0971:2007": "X-Rite ColorMunki Photo / Design",
     "085c:0500": "Datacolor Spyder 5",
     "085c:0a00": "Datacolor SpyderX",
     "04db:0100": "ColorVision Spyder",

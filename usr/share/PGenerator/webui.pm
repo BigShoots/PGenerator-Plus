@@ -7774,6 +7774,21 @@ sub _webui_ccmx_base_yflag (@) {
  return "l";
 }
 
+# ArgyllCMS exposes reconstructed high-resolution spectral sampling for the
+# i1Pro family and the ColorMunki spectro family. Keep this allow-list aligned
+# with the instrument drivers rather than enabling -H for every spectro.
+sub _webui_meter_supports_highres (@) {
+ my ($meter)=@_;
+ return 0 if(ref($meter) ne "HASH" || lc($meter->{meter_type}||"") ne "spectro");
+ my $usb_id=lc($meter->{usb_id}||"");
+ return 1 if($usb_id=~/^(?:0971:2000|0971:2007|0765:6008|0765:6009)$/);
+ my $name=lc($meter->{name}||"");
+ return 0 if($name=~/(?:colormunki|colorchecker|i1)\s*display|display\s*(?:pro|plus|studio)/);
+ return 1 if($name=~/(?:eye[- ]?one|i1)\s*pro(?:\s*(?:2|3|3\s*plus))?/);
+ return 1 if($name=~/(?:efi\s*es[- ]?(?:1000|2000|3000)|colormunki(?:\s*(?:photo|design))?|i1\s*studio|colorchecker\s*studio)/);
+ return 0;
+}
+
 sub _webui_ccss_from_ti3 (@) {
  my ($raw,$profile_name,$display_type_key)=@_;
  my $ccxxmake_bin="/usr/bin/ccxxmake";
@@ -8358,6 +8373,8 @@ sub webui_ccss_create_start (@) {
  $profiling_port=$1 if($body=~/"profiling_meter_port"\s*:\s*"?(\d+)"?/);
  my $target_port="";
  $target_port=$1 if($body=~/"target_meter_port"\s*:\s*"?(\d+)"?/);
+ my $high_resolution=0;
+ $high_resolution=1 if($body=~/"high_resolution"\s*:\s*(?:true|1|"true"|"1"|"yes")/i);
 
  return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
  return '{"status":"error","message":"Profile name must be 80 characters or fewer"}' if(length($name)>80);
@@ -8385,6 +8402,7 @@ sub webui_ccss_create_start (@) {
  my ($chosen)=grep { $_->{port_num} eq $profiling_port } @references;
  ($chosen)=@references if(!$chosen && scalar(@references) == 1);
  return '{"status":"error","message":"Select which reference meter to use"}' if(!$chosen);
+ return '{"status":"error","message":"The selected reference meter does not support high-resolution spectral mode"}' if($high_resolution && !&_webui_meter_supports_highres($chosen));
  my $chosen_port=$chosen->{port_num};
  $chosen_port=~s/[^0-9]//g;
  return '{"status":"error","message":"Selected reference meter has no usable port"}' if($chosen_port eq "");
@@ -8430,6 +8448,7 @@ sub webui_ccss_create_start (@) {
  my $profile_label=$name;
  $profile_label=~s/'/'"'"'/g;
  my $cmd="setsid sudo $python_runner $_ccss_create_runner --state-file '$_ccss_create_state_file' --pid-file '$_ccss_create_pid_file' --log-file '$_ccss_create_log_file' --patch-cmd '$_ccss_create_patch_cmd' --output-path '$out_path' --format '$format' --disptech '$disptech' --display-name '$profile_label' --signal-mode '$signal_mode' --max-luma '$max_luma' --patch-size '$patch_size' --ccxxmake-bin '$_ccss_create_ccxxmake_bin'";
+ $cmd.=" --high-resolution" if($high_resolution);
  $cmd.=" --refresh-rate '$refresh_rate'" if($refresh_rate ne "");
  $cmd.=" --comport '$chosen_port'" if($chosen_port ne "");
  if($format eq "ccmx") {
@@ -14835,6 +14854,13 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
      <label id="meterCcssCreateReferenceLabel" style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Reference Meter</label>
      <div id="meterCcssCreateChoices" style="display:grid;gap:8px;margin-bottom:10px"></div>
      <div id="meterCcssCreateStatus" style="font-size:.72rem;color:var(--text2);line-height:1.45"></div>
+    </div>
+    <div id="meterCcssCreateHighResolutionSection" style="margin-bottom:12px">
+     <label style="font-size:.74rem;color:var(--text);display:flex;align-items:center;gap:7px">
+      <input type="checkbox" id="meterCcssCreateHighResolution" disabled>
+      High-resolution spectrum
+     </label>
+     <div id="meterCcssCreateHighResolutionHelp" style="font-size:.7rem;color:var(--text2);margin-top:5px;line-height:1.45">Select a compatible reference spectrophotometer to enable approximately 3.3 nm reconstructed spectral sampling.</div>
     </div>
     <div id="meterCcssCreateTargetSection" style="display:none;margin-bottom:12px">
      <label style="font-size:.74rem;color:var(--text2);display:block;margin-bottom:6px">Target Colorimeter</label>
@@ -27875,6 +27901,15 @@ function meterSelectedProfilingPort(){
  return meterNormalizePortValue(meterProfilingPort);
 }
 
+function meterSupportsHighResolutionSpectrum(meter){
+ if(!meter||!meterIsSpectrophotometer(meter)) return false;
+ const usb=String(meter.usb_id||'').trim().toLowerCase();
+ if(/^(?:0971:2000|0971:2007|0765:6008|0765:6009)$/.test(usb)) return true;
+ const name=String(meter.name||'').trim().toLowerCase();
+ if(/(?:colormunki|colorchecker|i1)\s*display|display\s*(?:pro|plus|studio)/.test(name)) return false;
+ return /(?:eye[- ]?one|i1)\s*pro(?:\s*(?:2|3|3\s*plus))?|efi\s*es[- ]?(?:1000|2000|3000)|colormunki(?:\s*(?:photo|design))?|i1\s*studio|colorchecker\s*studio/.test(name);
+}
+
 function meterCcssCreateSpectros(){
  return (meterInventory||[]).filter(meter=>meterIsSpectrophotometer(meter));
 }
@@ -27989,6 +28024,25 @@ function meterCcssCreateSelectedMeter(){
  const references=meterCcssCreateReferenceMeters();
  if(selected&&references.includes(selected)) return selected;
  return references[0]||null;
+}
+
+function meterCcssCreateSyncHighResolution(){
+ const checkbox=document.getElementById('meterCcssCreateHighResolution');
+ const help=document.getElementById('meterCcssCreateHighResolutionHelp');
+ if(!checkbox) return false;
+ const needsReference=meterCcssCreateFormatValue()==='ccss'||meterCcssCreateMethodValue()==='measure';
+ const meter=needsReference&&meterCcssCreateInventoryReady?meterCcssCreateSelectedMeter():null;
+ const supported=!!(meter&&meterSupportsHighResolutionSpectrum(meter));
+ checkbox.disabled=!supported||meterCcssCreateJobActive;
+ if(!supported) checkbox.checked=false;
+ if(help){
+  if(!needsReference) help.textContent='High-resolution sampling is not used when creating a CCMX from a supplied matrix.';
+  else if(!meterCcssCreateInventoryReady) help.textContent='Checking whether the selected reference meter supports high-resolution spectral sampling.';
+  else if(!meter) help.textContent='Select a compatible reference spectrophotometer to enable approximately 3.3 nm reconstructed spectral sampling.';
+  else if(supported) help.textContent='Supported by '+meterOptionLabel(meter)+'. Uses approximately 3.3 nm reconstructed sampling and may not improve absolute colorimetric accuracy.';
+  else help.textContent=meterOptionLabel(meter)+' does not support ArgyllCMS high-resolution spectral mode.';
+ }
+ return supported;
 }
 
 function meterCcssCreateSelectedTarget(){
@@ -28110,6 +28164,11 @@ function meterCcssCreateSetStartingFeedback(starting,format){
  const startBtn=document.getElementById('meterCcssCreateStartBtn');
  const startHint=document.getElementById('meterCcssCreateStartBtnHint');
  const progress=document.getElementById('meterCcssCreateProgress');
+ const highResolutionInput=document.getElementById('meterCcssCreateHighResolution');
+ if(highResolutionInput){
+  if(starting) highResolutionInput.disabled=true;
+  else meterCcssCreateSyncHighResolution();
+ }
  if(startBtn){
   const supplied=meterCcssCreateFormatValue()==='ccmx'&&meterCcssCreateMethodValue()!=='measure';
   startBtn.textContent=starting?'Starting...':(supplied?'Create CCMX':'Start Creation');
@@ -28146,6 +28205,7 @@ function meterCcssCreateSetUi(status){
  const formatSel=document.getElementById('meterCcssCreateFormat');
  const methodSel=document.getElementById('meterCcssCreateMethod');
  const jsonInput=document.getElementById('meterCcssCreateJsonInput');
+ const highResolutionInput=document.getElementById('meterCcssCreateHighResolution');
  const running=!!(status&&(status.status==='starting'||status.status==='running'));
  if(progress&&status&&status.message){
   // Show only our curated message. status.detail carries the raw ccxxmake
@@ -28164,6 +28224,7 @@ function meterCcssCreateSetUi(status){
  if(formatSel) formatSel.disabled=running;
  if(methodSel) methodSel.disabled=running;
  if(jsonInput) jsonInput.disabled=running;
+ if(highResolutionInput) highResolutionInput.disabled=running||!meterCcssCreateSyncHighResolution();
  METER_CCMX_MATRIX_IDS.forEach(row=>row.forEach(id=>{const el=document.getElementById(id);if(el) el.disabled=running;}));
 }
 
@@ -28188,6 +28249,7 @@ function meterRenderCcssCreateChoices(){
  const mode=meterCcssCreateFormatValue();
  const method=meterCcssCreateMethodValue();
  const needsReference=mode==='ccss'||method==='measure';
+ meterCcssCreateSyncHighResolution();
  const referenceLabel=document.getElementById('meterCcssCreateReferenceLabel');
  if(referenceLabel) referenceLabel.textContent=mode==='ccss'?'Reference Spectrophotometer':'Reference Meter';
  if(!meterCcssCreateInventoryReady){
@@ -28254,6 +28316,7 @@ function meterRenderCcssCreateChoices(){
    ? 'Selected target: '+meterOptionLabel(chosenTarget)+'. The finished CCMX will be selected for this meter.'
    : 'No colorimeter detected. Connect the colorimeter that this matrix will correct.';
  }
+ meterCcssCreateSyncHighResolution();
  meterCcssCreateUpdateStartState();
 }
 
@@ -28609,8 +28672,10 @@ async function meterStartCcssCreate(){
  meterActionPending=true;
  meterCcssCreateSetStartingFeedback(true,format);
  try{
+  const highResolutionInput=document.getElementById('meterCcssCreateHighResolution');
+  const highResolution=!!(highResolutionInput&&highResolutionInput.checked&&meterSupportsHighResolutionSpectrum(meter));
   const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(meterMeasurementSignalContext({name:name,format:format,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),target_meter_port:target?meterNormalizePortValue(target.port_num):'',patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
+   body:JSON.stringify(meterMeasurementSignalContext({name:name,format:format,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),target_meter_port:target?meterNormalizePortValue(target.port_num):'',high_resolution:highResolution,patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
   if(!r||r.status==='error'){
    meterCcssCreateJobActive=false;
    meterCcssCreateSetUi(r||{status:'error',message:'Failed to start meter profile creation'});
