@@ -3175,7 +3175,7 @@ def windows_hdr_b2a_probe_luminance_shifts(rows, label=None, codes=None):
 
 
 def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
-                                     source_limit=0.74, max_shift=None):
+                                     source_limit=0.77, max_shift=None):
     """Pull the neutral corridor onto the PQ target, common mode.
 
     The shift is applied equally to all three channels, so channel ratios and
@@ -3397,7 +3397,51 @@ def apply_mhc2_probe_luminance_trim(luts, rows, neutral_gains,
     return touched
 
 
-def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
+def apply_mhc2_upper_neutral_jacobians(luts, rows, neutral_gains,
+                                        plateau_start=0.77):
+    """Keep reachable upper greys on measured XYZ solves below the plateau."""
+    pattern = re.compile(
+        r"^ICC Neutral Jacobian ([0-9]{4}) ([RGB])([+-])$")
+    groups = {}
+    for row in rows:
+        match = pattern.match(str(row.get("name", "")))
+        if match:
+            groups.setdefault(int(match.group(1)), {})[
+                match.group(2) + match.group(3)] = row
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    anchors = []
+    for code, probes in sorted(groups.items()):
+        source_code = code / 1023.0
+        if not (plateau_start - 0.08 <= source_code < plateau_start):
+            continue
+        built = mhc2_shadow_probe_jacobian(probes)
+        if built is None:
+            continue
+        target_y = pq_to_nits(source_code)
+        delta = mat_vec_mul(mat_inv(built["jacobian"]), [
+            target_y * d65[axis] - built["center_xyz"][axis]
+            for axis in range(3)
+        ])
+        target = [max(built["center_code"][channel] - 0.03,
+                      min(built["center_code"][channel] + 0.03,
+                          built["center_code"][channel] + delta[channel]))
+                  for channel in range(3)]
+        source_nits = pq_to_nits(source_code)
+        current = [sample_table(
+            luts[channel],
+            nits_to_pq(source_nits * neutral_gains[channel]))
+            for channel in range(3)]
+        anchors.append((source_code, [target[channel] - current[channel]
+                                     for channel in range(3)]))
+    if not anchors:
+        return False
+    return apply_interpolated_lut_anchors(
+        luts, anchors, neutral_gains,
+        max(0.0, anchors[0][0] - 0.04), plateau_start)
+
+
+def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.77):
     """Drive the B2A plateau with the directly measured best peak triplet.
 
     The top of the cube is degenerate: its input tables saturate, so several
@@ -3411,19 +3455,61 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
     This uses raw device-response provenance, the same rows the MHC2 balanced
     peak cap selects from, so it does not borrow MHC2-path feedback.
 
-    plateau_start must sit just below the white node. Measured on a 65 cube
-    whose lumi white is 984.17 nits: every neutral request from code 767 to
-    1023 clamps to that white and lands on nodes 47 to 49, whose source_code
-    is about 0.751, while nodes 55 to 64 carry source_code 0.8297, roughly
-    1900 nits, and are never reached by a neutral lookup. A 0.78 threshold
-    therefore wrote only unreachable overflow nodes. 0.74 covers everything
-    from about 900 nits up while still excluding code 716 at 620 nits, which
-    the corridor feedback already handles well at 0.152 chroma.
+    plateau_start must exclude code 767 (source 0.7498), whose 981-nit PQ
+    target is still below the measured panel peak, while including code 818
+    (source 0.7996), whose target exceeds it. A 0.77 boundary keeps the full
+    interpolation cell around 75% on its measured local solve and caps the
+    unreachable upper requests without
+    opening a gap with the common-mode ladder trim.
     """
     best = windows_hdr_b2a_measured_peak_drive(rows)
     if best is None:
         return profile
     drive = best[1]
+    probe_pattern = re.compile(
+        r"^ICC Neutral Jacobian ([0-9]{4}) ([RGB])([+-])$")
+    probe_groups = {}
+    for row in rows:
+        match = probe_pattern.match(str(row.get("name", "")))
+        if match:
+            probe_groups.setdefault(int(match.group(1)), {})[
+                match.group(2) + match.group(3)] = row
+    upper_targets = []
+    d65 = (0.3127 / 0.3290, 1.0,
+           (1.0 - 0.3127 - 0.3290) / 0.3290)
+    for code, probes in sorted(probe_groups.items()):
+        if code / 1023.0 < plateau_start - 0.08:
+            continue
+        built = mhc2_shadow_probe_jacobian(probes)
+        if built is None:
+            continue
+        target_y = pq_to_nits(code / 1023.0)
+        delta = mat_vec_mul(mat_inv(built["jacobian"]), [
+            target_y * d65[axis] - built["center_xyz"][axis]
+            for axis in range(3)
+        ])
+        target = [max(built["center_code"][channel] - 0.03,
+                      min(built["center_code"][channel] + 0.03,
+                          built["center_code"][channel] + delta[channel]))
+                  for channel in range(3)]
+        upper_targets.append((code / 1023.0, target))
+
+    def upper_target(source_code):
+        if not upper_targets:
+            return None
+        if source_code <= upper_targets[0][0]:
+            return upper_targets[0][1]
+        for index in range(1, len(upper_targets)):
+            code0, target0 = upper_targets[index - 1]
+            code1, target1 = upper_targets[index]
+            if source_code <= code1:
+                fraction = ((source_code - code0)
+                            / max(code1 - code0, 1e-12))
+                return [target0[channel] * (1.0 - fraction)
+                        + target1[channel] * fraction
+                        for channel in range(3)]
+        return upper_targets[-1][1]
+
     tags = dict(read_icc_tags(profile))
     lumi = tags.get(b"lumi")
     if not lumi or len(lumi) < 20 or lumi[:4] != b"XYZ ":
@@ -3465,33 +3551,20 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
         touched = 0
 
         # Stretch each output table's upper end so its maximum reaches the
-        # measured drive, and do it BEFORE writing any corridor node. The
-        # submitted peak drive on the cLUT path is exactly the output table
-        # maximum, measured on both this builder's output and the known-good
-        # reference, so a corridor write above that ceiling is silently
-        # clamped by invert_table and lost. Blue sat 23 codes short at 795
-        # against a needed 818, which is why extreme corridor writes had no
-        # effect on codes 870 and up.
-        #
-        # Only the region above the knee moves, so the shadow and midtone
-        # corridor stays untouched. The knee is deliberately high: at 0.90 the
-        # remap reached down far enough to disturb codes 614 and 716, giving
-        # dE2000 max 2.869, while 0.97 leaves them alone.
+        # measured drive before writing plateau nodes. The corridor loop below
+        # restores the still-reachable 68-76% band from the measured ladder.
         stretched = []
         for channel in range(3):
             table = list(output_tables[channel])
             ceiling = max(table)
             knee = ceiling * MHC2_PEAK_TABLE_KNEE
             target = drive[channel]
-            if ceiling <= knee:
-                stretched.append(table)
-                continue
             remapped = []
             for value in table:
                 if value <= knee:
                     remapped.append(value)
                 else:
-                    fraction = (value - knee) / (ceiling - knee)
+                    fraction = (value - knee) / max(ceiling - knee, 1e-12)
                     remapped.append(knee + fraction * (target - knee))
             for index in range(1, len(remapped)):
                 if remapped[index] < remapped[index - 1]:
@@ -3524,12 +3597,22 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
                         relative = max(0.0, pcs / d50[channel])
                         estimates.append(nits_to_pq(relative * white_nits))
                     source_code = sorted(estimates)[1]
-                    if source_code < plateau_start:
-                        continue
                     node_offset = (((red * grid + green) * grid + blue) * 3)
+                    if source_code < plateau_start:
+                        # The measured local RGB-to-XYZ solves at codes 716 and
+                        # 767 own the two reachable cells below the plateau.
+                        # They correct luminance and D65 together; assigning the
+                        # peak triplet here caused the measured 70-75% spike.
+                        if source_code < plateau_start - 0.08:
+                            continue
+                        desired = upper_target(source_code)
+                        if desired is None:
+                            continue
+                    else:
+                        desired = drive
                     for channel in range(3):
                         encoded = invert_table(output_tables[channel],
-                                               drive[channel])
+                                               desired[channel])
                         struct.pack_into(">H", updated,
                                          clut_start + (node_offset + channel) * 2,
                                          max(0, min(65535,
@@ -3614,6 +3697,12 @@ def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
                         correction = (
                             sample_table(corrected_luts[channel], curve_input)
                             - sample_table(reference_luts[channel], curve_input))
+                        # Inverting a flat output-table value chooses its far
+                        # edge. Rewriting a zero correction therefore expanded
+                        # the peak plateau down into code 767 even though the
+                        # requested node value was unchanged.
+                        if abs(correction) < 1e-9:
+                            continue
                         node_value = struct.unpack_from(
                             ">H", payload,
                             clut_start + (node_offset + channel) * 2)[0] / 65535.0
@@ -6511,7 +6600,7 @@ def build(payload, output_dir):
         # wrong-signed. Drive it from the directly measured best peak triplet
         # instead, which is the same selection the MHC2 balanced peak cap uses.
         # Common-mode luminance trim first, then the absolute plateau drive.
-        # The two operate on disjoint source ranges, below and above 0.74.
+        # The two operate on disjoint source ranges, below and above 0.77.
         profile = windows_hdr_b2a_with_ladder_trim(profile, mhc2_profile_rows)
         profile = windows_hdr_b2a_with_peak_drive(profile, mhc2_profile_rows)
 
@@ -6531,6 +6620,8 @@ def build(payload, output_dir):
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
+        apply_mhc2_upper_neutral_jacobians(
+            matching_luts, mhc2_profile_rows, final_neutral_gains)
         final_mhc2 = mhc2_with_adjustment_luts(final_mhc2, matching_luts)
         profile = rebuild_icc(profile, {b"MHC2": final_mhc2})
         with open(output_path, "wb") as handle:
