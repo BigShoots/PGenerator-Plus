@@ -425,6 +425,14 @@ MHC2_CURVE_FEEDBACK_CODES = (102, 153, 205, 256, 307, 358)
 # 4.044 to 4.656). The grey-ladder borrowed-Jacobian path in
 # apply_mhc2_active_shadow_jacobians is the remaining way to reach it.
 MHC2_CLUT_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563, 665, 716)
+# The MHC2 curves have the same hole the cLUT corridor had: shadow anchors fade
+# out by code 414 to 429 and the peak stages only begin near 763, so codes 409
+# to 716 were left to the unconstrained model. Measure 460 and 563, which sit
+# inside the MHC2 mid-band probe envelope. Do not add 665 or 716: the envelope
+# ends at 665 so a probe there has no amplitude, which is why codes 767 and
+# above were unprobeable. The recoverability validator stays on
+# MHC2_CURVE_FEEDBACK_CODES so new anchors cannot fail a build closed.
+MHC2_MIDBAND_FEEDBACK_CODES = MHC2_CURVE_FEEDBACK_CODES + (460, 563)
 MHC2_PROFILE_RESPONSE_CONTRACT = "signed-independent-v1"
 # Shadow chroma closer to D65 than this is treated as already neutral. Near
 # black the measured chromaticity carries real meter noise, and solving inside
@@ -3067,7 +3075,7 @@ def windows_hdr_b2a_grey_ladder(rows):
     return ladder if len(ladder) >= 9 else None
 
 
-def windows_hdr_b2a_probe_luminance_shifts(rows):
+def windows_hdr_b2a_probe_luminance_shifts(rows, label=None, codes=None):
     """Common-mode B2A shift vs source code from the profile's own probes.
 
     Sensitivity is the finished profile's local dY per code, not the
@@ -3086,6 +3094,7 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
     code is left untrimmed. The wanted shift is -error_fraction / that
     slope, clamped to +/- 5 codes and stored in the 0..1 output domain.
     Prefers ICC cLUT Curve Feedback rows and falls back to the MHC2 label.
+    Callers that already know their label and code list can pass them.
     """
     by_name = {}
     for row in rows:
@@ -3107,10 +3116,10 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
     if probe_codes <= 1e-9:
         return None
 
-    def collect(label):
+    def collect(collect_label, collect_codes):
         points = []
-        for code in MHC2_CLUT_FEEDBACK_CODES:
-            base_values = by_name.get("{} Base {}".format(label, code))
+        for code in collect_codes:
+            base_values = by_name.get("{} Base {}".format(collect_label, code))
             if not base_values:
                 continue
             base_y = median(base_values)
@@ -3120,9 +3129,9 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
             complete = True
             for channel in "RGB":
                 plus_values = by_name.get(
-                    "{} {}+ {}".format(label, channel, code))
+                    "{} {}+ {}".format(collect_label, channel, code))
                 minus_values = by_name.get(
-                    "{} {}- {}".format(label, channel, code))
+                    "{} {}- {}".format(collect_label, channel, code))
                 if not plus_values or not minus_values:
                     complete = False
                     break
@@ -3156,9 +3165,12 @@ def windows_hdr_b2a_probe_luminance_shifts(rows):
             points.append((code / 1023.0, shift_codes / 1023.0))
         return points
 
-    points = collect("ICC cLUT Curve Feedback")
+    wanted_codes = codes if codes is not None else MHC2_CLUT_FEEDBACK_CODES
+    if label is not None:
+        return collect(label, wanted_codes) or None
+    points = collect("ICC cLUT Curve Feedback", wanted_codes)
     if not points:
-        points = collect("ICC MHC2 Curve Feedback")
+        points = collect("ICC MHC2 Curve Feedback", wanted_codes)
     return points or None
 
 
@@ -3319,6 +3331,70 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
         if touched:
             replacements[signature] = bytes(updated)
     return rebuild_icc(profile, replacements) if replacements else profile
+
+
+def apply_mhc2_probe_luminance_trim(luts, rows, neutral_gains,
+                                    source_start=0.09, source_limit=0.65,
+                                    max_shift=None):
+    """Pull MHC2 curves onto the PQ target, common mode.
+
+    Same one-sided probe-calibrated method as
+    windows_hdr_b2a_with_ladder_trim, applied to the MHC2 adjustment
+    LUTs rather than the B2A cube. Cloning B2A here would erase the
+    measured MHC2 shadow correction.
+
+    Stops at source 0.65, the end of the MHC2 mid-band probe envelope,
+    so the peak candidate and final peak feedback stages keep the
+    region they own near code 763.
+    """
+    if (len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1
+            or len(luts[0]) < 2 or len(neutral_gains) != 3
+            or min(neutral_gains) <= 1e-6):
+        return False
+    if max_shift is None:
+        max_shift = 5.0 / 1023.0
+    probe_shifts = windows_hdr_b2a_probe_luminance_shifts(
+        rows, label="ICC MHC2 Curve Feedback",
+        codes=MHC2_MIDBAND_FEEDBACK_CODES)
+    if not probe_shifts:
+        return False
+
+    def probe_shift(source_code):
+        if source_code <= probe_shifts[0][0]:
+            return probe_shifts[0][1]
+        for index in range(1, len(probe_shifts)):
+            code0, shift0 = probe_shifts[index - 1]
+            code1, shift1 = probe_shifts[index]
+            if source_code <= code1:
+                if code1 <= code0 + 1e-12:
+                    return shift0
+                return (shift0
+                        + (source_code - code0) * (shift1 - shift0)
+                        / (code1 - code0))
+        return probe_shifts[-1][1]
+
+    entries = len(luts[0])
+    touched = False
+    for channel in range(3):
+        gain = neutral_gains[channel]
+        updated = []
+        for index, old in enumerate(luts[channel]):
+            curve_input = index / float(entries - 1)
+            source_code = nits_to_pq(pq_to_nits(curve_input) / gain)
+            if source_code < source_start or source_code >= source_limit:
+                updated.append(old)
+                continue
+            shift = probe_shift(source_code)
+            if not math.isfinite(shift) or abs(shift) < 1e-6:
+                updated.append(old)
+                continue
+            shift = max(-max_shift, min(max_shift, shift))
+            updated.append(max(0.0, min(1.0, old + shift)))
+            touched = True
+        updated = isotonic_curve(updated)
+        updated[0] = 0.0
+        luts[channel][:] = updated
+    return touched
 
 
 def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.74):
@@ -4462,6 +4538,13 @@ def mhc2_shadow_probe_weight(source_code, fade_start=0.38, fade_span=0.07):
 # before the shoulder plateau where no probe can produce a response.
 MHC2_CLUT_PROBE_FADE_START = 0.72
 MHC2_CLUT_PROBE_FADE_SPAN = 0.07
+# MHC2 mid-band envelope. Starts fading at 0.58 so it is gone by source 0.65,
+# code 665. That leaves a gap before the peak candidate and final peak
+# feedback stages own the region near code 763. Reusing the cLUT fade, which
+# reaches source 0.79, let the two mechanisms fight and peak-white went from
+# 0.362 to 1.475 dE ITP.
+MHC2_MIDBAND_PROBE_FADE_START = 0.58
+MHC2_MIDBAND_PROBE_FADE_SPAN = 0.07
 
 
 def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
@@ -4503,7 +4586,9 @@ def mhc2_profile_with_curve_probe(profile, channel, peak_delta=0.01,
     for index, old in enumerate(curves[channel]):
         position = index / float(entries - 1)
         source_code = nits_to_pq(pq_to_nits(position) / gain)
-        shadow_weight = mhc2_shadow_probe_weight(source_code)
+        shadow_weight = mhc2_shadow_probe_weight(
+            source_code, MHC2_MIDBAND_PROBE_FADE_START,
+            MHC2_MIDBAND_PROBE_FADE_SPAN)
         peak_weight = smoothstep((source_code - 0.70) / 0.05)
         curves[channel][index] = max(0.0, min(1.0,
             old + shadow_delta * shadow_weight
@@ -6437,7 +6522,12 @@ def build(payload, output_dir):
         matching_luts = mhc2_adjustment_luts(final_mhc2)
         apply_profile_curve_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
-            calibrated_white, "ICC MHC2 Curve Feedback")
+            calibrated_white, "ICC MHC2 Curve Feedback",
+            codes=MHC2_MIDBAND_FEEDBACK_CODES)
+        # Common-mode luminance trim on the MHC2 curves themselves. Cloning
+        # the B2A here would erase the measured MHC2 shadow correction.
+        apply_mhc2_probe_luminance_trim(
+            matching_luts, mhc2_profile_rows, final_neutral_gains)
         apply_mhc2_final_peak_feedback(
             matching_luts, mhc2_profile_rows, final_neutral_gains,
             calibrated_white)
