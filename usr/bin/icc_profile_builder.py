@@ -2068,7 +2068,29 @@ def shadow_chroma_lut_delta(center_xyz, center_code, jacobian, source_code,
     for channel in range(3):
         curve_input = nits_to_pq(source_nits * neutral_gains[channel])
         current.append(sample_table(luts[channel], curve_input))
-    return [target_codes[channel] - current[channel] for channel in range(3)]
+    raw = [target_codes[channel] - current[channel] for channel in range(3)]
+    # Remove the post-gain common-mode so this stage stays the pure chroma
+    # rotation it claims to be. Measured on the user's build: these anchors
+    # leaked plus or minus 2 codes of grey drive at the anchor codes, which
+    # re-added the exact oscillation the neutral re-anchor pass had just
+    # removed, since this stage runs after it.
+    shifts = []
+    for channel in range(3):
+        before = nits_to_pq(pq_to_nits(current[channel])
+                            * neutral_gains[channel])
+        after = nits_to_pq(pq_to_nits(max(0.0, min(1.0,
+                current[channel] + raw[channel])))
+                * neutral_gains[channel])
+        shifts.append(after - before)
+    mean_shift = sum(shifts) / 3.0
+    adjusted = []
+    for channel in range(3):
+        before = nits_to_pq(pq_to_nits(current[channel])
+                            * neutral_gains[channel])
+        wanted = max(0.0, min(1.0, before + shifts[channel] - mean_shift))
+        adjusted.append(nits_to_pq(pq_to_nits(wanted)
+                        / neutral_gains[channel]) - current[channel])
+    return adjusted
 
 
 def borrowed_shadow_grey_anchors(luts, rows, neutral_gains, probed, groups):
