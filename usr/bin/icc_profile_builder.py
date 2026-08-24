@@ -1915,6 +1915,36 @@ def apply_mhc2_active_neutral_luminance(luts, rows, black, primaries,
             updated[channel].append(
                 original[channel][index] * (1.0 - weight) + corrected * weight)
 
+    # Re-anchor the common-mode grey drive. The per-entry solve above leaves
+    # a measured plus or minus 1.9 code oscillation around the ladder
+    # inversion at the ladder knots, verified offline on the user's own
+    # build: +1.9 at code 205, -1.8 at 307, +1.75 at 358. That is about 3.5
+    # percent luminance and 2 to 3.5 dE ITP on the Windows system path,
+    # while the cLUT corridor received an equivalent exactness pass and
+    # measures clean. Correct the composite drive the way Windows evaluates
+    # it, curve first then matrix gain, against the ladder inversion of the
+    # PQ target, shifting all three channels equally so the per-channel
+    # chroma offsets are preserved. Fade with the same shoulder weight so
+    # the separately probed peak transition stays untouched.
+    for index in range(entries):
+        curve_input = index / float(entries - 1)
+        source_nits = pq_to_nits(curve_input)
+        target_y = min(source_nits, peak)
+        weight = 1.0 - smoothstep((target_y / peak - 0.65) / 0.25)
+        if weight <= 0.0:
+            continue
+        drives = [nits_to_pq(pq_to_nits(updated[channel][index])
+                             * neutral_gains[channel])
+                  for channel in range(3)]
+        delta = (invert_neutral_luminance(max(black_y, target_y))
+                 - sum(drives) / 3.0) * weight
+        if abs(delta) < 1e-6:
+            continue
+        for channel in range(3):
+            shifted = max(0.0, min(1.0, drives[channel] + delta))
+            updated[channel][index] = max(0.0, min(1.0, nits_to_pq(
+                pq_to_nits(shifted) / neutral_gains[channel])))
+
     for channel in range(3):
         updated[channel] = isotonic_curve(updated[channel])
         updated[channel][0] = 0.0
