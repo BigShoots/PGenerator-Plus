@@ -2817,11 +2817,12 @@ function meterIccMhc2PeakStep(name,r,g,b){
 }
 
 // The MHC2 path gets its top end from the peak candidate and final peak
-// feedback stages. The B2A corridor has no equivalent, so the cLUT series
-// also probes 767 and 921; without them the cLUT top end kept a flat +.0028
-// dy offset, about 1.5 chroma dE where MHC2 reached 0.54. Measuring them on
-// the cLUT variants keeps cLUT transform provenance.
-const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358];
+// feedback stages. Codes 460 and 563 sit inside the MHC2 mid-band probe
+// envelope, which ends at source 0.65 / code 665, so they can be measured
+// without colliding with those peak stages. The B2A corridor has no peak
+// equivalent, so the cLUT series also probes 665 and 716. Measuring them
+// on the cLUT variants keeps cLUT transform provenance.
+const METER_ICC_CURVE_FEEDBACK_CODES=[102,153,205,256,307,358,460,563];
 const METER_ICC_CLUT_FEEDBACK_CODES=[102,153,205,256,307,358,460,563,665,716];
 
 function meterIccCurveFeedbackCodes(label){
