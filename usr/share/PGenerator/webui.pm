@@ -25538,9 +25538,9 @@ function rgbBalance(reading,whiteRef,modeOrIncl,blackLevel){
 // target reports the intentional colour channels as enormous balance errors.
 // Compare measured and target RGB component-by-component after removing the
 // measured black floor and normalizing the usable span to measured white.
-function meterColorPatchRgbBalance(reading,whiteRef,blackRef){
+function meterColorPatchRgbBalance(reading,whiteRef,blackRef,includeLuminance){
  const measured=meterReadingXYZ(reading);
- const target=meterColorDeltaTargetXYZ(reading,false);
+ const target=meterColorDeltaTargetXYZ(reading,!!includeLuminance);
  const white=meterReadingXYZ(whiteRef);
  if(!measured||!target||!white||!(white.Y>0)||!(measured.Y>0)) return {R:null,G:null,B:null,noChroma:true};
  const black=meterReadingXYZ(blackRef)||{X:0,Y:0,Z:0};
@@ -25549,28 +25549,39 @@ function meterColorPatchRgbBalance(reading,whiteRef,blackRef){
  const gamut=meterAnalysisGamut();
  const subtractBlack=xyz=>({X:xyz.X-black.X,Y:xyz.Y-black.Y,Z:xyz.Z-black.Z});
  const measuredSpan=subtractBlack(measured);
+ const targetSpan=subtractBlack(target);
  const whiteSpan=subtractBlack(white);
  const m=xyzToLinRgb(measuredSpan.X/spanY,measuredSpan.Y/spanY,measuredSpan.Z/spanY,gamut.xyzToRgb);
  const w=xyzToLinRgb(whiteSpan.X/spanY,whiteSpan.Y/spanY,whiteSpan.Z/spanY,gamut.xyzToRgb);
- const t=xyzToLinRgb(target.X,target.Y,target.Z,gamut.xyzToRgb);
+ const t=xyzToLinRgb(targetSpan.X/spanY,targetSpan.Y/spanY,targetSpan.Z/spanY,gamut.xyzToRgb);
  const dominant=t.reduce((best,value,index)=>Math.abs(value)>Math.abs(t[best])?index:best,0);
  const targetDominant=t[dominant];
  const measuredDominant=m[dominant];
  if(!(Math.abs(targetDominant)>1e-9)||!(Math.abs(measuredDominant)>1e-9)) return {R:null,G:null,B:null,noChroma:true};
- // RGB balance is a chroma error around 100, not the absolute amount of the
- // intentionally driven colour channel. Scale the target ray to the measured
- // dominant channel first. For a primary this leaves that channel at the
- // measured-white balance and reports only unwanted energy in the other two
- // channels instead of treating the intended saturated channel as an error.
- const targetScale=measuredDominant/targetDominant;
- const scaledTarget=t.map(value=>value*targetScale);
- const whiteScale=Math.max(Math.abs(w[0]),Math.abs(w[1]),Math.abs(w[2]),1e-9);
- const whiteBalance=w.map(value=>value*100/whiteScale);
- const componentScale=Math.max(Math.abs(measuredDominant),1e-9);
+ let scaledTarget,baseline,componentScale;
+ if(includeLuminance){
+  // Luminance-inclusive RGB must use the same absolute XYZ target as xyY and
+  // Delta E. A perfect measured target therefore lands at 100/100/100, while
+  // an equal-channel luminance miss moves the driven components away from 100.
+  // The old dominant-channel rescale erased that luminance miss and could show
+  // perfect RGB while luminance-inclusive Delta E correctly grew worse.
+  scaledTarget=t;
+  baseline=[100,100,100];
+  componentScale=Math.max(Math.abs(targetDominant),1e-9);
+ }else{
+  // Chroma-only balance retains the target-ray normalization: intentional
+  // luminance differences are removed before component agreement is shown.
+  const targetScale=measuredDominant/targetDominant;
+  scaledTarget=t.map(value=>value*targetScale);
+  const whiteScale=Math.max(Math.abs(w[0]),Math.abs(w[1]),Math.abs(w[2]),1e-9);
+  baseline=w.map(value=>value*100/whiteScale);
+  componentScale=Math.max(Math.abs(measuredDominant),1e-9);
+ }
  const out=m.map((value,index)=>{
+  if(includeLuminance) return baseline[index]+(value-scaledTarget[index])*100/componentScale;
   const active=Math.abs(scaledTarget[index])>Math.abs(measuredDominant)*1e-6;
-  const baseline=active?whiteBalance[index]:100;
-  return baseline+(value-scaledTarget[index])*100/componentScale;
+  const center=active?baseline[index]:100;
+  return center+(value-scaledTarget[index])*100/componentScale;
  });
  return {R:out[0],G:out[1],B:out[2]};
 }
@@ -25614,7 +25625,8 @@ function meterLiveRgbData(reading){
   try{ whiteRef=meterSyntheticGreyWhiteReading(meterColorReferenceNits()); }catch(e){}
  }
  const blackRef=(typeof meterSeriesBaselineBlack!=='undefined')?meterSeriesBaselineBlack:null;
- const balance=whiteRef?meterColorPatchRgbBalance(reading,whiteRef,blackRef):null;
+ const includeLuminance=(typeof meterColorIncludeLum==='function')?meterColorIncludeLum():false;
+ const balance=whiteRef?meterColorPatchRgbBalance(reading,whiteRef,blackRef,includeLuminance):null;
  return balance?{mode:'balance',...balance}:{mode:'balance',R:null,G:null,B:null,noChroma:true};
 }
 
