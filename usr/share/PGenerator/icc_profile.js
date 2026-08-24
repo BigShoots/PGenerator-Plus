@@ -884,9 +884,13 @@ function meterIccWantsBaseActiveMhc2Steps(profileType,profileModel){
   &&meterIccProfileModelInfo(profileModel).family==='clut';
 }
 
+function meterIccBaseMhc2TailSteps(){
+ return meterIccActiveMhc2Steps().concat(meterIccBasePeakCandidateSteps());
+}
+
 function meterIccAppendBaseActiveMhc2Steps(steps,profileType,profileModel){
  if(!meterIccWantsBaseActiveMhc2Steps(profileType,profileModel)) return Array.isArray(steps)?steps:[];
- return (Array.isArray(steps)?steps:[]).concat(meterIccActiveMhc2Steps());
+ return (Array.isArray(steps)?steps:[]).concat(meterIccBaseMhc2TailSteps());
 }
 
 async function meterIccGenerateSteps(profileType,settings,includeMetadataWhite,profileModel){
@@ -1090,7 +1094,7 @@ function meterIccSyncUi(){
  const effectiveIccVersion=meterIccEffectiveVersion(type);
  const cicp=meterIccCicpSettings();
  const patchSettings=meterIccPatchSettings();
- const mhc2Extra=meterIccWantsBaseActiveMhc2Steps(type,profileModel)?meterIccActiveMhc2Steps().length:0;
+ const mhc2Extra=meterIccWantsBaseActiveMhc2Steps(type,profileModel)?meterIccBaseMhc2TailSteps().length:0;
  const count=patchSettings.patch_count+(type==='windows-hdr'?1:0)+mhc2Extra;
  const preRead=patchSettings.auto_precondition&&!patchSettings.precondition_profile;
  const patchMinimum=meterIccStructuredPatchEstimate(patchSettings);
@@ -2882,19 +2886,46 @@ function meterIccMhc2FinalFeedbackStep(name){
  return [meterIccMhc2PeakStep(name,1023,1023,1023)];
 }
 
-function meterIccMhc2PeakCandidateSteps(codes){
+function meterIccMhc2PeakCandidateSteps(codes,delta){
  if(!Array.isArray(codes)||codes.length!==3) throw new Error('The provisional MHC2 profile did not return a peak probe');
  const r=Math.round(Number(codes[0])),g=Math.round(Number(codes[1])),b=Math.round(Number(codes[2]));
  if(![r,g,b].every(Number.isFinite)) throw new Error('The provisional MHC2 peak probe is invalid');
+ const step=delta==null?4:Math.round(Number(delta));
+ if(!(step>0)) throw new Error('The MHC2 peak probe step is invalid');
  return [
   meterIccMhc2PeakStep('ICC MHC2 Peak Candidate',r,g,b),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R-',r-4,g,b),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R+',r+4,g,b),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G-',r,g-4,b),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G+',r,g+4,b),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B-',r,g,b-4),
-  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B+',r,g,b+4)
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R-',r-step,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate R+',r+step,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G-',r,g-step,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate G+',r,g+step,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B-',r,g,b-step),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Candidate B+',r,g,b+step)
  ];
+}
+
+// Unconditional base-series peak sweep. The series is composed before any
+// profile exists, so the centre cannot come from a provisional
+// mhc2_peak_codes value. MHC2 curves flatten near code 768; wide-gamut HDR
+// panels typically need more blue than a grey triplet at that shoulder.
+// windows_hdr_b2a_measured_peak_drive selects the best measured candidate by
+// chromaticity, so the bracket is wide on purpose rather than relying on a
+// precise centre. Closed-loop Fine Tune still measures its own adaptive
+// peak stage around the provisional centre.
+const METER_ICC_BASE_PEAK_CENTER=[768,776,816];
+
+function meterIccBasePeakCandidateSteps(){
+ const r=METER_ICC_BASE_PEAK_CENTER[0];
+ const g=METER_ICC_BASE_PEAK_CENTER[1];
+ const b=METER_ICC_BASE_PEAK_CENTER[2];
+ return meterIccMhc2PeakCandidateSteps([r,g,b],16).concat([
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine A',r,g,b+8),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine B',r-8,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine C',r+8,g,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine D',r,g-8,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine E',r,g+8,b),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine F',r,g,b-8),
+  meterIccMhc2PeakStep('ICC MHC2 Peak Refine G',r-8,g-8,b+8)
+ ]);
 }
 
 function meterIccMhc2PeakRefineSteps(readings){
