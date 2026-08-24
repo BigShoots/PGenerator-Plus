@@ -5594,9 +5594,17 @@ sub lg_generation_info (@) {
  my $webos_major=0;
  $webos_major=$1 if($product =~ /webostv\s+(\d+)/i);
  $webos_major=$1 if(!$webos_major && $release =~ /^(\d+)/);
+ # Older sets often return only modelName and omit platform/webOS status.
+ # Infer the model year from LG's single-character OLED generation suffix so
+ # C8/C9/CX and equivalent B/G/E/W models retain the no-readback profile.
+ my $series_year=0;
+ if($series =~ /^[A-Z](6|7|8|9|X|1)$/) {
+  my %year_for_suffix=(6=>2016,7=>2017,8=>2018,9=>2019,X=>2020,1=>2021);
+  $series_year=$year_for_suffix{$1}||0;
+ }
  my $ddc_only=0;
  $ddc_only=1 if($platform_year && $platform_year <= 2021);
- $ddc_only=1 if($series =~ /^[BCGZ]1$/);
+ $ddc_only=1 if($series_year && $series_year <= 2021);
  $ddc_only=1 if($webos_major && $webos_major <= 6);
  # When nothing resolved, default to conservative: assume the LG cannot be
  # classified and behave like a DDC/CAL-only generation. Phase 2 step 1.
@@ -5613,8 +5621,10 @@ sub lg_generation_info (@) {
 
  my $generation_id = "lg_unknown";
  if($platform_year >= 2022) { $generation_id = "lg2022plus_oled"; }
- elsif($platform_year == 2021 || $series =~ /^[BCGZ]1$/) { $generation_id = "lg2021_oled"; }
- elsif($platform_year >= 2019 && $platform_year <= 2020) { $generation_id = "lg".$platform_year."_oled"; }
+ elsif($platform_year == 2021 || $series_year == 2021) { $generation_id = "lg2021_oled"; }
+ elsif(($platform_year >= 2016 && $platform_year <= 2020) || ($series_year >= 2016 && $series_year <= 2020)) {
+  $generation_id="lg".($platform_year||$series_year)."_oled";
+ }
  elsif($webos_major && $webos_major <= 6) { $generation_id = "lg_pre2022_oled"; }
 
  return {
