@@ -718,6 +718,10 @@ cleanup() {
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
+ # Let the kernel release the USB interface before the replacement process
+ # tries to claim it. Immediate re-open is what produced intermittent
+ # "did not claim interface" failures on the Pi during the observed run.
+ sleep 1
  rm -f "$OUTFILE" "$CMDPIPE" "$CMD_FIFO" "$PID_FILE" "$CONFIG_FILE" "$READY_FILE" "$STARTUP_READY_FILE"
 }
 
@@ -808,6 +812,9 @@ respawn_spotread () {
  fi
  pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
+ # The old process is gone, but the kernel can still be releasing its USB
+ # interface. Give it a short settle before the first replacement claim.
+ sleep 1
  # The wait-for-ready loop below is run twice (150 iterations x 0.1s =
  # 15s per attempt, 30s total). The i1d3 AIO can take >5s to re-init
  # after a per-read low_light mode change (the previous step's averaging
@@ -889,6 +896,7 @@ respawn_spotread () {
   fi
   pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null
  pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null
+  sleep 1
  done
  log "respawn: spotread failed to ready within 15s on both attempts after $respawn_reason, surfacing error"
  write_state '{"status":"error","message":"Meter respawn failed"}'
@@ -1183,7 +1191,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
 		     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
-		     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="off"
+		     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="$CURRENT_LOW_LIGHT_MODE"
 
 	   # If the per-read low_light mode differs from the currently-running
 	   # spotread's, respawn ONLY spotread (1-3s) instead of the wrapper
