@@ -3020,6 +3020,37 @@ function meterAutoCalTargetGammaValue(){
  return (requested==='hdr10'||requested==='dv')?'st2084':'bt1886';
 }
 
+function meterPrepareAutoCalTargetGamma(){
+ // LG HDR10 and Dolby Vision greyscale AutoCal solve in the panel's 2.2
+ // calibration space. SDR keeps the operator-selected transfer function,
+ // with ST 2084 sanitized because it is not a valid SDR target.
+ const mode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'sdr').toLowerCase();
+ const tg=document.getElementById('meterTargetGamma');
+ if(!tg) return '';
+ if(mode==='hdr10'||mode==='dv'){
+  tg.value='2.2';
+ }else{
+  const sdrTargets=['bt1886','2.2','2.4','srgb'];
+  if(!sdrTargets.includes(tg.value)) tg.value='bt1886';
+ }
+ if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+ if(typeof saveMeterSettings==='function') saveMeterSettings();
+ return tg.value;
+}
+
+function meterRestoreTargetGammaAfterAutoCal(signalMode){
+ // Once HDR calibration mode ends, verification reads run through the TV's
+ // normal PQ processing. Do not let the internal 2.2 calibration target (or
+ // a stale SDR BT.1886 value) leak into the next manual series.
+ const mode=String(signalMode||((typeof getVal==='function'?getVal('signal_mode'):'')||'sdr')).toLowerCase();
+ if(mode!=='hdr10'&&mode!=='dv') return false;
+ const tg=document.getElementById('meterTargetGamma');
+ if(tg) tg.value='st2084';
+ if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
+ if(typeof saveMeterSettings==='function') saveMeterSettings();
+ return true;
+}
+
 function meterLgAutoCalGreyscaleTargetGammaValue(){
  // LG HDR autocal always calibrates against a 2.2 power target; Dolby Vision
  // greyscale reuses the same HDR20 1D-DPG mechanism and must ALSO always
@@ -4490,13 +4521,9 @@ function meterAutoCalCloseComplete(){
 	 meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 	 meterFullAutoCalClearReportData();
 	 meterAutoCalSetOverlay(false,null);
-	 // Calibration pinned Target Gamma to 2.2; restore the HDR10 default
-	 // (ST 2084 / PQ) so post-cal reads and charts target the PQ curve.
-	 if((getVal('signal_mode')||'sdr')==='hdr10'){
-	  setVal('meterTargetGamma','st2084');
-	  if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
-	  if(typeof saveMeterSettings==='function') saveMeterSettings();
-	 }
+	 // Calibration pinned Target Gamma to 2.2; restore the normal HDR/DV
+	 // verification target before the next manual read.
+	 meterRestoreTargetGammaAfterAutoCal();
 	}
 
 function meterStabilizationMeasurementOnlyEnabled(){
@@ -7352,6 +7379,7 @@ function meterFullAutoCalResetState(keepResults){
 
 function meterFullAutoCalAbort(message,isError){
  const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
+	 const abortedSignalMode=wasDvSignal?'dv':String((typeof getVal==='function'?getVal('signal_mode'):'')||'sdr').toLowerCase();
  meterAutoCalWizardContextActive=false;
  const text=message||'Full Auto Cal stopped';
  // The greyscale stage HOLDS LG calibration mode open for the 3D-LUT stage,
@@ -7382,6 +7410,7 @@ function meterFullAutoCalAbort(message,isError){
   meterAutoCalSetOverlay(false,null);
  }
  document.getElementById('meterProgress').style.display='none';
+	 meterRestoreTargetGammaAfterAutoCal(abortedSignalMode);
  meterUpdateReadButtons();
  toast(text,!!isError);
 }
@@ -8627,6 +8656,10 @@ async function meterStopDvAutoCalProfile(){
  if(wasDvSignal){
   try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
+ // The greyscale stage pinned Target Gamma to the internal 2.2 for HDR/DV;
+ // this stop ends the run, so verification must grade against ST 2084 again
+ // (same restore meterStopAutoCal performs).
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('Dolby Vision profile measurement stopped');
 }
 
@@ -9059,12 +9092,9 @@ function meterFullAutoCalComplete(touchupStatus,options){
  // so clear here too the moment the completion modal appears.
  meterClearDisplayPattern();
  toast('Full Auto Cal complete');
- // The greyscale autocal calibrates the 1D DPG against a 2.2 curve, so the
- // Target Gamma control sits at 2.2 during the run. Once the full workflow is
- // done, restore it to the signal-mode default (ST 2084/PQ for HDR10) so any
- // subsequent verification series -- greyscale, ColorChecker, saturation --
- // computes its target luminance against the correct EOTF instead of 2.2.
- try{ if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault(); }catch(e){}
+ // The greyscale autocal calibrates the 1D DPG against a 2.2 curve. Once the
+ // full workflow is done, restore ST 2084/PQ before any verification series.
+	 try{ meterRestoreTargetGammaAfterAutoCal(); }catch(e){}
  try{ fetchJSON('/api/lg/autocal/run/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(meterAutoCalRunEndPayload('complete')),_quiet:true,_timeoutMs:8000}).then(meterReportLgRunEnd).catch(function(){}); }catch(e){}
 }
 
@@ -9245,7 +9275,9 @@ let completeStatus=r;
 				     setVal('meterTargetGamma','bt1886');
 				     if(typeof applyMeterTargetGammaDefault==='function') applyMeterTargetGammaDefault();
 				     if(typeof saveMeterSettings==='function') saveMeterSettings();
-				    }
+				     }
+				   }else{
+				    meterRestoreTargetGammaAfterAutoCal(_compSm);
 				   }
 				   meterAutoCalPhase='complete';
 				   meterAutoCalRunning=true;
@@ -9369,17 +9401,9 @@ async function meterStartAutoCal(options){
  const autoCalSeriesBtn=document.querySelector('#meterSeriesBtnRow button[data-series="greyscale-26"]');
  if(autoCalSeriesBtn){autoCalSeriesBtn.classList.remove('btn-secondary');autoCalSeriesBtn.classList.add('btn-primary');}
  meterSetActiveSeriesChartContext();
-// SDR target gamma is the operator's choice (wizard gamma step / Target
-  // Gamma dropdown): bt1886, 2.2, 2.4 or srgb. Only sanitize invalid or
-  // HDR-only values (st2084) to BT.1886 so the worker and the charts can
-  // never diverge onto different curves.
-  {
-   const tg=document.getElementById('meterTargetGamma');
-   const ok=['bt1886','2.2','2.4','srgb'];
-   if(tg&&!ok.includes(tg.value)) tg.value='bt1886';
-   if(typeof meterSyncTargetGammaControl==='function') meterSyncTargetGammaControl();
-   if(typeof saveMeterSettings==='function') saveMeterSettings();
-  }
+	 // Pin HDR10/DV to the worker's 2.2 calibration space. SDR keeps the
+	 // operator's selected gamma, with invalid HDR-only values sanitized.
+	 meterPrepareAutoCalTargetGamma();
   meterSeriesSteps=meterBuildStepsJS('greyscale',26);
 	 const adjustable=meterSeriesSteps.filter(step=>meterGreyTvTargetAdjustable(meterGreyTvTarget(step)));
  if(!adjustable.length) return fail('No LG-adjustable greyscale points are available');
@@ -10060,6 +10084,7 @@ async function meterStopAutoCal(){
  if(wasDvSignal){
   try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
+	 meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('LG Auto Cal stopped');
 }
 
@@ -10898,6 +10923,7 @@ async function meterRetryLg3dUpload(){
 
 async function meterCloseLg3dUploadRetry(){
  const wasFullWorkflow=!!meterFullAutoCalRunning;
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  try{
   await fetchJSON('/api/meter/lg-3d-autocal/retry-upload',{
    method:'POST',headers:{'Content-Type':'application/json'},
@@ -10919,6 +10945,9 @@ async function meterCloseLg3dUploadRetry(){
    _quiet:true,_timeoutMs:8000
   }));
  }catch(_e){}
+ // Dismissing the failed upload ends the run; an HDR/DV run's greyscale
+ // stage pinned Target Gamma to 2.2, so restore ST 2084 for verification.
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('3D LUT upload remains uncommitted');
 }
 
@@ -11445,6 +11474,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
 }
 
 async function meterStopLg3dAutoCal(){
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  if(meterLg3dAutoCalSpectroSetupActive){
   meterLg3dAutoCalSpectroSetupActive=false;
   meterSpectroSetupApply(null);
@@ -11466,6 +11496,9 @@ async function meterStopLg3dAutoCal(){
   meterHideWorkflowProgress();
   meterUpdateReadButtons();
  }
+ // Stop during the 3D LUT stage ends an HDR/DV run whose greyscale stage
+ // pinned Target Gamma to 2.2; restore ST 2084 for verification.
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('LG 3D LUT AutoCal stopped');
 }
 let meterInternalSeriesWorkflow=null;
