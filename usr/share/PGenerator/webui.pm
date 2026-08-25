@@ -5969,10 +5969,10 @@ sub webui_meter_lg_autocal_start (@) {
  }
  return '{"status":"error","message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
  # Final server-side power gate immediately before any meter/session teardown
- # or worker launch. The browser's LG status is only a pairing snapshot and
- # can still say "connected" after the panel has entered standby. Use the
- # fresh CEC-backed LG status here so direct API callers and stale browser
- # tabs cannot launch AutoCal unless the display is definitely on.
+ # or worker launch. Block a definite CEC off state, but fail open when CEC is
+ # unknown or remains powering-on. Older adapters can keep those advisory
+ # states long after WebOS and the HDMI signal are usable; the authenticated LG
+ # reset/session preflight remains the authoritative launch check.
  if(defined(&lg_cec_status)) {
   my $tv_status=eval { &lg_cec_status() };
   if(ref($tv_status) eq "HASH") {
@@ -5981,17 +5981,7 @@ sub webui_meter_lg_autocal_start (@) {
    if($power eq "standby" || $power eq "off" || $power eq "powering-off") {
     return '{"status":"error","message":"LG TV is powered off. Turn it on and wait for it to finish starting before Auto Cal."}';
    }
-   if($power eq "powering-on") {
-    return '{"status":"error","message":"LG TV is still starting. Wait until it is fully on before Auto Cal."}';
-   }
-   if($power ne "on") {
-    return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
-   }
-  } else {
-   return '{"status":"error","message":"Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try Auto Cal again."}';
   }
- } else {
-  return '{"status":"error","message":"Unable to verify LG TV power before Auto Cal."}';
  }
  &webui_meter_stop();
  # Drop any stale stop file before launch. A root-owned leftover in sticky
@@ -44573,12 +44563,12 @@ async function meterAutoCalBackendRecoveryWatchdog(){
  }
 }
 
-// Confirm the display is actually awake before entering the AutoCal wizard or
-// launching its worker. LG's `connected` flag means a saved WebOS pairing is
-// available; it is not a live power check and remains true while the TV is in
-// standby. AutoCal requires a definite CEC `on` state. Retry transient unknown
-// readings briefly, then fail closed; the server and worker repeat the gate at
-// the launch boundary.
+// Confirm the display is not definitely off before entering the AutoCal wizard
+// or launching its worker. LG's `connected` flag means a saved WebOS pairing is
+// available and remains true in standby, so a definite CEC off state still
+// blocks. Unknown and stale powering-on states fail open because older adapters
+// can report them indefinitely while WebOS and the HDMI signal are already
+// usable; the authenticated LG preflight remains authoritative.
 async function meterEnsureLgTvReadyForAutoCal(label){
  let status=null;
  let power='';
@@ -44592,14 +44582,6 @@ async function meterEnsureLgTvReadyForAutoCal(label){
  }
  if(power==='standby'||power==='off'||power==='powering-off'){
   toast('LG TV is powered off. Turn it on and wait for it to finish starting before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power==='powering-on'){
-  toast('LG TV is still starting. Wait until it is fully on before '+(label||'Auto Cal')+'.',true);
-  return false;
- }
- if(power!=='on'){
-  toast('Unable to verify that the LG TV is powered on. Turn it on, wait for CEC to report On, then try '+(label||'Auto Cal')+' again.',true);
   return false;
  }
  return true;

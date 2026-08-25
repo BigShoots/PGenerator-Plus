@@ -46,6 +46,25 @@ ok(!defined(autocal_dpg_terminal_error('HDR20 1D DPG',0,1,'')),
  'a verified upload with converged white remains successful');
 
 {
+ no warnings qw(redefine once);
+ local *main::api_json=sub (@) { return {tv_power=>'standby'}; };
+ like(verify_lg_tv_power_for_autocal(undef),qr/powered off/i,
+  'a definite CEC standby state still blocks AutoCal');
+}
+{
+ no warnings qw(redefine once);
+ local *main::api_json=sub (@) { return {tv_power=>'powering-on'}; };
+ ok(!defined(verify_lg_tv_power_for_autocal(undef)),
+  'a stale CEC powering-on state does not block an otherwise reachable TV');
+}
+{
+ no warnings qw(redefine once);
+ local *main::api_json=sub (@) { return {tv_power=>'unknown'}; };
+ ok(!defined(verify_lg_tv_power_for_autocal(undef)),
+  'an unavailable CEC power reading fails open to the authenticated LG preflight');
+}
+
+{
  my $api_calls=0;
  no warnings qw(redefine once);
  local $main::LG_AUTOCAL_STATE={
@@ -93,6 +112,16 @@ like($source,qr/sub lg_calibration_end_retry_forbidden[\s\S]+?calibration_end_re
  'the 1D worker records a foreign-close prohibition');
 like($source,qr/if\(lg_calibration_end_retry_forbidden\(\$state\)\)[\s\S]{0,300}?\$cal_end_unconfirmed=1[\s\S]{0,500}?if\(!\$cal_end_unconfirmed[\s\S]{0,300}?end_calibration_mode/s,
  'the 1D finaliser does not send fallback CAL_END after an accepted write has an unconfirmed close');
+
+my $autocal_webui="$Bin/../usr/share/PGenerator/webui.pm";
+open(my $wfh,'<',$autocal_webui) or die "Unable to read $autocal_webui: $!";
+local $/;
+my $autocal_webui_source=<$wfh>;
+close($wfh);
+unlike($autocal_webui_source,qr/if\(\$power eq "powering-on"\)\s*\{\s*return '\{"status":"error","message":"LG TV is still starting/s,
+ 'the server does not fail closed on a stale CEC powering-on state');
+unlike($autocal_webui_source,qr/if\(power==='powering-on'\)\s*\{[\s\S]{0,220}?return false/,
+ 'the browser does not fail closed on a stale CEC powering-on state');
 
 my $worker3d="$Bin/../usr/bin/meter_lg_3d_autocal.pl";
 my $loaded3d;
