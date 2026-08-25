@@ -117,7 +117,9 @@ sub run_begin {
   if($cur ne "") {
    my $cdir = "$BASE_DIR/$cur";
    if(-d $cdir && !-e "$cdir/summary.json") {
-    _write_json_atomic("$cdir/summary.json", { status => 'superseded', ended_at => _now_ms() });
+    # Route through run_end's locked path: a run_end for the outgoing run
+    # racing this stamp must win with its real result, not be clobbered.
+    run_end($cur, { status => 'superseded' });
    }
   }
   $run_id = _gen_run_id();
@@ -194,10 +196,24 @@ sub run_end {
  eval {
   my $dir = run_dir($run_id);
   return if($dir eq "" || !-d $dir);
+  open(my $lock_fh, '>>', "$dir/.summary.lock") or return;
+  flock($lock_fh, LOCK_EX) or return;
   $summary = {} if(ref($summary) ne 'HASH');
+  $summary = {%{$summary}};
   $summary->{'ended_at'} = _now_ms() if(!$summary->{'ended_at'});
   $summary->{'status'}   = 'complete' if(!$summary->{'status'});
-  _write_json_atomic("$dir/summary.json", $summary);
+  my $path="$dir/summary.json";
+  my $prior=_read_json($path);
+  my $prior_status=lc($prior->{'status'}||'');
+  my $next_status=lc($summary->{'status'}||'');
+  # Recovery and teardown callbacks can arrive more than once. Preserve the
+  # first terminal result, except that a genuine completion may upgrade an
+  # earlier transient abort. Completed and superseded runs are immutable.
+  if($prior_status ne '') {
+   return if($prior_status eq 'complete' || $prior_status eq 'superseded');
+   return if($next_status ne 'complete');
+  }
+  _write_json_atomic($path, $summary);
   1;
  };
  return;

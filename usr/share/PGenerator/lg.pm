@@ -4,6 +4,7 @@
 
 use JSON::PP ();
 use File::Path qw(make_path remove_tree);
+use Fcntl qw(:flock);
 use IO::Select ();
 use IO::Socket::INET ();
 use MIME::Base64 ();
@@ -2405,10 +2406,38 @@ my $_meter_lg_dv_profile_file="/tmp/meter_lg_dv_profile.json";
 my $_meter_lg_dv_profile_config_file="/tmp/meter_lg_dv_profile_config.json";
 my $_meter_lg_dv_profile_stop_file="/tmp/meter_lg_dv_profile.stop";
 my $_meter_lg_dv_profile_log_file="/tmp/meter_lg_dv_profile.log";
+my $_meter_lg_dv_profile_start_lock_file="/tmp/meter_lg_dv_profile.start.lock";
 
 sub webui_meter_lg_dv_profile_running (@) {
  my $alive=`pgrep -f '[m]eter_lg_dv_profile\\.pl' 2>/dev/null`;
  return ($alive=~/\d/) ? 1 : 0;
+}
+
+sub webui_meter_lg_dv_profile_same_run_running (@) {
+ my ($body)=@_;
+ return 0 if(!defined($body) || $body eq "" || !-f $_meter_lg_dv_profile_config_file);
+ my $requested="";
+ $requested=$1 if($body=~/"full_autocal_run_id"\s*:\s*"([^"\\]{1,200})"/);
+ return 0 if($requested eq "");
+ my $config="";
+ if(open(my $fh,"<",$_meter_lg_dv_profile_config_file)) { local $/; $config=<$fh>; close($fh); }
+ return 0 if($config eq "");
+ return ($config=~/"full_autocal_run_id"\s*:\s*"\Q$requested\E"/) ? 1 : 0;
+}
+
+# The start handler writes the config and an initial "running" state under
+# its lock BEFORE system() backgrounds the setsid worker, but pgrep cannot
+# see that worker until the child has exec'd. This is the evidence that
+# bridges the gap: a fresh initial state still claiming "running". The mtime
+# bound keeps a crashed worker's leftover state from answering forever — the
+# status endpoint's liveness check rewrites such a state on its next poll.
+sub webui_meter_lg_dv_profile_recently_started (@) {
+ return 0 if(!-f $_meter_lg_dv_profile_file);
+ my $age=time()-((stat($_meter_lg_dv_profile_file))[9]||0);
+ return 0 if($age>20);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_dv_profile_file)) { local $/; $json=<$fh>; close($fh); }
+ return ($json=~/"status"\s*:\s*"running"/) ? 1 : 0;
 }
 
 sub webui_meter_lg_dv_profile_mark_cancelled (@) {
@@ -2441,13 +2470,28 @@ sub webui_meter_lg_dv_profile_kill (@) {
 sub webui_meter_lg_dv_profile_start (@) {
  my ($body)=@_;
  return '{"status":"error","message":"Dolby Vision profile payload required"}' if(!defined($body) || $body eq "" || $body!~/^\s*\{/);
+ my $start_lock;
+ return '{"status":"error","retryable":true,"message":"Unable to serialize Dolby Vision profile startup"}'
+  if(!open($start_lock,">>",$_meter_lg_dv_profile_start_lock_file));
+ flock($start_lock,LOCK_EX);
  my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
  return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  # retryable:false so the Full AutoCal busy loop does not treat a FOREIGN
  # worker's rejection as a transient hand-off wait and then adopt that
  # worker (the adoption probe additionally requires a run-id match).
  return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
- return '{"status":"error","retryable":false,"message":"Dolby Vision profile measurement is already running"}' if(&webui_meter_lg_dv_profile_running());
+ # The same-run check runs FIRST, against both liveness sources: pgrep for a
+ # visible worker, and the just-written config + initial state for a worker
+ # still inside the spawn gap. A same-run duplicate arriving in that gap
+ # would otherwise pass the process check and start a second worker over the
+ # first one's config and state files.
+ if(&webui_meter_lg_dv_profile_same_run_running($body)
+    && (&webui_meter_lg_dv_profile_running() || &webui_meter_lg_dv_profile_recently_started())) {
+  return '{"status":"started","message":"Dolby Vision profile measurement already running"}';
+ }
+ if(&webui_meter_lg_dv_profile_running()) {
+  return '{"status":"error","retryable":false,"message":"Dolby Vision profile measurement is already running"}';
+ }
  my $_dv_display_model=&webui_lg_display_model_name({});
  if($_dv_display_model ne "" && $body!~/"display_model"\s*:/) {
   $_dv_display_model=~s/\\/\\\\/g; $_dv_display_model=~s/"/\\"/g;
@@ -3388,15 +3432,42 @@ sub webui_lg_autocal_run_end (@) {
  my $body = shift;
  my $payload = &lg_decode_json($body);
  $payload = {} if(ref($payload) ne "HASH");
+ my $run_is_current=1;
+ my $resolved_run_id="";
  if($PGAC_LOADED) {
+  # If current() itself dies the eval leaves $run_is_current at 1 — a
+  # deliberate fail-open: blocking the cleanup below on a diagnostics
+  # failure could leave the TV stuck in calibration mode.
   eval {
-   my $run_id = $payload->{"run_id"} || PGAutoCalRun::current();
-   PGAutoCalRun::run_end($run_id, {
+   my $current_run_id=PGAutoCalRun::current();
+   my $payload_run_id=$payload->{"run_id"}||"";
+   $resolved_run_id=$payload_run_id || $current_run_id;
+   my $unattributed=0;
+   if($payload_run_id ne "") {
+    $run_is_current=0 if($current_run_id ne "" && $payload_run_id ne $current_run_id);
+   } elsif($current_run_id ne "") {
+    # A callback with no run id cannot prove it belongs to the live run,
+    # and the owning tab always carries the id run/begin returned. This is
+    # typically a non-owner tab's stop path; it must not write into the
+    # live run's summary or tear down its workflow and session below.
+    $run_is_current=0;
+    $unattributed=1;
+   }
+   PGAutoCalRun::run_end($resolved_run_id, {
     status => $payload->{"status"} || "complete",
     note   => $payload->{"note"}   || "",
-   });
+   }) if(!$unattributed);
    1;
   };
+ }
+ # A delayed callback may finalise its own diagnostics, but it must not clear
+ # the active run's workflow metadata or close that run's calibration session.
+ if(!$run_is_current) {
+  return &lg_encode_json({
+   status => "ok",
+   stale_run_ignored => &lg_json_true(),
+   run_id => $resolved_run_id,
+  });
  }
  # The full workflow (or a standalone-greyscale run) has reached a
  # terminal state. Clear the full-workflow + HDR tone-map metadata from

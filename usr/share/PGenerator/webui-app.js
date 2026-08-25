@@ -3743,6 +3743,8 @@ let meterFullAutoCalRunning=false;
 let meterFullAutoCalPhase='';
 let meterFullAutoCalConfig=null;
 let meterFullAutoCalRunId=null;
+let meterAutoCalRecordRunId=null;
+let meterFullAutoCalControllerIdCache='';
 let meterFullAutoCalStartedAt=null;
 let meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
 let meterFullAutoCalReportData={pre:null,post:null,updated_at:null,run_id:null,started_at:null,pre_cal_skipped:null,stages:{},reset:null};
@@ -19531,4 +19533,3 @@ function meterCloseLutTools(){
  if(modal) modal.style.display='none';
  uiSyncBodyScrollLock();
 }
-
