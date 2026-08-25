@@ -1,0 +1,186 @@
+ <!-- Display -->
+ <div id="lgConnectPrompt" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.62);align-items:center;justify-content:center;padding:18px">
+  <div style="width:min(540px,calc(100vw - 36px));background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:18px">
+   <h2 style="margin:0 0 10px">LG TV detected</h2>
+   <div id="lgConnectPromptText" style="font-size:.9rem;color:var(--text2);line-height:1.45;margin-bottom:12px"></div>
+   <div class="field" style="margin-bottom:10px">
+    <label>Found TVs</label>
+    <select id="lgPromptDeviceList" size="4" style="width:100%;min-height:98px" onchange="lgUsePromptSelectedIp()">
+     <option value="">Scanning...</option>
+    </select>
+   </div>
+	   <div class="field" style="margin-bottom:12px">
+	    <label>TV IP</label>
+	    <input type="text" id="lgPromptManualIp" placeholder="192.168.1.x" oninput="lgPromptManualIpChanged()">
+	   </div>
+   <div id="lgConnectScanStatus" style="font-size:.75rem;color:var(--text2);line-height:1.35;margin-bottom:12px">Scanning the local network...</div>
+   <div class="btn-row" style="justify-content:flex-end">
+    <button class="btn btn-sm btn-secondary" onclick="lgScanTvs(true)">Scan Again</button>
+    <button class="btn btn-sm btn-secondary" onclick="lgDismissDetectedPrompt()">Not Now</button>
+    <button class="btn btn-sm btn-success" id="lgConnectPromptBtn" onclick="lgPromptConnect()">Connect</button>
+   </div>
+  </div>
+	 </div>
+	 <div class="card" data-widget="lg" data-desktop-workspace="display-control" data-desktop-order="10" draggable="true">
+	  <style>
+	   #lgDeviceList::-webkit-scrollbar{width:10px}
+	   #lgDeviceList{background:var(--surface-inset)!important;color:var(--text-primary)!important;scrollbar-color:var(--scroll-thumb) var(--scroll-track)}
+	   #lgDeviceList::-webkit-scrollbar-track{background:var(--scroll-track);border-radius:6px}
+	   #lgDeviceList::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:999px;border:2px solid var(--scroll-track)}
+	   #lgDeviceList::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
+	   #lgDeviceList .lg-device-item:hover{background:var(--hover-bg)!important}
+	   #lgDeviceList .lg-device-item.selected{background:var(--selected-bg)!important;color:var(--text-primary);box-shadow:inset 4px 0 0 var(--accent)}
+	   #lgCardTitle::after{margin-left:0}
+	   .lg-display-control-open-desktop{display:none}
+	   body.layout-desktop #lgDisplayControlOpenBtn{display:none}
+	   body.layout-desktop #lgCalHistoryOpenBtn{display:none}
+	   body.layout-desktop #lgCardTitle .lg-card-title-label{display:none}
+	   body.layout-desktop .lg-display-control-open-desktop{display:inline-flex;margin:0 0 8px}
+	   body.layout-desktop #lgCalHistoryDesktop{display:block}
+	   .lg-card-title-actions{margin-left:auto;display:inline-flex;gap:6px;min-width:0}
+	   @media(max-width:600px){
+	    #lgCardTitle{flex-wrap:wrap}
+	    #lgCardTitle::after{order:2;margin-left:auto}
+	    #lgStatusBadge{margin-left:0!important}
+	    .lg-card-title-actions{order:3;display:grid;width:100%;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);margin-left:0}
+	    .lg-card-title-actions .btn{width:100%;min-width:0;justify-content:center;white-space:normal}
+	   }
+	   #lgCalHistoryDesktop{display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+	   .lg-cal-hist-section{margin-bottom:12px}
+	   .lg-cal-hist-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin:0 0 6px}
+	   .lg-cal-hist-list{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+	   .lg-cal-hist-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface-inset)}
+	   .lg-cal-hist-meta{flex:1;min-width:140px;font-size:.76rem;color:var(--text);line-height:1.35}
+	   .lg-cal-hist-meta small{display:block;color:var(--text2);font-size:.68rem}
+	   .lg-cal-hist-actions{display:flex;gap:5px;flex-wrap:wrap}
+	   .lg-cal-hist-empty{font-size:.74rem;color:var(--text2);padding:4px 0}
+	   #lgCalHistoryModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgCalHistoryPanel{width:min(720px,calc(100vw - 36px));max-height:min(780px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;box-sizing:border-box}
+	   #lgDisplayControlModal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgDisplayControlPanel{width:min(920px,calc(100vw - 36px));max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px;box-sizing:border-box;scrollbar-color:#525264 #232330;scrollbar-width:auto;scrollbar-gutter:stable}
+	   #lgDisplayControlPanel::-webkit-scrollbar{width:14px;height:14px}
+	   #lgDisplayControlPanel::-webkit-scrollbar-track{background:linear-gradient(90deg,#20202d 0%,#272736 100%);border-radius:999px;border:1px solid #3a3a4a}
+	   #lgDisplayControlPanel::-webkit-scrollbar-thumb{background:linear-gradient(90deg,#58586c 0%,#38384a 100%);border-radius:999px;border:1px solid #6c6c82;box-shadow:inset 1px 0 0 rgba(255,255,255,.12)}
+	   #lgDisplayControlPanel::-webkit-scrollbar-thumb:hover{background:linear-gradient(90deg,#67677c 0%,#434356 100%)}
+	   #lgApplyAllInputsModal{display:none;position:fixed;inset:0;z-index:10010;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+	   #lgApplyAllInputsPanel{width:min(520px,calc(100vw - 36px));max-height:calc(100vh - 36px);overflow:auto;background:var(--card);border:1px solid var(--orange);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:16px 18px;box-sizing:border-box}
+	   #lgApplyAllInputsPanel h2{margin:0 0 8px;font-size:1rem;color:var(--orange);display:flex;align-items:center;gap:8px}
+	   #lgApplyAllInputsPanel p{margin:0 0 8px;font-size:.8rem;line-height:1.5;color:var(--text)}
+	   #lgApplyAllInputsPanel ul{margin:0 0 12px 18px;padding:0;font-size:.78rem;line-height:1.5;color:var(--text2)}
+	   #lgApplyAllInputsMode{font-weight:600;color:var(--text)}
+	   #lgDisplayControlGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+	   .lg-display-control-item{border:1px solid var(--border);border-radius:6px;padding:9px;background:#10131d;min-height:74px}
+	   .lg-display-control-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
+	   .lg-display-control-label{font-size:.78rem;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	   .lg-display-control-value{font-size:.72rem;color:var(--text2);min-width:34px;text-align:right}
+	   .lg-display-control-row{display:flex;align-items:center;gap:8px}
+	   .lg-display-control-row input[type="range"]{flex:1;min-width:0}
+	   .lg-display-control-row input[type="number"]{width:68px}
+	   .lg-display-control-row select,.lg-display-control-row input[type="text"]{width:100%}
+	   #lgDisplayControlPanel .lg-display-control-row select,#lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{min-height:32px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);outline:none;box-sizing:border-box;color-scheme:dark}
+	   #lgDisplayControlPanel .lg-display-control-row input[type="number"],#lgDisplayControlPanel .lg-display-control-row input[type="text"]{padding:6px 8px}
+	   #lgDisplayControlPanel .lg-display-control-row select{padding:6px 30px 6px 8px;-webkit-appearance:none;appearance:none;cursor:pointer;background-color:#0d0d15;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23888'%3E%3Cpath d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+	   #lgDisplayControlPanel .lg-display-control-row select option{background:#0d0d15;color:var(--text)}
+	   #lgDisplayControlPanel .lg-display-control-row select:focus,#lgDisplayControlPanel .lg-display-control-row input[type="number"]:focus,#lgDisplayControlPanel .lg-display-control-row input[type="text"]:focus{border-color:var(--accent)}
+	   #lgDisplayControlPanel .lg-display-control-row select:disabled,#lgDisplayControlPanel .lg-display-control-row input:disabled{opacity:.65;cursor:not-allowed}
+	   .lg-current-input-value{display:flex;align-items:center;min-height:34px;padding:7px 10px;box-sizing:border-box;background:#0d0d15;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem}
+	  </style>
+	  <h2 id="lgCardTitle" style="gap:8px"><span class="drag-handle">&#9776;</span><span class="lg-card-title-label">LG Display</span><span id="lgStatusBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--badge-neutral);color:#000;margin-left:8px">Checking...</span><span class="lg-card-title-actions"><button class="btn btn-sm btn-secondary" id="lgCalHistoryOpenBtn" type="button" onclick="lgOpenCalHistoryModal()">History</button><button class="btn btn-sm btn-secondary" id="lgDisplayControlOpenBtn" type="button" onclick="lgOpenDisplayControl()">Display Control</button></span></h2>
+  <button class="btn btn-sm btn-secondary lg-display-control-open-desktop" type="button" onclick="lgOpenDisplayControl()">Display Control</button>
+  <div id="lgCommandStatus" style="display:none;align-items:center;gap:8px;font-size:.78rem;color:var(--text);background:#101522;border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin-bottom:8px">
+   <span class="spinner"></span>
+   <span id="lgCommandStatusText">Communicating with LG TV...</span>
+   <span id="lgCommandElapsed" style="margin-left:auto;color:var(--text2);font-size:.72rem"></span>
+  </div>
+  <div id="lgStatusText" style="font-size:.8rem;color:var(--text2);line-height:1.45;margin-bottom:8px">Checking current CEC state for an LG TV...</div>
+	  <div id="lgStatusMeta" style="font-size:.75rem;color:var(--text2);margin-bottom:8px"></div>
+		  <div class="grid">
+		   <div class="field">
+		    <label>TV IP</label>
+		    <input type="text" id="lgManualIp" placeholder="192.168.1.x">
+		   </div>
+	   <div class="field">
+	    <label>Picture Mode</label>
+    <select id="lgPictureMode" onchange="lgSetPictureMode()" disabled>
+     <option value="">Connect display</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Current Input</label>
+    <div id="lgCurrentInput" class="lg-current-input-value" role="status" aria-live="polite">Checking...</div>
+   </div>
+   <div class="field">
+    <label style="display:flex;align-items:center;gap:8px;margin-top:20px">
+     <input type="checkbox" id="lgCalibrationMode" onchange="lgSetCalibrationMode()" disabled>
+     <span>Calibration mode</span>
+    </label>
+	   </div>
+	  </div>
+		  <div class="field" style="margin-top:8px;width:min(560px,100%)">
+		   <label>Found LG TVs</label>
+		   <div id="lgDeviceList" role="listbox" aria-label="Found LG TVs" style="width:100%;height:90px;max-height:90px;background:#0d0d15;border:1px solid var(--border);border-radius:6px;overflow:hidden;color:var(--text);font-size:.82rem">
+		    <div style="height:30px;display:flex;align-items:center;padding:0 10px;color:var(--text2)">Scanning...</div>
+		   </div>
+	   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
+	    <span id="lgCardScanStatus" style="font-size:.7rem;color:var(--text2);line-height:1.3">Scanning the local network...</span>
+	    <button type="button" class="btn btn-sm btn-secondary" style="padding:4px 8px;font-size:.68rem" onclick="lgScanTvs(true)">Scan</button>
+	   </div>
+	  </div>
+	  <!-- The PIN entry row used to live here, but the LG Connect modal
+	       is now the only PIN entry point (see lgConnectModalShow/Submit).
+	       The modal pops when the operator clicks Connect and the field
+	       appears inline as soon as the TV starts showing a PIN, so the
+	       operator never has to hunt around the LG card behind the modal. -->
+	  <div class="btn-row" style="margin-top:8px">
+	      <button class="btn btn-sm btn-success" id="lgConnectBtn" onclick="lgConnect()">Connect</button>
+	    <button class="btn btn-sm btn-secondary" id="lgDisconnectBtn" onclick="lgDisconnectClient()" disabled>Disconnect</button>
+   <button class="btn btn-sm btn-primary" onclick="loadLgStatus()">Refresh</button>
+   <button class="btn btn-sm btn-danger" onclick="lgForgetClient()">Forget Pairing</button>
+  </div>
+    <div id="lgWorkflowHint" style="font-size:.75rem;color:var(--text2);margin-top:8px;line-height:1.45">Display detection is checking for an LG TV.</div>
+  <div id="lgCalHistoryDesktop">
+   <h3 style="margin:0 0 8px;font-size:.9rem;color:var(--text)">Calibration History</h3>
+   <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal artifacts only. Reupload enables calibration mode, uploads, then disables it.</p>
+   <div id="lgCalHistoryBodyDesktop" class="lg-cal-hist-root">History loads when you open this workspace.</div>
+  </div>
+ </div>
+ <div id="lgCalHistoryModal" onclick="if(event.target===this) lgCloseCalHistoryModal()">
+  <div id="lgCalHistoryPanel">
+   <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+    <h2 style="margin:0;font-size:1rem">Calibration History</h2>
+    <button class="btn btn-sm btn-secondary" type="button" onclick="lgCloseCalHistoryModal()">Close</button>
+   </div>
+   <p style="margin:0 0 10px;font-size:.74rem;color:var(--text2);line-height:1.4">Final uploaded AutoCal 1D LUTs, 3D LUTs, and DV configs. Reupload uses the same TV upload paths as AutoCal.</p>
+   <div id="lgCalHistoryBodyModal" class="lg-cal-hist-root">Open History to load.</div>
+  </div>
+ </div>
+ <div id="lgDisplayControlModal" onclick="if(event.target===this) lgCloseDisplayControl()">
+  <div id="lgDisplayControlPanel">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+   <h2 style="margin:0">Display Control <span id="lgDisplayControlBadge" style="font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--text2);color:#000;margin-left:8px">Idle</span></h2>
+   <button class="btn btn-sm btn-secondary" onclick="lgCloseDisplayControl()">Close</button>
+  </div>
+  <div id="lgDisplayControlStatus" style="font-size:.8rem;color:var(--text2);line-height:1.45;margin-bottom:8px">Connect display</div>
+	  <div class="btn-row" style="margin-bottom:10px">
+	   <button class="btn btn-sm btn-primary" id="lgDisplayControlRefreshBtn" onclick="lgDisplayControlRefresh(true)">Refresh Settings</button>
+	   <button class="btn btn-sm btn-warning" id="lgDisplayControlResetBtn" onclick="lgResetPictureMode()" disabled>&#8634; Reset Picture Mode</button>
+	   <button class="btn btn-sm btn-secondary" id="lgApplyAllInputsBtn" onclick="lgApplyAllInputs()" disabled title="Copy the active picture mode's settings to the same mode on every input (the TV's Picture &gt; Apply to All Inputs)">Apply to All Inputs</button>
+	  </div>
+	  <div id="lgDisplayControlGrid"></div>
+  </div>
+ </div>
+ <div id="lgApplyAllInputsModal" onclick="if(event.target===this) lgApplyAllInputsClose()">
+  <div id="lgApplyAllInputsPanel" role="alertdialog" aria-labelledby="lgApplyAllInputsTitle">
+   <h2 id="lgApplyAllInputsTitle">&#9888; Apply to All Inputs</h2>
+   <p>The TV will copy the settings of <span id="lgApplyAllInputsMode">the active picture mode</span> from this input to the same picture mode on <strong>every other input</strong>, exactly like Picture &gt; Apply to All Inputs on the TV.</p>
+   <ul>
+    <li>Whatever those inputs currently hold for this mode is overwritten and cannot be recovered.</li>
+    <li>Do this only after calibration, when you are happy with this mode as it is now.</li>
+    <li>At best the TV acknowledges the request and reports the action as done; it never says which inputs changed. Check another input if you want confirmation.</li>
+   </ul>
+   <div class="btn-row" style="justify-content:flex-end">
+    <button class="btn btn-sm btn-secondary" type="button" onclick="lgApplyAllInputsClose()">Cancel</button>
+    <button class="btn btn-sm btn-warning" type="button" id="lgApplyAllInputsConfirmBtn" onclick="lgApplyAllInputsConfirmed()">Apply to All Inputs</button>
+   </div>
+  </div>
+ </div>

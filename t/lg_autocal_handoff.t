@@ -13,7 +13,9 @@ sub read_source {
 }
 
 my $worker=read_source("$Bin/../usr/bin/meter_lg_autocal.pl");
-my $webui=read_source("$Bin/../usr/share/PGenerator/webui.pm");
+my $webui=read_source("$Bin/../usr/share/PGenerator/webui.pm")
+          .read_source("$Bin/../usr/share/PGenerator/webui-app.js")
+          .read_source("$Bin/../usr/share/PGenerator/webui-workspace.js");
 my $lg=read_source("$Bin/../usr/share/PGenerator/lg.pm");
 
 my $finalising_at=rindex($worker,'$state->{"phase"}="finalising"');

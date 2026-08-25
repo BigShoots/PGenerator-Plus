@@ -1206,11 +1206,27 @@ sub webui_icc_asset (@) {
  return $_webui_icc_asset_cache{$name} if(exists($_webui_icc_asset_cache{$name}));
  my $dir=__FILE__;
  $dir=~s{/[^/]+\z}{};
+ my $expected=-s "$dir/$name";
  my $content="";
+ my $io_error="";
  if(open(my $fh,"<:raw","$dir/$name")) {
   local $/;
-  $content=<$fh>||"";
-  close($fh);
+  $content=<$fh>//"";
+  $io_error="close failed: $!" if(!close($fh));
+  # A slurp racing an OTA/rsync rewrite (or hitting EIO) returns the bytes
+  # read so far; never cache or serve a torn asset.
+  if($io_error eq "" && length($content)!=($expected//-1)) {
+   $io_error="short read: ".length($content)." of ".($expected//"?")." bytes";
+  }
+ } else {
+  $io_error="open failed: $!";
+ }
+ # Cache successful reads only, so restoring a missing file takes effect on
+ # the next request without a restart; the caller decides how to fail.
+ if($io_error ne "" || $content eq "") {
+  my $reason=$io_error ne "" ? $io_error : "missing or empty";
+  &log("WebUI ERROR: ICC UI asset unusable: $name ($dir/$name): $reason",1) if(defined(&log));
+  return "";
  }
  $_webui_icc_asset_cache{$name}=$content;
  return $content;

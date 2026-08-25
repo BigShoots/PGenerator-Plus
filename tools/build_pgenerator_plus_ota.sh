@@ -5,10 +5,15 @@
 
 set -euo pipefail
 
+# Prevent macOS tar from adding AppleDouble ._* metadata entries to release
+# archives. The manifest and Web UI checks below also reject any that remain.
+export COPYFILE_DISABLE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
+FRAGMENT_CHECKER="$REPO_ROOT/t/check_webui_package.pl"
 
 FORCE_OUTPUT=0
 KEEP_STAGING=0
@@ -20,6 +25,7 @@ TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""
 OUTPUT_TARBALL=""
 STAGING_DIR=""
+ARCHIVE_CREATED=0
 GITHUB_REPO="${GITHUB_REPO:-BigShoots/PGenerator-Plus}"
 
 # Device-owned state: files the DEVICE writes (operator settings,
@@ -119,10 +125,21 @@ EOF
 }
 
 cleanup() {
+ local rc=$?
  set +e
  if [[ -n "$STAGING_DIR" ]] && [[ -d "$STAGING_DIR" ]] && [[ "$KEEP_STAGING" -eq 0 ]]; then
   rm -rf "$STAGING_DIR"
  fi
+ # Do not leave a tarball that failed either release-manifest validation or
+ # the split-Web-UI completeness checks ready to publish accidentally.
+ if [[ "$rc" -ne 0 ]] && [[ "$ARCHIVE_CREATED" -eq 1 ]] && [[ -e "$OUTPUT_TARBALL" ]]; then
+  if rm -f "$OUTPUT_TARBALL"; then
+   echo "ERROR: removed invalid archive: $OUTPUT_TARBALL" >&2
+  else
+   echo "ERROR: FAILED to remove invalid archive — do not publish: $OUTPUT_TARBALL" >&2
+  fi
+ fi
+ return "$rc"
 }
 
 trap cleanup EXIT
@@ -130,7 +147,7 @@ trap cleanup EXIT
 require_commands() {
  local missing=()
  local cmd
- for cmd in file install mktemp rsync sed strings tar; do
+ for cmd in file install mktemp perl rsync sed strings tar; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -513,6 +530,7 @@ build_tarball() {
  done
  [[ ${#roots[@]} -gt 0 ]] || die "Nothing to package"
  log "Creating $OUTPUT_TARBALL"
+ ARCHIVE_CREATED=1
  (
   cd "$STAGING_DIR"
   tar --owner=0 --group=0 --numeric-owner -czf "$OUTPUT_TARBALL" "${roots[@]}"
@@ -522,6 +540,8 @@ build_tarball() {
 validate_tarball() {
  log "Validating release manifest"
  "$MANIFEST_CHECKER" --tarball "$OUTPUT_TARBALL"
+ log "Validating split Web UI package"
+ perl "$FRAGMENT_CHECKER" "$OUTPUT_TARBALL"
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]] && tar -tzf "$OUTPUT_TARBALL" | grep -Eq '^lib(/|$)'; then
   die "Pi 5 OTA tarball contains root /lib entries and would break Bookworm usrmerge"
  fi
