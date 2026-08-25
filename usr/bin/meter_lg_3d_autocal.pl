@@ -3256,6 +3256,17 @@ sub upload_requested {
  return ($config->{"upload"} || ($config->{"output"}||"") eq "upload") ? 1 : 0;
 }
 
+# Classify the best measured shadow pass without turning any improvement into
+# convergence. A useful best-effort correction remains a valid terminal result,
+# but it must stay distinguishable from a pass that actually met tolerance.
+sub hdr20_postcal_best_status {
+ my ($improved,$best_worst,$baseline_worst,$tol)=@_;
+ return "reverted" if(!$improved);
+ return "reverted" if(!defined($best_worst) || !defined($baseline_worst) || $best_worst+0 >= $baseline_worst+0);
+ return "converged" if(defined($tol) && $best_worst+0 <= $tol+0);
+ return "best_effort";
+}
+
 # A measured/exported LUT is not a successful AutoCal when the operator asked
 # for it to be committed to the TV.  Keep this check side-effect free so
 # both the worker and regression tests can exercise every terminal contract.
@@ -3282,7 +3293,7 @@ sub autocal3d_commit_error {
   my $shadow=ref($state->{"hdr20_postcal_shadow"}) eq "HASH" ? $state->{"hdr20_postcal_shadow"} : {};
   my $shadow_status=$shadow->{"status"}||"";
   return "HDR shadow correction did not reach a valid terminal state: ".($shadow->{"note"}||$shadow_status||"not completed")
-   if($shadow_status !~ /^(?:self_gated|converged|reverted)$/);
+   if($shadow_status !~ /^(?:self_gated|converged|best_effort|reverted)$/);
   return "HDR shadow correction did not re-establish the calibrated TV session: ".($shadow->{"note"}||"the reset/DPG staging acknowledgement was missing")
    if(!$shadow->{"reestablished"});
   my $lut_status=$state->{"postcal_shadow_recommit_lut_status"}||"";
@@ -3937,6 +3948,7 @@ sub run_hdr20_postcal_shadow_correction {
  my $tol=$config->{"lg_autocal_hdr20_postcal_shadow_tol"};
  $tol=0.05 if(!defined($tol) || $tol+0 <= 0);
  $tol=$tol+0;
+ $status->{"tolerance"}=$tol;
  my $max_passes=$config->{"lg_autocal_hdr20_postcal_shadow_max_passes"};
  $max_passes=6 if(!defined($max_passes) || $max_passes+0 < 1);
  $max_passes=int($max_passes+0);
@@ -4407,6 +4419,9 @@ sub run_hdr20_postcal_shadow_correction {
      $status->{"status"}="self_gated";
      $status->{"lift_after"}=$first_lift if(defined($first_lift));
      $status->{"m_counts"}=0;
+     $status->{"baseline_worst"}=$worst;
+     $status->{"best_worst"}=$worst;
+     $status->{"within_tolerance"}=json_true();
      $status->{"note"}=($status->{"note"}||"")." baseline already within tol on all anchors; no correction needed.";
      # Leave the pass loop, not the subroutine. The common finaliser below
      # must still re-establish the held CAL session before the real 3D LUT and
@@ -4525,6 +4540,9 @@ sub run_hdr20_postcal_shadow_correction {
    $status->{"lift_after"}=$baseline_lifts{$anchor_idx[0]};
   }
   $status->{"m_counts"}=$best_m_counts;
+  $status->{"baseline_worst"}=$baseline_worst if($baseline_worst < 1e8);
+  $status->{"best_worst"}=$best_worst if($best_worst < 1e8);
+  $status->{"within_tolerance"}=json_bool($best_worst < 1e8 && $best_worst <= $tol);
 
   # Revert-if-worse: if no pass's worst beat the baseline worst
   # (pass-1 worst), keep corrected=base. The panel is already on base
@@ -4548,8 +4566,13 @@ sub run_hdr20_postcal_shadow_correction {
     my $saved=hdr20_postcal_save_matrix($matrix_path,$lg_generation,$model_str,$seed,$band_top_ire,$taper_top_ire);
     $state->{"postcal_shadow_matrix_saved"}=$saved ? json_true() : json_false();
    }
-   $status->{"status"}="converged" if(($status->{"status"}||"") ne "converged");
-   $status->{"note"}=($status->{"note"}||"")."converged (worst ".sprintf("%.3f",$best_worst)." vs baseline ".sprintf("%.3f",$baseline_worst).").";
+   my $best_status=hdr20_postcal_best_status($improved,$best_worst,$baseline_worst,$tol);
+   $status->{"status"}=$best_status;
+   if($best_status eq "converged") {
+    $status->{"note"}=($status->{"note"}||"")."converged within tolerance (worst ".sprintf("%.3f",$best_worst).", tolerance ".sprintf("%.3f",$tol).", baseline ".sprintf("%.3f",$baseline_worst).").";
+   } else {
+    $status->{"note"}=($status->{"note"}||"")."best effort improved the worst anchor to ".sprintf("%.3f",$best_worst)." from ".sprintf("%.3f",$baseline_worst).", but did not meet the ".sprintf("%.3f",$tol)." tolerance.";
+   }
   }
   1;
  } or do {
@@ -4558,7 +4581,7 @@ sub run_hdr20_postcal_shadow_correction {
   die $inner_err if($inner_err =~ /^cancelled$/i); # let cancellation propagate
   # Any non-cancellation error: corrected stays at base DPG, record note,
   # still re-establish below.
-  $status->{"status"}="error" if(($status->{"status"}||"") ne "skipped" && ($status->{"status"}||"") ne "self_gated" && ($status->{"status"}||"") ne "converged" && ($status->{"status"}||"") ne "reverted");
+  $status->{"status"}="error" if(($status->{"status"}||"") ne "skipped" && ($status->{"status"}||"") ne "self_gated" && ($status->{"status"}||"") ne "converged" && ($status->{"status"}||"") ne "best_effort" && ($status->{"status"}||"") ne "reverted");
   $status->{"note"}=($status->{"note"}||"")."inner eval error: ".$inner_err."; corrected=base DPG.";
  };
 
@@ -5395,6 +5418,13 @@ eval {
  $state->{"phase"}="complete";
  $state->{"current_name"}="LG 3D LUT Auto Cal complete";
  $state->{"message"}=$state->{"upload_verified"} ? "3D LUT exported, uploaded, and verified" : "3D LUT exported";
+ my $shadow_result=ref($state->{"hdr20_postcal_shadow"}) eq "HASH" ? $state->{"hdr20_postcal_shadow"} : {};
+ if(($shadow_result->{"status"}||"") eq "best_effort") {
+  my $best=defined($shadow_result->{"best_worst"}) ? 100*($shadow_result->{"best_worst"}+0) : 0;
+  my $limit=defined($shadow_result->{"tolerance"}) ? 100*($shadow_result->{"tolerance"}+0) : 0;
+  $state->{"hdr20_postcal_shadow_warning"}=sprintf("HDR shadow correction improved the result but did not meet tolerance: worst %.1f%%, limit %.1f%%.",$best,$limit);
+  $state->{"message"}.=". ".$state->{"hdr20_postcal_shadow_warning"};
+ }
  $state->{"upload_retry_available"}=json_false();
  $state->{"completed_at"}=int(time()*1000);
  $state->{"elapsed_ms"}=$state->{"completed_at"}-(($state->{"started_at"}||$state->{"completed_at"})+0);

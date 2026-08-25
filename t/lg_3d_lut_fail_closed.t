@@ -8,8 +8,13 @@ my $worker="$Bin/../usr/bin/meter_lg_3d_autocal.pl";
 do $worker;
 die $@ if($@);
 die "Failed to load $worker" if(!defined(&autocal3d_commit_error));
+die "Failed to load shadow terminal classifier" if(!defined(&hdr20_postcal_best_status));
 $SIG{INT}="DEFAULT";
 $SIG{TERM}="DEFAULT";
+
+is(hdr20_postcal_best_status(1,0.049,0.829,0.05),'converged','a best pass inside tolerance is converged');
+is(hdr20_postcal_best_status(1,0.067,0.829,0.05),'best_effort','an improved pass outside tolerance is not mislabeled converged');
+is(hdr20_postcal_best_status(1,0.829,0.829,0.05),'reverted','a pass that does not beat baseline is reverted');
 
 is(autocal3d_commit_error({upload=>0},{upload_verified=>0}),'','an export-only run does not require a TV commit');
 like(
@@ -95,6 +100,19 @@ is(
  ),
  '',
  'shadow-enabled HDR completes only after both final commits succeed',
+);
+is(
+ autocal3d_commit_error(
+  {upload=>1,full_workflow=>1,signal_mode=>'hdr10',lg_autocal_hdr20_postcal_shadow_enable=>1},
+  {
+   upload_verified=>1,tone_map_upload_status=>'ok',tone_map_uploaded=>1,
+   hdr20_postcal_shadow=>{status=>'best_effort',reestablished=>1,best_worst=>0.067,tolerance=>0.05},
+   postcal_shadow_recommit_lut_status=>'ok',postcal_shadow_recommit_lut_detail=>{upload_verified=>1},
+   postcal_shadow_recommit_tonemap_status=>'ok',
+  },
+ ),
+ '',
+ 'an improved shadow result outside tolerance remains a valid truthful terminal state',
 );
 
 my $tmp=tempdir(CLEANUP=>1);

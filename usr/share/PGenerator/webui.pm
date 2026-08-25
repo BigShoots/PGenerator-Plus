@@ -6586,7 +6586,7 @@ sub webui_meter_lg_3d_autocal_retry_upload (@) {
  my $shadow=ref($state->{"hdr20_postcal_shadow"}) eq "HASH" ? $state->{"hdr20_postcal_shadow"} : {};
  my $shadow_dpg=$state->{"hdr20_postcal_shadow_dpg_data"};
  my $shadow_complete=(ref($shadow_dpg) eq "ARRAY" && scalar(@{$shadow_dpg}) == 3072
-   && ($shadow->{"status"}||"") =~ /^(?:self_gated|converged|reverted)$/
+   && ($shadow->{"status"}||"") =~ /^(?:self_gated|converged|best_effort|reverted)$/
    && $shadow->{"reestablished"}) ? 1 : 0;
  my $shadow_measurements_pending=($config->{"full_workflow"}
   && lc($config->{"signal_mode"}||"") eq "hdr10"
