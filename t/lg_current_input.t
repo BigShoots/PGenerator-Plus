@@ -92,6 +92,8 @@ $source.=do {
  $content;
 };
 like($source,qr/id="lgCurrentInput"/,'the LG card includes the current-input status');
+like($source,qr/\.lg-current-input-value\{[^}]*padding:6px 10px[^}]*line-height:normal/s,
+ 'the current-input status aligns with adjacent form controls');
 like($source,qr/include_current_input:true/,'the live picture-mode refresh requests current input');
 like($source,qr/include_current_input\s*=>\s*\$payload->\{"include_current_input"\}/,'the WebUI forwards the opt-in to the helper');
 
