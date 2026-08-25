@@ -12,6 +12,22 @@ use JSON::PP ();
 # catch and that source-regex tests sailed past: the endpoint died on every
 # request. This test calls the sub for real.
 
+# The successful retry path launches the worker with system(). Intercept that
+# launch before webui.pm is compiled: otherwise Ubuntu's setsid can leave the
+# short-lived child visible to the next test's pgrep and make this test race.
+# Recording the command still lets us verify that the endpoint requests the
+# production worker without starting one on a developer machine.
+# NOTE: the override is file-wide and permanent — every system() the endpoint
+# ever makes is swallowed and counted, so a future system() added to this
+# code path (e.g. a `sudo rm -f` stale-file cleanup) will surface here as a
+# call-count failure, not as the new call misbehaving. Backticks are NOT
+# intercepted, which is why process discovery is stubbed separately below.
+our @system_calls;
+BEGIN {
+ no warnings 'redefine';
+ *CORE::GLOBAL::system=sub { push(@main::system_calls,[@_]); return 0; };
+}
+
 my $webui="$Bin/../usr/share/PGenerator/webui.pm";
 do $webui;
 die $@ if($@);
@@ -19,10 +35,22 @@ die "Failed to load $webui" if(!defined(&webui_meter_lg_3d_autocal_retry_upload)
 $SIG{INT}="DEFAULT";
 $SIG{TERM}="DEFAULT";
 
+# Stub process discovery so only state controlled by this test affects the
+# endpoint. The busy-worker guard is exercised explicitly below.
+my $worker_running=0;
+{
+ no warnings qw(redefine once);
+ *main::webui_meter_lg_3d_autocal_running=sub (@) { return $worker_running; };
+}
+
 my $state_file="/tmp/meter_lg_3d_autocal.json";
 my $config_file="/tmp/meter_lg_3d_autocal_config.json";
 
 # Preserve any real files at the fixed /tmp paths (a dev box may hold state).
+# The paths are file-scoped lexicals inside webui.pm, so they cannot be
+# redirected from here; do not run this test on a device with a live daemon
+# mid-calibration — the save/restore below cannot protect against a
+# concurrent writer.
 my %saved;
 foreach my $f ($state_file,$config_file) {
  if(-f $f) {
@@ -80,9 +108,17 @@ sub base_config {
  return { method=>"matrix", upload=>JSON::PP::true, output=>"upload", full_autocal_run_id=>"run-abc" };
 }
 
+# --- guard: worker already running ---
+write_fixture(base_state(),base_config());
+$worker_running=1;
+my $resp=JSON::PP::decode_json(webui_meter_lg_3d_autocal_retry_upload('{}'));
+is($resp->{status},'error','a running worker blocks a second retry');
+like($resp->{message},qr/already running/i,'the busy-worker guard names the reason');
+$worker_running=0;
+
 # --- guard: not waiting for a retry ---
 write_fixture({ status=>"complete" },base_config());
-my $resp=JSON::PP::decode_json(webui_meter_lg_3d_autocal_retry_upload('{}'));
+$resp=JSON::PP::decode_json(webui_meter_lg_3d_autocal_retry_upload('{}'));
 is($resp->{status},'error','a completed run is not retryable');
 like($resp->{message},qr/not waiting/i,'guard names the reason');
 
@@ -111,6 +147,8 @@ write_fixture(base_state(),base_config());
 $resp=JSON::PP::decode_json(webui_meter_lg_3d_autocal_retry_upload('{"run_id":"run-abc"}'));
 is($resp->{status},'started','the retry transaction completes and reports started')
  or diag("retry response: ".$encoder->encode($resp));
+is(scalar(@system_calls),1,'the retry requests exactly one worker launch');
+like($system_calls[0]->[0],qr{/usr/bin/meter_lg_3d_autocal\.pl},'the retry launches the 3D AutoCal worker');
 {
  local $/;
  open(my $fh,"<",$config_file) or die $!;
