@@ -4700,18 +4700,22 @@ function meterAutoCalSetOverlay(active,status){
  const fullSkipBtn=document.getElementById('meterFullAutoCalSkipBtn');
  const phase=(status&&status.phase)||meterAutoCalPhase||'';
  const statusName=String((status&&status.status)||'').toLowerCase();
- const showDisclaimer=phase==='disclaimer';
- const showLuminance=phase==='luminance';
- const showOptions=phase==='options';
- const showConfirm=phase==='confirm';
- const showUseCase=phase==='usecase';
- const showGamma=phase==='gammatarget';
- const showDisplayType=phase==='displaytype';
- const showUploadRetry=statusName==='error'&&!!(status&&status.upload_retry_available);
+ // A hidden overlay must also reset every phase-owned panel and action. Stop
+ // closes the overlay before it clears meterAutoCalPhase, so deriving these
+ // flags from the stale phase alone leaves controls primed to reappear inside
+ // the next Full AutoCal confirmation dialog.
+ const showDisclaimer=overlayActive&&phase==='disclaimer';
+ const showLuminance=overlayActive&&phase==='luminance';
+ const showOptions=overlayActive&&phase==='options';
+ const showConfirm=overlayActive&&phase==='confirm';
+ const showUseCase=overlayActive&&phase==='usecase';
+ const showGamma=overlayActive&&phase==='gammatarget';
+ const showDisplayType=overlayActive&&phase==='displaytype';
+ const showUploadRetry=overlayActive&&statusName==='error'&&!!(status&&status.upload_retry_available);
  // Success popup only — never for cancelled/error, and never from a
  // stale phase=complete left behind after Stop (status may be cancelled
  // while phase still says complete for one paint).
- const showComplete=(statusName==='complete'||phase==='complete')&&statusName!=='cancelled'&&statusName!=='error'&&statusName!=='idle';
+ const showComplete=overlayActive&&(statusName==='complete'||phase==='complete')&&statusName!=='cancelled'&&statusName!=='error'&&statusName!=='idle';
  if(disclaimerBox) disclaimerBox.style.display=showDisclaimer?'':'none';
  if(lumBox) lumBox.style.display=showLuminance?'':'none';
  if(confirmBox) confirmBox.style.display=(showConfirm||showOptions)?'':'none';
@@ -7492,7 +7496,7 @@ function meterFullAutoCalConfirmDialog(options){
  const cancelBtn=document.getElementById('meterFullAutoCalCancelBtn');
  const skipBtn=document.getElementById('meterFullAutoCalSkipBtn');
  const continueBtn=document.getElementById('meterFullAutoCalContinueBtn');
- ['meterAutoCalDisclaimerBox','meterAutoCalLuminanceBox','meterAutoCalConfirmBox','meterAutoCalResultsBox','meterAutoCalUploadRetryBox','meterAutoCalResetBtn','meterAutoCalDisclaimerContinueBtn','meterAutoCalContinueBtn','meterAutoCalStartConfirmBtn','meterAutoCalBackBtn','meterFullAutoCalPostReportBtn','meterFullAutoCalSkipReportBtn','meterAutoCalUploadRetryBtn','meterAutoCalUploadRetryCloseBtn'].forEach(id=>{
+ ['meterAutoCalUseCaseBox','meterAutoCalGammaBox','meterAutoCalDisplayTypeBox','meterAutoCalDisclaimerBox','meterAutoCalLuminanceBox','meterAutoCalConfirmBox','meterAutoCalResultsBox','meterAutoCalUploadRetryBox','meterAutoCalUseCaseContinueBtn','meterAutoCalGammaContinueBtn','meterAutoCalDisplayTypeContinueBtn','meterAutoCalResetBtn','meterAutoCalDisclaimerContinueBtn','meterAutoCalContinueBtn','meterAutoCalStartConfirmBtn','meterAutoCalBackBtn','meterFullAutoCalPostReportBtn','meterFullAutoCalSkipReportBtn','meterAutoCalUploadRetryBtn','meterAutoCalUploadRetryCloseBtn'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.style.display='none';
  });

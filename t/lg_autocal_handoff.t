@@ -57,5 +57,9 @@ like($webui,qr/async function meterPollAutoCal\(options\).*?meterFullAutoCalCanD
  'a non-owner status poll cannot drive a Full AutoCal stage transition');
 like($webui,qr/function meterAutoCalRunEndPayload\(status,note,runId\).*?payload\.run_id=recordRunId/s,
  'run-end callbacks carry the diagnostic run id');
+like($webui,qr/function meterAutoCalSetOverlay\(active,status\).*?const showUseCase=overlayActive&&phase==='usecase'.*?const showGamma=overlayActive&&phase==='gammatarget'.*?const showDisplayType=overlayActive&&phase==='displaytype'/s,
+ 'closing the AutoCal overlay clears every phase-specific setup control');
+like($webui,qr/function meterFullAutoCalConfirmDialog\(options\).*?'meterAutoCalUseCaseBox'.*?'meterAutoCalGammaBox'.*?'meterAutoCalDisplayTypeBox'.*?'meterAutoCalUseCaseContinueBtn'.*?'meterAutoCalGammaContinueBtn'.*?'meterAutoCalDisplayTypeContinueBtn'/s,
+ 'the Full AutoCal dialog hides all setup panels and buttons from an interrupted prior wizard');
 
 done_testing();
