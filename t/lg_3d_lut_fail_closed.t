@@ -16,6 +16,15 @@ is(hdr20_postcal_best_status(1,0.049,0.829,0.05),'converged','a best pass inside
 is(hdr20_postcal_best_status(1,0.067,0.829,0.05),'best_effort','an improved pass outside tolerance is not mislabeled converged');
 is(hdr20_postcal_best_status(1,0.829,0.829,0.05),'reverted','a pass that does not beat baseline is reverted');
 
+sub read_source {
+ my ($path)=@_;
+ open(my $fh,"<:raw",$path) or die "Unable to read $path: $!";
+ local $/;
+ my $source=<$fh>;
+ close($fh);
+ return $source;
+}
+
 is(autocal3d_commit_error({upload=>0},{upload_verified=>0}),'','an export-only run does not require a TV commit');
 like(
  autocal3d_commit_error({upload=>1},{upload_verified=>0,upload_message=>'websocket closed'}),
@@ -158,10 +167,12 @@ close($short);
 }
 
 my $webui="$Bin/../usr/share/PGenerator/webui.pm";
-open(my $wf,'<',$webui) or die "Unable to read $webui: $!";
-local $/;
-my $source=<$wf>;
-close($wf);
+my $source=read_source($webui)
+          .read_source("$Bin/../usr/share/PGenerator/webui-body.html")
+          .read_source("$Bin/../usr/share/PGenerator/webui-app.js")
+          .read_source("$Bin/../usr/share/PGenerator/webui-workspace.js")
+          .read_source("$Bin/../usr/share/PGenerator/webui-lg-card.html")
+          .read_source("$Bin/../usr/share/PGenerator/webui-lg.js");
 like($source,qr{/api/meter/lg-3d-autocal/retry-upload},'the manual retry endpoint is routed');
 like($source,qr/id="meterAutoCalUploadRetryBtn"[^>]+onclick="meterRetryLg3dUpload\(\)"/,'the failure overlay exposes a retry button');
 like($source,qr/retryWaiting=.*upload_retry_available/,'a saved retry remains visible after a page refresh');
@@ -188,9 +199,7 @@ is(webui_meter_lg_3d_autocal_recover_unverified_complete($verified),$verified,'a
 my $export_only='{"status":"complete","upload_verified":false,"export":{"cube_path":"/nonexistent.cube","payload_path":"/nonexistent.bin"}}';
 is(webui_meter_lg_3d_autocal_recover_unverified_complete($export_only),$export_only,'a completion without the exact on-disk files is never rewritten');
 
-open(my $worker_source_fh,'<',$worker) or die "Unable to read $worker: $!";
-my $worker_source=<$worker_source_fh>;
-close($worker_source_fh);
+my $worker_source=read_source($worker);
 my $self_gate_at=index($worker_source,'if($worst <= $tol)');
 ok($self_gate_at >= 0,'the HDR shadow self-gate is present');
 my $self_gate_block=substr($worker_source,$self_gate_at,650);

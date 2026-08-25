@@ -1,0 +1,19 @@
+# Web UI fragments are byte-sensitive assembly inputs.  Do not let Git apply
+# checkout or check-in newline conversion to them.
+usr/share/PGenerator/webui.html -text
+usr/share/PGenerator/webui-theme.css -text
+usr/share/PGenerator/webui-layout.css -text
+usr/share/PGenerator/webui-body.html -text
+usr/share/PGenerator/webui-logo-dark.html -text
+usr/share/PGenerator/webui-app.js -text
+usr/share/PGenerator/webui-workspace.js -text
+usr/share/PGenerator/webui-lg-card.html -text
+usr/share/PGenerator/webui-lg.js -text
+
+# Vendored/bundled binary artifacts should never be treated as text diffs.
+usr/bin/spotread binary
+usr/bin/colprof binary
+usr/bin/ccxxmake_interactive binary
+usr/bin/targen binary
+github-deployer/*.zip binary
+github-deployer/*.dmg binary

@@ -1,0 +1,25 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+# These files are assembled byte-for-byte into the Web UI response.
+# EditorConfig can only neutralise whitespace mutations here (trimming,
+# forced final newline); formatter-on-save must be disabled in the editor
+# itself — see the fragment README.
+[usr/share/PGenerator/webui-*]
+trim_trailing_whitespace = false
+insert_final_newline = unset
+
+[usr/share/PGenerator/webui.html]
+trim_trailing_whitespace = false
+insert_final_newline = unset
+
+# Vendored binaries; leave their bytes alone entirely.
+[{usr/bin/spotread,usr/bin/colprof,usr/bin/ccxxmake_interactive,usr/bin/targen,github-deployer/**,*.dmg}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

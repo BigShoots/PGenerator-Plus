@@ -9,7 +9,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Perl module dependencies
+        # The Web UI render tests load the daemon's real module list, which
+        # imports the non-core XML::Simple and URI::Escape.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml-simple-perl liburi-perl
       - name: Syntax-check the AutoCal worker
         run: perl -c usr/bin/meter_lg_autocal.pl
+      - name: Syntax-check Web UI helpers
+        run: |
+          perl -c usr/share/PGenerator/webui.pm
+          perl -c usr/share/PGenerator/lg.pm
+          perl -c t/slice_webui.pl
+          perl -c t/check_webui_package.pl
+          sh -n usr/sbin/pgenerator-webui-watchdog.sh
       - name: Run the test suite
         run: prove -v t/

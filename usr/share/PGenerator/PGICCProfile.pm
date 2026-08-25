@@ -1209,8 +1209,14 @@ sub webui_icc_asset (@) {
  my $content="";
  if(open(my $fh,"<:raw","$dir/$name")) {
   local $/;
-  $content=<$fh>||"";
+  $content=<$fh>//"";
   close($fh);
+ }
+ # Cache successful reads only, so restoring a missing file takes effect on
+ # the next request without a restart; the caller decides how to fail.
+ if($content eq "") {
+  &log("WebUI ERROR: ICC UI asset missing or empty: $name ($dir/$name)",1) if(defined(&log));
+  return "";
  }
  $_webui_icc_asset_cache{$name}=$content;
  return $content;

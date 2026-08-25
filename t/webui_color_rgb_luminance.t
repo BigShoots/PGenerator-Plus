@@ -4,7 +4,7 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw(tempfile);
 
-my $webui="$Bin/../usr/share/PGenerator/webui.pm";
+my $webui="$Bin/../usr/share/PGenerator/webui-app.js";
 open(my $fh,'<',$webui) or die "Unable to read $webui: $!";
 local $/;
 my $source=<$fh>;

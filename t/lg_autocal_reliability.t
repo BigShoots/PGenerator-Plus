@@ -176,6 +176,13 @@ my ($webui_source,$series_source);
  open(my $wfh,'<',$webui) or die "Unable to read $webui: $!";
  $webui_source=<$wfh>;
  close($wfh);
+ for my $fragment (qw(webui-app.js webui-workspace.js)) {
+  my $path="$Bin/../usr/share/PGenerator/$fragment";
+  open(my $ffh,'<',$path) or die "Unable to read $path: $!";
+  local $/;
+  $webui_source.="\n".<$ffh>;
+  close($ffh);
+ }
  my $series="$Bin/../usr/bin/meter_series.sh";
  open(my $ssh,'<',$series) or die "Unable to read $series: $!";
  $series_source=<$ssh>;

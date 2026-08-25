@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PGenerator+</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<script>
+/* Apply the browser-local appearance before CSS is parsed to avoid a flash. */
+(function(){
+ var mode='dark';
+ try{var saved=localStorage.getItem('pgen.ui.themeMode');if(saved==='light'||saved==='dark')mode=saved;}catch(e){}
+ document.documentElement.setAttribute('data-theme',mode);
+ try{
+  if(localStorage.getItem('pgen.ui.desktopSidebarCollapsed')==='1'){
+   document.documentElement.setAttribute('data-desktop-sidebar-collapsed','1');
+  }
+ }catch(e){}
+})();
+</script>
+<style>
+__PG_CSS_THEME__
+</style>
+<link rel="stylesheet" href="/assets/icc_profile.css">
+<style>
+__PG_CSS_LAYOUT__
+</style>
+__PG_BODY__
+<script src="/assets/hcfr_chc.js"></script>
+<script>
+__PG_JS_APP__
+</script>
+<script src="/assets/icc_profile.js"></script>
+<script>
+__PG_JS_WORKSPACE__
+</script>
+</body>
+</html>

@@ -77,6 +77,20 @@ open(my $fh,'<',$lg_module) or die "Unable to read $lg_module: $!";
 local $/;
 my $source=<$fh>;
 close($fh);
+$source.=do {
+ open(my $card,'<:raw',"$Bin/../usr/share/PGenerator/webui-lg-card.html") or die "Unable to read LG card fragment: $!";
+ local $/;
+ my $content=<$card>;
+ close($card);
+ $content;
+};
+$source.=do {
+ open(my $js,'<:raw',"$Bin/../usr/share/PGenerator/webui-lg.js") or die "Unable to read LG JavaScript fragment: $!";
+ local $/;
+ my $content=<$js>;
+ close($js);
+ $content;
+};
 like($source,qr/id="lgCurrentInput"/,'the LG card includes the current-input status');
 like($source,qr/include_current_input:true/,'the live picture-mode refresh requests current input');
 like($source,qr/include_current_input\s*=>\s*\$payload->\{"include_current_input"\}/,'the WebUI forwards the opt-in to the helper');
