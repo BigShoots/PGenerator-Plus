@@ -14326,7 +14326,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY; Bradford-adapt the reference only if the target white is not D65, then re-solve the wire codes. HCFR GCD, ColorChecker SG and SG Skin Tones keep their authored Rec.709 codes in BT.709 and re-solve that Rec.709 appearance into a wider colourspace. HCFR GCD HDR10/HLG is unchanged: Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation, 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY. ColorChecker SG and SG Skin Tones use the X-Rite November 2014 and newer D50 Lab references, Bradford-adapt them to D65, then solve and encode them for the selected target gamut, gamma and signal mode. HCFR GCD keeps its authored Rec.709 codes; its HDR10/HLG path remains Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation and a 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -34656,34 +34656,89 @@ const METER_COLORCHECKER_SG_NAMES=[
  '8B','8C','8D','8E','8F','8G','8H','8I','8J','8L','8M',
  '9B','9C','9D','9E','9F','9G','9H','9I','9J','9K','9L','9M'
 ];
-const METER_COLORCHECKER_SG_LEGAL8=[
- [235,235,235],[207,207,207],[185,185,185],[174,174,174],[163,163,163],[150,150,150],[139,139,139],[117,117,117],
- [108,108,108],[97,97,97],[88,88,88],[80,80,80],[62,62,62],[53,53,53],[16,16,16],[141,40,88],[80,55,77],
- [202,196,182],[112,71,49],[191,134,104],[93,112,128],[88,99,42],[126,117,141],[108,171,139],[235,187,147],
- [101,40,51],[180,42,80],[178,126,150],[110,93,134],[233,187,171],[215,112,16],[69,84,139],[187,71,75],
- [86,49,86],[161,171,16],[217,145,16],[200,215,171],[191,16,34],[90,44,62],[117,42,112],[16,62,93],
- [178,204,174],[27,53,117],[73,136,51],[169,16,38],[228,180,16],[182,73,121],[16,126,136],[215,191,180],
- [200,117,119],[180,16,49],[16,123,165],[88,147,165],[235,187,163],[180,200,182],[207,117,104],[222,60,49],
- [58,154,158],[16,66,75],[204,198,130],[235,104,16],[235,154,16],[16,66,60],[117,143,167],[204,121,77],
- [228,163,123],[187,136,95],[139,95,60],[193,145,115],[154,90,44],[200,130,95],[187,169,16],[235,180,16],
- [16,154,139],[16,136,117],[196,134,106],[231,147,115],[187,139,108],[189,136,108],[191,139,106],
- [121,80,49],[202,136,97],[174,139,36],[176,169,16],[71,62,47],[93,154,93],[16,134,84],[42,71,51],
- [66,154,110],[121,150,64],[60,134,38],[80,161,51],[189,130,53],[152,145,38],[158,176,16],[82,53,38]
+// X-Rite ColorChecker SG reference for charts manufactured during/after
+// November 2014. Values are CIE Lab under D50 with the 1931 2 degree observer.
+// They stay colorimetric here: the active target curve encodes them only when
+// the series is built, so changing SDR gamma or signal mode changes wire codes.
+// White and Black are the physical E5/E6 values in this table; the display
+// verification sequence keeps its full-code endpoint anchors for reference Y.
+const METER_COLORCHECKER_SG_LAB_D50=[
+ [96.78,-0.66,2.01],[88.85,-0.59,0.25],[79.65,-0.08,0.62],[75.36,0.35,0.26],
+ [70.60,-0.24,0.07],[65.22,-0.27,0.16],[60.04,0.09,0.05],[49.71,0.12,0.69],
+ [45.14,-0.04,0.86],[39.55,-0.37,-0.09],[34.85,-0.21,0.73],[30.32,-0.10,0.22],
+ [20.33,0.40,-0.21],[15.43,-0.24,-0.25],[8.07,0.12,-0.93],[33.02,52.00,-10.30],
+ [19.65,20.42,-18.82],[84.00,-1.70,-8.37],[32.77,19.91,22.33],[63.88,20.34,19.93],
+ [45.84,-3.74,-25.32],[38.29,-17.44,30.22],[51.36,9.52,-26.98],[68.71,-35.41,-1.11],
+ [85.68,10.75,18.39],[23.03,33.95,8.88],[42.52,63.55,11.43],[61.40,27.14,-18.42],
+ [41.70,18.90,-37.42],[85.48,15.15,0.79],[62.28,37.56,68.87],[35.28,12.93,-51.17],
+ [47.60,53.66,22.15],[20.76,31.66,-28.04],[71.62,-24.77,64.10],[70.39,19.37,79.73],
+ [89.35,-16.38,6.41],[44.35,67.94,50.62],[18.09,32.61,-5.90],[30.54,50.39,-41.79],
+ [20.25,0.26,-36.44],[84.56,-19.74,-1.13],[19.92,25.07,-61.05],[52.75,-44.12,38.68],
+ [36.88,65.72,41.63],[81.43,2.41,88.98],[48.75,57.24,-14.45],[47.42,-30.91,-32.27],
+ [84.59,5.21,-5.87],[60.91,36.55,4.15],[40.66,65.54,31.98],[49.56,-13.90,-49.65],
+ [60.13,-17.88,-32.08],[85.26,13.37,7.95],[83.63,-12.47,-8.89],[62.20,37.45,18.18],
+ [53.13,68.44,49.57],[60.62,-29.91,-27.54],[19.75,-17.79,-22.37],[84.38,-11.97,27.16],
+ [63.33,51.30,81.88],[82.08,23.39,87.24],[20.13,-24.81,-7.50],[60.43,-5.12,-32.79],
+ [62.35,29.94,36.89],[77.37,20.28,24.27],[63.46,13.53,26.37],[44.49,16.06,26.79],
+ [67.60,14.47,17.12],[45.14,26.38,41.24],[64.00,25.09,27.14],[73.74,-11.45,85.07],
+ [82.50,5.29,96.68],[60.32,-40.29,-13.25],[50.46,-47.90,-11.56],[64.17,21.34,19.36],
+ [74.01,29.00,25.80],[64.44,14.31,17.63],[64.97,15.89,16.79],[64.75,17.30,18.88],
+ [36.20,16.70,27.06],[66.65,22.21,28.81],[62.35,1.96,57.52],[71.90,-17.32,77.72],
+ [19.62,1.77,11.99],[60.53,-40.75,19.37],[50.48,-53.21,12.65],[20.33,-23.98,7.20],
+ [60.05,-44.00,7.27],[60.77,-30.19,40.76],[51.26,-50.65,43.80],[61.65,-54.33,46.18],
+ [62.05,16.45,51.74],[62.33,-14.54,54.58],[72.77,-29.09,71.26],[21.95,13.41,16.36]
 ];
 const METER_COLORCHECKER_SG_SKIN_NAMES=[
  'White','Black','2E','2F','2K','5D','7E','7F','7G','7H','7I','7J','8D','8E','8F','8G','8H','8I','8J'
 ];
-const METER_COLORCHECKER_SG_SKIN_LEGAL8=[
- [235,235,235],[16,16,16],[112,71,49],[191,134,104],[235,187,147],[235,187,163],[228,163,123],
- [187,136,95],[139,95,60],[193,145,115],[154,90,44],[200,130,95],[196,134,106],[231,147,115],
- [187,139,108],[189,136,108],[191,139,106],[121,80,49],[202,136,97]
-];
+const METER_COLORCHECKER_SG_D50_WHITE={x:0.3457,y:0.3585};
 
-function meterBuiltinFixedLegal8Rows(names,codes){
- const pct=code=>(Math.max(16,Math.min(235,Number(code)||16))-16)*100/219;
- return (Array.isArray(codes)?codes:[]).map((rgb,idx)=>[
-  (Array.isArray(names)&&names[idx])||('Patch '+(idx+1)),pct(rgb[0]),pct(rgb[1]),pct(rgb[2])
- ]);
+function meterColorCheckerLabD50ToD65Xyz(lab){
+ const L=Number(lab&&lab[0])||0,a=Number(lab&&lab[1])||0,b=Number(lab&&lab[2])||0;
+ const fy=(L+16)/116,fx=fy+a/500,fz=fy-b/200;
+ const d=6/29;
+ const inv=t=>t>d?t*t*t:3*d*d*(t-4/29);
+ const white=meterColorCheckerSgD50WhiteXyz();
+ return meterBradfordAdaptXyz(white.X*inv(fx),inv(fy),white.Z*inv(fz),METER_COLORCHECKER_SG_D50_WHITE,D65);
+}
+
+function meterColorCheckerSgD50WhiteXyz(){
+ const w=METER_COLORCHECKER_SG_D50_WHITE;
+ return {X:w.x/w.y,Y:1,Z:(1-w.x-w.y)/w.y};
+}
+
+function meterBuildXriteSgColorSteps(names,seriesMode){
+ const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
+ const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
+ const wp=meterTargetWhitePoint();
+ const signalModeFn=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode:((typeof meterChartSignalMode==='function')?meterChartSignalMode:null);
+ const signalMode=String((signalModeFn?signalModeFn():'sdr')||'sdr').toLowerCase();
+ const solveGamut=(signalMode==='hlg')
+  ?GAMUT_PRESETS.bt2020
+  :((typeof meterStimulusSolveGamut==='function')?meterStimulusSolveGamut():GAMUT_PRESETS.bt709);
+ const absoluteHdr=(signalMode==='hdr10')||(signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1');
+ const hdrReferenceNits=203;
+ const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
+ return (Array.isArray(names)?names:[]).map(name=>{
+  const sourceIndex=METER_COLORCHECKER_SG_NAMES.indexOf(name);
+  const lab=METER_COLORCHECKER_SG_LAB_D50[sourceIndex];
+  if(!lab) return null;
+  // Preserve the full-code endpoints used by color-series luminance analysis.
+  // E5/E6 remain in the reference table above, but replacing these anchors
+  // with their reflectance levels would make the series lose its peak/black Y.
+  if(name==='White'||name==='Black'){
+   const level=name==='White'?1:0,code=Math.round(min+level*span);
+   return {ire:level*100,r:code,g:code,b:code,name:name,target_x:wp.x,target_y:wp.y,target_Yn:level,
+    input_max:inputMax,series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
+  }
+  const xyz=meterColorCheckerLabD50ToD65Xyz(lab);
+  const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
+  const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
+  const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
+  return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
+   target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
+   series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
+ }).filter(Boolean);
 }
 
 // A common MacLeod-Boynton experiment samples an equal-luminance hue circle
@@ -34972,10 +35027,8 @@ function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
  if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
  if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
- if(preset==='sg-96') return meterBuildFixedVideoCodeColorSteps(
-  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg');
- if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
-  meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin');
+ if(preset==='sg-96') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_NAMES,'colorchecker-sg-2014');
+ if(preset==='sg-skin-19') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_SKIN_NAMES,'colorchecker-sg-skin-2014');
  if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
  if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
  if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
