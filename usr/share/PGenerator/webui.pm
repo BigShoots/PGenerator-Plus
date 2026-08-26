@@ -51000,6 +51000,9 @@ function showColorReadingDetail(rd,opts){
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
+ const targetRgbCodes=meterLiveTargetRgbCodes(view);
+ const targetGamma=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||'').toLowerCase():'';
+ const targetRgbLabel=targetGamma==='st2084'?'Target RGB PQe':'Target RGB';
  let h='<div style="margin-bottom:10px;text-align:center">';
  h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
  h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(view.name||'')+'</span></div>';
@@ -51008,6 +51011,7 @@ function showColorReadingDetail(rd,opts){
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  const chartAxis=meterCieChartAxis();
+ h+='<tr><td style="padding:3px 0;color:#777">'+targetRgbLabel+'</td><td style="text-align:right;padding:3px 0;color:#bbb"><span class="meter-live-rgb-triplet">'+meterLiveRgbMarkup(targetRgbCodes)+'</span></td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Target '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
