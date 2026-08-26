@@ -14182,7 +14182,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
     </select>
   </div>
   <div class="field field-gamma">
-    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets and error calculations. This changes the analysis target, not the generator signal mode." aria-label="Target gamma help">?</span></label>
+    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
@@ -14313,8 +14313,8 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800024">Classic (24)</option>
        <option value="29">HCFR GCD + Primaries (30)</option>
        <option value="800124">HCFR GCD Classic (24)</option>
-       <option value="800096">ColorChecker SG (96)</option>
-       <option value="800019">SG Skin Tones (19)</option>
+       <option value="800096">ColorChecker SG (up to 96)</option>
+       <option value="800019">SG Skin Tones (up to 19)</option>
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
@@ -14326,7 +14326,7 @@ body.layout-tablet .ui-choice:disabled:hover .ui-choice-description,body.layout-
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY. ColorChecker SG and SG Skin Tones use the X-Rite November 2014 and newer D50 Lab references, Bradford-adapt them to D65, then solve and encode them for the selected target gamut, gamma and signal mode. HCFR GCD keeps its authored Rec.709 codes; its HDR10/HLG path remains Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation and a 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY. ColorChecker SG and SG Skin Tones use the X-Rite November 2014 and newer D50 Lab references, Bradford-adapt them to the selected standard or custom white, omit patches outside the selected target colourspace, then encode them for the selected gamma and signal mode. HCFR GCD keeps its authored Rec.709 codes; its HDR10/HLG path remains Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation and a 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
@@ -20887,7 +20887,7 @@ function meterUseMeasuredWhiteTarget(){
  updateMeterTargetWhitepointVisibility();
  saveMeterSettings();
  meterOnGreyRefChange();
- meterRefreshActiveSeriesCharts();
+ meterRefreshActiveSeriesCharts({rebuildColorSteps:true});
  return true;
 }
 
@@ -34639,8 +34639,8 @@ const METER_BUILTIN_3D_PROFILE_SERIES=[
 const METER_BUILTIN_COLORCHECKER_SERIES=[
  {id:800024,name:'Classic (24)',category:'color',mode:'any',kind:'verification',preset:'classic-24',builtin_verification:true,patches:[]},
  {id:800124,name:'HCFR GCD Classic (24)',category:'color',mode:'any',kind:'verification',preset:'hcfr-gcd-24',builtin_verification:true,patches:[]},
- {id:800096,name:'ColorChecker SG (96)',category:'color',mode:'any',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
- {id:800019,name:'SG Skin Tones (19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
+ {id:800096,name:'ColorChecker SG (up to 96)',category:'color',mode:'any',kind:'verification',preset:'sg-96',builtin_verification:true,patches:[]},
+ {id:800019,name:'SG Skin Tones (up to 19)',category:'color',mode:'any',kind:'verification',preset:'sg-skin-19',builtin_verification:true,patches:[]},
  {id:800137,name:'MacLeod-Boynton Hue Circle (37)',category:'color',mode:'any',kind:'verification',preset:'mb-hue-circle-37',builtin_verification:true,patches:[]},
  {id:800008,name:'MacLeod-Boynton Focal Colours (8)',category:'color',mode:'any',kind:'verification',preset:'mb-focal-8',builtin_verification:true,patches:[]},
  {id:800064,name:'MacLeod-Boynton OSA-UCS Map (64)',category:'color',mode:'any',kind:'verification',preset:'mb-osa-ucs-64',builtin_verification:true,patches:[]}
@@ -34707,6 +34707,20 @@ function meterColorCheckerSgD50WhiteXyz(){
  return {X:w.x/w.y,Y:1,Z:(1-w.x-w.y)/w.y};
 }
 
+function meterColorCheckerReferenceFitsTargetGamut(X,Y,Z){
+ // Gamut membership is a linear-light property. Test the unmodified reference
+ // after adapting D65 to the selected standard or custom target white, but
+ // before applying gamma, PQ, HLG, transport-container conversion or clipping.
+ const adapted=meterAdaptReferenceXyzToTargetWhite(X,Y,Z);
+ const targetGamut=(typeof meterTargetSolveGamut==='function')
+  ?meterTargetSolveGamut()
+  :((typeof meterAnalysisGamut==='function')?meterAnalysisGamut():GAMUT_PRESETS.bt709);
+ if(!targetGamut||!Array.isArray(targetGamut.xyzToRgb)) return false;
+ const rgb=xyzToLinRgb(adapted.X,adapted.Y,adapted.Z,targetGamut.xyzToRgb);
+ const epsilon=1e-6;
+ return rgb.every(value=>Number.isFinite(value)&&value>=-epsilon&&value<=1+epsilon);
+}
+
 function meterBuildXriteSgColorSteps(names,seriesMode){
  const inputMax=(typeof meterPatchInputMax==='function')?meterPatchInputMax():255;
  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
@@ -34732,6 +34746,7 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
     input_max:inputMax,series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
   }
   const xyz=meterColorCheckerLabD50ToD65Xyz(lab);
+  if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
   const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
   const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
@@ -56542,7 +56557,7 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const d65El=document.getElementById('meterCustomD65Enabled');
- if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
+ if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts({rebuildColorSteps:true});});
  const stabilizationEl=document.getElementById('meterStabilizationEnabled');
  if(stabilizationEl) stabilizationEl.addEventListener('change',async()=>{
   window.meterUpdateGearVisibility();
@@ -56670,21 +56685,50 @@ function meterRefreshActiveSeriesCharts(options){
 	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 	  return;
 	 }
+	 const refreshOptions=options||{};
 	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
-	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
+	 const contextSource=hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:{};
+	 // A target-gamma change must win over the completed run's old metadata
+	 // before fresh colour steps are built. Ordinary refreshes keep using the
+	 // exact context stamped by the run.
+	 if(Object.prototype.hasOwnProperty.call(refreshOptions,'targetGamma')) contextSource.target_gamma=refreshOptions.targetGamma;
+	 meterSetActiveSeriesChartContext(contextSource);
 	 // A CHC workspace has measurement positions but no recoverable generator
 	 // RGB codes. Keep its imported steps: rebuilding from the normalized point
 	 // count silently substitutes a native preset and can filter or retarget the
 	 // imported results on any settings/output refresh.
 	 const hasSavedReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
 	 const importedWorkspace=hasSavedReadings&&meterReadings.every(meterSeriesReadingIsImported);
-	 // A completed measurement owns the exact steps and target metadata that
-	 // were used for that run. Rebuilding them while returning from another
-	 // workspace silently substitutes the current output controls, so changing
-	 // a display-only analysis selector can suddenly grade against another
-	 // target Y curve. Only create fresh steps when there is no measured series.
-	 if(!importedWorkspace&&!hasSavedReadings) meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+	 // A completed measurement normally owns the exact steps and target metadata
+	 // used for that run. Rebuild it only for an explicit target-definition
+	 // change; presentation-only refreshes must leave completed steps untouched.
+	 let colorStepsRebuilt=false;
+	 if(!importedWorkspace&&(!hasSavedReadings||(refreshOptions.rebuildColorSteps&&isColor))){
+	  const previousSteps=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+	  const selectedKeys=(meterSelectedThumbIndices instanceof Set)
+	   ?Array.from(meterSelectedThumbIndices).map(index=>previousSteps[index]).filter(Boolean).map(meterStepNameKey)
+	   :[];
+	  const currentKey=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):'';
+	  const currentName=String((meterCurrentPatchStep&&meterCurrentPatchStep.name)||'');
+	  const freshSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	  if(Array.isArray(freshSteps)&&freshSteps.length){
+	   if(isColor&&Object.prototype.hasOwnProperty.call(refreshOptions,'targetGamma')){
+	    freshSteps.forEach(step=>{ if(step) step.target_gamma=refreshOptions.targetGamma; });
+	   }
+	   meterSeriesSteps=freshSteps;
+	   if(refreshOptions.rebuildColorSteps&&isColor){
+	    colorStepsRebuilt=true;
+	    const selectedKeySet=new Set(selectedKeys);
+	    meterSelectedThumbIndices=new Set();
+	    meterSeriesSteps.forEach((step,index)=>{ if(selectedKeySet.has(meterStepNameKey(step))) meterSelectedThumbIndices.add(index); });
+	    const refreshedCurrent=meterSeriesSteps.find(step=>(currentKey&&meterStepNameKey(step)===currentKey)||(currentName&&String(step.name||'')===currentName))||null;
+	    meterCurrentPatchStep=refreshedCurrent;
+	    meterSelectedThumbIre=refreshedCurrent?meterStepNameKey(refreshedCurrent):null;
+	    if(!refreshedCurrent){ _selectedColorReadingName=null; _colorDetailPinned=false; }
+	   }
+	  }
+	 }
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
 	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
  // Regrading is an explicit target-definition operation, not part of a
@@ -56713,6 +56757,15 @@ function meterRefreshActiveSeriesCharts(options){
   drawAllChartsPreset(sortedSteps);
  }
  meterUpdateSeriesTabUi();
+   if(colorStepsRebuilt&&isColor){
+    if(meterCurrentPatchStep){
+     const selectedReading=meterFindReadingForStep(meterCurrentPatchStep);
+     if(selectedReading&&meterReadingIsRealMeasurement(selectedReading)) updateLiveReading(selectedReading);
+     else meterClearLiveReading(meterCurrentPatchStep);
+    } else {
+     showColorReadingDetail(null);
+    }
+   }
    if(meterCurrentPatchStep) meterLgGreySyncForCurrentStep(false);
    else meterRenderGreyTvControls(null);
 }
@@ -56739,14 +56792,15 @@ window.addEventListener('resize',()=>{
 document.getElementById('meterTargetGamut').addEventListener('change',()=>{
  updateMeterTargetWhitepointVisibility();
  meterOnGreyRefChange();
- meterRefreshActiveSeriesCharts();
+ meterRefreshActiveSeriesCharts({rebuildColorSteps:true});
 });
 
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
-  meterActiveSeriesTargetGamma=null;
-  meterRefreshActiveSeriesCharts({regradeTargets:true});
+  const selected=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
+  meterActiveSeriesTargetGamma=selected||null;
+  meterRefreshActiveSeriesCharts({regradeTargets:true,rebuildColorSteps:true,targetGamma:selected});
   return;
  }
  // Re-grade the currently displayed series against the newly selected target
@@ -56789,7 +56843,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
    meterRefreshActiveSeriesCharts();
   }
  } else {
-  meterRefreshActiveSeriesCharts({regradeTargets:true});
+  meterRefreshActiveSeriesCharts({regradeTargets:true,rebuildColorSteps:true,targetGamma:sel});
  }
 });
 
@@ -56798,7 +56852,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(!el) return;
  el.addEventListener('input',()=>{
   meterOnGreyRefChange();
-  meterRefreshActiveSeriesCharts();
+  meterRefreshActiveSeriesCharts({rebuildColorSteps:true});
  });
 });
 
