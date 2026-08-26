@@ -15636,6 +15636,9 @@ function showColorReadingDetail(rd,opts){
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
+ const targetRgbCodes=meterLiveTargetRgbCodes(view);
+ const targetGamma=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||'').toLowerCase():'';
+ const targetRgbLabel=targetGamma==='st2084'?'Target RGB PQe':'Target RGB';
  let h='<div style="margin-bottom:10px;text-align:center">';
  h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
  h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(view.name||'')+'</span></div>';
@@ -15644,6 +15647,7 @@ function showColorReadingDetail(rd,opts){
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  const chartAxis=meterCieChartAxis();
+ h+='<tr><td style="padding:3px 0;color:#777">'+targetRgbLabel+'</td><td style="text-align:right;padding:3px 0;color:#bbb"><span class="meter-live-rgb-triplet">'+meterLiveRgbMarkup(targetRgbCodes)+'</span></td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Target '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
@@ -21193,7 +21197,7 @@ if(meterDisplayTypeCapabilityEl) meterDisplayTypeCapabilityEl.addEventListener('
  const piEl=document.getElementById('meterPatchInsert');
  if(piEl) piEl.addEventListener('change',()=>{window.meterUpdateGearVisibility();saveMeterSettings();});
  const d65El=document.getElementById('meterCustomD65Enabled');
- if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts();});
+ if(d65El) d65El.addEventListener('change',()=>{window.meterUpdateGearVisibility();updateMeterTargetWhitepointVisibility();meterOnGreyRefChange();meterRefreshActiveSeriesCharts({rebuildColorSteps:true});});
  const stabilizationEl=document.getElementById('meterStabilizationEnabled');
  if(stabilizationEl) stabilizationEl.addEventListener('change',async()=>{
   window.meterUpdateGearVisibility();
@@ -21321,21 +21325,50 @@ function meterRefreshActiveSeriesCharts(options){
 	  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
 	  return;
 	 }
+	 const refreshOptions=options||{};
 	 const hasReadingContext=Array.isArray(meterReadings)&&meterReadings.some(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode));
-	 meterSetActiveSeriesChartContext(hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:null);
+	 const contextSource=hasReadingContext?{steps:meterSeriesSteps||[],readings:meterReadings}:{};
+	 // A target-gamma change must win over the completed run's old metadata
+	 // before fresh colour steps are built. Ordinary refreshes keep using the
+	 // exact context stamped by the run.
+	 if(Object.prototype.hasOwnProperty.call(refreshOptions,'targetGamma')) contextSource.target_gamma=refreshOptions.targetGamma;
+	 meterSetActiveSeriesChartContext(contextSource);
 	 // A CHC workspace has measurement positions but no recoverable generator
 	 // RGB codes. Keep its imported steps: rebuilding from the normalized point
 	 // count silently substitutes a native preset and can filter or retarget the
 	 // imported results on any settings/output refresh.
 	 const hasSavedReadings=Array.isArray(meterReadings)&&meterReadings.length>0;
 	 const importedWorkspace=hasSavedReadings&&meterReadings.every(meterSeriesReadingIsImported);
-	 // A completed measurement owns the exact steps and target metadata that
-	 // were used for that run. Rebuilding them while returning from another
-	 // workspace silently substitutes the current output controls, so changing
-	 // a display-only analysis selector can suddenly grade against another
-	 // target Y curve. Only create fresh steps when there is no measured series.
-	 if(!importedWorkspace&&!hasSavedReadings) meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 const isColor=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
+	 // A completed measurement normally owns the exact steps and target metadata
+	 // used for that run. Rebuild it only for an explicit target-definition
+	 // change; presentation-only refreshes must leave completed steps untouched.
+	 let colorStepsRebuilt=false;
+	 if(!importedWorkspace&&(!hasSavedReadings||(refreshOptions.rebuildColorSteps&&isColor))){
+	  const previousSteps=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
+	  const selectedKeys=(meterSelectedThumbIndices instanceof Set)
+	   ?Array.from(meterSelectedThumbIndices).map(index=>previousSteps[index]).filter(Boolean).map(meterStepNameKey)
+	   :[];
+	  const currentKey=meterCurrentPatchStep?meterStepNameKey(meterCurrentPatchStep):'';
+	  const currentName=String((meterCurrentPatchStep&&meterCurrentPatchStep.name)||'');
+	  const freshSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	  if(Array.isArray(freshSteps)&&freshSteps.length){
+	   if(isColor&&Object.prototype.hasOwnProperty.call(refreshOptions,'targetGamma')){
+	    freshSteps.forEach(step=>{ if(step) step.target_gamma=refreshOptions.targetGamma; });
+	   }
+	   meterSeriesSteps=freshSteps;
+	   if(refreshOptions.rebuildColorSteps&&isColor){
+	    colorStepsRebuilt=true;
+	    const selectedKeySet=new Set(selectedKeys);
+	    meterSelectedThumbIndices=new Set();
+	    meterSeriesSteps.forEach((step,index)=>{ if(selectedKeySet.has(meterStepNameKey(step))) meterSelectedThumbIndices.add(index); });
+	    const refreshedCurrent=meterSeriesSteps.find(step=>(currentKey&&meterStepNameKey(step)===currentKey)||(currentName&&String(step.name||'')===currentName))||null;
+	    meterCurrentPatchStep=refreshedCurrent;
+	    meterSelectedThumbIre=refreshedCurrent?meterStepNameKey(refreshedCurrent):null;
+	    if(!refreshedCurrent){ _selectedColorReadingName=null; _colorDetailPinned=false; }
+	   }
+	  }
+	 }
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
 	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
  // Regrading is an explicit target-definition operation, not part of a
@@ -21364,6 +21397,15 @@ function meterRefreshActiveSeriesCharts(options){
   drawAllChartsPreset(sortedSteps);
  }
  meterUpdateSeriesTabUi();
+   if(colorStepsRebuilt&&isColor){
+    if(meterCurrentPatchStep){
+     const selectedReading=meterFindReadingForStep(meterCurrentPatchStep);
+     if(selectedReading&&meterReadingIsRealMeasurement(selectedReading)) updateLiveReading(selectedReading);
+     else meterClearLiveReading(meterCurrentPatchStep);
+    } else {
+     showColorReadingDetail(null);
+    }
+   }
    if(meterCurrentPatchStep) meterLgGreySyncForCurrentStep(false);
    else meterRenderGreyTvControls(null);
 }
@@ -21390,14 +21432,15 @@ window.addEventListener('resize',()=>{
 document.getElementById('meterTargetGamut').addEventListener('change',()=>{
  updateMeterTargetWhitepointVisibility();
  meterOnGreyRefChange();
- meterRefreshActiveSeriesCharts();
+ meterRefreshActiveSeriesCharts({rebuildColorSteps:true});
 });
 
 document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(getVal('signal_mode')==='dv'){
   applyMeterTargetGammaDefault();
-  meterActiveSeriesTargetGamma=null;
-  meterRefreshActiveSeriesCharts({regradeTargets:true});
+  const selected=String((document.getElementById('meterTargetGamma')||{}).value||'').toLowerCase();
+  meterActiveSeriesTargetGamma=selected||null;
+  meterRefreshActiveSeriesCharts({regradeTargets:true,rebuildColorSteps:true,targetGamma:selected});
   return;
  }
  // Re-grade the currently displayed series against the newly selected target
@@ -21440,7 +21483,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
    meterRefreshActiveSeriesCharts();
   }
  } else {
-  meterRefreshActiveSeriesCharts({regradeTargets:true});
+  meterRefreshActiveSeriesCharts({regradeTargets:true,rebuildColorSteps:true,targetGamma:sel});
  }
 });
 
@@ -21449,7 +21492,7 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
  if(!el) return;
  el.addEventListener('input',()=>{
   meterOnGreyRefChange();
-  meterRefreshActiveSeriesCharts();
+  meterRefreshActiveSeriesCharts({rebuildColorSteps:true});
  });
 });
 

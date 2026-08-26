@@ -499,7 +499,7 @@ __PG_LOGO_DARK__
     </select>
   </div>
   <div class="field field-gamma">
-    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets and error calculations. This changes the analysis target, not the generator signal mode." aria-label="Target gamma help">?</span></label>
+    <label>Target Gamma <span class="meter-help-tip" title="Selects the reference transfer curve used for greyscale luminance targets, error calculations and SDR linear-reference colour encoding. This changes the target curve, not the generator signal mode." aria-label="Target gamma help">?</span></label>
     <select id="meterTargetGamma" onchange="meterOnGreyRefChange('target-gamma')">
      <option value="bt1886">BT.1886 (2.4)</option>
      <option value="2.2">Gamma 2.2</option>
@@ -630,8 +630,8 @@ __PG_LOGO_DARK__
        <option value="800024">Classic (24)</option>
        <option value="29">HCFR GCD + Primaries (30)</option>
        <option value="800124">HCFR GCD Classic (24)</option>
-       <option value="800096">ColorChecker SG (96)</option>
-       <option value="800019">SG Skin Tones (19)</option>
+       <option value="800096">ColorChecker SG (up to 96)</option>
+       <option value="800019">SG Skin Tones (up to 19)</option>
        </optgroup>
        <optgroup label="Saturation">
        <option value="24">Sat Sweep (24)</option>
@@ -643,7 +643,7 @@ __PG_LOGO_DARK__
        <option value="800064" data-mb-only="1">MacLeod-Boynton OSA-UCS Map (64)</option>
        </optgroup>
       </select>
-      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY; Bradford-adapt the reference only if the target white is not D65, then re-solve the wire codes. HCFR GCD, ColorChecker SG and SG Skin Tones keep their authored Rec.709 codes in BT.709 and re-solve that Rec.709 appearance into a wider colourspace. HCFR GCD HDR10/HLG is unchanged: Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation, 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
+      <span class="meter-help-tip" title="Choose a built-in verification series or Custom Series. Classic is D65 xyY. ColorChecker SG and SG Skin Tones use the X-Rite November 2014 and newer D50 Lab references, Bradford-adapt them to the selected standard or custom white, omit patches outside the selected target colourspace, then encode them for the selected gamma and signal mode. HCFR GCD keeps its authored Rec.709 codes; its HDR10/HLG path remains Rec.709-to-BT.2020, gamma 2.22, 8-bit legal quantisation and a 94.37844 cd/m2 PQ reference. DV has no HCFR equivalent. Sat Sweep is the native max-channel sweep; HCFR Constant Luminance Sat Sweep holds each hue's Y. Hue Circle locks this list to the MacLeod-Boynton series. Each preset keeps a separate cache." aria-label="Series help">?</span>
      </label>
       <span id="meterCustomSeriesLoadedColor" style="display:none;align-self:center;font-size:.72rem;color:var(--text2);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"></span>
      </div>
