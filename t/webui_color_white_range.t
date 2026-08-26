@@ -3,6 +3,7 @@ use warnings;
 use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw(tempfile);
+use JSON::PP qw(decode_json);
 
 # Regression guard for the colour-series White defect ("SG White reads over
 # 100% RGB with elevated dE while xyY shows 100%"):
@@ -10,6 +11,8 @@ use File::Temp qw(tempfile);
 #      (10-bit Full top = 1023, never span*4 = 1020);
 #  (2) every builtin colour preset's White endpoint must land on the range top
 #      and carry build-time signal_*_pct stamps;
+#      server-built standard Colors / Sat Sweep steps must carry the same
+#      stamps after they replace the client step list during status polling;
 #  (3) the neutral-row greyscale analysis must be range-flip-proof: a series
 #      measured under Limited codes and viewed under Full settings must still
 #      score its White at exactly 100/100/100 with zero dE.
@@ -21,8 +24,41 @@ plan skip_all => 'node is required to execute the colour-range functions'
 
 my $app="$Bin/../usr/share/PGenerator/webui-app.js";
 my $workspace="$Bin/../usr/share/PGenerator/webui-workspace.js";
+my $webui="$Bin/../usr/share/PGenerator/webui.pm";
 ok(-f $app,'webui-app.js exists');
 ok(-f $workspace,'webui-workspace.js exists');
+ok(-f $webui,'webui.pm exists');
+
+do $webui or die "Unable to load $webui: $@ $!";
+{
+ my $full=decode_json(webui_stamp_chroma_step_signal_pct(
+  '{"r":0,"g":512,"b":1023,"name":"server full"}',0,1023));
+ is($full->{signal_r_pct},0,'server-built 10-bit Full black endpoint is stamped at 0%');
+ cmp_ok(abs($full->{signal_g_pct}-(51200/1023)),'<',1e-12,
+  'server-built 10-bit Full midpoint keeps its exact authored signal');
+ is($full->{signal_b_pct},100,'server-built 10-bit Full white endpoint is stamped at 100%');
+
+ my $limited=decode_json(webui_stamp_chroma_step_signal_pct(
+  '{"r":64,"g":502,"b":940,"name":"server limited"}',64,876));
+ is_deeply([@{$limited}{qw(signal_r_pct signal_g_pct signal_b_pct)}],[0,50,100],
+  'server-built 10-bit Limited endpoints and midpoint are stamped on the legal ladder');
+
+ my $preserved=decode_json(webui_stamp_chroma_step_signal_pct(
+  '{"r":1023,"g":1023,"b":1023,"signal_r_pct":87.5}',0,1023));
+ is($preserved->{signal_r_pct},87.5,'an existing imported signal stamp is not overwritten');
+ is_deeply([@{$preserved}{qw(signal_g_pct signal_b_pct)}],[100,100],
+  'missing channel stamps are still filled');
+ is(webui_stamp_chroma_step_signal_pct('{"r":0',0,1023),'{"r":0',
+  'a malformed step is left unchanged');
+}
+{
+ open(my $fh,'<',$webui) or die "Unable to read $webui: $!";
+ local $/;
+ my $source=<$fh>;
+ close($fh);
+ like($source,qr/!scalar\(\@custom_series_steps\).*?webui_stamp_chroma_step_signal_pct\(\$_,\$chroma_min_code,\$chroma_span_code\)/s,
+  'server-generated Colors and Sat Sweep queues apply the chroma signal stamps');
+}
 
 my ($jsfh,$jsfile)=tempfile('pgen-color-white-range-XXXX',SUFFIX=>'.js',UNLINK=>1);
 print {$jsfh} <<'JS';

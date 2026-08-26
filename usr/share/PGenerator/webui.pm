@@ -3780,6 +3780,23 @@ sub webui_custom_series_steps_from_body (@) {
  return @out;
 }
 
+sub webui_stamp_chroma_step_signal_pct (@) {
+ my ($step,$min_code,$span_code)=@_;
+ return $step unless(defined($step) && $step ne "" && defined($span_code) && $span_code>0);
+ my @stamps;
+ foreach my $channel (qw(r g b)) {
+  next if($step=~/"signal_${channel}_pct"\s*:/);
+  next unless($step=~/"$channel"\s*:\s*(-?\d+(?:\.\d+)?)/);
+  my $pct=(($1+0)-($min_code+0))*100/($span_code+0);
+  $pct=0 if($pct<0);
+  $pct=110 if($pct>110);
+  push @stamps,'"signal_'.$channel.'_pct":'.(sprintf('%.15g',$pct)+0);
+ }
+ return $step unless(@stamps);
+ return $step unless($step=~s/\}\s*$//);
+ return $step.",".join(",",@stamps)."}";
+}
+
 sub webui_meter_series_start (@) {
  my ($body)=@_;
  # A cooperatively-cancelled series may still be finishing its current USB
@@ -5360,6 +5377,17 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    push @steps, "{\"ire\":$sat,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name $sat%\",\"series_color\":\"$name\",\"sat_pct\":$sat,\"target_x\":$tx,\"target_y\":$ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$series_mode_json}";
 	   }
 	  }
+	 }
+
+	 # Standard Colors / Sat Sweep runs are rebuilt on the server and replace
+	 # the client's step list on the first status poll. Stamp their authored
+	 # signal percentages here so the worker copies them onto readings and a
+	 # later range or bit-depth change cannot move a neutral row's target.
+	 # Custom and lattice runs already arrive with their own signal metadata;
+	 # preserving those values avoids decoding imported codes against the
+	 # current server range.
+	 if(!scalar(@custom_series_steps) && ($type eq "colors" || $type eq "saturations")) {
+	  @steps=map { &webui_stamp_chroma_step_signal_pct($_,$chroma_min_code,$chroma_span_code) } @steps;
 	 }
 
 	 # Colour, saturation, and profiling series do not necessarily contain
