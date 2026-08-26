@@ -36,11 +36,16 @@ CEC_RECEIVE          = _IOWR(M, 6, CEC_MSG_SZ)
 CEC_S_MODE           = _IOW(M, 9, 4)
 
 # ─── CEC opcodes ───
-CEC_MSG_IMAGE_VIEW_ON  = 0x04
-CEC_MSG_STANDBY        = 0x36
+CEC_MSG_IMAGE_VIEW_ON       = 0x04
+CEC_MSG_TEXT_VIEW_ON        = 0x0D
+CEC_MSG_STANDBY             = 0x36
+CEC_MSG_USER_CONTROL_PRESSED  = 0x44
+CEC_MSG_USER_CONTROL_RELEASED = 0x45
 CEC_MSG_ACTIVE_SOURCE       = 0x82
 CEC_MSG_GIVE_DEVICE_POWER   = 0x8F
 CEC_MSG_REPORT_POWER_STATUS = 0x90
+
+CEC_OP_UI_CMD_POWER_ON_FUNCTION = 0x6D
 
 # ─── CEC addresses ───
 CEC_LOG_ADDR_TV           = 0
@@ -107,13 +112,18 @@ def get_log_addrs(fd):
             'num_log_addrs': num, 'osd_name': osd}
 
 def claim_log_addr(fd):
-    """Try to claim a logical address. Tries RECORD, PLAYBACK, TUNER types."""
+    """Claim a logical address, preferring a playback-device address.
+
+    CEC_ADAP_S_LOG_ADDRS starts address allocation asynchronously. The request
+    buffer is not updated with the chosen address, so wait for G_LOG_ADDRS
+    instead of immediately reading buf[0].
+    """
     types = [
         # (primary_device_type, log_addr_type, all_device_types)
-        (1, 1, 0x02),   # RECORD   → candidates 1, 2, 9
-        (4, 4, 0x08),   # PLAYBACK → candidates 4, 8, 11
-        (3, 3, 0x04),   # TUNER    → candidates 3, 6, 7, 10
-        (5, 5, 0x40),   # SPECIFIC → candidate 14
+        (4, 3, 0x10),   # PLAYBACK -> candidates 4, 8, 11
+        (1, 1, 0x40),   # RECORD   -> candidates 1, 2, 9
+        (3, 2, 0x20),   # TUNER    -> candidates 3, 6, 7, 10
+        (7, 5, 0x04),   # SPECIFIC/SWITCH -> candidate 14
     ]
     for pdt, lat, adt in types:
         # Clear existing
@@ -140,9 +150,13 @@ def claim_log_addr(fd):
         buf[39] = adt
 
         if do_ioctl(fd, CEC_ADAP_S_LOG_ADDRS, buf):
-            addr = buf[0]
-            if addr != 0xFF:
-                return addr
+            for _ in range(20):
+                time.sleep(0.1)
+                assigned = get_log_addrs(fd)
+                if assigned and assigned['mask']:
+                    for addr in assigned['log_addr'][:assigned['num_log_addrs']]:
+                        if addr != 0xFF:
+                            return addr
     return 0xFF
 
 def transmit(fd, src, dst, opcode, params=None, timeout_ms=500):
@@ -195,6 +209,26 @@ def transmit_retry(fd, src, dst, opcode, params=None, retries=0):
         if attempt < retries:
             time.sleep(0.3)
     return st
+
+def wake_tv(fd, src, phys):
+    """Send the full One Touch Play sequence needed by LG webOS TVs."""
+    frames = [
+        (CEC_LOG_ADDR_TV, CEC_MSG_USER_CONTROL_PRESSED,
+         [CEC_OP_UI_CMD_POWER_ON_FUNCTION], True),
+        (CEC_LOG_ADDR_TV, CEC_MSG_USER_CONTROL_RELEASED, [], False),
+        (CEC_LOG_ADDR_TV, CEC_MSG_IMAGE_VIEW_ON, [], True),
+        (CEC_LOG_ADDR_TV, CEC_MSG_TEXT_VIEW_ON, [], True),
+        (CEC_LOG_ADDR_BROADCAST, CEC_MSG_ACTIVE_SOURCE,
+         [(phys >> 8) & 0xFF, phys & 0xFF], True),
+    ]
+    required_ok = True
+    for dst, opcode, params, required in frames:
+        status = transmit_retry(fd, src, dst, opcode, params)
+        if required and (not status or not (status & CEC_TX_STATUS_OK)):
+            required_ok = False
+        time.sleep(0.3)
+    return required_ok
+
 
 def query_power_status(fd, src, timeout_ms=500):
     """Send Give Device Power Status to TV and wait for reply.
@@ -320,10 +354,12 @@ def main():
     # ── Get or claim a logical address ──
     src = CEC_LOG_ADDR_UNREGISTERED
     if la and la['mask'] != 0:
-        # Already have a valid address
+        # PGenerator is a playback source. Reclaim old RECORD/SPECIFIC
+        # addresses left by earlier helper versions before sending actions.
         for i in range(la['num_log_addrs']):
-            if la['log_addr'][i] != 0xFF:
-                src = la['log_addr'][i]
+            addr = la['log_addr'][i]
+            if addr in (4, 8, 11):
+                src = addr
                 break
     if src == CEC_LOG_ADDR_UNREGISTERED:
         claimed = claim_log_addr(fd)
@@ -332,8 +368,7 @@ def main():
 
     # ── Execute command ──
     if cmd == 'on':
-        st = transmit_retry(fd, src, CEC_LOG_ADDR_TV, CEC_MSG_IMAGE_VIEW_ON)
-        if st and (st & CEC_TX_STATUS_OK):
+        if wake_tv(fd, src, phys):
             print('OK')
         else:
             print('FAILED')
@@ -356,24 +391,12 @@ def main():
             print('FAILED')
 
     elif cmd == 'wake':
-        # Image View On to wake TV + Active Source to select input
-        ok = True
-        st = transmit_retry(fd, src, CEC_LOG_ADDR_TV, CEC_MSG_IMAGE_VIEW_ON)
-        if not st or not (st & CEC_TX_STATUS_OK):
-            ok = False
-        time.sleep(0.5)
-        phys_hi = (phys >> 8) & 0xFF
-        phys_lo = phys & 0xFF
-        st2 = transmit_retry(fd, src, CEC_LOG_ADDR_BROADCAST,
-                             CEC_MSG_ACTIVE_SOURCE, [phys_hi, phys_lo])
-        if not st2 or not (st2 & CEC_TX_STATUS_OK):
-            ok = False
-        print('OK' if ok else 'PARTIAL')
+        print('OK' if wake_tv(fd, src, phys) else 'PARTIAL')
 
     else:
         print('Usage: %s <status|on|off|as|wake> [/dev/cecN]' % sys.argv[0])
         print('  status  show CEC adapter info')
-        print('  on      power on TV (Image View On)')
+        print('  on      power on TV and select this source')
         print('  off     standby all devices')
         print('  as      set this device as active source')
         print('  wake    power on TV + set active source')
