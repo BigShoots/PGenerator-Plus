@@ -3763,6 +3763,17 @@ sub webui_custom_series_steps_from_body (@) {
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
   $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  # Build-time stimulus stamps: forwarded so the worker copies them onto the
+  # readings and the neutral-row analysis never has to decode wire codes
+  # against a possibly-changed current range (SG White >100% defect).
+  # Clamped to the same 0..110 envelope as ire above.
+  foreach my $pct_key (qw(stimulus signal_r_pct signal_g_pct signal_b_pct)) {
+   next unless(defined $num{$pct_key});
+   my $pct_val=$num{$pct_key}+0;
+   $pct_val=0 if($pct_val<0);
+   $pct_val=110 if($pct_val>110);
+   $step.=",\"$pct_key\":$pct_val";
+  }
   $step.="}";
   push @out,$step;
  }

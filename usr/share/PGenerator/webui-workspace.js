@@ -755,6 +755,12 @@ function meterRgbTripletNameFromReading(rd){
  if(!rd) return '';
  const raw=String(rd.name||'');
  if(/^[0-9.]+\/[0-9.]+\/[0-9.]+$/.test(raw)) return raw;
+ // Only synthesize a triplet for numeric (slash-stripped lattice) labels.
+ // Human-named rows (ColorChecker "White"/"2E", sweep "Red 50%") must keep
+ // their names so the LUT-solve intake filters them out — colour-series
+ // steps now carry signal_*_pct, and without this guard a loaded SG series
+ // would suddenly qualify as sparse (and useless) LUT-solve input.
+ if(raw!==''&&!/^[0-9. ]+$/.test(raw)) return raw;
  const fmt=function(v){
   const n=Number(v);
   if(!Number.isFinite(n)) return null;
@@ -2176,6 +2182,13 @@ function meterBuildStepsJS(type,points){
     }
    });
   });
+  // Build-time stimulus stamps: the 0% sweep steps are exactly neutral and
+  // take the neutral greyscale analysis, so they need the same range-flip
+  // protection as the ColorChecker White/Black rows.
+  if(typeof meterStampChromaSignalPct==='function'){
+   const stampMin=meterChromaPatchRangeMin(),stampSpan=meterChromaPatchRangeSpan();
+   steps.forEach(step=>meterStampChromaSignalPct(step,stampMin,stampSpan));
+  }
  }
 	 return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 }

@@ -5411,16 +5411,35 @@ function meterSdrRgbChromaUsesFullSourceRange(){
  return mode==='sdr' && meterOutputIsRgb() && !meterPatchUsesVideoRange();
 }
 
-function meterChromaPatchRangeMin(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+function meterChromaPatchRange(){
+ // Scale the ENDPOINTS, not the span — same rule meterGreyCodeRange applies
+ // (see its comment): full scale is full scale at either depth (8-bit 255 IS
+ // 10-bit 1023), while sub-full-scale endpoints (legal 16..235) are exact <<2
+ // mappings (64..940). The old span*4 emitted 10-bit Full colour-series white
+ // at 1020 — a real ~0.65% luminance deficit on the wire — and shifted every
+ // neutral-row analysis target with it. The Perl server's chroma range
+ // (webui_meter_series_start) already tops out at 1023 for 10-bit Full.
+ // 12-bit stays *16: it only occurs for DV, which is always legal-coded
+ // (256..3760 exact), never full scale.
+ const min8=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+ const span8=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
  const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ if(bits===12) return {min:Math.round(min8*16),span:Math.round(span8*16)};
+ if(bits===10){
+  const max8=min8+span8;
+  const min10=Math.round(min8*4);
+  const max10=(max8>=255)?1023:Math.round(max8*4);
+  return {min:min10,span:max10-min10};
+ }
+ return {min:min8,span:span8};
+}
+
+function meterChromaPatchRangeMin(){
+ return meterChromaPatchRange().min;
 }
 
 function meterChromaPatchRangeSpan(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
- const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ return meterChromaPatchRange().span;
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
@@ -7614,9 +7633,14 @@ function meterGreyChartTargetXYZForReading(reading){
  // color step; falling through on numeric zero would target that index instead
  // of black.
  if(ire==null&&step) ire=meterGreyscaleTargetSlotIre(step);
- const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
+ const code=(reading&&reading._neutral_color_greyscale_analysis)?null
+  :((reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null)));
  const measuredDvTargetY=meterDvAbsoluteReadingTargetY(reading);
- const Y=measuredDvTargetY!=null?measuredDvTargetY:meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
+ const targetIre=ire!=null?ire:(reading&&reading.ire||0);
+ const Y=measuredDvTargetY!=null?measuredDvTargetY:
+  ((reading&&reading._neutral_color_greyscale_analysis&&typeof meterNeutralCloneTargetLuminance==='function')
+   ? meterNeutralCloneTargetLuminance(targetIre,peak,black||0)
+   : meterGreyTargetLuminance(targetIre,peak,black||0,code));
  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
 }
 
@@ -8387,6 +8411,26 @@ function meterSolveD65ReferenceLinear(X,Y,Z,solveGamut){
  return {rgb:rgb,target_x:targetX,target_y:targetY,target_Yn:Math.max(0,adapted.Y)*scale,reference_Yn:Math.max(0,adapted.Y)};
 }
 
+// Stamp build-time transport-signal percentages on a colour-series step from
+// its emitted codes and the chroma range that emitted them. The neutral-row
+// greyscale analysis (meterNeutralColorGreyscaleReading) recovers the authored
+// stimulus from these, so a later output range / bit-depth change can never
+// move the target of an already-measured patch — decoding the wire code
+// against the CURRENT range did exactly that (the "SG White reads over 100%"
+// defect). Greyscale series already stamp these; colour series did not.
+function meterStampChromaSignalPct(step,min,span){
+ if(!step||!(span>0)) return step;
+ const pct=code=>{
+  const numeric=Number(code);
+  if(!Number.isFinite(numeric)) return undefined;
+  return Math.max(0,Math.min(110,(numeric-min)*100/span));
+ };
+ if(step.signal_r_pct==null) step.signal_r_pct=pct(step.r);
+ if(step.signal_g_pct==null) step.signal_g_pct=pct(step.g);
+ if(step.signal_b_pct==null) step.signal_b_pct=pct(step.b);
+ return step;
+}
+
 function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
  const steps=[];
  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
@@ -8484,6 +8528,7 @@ function meterBuildFixedVideoCodeColorSteps(rows,seriesMode){
    input_max:inputMax,series_mode:(seriesMode||'fixed-video')+'-'+signalMode});
  };
  (Array.isArray(rows)?rows:[]).forEach((row,idx)=>add(row[0]||('Patch '+(idx+1)),row[1],row[2],row[3]));
+ steps.forEach(step=>meterStampChromaSignalPct(step,min,span));
  return steps;
 }
 
@@ -8493,7 +8538,7 @@ function meterBuildHcfrColorCheckerStepsJS(includePrimaries){
  if(includePrimaries===false) return steps;
  [['100% Red','Red'],['100% Green','Green'],['100% Blue','Blue'],['100% Cyan','Cyan'],['100% Magenta','Magenta'],['100% Yellow','Yellow']].forEach(([name,colorName])=>{
   const step=meterBuildHcfrSaturationStep(colorName,100);
-  steps.push({...step,name:name});
+  steps.push(meterStampChromaSignalPct({...step,name:name},meterChromaPatchRangeMin(),meterChromaPatchRangeSpan()));
  });
  return steps;
 }
@@ -8609,6 +8654,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
    ...target
   });
  });
+ steps.forEach(step=>meterStampChromaSignalPct(step,min,max-min));
  return steps;
 }
 
@@ -9537,8 +9583,47 @@ function meterPerceptualRgbBalanceGain(reading){
 // while every R/G/B bar reads "too low" on the same patch. SDR26 rows are
 // unaffected (their branch runs first inside the lookup); custom greyscale
 // keeps its nominal-slot target; HDR/DV keep their existing signal paths.
+// Neutral colour-series rows analysed as greyscale must never have their
+// target derived from the wire code: the code was emitted through the CHROMA
+// range of the run that measured it, while the greyscale decode
+// (meterGreySignalFractionFromCode) uses the CURRENT greyscale range — any
+// range or bit-depth difference between the two scores the patch against a
+// shifted target (the "SG White reads over 100%" defect). The clone carries
+// the authored stimulus (ire / signal_*_pct), which is range-independent.
+// Greyscale-native rows keep their code: headroom / extended-SDR targets are
+// intentionally code-derived.
+function meterGreyTargetCodeForReading(reading){
+ if(reading&&reading._neutral_color_greyscale_analysis) return null;
+ return (reading&&reading.r_code!=null)?reading.r_code:null;
+}
+
+// Exact-stimulus target luminance for neutral colour-series clones. The
+// clone's ire IS the build-time transport-signal percentage, so hand it to
+// the selected target curve directly. Routing it through the code paths
+// instead either decoded the wire code against the CURRENT range (the
+// range-flip defect) or, with the code stripped, re-encoded the percentage
+// through an 8-BIT code in meterGreyStimulusFraction — which discards ~2 bits
+// on a 10-bit HDR link and PQ amplifies the residue into a real target error.
+// The 8-bit re-encode sits behind meterChartIsPq() (SIGNAL-mode based), so
+// every curve selection on an HDR10 signal — st2084 AND power/BT.1886/sRGB
+// (the LG HDR autocal pins a 2.2 power target) — must take the exact
+// fraction. This mirrors the curve dispatch tail of meterGreyTargetLuminance
+// with signal=frac; keep the two in step.
+function meterNeutralCloneTargetLuminance(ire,Lw,Lb){
+ if(meterChartIsDv()) return meterGreyTargetLuminance(ire,Lw,Lb||0,null);
+ const frac=Math.max(0,Math.min(1.1,(Number(ire)||0)/100));
+ const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
+ const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
+ if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(frac,peak,Lb||0);
+ const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
+ if(tgt==='bt1886') return bt1886Eotf(frac,peak,Lb||0);
+ if(tgt==='srgb') return meterSrgbTargetLuminance(frac,peak,Lb||0);
+ const gamma=parseFloat(tgt);
+ return meterPowerTargetLuminance(frac,peak,(gamma>0&&isFinite(gamma))?gamma:2.2,Lb||0);
+}
+
 function meterBalanceTargetRow(reading,ire){
- const row={stimulus:ire,code:(reading&&reading.r_code!=null)?reading.r_code:null};
+ const row={stimulus:ire,code:meterGreyTargetCodeForReading(reading)};
  try{
   if(!meterChartIsDv()&&!meterChartIsHdr()
    &&!(typeof meterGreyscaleCustomTargetActive==='function'&&meterGreyscaleCustomTargetActive())
@@ -9590,9 +9675,11 @@ function rgbBalancePerceptual(reading,whiteRef,modeOrIncl,blackLevel,shadowWeigh
   // min=16 range -> wildly wrong signal at low/mid IRE, the "unbalanced lines").
   // Non-SDR26 modes fall straight back to meterGreyTargetLuminance(ire,...,code).
   const tgtLum=(meterReadingIsPeakHeadroom(reading)&&mode!=='eotf') ? readingXYZ.Y :
-   ((typeof meterGreyTargetLuminanceForChartPoint==='function')
-    ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,meterBalanceTargetRow(reading,ire))
-    : meterGreyTargetLuminance(ire,Lw,Lb,reading.r_code));
+   ((reading&&reading._neutral_color_greyscale_analysis&&typeof meterNeutralCloneTargetLuminance==='function')
+    ? meterNeutralCloneTargetLuminance(ire,Lw,Lb)
+    : ((typeof meterGreyTargetLuminanceForChartPoint==='function')
+     ? meterGreyTargetLuminanceForChartPoint(ire/100,Lw,Lb,meterBalanceTargetRow(reading,ire))
+     : meterGreyTargetLuminance(ire,Lw,Lb,(typeof meterGreyTargetCodeForReading==='function')?meterGreyTargetCodeForReading(reading):reading.r_code)));
   const targetNormY=(mode==='eotf')?whiteXYZ.Y:Lw;
   const tYn=(targetNormY>0)?tgtLum/targetNormY:0;
   const tXn=wXn*tYn;
@@ -9663,9 +9750,11 @@ function rgbBalanceHCFR(reading,whiteRef,modeOrIncl,blackLevel){
   const targetIre=((typeof meterGreyscaleTargetSlotIre==='function')?meterGreyscaleTargetSlotIre(reading):null)||reading.ire;
   // Same stimulus-based target as the gamma chart (see rgbBalancePerceptual):
   // avoids the limited-only meterGreyCodeRange skewing full-range gamma error.
-  const tgtY = (typeof meterGreyTargetLuminanceForChartPoint==='function')
-   ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, meterBalanceTargetRow(reading,targetIre))
-   : meterGreyTargetLuminance(targetIre, targetPeak, Lb, reading.r_code);
+  const tgtY = (reading&&reading._neutral_color_greyscale_analysis&&typeof meterNeutralCloneTargetLuminance==='function')
+   ? meterNeutralCloneTargetLuminance(targetIre, targetPeak, Lb)
+   : ((typeof meterGreyTargetLuminanceForChartPoint==='function')
+    ? meterGreyTargetLuminanceForChartPoint(targetIre/100, targetPeak, Lb, meterBalanceTargetRow(reading,targetIre))
+    : meterGreyTargetLuminance(targetIre, targetPeak, Lb, (typeof meterGreyTargetCodeForReading==='function')?meterGreyTargetCodeForReading(reading):reading.r_code));
   fact = (tgtY>0 && readingXYZ.Y>=0) ? readingXYZ.Y / tgtY : 1.0;
  }
  const Xn = (x/y)*fact, Yn = 1.0*fact, Zn = ((1-x-y)/y)*fact;
@@ -13764,10 +13853,12 @@ function meterLiveTargetRgbCodes(src){
  const tenBit=inputMax===1023 || raw.some(code=>code>255) ||
   ((typeof meterPatchBitDepth==='function'&&meterPatchBitDepth()===10) &&
    !(typeof meterActiveSeriesCodesAre8Bit==='function'&&meterActiveSeriesCodesAre8Bit()));
- // No per-channel signal pct (colour / saturation patches, legacy snapshots):
- // reduce the 10-bit code to its 8-bit equivalent using the exact 4x mapping
- // (Limited 64..940 -> 16..235; Full 0..1023 -> 0..255), then convert it off
- // the ladder it was built on and onto the display range.
+ // No per-channel signal pct (legacy snapshots and imported/hand-built steps
+ // without stamps — builtin colour and saturation steps now carry build-time
+ // signal_*_pct and take the pct branch above): reduce the 10-bit code to its
+ // 8-bit equivalent using the exact 4x mapping (Limited 64..940 -> 16..235;
+ // Full 0..1023 -> 0..255), then convert it off the ladder it was built on
+ // and onto the display range.
  const code8=raw.map(code=>Math.max(0,Math.min(1023,tenBit?code/4:code)));
  const ladder=meterLiveCodeRangeForStep(step);
  return code8.map(code=>toDisplay(ladder.span>0?((code-ladder.min)/ladder.span):0));
@@ -19130,16 +19221,24 @@ function meterBuildMbHueCircleSteps(){
 
 function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
- if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
- if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
- if(preset==='sg-96') return meterBuildFixedVideoCodeColorSteps(
+ let steps=[];
+ if(preset==='classic-24') steps=meterBuildColorCheckerStepsJS(false);
+ else if(preset==='hcfr-gcd-24') steps=meterBuildHcfrColorCheckerStepsJS(false);
+ else if(preset==='sg-96') steps=meterBuildFixedVideoCodeColorSteps(
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_NAMES,METER_COLORCHECKER_SG_LEGAL8),'colorchecker-sg');
- if(preset==='sg-skin-19') return meterBuildFixedVideoCodeColorSteps(
+ else if(preset==='sg-skin-19') steps=meterBuildFixedVideoCodeColorSteps(
   meterBuiltinFixedLegal8Rows(METER_COLORCHECKER_SG_SKIN_NAMES,METER_COLORCHECKER_SG_SKIN_LEGAL8),'colorchecker-sg-skin');
- if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
- if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
- if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
- return [];
+ else if(preset==='mb-hue-circle-37') steps=meterBuildMbHueCircleSteps();
+ else if(preset==='mb-focal-8') steps=meterBuildMbFocalColourSteps();
+ else if(preset==='mb-osa-ucs-64') steps=meterBuildMbOsaUcsMapSteps();
+ // Uniform build-time stimulus stamp for every builtin preset (the fixed-code
+ // and classic builders already stamp their own steps; the helper is a no-op
+ // where signal_*_pct is present).
+ if(Array.isArray(steps)&&steps.length&&typeof meterStampChromaSignalPct==='function'){
+  const min=meterChromaPatchRangeMin(),span=meterChromaPatchRangeSpan();
+  steps.forEach(step=>meterStampChromaSignalPct(step,min,span));
+ }
+ return steps;
 }
 
 // Built-in cube lattices pick node spacing from the CURRENT signal mode:
