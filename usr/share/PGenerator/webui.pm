@@ -12575,15 +12575,26 @@ sub webui_asset (@) {
  }
  return $_webui_asset_cache{$name} if(exists($_webui_asset_cache{$name}));
  my $path=&_webui_asset_path($name);
+ my $expected=-s $path;
  my $content="";
+ my $io_error="";
  if(open(my $fh,"<:raw",$path)) {
   local $/;
   $content=<$fh>//"";
-  close($fh);
+  $io_error="close failed: $!" if(!close($fh));
+  # A slurp interrupted by EIO, or racing an OTA/rsync rewrite of the file,
+  # returns the bytes read so far; a torn fragment must never be cached for
+  # the process lifetime or served as a broken page.
+  if($io_error eq "" && length($content)!=($expected//-1)) {
+   $io_error="short read: ".length($content)." of ".($expected//"?")." bytes";
+  }
+ } else {
+  $io_error="open failed: $!";
  }
- if($content eq "") {
+ if($io_error ne "" || $content eq "") {
   $_webui_asset_missing=$name;
-  &log("WebUI ERROR: required UI fragment missing or empty: $name ($path)",1);
+  my $reason=$io_error ne "" ? $io_error : "missing or empty";
+  &log("WebUI ERROR: required UI fragment unusable: $name ($path): $reason",1);
   return "";
  }
  # Cache successful reads only. A missing file is deliberately retried on
@@ -12658,6 +12669,7 @@ button:hover{background:#718fff}
 <form action="/api/update/apply" method="post">
 <button type="submit">Install latest update</button>
 </form>
+<p>The update takes a few minutes and replies with a short status message; afterwards come back to this address and reload to get the full interface.</p>
 </main>
 </body>
 </html>
@@ -12673,9 +12685,20 @@ sub webui_check_assets (@) {
   my $content=&webui_asset($name);
   &log("WebUI ERROR: required UI fragment unavailable at boot: $name",1) if($content eq "");
  }
- &log("WebUI ERROR: required UI fragment unavailable at boot: icc_profile.html",1)
-  if(defined(&webui_icc_asset) && &webui_icc_asset("icc_profile.html") eq "");
+ foreach my $icc_name ("icc_profile.html","icc_profile.css","icc_profile.js") {
+  &log("WebUI ERROR: required UI fragment unavailable at boot: $icc_name",1)
+   if(defined(&webui_icc_asset) && &webui_icc_asset($icc_name) eq "");
+ }
+ # hcfr_chc.js is served verbatim from /assets/ rather than spliced, so a
+ # missing copy breaks the UI silently; surface it in the boot log too.
+ my $hcfr_path=&_webui_asset_path("hcfr_chc.js");
+ &log("WebUI ERROR: required UI asset unavailable at boot: hcfr_chc.js ($hcfr_path)",1)
+  if(!-s $hcfr_path);
  $_webui_asset_missing="";
+ # Drop the warmed fragment cache: it exists only for the boot diagnostic,
+ # and any data left here is deep-cloned into every ithreads worker (about
+ # 2.6 MB each). Each worker re-reads and re-caches on its first request.
+ %_webui_asset_cache=();
  return 1;
 }
 
@@ -12684,6 +12707,9 @@ sub webui_html (@) {
  $_webui_asset_missing="";
  my $html=&webui_asset("webui.html");
  return &webui_recovery_html($_webui_asset_missing || "webui.html") if($html eq "");
+ # Order is load-bearing: a marker may live inside an earlier fragment
+ # rather than the skeleton (__PG_LOGO_DARK__ is in webui-body.html), so
+ # each entry must come after the fragment that carries its marker.
  foreach my $asset (["__PG_CSS_THEME__","webui-theme.css"],
                     ["__PG_CSS_LAYOUT__","webui-layout.css"],
                     ["__PG_BODY__","webui-body.html"],
@@ -12695,16 +12721,26 @@ sub webui_html (@) {
   return &webui_recovery_html($_webui_asset_missing || $name) if($content eq "");
   my $replaced=($html=~s/^\Q$marker\E\n/$content/me);
   if(!$replaced) {
-   &log("WebUI ERROR: skeleton marker $marker for $name was not found in webui.html",1);
+   &log("WebUI ERROR: skeleton marker $marker for $name was not found in the page assembled so far",1);
    return &webui_recovery_html("webui.html (marker $marker not replaced)");
   }
  }
  return &webui_recovery_html($_webui_asset_missing) if($_webui_asset_missing ne "");
- $html =~ s/__PG_LG_CARD__/&webui_lg_card_html()/e;
- $html =~ s/__PG_LG_JS__/&webui_lg_js()/e;
- $html =~ s/__PG_LG_LOAD_INFO__/&webui_lg_load_info_js()/e;
- $html =~ s/__PG_LG_INIT__/&webui_lg_init_js()/e;
- $html =~ s/__PG_GAMUT_PRESETS__/&webui_meter_gamut_js_literal()/e;
+ # These markers live inside fragments, not the skeleton, so the residual
+ # __PG_ check below can never notice one that was ABSENT (a truncated or
+ # mixed-generation fragment); count each replacement explicitly.
+ foreach my $splice (["__PG_LG_CARD__",\&webui_lg_card_html],
+                     ["__PG_LG_JS__",\&webui_lg_js],
+                     ["__PG_LG_LOAD_INFO__",\&webui_lg_load_info_js],
+                     ["__PG_LG_INIT__",\&webui_lg_init_js],
+                     ["__PG_GAMUT_PRESETS__",\&webui_meter_gamut_js_literal]) {
+  my ($marker,$builder)=@{$splice};
+  my $replaced=($html=~s/\Q$marker\E/&{$builder}()/e);
+  if(!$replaced) {
+   &log("WebUI ERROR: splice marker $marker was not found in the assembled page",1);
+   return &webui_recovery_html("assembled page (marker $marker missing)");
+  }
+ }
  return &webui_recovery_html($_webui_asset_missing) if($_webui_asset_missing ne "");
  # The ICC splice consumes its whole comment marker, so an empty read would
  # slip past the residual __PG_ check below; treat it as a missing fragment.
@@ -12713,7 +12749,10 @@ sub webui_html (@) {
   &log("WebUI ERROR: required UI fragment missing or empty: icc_profile.html",1);
   return &webui_recovery_html("icc_profile.html");
  }
- $html =~ s/<!--__PG_ICC_PROFILE_HTML__-->/$icc/;
+ if(!($html =~ s/<!--__PG_ICC_PROFILE_HTML__-->/$icc/)) {
+  &log("WebUI ERROR: splice marker __PG_ICC_PROFILE_HTML__ was not found in the assembled page",1);
+  return &webui_recovery_html("assembled page (marker __PG_ICC_PROFILE_HTML__ missing)");
+ }
  if($html=~/(__PG_[A-Z0-9_]+__)/) {
   &log("WebUI ERROR: assembled page still contains unreplaced marker $1",1);
   return &webui_recovery_html("webui.html (marker $1 not replaced)");

@@ -12,10 +12,35 @@ close($fh);
 
 like($source,qr/meterPrepareAutoCalTargetGamma\(\);/,
  'AutoCal setup normalizes the target gamma for the active signal mode');
-like($source,qr/meterStopAutoCal[\s\S]+meterRestoreTargetGammaAfterAutoCal/,
- 'stopping AutoCal restores the HDR verification target');
-like($source,qr/meterFullAutoCalComplete[\s\S]+meterRestoreTargetGammaAfterAutoCal/,
- 'completing Full AutoCal restores the HDR verification target');
+
+# Whole-file regexes are vacuous here (a comment mentioning the function
+# plus any later restore call satisfies them), so the wiring is asserted
+# inside each terminal path's own function body.
+sub function_source {
+ my ($name)=@_;
+ my $start=index($source,"function $name(");
+ die "missing $name in webui-workspace.js" if($start<0);
+ my $brace=index($source,'{',$start);
+ my $depth=0;
+ for(my $i=$brace;$i<length($source);$i++) {
+  my $c=substr($source,$i,1);
+  if($c eq '{') { $depth++; }
+  elsif($c eq '}') { return substr($source,$start,$i-$start+1) if(--$depth==0); }
+ }
+ die "unterminated $name in webui-workspace.js";
+}
+
+# Every terminal exit of an HDR/DV run must restore the ST 2084 verification
+# target: normal completion, close-complete, abort, and each stop/dismiss
+# path reachable after the greyscale stage pinned the internal 2.2 target.
+foreach my $fn (qw(meterAutoCalCloseComplete meterFullAutoCalComplete
+                   meterFullAutoCalAbort meterStopAutoCal
+                   meterStopDvAutoCalProfile meterStopLg3dAutoCal
+                   meterCloseLg3dUploadRetry meterAutoCalConfirmAndStart
+                   meterPollAutoCal)) {
+ ok(index(function_source($fn),'meterRestoreTargetGammaAfterAutoCal')>=0,
+  "$fn restores the HDR verification target");
+}
 
 my ($jsfh,$jsfile)=tempfile('pgen-hdr-target-gamma-XXXX',SUFFIX=>'.js',UNLINK=>1);
 print {$jsfh} <<'JS';
@@ -84,7 +109,12 @@ assert(saveCount>=7,'target-gamma changes were persisted');
 JS
 close($jsfh) or die "Unable to close $jsfile: $!";
 
-my $status=system('node',$jsfile,$webui);
-is($status,0,'HDR AutoCal target-gamma regression passes with production JavaScript');
+SKIP: {
+ my $node_version=`node --version 2>/dev/null`;
+ skip 'node is required to execute the target-gamma functions',1
+  if(!defined($node_version) || $node_version!~/v\d+/);
+ my $status=system('node',$jsfile,$webui);
+ is($status,0,'HDR AutoCal target-gamma regression passes with production JavaScript');
+}
 
 done_testing();

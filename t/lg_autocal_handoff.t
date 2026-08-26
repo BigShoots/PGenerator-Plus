@@ -38,8 +38,12 @@ like($lg,qr/sub webui_meter_lg_dv_profile_start \(@\).*?flock\([^,]+,\s*LOCK_EX\
  'Dolby Vision profile startup serializes the check-and-spawn boundary');
 like($lg,qr/sub webui_meter_lg_dv_profile_start \(@\).*?webui_meter_lg_dv_profile_same_run_running\(\$body\).*?"status":"started"/s,
  'a duplicate start for the same Full AutoCal run is idempotent');
+like($lg,qr/sub webui_meter_lg_dv_profile_start \(@\).*?webui_meter_lg_dv_profile_same_run_running\(\$body\)\s*\n\s*&&\s*\(&webui_meter_lg_dv_profile_running\(\)\s*\|\|\s*&webui_meter_lg_dv_profile_recently_started\(\)\)/s,
+ 'the same-run duplicate guard also covers the spawn gap before pgrep sees the worker');
 like($lg,qr/sub webui_lg_autocal_run_end \(@\).*?stale_run_ignored.*?return/s,
  'a delayed run-end callback cannot tear down the current run');
+like($lg,qr/sub webui_lg_autocal_run_end \(@\).*?\$unattributed=1;.*?PGAutoCalRun::run_end\(.*?\)\s+if\(!\$unattributed\);/s,
+ 'a run-end callback without a run id cannot write into or tear down the live run');
 
 like($webui,qr/function meterFullAutoCalTransitionBusy\(response\).*?hasOwnProperty\.call\(response,'retryable'\).*?response\.retryable===true/s,
  'the browser honours explicit retryable true and false responses instead of relying only on message text');
@@ -55,10 +59,14 @@ like($webui,qr/function meterFullAutoCalRestoreSavedState\(\).*?meterFullAutoCal
  'only the owning browser tab restores a Full AutoCal workflow');
 like($webui,qr/async function meterPollAutoCal\(options\).*?meterFullAutoCalCanDriveStatus\(r\).*?return;/s,
  'a non-owner status poll cannot drive a Full AutoCal stage transition');
-like($webui,qr/function meterAutoCalRunEndPayload\(status,note,runId\).*?payload\.run_id=recordRunId/s,
- 'run-end callbacks carry the diagnostic run id');
+like($webui,qr/function meterAutoCalRunEndPayload\(status,note,runId\).*?controller_id:meterFullAutoCalControllerId\(\).*?payload\.client_run_token=meterAutoCalRecordToken.*?payload\.run_id=recordRunId/s,
+ 'run-end callbacks carry per-run attribution and the diagnostic run id');
+like($webui,qr{/api/lg/autocal/run/begin.*?controller_id:meterFullAutoCalControllerId\(\).*?client_run_token:meterAutoCalRecordToken}s,
+ 'run-begin persists per-run attribution for timeout recovery');
 like($webui,qr/function meterAutoCalSetOverlay\(active,status\).*?const showUseCase=overlayActive&&phase==='usecase'.*?const showGamma=overlayActive&&phase==='gammatarget'.*?const showDisplayType=overlayActive&&phase==='displaytype'/s,
  'closing the AutoCal overlay clears every phase-specific setup control');
+like($webui,qr/function meterAutoCalSetOverlay\(active,status\).*?progressBox\.style\.display=\(!overlayActive\|\|/s,
+ 'a hidden overlay also hides the progress panel instead of leaving it primed');
 like($webui,qr/function meterFullAutoCalConfirmDialog\(options\).*?'meterAutoCalUseCaseBox'.*?'meterAutoCalGammaBox'.*?'meterAutoCalDisplayTypeBox'.*?'meterAutoCalUseCaseContinueBtn'.*?'meterAutoCalGammaContinueBtn'.*?'meterAutoCalDisplayTypeContinueBtn'/s,
  'the Full AutoCal dialog hides all setup panels and buttons from an interrupted prior wizard');
 

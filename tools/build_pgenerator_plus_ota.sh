@@ -133,8 +133,11 @@ cleanup() {
  # Do not leave a tarball that failed either release-manifest validation or
  # the split-Web-UI completeness checks ready to publish accidentally.
  if [[ "$rc" -ne 0 ]] && [[ "$ARCHIVE_CREATED" -eq 1 ]] && [[ -e "$OUTPUT_TARBALL" ]]; then
-  rm -f "$OUTPUT_TARBALL"
-  echo "ERROR: removed invalid archive: $OUTPUT_TARBALL" >&2
+  if rm -f "$OUTPUT_TARBALL"; then
+   echo "ERROR: removed invalid archive: $OUTPUT_TARBALL" >&2
+  else
+   echo "ERROR: FAILED to remove invalid archive - do not publish: $OUTPUT_TARBALL" >&2
+  fi
  fi
  return "$rc"
 }

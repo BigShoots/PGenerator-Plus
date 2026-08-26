@@ -17,6 +17,12 @@ insert_final_newline = unset
 trim_trailing_whitespace = false
 insert_final_newline = unset
 
+# icc_profile.html is part of the golden-hashed page; its siblings are
+# served verbatim as /assets/. Same byte-sensitivity as the fragments.
+[usr/share/PGenerator/{icc_profile.html,icc_profile.css,icc_profile.js,hcfr_chc.js}]
+trim_trailing_whitespace = false
+insert_final_newline = unset
+
 # Vendored binaries; leave their bytes alone entirely.
 [{usr/bin/spotread,usr/bin/colprof,usr/bin/ccxxmake_interactive,usr/bin/targen,github-deployer/**,*.dmg}]
 charset = unset

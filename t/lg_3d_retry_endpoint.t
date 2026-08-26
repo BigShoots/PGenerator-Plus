@@ -17,6 +17,11 @@ use JSON::PP ();
 # short-lived child visible to the next test's pgrep and make this test race.
 # Recording the command still lets us verify that the endpoint requests the
 # production worker without starting one on a developer machine.
+# NOTE: the override is file-wide and permanent — every system() the endpoint
+# ever makes is swallowed and counted, so a future system() added to this
+# code path (e.g. a `sudo rm -f` stale-file cleanup) will surface here as a
+# call-count failure, not as the new call misbehaving. Backticks are NOT
+# intercepted, which is why process discovery is stubbed separately below.
 our @system_calls;
 BEGIN {
  no warnings 'redefine';
@@ -42,6 +47,10 @@ my $state_file="/tmp/meter_lg_3d_autocal.json";
 my $config_file="/tmp/meter_lg_3d_autocal_config.json";
 
 # Preserve any real files at the fixed /tmp paths (a dev box may hold state).
+# The paths are file-scoped lexicals inside webui.pm, so they cannot be
+# redirected from here; do not run this test on a device with a live daemon
+# mid-calibration — the save/restore below cannot protect against a
+# concurrent writer.
 my %saved;
 foreach my $f ($state_file,$config_file) {
  if(-f $f) {

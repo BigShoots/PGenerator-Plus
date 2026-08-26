@@ -23,6 +23,7 @@ sub read_summary {
 my $complete_then_abort=PGAutoCalRun::run_begin({workflow=>'full'});
 ok($complete_then_abort,'created a run for complete-then-abort ordering');
 PGAutoCalRun::run_end($complete_then_abort,{status=>'complete',note=>'worker finished'});
+PGAutoCalRun::run_end($complete_then_abort,{status=>'superseded'});
 PGAutoCalRun::run_end($complete_then_abort,{status=>'aborted',note=>'stale browser timeout'});
 my $summary=read_summary($complete_then_abort);
 is($summary->{status},'complete','a stale abort cannot downgrade a completed run');
@@ -31,9 +32,20 @@ is($summary->{note},'worker finished','a stale abort cannot replace the successf
 my $abort_then_complete=PGAutoCalRun::run_begin({workflow=>'full'});
 ok($abort_then_complete,'created a run for abort-then-complete ordering');
 PGAutoCalRun::run_end($abort_then_complete,{status=>'aborted',note=>'transient browser error'});
+PGAutoCalRun::run_end($abort_then_complete,{status=>'superseded'});
+$summary=read_summary($abort_then_complete);
+is($summary->{status},'aborted','a later supersede cannot replace a real abort');
 PGAutoCalRun::run_end($abort_then_complete,{status=>'complete',note=>'worker ultimately finished'});
 $summary=read_summary($abort_then_complete);
 is($summary->{status},'complete','a later authoritative completion upgrades an aborted summary');
 is($summary->{note},'worker ultimately finished','the completion replaces the stale abort note');
+
+my $supersede_then_abort=PGAutoCalRun::run_begin({workflow=>'full'});
+ok($supersede_then_abort,'created a run for supersede-then-abort ordering');
+PGAutoCalRun::run_end($supersede_then_abort,{status=>'superseded'});
+PGAutoCalRun::run_end($supersede_then_abort,{status=>'aborted',note=>'real worker stopped'});
+$summary=read_summary($supersede_then_abort);
+is($summary->{status},'aborted','a real abort replaces a provisional supersede stamp');
+is($summary->{note},'real worker stopped','the real terminal note replaces the supersede stamp');
 
 done_testing();

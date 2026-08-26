@@ -10,6 +10,14 @@ usr/share/PGenerator/webui-workspace.js -text
 usr/share/PGenerator/webui-lg-card.html -text
 usr/share/PGenerator/webui-lg.js -text
 
+# icc_profile.html is spliced into the assembled page (it is inside the
+# golden hash); the css/js siblings and hcfr_chc.js are served verbatim
+# from /assets/. All four are byte-sensitive for the same reason.
+usr/share/PGenerator/icc_profile.html -text
+usr/share/PGenerator/icc_profile.css -text
+usr/share/PGenerator/icc_profile.js -text
+usr/share/PGenerator/hcfr_chc.js -text
+
 # Vendored/bundled binary artifacts should never be treated as text diffs.
 usr/bin/spotread binary
 usr/bin/colprof binary

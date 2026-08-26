@@ -4612,8 +4612,9 @@ function meterReportLgRunEnd(r){
  return r;
 }
 function meterAutoCalRunEndPayload(status,note,runId){
- const payload={status:status||'complete'};
+ const payload={status:status||'complete',controller_id:meterFullAutoCalControllerId()};
  if(note) payload.note=note;
+ if(meterAutoCalRecordToken) payload.client_run_token=meterAutoCalRecordToken;
  const recordRunId=runId||meterAutoCalRecordRunId||'';
  if(recordRunId) payload.run_id=recordRunId;
  return payload;
@@ -4753,7 +4754,10 @@ function meterAutoCalSetOverlay(active,status){
  if(useCaseBox) useCaseBox.style.display=showUseCase?'':'none';
  if(gammaBox) gammaBox.style.display=showGamma?'':'none';
  if(displayTypeBox) displayTypeBox.style.display=showDisplayType?'':'none';
- if(progressBox) progressBox.style.display=(showConfirm||showOptions||showDisclaimer||showComplete||showUploadRetry||showUseCase||showGamma||showDisplayType)?'none':'';
+ // The progress panel is gated on overlayActive like every other panel: with
+ // all show flags false a hidden overlay would otherwise leave it primed
+ // shown inside the closed overlay — the same stale-state class as above.
+ if(progressBox) progressBox.style.display=(!overlayActive||showConfirm||showOptions||showDisclaimer||showComplete||showUploadRetry||showUseCase||showGamma||showDisplayType)?'none':'';
  if(resetBtn){
   resetBtn.style.display=(showDisclaimer&&!meterAutoCalPreflightResetDone)?'':'none';
   resetBtn.disabled=!!meterAutoCalResetInProgress;
@@ -5722,11 +5726,14 @@ async function meterAutoCalRunPreflightReset(){
  // signal_mode='sdr' on the wire).
   const runBeginSigMode=String((typeof getVal==='function'?getVal('signal_mode'):'')||'').toLowerCase();
   meterAutoCalRecordRunId=null;
+  meterAutoCalRecordToken='client-run-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10);
   const runBegin=await fetchJSON('/api/lg/autocal/run/begin',{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
     ip:(cfg.ip||''),
     workflow:(cfg.fullWorkflow?'full':'greyscale2pt'),
+    controller_id:meterFullAutoCalControllerId(),
+    client_run_token:meterAutoCalRecordToken,
     config:{
      signal_mode:runBeginSigMode,
      picture_mode:meterLgPictureModeValue(),
@@ -6328,6 +6335,7 @@ function meterAutoCalSaveState(){
    active:true,
    phase:meterAutoCalPhase||'running',
    recordRunId:meterAutoCalRecordRunId||null,
+   recordToken:meterAutoCalRecordToken||null,
    updated:Date.now()
   }));
  }catch(e){}
@@ -6347,6 +6355,7 @@ function meterAutoCalRestoreSavedState(){
  }
  meterAutoCalRunning=true;
  meterAutoCalRecordRunId=saved.recordRunId||meterAutoCalRecordRunId||null;
+ meterAutoCalRecordToken=saved.recordToken||meterAutoCalRecordToken||null;
  meterAutoCalPhase=String(saved.phase||'running');
  if(meterAutoCalPhase!=='complete'&&meterAutoCalPhase!=='error') meterAutoCalPhase='running';
  if(!meterAutoCalPolling) meterAutoCalPolling=setInterval(meterPollAutoCal,1500);
@@ -6370,7 +6379,7 @@ function meterRestoreAutoCalWorkflows(){
  try{
   const f=JSON.parse(localStorage.getItem(METER_FULL_AUTOCAL_STATE_KEY)||'null');
   const g=JSON.parse(localStorage.getItem(METER_AUTOCAL_STATE_KEY)||'null');
-  hasSaved=!!(meterFullAutoCalSavedStateOwnedByThisTab(f)||(g&&g.active));
+  hasSaved=!!(meterFullAutoCalSavedStateOwnedByThisTab(f)||meterFullAutoCalSavedStateAbandoned(f)||(g&&g.active));
  }catch(e){ hasSaved=false; }
  if(!hasSaved) return;
  Promise.all([
@@ -7079,12 +7088,24 @@ function meterFullAutoCalTouchupChoiceValue(){
 function meterFullAutoCalSaveState(){
  if(!meterFullAutoCalRunning) return;
  try{
+  const prior=meterFullAutoCalReadSavedState();
+  if(prior&&prior.active&&prior.controllerId&&prior.controllerId!==meterFullAutoCalControllerId()
+   &&String(prior.runId||'')===String(meterFullAutoCalRunId||'')
+   &&(Date.now()-Number(prior.updated||0))<=METER_FULL_AUTOCAL_LEASE_MS){
+   // Another tab holds a live lease on THIS run — it adopted the workflow
+   // while this tab was throttled in the background. Do not steal the
+   // record back; the server-side same-run guards absorb any duplicate
+   // stage calls this tab still makes. A record for a different run is
+   // a dead run's leftover and is overwritten normally.
+   return;
+  }
   localStorage.setItem(METER_FULL_AUTOCAL_STATE_KEY,JSON.stringify({
    active:true,
    controllerId:meterFullAutoCalControllerId(),
    phase:meterFullAutoCalPhase||'first-greyscale',
    runId:meterFullAutoCalRunId||null,
    recordRunId:meterAutoCalRecordRunId||null,
+   recordToken:meterAutoCalRecordToken||null,
    startedAt:meterFullAutoCalStartedAt||null,
    config:meterFullAutoCalConfig||meterFullAutoCalDefaultConfig(),
    report:meterFullAutoCalReportData||meterFullAutoCalDefaultReportData(),
@@ -7092,6 +7113,11 @@ function meterFullAutoCalSaveState(){
   }));
  }catch(e){}
 }
+
+// Lease heartbeat: refresh the saved-state timestamp while this tab drives a
+// run, in every phase (the per-phase pollers only save on transitions). A
+// record whose lease lapses is adoptable by another tab.
+setInterval(function(){ if(meterFullAutoCalRunning) meterFullAutoCalSaveState(); },30000);
 
 function meterFullAutoCalControllerId(){
  if(meterFullAutoCalControllerIdCache) return meterFullAutoCalControllerIdCache;
@@ -7108,14 +7134,33 @@ function meterFullAutoCalSavedStateOwnedByThisTab(saved){
  return !!(saved&&saved.active&&saved.controllerId&&saved.controllerId===meterFullAutoCalControllerId());
 }
 
+// The controller id lives in sessionStorage, so it dies with the tab. The
+// lease below is what lets a run survive that: the owning tab refreshes
+// `updated` while it drives, and once the record goes stale another tab may
+// adopt the run instead of leaving it permanently undrivable.
+const METER_FULL_AUTOCAL_LEASE_MS=3*60*1000;
+
+function meterFullAutoCalSavedStateAbandoned(saved){
+ if(!(saved&&saved.active&&saved.controllerId)) return false;
+ if(meterFullAutoCalSavedStateOwnedByThisTab(saved)) return false;
+ return (Date.now()-Number(saved.updated||0))>METER_FULL_AUTOCAL_LEASE_MS;
+}
+
 function meterFullAutoCalReadSavedState(){
  try{ return JSON.parse(localStorage.getItem(METER_FULL_AUTOCAL_STATE_KEY)||'null'); }catch(e){ return null; }
 }
 
 function meterFullAutoCalCanDriveStatus(status){
  if(!(status&&status.full_workflow)) return true;
- if(meterFullAutoCalRunning) return meterFullAutoCalStatusMatchesRun(status);
  const saved=meterFullAutoCalReadSavedState();
+ if(meterFullAutoCalRunning){
+  // A former owner may wake after another tab adopted its expired lease.
+  // The foreign same-run record remains authoritative; only the explicit
+  // restore/adoption path may claim it again if that adopter later vanishes.
+  if(saved&&saved.active&&saved.controllerId&&!meterFullAutoCalSavedStateOwnedByThisTab(saved)
+   &&String(saved.runId||'')===String(meterFullAutoCalRunId||'')) return false;
+  return true;
+ }
  if(!meterFullAutoCalSavedStateOwnedByThisTab(saved)) return false;
  const savedRunId=String(saved.runId||'');
  const statusRunId=meterFullAutoCalStatusRunId(status);
@@ -7125,7 +7170,12 @@ function meterFullAutoCalCanDriveStatus(status){
 function meterFullAutoCalClearSavedState(){
  try{
   const saved=meterFullAutoCalReadSavedState();
-  if(saved&&saved.controllerId&&!meterFullAutoCalSavedStateOwnedByThisTab(saved)) return;
+  // Protect only a LIVE other tab's record. An abandoned lease or an
+  // expired record must stay deletable, or an orphaned run's state would
+  // be immortal — unreadable by everyone yet impossible to remove.
+  if(saved&&saved.controllerId&&!meterFullAutoCalSavedStateOwnedByThisTab(saved)
+   &&!meterFullAutoCalSavedStateAbandoned(saved)
+   &&(Date.now()-Number(saved.updated||0))<=12*60*60*1000) return;
   localStorage.removeItem(METER_FULL_AUTOCAL_STATE_KEY);
  }catch(e){}
 }
@@ -7282,19 +7332,30 @@ function meterFullAutoCalEnsureStatusPhase(status,phase){
 function meterFullAutoCalRestoreSavedState(){
  let saved=null;
  try{ saved=JSON.parse(localStorage.getItem(METER_FULL_AUTOCAL_STATE_KEY)||'null'); }catch(e){ saved=null; }
- if(!meterFullAutoCalSavedStateOwnedByThisTab(saved)) return false;
+ if(!(saved&&saved.active)) return false;
+ // Expiry is checked before ownership so an orphaned record is still pruned.
  if(Date.now()-Number(saved.updated||0)>12*60*60*1000){
   meterFullAutoCalClearSavedState();
   return false;
+ }
+ if(!meterFullAutoCalSavedStateOwnedByThisTab(saved)){
+  if(!meterFullAutoCalSavedStateAbandoned(saved)) return false;
+  // The owning tab's lease lapsed (tab closed, browser restarted): adopt
+  // the run so it can still be driven to completion. The caller has already
+  // confirmed the backend really reports a live run before restoring.
+  saved.controllerId=meterFullAutoCalControllerId();
+  try{ localStorage.setItem(METER_FULL_AUTOCAL_STATE_KEY,JSON.stringify(saved)); }catch(e){}
  }
  meterFullAutoCalRunning=true;
  meterFullAutoCalPhase=saved.phase||'first-greyscale';
  meterFullAutoCalRunId=saved.runId||null;
  meterAutoCalRecordRunId=saved.recordRunId||meterAutoCalRecordRunId||null;
+ meterAutoCalRecordToken=saved.recordToken||meterAutoCalRecordToken||null;
  meterFullAutoCalStartedAt=Number(saved.startedAt)||null;
  meterFullAutoCalConfig=saved.config||meterFullAutoCalDefaultConfig();
  meterFullAutoCalReportData=saved.report||meterFullAutoCalLoadReportData();
  meterFullAutoCalResults={first:null,lut3d:null,touchup:null};
+ meterFullAutoCalSaveState();
  if(meterFullAutoCalPhase==='3d-lut'){
   meterLg3dAutoCalRunning=true;
  }else if(meterFullAutoCalPhase==='precal-report'||meterFullAutoCalPhase==='postcal-report'){
@@ -8610,6 +8671,10 @@ async function meterStopDvAutoCalProfile(){
  if(wasDvSignal){
   try{ meterDvAutoCalSetMapMode('1').catch(function(){}); }catch(e){}
  }
+ // The greyscale stage pinned Target Gamma to the internal 2.2 for HDR/DV;
+ // this stop ends the run, so verification must grade against ST 2084 again
+ // (same restore meterStopAutoCal performs).
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('Dolby Vision profile measurement stopped');
 }
 
@@ -9069,14 +9134,18 @@ async function meterPollAutoCal(options){
 	 try{
 	  const r=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:timeoutMs});
 	  if(!r) return;
-	  // A Full AutoCal workflow is browser-orchestrated. Only the tab that
-	  // created its saved state may advance stage boundaries; other open tabs
-	  // remain observers and must not start duplicate 3D/DV workers.
+	  // A Full AutoCal workflow is browser-orchestrated. Only the tab holding
+	  // the saved-state lease may advance stage boundaries. This check also
+	  // demotes a former in-memory owner when another tab adopted its expired
+	  // lease. Foreign status ticks are still skipped by the run-id check below.
 	  if(r.full_workflow&&!meterFullAutoCalCanDriveStatus(r)){
 	   if(meterAutoCalPolling){clearInterval(meterAutoCalPolling);meterAutoCalPolling=null;}
+	   if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
 	   meterAutoCalRunning=false;
 	   meterAutoCalPhase='';
 	   meterAutoCalPendingConfig=null;
+	   meterHideWorkflowProgress();
+	   meterUpdateReadButtons();
 	   return;
 	  }
 	  if(meterFullAutoCalReportPhaseActive()){
@@ -9229,6 +9298,7 @@ let completeStatus=r;
 				   meterAutoCalPendingConfig=null;
 				   meterAutoCalSetOverlay(true,{...completeStatus,phase:'complete'});
 	   }else if(r.status==='error'){
+	    meterRestoreTargetGammaAfterAutoCal();
 	    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
 	    meterAutoCalPhase='error';
 	    meterAutoCalRunning=true;
@@ -9929,6 +9999,7 @@ async function meterAutoCalConfirmAndStart(){
    meterActionPending=false;
    meterAutoCalPhase='error';
    meterAutoCalClearSavedState();
+   meterRestoreTargetGammaAfterAutoCal();
    if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
    meterAutoCalSetOverlay(true,{phase:'running',current_name:'LG Auto Cal error',message:(r&&r.message)?r.message:'Unable to start LG Auto Cal',status:'error'});
    toast(r&&r.message?r.message:'Unable to start LG Auto Cal',true);
@@ -9970,6 +10041,7 @@ async function meterAutoCalConfirmAndStart(){
  meterActionPending=false;
  meterAutoCalPhase='error';
  meterAutoCalClearSavedState();
+ meterRestoreTargetGammaAfterAutoCal();
  if(meterFullAutoCalRunning) meterFullAutoCalResetState(false);
  meterAutoCalSetOverlay(true,{phase:'running',current_name:'LG Auto Cal error',message:(e&&e.message)?e.message:'Unable to start LG Auto Cal',status:'error'});
   toast((e&&e.message)?e.message:'Unable to start LG Auto Cal',true);
@@ -10868,6 +10940,7 @@ async function meterRetryLg3dUpload(){
 
 async function meterCloseLg3dUploadRetry(){
  const wasFullWorkflow=!!meterFullAutoCalRunning;
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  try{
   await fetchJSON('/api/meter/lg-3d-autocal/retry-upload',{
    method:'POST',headers:{'Content-Type':'application/json'},
@@ -10889,6 +10962,9 @@ async function meterCloseLg3dUploadRetry(){
    _quiet:true,_timeoutMs:8000
   }));
  }catch(_e){}
+ // Dismissing the failed upload ends the run; an HDR/DV run's greyscale
+ // stage pinned Target Gamma to 2.2, so restore ST 2084 for verification.
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('3D LUT upload remains uncommitted');
 }
 
@@ -11415,6 +11491,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
 }
 
 async function meterStopLg3dAutoCal(){
+ const wasDvSignal=!!(meterFullAutoCalConfig&&String(meterFullAutoCalConfig.signalMode||'').toLowerCase()==='dv');
  if(meterLg3dAutoCalSpectroSetupActive){
   meterLg3dAutoCalSpectroSetupActive=false;
   meterSpectroSetupApply(null);
@@ -11436,6 +11513,9 @@ async function meterStopLg3dAutoCal(){
   meterHideWorkflowProgress();
   meterUpdateReadButtons();
  }
+ // Stop during the 3D LUT stage ends an HDR/DV run whose greyscale stage
+ // pinned Target Gamma to 2.2; restore ST 2084 for verification.
+ meterRestoreTargetGammaAfterAutoCal(wasDvSignal?'dv':getVal('signal_mode'));
  toast('LG 3D LUT AutoCal stopped');
 }
 let meterInternalSeriesWorkflow=null;

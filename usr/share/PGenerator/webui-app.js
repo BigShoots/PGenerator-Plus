@@ -3744,6 +3744,7 @@ let meterFullAutoCalPhase='';
 let meterFullAutoCalConfig=null;
 let meterFullAutoCalRunId=null;
 let meterAutoCalRecordRunId=null;
+let meterAutoCalRecordToken=null;
 let meterFullAutoCalControllerIdCache='';
 let meterFullAutoCalStartedAt=null;
 let meterFullAutoCalResults={first:null,lut3d:null,touchup:null};

@@ -2,19 +2,24 @@
 # Keep PGenerator WebUI (port 80) alive if the daemon exits unexpectedly.
 # Installed as a cron every-minute helper on the device.
 
-PID_FILE=/var/run/PGenerator/PGeneratord.pl.pid
+PID_FILE=${PG_WATCHDOG_PID_FILE:-/var/run/PGenerator/PGeneratord.pl.pid}
 LOG=${PG_WATCHDOG_LOG:-/tmp/pgenerator-watchdog.log}
-# PG_WATCHDOG_TMPDIR and PG_WATCHDOG_INIT exist so the test harness can run
-# the script in isolation; the device always uses the defaults.
+# PG_WATCHDOG_TMPDIR, PG_WATCHDOG_INIT and PG_WATCHDOG_PID_FILE exist so the
+# test harness can run the script in isolation; the device always uses the
+# defaults.
 WORK_DIR=${PG_WATCHDOG_TMPDIR:-/tmp}
 INIT_SCRIPT=${PG_WATCHDOG_INIT:-/etc/init.d/PGenerator}
 LOCK_FILE="$WORK_DIR/pgenerator-watchdog.lock"
+PROBE_STAMP="$WORK_DIR/pgenerator-watchdog-root-ok"
 MAX_LOG=50
 WEBUI_MIN_BYTES=65536
 
 log() {
   ts=$(date +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "?")
-  echo "$ts $*" >>"$LOG" 2>/dev/null
+  if ! echo "$ts $*" >>"$LOG" 2>/dev/null; then
+    # Unwritable log (full or read-only filesystem): keep the message.
+    logger -t pgenerator-watchdog "$*" 2>/dev/null || true
+  fi
   # keep log short
   if [ -f "$LOG" ]; then
     lines=$(wc -l <"$LOG" 2>/dev/null || echo 0)
@@ -31,8 +36,18 @@ log() {
 # The body is discarded — pulling the multi-megabyte page to disk every
 # minute would wear the SD card; status and size come from curl itself, and
 # the body is fetched for the sentinel only when the page is already small.
+# Each ithread owns its own fragment/page cache, so one successful response
+# cannot permanently vouch for every worker. A healthy PID stamp suppresses
+# the expensive 2.6 MB probe for 15 minutes, then allows a low-frequency
+# sample of another worker. Degraded results are never stamped, so an
+# unhealthy root is re-probed every tick.
 probe_webui_root() {
-  status_file="$WORK_DIR/pgenerator-watchdog-probe.$$"
+  daemon_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+  if [ -n "$daemon_pid" ] && [ "$(cat "$PROBE_STAMP" 2>/dev/null)" = "$daemon_pid" ] \
+     && [ -n "$(find "$PROBE_STAMP" -mmin -15 2>/dev/null)" ]; then
+    return 0
+  fi
+  status_file=$(mktemp "$WORK_DIR/pgenerator-watchdog-probe.XXXXXX" 2>/dev/null) || status_file="$WORK_DIR/pgenerator-watchdog-probe.$$"
   if ! err=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{size_download}' http://127.0.0.1/ 2>&1 >"$status_file"); then
     log "ERROR: WebUI root probe failed to connect: ${err:-no detail}"
     rm -f "$status_file"
@@ -42,11 +57,16 @@ probe_webui_root() {
   rm -f "$status_file"
   if [ "${status:-}" != "200" ]; then
     log "ERROR: WebUI root probe returned HTTP ${status:-unknown}"
-  elif [ "${bytes:-0}" -lt "$WEBUI_MIN_BYTES" ] 2>/dev/null; then
-    # Small enough to be the recovery page — fetch it once to classify.
-    body_file="$WORK_DIR/pgenerator-watchdog-page.$$"
-    curl -s --max-time 5 -o "$body_file" http://127.0.0.1/ 2>/dev/null
-    if grep -Fq '<!--PG_RECOVERY_PAGE-->' "$body_file" 2>/dev/null; then
+  elif [ "${bytes:-0}" -ge "$WEBUI_MIN_BYTES" ] 2>/dev/null; then
+    # Full page served: nothing can change until the daemon restarts.
+    [ -n "$daemon_pid" ] && echo "$daemon_pid" >"$PROBE_STAMP" 2>/dev/null
+  else
+    # A small — or unparseable — 200 could be the recovery page; fetch it
+    # once to classify.
+    body_file=$(mktemp "$WORK_DIR/pgenerator-watchdog-page.XXXXXX" 2>/dev/null) || body_file="$WORK_DIR/pgenerator-watchdog-page.$$"
+    if ! curl -s --max-time 5 -o "$body_file" http://127.0.0.1/ 2>/dev/null; then
+      log "ERROR: WebUI root probe classification fetch failed after a ${bytes:-0}-byte response"
+    elif grep -Fq '<!--PG_RECOVERY_PAGE-->' "$body_file" 2>/dev/null; then
       log "ERROR: WebUI root probe found the fragment recovery page"
     else
       log "ERROR: WebUI root probe returned only ${bytes:-0} bytes"

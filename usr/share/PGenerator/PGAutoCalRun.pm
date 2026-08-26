@@ -117,7 +117,9 @@ sub run_begin {
   if($cur ne "") {
    my $cdir = "$BASE_DIR/$cur";
    if(-d $cdir && !-e "$cdir/summary.json") {
-    _write_json_atomic("$cdir/summary.json", { status => 'superseded', ended_at => _now_ms() });
+    # Route through run_end's locked path: a run_end for the outgoing run
+    # racing this stamp must win with its real result, not be clobbered.
+    run_end($cur, { status => 'superseded' });
    }
   }
   $run_id = _gen_run_id();
@@ -131,6 +133,14 @@ sub run_begin {
   1;
  } or return "";
  return $run_id;
+}
+
+sub run_manifest {
+ my ($run_id) = @_;
+ my $dir = run_dir($run_id);
+ return {} if($dir eq "" || !-d $dir);
+ my $manifest = _read_json("$dir/manifest.json");
+ return (ref($manifest) eq 'HASH') ? {%{$manifest}} : {};
 }
 
 sub run_stage {
@@ -204,12 +214,18 @@ sub run_end {
   my $prior=_read_json($path);
   my $prior_status=lc($prior->{'status'}||'');
   my $next_status=lc($summary->{'status'}||'');
-  # Recovery and teardown callbacks can arrive more than once. Preserve the
-  # first terminal result, except that a genuine completion may upgrade an
-  # earlier transient abort. Completed and superseded runs are immutable.
+  # Recovery and teardown callbacks can arrive more than once. `superseded`
+  # is only a provisional stamp from run_begin: whichever real terminal
+  # callback (complete/aborted/error) wins the lock must replace it. A real
+  # terminal result ignores a later supersede, and completion may still
+  # upgrade an earlier abort/error.
   if($prior_status ne '') {
-   return if($prior_status eq 'complete' || $prior_status eq 'superseded');
-   return if($next_status ne 'complete');
+   return if($prior_status eq 'complete');
+   if($prior_status eq 'superseded') {
+    return if($next_status eq 'superseded');
+   } else {
+    return if($next_status ne 'complete');
+   }
   }
   _write_json_atomic($path, $summary);
   1;

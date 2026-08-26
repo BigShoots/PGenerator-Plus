@@ -2425,6 +2425,21 @@ sub webui_meter_lg_dv_profile_same_run_running (@) {
  return ($config=~/"full_autocal_run_id"\s*:\s*"\Q$requested\E"/) ? 1 : 0;
 }
 
+# The start handler writes the config and an initial "running" state under
+# its lock BEFORE system() backgrounds the setsid worker, but pgrep cannot
+# see that worker until the child has exec'd. This is the evidence that
+# bridges the gap: a fresh initial state still claiming "running". The mtime
+# bound keeps a crashed worker's leftover state from answering forever — the
+# status endpoint's liveness check rewrites such a state on its next poll.
+sub webui_meter_lg_dv_profile_recently_started (@) {
+ return 0 if(!-f $_meter_lg_dv_profile_file);
+ my $age=time()-((stat($_meter_lg_dv_profile_file))[9]||0);
+ return 0 if($age>20);
+ my $json="";
+ if(open(my $fh,"<",$_meter_lg_dv_profile_file)) { local $/; $json=<$fh>; close($fh); }
+ return ($json=~/"status"\s*:\s*"running"/) ? 1 : 0;
+}
+
 sub webui_meter_lg_dv_profile_mark_cancelled (@) {
  return unless(-f $_meter_lg_dv_profile_file);
  my $json="";
@@ -2465,9 +2480,16 @@ sub webui_meter_lg_dv_profile_start (@) {
  # worker's rejection as a transient hand-off wait and then adopt that
  # worker (the adoption probe additionally requires a run-id match).
  return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}' if(&webui_meter_lg_3d_autocal_running());
+ # The same-run check runs FIRST, against both liveness sources: pgrep for a
+ # visible worker, and the just-written config + initial state for a worker
+ # still inside the spawn gap. A same-run duplicate arriving in that gap
+ # would otherwise pass the process check and start a second worker over the
+ # first one's config and state files.
+ if(&webui_meter_lg_dv_profile_same_run_running($body)
+    && (&webui_meter_lg_dv_profile_running() || &webui_meter_lg_dv_profile_recently_started())) {
+  return '{"status":"started","message":"Dolby Vision profile measurement already running"}';
+ }
  if(&webui_meter_lg_dv_profile_running()) {
-  return '{"status":"started","message":"Dolby Vision profile measurement already running"}'
-   if(&webui_meter_lg_dv_profile_same_run_running($body));
   return '{"status":"error","retryable":false,"message":"Dolby Vision profile measurement is already running"}';
  }
  my $_dv_display_model=&webui_lg_display_model_name({});
@@ -3393,8 +3415,14 @@ sub webui_lg_autocal_run_begin (@) {
      paired           => ($c->{"client_key"} ? &lg_json_true() : &lg_json_false()),
     };
    }
+   my $controller_id=$payload->{"controller_id"}||"";
+   $controller_id="" if($controller_id!~/\A[A-Za-z0-9._-]{1,200}\z/);
+   my $client_run_token=$payload->{"client_run_token"}||"";
+   $client_run_token="" if($client_run_token!~/\A[A-Za-z0-9._-]{1,200}\z/);
    my $manifest = {
     workflow           => $payload->{"workflow"} || "",
+    controller_id      => $controller_id,
+    client_run_token   => $client_run_token,
     config             => (ref($payload->{"config"}) eq "HASH") ? $payload->{"config"} : {},
     pgenerator_version => $payload->{"pgenerator_version"} || "",
     tv                 => $tv,
@@ -3413,14 +3441,39 @@ sub webui_lg_autocal_run_end (@) {
  my $run_is_current=1;
  my $resolved_run_id="";
  if($PGAC_LOADED) {
+  # If current() itself dies the eval leaves $run_is_current at 1 — a
+  # deliberate fail-open: blocking the cleanup below on a diagnostics
+  # failure could leave the TV stuck in calibration mode.
   eval {
    my $current_run_id=PGAutoCalRun::current();
-   $resolved_run_id=$payload->{"run_id"} || $current_run_id;
-   $run_is_current=0 if(($payload->{"run_id"}||"") ne "" && $current_run_id ne "" && $resolved_run_id ne $current_run_id);
+   my $payload_run_id=$payload->{"run_id"}||"";
+   my $payload_controller_id=$payload->{"controller_id"}||"";
+   $payload_controller_id="" if($payload_controller_id!~/\A[A-Za-z0-9._-]{1,200}\z/);
+   my $payload_client_run_token=$payload->{"client_run_token"}||"";
+   $payload_client_run_token="" if($payload_client_run_token!~/\A[A-Za-z0-9._-]{1,200}\z/);
+   $resolved_run_id=$payload_run_id || $current_run_id;
+   my $unattributed=0;
+   if($payload_run_id ne "") {
+    $run_is_current=0 if($current_run_id ne "" && $payload_run_id ne $current_run_id);
+   } elsif($current_run_id ne "") {
+    # A run/begin response can time out after the server already created the
+    # record. The saved workflow still carries the unique client token
+    # generated for that begin attempt, even after another tab adopts its
+    # lease; match it against the immutable run manifest. Unlike a tab id,
+    # the per-run token also rejects an older callback from the same tab.
+    my $manifest=PGAutoCalRun::run_manifest($current_run_id);
+    my $manifest_client_run_token=(ref($manifest) eq "HASH") ? ($manifest->{"client_run_token"}||"") : "";
+    if($payload_client_run_token eq "" || $manifest_client_run_token eq "" || $payload_client_run_token ne $manifest_client_run_token) {
+     # A different/no run token cannot prove it owns the live run and must
+     # not write its summary or tear down workflow/session state.
+     $run_is_current=0;
+     $unattributed=1;
+    }
+   }
    PGAutoCalRun::run_end($resolved_run_id, {
     status => $payload->{"status"} || "complete",
     note   => $payload->{"note"}   || "",
-   });
+   }) if(!$unattributed);
    1;
   };
  }
@@ -3518,7 +3571,7 @@ sub _lg_webui_fragment (@) {
  # Fallback for harness contexts that load lg.pm without webui.pm; the daemon
  # always routes through webui_asset. Warn loudly — a silent "" here surfaces
  # only as a distant substring-assertion failure.
- if(!defined($name) || $name ne "webui-lg-card.html" && $name ne "webui-lg.js") {
+ if(!defined($name) || ($name ne "webui-lg-card.html" && $name ne "webui-lg.js")) {
   warn "lg fragment request rejected: ".(defined($name) ? $name : "(undefined)")."\n";
   return "";
  }

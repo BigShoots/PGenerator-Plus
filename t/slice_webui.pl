@@ -10,6 +10,12 @@ use File::Spec;
 # Every boundary below is discovered from the HTML tag structure in the
 # heredoc. If the source layout changes, the assertions fail instead of
 # silently producing a subtly different page.
+#
+# ONE-SHOT: this script documents and reproduces the original heredoc split.
+# It asserts against the PRE-refactor webui.pm layout, so on any tree where
+# the split has already landed it dies at the heredoc assertion — that is
+# expected, not a regression. The standing byte guarantee for the split tree
+# is t/webui_html_golden.t.
 
 my $repo = dirname(dirname(abs_path(__FILE__)));
 my $shared = File::Spec->catdir($repo, "usr", "share", "PGenerator");
