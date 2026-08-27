@@ -54,6 +54,7 @@ PI5_RUNTIME_PACKAGES=(
  bluez-tools
  python3-dbus
  python3-gi
+ python3-numpy
  rfkill
  iw
  net-tools
@@ -85,6 +86,7 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/bin/bt-network
  usr/lib/python3/dist-packages/dbus
  usr/lib/python3/dist-packages/gi
+ usr/lib/python3/dist-packages/numpy
  usr/sbin/rfkill
  usr/sbin/iw
  usr/sbin/ifconfig
@@ -131,6 +133,15 @@ EXTERNAL_ICC_TOOL_PATHS=(
  "usr/bin/icc_companion_package.py"
  "usr/share/PGenerator/icc-companion"
  "usr/share/PGenerator/icc-companion-src"
+)
+PI4_NUMPY_RUNTIME_PATHS=(
+ "usr/lib/python3/dist-packages/numpy"
+ "usr/lib/python3/dist-packages/numpy-1.18.5.dist-info"
+ "usr/lib/libatlas.so.3"
+ "usr/lib/libblas.so.3"
+ "usr/lib/libcblas.so.3"
+ "usr/lib/libf77blas.so.3"
+ "usr/lib/liblapack.so.3"
 )
 
 KEEP_WORKDIR=0
@@ -580,7 +591,11 @@ pi5_required_boot_kernel_present() {
 shared_rsync_excludes_for_rel() {
  local rel="$1"
  local owned
- for owned in "${TARGET_OWNED_RUNTIME_PATHS[@]}" "${EXTERNAL_ICC_TOOL_PATHS[@]}"; do
+ local target_owned=("${TARGET_OWNED_RUNTIME_PATHS[@]}" "${EXTERNAL_ICC_TOOL_PATHS[@]}")
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}")
+ fi
+ for owned in "${target_owned[@]}"; do
   case "$owned" in
    "$rel"/*)
     printf '%s\n' "--exclude=/${owned#$rel/}"
@@ -689,6 +704,43 @@ validate_pi4_legacy_runtime() {
  [[ "$(printf '%s\n%s\n' "$max_glibc" '2.21' | sort -V | tail -1)" == '2.21' ]] || \
   die "Pi 4 chartread requires glibc $max_glibc, newer than the image's glibc 2.21"
  log "Validated Pi 4 chartread compatibility: glibc <= $max_glibc"
+}
+
+validate_colour_math_runtime() {
+ local root="$ROOT_MOUNT"
+ local rel
+
+ [[ -f "$root/usr/bin/pgen_colour_math.py" ]] || \
+  die "Math runtime is missing /usr/bin/pgen_colour_math.py"
+ [[ -f "$root/usr/share/PGenerator/PGMath.pm" ]] || \
+  die "Math runtime is missing /usr/share/PGenerator/PGMath.pm"
+ [[ -x "$root/usr/bin/pgen_lut_solve" ]] || \
+  die "Math runtime is missing executable /usr/bin/pgen_lut_solve"
+ file "$root/usr/bin/pgen_lut_solve" | grep -q 'ELF 32-bit.*ARM.*statically linked' || \
+  die "pgen_lut_solve must be a static 32-bit ARM executable"
+
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
+  for rel in "${PI4_NUMPY_RUNTIME_PATHS[@]}"; do
+   [[ -e "$root/$rel" ]] || die "Pi 4 math runtime is missing /$rel"
+  done
+  rel="usr/lib/python3/dist-packages/numpy/core/_multiarray_umath.cpython-35m-arm-linux-gnueabihf.so"
+  [[ -f "$root/$rel" ]] || die "Pi 4 NumPy runtime is missing /$rel"
+  file "$root/$rel" | grep -q 'ELF 32-bit.*ARM' || \
+   die "Pi 4 NumPy core must use the 32-bit ARM CPython 3.5 ABI"
+ for rel in usr/lib/libatlas.so.3 usr/lib/libblas.so.3 usr/lib/libcblas.so.3 \
+             usr/lib/libf77blas.so.3 usr/lib/liblapack.so.3; do
+   file "$root/$rel" | grep -q 'ELF 32-bit.*ARM' || \
+    die "Pi 4 numerical library /$rel is not a 32-bit ARM binary"
+  done
+ else
+  [[ ! -e "$root/usr/lib/python3/dist-packages/numpy-1.18.5.dist-info" ]] || \
+   die "Pi 5 image must not contain the Pi 4 NumPy 1.18.5 runtime"
+  if find "$root/usr/lib/python3/dist-packages" -type f \
+      -name '*.cpython-35m-arm-linux-gnueabihf.so' -print -quit 2>/dev/null | grep -q .; then
+   die "Pi 5 image contains a Pi 4 CPython 3.5 extension"
+  fi
+ fi
+ log "Validated shared colour-math modules and native LUT helper"
 }
 
 stage_argyll_runtime() {
@@ -1757,6 +1809,7 @@ main() {
  validate_pi5_usrmerge_root
  stage_argyll_runtime
  validate_pi4_legacy_runtime
+ validate_colour_math_runtime
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults

@@ -20,6 +20,15 @@ Without a TI3 argument the embedded targ tag is used.
 """
 import struct, sys
 
+from pgen_colour_math import (
+    ICC_D50_WHITE,
+    bradford_adaptation,
+    matrix3_inverse,
+    matrix3_vector_multiply as mmul_b,
+    pq_encode_nits,
+    sample_uniform_table as sample_curve,
+)
+
 def read_profile(path):
     d = bytearray(open(path, 'rb').read())
     count = struct.unpack('>I', d[128:132])[0]
@@ -40,14 +49,7 @@ def parse_ti3(text):
     return fmt, rows
 
 def minv3(m):
-    a,b,c,e,f,g,h,i,j = m[0][0],m[0][1],m[0][2],m[1][0],m[1][1],m[1][2],m[2][0],m[2][1],m[2][2]
-    det = a*(f*j-g*i)-b*(e*j-g*h)+c*(e*i-f*h)
-    return [[(f*j-g*i)/det,(c*i-b*j)/det,(b*g-c*f)/det],
-            [(g*h-e*j)/det,(a*j-c*h)/det,(c*e-a*g)/det],
-            [(e*i-f*h)/det,(b*h-a*i)/det,(a*f-b*e)/det]]
-
-BRAD_M = [[0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]]
-def mmul_b(m, v): return [sum(m[r][k]*v[k] for k in range(3)) for r in range(3)]
+    return matrix3_inverse(m, determinant_tolerance=None)
 
 def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
     ri, gi, bi = fmt.index('RGB_R'), fmt.index('RGB_G'), fmt.index('RGB_B')
@@ -149,12 +151,8 @@ def refine_balance_with_a2b(d, tags, balanced, plateau_dev, native_white_xy, tar
     # through the profile's native-to-D50 adaptation, not to raw D65.
     nx, ny = native_white_xy
     nat = [nx/ny, 1.0, (1-nx-ny)/ny]
-    d50 = [0.9642, 1.0, 0.8249]
     d65 = [target[0]/target[1], 1.0, (1-target[0]-target[1])/target[1]]
-    cs, cd = mmul_b(BRAD_M, nat), mmul_b(BRAD_M, d50)
-    sc = [[cd[r]/cs[r]*BRAD_M[r][k] for k in range(3)] for r in range(3)]
-    ib = minv3(BRAD_M)
-    AD = [[sum(ib[r][k]*sc[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
+    AD = bradford_adaptation(nat, ICC_D50_WHITE)
     txyz = mmul_b(AD, d65)
     ts_ = sum(txyz)
     tx, ty = txyz[0]/ts_, txyz[1]/ts_
@@ -209,20 +207,7 @@ def load_calibration_curves():
 def _pq_code(nits):
     """PQ signal code for an absolute luminance - the request domain the
     calibration curves are indexed by."""
-    m1 = 2610.0/16384.0
-    m2 = 2523.0/32.0
-    c1 = 3424.0/4096.0
-    c2 = 2413.0/128.0
-    c3 = 2392.0/128.0
-    y = max(0.0, min(1.0, nits/10000.0))**m1
-    return ((c1 + c2*y)/(1.0 + c3*y))**m2
-
-
-def sample_curve(curve, position):
-    position = max(0.0, min(1.0, position))*(len(curve)-1)
-    low = min(int(position), len(curve)-2)
-    fraction = position-low
-    return curve[low]*(1.0-fraction)+curve[low+1]*fraction
+    return pq_encode_nits(nits, clamp_peak=True)
 
 def choose_anchor_mode(cal, plateau_pct):
     """Pick the corridor's calibration anchor from panel geometry.

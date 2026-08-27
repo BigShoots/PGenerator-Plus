@@ -3,7 +3,8 @@
 
 The normal and KDE profiles are created by the bundled ArgyllCMS colprof.
 Windows Advanced Color profiles add Microsoft's documented MHC2 tag to that
-measured matrix/shaper profile.  Only the Python standard library is used.
+measured matrix/shaper profile.  Only the Python standard library and NumPy
+are used.
 """
 
 from __future__ import print_function
@@ -20,6 +21,25 @@ import subprocess
 import sys
 import tempfile
 import time
+
+import numpy as np
+
+from pgen_colour_math import (
+    BRADFORD,
+    PQ_C1,
+    PQ_C2,
+    PQ_C3,
+    PQ_M1,
+    PQ_M2,
+    bradford_adaptation as shared_bradford_adaptation,
+    matrix3_inverse,
+    matrix3_multiply as mat_mul,
+    matrix3_vector_multiply as mat_vec_mul,
+    pq_decode_nits as pq_to_nits,
+    pq_encode_nits as nits_to_pq,
+    sample_uniform_table as sample_table,
+    smoothstep,
+)
 
 
 PROFILE_TYPES = {
@@ -305,26 +325,11 @@ def make_ti3(payload, rows):
     return "\n".join(lines), black, white
 
 
-def mat_mul(left, right):
-    return [[sum(left[r][k] * right[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
-
-
-def mat_vec_mul(matrix, vector):
-    return [sum(matrix[row][column] * vector[column] for column in range(3)) for row in range(3)]
-
-
 def mat_inv(matrix):
-    a, b, c = matrix[0]
-    d, e, f = matrix[1]
-    g, h, i = matrix[2]
-    determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-    if abs(determinant) < 1e-9:
+    inverse = matrix3_inverse(matrix, determinant_tolerance=1e-9)
+    if inverse is None:
         fail("Measured primary matrix is singular")
-    return [
-        [(e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant],
-        [(f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant],
-        [(d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant],
-    ]
+    return inverse
 
 
 def xy_matrix(primaries, white):
@@ -368,18 +373,6 @@ def linear_to_srgb(value):
     if value <= 0.0031308:
         return value * 12.92
     return 1.055 * (value ** (1.0 / 2.4)) - 0.055
-
-
-def pq_to_nits(value):
-    """Decode a normalized ST.2084 signal value into absolute cd/m2."""
-    value = max(0.0, min(1.0, value))
-    m1 = 2610.0 / 16384.0
-    m2 = 2523.0 / 32.0
-    c1 = 3424.0 / 4096.0
-    c2 = 2413.0 / 128.0
-    c3 = 2392.0 / 128.0
-    power = value ** (1.0 / m2)
-    return 10000.0 * (max(power - c1, 0.0) / max(c2 - c3 * power, 1e-12)) ** (1.0 / m1)
 
 
 # Entries in the per-channel calibration curve written to vcgt. A 1D curve can
@@ -463,18 +456,6 @@ def mhc2_exact_white_start(entries):
     # keeps the probed 253 boundary constant while 99% remains below it.
     return max(1, min(entries - 1, int(math.floor(
         253.0 * (entries - 1) / 255.0))))
-
-
-def nits_to_pq(nits):
-    """Encode absolute cd/m2 as a normalized ST.2084 signal value."""
-    m1 = 2610.0 / 16384.0
-    m2 = 2523.0 / 32.0
-    c1 = 3424.0 / 4096.0
-    c2 = 2413.0 / 128.0
-    c3 = 2392.0 / 128.0
-    ratio = max(0.0, nits) / 10000.0
-    powered = ratio ** m1
-    return ((c1 + c2 * powered) / (1.0 + c3 * powered)) ** m2
 
 
 def vcgt_from_mhc2(matrix, adjustment_luts, wire, entries=VCGT_ENTRIES):
@@ -598,7 +579,7 @@ def blend_hdr_profile_calibration(direct, modeled, start=0.30, end=0.35):
                 weight = 1.0
             else:
                 weight = (position - start) / (end - start)
-                weight = weight * weight * (3.0 - 2.0 * weight)
+                weight = smoothstep(weight)
             value = (sample_table(direct[channel], position) * (1.0 - weight)
                      + sample_table(modeled[channel], position) * weight)
             previous = max(previous, max(0.0, min(1.0, value)))
@@ -1366,13 +1347,263 @@ def rebuild_icc(profile, replacements):
     return bytes(result)
 
 
-def sample_table(table, position):
-    """Linearly sample a normalized monotonic table."""
-    position = max(0.0, min(1.0, position))
+# --- Batch (NumPy) twins of the scalar primitives above ---------------------
+#
+# Every helper below reproduces its scalar original expression by expression so
+# the 65-cube B2A solvers can run over whole lattices without changing a single
+# rounding decision. The rules that keep them bit-identical:
+#
+#   * no np.dot / @ / einsum / arr.sum() for order-sensitive accumulations --
+#     three-term rows are written out so the left-to-right association of the
+#     scalar sum() is preserved,
+#   * every division inside a np.where is guarded on both branches, because
+#     np.where evaluates the branch it discards and the Perl caller parses this
+#     script's stdout: one RuntimeWarning corrupts the protocol,
+#   * squaring goes through _pow2 (see its comment),
+#   * quantization is always rint -> clip -> ">u2", which is exactly the scalar
+#     int(round(x)) then clamp for the finite values these tables hold.
+#
+# Nodes are processed in chunks by the callers: a 65-cube is 274,625 nodes and
+# the appliance cannot hold a dozen live (N, 3) float64 temporaries at once.
+# At the 65-cube default, 8192 keeps the peak resident set in the same tens-of-
+# MiB range as the scalar implementation without materially affecting runtime.
+_BATCH_CHUNK = 8192
+
+
+def _pow2(values):
+    """Square an array the way CPython's ``x ** 2`` does.
+
+    NumPy takes a squaring fast path for a scalar exponent of 2 that disagrees
+    with libm pow on roughly 0.15% of inputs by one ulp. An array exponent
+    forces the generic pow loop, which matches CPython exactly. Measured 0
+    mismatches over 400k samples where the fast path had 648.
+    """
+    return values ** np.full(np.shape(values), 2.0)
+
+
+def _np_sample_table(table, position):
+    """Batch twin of sample_table()."""
+    position = np.clip(position, 0.0, 1.0)
     spot = position * (len(table) - 1)
-    low = min(len(table) - 2, int(spot))
+    low = np.minimum(len(table) - 2, spot.astype(np.intp))
     fraction = spot - low
     return table[low] * (1.0 - fraction) + table[low + 1] * fraction
+
+
+def _np_table_bisect(table, value):
+    """Replay the scalar table bisection over a whole array of values.
+
+    Both scalar inverses converge on the rightmost index whose entry is still
+    below the requested value. Replaying the loop rather than translating it
+    into a searchsorted side keeps the plateau behaviour correct even if a
+    table ever arrives non-monotonic.
+    """
+    low = np.zeros(np.shape(value), dtype=np.intp)
+    high = np.full(np.shape(value), len(table) - 1, dtype=np.intp)
+    while True:
+        active = low < high - 1
+        if not np.any(active):
+            return low, high
+        middle = (low + high) // 2
+        below = table[middle] <= value
+        low = np.where(active & below, middle, low)
+        high = np.where(active & ~below, middle, high)
+
+
+def _np_invert_table(table, value):
+    """Batch twin of invert_table()."""
+    value = np.clip(value, 0.0, 1.0)
+    low, high = _np_table_bisect(table, value)
+    step = table[high] - table[low]
+    positive = step > 0
+    fraction = np.where(positive,
+                        (value - table[low]) / np.where(positive, step, 1.0),
+                        0.0)
+    result = (low + fraction) / (len(table) - 1.0)
+    # Applied in reverse order so the scalar's first test wins on a degenerate
+    # table whose two endpoint conditions can both be true.
+    result = np.where(value >= table[-1], 1.0, result)
+    return np.where(value <= table[0], 0.0, result)
+
+
+def _np_calibration_to_profile_value(curve, device):
+    """Batch twin of calibration_to_profile_value().
+
+    Identical to _np_invert_table() except that the scalar original does not
+    clamp its input first.
+    """
+    entries = len(curve)
+    low, high = _np_table_bisect(curve, device)
+    step = curve[high] - curve[low]
+    positive = step > 0
+    fraction = np.where(positive,
+                        (device - curve[low]) / np.where(positive, step, 1.0),
+                        0.0)
+    result = (low + fraction) / (entries - 1.0)
+    result = np.where(device >= curve[-1], 1.0, result)
+    return np.where(device <= curve[0], 0.0, result)
+
+
+def _np_clut_trilinear(table, grid, coordinates):
+    """Batch twin of _sample_mft2_clut(); (N, 3) in, (N, 3) out.
+
+    The eight corners are accumulated in the scalar's red/green/blue nesting
+    order because floating-point addition is not associative.
+    """
+    positions = np.clip(coordinates, 0.0, 1.0) * (grid - 1)
+    lows = np.minimum(grid - 2, positions.astype(np.intp))
+    fractions = positions - lows
+    base = (lows[:, 0] * grid * grid + lows[:, 1] * grid + lows[:, 2]) * 3
+    result = np.zeros(coordinates.shape, dtype=np.float64)
+    for red in (0, 1):
+        red_weight = fractions[:, 0] if red else 1.0 - fractions[:, 0]
+        for green in (0, 1):
+            green_weight = fractions[:, 1] if green else 1.0 - fractions[:, 1]
+            for blue in (0, 1):
+                blue_weight = fractions[:, 2] if blue else 1.0 - fractions[:, 2]
+                weight = red_weight * green_weight * blue_weight
+                node = base + (red * grid * grid + green * grid + blue) * 3
+                for channel in range(3):
+                    result[:, channel] += table[node + channel] * weight
+    return result
+
+
+# Per-tetrahedron middle-node offsets and weight permutations, in the branch
+# order of _sample_mft2_clut_tetrahedral(). Case ids follow the scalar tree:
+# r>=g ? (g>=b ? 0 : r>=b ? 1 : 2) : (r>=b ? 3 : g>=b ? 4 : 5).
+_TETRA_FIRST_MIDDLE = np.array(
+    ((1, 0, 0), (1, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 0), (0, 0, 1)),
+    dtype=np.intp)
+_TETRA_SECOND_MIDDLE = np.array(
+    ((1, 1, 0), (1, 0, 1), (1, 0, 1), (1, 1, 0), (0, 1, 1), (0, 1, 1)),
+    dtype=np.intp)
+_TETRA_WEIGHT_ORDER = np.array(
+    ((0, 1, 2), (0, 2, 1), (2, 0, 1), (1, 0, 2), (1, 2, 0), (2, 1, 0)),
+    dtype=np.intp)
+
+
+def _np_clut_tetrahedral(table, grid, coordinates):
+    """Batch twin of _sample_mft2_clut_tetrahedral(); (N, 3) in, (N, 3) out."""
+    positions = np.clip(coordinates, 0.0, 1.0) * (grid - 1)
+    lows = np.minimum(grid - 2, positions.astype(np.intp))
+    fractions = positions - lows
+    base = (lows[:, 0] * grid * grid + lows[:, 1] * grid + lows[:, 2]) * 3
+    red, green, blue = fractions[:, 0], fractions[:, 1], fractions[:, 2]
+    # The >= comparisons are the ArgyllCMS contract: ties must land in the
+    # same tetrahedron the scalar tree picks.
+    case = np.where(red >= green,
+                    np.where(green >= blue, 0, np.where(red >= blue, 1, 2)),
+                    np.where(red >= blue, 3, np.where(green >= blue, 4, 5)))
+    rows = np.arange(coordinates.shape[0])
+    weights = fractions[rows[:, None], _TETRA_WEIGHT_ORDER[case]]
+    offsets = _TETRA_FIRST_MIDDLE[case]
+    first_middle = base + (offsets[:, 0] * grid * grid
+                           + offsets[:, 1] * grid + offsets[:, 2]) * 3
+    offsets = _TETRA_SECOND_MIDDLE[case]
+    second_middle = base + (offsets[:, 0] * grid * grid
+                            + offsets[:, 1] * grid + offsets[:, 2]) * 3
+    last = base + (grid * grid + grid + 1) * 3
+    result = np.empty(coordinates.shape, dtype=np.float64)
+    for channel in range(3):
+        corner = table[base + channel]
+        middle0 = table[first_middle + channel]
+        middle1 = table[second_middle + channel]
+        result[:, channel] = (corner
+                              + weights[:, 0] * (middle0 - corner)
+                              + weights[:, 1] * (middle1 - middle0)
+                              + weights[:, 2] * (table[last + channel] - middle1))
+    return result
+
+
+def _np_mat3_apply(matrix, vectors):
+    """Apply a row-major nine-element 3x3 to an (N, 3) array."""
+    result = np.empty(vectors.shape, dtype=np.float64)
+    for row in range(3):
+        result[:, row] = (matrix[row * 3] * vectors[:, 0]
+                          + matrix[row * 3 + 1] * vectors[:, 1]
+                          + matrix[row * 3 + 2] * vectors[:, 2])
+    return result
+
+
+def _np_mat_inv3(entries):
+    """Elementwise 3x3 adjugate inverse over N matrices.
+
+    ``entries`` is a nine-element sequence of (N,) arrays in row-major order;
+    the return is the same shape plus a validity mask replacing mat_inv()'s
+    "Measured primary matrix is singular" failure. The explicit adjugate is
+    deliberate: np.linalg.inv would round differently from the scalar
+    cofactor expressions this mirrors.
+    """
+    a, b, c, d, e, f, g, h, i = entries
+    determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    valid = np.abs(determinant) >= 1e-9
+    divisor = np.where(valid, determinant, 1.0)
+    inverse = (
+        (e * i - f * h) / divisor, (c * h - b * i) / divisor, (b * f - c * e) / divisor,
+        (f * g - d * i) / divisor, (a * i - c * g) / divisor, (c * d - a * f) / divisor,
+        (d * h - e * g) / divisor, (b * g - a * h) / divisor, (a * e - b * d) / divisor,
+    )
+    return inverse, valid
+
+
+def _np_pq_to_nits(value):
+    """Batch twin of pq_to_nits()."""
+    value = np.clip(value, 0.0, 1.0)
+    power = value ** (1.0 / PQ_M2)
+    return 10000.0 * (np.maximum(power - PQ_C1, 0.0)
+                      / np.maximum(PQ_C2 - PQ_C3 * power, 1e-12)) ** (1.0 / PQ_M1)
+
+
+def _np_nits_to_pq(nits):
+    """Batch twin of nits_to_pq()."""
+    ratio = np.maximum(0.0, nits) / 10000.0
+    powered = ratio ** PQ_M1
+    return ((PQ_C1 + PQ_C2 * powered)
+            / (1.0 + PQ_C3 * powered)) ** PQ_M2
+
+
+def _np_smoothstep(value):
+    """Batch twin of smoothstep()."""
+    value = np.clip(value, 0.0, 1.0)
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _np_u16_bytes(values):
+    """Quantize to big-endian u16 exactly as int(round(x)) then clamp does."""
+    return np.clip(np.rint(values * 65535.0), 0.0, 65535.0).astype(">u2").tobytes()
+
+
+def _np_lattice_axes(grid, start, stop):
+    """Integer node axes for a red-slowest/blue-fastest cLUT walk."""
+    index = np.arange(start, stop, dtype=np.intp)
+    red = index // (grid * grid)
+    green = (index // grid) % grid
+    blue = index % grid
+    return red, green, blue
+
+
+def _np_mft2_tables(payload, offset, entries):
+    return np.frombuffer(payload, dtype=">u2", count=entries,
+                         offset=offset) / 65535.0
+
+
+def _np_first_at_or_above(bounds, values):
+    """Batch replay of the scalar ``for i in 1..n-1: if value <= bounds[i]`` scan.
+
+    Returns the matching index and a mask marking the values that ran off the
+    end of the scan, where the scalar loops take their trailing return. The
+    boolean matrix is used rather than searchsorted so the result does not
+    depend on the bounds being sorted; the anchor lists here are short.
+    """
+    hits = values[:, None] <= bounds[None, 1:]
+    found = np.any(hits, axis=1)
+    return np.where(found, np.argmax(hits, axis=1) + 1, len(bounds) - 1), found
+
+
+# Entries processed per neighbourhood-fit block. The distance matrix is
+# (block, measurements), so this bounds the largest temporary the local
+# Jacobian fit allocates.
+_FIT_CHUNK = 512
 
 
 def regularize_hdr_shadow_balance(curves):
@@ -1392,10 +1623,6 @@ def regularize_hdr_shadow_balance(curves):
     original = [list(curve) for curve in curves]
     result = [list(curve) for curve in curves]
 
-    def smooth_unit(value):
-        value = max(0.0, min(1.0, value))
-        return value * value * (3.0 - 2.0 * value)
-
     for index in range(1, entries):
         position = index / float(entries - 1)
         if position >= 0.45:
@@ -1414,7 +1641,7 @@ def regularize_hdr_shadow_balance(curves):
             distance = abs(neighbour - position)
             kernel = max(0.0, 1.0 - distance / 0.101)
             signal = pq_to_nits(neighbour)
-            reliability = smooth_unit((signal - 0.12) / 0.88)
+            reliability = smoothstep((signal - 0.12) / 0.88)
             weight = kernel * (0.20 + 0.80 * reliability)
             for channel in range(3):
                 weighted_offsets[channel] += weight * (values[channel] - mean)
@@ -1425,7 +1652,7 @@ def regularize_hdr_shadow_balance(curves):
         # preventing a join at 45% while retaining full smoothing through the
         # 10-35% range where sparse HDR reads most often oscillate.
         strength = (1.0 if position <= 0.35 else
-                    smooth_unit((0.45 - position) / 0.10))
+                    smoothstep((0.45 - position) / 0.10))
         for channel in range(3):
             raw_offset = own[channel] - own_mean
             smooth_offset = weighted_offsets[channel] / weight_sum
@@ -1436,7 +1663,7 @@ def regularize_hdr_shadow_balance(curves):
             # The common drive is unchanged, balanced curves remain a no-op,
             # and confidence reaches one before the HDR body begins.
             signal = pq_to_nits(position)
-            confidence = 0.65 + 0.35 * smooth_unit(
+            confidence = 0.65 + 0.35 * smoothstep(
                 (signal - 0.12) / (10.0 - 0.12))
             offset *= confidence
             # Keep this a regularizer, not another calibration stage.
@@ -2808,11 +3035,6 @@ def windows_hdr_mhc2_from_active_profile(profile, rows, black, white,
     return mhc2, matrix, adjustment_luts, calibrated_peak
 
 
-def smoothstep(value):
-    value = max(0.0, min(1.0, value))
-    return value * value * (3.0 - 2.0 * value)
-
-
 def apply_mhc2_profile_exact_white_tail(luts, evaluate, chad, damping=0.5):
     """Solve a profile-predicted exact-white residual in the final entries."""
     if len(luts) != 3 or len(set(len(curve) for curve in luts)) != 1:
@@ -2972,24 +3194,40 @@ def mft2_a2b_evaluator(profile):
     output_tables = []
     for channel in range(3):
         offset = input_start + channel * input_entries * 2
-        input_tables.append([value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(input_entries), payload, offset)])
+        input_tables.append(_np_mft2_tables(payload, offset, input_entries))
         offset = output_start + channel * output_entries * 2
-        output_tables.append([value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(output_entries), payload, offset)])
-    clut = [value / 65535.0 for value in struct.unpack_from(
-        ">{}H".format(clut_values), payload, clut_start)]
+        output_tables.append(_np_mft2_tables(payload, offset, output_entries))
+    clut = _np_mft2_tables(payload, clut_start, clut_values)
+    # Both representations are kept deliberately. Single-triple callers stay on
+    # the scalar lists, where per-call NumPy dispatch would cost more than it
+    # saves; the lattice solvers hand in an (N, 3) array and get one back.
+    scalar_input_tables = [table.tolist() for table in input_tables]
+    scalar_output_tables = [table.tolist() for table in output_tables]
+    scalar_clut = clut.tolist()
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
 
     def evaluate(rgb):
-        shaped = [sample_table(input_tables[channel], rgb[channel]) for channel in range(3)]
-        transformed = [
-            sum(matrix[row * 3 + column] * shaped[column] for column in range(3))
-            for row in range(3)
-        ]
-        encoded = _sample_mft2_clut_tetrahedral(clut, grid, transformed)
-        return [sample_table(output_tables[channel], encoded[channel]) / xyz_to_mft
-                for channel in range(3)]
+        if not isinstance(rgb, np.ndarray) or rgb.ndim == 1:
+            shaped = [sample_table(scalar_input_tables[channel], rgb[channel])
+                      for channel in range(3)]
+            transformed = [
+                sum(matrix[row * 3 + column] * shaped[column] for column in range(3))
+                for row in range(3)
+            ]
+            encoded = _sample_mft2_clut_tetrahedral(scalar_clut, grid, transformed)
+            return [sample_table(scalar_output_tables[channel], encoded[channel])
+                    / xyz_to_mft for channel in range(3)]
+        shaped = np.empty(rgb.shape, dtype=np.float64)
+        for channel in range(3):
+            shaped[:, channel] = _np_sample_table(input_tables[channel],
+                                                  rgb[:, channel])
+        transformed = _np_mat3_apply(matrix, shaped)
+        encoded = _np_clut_tetrahedral(clut, grid, transformed)
+        result = np.empty(rgb.shape, dtype=np.float64)
+        for channel in range(3):
+            result[:, channel] = _np_sample_table(
+                output_tables[channel], encoded[:, channel]) / xyz_to_mft
+        return result
 
     return evaluate
 
@@ -3022,25 +3260,38 @@ def mft2_b2a_evaluator(profile):
     output_tables = []
     for channel in range(3):
         offset = input_start + channel * input_entries * 2
-        input_tables.append([value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(input_entries), payload, offset)])
+        input_tables.append(_np_mft2_tables(payload, offset, input_entries))
         offset = output_start + channel * output_entries * 2
-        output_tables.append([value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(output_entries), payload, offset)])
-    clut = [value / 65535.0 for value in struct.unpack_from(
-        ">{}H".format(clut_values), payload, clut_start)]
+        output_tables.append(_np_mft2_tables(payload, offset, output_entries))
+    clut = _np_mft2_tables(payload, clut_start, clut_values)
+    scalar_input_tables = [table.tolist() for table in input_tables]
+    scalar_output_tables = [table.tolist() for table in output_tables]
+    scalar_clut = clut.tolist()
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
 
     def evaluate(xyz):
-        mapped = [
-            sum(matrix[row * 3 + column] * xyz[column] for column in range(3))
-            for row in range(3)
-        ]
-        shaped = [sample_table(input_tables[channel], mapped[channel] * xyz_to_mft)
-                  for channel in range(3)]
-        encoded = _sample_mft2_clut(clut, grid, shaped)
-        return [sample_table(output_tables[channel], encoded[channel])
-                for channel in range(3)]
+        if not isinstance(xyz, np.ndarray) or xyz.ndim == 1:
+            mapped = [
+                sum(matrix[row * 3 + column] * xyz[column] for column in range(3))
+                for row in range(3)
+            ]
+            shaped = [sample_table(scalar_input_tables[channel],
+                                   mapped[channel] * xyz_to_mft)
+                      for channel in range(3)]
+            encoded = _sample_mft2_clut(scalar_clut, grid, shaped)
+            return [sample_table(scalar_output_tables[channel], encoded[channel])
+                    for channel in range(3)]
+        mapped = _np_mat3_apply(matrix, xyz)
+        shaped = np.empty(xyz.shape, dtype=np.float64)
+        for channel in range(3):
+            shaped[:, channel] = _np_sample_table(
+                input_tables[channel], mapped[:, channel] * xyz_to_mft)
+        encoded = _np_clut_trilinear(clut, grid, shaped)
+        result = np.empty(xyz.shape, dtype=np.float64)
+        for channel in range(3):
+            result[:, channel] = _np_sample_table(output_tables[channel],
+                                                  encoded[:, channel])
+        return result
 
     return evaluate
 
@@ -3900,6 +4151,26 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
                              + xyz1[channel] * fraction for channel in range(3))
         return measured_neutral[-1][1]
 
+    neutral_codes = np.asarray([code for code, _xyz in measured_neutral],
+                               dtype=np.float64)
+    neutral_xyz = np.asarray([xyz for _code, xyz in measured_neutral],
+                             dtype=np.float64)
+
+    def measured_xyz_at_codes(codes):
+        """Batch twin of measured_xyz_at_code()."""
+        index, found = _np_first_at_or_above(neutral_codes, codes)
+        lower = neutral_codes[index - 1]
+        span = neutral_codes[index] - lower
+        positive = span > 0.0
+        fraction = np.where(positive,
+                            (codes - lower) / np.where(positive, span, 1.0),
+                            0.0)
+        result = (neutral_xyz[index - 1] * (1.0 - fraction)[:, None]
+                  + neutral_xyz[index] * fraction[:, None])
+        result = np.where(found[:, None], result, neutral_xyz[-1])
+        return np.where((codes <= neutral_codes[0])[:, None],
+                        neutral_xyz[0], result)
+
     response_neutral = [(code, xyz[1]) for code, xyz in measured_neutral]
 
     blocks = []
@@ -3965,42 +4236,55 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
         isotonic_absolute(samples) for samples in absolute_channel_samples
     ]
 
-    def invert_absolute_response(samples, target):
-        if target <= samples[0][1]:
-            return samples[0][0]
-        for sample_index in range(1, len(samples)):
-            x0, y0 = samples[sample_index - 1]
-            x1, y1 = samples[sample_index]
-            if target <= y1:
-                if y1 <= y0 + 1e-12:
-                    return min(x1, plateau_code)
-                fraction = (target - y0) / (y1 - y0)
-                return min(x0 + fraction * (x1 - x0), plateau_code)
-        return plateau_code
+    def invert_response(codes, responses, targets):
+        """Batch inverse of one isotonic code-to-response series.
+
+        Serves both the absolute per-channel responses and the neutral
+        luminance series: the two scalar originals were the same scan with
+        the same flat-segment and plateau clamps.
+        """
+        index, found = _np_first_at_or_above(responses, targets)
+        lower_code = codes[index - 1]
+        lower = responses[index - 1]
+        upper = responses[index]
+        flat = upper <= lower + 1e-12
+        span = upper - lower
+        fraction = np.where(flat, 0.0,
+                            (targets - lower) / np.where(flat, 1.0, span))
+        result = np.where(
+            flat, np.minimum(codes[index], plateau_code),
+            np.minimum(lower_code + fraction * (codes[index] - lower_code),
+                       plateau_code))
+        result = np.where(found, result, plateau_code)
+        return np.where(targets <= responses[0], codes[0], result)
+
+    absolute_channel_codes = [
+        np.asarray([code for code, _value in samples], dtype=np.float64)
+        for samples in absolute_channel_samples
+    ]
+    absolute_channel_values = [
+        np.asarray([value for _code, value in samples], dtype=np.float64)
+        for samples in absolute_channel_samples
+    ]
 
     def measured_axis_rgb(target_xyz):
-        target_response = mat_vec_mul(
-            inverse_primary_axes,
-            [target_xyz[axis] - black_xyz[axis] for axis in range(3)],
-        )
-        return [
-            invert_absolute_response(absolute_channel_samples[channel],
-                                     max(0.0, target_response[channel]))
-            for channel in range(3)
-        ]
+        """Batch twin: (E, 3) absolute XYZ targets to (E, 3) device codes."""
+        offsets = target_xyz - np.asarray(black_xyz, dtype=np.float64)
+        result = np.empty(target_xyz.shape, dtype=np.float64)
+        for channel in range(3):
+            response = (inverse_primary_axes[channel][0] * offsets[:, 0]
+                        + inverse_primary_axes[channel][1] * offsets[:, 1]
+                        + inverse_primary_axes[channel][2] * offsets[:, 2])
+            result[:, channel] = invert_response(
+                absolute_channel_codes[channel],
+                absolute_channel_values[channel],
+                np.maximum(0.0, response))
+        return result
 
-    def invert_luminance(target):
-        if target <= response_neutral[0][1]:
-            return response_neutral[0][0]
-        for index in range(1, len(response_neutral)):
-            x0, y0 = response_neutral[index - 1]
-            x1, y1 = response_neutral[index]
-            if target <= y1:
-                if y1 <= y0 + 1e-12:
-                    return min(x1, plateau_code)
-                fraction = (target - y0) / (y1 - y0)
-                return min(x0 + fraction * (x1 - x0), plateau_code)
-        return plateau_code
+    response_codes = np.asarray([code for code, _value in response_neutral],
+                                dtype=np.float64)
+    response_values = np.asarray([value for _code, value in response_neutral],
+                                 dtype=np.float64)
 
     evaluate = mft2_a2b_evaluator(profile)
     d50 = (0.9642, 1.0, 0.8249)
@@ -4042,46 +4326,57 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
                 center = int(match.group(1)) / 1023.0
                 neutral_probe_groups.setdefault(center, []).append(measurement)
 
-    def measured_channel_xyz(channel, code):
-        anchors = channel_measurements[channel]
-        if code <= anchors[0][0]:
-            return anchors[0][1]
-        upper = 1
-        while upper < len(anchors) - 1 and anchors[upper][0] < code:
-            upper += 1
-        lower = max(0, upper - 1)
-        x0, xyz0 = anchors[lower]
-        x1, xyz1 = anchors[upper]
-        if x1 <= x0:
-            return xyz0
-        fraction = max(0.0, min(1.0, (code - x0) / (x1 - x0)))
-        return tuple(xyz0[axis] * (1.0 - fraction) + xyz1[axis] * fraction
-                     for axis in range(3))
+    channel_anchor_codes = [
+        np.asarray([code for code, _xyz in channel_measurements[channel]],
+                   dtype=np.float64) for channel in range(3)
+    ]
+    channel_anchor_xyz = [
+        np.asarray([xyz for _code, xyz in channel_measurements[channel]],
+                   dtype=np.float64) for channel in range(3)
+    ]
 
-    def measured_channel_derivative(channel, code):
-        anchors = channel_measurements[channel]
-        upper = 1
-        while upper < len(anchors) - 1 and anchors[upper][0] < code:
-            upper += 1
-        lower = max(0, upper - 1)
-        x0, xyz0 = anchors[lower]
-        x1, xyz1 = anchors[upper]
-        if x1 <= x0:
-            return (0.0, 0.0, 0.0)
-        return tuple((xyz1[axis] - xyz0[axis]) / (x1 - x0)
-                     for axis in range(3))
+    def measured_channel_xyz(channel, codes):
+        """Batch twin: one channel's ramp sampled at (E,) device codes."""
+        anchors = channel_anchor_codes[channel]
+        values = channel_anchor_xyz[channel]
+        index, _found = _np_first_at_or_above(anchors, codes)
+        lower = anchors[index - 1]
+        span = anchors[index] - lower
+        positive = span > 0.0
+        fraction = np.clip(
+            np.where(positive, (codes - lower) / np.where(positive, span, 1.0),
+                     0.0), 0.0, 1.0)
+        result = (values[index - 1] * (1.0 - fraction)[:, None]
+                  + values[index] * fraction[:, None])
+        result = np.where(positive[:, None], result, values[index - 1])
+        return np.where((codes <= anchors[0])[:, None], values[0], result)
 
-    def additive_xyz(rgb):
+    def measured_channel_derivative(channel, codes):
+        """Batch twin: one channel ramp's local XYZ derivative."""
+        anchors = channel_anchor_codes[channel]
+        values = channel_anchor_xyz[channel]
+        index, _found = _np_first_at_or_above(anchors, codes)
+        span = anchors[index] - anchors[index - 1]
+        positive = span > 0.0
+        slope = ((values[index] - values[index - 1])
+                 / np.where(positive, span, 1.0)[:, None])
+        return np.where(positive[:, None], slope, 0.0)
+
+    def additive_xyz(codes):
         # Each primary ramp includes the measured black offset. Count that
         # offset once when combining the three independently measured ramps.
-        return tuple(
-            sum(measured_channel_xyz(channel, rgb[channel])[axis]
-                for channel in range(3)) - 2.0 * black_xyz[axis]
-            for axis in range(3)
-        )
+        return (measured_channel_xyz(0, codes)
+                + measured_channel_xyz(1, codes)
+                + measured_channel_xyz(2, codes)
+                - 2.0 * np.asarray(black_xyz, dtype=np.float64))
 
     def fit_measured_jacobian(code, nearby, dedicated=False):
-        """Fit a physical RGB-to-XYZ derivative around one neutral code."""
+        """Fit a physical RGB-to-XYZ derivative around one neutral code.
+
+        The dedicated probe-group regime still runs here, once per group. The
+        neighbourhood regime is served by fit_local_jacobians() below, which
+        fits every curve entry at once against the same expressions.
+        """
         minimum = 6 if dedicated else 12
         if len(nearby) < minimum:
             return None, 0.0
@@ -4207,171 +4502,300 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
         if jacobian is not None and confidence > 0.0:
             dedicated_jacobians.append((center, jacobian, confidence))
 
-    def measured_local_jacobian(code):
-        """Fit or interpolate a local physical RGB-to-XYZ derivative."""
-        if dedicated_jacobians:
-            if code <= dedicated_jacobians[0][0]:
-                center, jacobian, confidence = dedicated_jacobians[0]
-                reach = max(0.0, min(1.0, 1.0 - (center - code) / 0.04))
-                if reach > 0.0:
-                    return jacobian, confidence * reach
-            elif code >= dedicated_jacobians[-1][0]:
-                center, jacobian, confidence = dedicated_jacobians[-1]
-                reach = max(0.0, min(1.0, 1.0 - (code - center) / 0.04))
-                if reach > 0.0:
-                    return jacobian, confidence * reach
+    color_rgb = np.asarray([item[0] for item in color_measurements],
+                           dtype=np.float64).reshape(-1, 3)
+    color_xyz = np.asarray([item[1] for item in color_measurements],
+                           dtype=np.float64).reshape(-1, 3)
+
+    def fit_local_jacobians(codes):
+        """Batch neighbourhood fit: the non-dedicated fit_measured_jacobian().
+
+        Every entry takes its twelve closest mixed-colour patches and runs the
+        same ridge-regularized weighted normal equations. The twelve slots are
+        accumulated in ascending-distance order so the sequential summation
+        rounding of the scalar sample loop is reproduced, and the neighbour
+        order itself comes from a stable argsort so equal distances resolve
+        the way Python's stable sorted() resolves them.
+        """
+        count = codes.shape[0]
+        jacobian = np.zeros((count, 9), dtype=np.float64)
+        confidence = np.zeros(count, dtype=np.float64)
+        present = np.zeros(count, dtype=bool)
+        if len(color_measurements) < 12:
+            return jacobian, confidence, present
+        for start in range(0, count, _FIT_CHUNK):
+            stop = min(count, start + _FIT_CHUNK)
+            block = codes[start:stop]
+            distance = (_pow2(color_rgb[None, :, 0] - block[:, None])
+                        + _pow2(color_rgb[None, :, 1] - block[:, None])
+                        + _pow2(color_rgb[None, :, 2] - block[:, None]))
+            order = np.argsort(distance, axis=1, kind="stable")[:, :12]
+            ordered = np.take_along_axis(distance, order, axis=1)
+            bandwidth2 = np.maximum(1e-8, ordered[:, 11])
+            center_xyz = measured_xyz_at_codes(block)
+            normal = [np.zeros(stop - start, dtype=np.float64) for _ in range(9)]
+            cross = [np.zeros(stop - start, dtype=np.float64) for _ in range(9)]
+            weighted_actual = np.zeros(stop - start, dtype=np.float64)
+            weights = []
+            device_deltas = []
+            xyz_deltas = []
+            for slot in range(12):
+                weight = np.exp(-2.0 * ordered[:, slot] / bandwidth2)
+                device_delta = color_rgb[order[:, slot]] - block[:, None]
+                xyz_delta = color_xyz[order[:, slot]] - center_xyz
+                weights.append(weight)
+                device_deltas.append(device_delta)
+                xyz_deltas.append(xyz_delta)
+                for first in range(3):
+                    for second in range(3):
+                        normal[first * 3 + second] += (
+                            weight * device_delta[:, first]
+                            * device_delta[:, second])
+                    for axis in range(3):
+                        cross[axis * 3 + first] += (weight * device_delta[:, first]
+                                                    * xyz_delta[:, axis])
+                weighted_actual += weight * (xyz_delta[:, 0] * xyz_delta[:, 0]
+                                             + xyz_delta[:, 1] * xyz_delta[:, 1]
+                                             + xyz_delta[:, 2] * xyz_delta[:, 2])
+            ridge = np.maximum(1e-12, (normal[0] + normal[4] + normal[8]) * 1e-7)
+            for diagonal in (0, 4, 8):
+                normal[diagonal] = normal[diagonal] + ridge
+            # The dedicated +/- probes use a deliberately small device-code
+            # displacement, so the raw normal matrix can fall below the
+            # absolute determinant guard while still being well conditioned.
+            # Normalize its magnitude first, exactly as the scalar does.
+            if raw_measurement_model:
+                inverse, usable = _np_mat_inv3(normal)
             else:
-                for index in range(1, len(dedicated_jacobians)):
-                    left = dedicated_jacobians[index - 1]
-                    right = dedicated_jacobians[index]
-                    if code <= right[0]:
-                        fraction = ((code - left[0])
-                                    / max(right[0] - left[0], 1e-9))
-                        jacobian = [[
-                            left[1][axis][channel] * (1.0 - fraction)
-                            + right[1][axis][channel] * fraction
-                            for channel in range(3)] for axis in range(3)]
-                        confidence = (left[2] * (1.0 - fraction)
-                                      + right[2] * fraction)
-                        return jacobian, confidence
-        nearby = sorted(
-            color_measurements,
-            key=lambda item: sum((item[0][channel] - code) ** 2
-                                 for channel in range(3)),
-        )[:12]
-        return fit_measured_jacobian(code, nearby)
+                scale = np.abs(normal[0])
+                for entry in normal[1:]:
+                    scale = np.maximum(scale, np.abs(entry))
+                scaled = scale > 1e-18
+                divisor = np.where(scaled, scale, 1.0)
+                scaled_inverse, valid = _np_mat_inv3(
+                    [entry / divisor for entry in normal])
+                inverse = [entry / divisor for entry in scaled_inverse]
+                usable = scaled & valid
+            fitted = []
+            for axis in range(3):
+                for channel in range(3):
+                    fitted.append(cross[axis * 3] * inverse[channel]
+                                  + cross[axis * 3 + 1] * inverse[3 + channel]
+                                  + cross[axis * 3 + 2] * inverse[6 + channel])
+            weighted_error = np.zeros(stop - start, dtype=np.float64)
+            for slot in range(12):
+                weight = weights[slot]
+                device_delta = device_deltas[slot]
+                xyz_delta = xyz_deltas[slot]
+                squares = np.zeros(stop - start, dtype=np.float64)
+                for axis in range(3):
+                    predicted = (fitted[axis * 3] * device_delta[:, 0]
+                                 + fitted[axis * 3 + 1] * device_delta[:, 1]
+                                 + fitted[axis * 3 + 2] * device_delta[:, 2])
+                    squares = squares + _pow2(xyz_delta[:, axis] - predicted)
+                weighted_error += weight * squares
+            fit = np.maximum(0.0, 1.0 - weighted_error
+                             / np.maximum(weighted_actual, 1e-12))
+            # Requiring 32 neighbours made a 425-patch set reach far outside
+            # the local HDR shoulder. Fade the fit only once its closest
+            # useful neighbourhood grows beyond 0.30 device units.
+            coverage = np.clip((0.30 - np.sqrt(bandwidth2)) / 0.12, 0.0, 1.0)
+            block_confidence = coverage * np.clip((fit - 0.35) / 0.55, 0.0, 1.0)
+            for entry in range(9):
+                jacobian[start:stop, entry] = np.where(usable, fitted[entry], 0.0)
+            confidence[start:stop] = np.where(usable, block_confidence, 0.0)
+            present[start:stop] = usable
+        return jacobian, confidence, present
+
+    def measured_local_jacobians(codes):
+        """Batch twin: fit or interpolate the local RGB-to-XYZ derivative."""
+        count = codes.shape[0]
+        jacobian = np.zeros((count, 9), dtype=np.float64)
+        confidence = np.zeros(count, dtype=np.float64)
+        present = np.zeros(count, dtype=bool)
+        pending = np.ones(count, dtype=bool)
+        if dedicated_jacobians:
+            centers = np.asarray([item[0] for item in dedicated_jacobians],
+                                 dtype=np.float64)
+            matrices = np.asarray(
+                [[item[1][axis][channel] for axis in range(3)
+                  for channel in range(3)] for item in dedicated_jacobians],
+                dtype=np.float64)
+            confidences = np.asarray([item[2] for item in dedicated_jacobians],
+                                     dtype=np.float64)
+            below = codes <= centers[0]
+            above = (~below) & (codes >= centers[-1])
+            for edge, side in ((below, 0), (above, -1)):
+                distance = (centers[0] - codes) if side == 0 else (codes - centers[-1])
+                reach = np.clip(1.0 - distance / 0.04, 0.0, 1.0)
+                # A zero reach is not a result: the scalar falls through to
+                # the neighbourhood fit there.
+                taken = edge & (reach > 0.0)
+                jacobian[taken] = matrices[side]
+                confidence[taken] = (confidences[side] * reach)[taken]
+                present |= taken
+                pending &= ~taken
+            interior = ~(below | above)
+            if len(dedicated_jacobians) > 1 and np.any(interior):
+                index, found = _np_first_at_or_above(centers, codes)
+                span = np.maximum(centers[index] - centers[index - 1], 1e-9)
+                fraction = (codes - centers[index - 1]) / span
+                taken = interior & found
+                blended = (matrices[index - 1] * (1.0 - fraction)[:, None]
+                           + matrices[index] * fraction[:, None])
+                jacobian[taken] = blended[taken]
+                confidence[taken] = (confidences[index - 1] * (1.0 - fraction)
+                                     + confidences[index] * fraction)[taken]
+                present |= taken
+                pending &= ~taken
+        if np.any(pending):
+            fitted, fitted_confidence, fitted_present = fit_local_jacobians(
+                codes[pending])
+            jacobian[pending] = fitted
+            confidence[pending] = fitted_confidence
+            present[pending] = fitted_present
+        return jacobian, confidence, present
 
     step = 2.0 / 1023.0
-    curves = [[], [], []]
-    for index in range(entries):
-        encoded = index / float(entries - 1)
-        target_nits = min(pq_to_nits(encoded), peak)
-        base = invert_luminance(target_nits)
-        rgb = [base, base, base]
-        actual = evaluate(rgb)
-        jacobian = [[0.0] * 3 for _axis in range(3)]
+    encoded = np.arange(entries, dtype=np.float64) / float(entries - 1)
+    target_nits = np.minimum(_np_pq_to_nits(encoded), peak)
+    base = invert_response(response_codes, response_values, target_nits)
+    rgb = np.stack([base, base, base], axis=1)
+    actual = evaluate(rgb)
+    columns = []
+    for channel in range(3):
+        probe = rgb.copy()
+        moved = np.minimum(1.0, base + step)
+        moved = np.where(moved == base, np.maximum(0.0, base - step), moved)
+        probe[:, channel] = moved
+        # Never zero: a base that clamps at 1.0 going up has room going down.
+        columns.append((evaluate(probe) - actual) / (moved - base)[:, None])
+    jacobian = []
+    for axis in range(3):
         for channel in range(3):
-            probe = list(rgb)
-            probe[channel] = min(1.0, base + step)
-            if probe[channel] == base:
-                probe[channel] = max(0.0, base - step)
-            result = evaluate(probe)
-            denominator = probe[channel] - base
-            for axis in range(3):
-                jacobian[axis][channel] = (result[axis] - actual[axis]) / denominator
-        measured_xyz = measured_xyz_at_code(base)
-        target_xyz = [target_nits * component for component in d65]
-        axis_rgb = measured_axis_rgb(target_xyz)
-        measured_pcs = [
-            sum(chad[axis * 3 + channel] * measured_xyz[channel] / white_y
-                for channel in range(3))
-            for axis in range(3)
-        ]
-        target = [
-            sum(chad[axis * 3 + channel] * target_xyz[channel] / white_y
-                for channel in range(3))
-            for axis in range(3)
-        ]
-        try:
-            delta = mat_vec_mul(mat_inv(jacobian),
-                                [target[axis] - measured_pcs[axis] for axis in range(3)])
-        except Exception:
-            delta = [0.0, 0.0, 0.0]
-        # Near black, isolated primary ramps have useful channel directions
-        # but their sum does not necessarily equal the display's measured
-        # neutral response. Normalize each XYZ row of their Jacobian so equal
-        # drive matches the dense neutral measurement at this code, then solve
-        # the white-point residual around that physical neutral anchor.
-        additive_at_neutral = additive_xyz([base, base, base])
-        normalized_jacobian = [
-            [measured_channel_derivative(channel, base)[axis]
-             * max(0.1, min(10.0, measured_xyz[axis]
-                            / max(additive_at_neutral[axis], 1e-12)))
-             for channel in range(3)]
-            for axis in range(3)
-        ]
-        try:
-            normalized_primary_delta = mat_vec_mul(
-                mat_inv(normalized_jacobian),
-                [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
-            )
-        except Exception:
-            normalized_primary_delta = delta
-
-        # For the shoulder and peak, use the derivative fitted from nearby
-        # measured mixed-color patches; isolated primaries do not model OLED
-        # power limiting at white.
-        local_jacobian, local_confidence = measured_local_jacobian(base)
-        if local_jacobian is not None and local_confidence > 0:
-            try:
-                local_delta = mat_vec_mul(
-                    mat_inv(local_jacobian),
-                    [target_xyz[axis] - measured_xyz[axis] for axis in range(3)],
-                )
-                if not raw_measurement_model:
-                    local_delta = [max(-0.025, min(0.025, value))
-                                   for value in local_delta]
-                delta = [local_delta[channel] * local_confidence
-                         + delta[channel] * (1.0 - local_confidence)
-                         for channel in range(3)]
-            except Exception:
-                pass
-        additive_full = peak * 0.005
-        additive_end = peak * 0.0125
-        target_fraction = target_nits / peak
-        if target_nits <= additive_full:
-            additive_weight = 1.0
-        elif target_nits < additive_end:
-            additive_weight = (1.0 - (target_nits - additive_full)
-                               / (additive_end - additive_full))
-        else:
-            additive_weight = 0.0
-        # A complete, stable same-loading probe group is a direct measurement
-        # of this derivative. The independent-primary fallback predates those
-        # probes and must not overwrite their solved delta in the low-light
-        # band. Partial confidence blends the two; charts without trustworthy
-        # local probes retain the established fallback unchanged.
-        if not raw_measurement_model:
-            additive_weight *= 1.0 - local_confidence
-        delta = [normalized_primary_delta[channel] * additive_weight
-                 + delta[channel] * (1.0 - additive_weight) for channel in range(3)]
-        delta = [max(-0.04, min(0.04, value)) for value in delta]
-
-        # Argyll's fitted Jacobian is useful through the uniquely invertible
-        # body of the response.  In the shadows it has too little meter signal,
-        # and in the OLED shoulder many device codes describe the same light
-        # output.  Use the absolute response recovered from the dense measured
-        # neutral series in those regions.  This is still a fully offline
-        # characterization solve; no post-profile readings are involved.
-        if target_nits <= first_nonzero_y:
-            model_weight = 0.0
-        elif target_nits < full_model_floor:
-            model_weight = ((target_nits - first_nonzero_y)
-                            / (full_model_floor - first_nonzero_y))
-        else:
-            if target_fraction <= 0.0125:
-                model_weight = 0.0
-            elif target_fraction < 0.025:
-                model_weight = (target_fraction - 0.0125) / 0.0125
-            elif target_fraction <= 0.40:
-                model_weight = 1.0
-            elif target_fraction < 0.75:
-                model_weight = 1.0 - (target_fraction - 0.40) / 0.35
-            else:
-                model_weight = min(1.0, (target_fraction - 0.75) / 0.15)
-        # Dedicated probes make the fitted model physically local even below
-        # the old 1.25%-of-peak cutoff. Raise its weight only as the actual
-        # measured signal becomes reliable; an incomplete or noisy probe set
-        # has low confidence and naturally falls back to the axis solution.
-        if dedicated_jacobians and local_confidence > 0.0:
-            signal_confidence = smoothstep((target_nits - 0.01) / 0.14)
-            model_weight = max(
-                model_weight, local_confidence * signal_confidence)
+            jacobian.append(columns[channel][:, axis])
+    measured_xyz = measured_xyz_at_codes(base)
+    target_xyz = target_nits[:, None] * np.asarray(d65, dtype=np.float64)
+    axis_rgb = measured_axis_rgb(target_xyz)
+    pcs_residual = np.empty((entries, 3), dtype=np.float64)
+    for axis in range(3):
+        pcs_residual[:, axis] = (
+            (chad[axis * 3] * target_xyz[:, 0] / white_y
+             + chad[axis * 3 + 1] * target_xyz[:, 1] / white_y
+             + chad[axis * 3 + 2] * target_xyz[:, 2] / white_y)
+            - (chad[axis * 3] * measured_xyz[:, 0] / white_y
+               + chad[axis * 3 + 1] * measured_xyz[:, 1] / white_y
+               + chad[axis * 3 + 2] * measured_xyz[:, 2] / white_y))
+    inverse, valid = _np_mat_inv3(jacobian)
+    delta = np.empty((entries, 3), dtype=np.float64)
+    for row in range(3):
+        delta[:, row] = np.where(
+            valid,
+            inverse[row * 3] * pcs_residual[:, 0]
+            + inverse[row * 3 + 1] * pcs_residual[:, 1]
+            + inverse[row * 3 + 2] * pcs_residual[:, 2],
+            0.0)
+    # Near black, isolated primary ramps have useful channel directions
+    # but their sum does not necessarily equal the display's measured
+    # neutral response. Normalize each XYZ row of their Jacobian so equal
+    # drive matches the dense neutral measurement at this code, then solve
+    # the white-point residual around that physical neutral anchor.
+    additive_at_neutral = additive_xyz(base)
+    derivatives = [measured_channel_derivative(channel, base)
+                   for channel in range(3)]
+    normalized_jacobian = []
+    for axis in range(3):
+        row_scale = np.clip(
+            measured_xyz[:, axis]
+            / np.maximum(additive_at_neutral[:, axis], 1e-12), 0.1, 10.0)
         for channel in range(3):
-            model_value = max(0.0, min(plateau_code, base + delta[channel]))
-            fallback_value = max(0.0, min(1.0, axis_rgb[channel]))
-            curves[channel].append(model_weight * model_value
-                                   + (1.0 - model_weight) * fallback_value)
+            normalized_jacobian.append(derivatives[channel][:, axis] * row_scale)
+    xyz_residual = target_xyz - measured_xyz
+    normalized_inverse, normalized_valid = _np_mat_inv3(normalized_jacobian)
+    normalized_primary_delta = np.empty((entries, 3), dtype=np.float64)
+    for row in range(3):
+        normalized_primary_delta[:, row] = np.where(
+            normalized_valid,
+            normalized_inverse[row * 3] * xyz_residual[:, 0]
+            + normalized_inverse[row * 3 + 1] * xyz_residual[:, 1]
+            + normalized_inverse[row * 3 + 2] * xyz_residual[:, 2],
+            delta[:, row])
+
+    # For the shoulder and peak, use the derivative fitted from nearby
+    # measured mixed-color patches; isolated primaries do not model OLED
+    # power limiting at white.
+    local_jacobian, local_confidence, local_present = measured_local_jacobians(base)
+    local_inverse, local_valid = _np_mat_inv3(
+        [local_jacobian[:, entry] for entry in range(9)])
+    use_local = local_present & (local_confidence > 0) & local_valid
+    local_delta = np.empty((entries, 3), dtype=np.float64)
+    for row in range(3):
+        local_delta[:, row] = (local_inverse[row * 3] * xyz_residual[:, 0]
+                               + local_inverse[row * 3 + 1] * xyz_residual[:, 1]
+                               + local_inverse[row * 3 + 2] * xyz_residual[:, 2])
+    if not raw_measurement_model:
+        local_delta = np.clip(local_delta, -0.025, 0.025)
+    delta = np.where(use_local[:, None],
+                     local_delta * local_confidence[:, None]
+                     + delta * (1.0 - local_confidence)[:, None],
+                     delta)
+    additive_full = peak * 0.005
+    additive_end = peak * 0.0125
+    target_fraction = target_nits / peak
+    additive_weight = np.where(
+        target_nits <= additive_full, 1.0,
+        np.where(target_nits < additive_end,
+                 1.0 - (target_nits - additive_full)
+                 / (additive_end - additive_full),
+                 0.0))
+    # A complete, stable same-loading probe group is a direct measurement
+    # of this derivative. The independent-primary fallback predates those
+    # probes and must not overwrite their solved delta in the low-light
+    # band. Partial confidence blends the two; charts without trustworthy
+    # local probes retain the established fallback unchanged.
+    if not raw_measurement_model:
+        additive_weight = additive_weight * (1.0 - local_confidence)
+    delta = (normalized_primary_delta * additive_weight[:, None]
+             + delta * (1.0 - additive_weight)[:, None])
+    delta = np.clip(delta, -0.04, 0.04)
+
+    # Argyll's fitted Jacobian is useful through the uniquely invertible
+    # body of the response.  In the shadows it has too little meter signal,
+    # and in the OLED shoulder many device codes describe the same light
+    # output.  Use the absolute response recovered from the dense measured
+    # neutral series in those regions.  This is still a fully offline
+    # characterization solve; no post-profile readings are involved.
+    body_weight = np.where(
+        target_fraction <= 0.0125, 0.0,
+        np.where(target_fraction < 0.025,
+                 (target_fraction - 0.0125) / 0.0125,
+                 np.where(target_fraction <= 0.40, 1.0,
+                          np.where(target_fraction < 0.75,
+                                   1.0 - (target_fraction - 0.40) / 0.35,
+                                   np.minimum(1.0, (target_fraction - 0.75)
+                                              / 0.15)))))
+    model_weight = np.where(
+        target_nits <= first_nonzero_y, 0.0,
+        np.where(target_nits < full_model_floor,
+                 (target_nits - first_nonzero_y)
+                 / (full_model_floor - first_nonzero_y),
+                 body_weight))
+    # Dedicated probes make the fitted model physically local even below
+    # the old 1.25%-of-peak cutoff. Raise its weight only as the actual
+    # measured signal becomes reliable; an incomplete or noisy probe set
+    # has low confidence and naturally falls back to the axis solution.
+    if dedicated_jacobians:
+        signal_confidence = _np_smoothstep((target_nits - 0.01) / 0.14)
+        model_weight = np.where(
+            local_confidence > 0.0,
+            np.maximum(model_weight, local_confidence * signal_confidence),
+            model_weight)
+    curves = []
+    for channel in range(3):
+        model_value = np.clip(base + delta[:, channel], 0.0, plateau_code)
+        fallback_value = np.clip(axis_rgb[:, channel], 0.0, 1.0)
+        curves.append((model_weight * model_value
+                       + (1.0 - model_weight) * fallback_value).tolist())
 
     for channel in range(3):
         previous = 0.0
@@ -4403,21 +4827,11 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
 
 def bradford_adaptation(source_white, destination_white):
     """Return a Bradford XYZ chromatic-adaptation matrix."""
-    bradford = [
-        [0.8951, 0.2664, -0.1614],
-        [-0.7502, 1.7135, 0.0367],
-        [0.0389, -0.0685, 1.0296],
-    ]
-    source_cone = mat_vec_mul(bradford, source_white)
-    destination_cone = mat_vec_mul(bradford, destination_white)
-    if min(abs(value) for value in source_cone) <= 1e-12:
+    adaptation = shared_bradford_adaptation(
+        source_white, destination_white, cone_tolerance=1e-12)
+    if adaptation is None:
         fail("Measured profile white cannot be chromatically adapted")
-    scale = [
-        [destination_cone[row] / source_cone[row] if row == column else 0.0
-         for column in range(3)]
-        for row in range(3)
-    ]
-    return mat_mul(mat_inv(bradford), mat_mul(scale, bradford))
+    return adaptation
 
 
 def profile_with_measured_chad(profile, black, white):
@@ -4631,7 +5045,7 @@ def windows_hdr_commuting_adjustment_luts(matrix, modeled_luts, black, white,
             weight = 1.0
         else:
             weight = (source_position - 0.25) / 0.10
-            weight = weight * weight * (3.0 - 2.0 * weight)
+            weight = smoothstep(weight)
         return 1.0 + weight * (factor - 1.0)
 
     luts = []
@@ -4905,40 +5319,26 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
         output_tables = []
         for channel in range(3):
             offset = input_start + channel * input_entries * 2
-            values = struct.unpack_from(">{}H".format(input_entries), payload, offset)
-            input_tables.append([value / 65535.0 for value in values])
+            input_tables.append(_np_mft2_tables(payload, offset, input_entries))
             offset = output_start + channel * output_entries * 2
-            values = struct.unpack_from(">{}H".format(output_entries), payload, offset)
-            output_tables.append([value / 65535.0 for value in values])
-        if any(table[index] > table[index + 1]
-               for table in input_tables + output_tables
-               for index in range(len(table) - 1)):
+            output_tables.append(_np_mft2_tables(payload, offset, output_entries))
+        if any(bool(np.any(table[:-1] > table[1:]))
+               for table in input_tables + output_tables):
             fail("ICC B2A PQ shaping requires monotonic shaper tables")
-        old_clut = [value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(clut_values), payload, clut_start)]
-
-        def evaluate_original(pcs):
-            coordinates = [
-                sample_table(input_tables[channel], pcs[channel] * xyz_to_mft)
-                for channel in range(3)
-            ]
-            clut_result = _sample_mft2_clut(old_clut, source_grid, coordinates)
-            return [sample_table(output_tables[channel], clut_result[channel])
-                    for channel in range(3)]
+        old_clut = _np_mft2_tables(payload, clut_start, clut_values)
 
         updated = bytearray(payload[:48])
         updated[10] = grid
         updated.extend(struct.pack(">HH", new_input_entries, new_output_entries))
         new_input_tables = []
+        shaper_index = np.arange(new_input_entries, dtype=np.float64)
         for channel in range(3):
-            quantized_table = []
-            for index in range(new_input_entries):
-                encoded_xyz = index / float(new_input_entries - 1)
-                pcs = encoded_xyz / xyz_to_mft
-                relative = max(0.0, pcs / d50[channel])
-                pq_value = nits_to_pq(relative * white_y)
-                quantized = max(0, min(65535, int(round(pq_value * 65535.0))))
-                quantized_table.append(quantized)
+            encoded_xyz = shaper_index / float(new_input_entries - 1)
+            pcs = encoded_xyz / xyz_to_mft
+            relative = np.maximum(0.0, pcs / d50[channel])
+            pq_value = _np_nits_to_pq(relative * white_y)
+            quantized_table = np.clip(np.rint(pq_value * 65535.0),
+                                      0.0, 65535.0).astype(np.int64)
 
             # Linear PCS has less than one full mft2 input-table interval at
             # 5% PQ on a bright HDR display. Sampling the analytic shaper only
@@ -4964,13 +5364,25 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
                 upper = quantized_table[anchor_low + 2] / 65535.0
                 if lower <= needed <= upper:
                     quantized_table[anchor_low + 1] = max(
-                        0, min(65535, int(round(needed * 65535.0))))
-            updated.extend(struct.pack(">{}H".format(new_input_entries),
-                                       *quantized_table))
-            new_input_tables.append(
-                [value / 65535.0 for value in quantized_table])
+                        0, min(65535, int(round(float(needed) * 65535.0))))
+            updated.extend(quantized_table.astype(">u2").tobytes())
+            new_input_tables.append(quantized_table / 65535.0)
 
-        def pq_from_clut_coordinates(coordinates):
+        denominator = float(grid - 1)
+        # Preserve the same normalized corridor width at each supported cube
+        # density. This intentionally evaluates to one cell at 33^3 and two
+        # cells at 65^3.
+        neutral_corridor_cells = max(
+            1, int(round(2.0 * denominator / 64.0)))
+        # The lattice is walked in chunks: a 65-cube is 274,625 nodes and the
+        # appliance cannot afford whole-cube float64 temporaries. Chunking is
+        # elementwise, so it changes no value.
+        node_count = grid ** 3
+        for chunk_start in range(0, node_count, _BATCH_CHUNK):
+            axes = _np_lattice_axes(grid, chunk_start,
+                                    min(node_count, chunk_start + _BATCH_CHUNK))
+            pq_coordinates = np.stack([axis / denominator for axis in axes],
+                                      axis=1)
             # A uniform XYZ input table has fewer than two samples below 5%
             # PQ even at the 32767-entry limit accepted by KWin.  Its linear
             # interpolation therefore produces different PQ coordinates for
@@ -4980,68 +5392,135 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
             # nearby chromatic coordinate retains its channel separation.
             # Collapsing these estimates to one median value would fix gray at
             # the cost of desaturating every color inside the corridor.
-            estimates = []
+            pcs = np.empty(pq_coordinates.shape, dtype=np.float64)
             for channel in range(3):
-                encoded_xyz = invert_table(new_input_tables[channel],
-                                           coordinates[channel])
-                pcs = encoded_xyz / xyz_to_mft
-                relative = max(0.0, pcs / d50[channel])
-                estimates.append(nits_to_pq(relative * white_y))
-            return estimates
-
-        denominator = float(grid - 1)
-        # Preserve the same normalized corridor width at each supported cube
-        # density. This intentionally evaluates to one cell at 33^3 and two
-        # cells at 65^3.
-        neutral_corridor_cells = max(
-            1, int(round(2.0 * denominator / 64.0)))
-        for red in range(grid):
-            for green in range(grid):
-                for blue in range(grid):
-                    pq_coordinates = [red / denominator, green / denominator, blue / denominator]
-                    corrected = pq_from_clut_coordinates(pq_coordinates)
-                    pcs = [
-                        d50[channel] * pq_to_nits(corrected[channel]) / white_y
-                        for channel in range(3)
-                    ]
-                    original = evaluate_original(pcs)
-                    spread = max(red, green, blue) - min(red, green, blue)
-                    if spread <= neutral_corridor_cells:
-                        # Keep this corridor linear in each axis. Trilinear
-                        # interpolation then reproduces an on-axis request
-                        # exactly, leaving the dense output shapers as the one
-                        # owner of neutral calibration. Storing the median at
-                        # every nearby node biases the interpolation between
-                        # diagonal nodes; a two-thousandth code bias at 20% PQ
-                        # is enough to create a large OLED shadow colour error.
-                        result = list(pq_coordinates)
-                    elif spread == neutral_corridor_cells + 1:
-                        anchored = pq_coordinates
-                        result = [(anchored[channel] + original[channel]) * 0.5
-                                  for channel in range(3)]
-                    else:
-                        result = original
-                    updated.extend(struct.pack(">3H", *(
-                        max(0, min(65535, int(round(value * 65535.0))))
-                        for value in result
-                    )))
+                encoded_xyz = _np_invert_table(new_input_tables[channel],
+                                               pq_coordinates[:, channel])
+                relative = np.maximum(0.0,
+                                      encoded_xyz / xyz_to_mft / d50[channel])
+                corrected = _np_nits_to_pq(relative * white_y)
+                pcs[:, channel] = (d50[channel] * _np_pq_to_nits(corrected)
+                                   / white_y)
+            coordinates = np.empty(pq_coordinates.shape, dtype=np.float64)
+            for channel in range(3):
+                coordinates[:, channel] = _np_sample_table(
+                    input_tables[channel], pcs[:, channel] * xyz_to_mft)
+            clut_result = _np_clut_trilinear(old_clut, source_grid, coordinates)
+            original = np.empty(pq_coordinates.shape, dtype=np.float64)
+            for channel in range(3):
+                original[:, channel] = _np_sample_table(
+                    output_tables[channel], clut_result[:, channel])
+            spread = (np.maximum(np.maximum(axes[0], axes[1]), axes[2])
+                      - np.minimum(np.minimum(axes[0], axes[1]), axes[2]))
+            # Inside the corridor, keep the axis linear. Trilinear
+            # interpolation then reproduces an on-axis request exactly,
+            # leaving the dense output shapers as the one owner of neutral
+            # calibration. Storing the median at every nearby node biases the
+            # interpolation between diagonal nodes; a two-thousandth code bias
+            # at 20% PQ is enough to create a large OLED shadow colour error.
+            result = np.where(
+                (spread <= neutral_corridor_cells)[:, None],
+                pq_coordinates,
+                np.where((spread == neutral_corridor_cells + 1)[:, None],
+                         (pq_coordinates + original) * 0.5,
+                         original))
+            updated.extend(_np_u16_bytes(result))
+        curve_position = (np.arange(new_output_entries, dtype=np.float64)
+                          / float(new_output_entries - 1))
         for channel in range(3):
-            output_curve = [
-                sample_table(incorporated_calibration[channel],
-                             index / float(new_output_entries - 1))
-                if incorporated_calibration is not None
-                else index / float(new_output_entries - 1)
-                for index in range(new_output_entries)
-            ]
-            updated.extend(struct.pack(">{}H".format(new_output_entries), *(
-                max(0, min(65535, int(round(value * 65535.0))))
-                for value in output_curve
-            )))
+            if incorporated_calibration is not None:
+                output_curve = _np_sample_table(
+                    np.asarray(incorporated_calibration[channel],
+                               dtype=np.float64), curve_position)
+            else:
+                output_curve = curve_position
+            updated.extend(_np_u16_bytes(output_curve))
         replacements[signature] = bytes(updated)
         changed = True
     if not changed:
         fail("KDE HDR calibrated profiles require an mft2 B2A transform")
     return rebuild_icc(profile, replacements)
+
+
+def _np_model_error(forward, device, target):
+    """Squared forward-model residual for a whole batch of device triples."""
+    difference = forward(device) - target
+    return (_pow2(difference[:, 0]) + _pow2(difference[:, 1])
+            + _pow2(difference[:, 2]))
+
+
+def _np_refine_newton(forward, target, initial):
+    """Damped Newton solve for a batch of cLUT nodes against a forward model.
+
+    This is the scalar per-node solver run as a masked batch: every active node
+    performs the same arithmetic in the same order it would alone -- one
+    forward evaluation, three probe evaluations for the central Jacobian, then
+    a halving line search that stops at the first strict improvement. A node
+    that converges, fails its Jacobian inversion or fails the line search is
+    dropped from the active set with its device value frozen, so the remaining
+    iterations neither touch it nor spend evaluations on it.
+    """
+    device = np.array(initial, dtype=np.float64, copy=True)
+    previous_error = _np_model_error(forward, device, target)
+    active = np.ones(device.shape[0], dtype=bool)
+    for _iteration in range(14):
+        index = np.nonzero(active)[0]
+        if index.size == 0:
+            break
+        node_device = device[index]
+        node_target = target[index]
+        node_error = previous_error[index]
+        actual = forward(node_device)
+        residual = node_target - actual
+        step = 0.002
+        columns = []
+        for axis in range(3):
+            probe = node_device.copy()
+            position = node_device[:, axis]
+            probe[:, axis] = np.where(position < 0.998,
+                                      np.minimum(1.0, position + step),
+                                      np.maximum(0.0, position - step))
+            measured = forward(probe)
+            # Never zero: a node below 0.998 cannot clamp at 1.0 after a
+            # 0.002 step, and one at or above it always has room to go down.
+            denominator = (probe[:, axis] - position)[:, None]
+            columns.append((measured - actual) / denominator)
+        entries = []
+        for row in range(3):
+            for column in range(3):
+                entries.append(columns[column][:, row])
+        inverse, valid = _np_mat_inv3(entries)
+        delta = np.empty(node_device.shape, dtype=np.float64)
+        for row in range(3):
+            delta[:, row] = (inverse[row * 3] * residual[:, 0]
+                             + inverse[row * 3 + 1] * residual[:, 1]
+                             + inverse[row * 3 + 2] * residual[:, 2])
+        # A singular Jacobian is the scalar solver's ValueError: that node
+        # stops here with the device value it already had.
+        searching = valid.copy()
+        accepted = np.zeros(index.size, dtype=bool)
+        accepted_scale = np.zeros(index.size, dtype=np.float64)
+        scale = 1.0
+        while scale >= 1.0 / 128.0:
+            live = np.nonzero(searching)[0]
+            if live.size == 0:
+                break
+            probe = np.clip(node_device[live] + scale * delta[live], 0.0, 1.0)
+            current_error = _np_model_error(forward, probe, node_target[live])
+            improved = current_error < node_error[live]
+            if np.any(improved):
+                chosen = live[improved]
+                node_device[chosen] = probe[improved]
+                node_error[chosen] = current_error[improved]
+                accepted[chosen] = True
+                accepted_scale[chosen] = scale
+                searching[chosen] = False
+            scale /= 2.0
+        device[index] = node_device
+        previous_error[index] = node_error
+        moved = np.max(np.abs(accepted_scale[:, None] * delta), axis=1)
+        active[index] = valid & accepted & (moved >= 0.000002)
+    return device
 
 
 def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
@@ -5088,110 +5567,60 @@ def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
         output_tables = []
         for channel in range(3):
             offset = input_start + channel * input_entries * 2
-            input_tables.append([value / 65535.0 for value in struct.unpack_from(
-                ">{}H".format(input_entries), payload, offset)])
+            input_tables.append(_np_mft2_tables(payload, offset, input_entries))
             offset = output_start + channel * output_entries * 2
-            output_tables.append([value / 65535.0 for value in struct.unpack_from(
-                ">{}H".format(output_entries), payload, offset)])
-        original_clut = [value / 65535.0 for value in struct.unpack_from(
-            ">{}H".format(clut_values), payload, clut_start)]
+            output_tables.append(_np_mft2_tables(payload, offset, output_entries))
+        original_clut = _np_mft2_tables(payload, clut_start, clut_values)
+        node_clut = original_clut.reshape(grid ** 3, 3)
 
-        def base_device(target):
-            coordinates = [
-                sample_table(input_tables[channel],
-                             target[channel] / (65535.0 / 32768.0))
-                for channel in range(3)
-            ]
-            pre_output = _sample_mft2_clut(original_clut, grid, coordinates)
-            return [sample_table(output_tables[channel], pre_output[channel])
-                    for channel in range(3)]
-
-        def model_error(device, target):
-            actual = forward(device)
-            return sum((actual[channel] - target[channel]) ** 2
-                       for channel in range(3))
-
-        def solve_node(target, initial):
-            device = list(initial)
-            previous_error = model_error(device, target)
-            for unused in range(14):
-                actual = forward(device)
-                residual = [target[channel] - actual[channel] for channel in range(3)]
-                step = 0.002
-                columns = []
-                for axis in range(3):
-                    probe = list(device)
-                    probe[axis] = (min(1.0, device[axis] + step)
-                                   if device[axis] < 0.998
-                                   else max(0.0, device[axis] - step))
-                    measured = forward(probe)
-                    denominator = probe[axis] - device[axis]
-                    columns.append([
-                        (measured[channel] - actual[channel]) / denominator
-                        for channel in range(3)
-                    ])
-                jacobian = [[columns[column][row] for column in range(3)]
-                            for row in range(3)]
-                try:
-                    delta = mat_vec_mul(mat_inv(jacobian), residual)
-                except ValueError:
-                    break
-                scale = 1.0
-                accepted = False
-                while scale >= 1.0 / 128.0:
-                    probe = [max(0.0, min(1.0,
-                                 device[channel] + scale * delta[channel]))
-                             for channel in range(3)]
-                    current_error = model_error(probe, target)
-                    if current_error < previous_error:
-                        device = probe
-                        previous_error = current_error
-                        accepted = True
-                        break
-                    scale /= 2.0
-                if (not accepted
-                        or max(abs(scale * value) for value in delta) < 0.000002):
-                    break
-            return device
-
-        refined_clut = []
         denominator = float(grid - 1)
-        for red in range(grid):
-            for green in range(grid):
-                for blue in range(grid):
-                    pq_coordinates = [red / denominator, green / denominator,
-                                      blue / denominator]
-                    target = [
-                        d50[channel] * pq_to_nits(pq_coordinates[channel]) / white_y
-                        for channel in range(3)
-                    ]
-                    initial = base_device(target)
-                    spread = max(red, green, blue) - min(red, green, blue)
-                    node = ((red * grid + green) * grid + blue) * 3
-                    original = original_clut[node:node + 3]
-                    if spread <= 2 or max(pq_coordinates) > 0.82:
-                        pre_output = original
-                    else:
-                        device = solve_node(target, initial)
-                        pre_output = [
-                            calibration_to_profile_value(output_tables[channel],
-                                                         device[channel])
-                            for channel in range(3)
-                        ]
-                    if spread in (3, 4):
-                        weight = (spread - 2) / 3.0
-                        pre_output = [
-                            original[channel] * (1.0 - weight)
-                            + pre_output[channel] * weight
-                            for channel in range(3)
-                        ]
-                    refined_clut.extend(pre_output)
-
+        node_count = grid ** 3
         updated = bytearray(payload[:clut_start])
-        updated.extend(struct.pack(">{}H".format(len(refined_clut)), *(
-            max(0, min(65535, int(round(value * 65535.0))))
-            for value in refined_clut
-        )))
+        for chunk_start in range(0, node_count, _BATCH_CHUNK):
+            chunk_stop = min(node_count, chunk_start + _BATCH_CHUNK)
+            axes = _np_lattice_axes(grid, chunk_start, chunk_stop)
+            pq_coordinates = np.stack([axis / denominator for axis in axes],
+                                      axis=1)
+            target = np.empty(pq_coordinates.shape, dtype=np.float64)
+            for channel in range(3):
+                target[:, channel] = (
+                    d50[channel] * _np_pq_to_nits(pq_coordinates[:, channel])
+                    / white_y)
+            # base_device: the reshaped table's own inverse, used as the Newton
+            # seed. The 65535/32768 divisor is the mft2 PCS encoding and is
+            # deliberately not the xyz_to_mft multiplier used elsewhere -- the
+            # two constants differ in their last bit.
+            coordinates = np.empty(target.shape, dtype=np.float64)
+            for channel in range(3):
+                coordinates[:, channel] = _np_sample_table(
+                    input_tables[channel],
+                    target[:, channel] / (65535.0 / 32768.0))
+            pre_clut = _np_clut_trilinear(original_clut, grid, coordinates)
+            initial = np.empty(target.shape, dtype=np.float64)
+            for channel in range(3):
+                initial[:, channel] = _np_sample_table(output_tables[channel],
+                                                       pre_clut[:, channel])
+            spread = (np.maximum(np.maximum(axes[0], axes[1]), axes[2])
+                      - np.minimum(np.minimum(axes[0], axes[1]), axes[2]))
+            original = node_clut[chunk_start:chunk_stop]
+            solve = ~((spread <= 2) | (pq_coordinates.max(axis=1) > 0.82))
+            pre_output = original.copy()
+            if np.any(solve):
+                device = _np_refine_newton(forward, target[solve],
+                                           initial[solve])
+                solved = np.empty(device.shape, dtype=np.float64)
+                for channel in range(3):
+                    solved[:, channel] = _np_calibration_to_profile_value(
+                        output_tables[channel], device[:, channel])
+                pre_output[solve] = solved
+            blend = (spread == 3) | (spread == 4)
+            if np.any(blend):
+                # Run this arithmetic even where pre_output is still the
+                # original: o*(1-w) + o*w is not guaranteed to be bitwise o.
+                weight = ((spread[blend] - 2) / 3.0)[:, None]
+                pre_output[blend] = (original[blend] * (1.0 - weight)
+                                     + pre_output[blend] * weight)
+            updated.extend(_np_u16_bytes(pre_output))
         updated.extend(payload[output_start:])
         replacements[signature] = bytes(updated)
         refined_payloads[payload] = replacements[signature]

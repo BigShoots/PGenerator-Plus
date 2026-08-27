@@ -43,11 +43,20 @@ import subprocess
 import sys
 import tempfile
 
-M1 = 2610.0 / 16384.0
-M2 = 2523.0 / 32.0
-C1 = 3424.0 / 4096.0
-C2 = 2413.0 / 128.0
-C3 = 2392.0 / 128.0
+from pgen_colour_math import (
+    ICTCP_XYZ_TO_RGB2020 as XYZ_TO_RGB2020,
+    D65_WHITE,
+    ICC_D50_WHITE,
+    bradford_adaptation,
+    delta_e_itp_xyz,
+    matrix3_inverse as mat_inv,
+    matrix3_multiply as mat_mul,
+    matrix3_vector_multiply as mat_vec,
+    pq_decode_nits,
+    pq_encode_nits,
+    sample_uniform_table as sample_values,
+    smoothstep,
+)
 
 D65_X = 0.3127
 D65_Y = 0.3290
@@ -194,39 +203,19 @@ def finalize_session(payload, output_dir):
 
 
 def pq_to_nits(value):
-    value = max(0.0, value)
-    power = value ** (1.0 / M2)
-    numerator = max(power - C1, 0.0)
-    denominator = C2 - C3 * power
-    if denominator <= 0:
-        return 10000.0
-    return 10000.0 * (numerator / denominator) ** (1.0 / M1)
+    return pq_decode_nits(
+        value, clamp_signal=False, nonpositive_result=10000.0)
 
 
 def nits_to_pq(nits):
-    y = max(0.0, min(1.0, nits / 10000.0)) ** M1
-    return ((C1 + C2 * y) / (1.0 + C3 * y)) ** M2
-
-
-XYZ_TO_RGB2020 = [[1.7166512, -0.3556708, -0.2533663],
-                  [-0.6666844, 1.6164812, 0.0157685],
-                  [0.0176399, -0.0427706, 0.9421031]]
-RGB_TO_LMS = [[1688.0 / 4096, 2146.0 / 4096, 262.0 / 4096],
-              [683.0 / 4096, 2951.0 / 4096, 462.0 / 4096],
-              [99.0 / 4096, 309.0 / 4096, 3688.0 / 4096]]
+    return pq_encode_nits(nits, clamp_peak=True)
 
 
 def de_itp(xyz_a, xyz_b):
     """BT.2124 colour difference between two absolute XYZ stimuli."""
-    def itp(xyz):
-        rgb = [sum(XYZ_TO_RGB2020[r][k] * xyz[k] for k in range(3)) for r in range(3)]
-        lms = [sum(RGB_TO_LMS[r][k] * max(0.0, rgb[k]) for k in range(3)) for r in range(3)]
-        lp = [nits_to_pq(c) for c in lms]
-        return (0.5 * lp[0] + 0.5 * lp[1],
-                0.5 * (6610 * lp[0] - 13613 * lp[1] + 7003 * lp[2]) / 4096.0,
-                (17933 * lp[0] - 17390 * lp[1] - 543 * lp[2]) / 4096.0)
-    pa, pb = itp(xyz_a), itp(xyz_b)
-    return 720.0 * math.sqrt(sum((x - y) ** 2 for x, y in zip(pa, pb)))
+    return delta_e_itp_xyz(
+        xyz_a, xyz_b, pq_encoder=nits_to_pq,
+        legacy_fold_delta_t_weight=True)
 
 
 REF_NITS = 203.0
@@ -390,11 +379,6 @@ def median(values):
     return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
-def smoothstep(value):
-    value = max(0.0, min(1.0, float(value)))
-    return value * value * (3.0 - 2.0 * value)
-
-
 def isotonic_values(values):
     """Pool adjacent violations without turning a local dip into a tail.
 
@@ -464,13 +448,6 @@ def invert_pairs(samples, target):
                 return x0
             return x0 + (target - y0) / (y1 - y0) * (x1 - x0)
     return samples[-1][0]
-
-
-def sample_values(values, position):
-    spot = max(0.0, min(1.0, position)) * (len(values) - 1)
-    low = min(int(spot), len(values) - 2)
-    fraction = spot - low
-    return values[low] * (1.0 - fraction) + values[low + 1] * fraction
 
 
 def invert_values(values, target):
@@ -592,27 +569,6 @@ def parse_targ(data, tags):
         if in_data and line.split():
             rows.append(line.split())
     return fmt, rows, text
-
-
-def mat_inv(m):
-    a, b, c = m[0]
-    d, e, f = m[1]
-    g, h, i = m[2]
-    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-    if abs(det) < 1e-12:
-        return None
-    return [[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
-            [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
-            [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det]]
-
-
-def mat_vec(m, v):
-    return [sum(m[r][k] * v[k] for k in range(3)) for r in range(3)]
-
-
-def mat_mul(a, b):
-    return [[sum(a[row][k] * b[k][column] for k in range(3))
-             for column in range(3)] for row in range(3)]
 
 
 def mhc2_residual_matrix(samples, damping):
@@ -1586,18 +1542,7 @@ def finetune(payload, output_dir):
     # residual rather than subtracting a matrix stage absent from that path.
     # Matrix-family MHC2 profiles have no B2A table and stop above.
     if color_samples and "B2A0" in tags:
-        bradford = ((0.8951, 0.2664, -0.1614),
-                    (-0.7502, 1.7135, 0.0367),
-                    (0.0389, -0.0685, 1.0296))
-        d65w = (0.9504559, 1.0, 1.0890578)
-        d50w = (0.9642, 1.0, 0.8249)
-        cone_src = mat_vec([list(r) for r in bradford], list(d65w))
-        cone_dst = mat_vec([list(r) for r in bradford], list(d50w))
-        scaled = [[cone_dst[r] / cone_src[r] * bradford[r][k] for k in range(3)]
-                  for r in range(3)]
-        brad_inv = mat_inv([list(r) for r in bradford])
-        adapt = [[sum(brad_inv[r][k] * scaled[k][c] for k in range(3))
-                  for c in range(3)] for r in range(3)]
+        adapt = bradford_adaptation(D65_WHITE, ICC_D50_WHITE)
         encode = 32768.0 / 65535.0
 
         def local_slope(wire):

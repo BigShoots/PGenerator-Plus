@@ -7,6 +7,21 @@ import re
 import struct
 import sys
 
+import numpy as np
+
+from pgen_colour_math import (
+    BRADFORD,
+    PQ_C1,
+    PQ_C2,
+    PQ_C3,
+    PQ_M1,
+    PQ_M2,
+    bradford_adaptation as shared_bradford_adaptation,
+    matrix3_inverse,
+    matrix3_multiply as mat_mul,
+    matrix3_vector_multiply as mat_vec,
+)
+
 
 GRID = 65
 
@@ -37,51 +52,40 @@ def tags(data):
 
 
 def inverse3(matrix):
-    a, b, c = matrix[0]
-    d, e, f = matrix[1]
-    g, h, i = matrix[2]
-    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-    if abs(det) < 1e-12:
+    # Keep the scalar operation order used by Main. BLAS/LAPACK is excellent
+    # for large systems, but a 3x3 inverse is setup work and changing its
+    # reduction order can move a value across a 16-bit quantisation boundary.
+    inverse = matrix3_inverse(matrix, determinant_tolerance=1e-12)
+    if inverse is None:
         fail("ICC matrix is singular")
-    return [
-        [(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
-        [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
-        [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det],
-    ]
+    return inverse
 
 
-def mat_vec(matrix, vector):
-    return [sum(matrix[row][column] * vector[column] for column in range(3)) for row in range(3)]
-
-
-def mat_mul(left, right):
-    return [[sum(left[row][k] * right[k][column] for k in range(3)) for column in range(3)]
-            for row in range(3)]
-
-
-BRADFORD = (
-    (0.8951, 0.2664, -0.1614),
-    (-0.7502, 1.7135, 0.0367),
-    (0.0389, -0.0685, 1.0296),
-)
+def mat_vec_many(matrix, vectors):
+    """Apply a 3x3 matrix without handing reduction order to BLAS."""
+    result = np.empty(vectors.shape, dtype=np.float64)
+    for row in range(3):
+        result[:, row] = (matrix[row][0] * vectors[:, 0]
+                          + matrix[row][1] * vectors[:, 1]
+                          + matrix[row][2] * vectors[:, 2])
+    return result
 
 
 def chromatic_adaptation(source_white, destination_white):
     """Bradford adaptation from one white point to another."""
-    source_cone = mat_vec(BRADFORD, source_white)
-    destination_cone = mat_vec(BRADFORD, destination_white)
-    if any(abs(value) < 1e-9 for value in source_cone):
+    adaptation = shared_bradford_adaptation(
+        source_white, destination_white, cone_tolerance=1e-9,
+        inclusive=False)
+    if adaptation is None:
         fail("Companion correction has a degenerate media white point")
-    scale = [[0.0] * 3 for _ in range(3)]
-    for index in range(3):
-        scale[index][index] = destination_cone[index] / source_cone[index]
-    return mat_mul(inverse3(BRADFORD), mat_mul(scale, BRADFORD))
+    return adaptation
 
 
-def table_sample(table, value):
-    value = max(0.0, min(1.0, value)) * (len(table) - 1)
-    lower = min(len(table) - 2, int(value))
-    fraction = value - lower
+def table_sample(table, values):
+    """Linear interpolation matching the scalar index/fraction clamping."""
+    position = np.clip(values, 0.0, 1.0) * (len(table) - 1)
+    lower = np.minimum(len(table) - 2, position.astype(np.intp))
+    fraction = position - lower
     return table[lower] * (1.0 - fraction) + table[lower + 1] * fraction
 
 
@@ -90,27 +94,25 @@ def curve_values(tag):
         fail("ICC tone curve is unsupported")
     count = u32(tag, 8)
     if count == 0:
-        return [0.0, 1.0]
+        return np.array([0.0, 1.0])
     if count == 1:
         gamma = struct.unpack_from(">H", tag, 12)[0] / 256.0
-        return [(index / 4095.0) ** gamma for index in range(4096)]
+        return (np.arange(4096) / 4095.0) ** gamma
     if 12 + count * 2 > len(tag):
         fail("ICC tone curve is truncated")
-    return [value / 65535.0 for value in struct.unpack_from(">{}H".format(count), tag, 12)]
+    return np.frombuffer(tag, dtype=">u2", count=count, offset=12) / 65535.0
 
 
-def inverse_curve(table, value):
-    value = max(0.0, min(1.0, value))
-    low, high = 0, len(table) - 1
-    while high - low > 1:
-        middle = (low + high) // 2
-        if table[middle] < value:
-            low = middle
-        else:
-            high = middle
-    y0, y1 = table[low], table[high]
-    fraction = 0.0 if y1 <= y0 else (value - y0) / (y1 - y0)
-    return (low + max(0.0, min(1.0, fraction))) / (len(table) - 1)
+def inverse_curve(table, values):
+    """Invert a non-decreasing tone curve, matching the scalar bisection."""
+    values = np.clip(values, 0.0, 1.0)
+    high = np.clip(np.searchsorted(table, values, side="left"), 1, len(table) - 1)
+    low = high - 1
+    y0 = table[low]
+    y1 = table[high]
+    span = y1 - y0
+    fraction = np.where(span > 0.0, (values - y0) / np.where(span > 0.0, span, 1.0), 0.0)
+    return (low + np.clip(fraction, 0.0, 1.0)) / (len(table) - 1)
 
 
 class MatrixTransform:
@@ -123,12 +125,14 @@ class MatrixTransform:
                 fail("ICC matrix fallback is unavailable")
             columns.append([s15(xyz, 8), s15(xyz, 12), s15(xyz, 16)])
             curves.append(curve_values(profile_tags.get(curve_name, b"")))
-        self.inverse = inverse3([[columns[column][row] for column in range(3)] for row in range(3)])
+        self.inverse = inverse3([[columns[column][row]
+                                 for column in range(3)] for row in range(3)])
         self.curves = curves
 
     def apply(self, xyz):
-        linear = mat_vec(self.inverse, xyz)
-        return [inverse_curve(self.curves[channel], linear[channel]) for channel in range(3)]
+        linear = mat_vec_many(self.inverse, xyz)
+        return np.stack([inverse_curve(self.curves[channel], linear[:, channel])
+                         for channel in range(3)], axis=1)
 
 
 class Lut16Transform:
@@ -138,7 +142,8 @@ class Lut16Transform:
         self.inputs, self.outputs, self.grid = tag[8], tag[9], tag[10]
         if self.inputs != 3 or self.outputs != 3 or self.grid < 2:
             fail("ICC BToA cLUT dimensions are unsupported")
-        self.matrix = [[s15(tag, 12 + (row * 3 + column) * 4) for column in range(3)] for row in range(3)]
+        self.matrix = [[s15(tag, 12 + (row * 3 + column) * 4)
+                        for column in range(3)] for row in range(3)]
         input_entries, output_entries = struct.unpack_from(">HH", tag, 48)
         if input_entries < 2 or output_entries < 2:
             fail("ICC BToA cLUT tables are invalid")
@@ -148,62 +153,59 @@ class Lut16Transform:
             size = input_entries * 2
             if offset + size > len(tag):
                 fail("ICC BToA input table is truncated")
-            self.input_tables.append([value / 65535.0 for value in struct.unpack_from(">{}H".format(input_entries), tag, offset)])
+            self.input_tables.append(
+                np.frombuffer(tag, dtype=">u2", count=input_entries, offset=offset) / 65535.0)
             offset += size
         count = self.grid ** 3 * 3
         size = count * 2
         if offset + size > len(tag):
             fail("ICC BToA cLUT is truncated")
-        self.clut = [value / 65535.0 for value in struct.unpack_from(">{}H".format(count), tag, offset)]
+        self.clut = (np.frombuffer(tag, dtype=">u2", count=count, offset=offset) / 65535.0
+                     ).reshape(self.grid, self.grid, self.grid, 3)
         offset += size
         self.output_tables = []
         for _ in range(3):
             size = output_entries * 2
             if offset + size > len(tag):
                 fail("ICC BToA output table is truncated")
-            self.output_tables.append([value / 65535.0 for value in struct.unpack_from(">{}H".format(output_entries), tag, offset)])
+            self.output_tables.append(
+                np.frombuffer(tag, dtype=">u2", count=output_entries, offset=offset) / 65535.0)
             offset += size
 
     def apply(self, xyz):
         # ICC v2 LUT16 encodes PCS XYZ over 0.0 through 1.99997.
-        values = mat_vec(self.matrix, xyz)
-        values = [table_sample(self.input_tables[channel], values[channel] / (65535.0 / 32768.0)) for channel in range(3)]
-        base = []
-        fraction = []
-        for value in values:
-            position = max(0.0, min(1.0, value)) * (self.grid - 1)
-            lower = min(self.grid - 2, int(position))
-            base.append(lower)
-            fraction.append(position - lower)
-        result = [0.0, 0.0, 0.0]
+        values = mat_vec_many(self.matrix, xyz)
+        values = np.stack([table_sample(self.input_tables[channel],
+                                        values[:, channel] / (65535.0 / 32768.0))
+                           for channel in range(3)], axis=1)
+        position = np.clip(values, 0.0, 1.0) * (self.grid - 1)
+        base = np.minimum(self.grid - 2, position.astype(np.intp))
+        fraction = position - base
+        result = np.zeros_like(values)
         for corner in range(8):
-            weight = 1.0
+            weight = np.ones(len(values))
             coordinate = []
             for axis in range(3):
                 if corner & (1 << axis):
-                    weight *= fraction[axis]
-                    coordinate.append(base[axis] + 1)
+                    weight = weight * fraction[:, axis]
+                    coordinate.append(base[:, axis] + 1)
                 else:
-                    weight *= 1.0 - fraction[axis]
-                    coordinate.append(base[axis])
-            offset = ((coordinate[0] * self.grid + coordinate[1]) * self.grid + coordinate[2]) * 3
-            for channel in range(3):
-                result[channel] += weight * self.clut[offset + channel]
-        return [table_sample(self.output_tables[channel], result[channel]) for channel in range(3)]
+                    weight = weight * (1.0 - fraction[:, axis])
+                    coordinate.append(base[:, axis])
+            result += weight[:, None] * self.clut[coordinate[0], coordinate[1], coordinate[2]]
+        return np.stack([table_sample(self.output_tables[channel], result[:, channel])
+                         for channel in range(3)], axis=1)
 
 
-def pq_linear(value):
-    m1 = 2610.0 / 16384.0
-    m2 = 2523.0 / 32.0
-    c1 = 3424.0 / 4096.0
-    c2 = 2413.0 / 128.0
-    c3 = 2392.0 / 128.0
-    power = max(0.0, min(1.0, value)) ** (1.0 / m2)
-    return (max(power - c1, 0.0) / max(c2 - c3 * power, 1e-12)) ** (1.0 / m1)
+def pq_linear(values):
+    power = np.clip(values, 0.0, 1.0) ** (1.0 / PQ_M2)
+    return (np.maximum(power - PQ_C1, 0.0)
+            / np.maximum(PQ_C2 - PQ_C3 * power, 1e-12)) ** (1.0 / PQ_M1)
 
 
-def srgb_linear(value):
-    return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+def srgb_linear(values):
+    return np.where(values <= 0.04045, values / 12.92,
+                    ((np.maximum(values, 0.04045) + 0.055) / 1.055) ** 2.4)
 
 
 PCS_WHITE = (0.9642, 1.0, 0.8249)
@@ -267,16 +269,16 @@ def source_xyz(rgb, signal_mode, white_nits, adaptation):
         # while PQ is absolute with 1.0 representing 10,000 cd/m2. Scale the
         # requested absolute light level into the selected profile's relative
         # PCS before evaluating its PCS-to-device transform.
-        linear = [min(1.0, pq_linear(value) * 10000.0 / white_nits) for value in rgb]
-        absolute_xyz = mat_vec(BT2020_TO_XYZ, linear)
+        linear = np.minimum(1.0, pq_linear(rgb) * 10000.0 / white_nits)
+        absolute_xyz = mat_vec_many(BT2020_TO_XYZ, linear)
     else:
-        linear = [srgb_linear(value) for value in rgb]
-        absolute_xyz = mat_vec(SRGB_TO_XYZ, linear)
+        linear = srgb_linear(rgb)
+        absolute_xyz = mat_vec_many(SRGB_TO_XYZ, linear)
     # Display BToA tables are relative-colorimetric and D50-referenced. Adapt
     # the requested absolute XYZ with the same transform the profile was built
     # with, so D65 is corrected to D65 rather than being remapped towards the
     # display's uncalibrated native white.
-    return mat_vec(adaptation, absolute_xyz)
+    return mat_vec_many(adaptation, absolute_xyz)
 
 
 def make_transform(profile_path, method, signal_mode):
@@ -305,18 +307,25 @@ def write_atomic(output_path, payload):
     os.replace(temporary, output_path)
 
 
+def lattice(size, red_fastest):
+    """All grid nodes as an (size^3, 3) array in the requested nesting order."""
+    axis = np.arange(size) / (size - 1.0)
+    if red_fastest:
+        blue, green, red = np.meshgrid(axis, axis, axis, indexing="ij")
+    else:
+        red, green, blue = np.meshgrid(axis, axis, axis, indexing="ij")
+    return np.stack([red.ravel(), green.ravel(), blue.ravel()], axis=1)
+
+
 def build(profile_path, method, signal_mode, output_path):
     transform, white_nits, adaptation = make_transform(profile_path, method, signal_mode)
+    rgb = lattice(GRID, red_fastest=False)
+    corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
+    quantized = np.rint(np.clip(corrected, 0.0, 1.0) * 65535.0).astype(">u2")
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
-    for red in range(GRID):
-        for green in range(GRID):
-            for blue in range(GRID):
-                rgb = (red / (GRID - 1.0), green / (GRID - 1.0), blue / (GRID - 1.0))
-                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
-                for value in corrected:
-                    output.extend(struct.pack(">H", int(round(max(0.0, min(1.0, value)) * 65535.0))))
+    output.extend(quantized.tobytes())
     write_atomic(output_path, output)
 
 
@@ -334,13 +343,10 @@ def build_cube(profile_path, method, signal_mode, output_path, size, title=None)
     # Standard .cube node order is red-fastest/blue-slowest -- the reverse of
     # the PGLT payload above. Keeping the PGLT nesting here would hand external
     # tools an R<->B swapped lattice whose neutral axis still looks correct.
-    for blue in range(size):
-        for green in range(size):
-            for red in range(size):
-                rgb = (red / (size - 1.0), green / (size - 1.0), blue / (size - 1.0))
-                corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
-                lines.append(" ".join(
-                    "{:.9f}".format(max(0.0, min(1.0, value))) for value in corrected))
+    rgb = lattice(size, red_fastest=True)
+    corrected = np.clip(transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation)), 0.0, 1.0)
+    for row in corrected:
+        lines.append("{:.9f} {:.9f} {:.9f}".format(row[0], row[1], row[2]))
     write_atomic(output_path, "\n".join(lines) + "\n")
 
 

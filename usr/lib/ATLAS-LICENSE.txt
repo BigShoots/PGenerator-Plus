@@ -1,0 +1,60 @@
+ATLAS 3.10.2 runtime licence notice
+
+The Raspberry Pi 4 NumPy runtime uses ATLAS/BLAS/LAPACK shared libraries
+built from ATLAS 3.10.2. The corresponding source is available from
+https://math-atlas.sourceforge.net/.
+
+Copyright:
+
+1997-2016 R. Clint Whaley
+1999-2000, 2004 Antoine P. Petitet
+2000-2001 Peter Soendergaard
+2009, 2012 Siju Samuel
+2001 Julian Ruhe
+2010 IBM Corporation
+1998 Jeff Horner
+2011 Md. Rakib Hasan
+2010-2011 Vesperix Corporation
+2009 Chad Zalkin
+2011 Md. Majedul Haque Sujon
+1999 The Australian National University
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. The name of the University, the ATLAS group, or the names of its
+   contributors may not be used to endorse or promote products derived from
+   this software without specific written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE UNIVERSITY OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The reference BLAS sources included in ATLAS carry the following notice:
+
+Copyright 1992-2017 The University of Tennessee and The University of
+Tennessee Research Foundation; 2000-2017 The University of California
+Berkeley; 2006-2017 The University of Colorado Denver.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that source redistributions retain the
+copyright notice, conditions and disclaimer; binary redistributions reproduce
+them in documentation or other materials; and copyright-holder or contributor
+names are not used for endorsement without prior written permission.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OF MERCHANTABILITY OR
+FITNESS FOR A PARTICULAR PURPOSE. THE COPYRIGHT OWNER OR CONTRIBUTORS ARE NOT
+LIABLE FOR DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY OR CONSEQUENTIAL
+DAMAGES, HOWEVER CAUSED, ARISING FROM USE OF THE SOFTWARE.

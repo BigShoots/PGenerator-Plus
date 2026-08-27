@@ -955,7 +955,10 @@ apply_dv_absolute_greyscale_targets() {
  [[ -f "$STEPS_FILE" ]] || return 1
  is_number "$white_y" || return 1
  STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
-import json, math, os, tempfile
+import json, math, os, sys, tempfile
+
+sys.path.insert(0, "/usr/bin")
+from pgen_colour_math import pq_decode_nits, pq_encode_nits
 
 def finite(value):
     return value == value and value not in (float("inf"), float("-inf"))
@@ -976,29 +979,14 @@ except Exception:
 if not isinstance(steps, list):
     raise SystemExit(1)
 
-m1 = 2610.0 / 16384.0
-m2 = 2523.0 / 32.0
-c1 = 3424.0 / 4096.0
-c2 = 2413.0 / 128.0
-c3 = 2392.0 / 128.0
 def pq_decode_normalized(code):
-    code = max(0.0, min(1.0, float(code)))
-    if code <= 0:
-        return 0.0
-    p = code ** (1 / m2)
-    num = max(p - c1, 0.0)
-    den = c2 - c3 * p
-    if den <= 0:
-        return 10000.0
-    return 10000.0 * ((num / den) ** (1 / m1))
+    return pq_decode_nits(float(code))
 
 def pq_encode_normalized(nits):
     nits = max(0.0, min(10000.0, float(nits)))
     if nits <= 0:
         return 0.0
-    linear = nits / 10000.0
-    p = linear ** m1
-    return ((c1 + c2 * p) / (1 + c3 * p)) ** m2
+    return pq_encode_nits(nits, clamp_peak=True)
 
 def percent_from_step(step, channel):
     for key in ("signal_%s_pct" % channel, "stimulus", "analysis_ire", "target_ire", "ire"):

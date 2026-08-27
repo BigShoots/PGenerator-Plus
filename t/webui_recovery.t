@@ -35,6 +35,8 @@ $golden =~ s/\s+\z//;
 my $temp = tempdir("pgenerator-webui-recovery-XXXXXX", TMPDIR => 1, CLEANUP => 1);
 copy(File::Spec->catfile($shared, "webui.pm"), File::Spec->catfile($temp, "webui.pm"))
     or die "cannot stage webui.pm: $!";
+copy(File::Spec->catfile($shared, "PGMath.pm"), File::Spec->catfile($temp, "PGMath.pm"))
+    or die "cannot stage PGMath.pm: $!";
 copy(File::Spec->catfile($shared, "PGICCProfile.pm"), File::Spec->catfile($temp, "PGICCProfile.pm"))
     or die "cannot stage PGICCProfile.pm: $!";
 copy(File::Spec->catfile($shared, "icc_profile.html"), File::Spec->catfile($temp, "icc_profile.html"))

@@ -8,6 +8,15 @@ use IO::Select ();
 use IO::Socket::INET ();
 use MIME::Base64 ();
 use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(
+ akima_interpolate delta_e_itp_xyz pq_constants pq_decode_nits
+ pq_decode_normalized pq_encode_normalized xyz_to_ictcp
+);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -1223,28 +1232,6 @@ sub clamp_unit {
  return 0 if($value < 0);
  return 1 if($value > 1);
  return $value;
-}
-
-sub pq_decode_normalized {
- my ($signal)=@_;
- $signal=clamp_unit($signal);
- return 0 if($signal <= 0);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $n=$signal ** (1/$m2);
- my $den=$c2 - $c3*$n;
- return 0 if($den <= 0);
- my $l=($n - $c1)/$den;
- $l=0 if($l < 0);
- return clamp_unit($l ** (1/$m1));
-}
-
-sub pq_decode_nits {
- my ($signal)=@_;
- return pq_decode_normalized($signal) * 10000;
 }
 
 sub target_gamma_linear {
@@ -2711,53 +2698,6 @@ sub reading_xyz {
  my $Y=luminance($reading);
  return (undef,undef,undef) if(!defined($Y) || !defined($reading->{"x"}) || !defined($reading->{"y"}));
  return xyz_from_xy_y($reading->{"x"},$reading->{"y"},$Y);
-}
-
-sub pq_encode_normalized {
- my ($nits)=@_;
- $nits=0 if(!defined($nits));
- $nits+=0;
- return 0 if($nits <= 0);
- $nits=10000 if($nits > 10000);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l ** $m1;
- return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
-}
-
-sub xyz_to_ictcp {
- my ($X,$Y,$Z)=@_;
- $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
- my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
- my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
- my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
- $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
- my $L=(1688*$R+2146*$G+262*$B)/4096;
- my $M=(683*$R+2951*$G+462*$B)/4096;
- my $S=(99*$R+309*$G+3688*$B)/4096;
- my $Lp=pq_encode_normalized($L);
- my $Mp=pq_encode_normalized($M);
- my $Sp=pq_encode_normalized($S);
- return {
-  I=>0.5*$Lp+0.5*$Mp,
-  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
-  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096
- };
-}
-
-sub delta_e_itp_xyz {
- my ($X1,$Y1,$Z1,$X2,$Y2,$Z2)=@_;
- return undef if(!defined($X1) || !defined($Y1) || !defined($Z1) || !defined($X2) || !defined($Y2) || !defined($Z2));
- my $a=xyz_to_ictcp($X1,$Y1,$Z1);
- my $b=xyz_to_ictcp($X2,$Y2,$Z2);
- my $dI=$a->{"I"}-$b->{"I"};
- my $dT=$a->{"T"}-$b->{"T"};
- my $dP=$a->{"P"}-$b->{"P"};
- return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
 }
 
 sub delta_e_itp_gamma {
@@ -13349,110 +13289,7 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 #                                      defined, just less smooth at the
 #                                      very ends)
 sub lg_autocal_26_akima_interpolate {
- my ($xs_ref,$ys_ref,$min_idx,$max_idx)=@_;
- $min_idx=$xs_ref->[0] if(!defined($min_idx));
- $max_idx=$xs_ref->[-1] if(!defined($max_idx));
- return [] if(!defined($xs_ref) || ref($xs_ref) ne "ARRAY");
- return [] if(!defined($ys_ref) || ref($ys_ref) ne "ARRAY");
- return [] if(scalar(@$xs_ref) != scalar(@$ys_ref));
- return [] if(scalar(@$xs_ref) < 4);
- # Coerce to floats
- my @xs=map { 0+$_ } @$xs_ref;
- my @ys=map { 0+$_ } @$ys_ref;
- my $n=scalar(@xs);
- # Edge case: only 2 real slopes (n=4 anchors gives n-1=3 slopes,
- # so the n<4 check above already filters n<4; for n=4 we have
- # exactly 3 slopes, scipy handles it via the refined formula
- # below).
- # 1) Segment slopes
- my @m;
- for my $i (0..$n-2) {
-  my $dx=$xs[$i+1]-$xs[$i];
-  push @m, ($dx != 0) ? ($ys[$i+1]-$ys[$i])/$dx : 0;
- }
- # 2) Pad the slope array with 2 extrapolated slopes on each side.
- # scipy's Akima1DInterpolator uses this padding so the interior
- # formula at i=0 and i=n-1 doesn't need a special case.
- my @mpad;
- $mpad[0]=2*$m[0] - $m[1];
- $mpad[1]=2*$mpad[0] - $m[0];
- for my $i (0..$n-2) { push @mpad, $m[$i]; }
- $mpad[$n+1]=2*$m[$n-2] - $m[$n-3];
- $mpad[$n+2]=2*$mpad[$n+1] - $m[$n-2];
- # 3) Initial derivative estimate: t[i] = 0.5 * (mpad[i+3] + mpad[i]).
- # For linear data this gives the exact slope; for non-linear data
- # it's a midpoint average that the refinement step below will
- # correct via the magnitude-weighted Akima formula.
- my @t;
- for my $i (0..$n-1) {
-  $t[$i]=0.5*($mpad[$i+3] + $mpad[$i]);
- }
- # 4) Refine with the magnitude-weighted Akima formula. scipy uses
- # w1 = |m[i] - m[i-1]| and w2 = |m[i-1] - m[i-2]| (not the textbook
- # Akima 1970 w1' = |m[i+1] - m[i]|). For linear data both w1 and w2
- # are 0, so t stays at the initial value (which IS the correct
- # slope), giving exact linear results -- this is the key property
- # scipy preserves and we need to preserve too.
- my $break_mult=1e-9;
- my @diff=map { abs($mpad[$_+1] - $mpad[$_]) } (0..$#mpad-1);
- # Find the max of (f1+f2) for the relative threshold
- my $f12_max=0;
- for my $i (0..$n-1) {
-  my $f1=$diff[$i+2];  # |mpad[i+2] - mpad[i+1]|
-  my $f2=$diff[$i];    # |mpad[i+1] - mpad[i]|
-  my $f12=$f1+$f2;
-  $f12_max=$f12 if($f12 > $f12_max);
- }
- $f12_max=-1 if($f12_max == 0);
- for my $i (0..$n-1) {
-  my $f1=$diff[$i+2];
-  my $f2=$diff[$i];
-  my $f12=$f1+$f2;
-  # Skip the refinement if f12 is too small (numerically unstable)
-  # or if all f12 are 0 (the linear case where t stays at the
-  # initial midpoint estimate, which IS the exact slope -- this
-  # is the property that gives exact linear results on linear data).
-  next if($f12 <= 0);
-  next if($f12_max > 0 && $f12 <= $break_mult * $f12_max);
-  # In padded indices: m_padded[i+1] and m_padded[i+2] correspond to
-  # the real slopes. For i=0, mpad[1] is the left padding (not a
-  # real slope), so the formula's anchors are mpad[1] (fake) and
-  # mpad[2] (real_m[0]). For i=1, mpad[2]=real_m[0], mpad[3]=real_m[1].
-  # scipy's formula: t[i] = mpad[i+1] + (f2/f12) * (mpad[i+2] - mpad[i+1])
-  $t[$i]=$mpad[$i+1] + ($f2/$f12)*($mpad[$i+2] - $mpad[$i+1]);
- }
- # 3) Hermite cubic per integer index in [$min_idx, $max_idx]
- my @out;
- for my $qx ($min_idx..$max_idx) {
-  if($qx <= $xs[0]) {
-   push @out, $ys[0];
-   next;
-  }
-  if($qx >= $xs[-1]) {
-   push @out, $ys[-1];
-   next;
-  }
-  # Find segment (linear scan; for the DPG use case n is small enough)
-  my $i=0;
-  for my $k (0..$n-2) {
-   if($xs[$k+1] >= $qx) { $i=$k; last; }
-  }
-  my $h=$xs[$i+1]-$xs[$i];
-  if($h == 0) {
-   push @out, $ys[$i];
-   next;
-  }
-  my $s=($qx-$xs[$i])/$h;
-  my $s2=$s*$s;
-  my $s3=$s2*$s;
-  my $h00=2*$s3 - 3*$s2 + 1;
-  my $h10=$s3 - 2*$s2 + $s;
-  my $h01=-2*$s3 + 3*$s2;
-  my $h11=$s3 - $s2;
-  my $val=$h00*$ys[$i] + $h10*$h*$t[$i] + $h01*$ys[$i+1] + $h11*$h*$t[$i+1];
-  push @out, $val;
- }
- return \@out;
+ return akima_interpolate(@_);
 }
 
 # Build the LG HDR20 1D DPG LUT (3072 values = 3 channels x 1024 points,
@@ -14681,11 +14518,7 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 our %LG_AUTOCAL_PQ_GAMMA_TABLE;
 sub lg_autocal_pq_gamma_table_init {
  return 1 if(scalar(keys %LG_AUTOCAL_PQ_GAMMA_TABLE) >= 256);
- my $m1=2610.0/16384.0;       # 0.1593017578125
- my $m2=2523.0/32.0;          # 78.84375
- my $c1=3424.0/4096.0;        # 0.8359375
- my $c2=2413.0/128.0;         # 18.8515625  (NOT 2413/32=75.40625)
- my $c3=2392.0/128.0;         # 18.6875     (NOT 2392/32=74.75)
+ my ($m1,$m2,$c1,$c2,$c3)=pq_constants();
  my $m1_inv=1.0/$m1;          # 6.277
  my $m2_inv=1.0/$m2;          # 0.01268
  for(my $i=0;$i<256;$i++) {

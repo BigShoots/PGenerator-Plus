@@ -20,6 +20,12 @@
 use strict;
 use warnings;
 use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(pq_decode_nits);
 
 my $STATE_FILE = "/tmp/pgen_sim_pattern.json";
 my $SIM_PORT   = 99;
@@ -94,17 +100,6 @@ sub gauss {
  return $sigma * sqrt(-2*log($u1)) * cos(2*3.14159265358979*$u2);
 }
 
-sub pq_eotf {
- my ($v) = @_;                     # 0..1 signal -> absolute cd/m^2
- $v = 0 if ($v < 0); $v = 1 if ($v > 1);
- my ($m1,$m2,$c1,$c2,$c3) = (2610/16384, 2523/4096*128, 3424/4096, 2413/4096*32, 2392/4096*32);
- my $p = $v ** (1/$m2);
- my $num = $p - $c1; $num = 0 if ($num < 0);
- my $den = $c2 - $c3*$p;
- return 0 if ($den <= 0);
- return 10000 * (($num/$den) ** (1/$m1));
-}
-
 sub hlg_inv_oetf {
  my ($v) = @_;                     # 0..1 signal -> 0..1 scene linear
  $v = 0 if ($v < 0); $v = 1 if ($v > 1);
@@ -174,7 +169,7 @@ sub measure_xyz {
  my ($mtx, $black, @lin);
  if ($mode eq "hdr10" || $mode eq "dv") {
   $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
-  @lin = map { panel_tonemap(pq_eotf($_), $PANEL{hdr_peak}) } ($r,$g,$b);
+  @lin = map { panel_tonemap(pq_decode_nits($_), $PANEL{hdr_peak}) } ($r,$g,$b);
  } elsif ($mode eq "hlg") {
   $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
   my @scene = map { hlg_inv_oetf($_) } ($r,$g,$b);

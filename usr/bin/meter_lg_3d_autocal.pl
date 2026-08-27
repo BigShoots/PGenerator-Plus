@@ -10,6 +10,16 @@ use JSON::PP ();
 use MIME::Base64 ();
 use POSIX qw(strftime);
 use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(
+ delta_e_itp_xyz matrix3_inverse matrix3_multiply
+ matrix3_vector_multiply pq_decode_normalized pq_encode_normalized
+ xyz_to_ictcp
+);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -644,38 +654,15 @@ sub matrix_from_columns {
 }
 
 sub matrix_mul_vec {
- my ($m,$v)=@_;
- return [
-  $m->[0][0]*$v->[0]+$m->[0][1]*$v->[1]+$m->[0][2]*$v->[2],
-  $m->[1][0]*$v->[0]+$m->[1][1]*$v->[1]+$m->[1][2]*$v->[2],
-  $m->[2][0]*$v->[0]+$m->[2][1]*$v->[1]+$m->[2][2]*$v->[2],
- ];
+ return matrix3_vector_multiply(@_);
 }
 
 sub matrix_mul {
- my ($a,$b)=@_;
- my @m;
- for(my $r=0;$r<3;$r++) {
-  for(my $c=0;$c<3;$c++) {
-   $m[$r][$c]=$a->[$r][0]*$b->[0][$c]+$a->[$r][1]*$b->[1][$c]+$a->[$r][2]*$b->[2][$c];
-  }
- }
- return \@m;
+ return matrix3_multiply(@_);
 }
 
 sub matrix_inverse {
- my ($m)=@_;
- my $a=$m->[0][0]; my $b=$m->[0][1]; my $c=$m->[0][2];
- my $d=$m->[1][0]; my $e=$m->[1][1]; my $f=$m->[1][2];
- my $g=$m->[2][0]; my $h=$m->[2][1]; my $i=$m->[2][2];
- my $det=$a*($e*$i-$f*$h)-$b*($d*$i-$f*$g)+$c*($d*$h-$e*$g);
- return undef if(abs($det) < 1e-12);
- my $id=1/$det;
- return [
-  [ ($e*$i-$f*$h)*$id, ($c*$h-$b*$i)*$id, ($b*$f-$c*$e)*$id ],
-  [ ($f*$g-$d*$i)*$id, ($a*$i-$c*$g)*$id, ($c*$d-$a*$f)*$id ],
-  [ ($d*$h-$e*$g)*$id, ($b*$g-$a*$h)*$id, ($a*$e-$b*$d)*$id ],
- ];
+ return matrix3_inverse(@_);
 }
 
 my %rgb_to_xyz_matrix_cache;
@@ -746,18 +733,7 @@ sub xyz_to_rgb_inverse_for_gamut {
 
 sub st2084_pq_to_linear {
  my ($signal)=@_;
- $signal=clamp($signal,0,1);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $n=$signal ** (1/$m2);
- my $den=$c2 - $c3*$n;
- return 0 if($den <= 0);
- my $l=($n - $c1)/$den;
- $l=0 if($l < 0);
- return clamp($l ** (1/$m1),0,1);
+ return pq_decode_normalized($signal);
 }
 
 sub target_gamma_linear {
@@ -1834,9 +1810,372 @@ sub _lut_node_u16 {
  return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
 }
 
+# ---- Native batched node solve (src/lut_solver/pgen_lut_solve.c) ----
+# The measured-response inverse dominates cube generation, so the helper takes
+# the WHOLE per-node solve -- target, seed, LM inverse, blends and quantise --
+# for one cube per invocation and hands back the complete u16 vector. Splitting
+# out only fm_invert would mean shipping 215k doubles each way as text, which
+# costs more in sprintf than the whole-cube helper costs end to end.
+# Appliance benchmarks and the complete code-for-code parity sweep live in
+# MATH_SPEED.md and t/lg_3d_lut_native_parity.t. Keep measurements out of this
+# source comment so a faster model or a larger fixture cannot make it stale.
+#
+# It is an OPTIMISATION, never a source of truth. Every failure path logs and
+# returns undef so the caller runs the existing Perl cube: a slow cube is
+# always correct, a wrong cube never is. Set PGEN_AUTOCAL_LUT_NATIVE=0 to force
+# the Perl path (A/B comparison, parity verification).
+
+our $_lut_native_bad=0;
+our $_lut_native_seq=0;
+
+sub _lut_native_helper {
+ my $override=$ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"};
+ return $override if(defined($override) && $override ne "");
+ my $dir=__FILE__;
+ $dir =~ s{/[^/]*$}{};
+ $dir="." if($dir eq "");
+ return "$dir/pgen_lut_solve" if(-x "$dir/pgen_lut_solve");
+ return "/usr/bin/pgen_lut_solve";
+}
+
+# Wall-clock ceiling for one helper invocation. Measured worst case on the
+# appliance is seconds even on the largest supported lattice. These ceilings
+# exist to bound a wedged child, not to police a slow one.
+sub _lut_native_timeout {
+ my ($size)=@_;
+ my $override=$ENV{"PGEN_AUTOCAL_LUT_NATIVE_TIMEOUT"};
+ return $override+0 if(defined($override) && $override =~ /^\d+$/ && $override+0 > 0);
+ $size=17 if(!defined($size) || $size < 2);
+ return 60 if($size <= 33);
+ return 600;
+}
+
+sub _lut_native_enabled {
+ my $v=$ENV{"PGEN_AUTOCAL_LUT_NATIVE"};
+ return 1 if(!defined($v) || $v eq "");
+ return 0 if($v =~ /^\s*(0|no|off|false)\s*$/i);
+ return 1;
+}
+
+# %.17g is round-trip exact for IEEE-754 binary64; Perl's default
+# stringification is %.15g and is not. Never interpolate a model double
+# into the request without going through here.
+sub _lut_native_num {
+ my ($v)=@_;
+ $v=0 if(!defined($v));
+ $v=$v+0;
+ if($v != $v || ($v != 0 && $v*0 != 0)) { $_lut_native_bad=1; return "0"; }
+ return sprintf("%.17g",$v);
+}
+
+sub _lut_native_vec {
+ my ($v)=@_;
+ return join(" ",map { _lut_native_num($v->[$_]) } (0..2));
+}
+
+sub _lut_native_matrix {
+ my ($m)=@_;
+ return undef if(ref($m) ne "ARRAY" || scalar(@{$m}) != 3);
+ my @out;
+ foreach my $row (@{$m}) {
+  return undef if(ref($row) ne "ARRAY" || scalar(@{$row}) != 3);
+  push @out,map { _lut_native_num($_) } @{$row};
+ }
+ return join(" ",@out);
+}
+
+sub _lut_native_request {
+ my ($model,$size,$order)=@_;
+ local $_lut_native_bad=0;
+ my $fm=$model->{"forward_model"};
+ return undef if(ref($fm) ne "HASH");
+ my $ramp=$fm->{"ramp"};
+ return undef if(ref($ramp) ne "ARRAY" || scalar(@{$ramp}) != 3);
+ my $gamma=$model->{"target_gamma"};
+ return undef if(!defined($gamma) || $gamma eq "" || $gamma =~ /\s/ || length($gamma) > 31);
+ my $black=(ref($model->{"black"}) eq "ARRAY") ? $model->{"black"} : [0,0,0];
+ my $fmb=(ref($fm->{"black"}) eq "ARRAY") ? $fm->{"black"} : [0,0,0];
+ # fm_additive and the target chain both read a black; the helper carries one.
+ for my $k (0..2) { return undef if(($fmb->[$k]||0) != ($black->[$k]||0)); }
+ my $gm=_lut_native_matrix(rgb_to_xyz_matrix_for_gamut($model->{"target_gamut"}));
+ return undef if(!defined($gm));
+ my @req;
+ push @req,"PGLUT3D 1";
+ push @req,"size ".int($size);
+ push @req,"order ".$order;
+ push @req,"neutral_axis_identity ".($model->{"neutral_axis_identity"} ? 1 : 0);
+ push @req,"neutral_neighborhood ".($model->{"neutral_neighborhood_identity_enabled"} ? 1 : 0);
+ push @req,"target_gamma ".$gamma;
+ push @req,"target_gamut ".sanitize_target_gamut($model->{"target_gamut"});
+ push @req,"white_y "._lut_native_num($model->{"white_y"} || 0);
+ push @req,"chromatic_white_y "._lut_native_num($model->{"chromatic_white_y"} || 0);
+ # target_xyz_for_node picks the node white by Perl truthiness; resolve it here
+ # rather than making the helper reproduce the semantics of ||.
+ push @req,"node_white_y "._lut_native_num($model->{"chromatic_white_y"} || $model->{"white_y"} || 0);
+ push @req,"black "._lut_native_vec($black);
+ push @req,"gamut_rgb2xyz ".$gm;
+ if($model->{"gamut_drive_matrix"}) {
+  my $drive=_lut_native_matrix($model->{"gamut_drive_matrix"});
+  return undef if(!defined($drive));
+  push @req,"seed matrix";
+  push @req,"gamut_drive_matrix ".$drive;
+ } else {
+  my $peak=_lut_native_matrix($model->{"peak_inverse"});
+  return undef if(!defined($peak));
+  return undef if(ref($model->{"peak_y"}) ne "HASH" || ref($model->{"contrib"}) ne "HASH");
+  push @req,"seed solve";
+  push @req,"peak_inverse ".$peak;
+  push @req,"peak_y ".join(" ",map { _lut_native_num($model->{"peak_y"}{$_} || 1) } qw(red green blue));
+  my %ramp_level=map { ($_ => 1) } ramp_levels();
+  my @kinds=qw(red green blue);
+  for my $ch (0..2) {
+   my $h=$model->{"contrib"}{$kinds[$ch]};
+   return undef if(ref($h) ne "HASH");
+   my @lv=sort { $a <=> $b } map { $_+0 } keys %{$h};
+   # channel_inverse_level looks contrib up by the exact ramp_levels() key, so
+   # a stray key would resolve differently in the helper's numeric match.
+   foreach my $l (@lv) { return undef if(!$ramp_level{$l}); }
+   push @req,"contrib $ch ".scalar(@lv);
+   foreach my $l (@lv) {
+    my $v=$h->{$l};
+    return undef if(ref($v) ne "ARRAY");
+    push @req,_lut_native_num($l)." "._lut_native_vec($v);
+   }
+  }
+ }
+ push @req,sprintf("chroma_luma_comp %d %s",
+  ($model->{"wrgb_chroma_luma_comp"} ? 1 : 0),_lut_native_num($model->{"wrgb_chroma_luma_comp_strength"} || 0));
+ push @req,sprintf("mid_sat_blend %d %s",
+  ($model->{"wrgb_mid_sat_matrix_blend"} ? 1 : 0),_lut_native_num($model->{"wrgb_mid_sat_matrix_blend_strength"} || 0));
+ if(ref($model->{"white_axis"}) eq "HASH") {
+  my @lv=sort { $a <=> $b } map { $_+0 } keys %{$model->{"white_axis"}};
+  push @req,"white_axis ".scalar(@lv);
+  foreach my $l (@lv) {
+   my $v=$model->{"white_axis"}{$l};
+   return undef if(ref($v) ne "ARRAY");
+   push @req,_lut_native_num($l)." "._lut_native_vec($v);
+  }
+ }
+ for my $ch (0..2) {
+  my $arr=$ramp->[$ch];
+  return undef if(ref($arr) ne "ARRAY" || !@{$arr});
+  push @req,"ramp $ch ".scalar(@{$arr});
+  foreach my $s (@{$arr}) {
+   return undef if(ref($s) ne "ARRAY" || ref($s->[1]) ne "ARRAY");
+   push @req,_lut_native_num($s->[0])." "._lut_native_vec($s->[1]);
+  }
+ }
+ # fm_nonadd_corr accumulates inverse-distance weights sequentially, so the
+ # sample ORDER is part of the result. Ship it as-is, skipping exactly the
+ # entries fm_nonadd_corr itself skips.
+ my $pts=(ref($fm->{"nonadd_samples"}) eq "ARRAY") ? $fm->{"nonadd_samples"} : [];
+ my @na;
+ foreach my $p (@{$pts}) {
+  next if(ref($p) ne "HASH");
+  my $f=$p->{"f"}; my $d=$p->{"d"};
+  next if(ref($f) ne "ARRAY" || ref($d) ne "ARRAY");
+  push @na,_lut_native_vec($f)." "._lut_native_vec($d);
+ }
+ push @req,"nonadd ".scalar(@na);
+ push @req,@na;
+ push @req,"end";
+ return undef if($_lut_native_bad);
+ return join("\n",@req)."\n";
+}
+
+# Fixed 64-node sample the runtime self-check re-solves in Perl: the 8 cube
+# corners, the neutral diagonal and its 1-step neighbourhood, then interior
+# nodes from a constant-seed LCG so the set is the same on every run and is
+# not aligned to the profile lattice. The diagonal is not decoration -- when
+# greys are solved it carries the smallest measured distance to an int() cut
+# point anywhere in the cube (2.27e-13 code units at the exact centre), so it
+# is the first place a libm or build-flag divergence would show.
+sub _lut_native_check_nodes {
+ my ($size)=@_;
+ my $hi=$size-1;
+ my $mid=int($hi/2);
+ my $q1=int($hi/4);
+ my $q3=int(3*$hi/4);
+ my @pts=([0,0,0],[$hi,0,0],[0,$hi,0],[0,0,$hi],[$hi,$hi,0],[$hi,0,$hi],[0,$hi,$hi],[$hi,$hi,$hi],
+  [$mid,$mid,$mid],[$q1,$q1,$q1],[$q3,$q3,$q3],[1,1,1],[$hi-1,$hi-1,$hi-1],
+  [$mid,$mid,$mid+1],[$mid+1,$mid,$mid],[$q3,$q3-1,$q3]);
+ my $s=1;
+ while(scalar(@pts) < 64) {
+  my @n;
+  for my $k (0..2) { $s=($s*75+74) % 65537; push @n,$s % $size; }
+  push @pts,\@n;
+ }
+ foreach my $pt (@{\@pts}) { foreach my $v (@{$pt}) { $v=0 if($v < 0); $v=$hi if($v > $hi); } }
+ return \@pts;
+}
+
+sub _lut_native_verify {
+ my ($model,$size,$order,$u16)=@_;
+ my $n2=$size*$size;
+ foreach my $pt (@{_lut_native_check_nodes($size)}) {
+  my ($r,$g,$b)=@{$pt};
+  my $off=(($order eq "r_slowest") ? ($r*$n2+$g*$size+$b) : ($b*$n2+$g*$size+$r))*3;
+  my @want=_lut_node_u16($model,$r,$g,$b,$size);
+  for my $k (0..2) {
+   next if($u16->[$off+$k] == $want[$k]);
+   log_line(sprintf("lut native: self-check mismatch at node %d,%d,%d helper %d,%d,%d perl %d,%d,%d",
+    $r,$g,$b,$u16->[$off],$u16->[$off+1],$u16->[$off+2],$want[0],$want[1],$want[2]));
+   return 0;
+  }
+ }
+ return 1;
+}
+
+sub _lut_native_u16 {
+ my ($model,$size,$order)=@_;
+ return undef if(!_lut_native_enabled());
+ return undef if(ref($model) ne "HASH");
+ return undef if(ref($model->{"forward_model"}) ne "HASH");
+ # The helper implements only node_output_pct's forward-model branch. A
+ # residual grid would be silently ignored, so refuse the model outright.
+ return undef if($model->{"residual_grid"});
+ my $bin=_lut_native_helper();
+ if(!-x $bin) {
+  # An appliance deploy that rsyncs without permissions leaves the vendored
+  # binary readable but not executable, which would otherwise cost 90 s per
+  # cube in Perl on every run with nothing in the log to explain it.
+  return undef if(!-f $bin);
+  chmod(0755,$bin);
+  if(!-x $bin) {
+   log_line("lut native: $bin exists but is not executable ($!), Perl cube");
+   return undef;
+  }
+  log_line("lut native: restored the executable bit on $bin");
+ }
+ my $req;
+ my $built=eval { $req=_lut_native_request($model,$size,$order); 1 };
+ if(!$built) {
+  my $err=$@||"unknown"; $err =~ s/\s+$//;
+  log_line("lut native: request build died ($err), Perl cube");
+  return undef;
+ }
+ return undef if(!defined($req));
+ # A run generates the export cube and the LG payload back to back, so pid and
+ # second are not enough to keep the two staging directories apart.
+ my $tmpdir=sprintf("/tmp/lutnat_%d_%d_%d",$$,time(),++$_lut_native_seq);
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut native: mkdir $tmpdir failed ($!), Perl cube");
+  return undef;
+ }
+ my $reqpath="$tmpdir/req.txt";
+ my $staged=0;
+ if(open(my $rq,'>',$reqpath)) {
+  print $rq $req;
+  $staged=1 if(close($rq));
+ }
+ if(!$staged) {
+  log_line("lut native: could not stage the request ($!), Perl cube");
+  unlink($reqpath); rmdir($tmpdir);
+  return undef;
+ }
+ # The request outgrows a 64K pipe buffer on a dense lattice, so it is handed
+ # in on fd 0 rather than written into the same child we are reading back.
+ my $pid=open(my $rd,"-|");
+ if(!defined($pid)) {
+  log_line("lut native: fork failed ($!), Perl cube");
+  unlink($reqpath); rmdir($tmpdir);
+  return undef;
+ }
+ if($pid == 0) {
+  open(STDIN,'<',$reqpath) or exit 127;
+  exec($bin);
+  exit 127;
+ }
+ binmode($rd);
+ my $blob;
+ # The solve is bounded (18 LM iterations per node, a fixed node count), so a
+ # helper that has not finished in this long is wedged, not merely slow.
+ my $timed_out=0;
+ eval {
+  local $SIG{"ALRM"}=sub { $timed_out=1; die "timeout\n"; };
+  alarm(_lut_native_timeout($size));
+  local $/;
+  $blob=<$rd>;
+  alarm(0);
+  1;
+ } or do { alarm(0); };
+ if($timed_out) {
+  kill('KILL',$pid);
+  close($rd);
+  waitpid($pid,0);
+  unlink($reqpath); rmdir($tmpdir);
+  log_line("lut native: helper did not finish within "._lut_native_timeout($size)."s, killed it, Perl cube");
+  return undef;
+ }
+ close($rd);
+ my $status=$?;
+ unlink($reqpath);
+ rmdir($tmpdir);
+ if($status != 0) {
+  my $why=defined($blob) ? (split(/\n/,$blob))[0] : "";
+  $why="" if(!defined($why));
+  log_line(sprintf("lut native: helper exit %d%s, Perl cube",$status >> 8,($why ne "") ? " ($why)" : ""));
+  return undef;
+ }
+ my $want=3*$size*$size*$size;
+ my $hdr="PGLUT3D 1 ok\n";
+ if(!defined($blob) || index($blob,$hdr) != 0) {
+  log_line("lut native: bad response header, Perl cube");
+  return undef;
+ }
+ my $nl=index($blob,"\n",length($hdr));
+ my $count=($nl > 0) ? substr($blob,length($hdr),$nl-length($hdr)) : "";
+ if($count !~ /\Acodes (\d+)\z/ || $1+0 != $want) {
+  log_line("lut native: response declared '$count', wanted $want codes, Perl cube");
+  return undef;
+ }
+ my $tail=substr($blob,$nl+1);
+ if(substr($tail,-4) ne "end\n") {
+  log_line("lut native: response was truncated, Perl cube");
+  return undef;
+ }
+ substr($tail,-4)="";
+ if($tail =~ /[^0-9 \n]/) {
+  log_line("lut native: response carried a non-numeric token, Perl cube");
+  return undef;
+ }
+ my @u16=map { $_+0 } split(' ',$tail);
+ if(scalar(@u16) != $want) {
+  log_line("lut native: response had ".scalar(@u16)." codes, wanted $want, Perl cube");
+  return undef;
+ }
+ foreach my $v (@u16) {
+  next if($v <= 4095);
+  log_line("lut native: response carried an out-of-range code $v, Perl cube");
+  return undef;
+ }
+ # Bounded, logged, self-healing: re-solve a fixed 64-node sample in Perl and
+ # discard the whole helper cube on any disagreement. This will not catch a
+ # single isolated flip, but it catches every systematic divergence -- wrong
+ # libm, wrong build flags, a skewed deploy, a protocol field lost in a
+ # refactor -- which is the failure mode that actually ships.
+ if(!_lut_native_verify($model,$size,$order,\@u16)) {
+  log_line("lut native: self-check failed, discarding the helper cube");
+  return undef;
+ }
+ return \@u16;
+}
+
 sub generate_lut_cube {
  my ($model,$size)=@_;
  $size ||= 17;
+ my $native=_lut_native_u16($model,$size,"r_slowest");
+ if($native) {
+  log_line("lut generate: cube ${size}^3 via native helper");
+  my @nodes;
+  for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
+   my ($r,$g,$b)=@{$pt};
+   my $out=node_output_pct($model,$r,$g,$b,$size);
+   my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+   push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
+  }
+  return ($native,\@nodes);
+ }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_cube_serial($model,$size) if($workers <= 1);
  my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
@@ -1902,6 +2241,11 @@ sub generate_lut_cube {
 sub generate_lut_lg_payload {
  my ($model,$size)=@_;
  $size ||= 33;
+ my $native=_lut_native_u16($model,$size,"r_fastest");
+ if($native) {
+  log_line("lut generate: payload ${size}^3 via native helper");
+  return $native;
+ }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_lg_payload_serial($model,$size) if($workers <= 1);
  my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
@@ -3453,56 +3797,8 @@ sub reset_3d_lut_to_unity_before_profile {
 }
 
 # --- HDR20 post-cal shadow correction (PQ EOTF + ICtCp delta-E) ---
-# Ported from usr/bin/meter_lg_autocal.pl (pq_encode_normalized +
-# xyz_to_ictcp + delta_e_itp_xyz). Used to compute a ΔE(ITP) for the 5%
-# grey probe so revert-if-worse has a perceptually uniform comparator
-# instead of a luminance-only one.
-sub pq_encode_normalized {
- my ($nits)=@_;
- $nits=0 if(!defined($nits));
- $nits+=0;
- return 0 if($nits <= 0);
- $nits=10000 if($nits > 10000);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l ** $m1;
- return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
-}
-
-sub xyz_to_ictcp {
- my ($X,$Y,$Z)=@_;
- $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
- my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
- my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
- my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
- $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
- my $L=(1688*$R+2146*$G+262*$B)/4096;
- my $M=(683*$R+2951*$G+462*$B)/4096;
- my $S=(99*$R+309*$G+3688*$B)/4096;
- my $Lp=pq_encode_normalized($L);
- my $Mp=pq_encode_normalized($M);
- my $Sp=pq_encode_normalized($S);
- return {
-  I=>0.5*$Lp+0.5*$Mp,
-  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
-  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096
- };
-}
-
-sub delta_e_itp_xyz {
- my ($X1,$Y1,$Z1,$X2,$Y2,$Z2)=@_;
- return undef if(!defined($X1) || !defined($Y1) || !defined($Z1) || !defined($X2) || !defined($Y2) || !defined($Z2));
- my $a=xyz_to_ictcp($X1,$Y1,$Z1);
- my $b=xyz_to_ictcp($X2,$Y2,$Z2);
- my $dI=$a->{"I"}-$b->{"I"};
- my $dT=$a->{"T"}-$b->{"T"};
- my $dP=$a->{"P"}-$b->{"P"};
- return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
-}
+# PGMath owns the shared ST 2084, ICtCp and delta-E implementations used by
+# both AutoCal workers. The code below owns only the 3D correction policy.
 
 # Taper for the HDR20 post-cal shadow correction. 0 at index 0 (true
 # black pinned); linear 0->1 for 0 < i < 14 (ramp up from black;

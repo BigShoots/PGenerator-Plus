@@ -11,7 +11,13 @@
 #   webui_mdns()  — mDNS responder (port 5353, multicast 224.0.0.251)
 #
 
-BEGIN { require bytes; }
+BEGIN {
+ require bytes;
+ my $module_dir=__FILE__;
+ $module_dir=~s{/[^/]+\z}{};
+ unshift @INC,$module_dir if($module_dir ne "" && !grep { $_ eq $module_dir } @INC);
+}
+use PGMath ();
 use Fcntl qw(O_NONBLOCK O_WRONLY);
 use Time::HiRes ();
 # Required for the ":shared" attributes and lock() below: webui_http dispatches
@@ -3451,19 +3457,7 @@ sub webui_meter_gamut_js_literal (@) {
 # Bradford-adapt a D65 ColorChecker reference to the selected target white.
 # This is intentionally scoped to the meter reference-color builders.
 sub webui_meter_bradford_adapt_xyz (@) {
- my ($X,$Y,$Z,$fx,$fy,$tx,$ty)=@_;
- return ($X,$Y,$Z) unless($fx>0 && $fy>0 && $tx>0 && $ty>0);
- return ($X,$Y,$Z) if(abs($fx-$tx)<1e-7 && abs($fy-$ty)<1e-7);
- my @M=([0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]);
- my @MI=([0.9869929,-0.1470543,0.1599627],[0.4323053,0.5183603,0.0492912],[-0.0085287,0.0400428,0.9684867]);
- my $mul=sub { my ($m,$v)=@_; return map { my $r=$_; $$m[$r][0]*$$v[0]+$$m[$r][1]*$$v[1]+$$m[$r][2]*$$v[2] } (0,1,2); };
- my @ws=($fx/$fy,1,(1-$fx-$fy)/$fy);
- my @wd=($tx/$ty,1,(1-$tx-$ty)/$ty);
- my @cs=$mul->(\@M,\@ws);
- my @cd=$mul->(\@M,\@wd);
- my @c=$mul->(\@M,[$X,$Y,$Z]);
- my @scaled=map { $c[$_]*($cs[$_]!=0 ? $cd[$_]/$cs[$_] : 1) } (0,1,2);
- return $mul->(\@MI,\@scaled);
+ return PGMath::bradford_adapt_xyz(@_);
 }
 
 sub _webui_meter_lg_autocal_norm_text (@) {
@@ -3611,13 +3605,7 @@ sub webui_lattice_series_steps_from_body (@) {
  $peak_nits=$1+0 if($obj=~/"peak_nits"\s*:\s*(-?\d+(?:\.\d+)?)/);
  $peak_nits=100 if($peak_nits<100);
  $peak_nits=10000 if($peak_nits>10000);
- my $pq_encode=sub {
-  my ($L)=@_;
-  my $m1=2610/16384; my $m2=2523/32; my $c1=3424/4096; my $c2=2413/128; my $c3=2392/128;
-  my $y=($L<0?0:$L)/10000;
-  my $pp=$y**$m1;
-  return (($c1+$c2*$pp)/(1+$c3*$pp))**$m2;
- };
+ my $pq_encode=sub { return PGMath::pq_encode_normalized($_[0]); };
  my $axis_frac=sub {
   my ($i,$div)=@_;
   my $t=$i/$div;
@@ -11226,18 +11214,7 @@ sub webui_pattern_is_pq_mode (@) {
 }
 
 sub webui_pattern_pq_encode_normalized (@) {
- my $nits=shift;
- $nits=0 if($nits < 0);
- $nits=10000 if($nits > 10000);
- return 0 if($nits <= 0);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l**$m1;
- return (($c1 + $c2*$p)/(1 + $c3*$p))**$m2;
+ return PGMath::pq_encode_normalized(shift);
 }
 
 # Single source of truth for stimulus-percent -> wire code for the greyscale
@@ -11592,21 +11569,7 @@ sub webui_pattern_idle_refresh_allowed (@) {
 }
 
 sub webui_pattern_pq_decode_normalized (@) {
- my $code=shift;
- $code=0 if($code < 0);
- $code=1 if($code > 1);
- return 0 if($code <= 0);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$code**(1/$m2);
- my $num=$p-$c1;
- $num=0 if($num < 0);
- my $den=$c2-$c3*$p;
- return 10000 if($den <= 0);
- return 10000*(($num/$den)**(1/$m1));
+ return PGMath::pq_decode_nits(shift);
 }
 
 sub webui_pattern_peak_code (@) {

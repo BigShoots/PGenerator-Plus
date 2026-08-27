@@ -11,6 +11,14 @@ use MIME::Base64 qw(encode_base64 decode_base64);
 use Time::HiRes qw(time);
 use POSIX ();
 
+BEGIN {
+ my $directory=__FILE__;
+ $directory=~s{/[^/]+$}{};
+ my $shared="$directory/../share/PGenerator";
+ unshift @INC,$shared if(-d $shared);
+}
+use PGMath qw(matrix3_inverse matrix3_multiply);
+
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
 
@@ -2674,31 +2682,14 @@ sub lg_dv_profile_format_general (@) {
 
 sub lg_dv_profile_mat_inverse3 (@) {
  my ($m)=@_;
- my $det = $m->[0][0]*($m->[1][1]*$m->[2][2]-$m->[1][2]*$m->[2][1])
-         - $m->[0][1]*($m->[1][0]*$m->[2][2]-$m->[1][2]*$m->[2][0])
-         + $m->[0][2]*($m->[1][0]*$m->[2][1]-$m->[1][1]*$m->[2][0]);
- my @inv;
- $inv[0][0]=($m->[1][1]*$m->[2][2]-$m->[1][2]*$m->[2][1])/$det;
- $inv[0][1]=($m->[0][2]*$m->[2][1]-$m->[0][1]*$m->[2][2])/$det;
- $inv[0][2]=($m->[0][1]*$m->[1][2]-$m->[0][2]*$m->[1][1])/$det;
- $inv[1][0]=($m->[1][2]*$m->[2][0]-$m->[1][0]*$m->[2][2])/$det;
- $inv[1][1]=($m->[0][0]*$m->[2][2]-$m->[0][2]*$m->[2][0])/$det;
- $inv[1][2]=($m->[0][2]*$m->[1][0]-$m->[0][0]*$m->[1][2])/$det;
- $inv[2][0]=($m->[1][0]*$m->[2][1]-$m->[1][1]*$m->[2][0])/$det;
- $inv[2][1]=($m->[0][1]*$m->[2][0]-$m->[0][0]*$m->[2][1])/$det;
- $inv[2][2]=($m->[0][0]*$m->[1][1]-$m->[0][1]*$m->[1][0])/$det;
- return \@inv;
+ # This caller historically divided each cofactor directly. Retain that
+ # binary64 order while sharing the determinant and cofactor implementation.
+ return matrix3_inverse($m,0,1);
 }
 
 sub lg_dv_profile_mat_mult3 (@) {
  my ($m1,$m2)=@_;
- my @r;
- for my $i (0..2) {
-  for my $j (0..2) {
-   $r[$i][$j]=$m1->[$i][0]*$m2->[0][$j] + $m1->[$i][1]*$m2->[1][$j] + $m1->[$i][2]*$m2->[2][$j];
-  }
- }
- return \@r;
+ return matrix3_multiply($m1,$m2);
 }
 
 # TLMS2RGBmat: the Dolby Vision profile file's LMS-to-RGB matrix. Hw-verified

@@ -2101,12 +2101,16 @@ function clampNum(v,min,max){
  if(v>max)return max;
  return v;
 }
+const PGEN_PQ_M1=2610/16384;
+const PGEN_PQ_M2=2523/32;
+const PGEN_PQ_C1=3424/4096;
+const PGEN_PQ_C2=2413/128;
+const PGEN_PQ_C3=2392/128;
 function pqEncodeNormalized(nits){
  const l=clampNum(nits,0,10000)/10000;
  if(l<=0)return 0;
- const m1=2610/16384,m2=2523/32,c1=3424/4096,c2=2413/128,c3=2392/128;
- const p=Math.pow(l,m1);
- return Math.pow((c1+c2*p)/(1+c3*p),m2);
+ const p=Math.pow(l,PGEN_PQ_M1);
+ return Math.pow((PGEN_PQ_C1+PGEN_PQ_C2*p)/(1+PGEN_PQ_C3*p),PGEN_PQ_M2);
 }
 function getPatternPeakCode(){
  const maxCode=getPatternTargetMax();
@@ -11073,31 +11077,17 @@ function meterUpdateHdrConfigVisibility(){
 }
 
 function meterChartPqEncodeNormalized(nits){
- const clamped=Math.max(0,Math.min(10000,nits||0));
- if(clamped<=0) return 0;
- const l=clamped/10000;
- const m1=2610/16384;
- const m2=2523/32;
- const c1=3424/4096;
- const c2=2413/128;
- const c3=2392/128;
- const p=Math.pow(l,m1);
- return Math.pow((c1+c2*p)/(1+c3*p),m2);
+ return pqEncodeNormalized(nits);
 }
 
 function meterChartPqDecodeNormalized(code){
  const clamped=Math.max(0,Math.min(1,code||0));
  if(clamped<=0) return 0;
- const m1=2610/16384;
- const m2=2523/32;
- const c1=3424/4096;
- const c2=2413/128;
- const c3=2392/128;
- const p=Math.pow(clamped,1/m2);
- const num=Math.max(p-c1,0);
- const den=c2-c3*p;
+ const p=Math.pow(clamped,1/PGEN_PQ_M2);
+ const num=Math.max(p-PGEN_PQ_C1,0);
+ const den=PGEN_PQ_C2-PGEN_PQ_C3*p;
  if(den<=0) return 10000;
- return 10000*Math.pow(num/den,1/m1);
+ return 10000*Math.pow(num/den,1/PGEN_PQ_M1);
 }
 
 function xyzToICtCp(X,Y,Z){
@@ -19415,15 +19405,14 @@ function meterLatticeAxisFracs(N,params){
  const div=N-1;
  const out=[];
  const light=!!(params&&params.spacing==='light');
- const pqe=(L)=>{ const m1=2610/16384,m2=2523/32,c1=3424/4096,c2=2413/128,c3=2392/128; const y=Math.max(0,L)/10000; const p=Math.pow(y,m1); return Math.pow((c1+c2*p)/(1+c3*p),m2); };
+ const pqe=pqEncodeNormalized;
  const peak=(params&&params.peak_nits)||1000;
  const top=pqe(peak);
  for(let i=0;i<N;i++){
   const t=i/div;
   if(!light){ out.push(t); continue; }
-  // Endpoints pinned EXACTLY: pqe(0) is ~7e-7, not 0, and a black frac of
-  // 9.7e-7 breaks the frac-exact corner detection (corners-first ordering,
-  // display-referenced ceilings) even though the percent name rounds to 0.
+  // Endpoints stay explicit so the lattice corner ordering does not depend on
+  // transfer-function boundary conventions or floating-point normalization.
   if(i===0){ out.push(0); continue; }
   if(i===div){ out.push(1); continue; }
   if(params.pq){ out.push(top>0?(pqe(t*peak)/top):t); }

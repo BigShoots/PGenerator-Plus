@@ -36,8 +36,17 @@ usr/share/PGenerator/*.bak
 # Local agent workspaces
 .qwen/
 
+__pycache__/
+*.py[cod]
+
+# The Pi 4 appliance is pinned to CPython 3.5. NumPy's ARM extension modules
+# are part of the checked-in runtime, even though generated shared objects are
+# ignored elsewhere in the tree.
+!usr/lib/python3/dist-packages/numpy/**/*.so
+
 # On-device / cross build outputs (renderer objects, linked binaries,
 # and the vc4 kernel-module build tree with its extracted kernel source)
+src/lut_solver/build/
 tools/image-targets/*/src/pattern_generator/bin/
 tools/image-targets/*/src/pattern_generator/obj/
 tools/image-targets/*/build/
