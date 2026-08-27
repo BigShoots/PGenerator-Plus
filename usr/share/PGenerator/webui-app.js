@@ -13780,11 +13780,28 @@ function meterLiveTargetRgbCodes(src){
   ((typeof meterPatchBitDepth==='function'&&meterPatchBitDepth()===10) &&
    !(typeof meterActiveSeriesCodesAre8Bit==='function'&&meterActiveSeriesCodesAre8Bit()));
  // No per-channel signal pct (colour / saturation patches, legacy snapshots):
- // reduce the 10-bit code to its 8-bit equivalent using the exact 4x mapping
- // (Limited 64..940 -> 16..235; Full 0..1023 -> 0..255), then convert it off
- // the ladder it was built on and onto the display range.
- const code8=raw.map(code=>Math.max(0,Math.min(1023,tenBit?code/4:code)));
- const ladder=meterLiveCodeRangeForStep(step);
+ // Reduce the source code to its 8-bit equivalent using the exact integer
+ // transport mapping: 10-bit /4, Dolby Vision 12-bit /16, or unchanged 8-bit.
+ // Then convert it off the ladder it was built on and onto the display range.
+ const sourceScale=inputMax===4095?16:(tenBit?4:1);
+ const sourceMax=inputMax===4095?4095:(tenBit?1023:255);
+ const code8=raw.map(code=>Math.max(0,Math.min(sourceMax,code))/sourceScale);
+ // ColorChecker and saturation IRE is patch luminance/category metadata, not
+ // the per-channel signal percentage. Inferring the source ladder from IRE
+ // therefore fails for some patches. Live example: Gray 80 used code 673
+ // (168 in 8-bit Limited) but its IRE=59 made the heuristic select Full and
+ // report Target RGB 160. Color-series builders already have one definitive
+ // bit-depth/range helper, so use it directly and reserve the heuristic for
+ // greyscale/legacy steps whose IRE really does describe signal stimulus.
+ let ladder=null;
+ const activeType=(typeof meterActiveSeriesType!=='undefined')?String(meterActiveSeriesType||'').toLowerCase():'';
+ if((activeType==='colors'||activeType==='saturations')&&typeof meterColorTargetCodeRange==='function'){
+  const colorRange=meterColorTargetCodeRange();
+  if(colorRange&&Number(colorRange.span)>0){
+   ladder={min:Number(colorRange.min)/sourceScale,span:Number(colorRange.span)/sourceScale};
+  }
+ }
+ if(!ladder) ladder=meterLiveCodeRangeForStep(step);
  return code8.map(code=>toDisplay(ladder.span>0?((code-ladder.min)/ladder.span):0));
 }
 
