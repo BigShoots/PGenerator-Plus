@@ -283,16 +283,6 @@ $MAX_CONNECT_TIMEOUT=5;
 # Grace period for reaping a socat child that is still stuck in connect().
 $CONNECT_CHILD_REAP_GRACE=3;
 $MAX_FRAME_SIZE=1024*1024;
-$LG_REMOTE_APP_SIGNATURE=(
- "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
- "ctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR".
- "+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRy".
- "aMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4".
- "RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n".
- "50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM".
- "2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQoj".
- "oa7NQnAtw=="
-);
 
 ###############################################
 #              JSON Helpers                   #
@@ -751,38 +741,22 @@ sub lg_message_register (@) {
   payload => {
    "client-key" => $client_key,
    forcePairing => &json_bool($force_pairing),
+   # webOS 26 rejects the old shared LG test certificate before it can show
+   # the pairing prompt. This unsigned outer manifest is also accepted by
+   # older webOS releases. Keep the permissions needed by picture control,
+   # PIN pairing, and the notification-backed Luna settings bridge together.
    manifest => {
-    appVersion => "1.1",
+    appVersion => "1.0",
     manifestVersion => 1,
     permissions => [
-     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
+     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE",
      "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
      "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
      "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
      "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
      "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-     "READ_INSTALLED_APPS","READ_SETTINGS"
+     "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT"
     ],
-    signatures => [{ signature => $LG_REMOTE_APP_SIGNATURE, signatureVersion => 1 }],
-    signed => {
-     appId => "com.lge.test",
-     created => "20140509",
-     localizedAppNames => {
-      "" => "LG Remote App",
-      "ko-KR" => "\x{B9AC}\x{BAA8}\x{CEE8} \x{C571}",
-      "zxx-XX" => "\x{041B}\x{0413} R\x{044D}\x{043C}ot\x{044D} A\x{041F}\x{041F}",
-     },
-     localizedVendorNames => { "" => "LG Electronics" },
-     permissions => [
-      "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-      "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
-      "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
-      "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
-      "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
-     ],
-     serial => "2f930e2d2cfe083771f68e4fe7bb07",
-     vendorId => "com.lge",
-    },
    },
    pairingType => $pairing_type,
   },
@@ -870,7 +844,11 @@ sub lg_luna_request (@) {
   $alert_id=$create->{"payload"}{"alertId"}||"";
  }
  return { type => "error", error => "LG TV did not return an alertId for Luna request", payload => $create->{"payload"}||{} } if($alert_id eq "");
- my $close=&lg_request($session,"${id_prefix}_close_alert","system.notifications/closeAlert",{ alertId => $alert_id },$timeout);
+ # Newer firmware returns a public adapter ID from createAlert but expects the
+ # corresponding private adapter ID at closeAlert. Older IDs pass unchanged.
+ my $close_alert_id=$alert_id;
+ $close_alert_id =~ s/\.pub-/-/;
+ my $close=&lg_request($session,"${id_prefix}_close_alert","system.notifications/closeAlert",{ alertId => $close_alert_id },$timeout);
  return $close if(ref($close) eq "HASH");
  return { type => "error", error => "LG TV did not acknowledge Luna request alert close", payload => {} };
 }
