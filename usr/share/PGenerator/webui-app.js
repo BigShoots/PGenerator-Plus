@@ -7616,7 +7616,21 @@ function meterGreyChartTargetXYZForReading(reading){
  if(ire==null&&step) ire=meterGreyscaleTargetSlotIre(step);
  const code=(reading&&reading.r_code!=null)?reading.r_code:(reading&&reading.r!=null?reading.r:(step?(step.r_code!=null?step.r_code:step.r):null));
  const measuredDvTargetY=meterDvAbsoluteReadingTargetY(reading);
- const Y=measuredDvTargetY!=null?measuredDvTargetY:meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code);
+ // Color-series neutrals carry an authored relative luminance target. Grade
+ // their chromaticity and RGB balance as greyscale, but scale that authored Y
+ // by the selected measured/manual white and black references. Decoding the
+ // emitted PQ/SDR code here makes the target describe the transport code
+ // instead of the ColorChecker patch, which is why classic neutral targets
+ // jumped far above their established values in HDR.
+ const authoredYn=(reading&&reading._neutral_color_greyscale_analysis)?Number(reading.target_Yn):NaN;
+ const relativeColorTargetY=Number.isFinite(authoredYn)&&authoredYn>=0
+  ?meterGreyscaleTargetYFromYn(authoredYn,peak,black||0)
+  :null;
+ const Y=measuredDvTargetY!=null
+  ?measuredDvTargetY
+  :(relativeColorTargetY!=null
+    ?relativeColorTargetY
+    :meterGreyTargetLuminance(ire!=null?ire:(reading&&reading.ire||0),peak,black||0,code));
  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
 }
 
@@ -8170,10 +8184,15 @@ function meterNeutralColorGreyscaleReading(reading){
  clone.signal_b_pct=ire;
  clone.series_type='greyscale';
  clone._neutral_color_greyscale_analysis=true;
- // Color-series targets are not greyscale targets. The marker above makes the
- // target resolver rebuild D65 + EOTF Y from this patch's actual neutral code.
+ // Keep the ColorChecker's authored linear target_Yn. Neutral color patches
+ // use greyscale grading, but their luminance target is this relative Y scaled
+ // by the selected measured/manual white, not the absolute PQ luminance of the
+ // emitted code. Prefer the canonical step so a live target-gamma refresh
+ // cannot replace ColorChecker reflectance Y with a slot/IRE-derived value.
+ const authoredYn=Number(source.target_Yn);
+ if(Number.isFinite(authoredYn)&&authoredYn>=0) clone.target_Yn=authoredYn;
  delete clone.target_X; delete clone.target_Y; delete clone.target_Z;
- delete clone.target_x; delete clone.target_y; delete clone.target_Yn;
+ delete clone.target_x; delete clone.target_y;
  return clone;
 }
 
