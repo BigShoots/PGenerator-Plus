@@ -7397,9 +7397,8 @@ function meterParseSaturationReading(reading){
 // Full 0..1023, with input_max=1023 stamped on every step) on a max_bpc=10
 // link. Those codes MUST be normalized against the 10-bit range: decoding them
 // with the 8-bit range (16..235 / 0..255) clamps every chromatic channel to
-// signal 1.0, which on a PQ chart decodes to the panel peak -- so every HDR
-// ColorChecker / saturation patch target collapsed to ~1000 cd/m^2 instead of
-// its 203-nit-referenced per-patch value. 12-bit links coerce to 10-bit
+// signal 1.0, which on a PQ chart decodes to the panel peak, collapsing every
+// HDR ColorChecker / saturation target to the same luminance. 12-bit links coerce to 10-bit
 // (meterPatchBitDepth). The meterActiveSeriesCodesAre8Bit() guard keeps a
 // genuinely 8-bit series (white code <=255) on the 8-bit range even when the
 // conf reports max_bpc=10, matching the greyscale path.
@@ -7640,6 +7639,14 @@ function meterTargetXYZForReading(reading){
 	   return {X:0, Y:0, Z:0};
 	  }
 	 }catch(e){}
+	 // An equal-code patch inside any colour or saturation series is a
+	 // greyscale sample. Route it through the greyscale target resolver before
+	 // looking at colour-series target metadata so every consumer uses the same
+	 // white, black, transfer-function and range handling as greyscale.
+	 if(typeof meterColorSeriesNeutralUsesGreyscaleAnalysis==='function'
+	    &&meterColorSeriesNeutralUsesGreyscaleAnalysis(reading)){
+	  return meterGreyChartTargetXYZForReading(meterNeutralColorGreyscaleReading(reading));
+	 }
 	 const absX=Number(reading.target_X);
 	 const absY=Number(reading.target_Y);
 	 const absZ=Number(reading.target_Z);
@@ -7711,14 +7718,15 @@ function meterTargetXYZForReading(reading){
      if(_gw>0) _sy=Math.min(_sy,_gw);
     }
     _sy=meterLatticeDisplayTargetY(_sy,reading);
+	let _blackFloor=0;
+	try{ _blackFloor=(typeof meterBlackReadingY==='function')?meterBlackReadingY():0; }catch(e){}
+	if(Number.isFinite(_blackFloor)&&_blackFloor>0) _sy=Math.max(_sy,_blackFloor);
     _wrgbStimY=_sy;
    }
   }
-  // HDR10 color/sat series carry PQ-absolute target_Yn (normalized to the
-  // 10000-nit peak), so colored patches reference the PQ peak. The neutral
-  // WHITE reference patch (target_Yn=1) must instead reference the display's
-  // achieved white; otherwise the panel's normal peak rolloff reads as a
-  // spurious white luminance error.
+  // Keep the measured display white as the color-series reference. Neutral
+  // rows return through the greyscale resolver above; this also keeps the
+  // chromatic fallback aligned with the selected Target White.
   if(_activeColorSeries&&meterActiveChartSignalMode()==='hdr10'&&_greyReading){
    const _whiteRef=meterFindMeasuredWhiteReading();
    const _whiteRefY=meterReadingLuminanceNits(_whiteRef);
@@ -7750,6 +7758,12 @@ function meterTargetXYZForReading(reading){
 	   if(Number.isFinite(fallbackTargetY)&&fallbackTargetY>=0) greyTargetY=fallbackTargetY;
 	  }
   if(tYn<=0&&greyTargetY==null) return {X:0,Y:0,Z:0};
+  let relativeTargetY=null;
+  if(greyTargetY==null&&_wrgbStimY==null&&typeof meterGreyscaleTargetYFromYn==='function'){
+   let black=0;
+   try{ black=(typeof meterBlackReadingY==='function')?meterBlackReadingY():0; }catch(e){}
+   relativeTargetY=meterGreyscaleTargetYFromYn(tYn,refY,black||0);
+  }
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
   const gamut=meterAnalysisGamut();
@@ -7761,11 +7775,11 @@ function meterTargetXYZForReading(reading){
    const cs=clipped.X+clipped.Y+clipped.Z;
    if(cs>0&&clipped.Y>0){
     const cx=clipped.X/cs,cy=clipped.Y/cs;
-    const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:tYn*refY);
+    const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:(relativeTargetY!=null?relativeTargetY:tYn*refY));
     return {X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y};
    }
   }
-	  const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:tYn*refY);
+	  const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:(relativeTargetY!=null?relativeTargetY:tYn*refY));
 	  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
 	 }
 	 if(meterActiveSeriesType==='colors' && reading.series_color && reading.sat_pct!=null){
@@ -8516,20 +8530,31 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 // so unrelated custom and MacLeod-Boynton series retain their behavior.
 	 const wireSolveGamut=meterChartIsHlg()?GAMUT_PRESETS.bt2020:solveGamut;
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
-	 const hdrColorCheckerRefNits=203;
+	 const hdrColorCheckerRefNits=seriesWhite;
+	 let useMeasuredWhite=true;
+	 try{
+	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
+	 }catch(e){}
+	 const rebaseMeta=(rgb)=>absoluteHdrColorChecker&&useMeasuredWhite?{
+	  colorchecker_rebase_white:true,
+	  colorchecker_linear_r:rgb[0],colorchecker_linear_g:rgb[1],colorchecker_linear_b:rgb[2],
+	  colorchecker_code_min:min,colorchecker_code_span:max-min
+	 }:{};
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
 	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
 	   const code=meterEncodeColorCheckerLinear(src.gray,absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined);
-	   let targetYn=absoluteHdrColorChecker?(src.gray*hdrColorCheckerRefNits/seriesWhite):src.gray;
+	   let targetYn=src.gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
+	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
+	    ...rebaseMeta([src.gray,src.gray,src.gray])});
 	   return;
 	  }
     const ref=xyToUnitXyz(src.x,src.y);
@@ -8559,7 +8584,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
 	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
 	  const scaledYn=adaptedYn*stimulusScale;
-	  let targetYn=absoluteHdrColorChecker?(scaledYn*hdrColorCheckerRefNits/seriesWhite):scaledYn;
+	  let targetYn=scaledYn;
 	  if(meterChartIsDv()&&!dvAbsolute){
     const min=meterChromaPatchRangeMin();
     const span=meterChromaPatchRangeSpan();
@@ -8585,8 +8610,9 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
    target_x:targetX,
    target_y:targetY,
    target_Yn:targetYn,
-   input_max:inputMax
-  });
+	   input_max:inputMax,
+	   ...rebaseMeta([rl,gl,bl])
+	  });
  });
  if(includePrimaries!==false) [
   ['100% Red','Red'],
@@ -10674,10 +10700,10 @@ function meterGreyTargetPeak(refWhite){
  const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsPq();
  if(usesPqTarget){
   const displayPeak=meterApplyHdrDiffuseOverridePeak((refWhite>0)?refWhite:meterChartHdrPeak());
-  // An explicit Target White must win over mastering Max Luma in native PQ
-  // mode too. Max Luma remains the fallback when Target White follows the
-  // measurement, and remains the BT.2390 source/mastering peak.
-  if(manualTargetWhite!=null) return displayPeak;
+  // Both manual Target White and "Use measured" are explicit target choices.
+  // Once a real measured reference exists, use it even when BT.2390 is off.
+  // Mastering Max Luma is only the fallback before White has been measured.
+  if(manualTargetWhite!=null||(_tw&&_tw.useMeasured&&refWhite>0)) return displayPeak;
   if(typeof meterChartBt2390Enabled==='function'&&!meterChartBt2390Enabled()){
    const master=(typeof meterChartMasterPeak==='function')?meterChartMasterPeak():meterChartHdrPeak();
    return (master>0)?master:displayPeak;
@@ -18892,8 +18918,13 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   ?GAMUT_PRESETS.bt2020
   :((typeof meterStimulusSolveGamut==='function')?meterStimulusSolveGamut():GAMUT_PRESETS.bt709);
  const absoluteHdr=(signalMode==='hdr10')||(signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1');
- const hdrReferenceNits=203;
- const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
+	 const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
+	 const hdrReferenceNits=seriesWhite;
+	 let useMeasuredWhite=true;
+	 try{
+	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
+	 }catch(e){}
  return (Array.isArray(names)?names:[]).map(name=>{
   const sourceIndex=METER_COLORCHECKER_SG_NAMES.indexOf(name);
   const lab=METER_COLORCHECKER_SG_LAB_D50[sourceIndex];
@@ -18910,10 +18941,15 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
   const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
-  const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
-  return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
-   target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
-   series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
+	  const targetYn=solved.target_Yn;
+	  return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
+	   target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
+	   series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode,
+	   ...(absoluteHdr&&useMeasuredWhite?{
+	    colorchecker_rebase_white:true,
+	    colorchecker_linear_r:solved.rgb[0],colorchecker_linear_g:solved.rgb[1],colorchecker_linear_b:solved.rgb[2],
+	    colorchecker_code_min:min,colorchecker_code_span:span
+	   }:{})};
  }).filter(Boolean);
 }
 

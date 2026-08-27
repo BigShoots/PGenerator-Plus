@@ -3716,8 +3716,8 @@ sub webui_custom_series_steps_from_body (@) {
   last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
-  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
-   $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?\d+(?:\.\d+)?)/);
+  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
+   $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
   # Prefer the client's input_max. Fall back by magnitude of the RGB codes so
@@ -3763,6 +3763,12 @@ sub webui_custom_series_steps_from_body (@) {
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
   $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  if($obj=~/"colorchecker_rebase_white"\s*:\s*true/i) {
+   $step.=',"colorchecker_rebase_white":true';
+   foreach my $key (qw(colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
+    $step.=',"'.$key.'":'.($num{$key}+0) if(defined $num{$key});
+   }
+  }
   $step.="}";
   push @out,$step;
  }
@@ -4768,11 +4774,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
-    # BT.2408 HDR Reference White for ColorChecker patches in HDR10 and
-    # DV-Absolute. Both neutral and chromatic reflectance samples are anchored
-    # to the same 203 cd/m^2 diffuse white. The separate White patch remains
-    # full code so it can establish the display peak.
-    my $bt2408_ref_white_nits=203;
     my $encode_linear=sub {
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
@@ -4783,9 +4784,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      }
       my $encoded=0;
       if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
-       # Callers for HDR10 and DV-Absolute ColorChecker reflectance patches
-       # pass the BT.2408 203 cd/m^2 reference explicitly. Other PQ callers
-       # retain the measured-white/mastering-peak fallback below.
        my $cc_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
        my $ref=(defined $ref_nits_override && $ref_nits_override>0)?$ref_nits_override:$cc_ref;
        $encoded=&webui_pattern_pq_encode_normalized($linear*$ref);
@@ -4918,10 +4916,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($r,$g,$b);
      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      $r=$encode_linear->($rl,$bt2408_ref_white_nits);
-      $g=$encode_linear->($gl,$bt2408_ref_white_nits);
-      $b=$encode_linear->($bl,$bt2408_ref_white_nits);
-      $target_Yn=$cc_white>0 ? $scaled_Yn*$bt2408_ref_white_nits/$cc_white : 0;
+      $r=$encode_linear->($rl,$cc_white);
+      $g=$encode_linear->($gl,$cc_white);
+      $b=$encode_linear->($bl,$cc_white);
+      $target_Yn=$scaled_Yn;
      } else {
       $r=$encode_linear->($rl);
       $g=$encode_linear->($gl);
@@ -4933,7 +4931,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
        $target_Yn=0 if($target_Yn<0);
       }
      }
-     return ($r,$g,$b,$target_x,$target_y,$target_Yn,$Yn);
+     return ($r,$g,$b,$target_x,$target_y,$target_Yn,$Yn,$rl,$gl,$bl);
     };
     my $build_hcfr_fixed_rgb=sub {
      my ($r_pct,$g_pct,$b_pct)=@_;
@@ -5025,26 +5023,30 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      my $level=$vals[0];
 	      my $absolute_hdr_colorchecker=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 1 : 0;
 	      my $code=$absolute_hdr_colorchecker
-	       ? $encode_linear->($level,$bt2408_ref_white_nits)
+	       ? $encode_linear->($level)
 	       : $encode_linear->($level);
 	      my $ire=int($level*100 + .5);
 	      my $target_Yn_for_step=$level;
-	      if($absolute_hdr_colorchecker) {
-	       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-	       $target_Yn_for_step=$cc_white>0 ? $level*$bt2408_ref_white_nits/$cc_white : 0;
-	      } elsif($signal_mode eq "dv" && $span_code>0) {
+	      if(!$absolute_hdr_colorchecker && $signal_mode eq "dv" && $span_code>0) {
 	       my $norm=($code-$min_code)/$span_code;
 	       $norm=0 if($norm < 0); $norm=1 if($norm > 1);
 	       $target_Yn_for_step=$decode_linear->($norm);
 	       $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 	      }
-	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+	      my $rebase_json=($absolute_hdr_colorchecker && $target_white_use_measured)
+	       ? ",\"colorchecker_rebase_white\":true,\"colorchecker_linear_r\":$level,\"colorchecker_linear_g\":$level,\"colorchecker_linear_b\":$level,\"colorchecker_code_min\":$min_code,\"colorchecker_code_span\":$span_code"
+	       : "";
+	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$rebase_json}";
 	      next;
 	     }
       my ($target_x,$target_y,$Yn)=@vals;
-      my ($r,$g,$b,$chart_tx,$chart_ty,$target_Yn_for_step,$nominal_Yn)=$build_reference_color->($target_x,$target_y,$Yn);
+      my ($r,$g,$b,$chart_tx,$chart_ty,$target_Yn_for_step,$nominal_Yn,$linear_r,$linear_g,$linear_b)=$build_reference_color->($target_x,$target_y,$Yn);
       my $ire=int($nominal_Yn*100 + .5);
-      push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+      my $absolute_hdr_colorchecker=($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) ? 1 : 0;
+      my $rebase_json=($absolute_hdr_colorchecker && $target_white_use_measured)
+       ? ",\"colorchecker_rebase_white\":true,\"colorchecker_linear_r\":$linear_r,\"colorchecker_linear_g\":$linear_g,\"colorchecker_linear_b\":$linear_b,\"colorchecker_code_min\":$min_code,\"colorchecker_code_span\":$span_code"
+       : "";
+      push @steps, "{\"ire\":$ire,\"r\":$r,\"g\":$g,\"b\":$b,\"name\":\"$name\",\"target_x\":$chart_tx,\"target_y\":$chart_ty,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$rebase_json}";
      }
   # Endpoint names describe the selected target gamut. In HDR10 that is
   # normally P3-D65 carried in a BT.2020 container, so derive the endpoint xy
