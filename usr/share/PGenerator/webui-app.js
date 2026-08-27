@@ -8530,31 +8530,20 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 // so unrelated custom and MacLeod-Boynton series retain their behavior.
 	 const wireSolveGamut=meterChartIsHlg()?GAMUT_PRESETS.bt2020:solveGamut;
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
-	 const hdrColorCheckerRefNits=seriesWhite;
-	 let useMeasuredWhite=true;
-	 try{
-	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
-	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
-	 }catch(e){}
-	 const rebaseMeta=(rgb)=>absoluteHdrColorChecker&&useMeasuredWhite?{
-	  colorchecker_rebase_white:true,
-	  colorchecker_linear_r:rgb[0],colorchecker_linear_g:rgb[1],colorchecker_linear_b:rgb[2],
-	  colorchecker_code_min:min,colorchecker_code_span:max-min
-	 }:{};
+	 const hdrColorCheckerRefNits=203;
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
 	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
-	   const code=meterEncodeColorCheckerLinear(src.gray,absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined);
+	   const code=meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
 	   let targetYn=src.gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
-	    ...rebaseMeta([src.gray,src.gray,src.gray])});
+	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
 	   return;
 	  }
     const ref=xyToUnitXyz(src.x,src.y);
@@ -8584,7 +8573,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
 	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
 	  const scaledYn=adaptedYn*stimulusScale;
-	  let targetYn=scaledYn;
+	  let targetYn=absoluteHdrColorChecker?(scaledYn*hdrColorCheckerRefNits/seriesWhite):scaledYn;
 	  if(meterChartIsDv()&&!dvAbsolute){
     const min=meterChromaPatchRangeMin();
     const span=meterChromaPatchRangeSpan();
@@ -8610,8 +8599,7 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
    target_x:targetX,
    target_y:targetY,
    target_Yn:targetYn,
-	   input_max:inputMax,
-	   ...rebaseMeta([rl,gl,bl])
+	   input_max:inputMax
 	  });
  });
  if(includePrimaries!==false) [
@@ -18918,13 +18906,8 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   ?GAMUT_PRESETS.bt2020
   :((typeof meterStimulusSolveGamut==='function')?meterStimulusSolveGamut():GAMUT_PRESETS.bt709);
  const absoluteHdr=(signalMode==='hdr10')||(signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1');
-	 const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
-	 const hdrReferenceNits=seriesWhite;
-	 let useMeasuredWhite=true;
-	 try{
-	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
-	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
-	 }catch(e){}
+ const hdrReferenceNits=203;
+ const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
  return (Array.isArray(names)?names:[]).map(name=>{
   const sourceIndex=METER_COLORCHECKER_SG_NAMES.indexOf(name);
   const lab=METER_COLORCHECKER_SG_LAB_D50[sourceIndex];
@@ -18941,15 +18924,10 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
   const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
-	  const targetYn=solved.target_Yn;
-	  return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
-	   target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
-	   series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode,
-	   ...(absoluteHdr&&useMeasuredWhite?{
-	    colorchecker_rebase_white:true,
-	    colorchecker_linear_r:solved.rgb[0],colorchecker_linear_g:solved.rgb[1],colorchecker_linear_b:solved.rgb[2],
-	    colorchecker_code_min:min,colorchecker_code_span:span
-	   }:{})};
+  const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
+  return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
+   target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
+   series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
  }).filter(Boolean);
 }
 
