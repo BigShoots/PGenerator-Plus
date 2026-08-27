@@ -704,12 +704,15 @@ apply_series_white_reference_to_steps() {
  STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" SIGNAL_MODE="$SIGNAL_MODE" DV_MAP_MODE="$DV_MAP_MODE" python - <<'PY' 2>/dev/null
 import json, math, os, tempfile
 
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
+
 path = os.environ.get("STEPS_FILE", "")
 try:
     white_y = float(os.environ.get("WHITE_Y", ""))
 except Exception:
     raise SystemExit(1)
-if not math.isfinite(white_y) or white_y <= 0:
+if not finite(white_y) or white_y <= 0:
     raise SystemExit(1)
 try:
     with open(path) as fh:
@@ -729,7 +732,7 @@ def number(value):
         value = float(value)
     except Exception:
         return None
-    return value if math.isfinite(value) else None
+    return value if finite(value) else None
 
 def pq_encode_normalized(nits):
     nits = max(0.0, min(10000.0, float(nits)))
@@ -787,7 +790,10 @@ PY
 effective_low_light_mode_for_step() {
  local idx="$1"
  STEPS_FILE="$STEPS_FILE" STEP_INDEX="$idx" SELECTED_MODE="$LOW_LIGHT_MODE" LOW_LIGHT_TRIGGER_VALUE="$LOW_LIGHT_TRIGGER" python - <<'PY' 2>/dev/null
-import json, math, os
+import json, os
+
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
 
 def number(value):
     if isinstance(value, bool):
@@ -796,7 +802,7 @@ def number(value):
         value = float(value)
     except Exception:
         return None
-    return value if math.isfinite(value) else None
+    return value if finite(value) else None
 
 mode = os.environ.get("SELECTED_MODE", "off")
 if mode not in ("a", "aa", "aaa"):
@@ -850,7 +856,7 @@ if not absolute_present:
                     break
             if white_y is not None:
                 expected = max(black_y, target_yn * white_y)
-if expected is None or expected < 0 or not math.isfinite(expected):
+if expected is None or expected < 0 or not finite(expected):
     print("off")
 else:
     print(mode if expected < trigger else "off")
@@ -1860,14 +1866,17 @@ implausibly_dim_hdr_profile_reading() {
  [[ "$SERIES_ID" == colors_* && "$name" == ICC\ * ]] || return 1
  READING_JSON="$reading" R_CODE="$r" G_CODE="$g" B_CODE="$b" INPUT_MAX_VALUE="$input_max" \
  STATE_FILE_VALUE="$STATE_FILE" "${PYTHON_BIN:-python}" - <<'PY' 2>/dev/null
-import json, math, os, sys
+import json, os, sys
+
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
 
 def number(value):
     try:
         value = float(value)
     except Exception:
         return None
-    return value if math.isfinite(value) else None
+    return value if finite(value) else None
 
 try:
     maximum = float(os.environ.get("INPUT_MAX_VALUE", "0"))
@@ -1945,7 +1954,10 @@ PY
 normalize_oled_zero_black_reading() {
  local reading="$1"
  READING_JSON="$reading" DISPLAY_TYPE_VALUE="$DISPLAY_TYPE" CCSS_FILE_VALUE="${CCSS_FILE:-}" "${PYTHON_BIN:-python}" - <<'PY'
-import json, os, math, sys
+import json, os, sys
+
+def finite(value):
+    return value == value and value not in (float("inf"), float("-inf"))
 
 try:
     rd = json.loads(os.environ.get("READING_JSON", "") or "{}")
@@ -1963,7 +1975,7 @@ if str(rd.get("series_type", "")).lower() not in ("", "greyscale"):
 def num(value):
     try:
         n = float(value)
-        return n if math.isfinite(n) else None
+        return n if finite(n) else None
     except Exception:
         return None
 
