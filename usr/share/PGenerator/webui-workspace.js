@@ -20213,16 +20213,20 @@ function ccssPreviewRender(payload){
 
  const ctx=setupCanvasHiDPI(canvas);
  if(!ctx) return;
+ const ySteps=5;
+ const yStep=maxValue/ySteps;
+ const yPrecision=yStep>0
+  ? Math.max(0,Math.min(6,1-Math.floor(Math.log10(yStep))))
+  : 3;
  const chart=drawChartGrid(ctx,{
   pad:{t:20,r:18,b:36,l:50},
   xSteps:8,
-  ySteps:5,
+  ySteps:ySteps,
   xLabel:(step,total)=>String(Math.round(minNm+((maxNm-minNm)*(step/total)))),
   yLabel:(step,total)=>{
    const value=maxValue*(step/total);
-   if(value>=10) return value.toFixed(0);
-   if(value>=1) return value.toFixed(1).replace(/\.0$/,'');
-   return value.toFixed(3).replace(/0+$/,'').replace(/\.$/,'');
+   if(value===0) return '0';
+   return value.toFixed(yPrecision).replace(/0+$/,'').replace(/\.$/,'');
   }
  });
 
