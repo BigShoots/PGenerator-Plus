@@ -6,6 +6,8 @@ expressions this PR replaced, recovered verbatim from the upstream main branch
 into t/fixtures/scalar_reference.py. They use exact float64 equality wherever the
 production path promises identical operation order, then repeat the comparison
 after the production 16-bit quantisation step.
+
+The one documented exception is pow: see within_one_ulp() below.
 """
 
 from __future__ import print_function
@@ -44,6 +46,7 @@ COMPANION = load_source(
 
 
 checks = 0
+ulp_checks = 0
 
 
 def exact(label, actual, expected):
@@ -58,6 +61,56 @@ def exact(label, actual, expected):
             label, first,
             actual.ravel()[first] if first >= 0 else actual.shape,
             expected.ravel()[first] if first >= 0 else expected.shape))
+
+
+# Exact equality is the contract these tests exist to defend, and it holds for
+# everything the production paths are built from: +, -, *, /, comparisons,
+# rint and the u16 serialisation are correctly rounded and give identical
+# results on every platform.
+#
+# pow is the exception, in one specific direction. NumPy's vectorised
+# transcendental loops are compiled in on Linux x86_64 and dispatched on
+# AVX512_SKX; on a host that takes them, an ARRAY pow can land one ulp away
+# from the SAME NumPy build's SCALAR pow, which falls back to libm. The checks
+# below compare exactly those two entry points against one another, so on such
+# a host they disagree by an ulp with nothing wrong in the code under test.
+#
+# That is a property of the runner, not of the production path. GitHub's
+# runners are heterogeneous in precisely this feature, which is why the same
+# commit passes on one and fails on another; the appliance is ARM with NumPy
+# 1.18.5, which has no such loop, and the appliance is the platform the
+# bit-exactness promise is made for. Observed on a GitHub runner as
+# pq_to_nits(0.04045) giving 0.03742617499852619 from the batch path against
+# 0.037426174998526185 from the scalar one -- one ulp, in the second pow.
+#
+# The allowance is deliberately narrower than "anything using pow". It covers
+# only the two checks whose batch side is `array ** float`, the operation that
+# actually diverged on the runner. _pow2 and the model error keep EXACT
+# equality even though they also raise to a power, because the _pow2
+# regression this suite has to catch -- dropping the array exponent, so NumPy
+# takes its squaring fast path -- IS a one-ulp difference on about 0.15% of
+# inputs. Allowing an ulp there would swallow the very mutation the check
+# exists for, and the same runner that failed on PQ decode passed both of
+# those. Anything larger than an ulp still fails everywhere.
+def within_one_ulp(label, actual, expected):
+    global checks, ulp_checks
+    checks += 1
+    ulp_checks += 1
+    actual = np.asarray(actual, dtype=np.float64)
+    expected = np.asarray(expected, dtype=np.float64)
+    if actual.shape != expected.shape:
+        raise AssertionError("{} shape differs: {} != {}".format(
+            label, actual.shape, expected.shape))
+    close = ((actual == expected)
+             | (actual == np.nextafter(expected, np.inf))
+             | (actual == np.nextafter(expected, -np.inf)))
+    if not close.all():
+        index = int(np.flatnonzero(~close.ravel())[0])
+        raise AssertionError(
+            "{} differs by more than one ulp at flattened index {}: "
+            "{!r} != {!r}".format(label, index,
+                                  actual.ravel()[index],
+                                  expected.ravel()[index]))
 
 
 def exact_bytes(label, actual, expected):
@@ -150,11 +203,11 @@ exact("builder explicit 3x3 inverse",
        for matrix in matrices])
 
 unit = np.clip(positions, 0.0, 1.0)
-exact("builder PQ decode", BUILDER._np_pq_to_nits(unit),
-      [BUILDER.pq_to_nits(value) for value in unit])
+within_one_ulp("builder PQ decode", BUILDER._np_pq_to_nits(unit),
+               [BUILDER.pq_to_nits(value) for value in unit])
 nits = unit * 12000.0 - 500.0
-exact("builder PQ encode", BUILDER._np_nits_to_pq(nits),
-      [BUILDER.nits_to_pq(value) for value in nits])
+within_one_ulp("builder PQ encode", BUILDER._np_nits_to_pq(nits),
+               [BUILDER.nits_to_pq(value) for value in nits])
 exact("builder smoothstep", BUILDER._np_smoothstep(positions),
       [BUILDER.smoothstep(value) for value in positions])
 expected_u16 = b"".join(
@@ -391,4 +444,7 @@ exact_bytes("companion u16 quantisation",
             COMPANION.quantize_u16(positions).tobytes(),
             SCALAR.companion_u16_bytes(positions))
 
-print("{} exact vector/scalar parity checks passed".format(checks))
+# The split is printed so that loosening another check is visible in the test
+# output rather than only in the diff.
+print("{} vector/scalar parity checks passed ({} exact, {} within one ulp)"
+      .format(checks, checks - ulp_checks, ulp_checks))
