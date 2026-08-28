@@ -6,6 +6,12 @@
 
 set -o pipefail
 
+# Directory this script was started from, so the shared Python maths module is
+# importable from a checkout as well as from /usr/bin on the appliance. A bare
+# name (started through PATH) leaves no directory to strip.
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Built-in i1D3 keys remain first in Argyll's key list; other meter drivers
 # never consume this variable.
@@ -950,14 +956,46 @@ raise SystemExit(1)
 PY
 }
 
+# There is no recovery from a failed DV-absolute target application and no
+# sign of it in the series output: the whole greyscale sweep simply measures
+# against the wrong targets. Say so where an operator actually looks.
+dv_absolute_targets_failed() {
+ local line
+ line="[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets NOT applied: $1"
+ echo "$line" >&2
+ echo "$line" >> /tmp/meter_series_debug.log
+}
+
 apply_dv_absolute_greyscale_targets() {
  local white_y="$1"
- [[ -f "$STEPS_FILE" ]] || return 1
- is_number "$white_y" || return 1
- STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
+ local output status
+ if [[ ! -f "$STEPS_FILE" ]]; then
+  dv_absolute_targets_failed "steps file '$STEPS_FILE' is missing"
+  return 1
+ fi
+ if ! is_number "$white_y"; then
+  dv_absolute_targets_failed "white reference '$white_y' is not a number"
+  return 1
+ fi
+ # The worker's diagnostics are captured rather than discarded: a partial
+ # deploy that leaves pgen_colour_math.py behind shows up here as an
+ # ImportError instead of as an unexplained non-zero exit.
+ output="$(dv_absolute_targets_worker "$white_y" 2>&1)"
+ status=$?
+ if [[ $status -ne 0 ]]; then
+  dv_absolute_targets_failed "worker exited $status: $(printf '%s' "$output" | tr '\n' ' ' | cut -c1-400)"
+  return 1
+ fi
+ return 0
+}
+
+dv_absolute_targets_worker() {
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$1" PGEN_BIN_DIR="$SCRIPT_DIR" python - <<'PY'
 import json, math, os, sys, tempfile
 
-sys.path.insert(0, "/usr/bin")
+for candidate in (os.environ.get("PGEN_BIN_DIR", ""), "/usr/bin"):
+    if candidate and candidate not in sys.path:
+        sys.path.insert(0, candidate)
 from pgen_colour_math import pq_decode_nits, pq_encode_nits
 
 def finite(value):
@@ -2472,7 +2510,9 @@ EOJSON
 
  if [[ "$DV_ABSOLUTE_TARGETS_APPLIED" == "0" ]] && dv_absolute_greyscale_series_active && is_number "$IRE" && float_le 99.999 "$IRE"; then
   WHITE_Y=$(reading_luminance_json "$READING" 2>/dev/null || true)
-  if [[ -n "$WHITE_Y" ]] && apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
+  if [[ -z "$WHITE_Y" ]]; then
+   dv_absolute_targets_failed "the 100% reading carried no usable luminance"
+  elif apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
    DV_ABSOLUTE_TARGETS_APPLIED=1
    WHITE_READING="$READING"
    echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log

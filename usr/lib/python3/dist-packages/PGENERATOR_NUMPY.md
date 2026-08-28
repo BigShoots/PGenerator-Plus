@@ -13,6 +13,19 @@ workers is checked in here.
 - Platform ABI: Linux ARMv7 hard-float
 - Licence: BSD-3-Clause; see `numpy-1.18.5.dist-info/LICENSE.txt`
 
+The ATLAS licence notice in `usr/lib/ATLAS-LICENSE.txt` is a transcription,
+not a file extracted from the shipped artefacts: the `.so` files carry no
+embedded copyright text (`strings` finds none), so the notice cannot be
+verified against them. What the binaries do evidence is the version and the
+build origin -- they contain `atlas-3.10.2` and a Debian build path
+(`/build/atlas-o_kal6/atlas-3.10.2/...`), which matches the 3.10.2 stated in
+the notice. The copyright years in that transcription run to 2016 and 2017,
+later than the 3.10.2 release, so the year ranges appear to have been taken
+from a newer upstream notice. They have deliberately been left as they stand
+rather than edited to a guess: correcting them needs the 3.10.2 or Debian
+source package to hand, and an unevidenced edit to a licence notice is worse
+than an accurate note about its provenance.
+
 The vendored tree is a runtime subset. Upstream test suites, documentation, F2PY,
 `distutils`, development headers, static libraries, and bytecode caches have
 been removed. The companion ATLAS/BLAS/LAPACK shared libraries in `usr/lib`
@@ -33,6 +46,6 @@ or the Jessie numerical libraries. Its image build installs the distribution's
 `python3-numpy` package instead; the image and OTA builders explicitly exclude
 the Pi 4-only paths when assembling a Pi 5 target.
 
-Rebuild or replace this runtime only with a wheel whose provenance, ABI,
-licence, import test, and byte-for-byte ICC parity have all been recorded in
-`MATH_SPEED.md`.
+Rebuild or replace this runtime only after recording its provenance, ABI,
+licence, import test, and byte-for-byte ICC parity in the change that updates
+the runtime.

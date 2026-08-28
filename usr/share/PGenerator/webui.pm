@@ -3610,9 +3610,14 @@ sub webui_lattice_series_steps_from_body (@) {
   my ($i,$div)=@_;
   my $t=$i/$div;
   return $t if($spacing ne "light");
-  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): pqe(0) is
-  # ~7e-7, not 0, and a non-zero black frac breaks frac-exact corner
-  # detection in the client ordering parity.
+  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): the corner
+  # ordering must not depend on the encoder's boundary convention, and the
+  # runtimes do not share one. PGMath::pq_encode_normalized and the browser's
+  # pqEncodeNormalized short-circuit non-positive input to 0, while
+  # pgen_colour_math.py and the C header return the transfer function's true
+  # value at zero, ~7.3e-7. This used to carry a private inline encoder with
+  # no short-circuit, so a non-zero black frac was the live hazard; pinning
+  # both ends keeps the frac-exact corner detection correct either way.
   return 0 if($i==0);
   return 1 if($i==$div);
   if($lat_pq) {

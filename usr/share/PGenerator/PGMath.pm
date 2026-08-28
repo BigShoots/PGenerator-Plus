@@ -31,16 +31,29 @@ my $BRADFORD_INVERSE=[
 
 # SMPTE ST 2084 constants. Keep these in one Perl module so the web server,
 # 1D worker, 3D worker and simulator cannot acquire different copies.
-my $PQ_M1=2610/16384;
-my $PQ_M2=2523/32;
-my $PQ_C1=3424/4096;
-my $PQ_C2=2413/128;
-my $PQ_C3=2392/128;
+#
+# c2 and c3 are over 128, NOT over 32. A display specification in circulation
+# lists c2=2413/32 and c3=2392/32; both are typos. With them the EOTF ratio is
+# essentially constant at ~1.0087 for every input, the local gamma collapses to
+# zero and every derived value ends up on a safety clamp. This warning lived
+# beside the inline copy the callers used to carry, so it lives here now.
+my $PQ_M1=2610/16384;        # 0.1593017578125
+my $PQ_M2=2523/32;           # 78.84375
+my $PQ_C1=3424/4096;         # 0.8359375
+my $PQ_C2=2413/128;          # 18.8515625  (NOT 2413/32=75.40625)
+my $PQ_C3=2392/128;          # 18.6875     (NOT 2392/32=74.75)
 
 sub pq_constants {
  return ($PQ_M1,$PQ_M2,$PQ_C1,$PQ_C2,$PQ_C3);
 }
 
+# Non-positive input returns exactly 0 here and in the browser's
+# pqEncodeNormalized, while pgen_colour_math.py and src/common/pgen_colour_math.h
+# evaluate the transfer function and return its true value at zero,
+# 7.3095590257839665e-07. That split is deliberate and long-established --
+# these callers emit pattern codes where a hard 0 is wanted, the Python and C
+# callers fill 16-bit ICC tables where the floor value round-trips -- and each
+# language pins its own zero in its own conformance test.
 sub pq_encode_normalized {
  my ($nits)=@_;
  $nits=0 if(!defined($nits));

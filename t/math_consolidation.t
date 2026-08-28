@@ -8,8 +8,13 @@ use JSON::PP ();
 use lib "$Bin/../usr/share/PGenerator";
 use PGMath qw(
  akima_interpolate bradford_adapt_xyz delta_e_itp_xyz matrix3_inverse
- matrix3_vector_multiply pq_decode_nits pq_encode_normalized xyz_to_ictcp
+ matrix3_multiply matrix3_vector_multiply pq_constants pq_decode_nits
+ pq_encode_normalized xyz_to_ictcp
 );
+
+# The Python legs import modules from usr/bin; without this they leave a
+# usr/bin/__pycache__ behind in the source tree on every run.
+$ENV{"PYTHONDONTWRITEBYTECODE"}=1;
 
 my $root="$Bin/..";
 my $fixture_path="$Bin/fixtures/math_conformance.json";
@@ -36,9 +41,67 @@ foreach my $row (@{$fixture->{"pq_encode"}}) {
  close_enough(pq_encode_normalized($row->{"nits"}),$row->{"signal"},
   "Perl PQ encodes $row->{nits} cd/m2");
 }
+# Zero is the one input the four languages do NOT agree on, so the shared
+# fixture cannot carry it and each language pins its own. Perl and the browser
+# short-circuit to exactly 0; Python and C return the transfer function's true
+# value at zero. See the comment on PGMath::pq_encode_normalized.
+is(pq_encode_normalized(0),0,
+ "Perl PQ encode short-circuits zero to exactly 0");
+is(pq_encode_normalized(-5),0,
+ "Perl PQ encode short-circuits negative input to exactly 0");
 foreach my $row (@{$fixture->{"pq_decode"}}) {
  close_enough(pq_decode_nits($row->{"signal"}),$row->{"nits"},
   "Perl PQ decodes signal $row->{signal}");
+}
+
+# pq_constants and matrix3_multiply feed the 1D and 3D workers but had no
+# value coverage of their own: the fixture rows above cannot see a c2/c3 swap
+# or a transposed product, because both sides of every other check consume the
+# same Perl-computed result.
+#
+# The literals are the ST 2084 constants written out exactly. c2 and c3 are
+# over 128; the 2413/32 and 2392/32 forms that circulate are typos, and a swap
+# of c2 with c3 leaves every ratio plausible-looking but wrong.
+my ($pq_m1,$pq_m2,$pq_c1,$pq_c2,$pq_c3)=pq_constants();
+is($pq_m1,0.1593017578125,"shared ST 2084 m1 is 2610/16384");
+is($pq_m2,78.84375,"shared ST 2084 m2 is 2523/32");
+is($pq_c1,0.8359375,"shared ST 2084 c1 is 3424/4096");
+is($pq_c2,18.8515625,"shared ST 2084 c2 is 2413/128, not 2413/32");
+is($pq_c3,18.6875,"shared ST 2084 c3 is 2392/128, not 2392/32");
+isnt($pq_c2,$pq_c3,"shared ST 2084 c2 and c3 are not interchangeable");
+
+# Every entry is an exact binary fraction, so the hand-computed product below
+# is exact in binary64 and can be compared with is_deeply. The product is
+# asymmetric in both senses: left/right swapped and transposed both differ.
+my $left_matrix=[
+ [0.5,0.25,-0.125],[-0.75,1.5,0.0625],[0.375,-0.5,1.25],
+];
+my $right_matrix=[
+ [2,0.5,-1],[0.25,-2,0.75],[-0.5,1,4],
+];
+my $hand_computed=[
+ [1.125,-0.375,-0.8125],
+ [-1.15625,-3.3125,2.125],
+ [0,2.4375,4.25],
+];
+is_deeply(matrix3_multiply($left_matrix,$right_matrix),$hand_computed,
+ "shared 3x3 product matches an independently hand-computed result");
+isnt_deeply_product(matrix3_multiply($right_matrix,$left_matrix),$hand_computed,
+ "shared 3x3 product is not commutative, so operand order is pinned");
+isnt_deeply_product(
+ [map { my $row=$_; [map { $hand_computed->[$_][$row] } (0..2)] } (0..2)],
+ $hand_computed,
+ "the hand-computed product is not its own transpose");
+
+sub isnt_deeply_product {
+ my ($actual,$unwanted,$label)=@_;
+ my $same=1;
+ for my $row (0..2) {
+  for my $column (0..2) {
+   $same=0 if($actual->[$row][$column] != $unwanted->[$row][$column]);
+  }
+ }
+ ok(!$same,$label);
 }
 
 my $inverse=matrix3_inverse($fixture->{"matrix"});
@@ -79,9 +142,10 @@ for my $index (0..2) {
   "Perl shared Bradford reference component $index");
 }
 
-# Independent Colour 0.4.7 reference values. Main's established coefficient
-# precision is retained for serial parity, so this reference gate is explicit
-# and slightly wider than the same-expression conformance checks above.
+# Independent Colour 0.4.7 reference values. The coefficient precision the
+# upstream main branch established is retained for serial parity with shipped
+# output, so this reference gate is explicit and slightly wider than the
+# same-expression conformance checks above.
 for my $case (0..$#{$fixture->{"colour_0_4_7_ictcp_reference"}}) {
  my $row=$fixture->{"colour_0_4_7_ictcp_reference"}[$case];
  my $actual=xyz_to_ictcp(@{$row->{"xyz"}});
@@ -117,10 +181,18 @@ is($python_status,0,"shared Python colour maths passes conformance")
 like($python_output||"",qr/^\d+ Python colour-math conformance checks passed\s*$/,
  "Python workers delegate to the shared implementation");
 
+# Skipping a conformance leg is a dev-box convenience only: CI carries both
+# interpreters and a C toolchain, so an absent one there is a broken runner
+# rather than a reason to lose the coverage silently.
+my $ci=($ENV{"GITHUB_ACTIONS"} || $ENV{"CI"}) ? 1 : 0;
+
 my ($node_path,$node_lookup)=command_output("sh","-c","command -v node 2>/dev/null");
 $node_path=~s/\s+\z// if(defined($node_path));
 SKIP: {
- skip "Node.js is unavailable",2 if($node_lookup!=0 || !$node_path);
+ my $no_node=($node_lookup!=0 || !$node_path);
+ fail("Node.js must be installed in CI; the JavaScript conformance leg cannot be skipped")
+  if($no_node && $ci);
+ skip "Node.js is unavailable",2 if($no_node);
  my ($node_output,$node_status)=command_output($node_path,"$Bin/math_conformance.js");
  is($node_status,0,"browser JavaScript PQ maths passes conformance")
   or diag($node_output||"");
@@ -133,8 +205,11 @@ my ($compiler_path,$compiler_lookup)=command_output("sh","-c","command -v '$comp
 $compiler_path=~s/\s+\z// if(defined($compiler_path));
 SKIP: {
  my $c_checks=scalar(@{$fixture->{"pq_encode"}})
-  +scalar(@{$fixture->{"pq_decode"}})+9;
- skip "C compiler is unavailable",$c_checks if($compiler_lookup!=0 || !$compiler_path);
+  +scalar(@{$fixture->{"pq_decode"}})+28;
+ my $no_compiler=($compiler_lookup!=0 || !$compiler_path);
+ fail("a C compiler must be installed in CI; the C conformance leg cannot be skipped")
+  if($no_compiler && $ci);
+ skip "C compiler is unavailable",$c_checks if($no_compiler);
  my $temporary=tempdir(CLEANUP=>1);
  my $binary="$temporary/math-conformance";
  my @build=($compiler_path,"-O2","-std=c99","-ffp-contract=off",
@@ -142,6 +217,9 @@ SKIP: {
   "-Werror","-I$root","-o",$binary,"$Bin/math_conformance.c","-lm");
  system(@build);
  if($?!=0 || !-x $binary) {
+  # The compiler is present, so a failed build is a defect in the header or
+  # the helper, never a reason to drop the checks it would have run.
+  fail("$compiler_path is available but failed to build $Bin/math_conformance.c");
   skip "C colour-math conformance helper did not build",$c_checks;
  } else {
   foreach my $row (@{$fixture->{"pq_encode"}}) {
@@ -156,6 +234,12 @@ SKIP: {
    close_enough($output+0,$row->{"nits"},
     "C PQ decodes signal $row->{signal}");
   }
+  # The C side of the zero divergence: no short-circuit, so the transfer
+  # function's value at zero is what an ICC table gets.
+  my ($zero_output,$zero_status)=command_output($binary,"encode",0);
+  die "C PQ encode helper failed" if($zero_status!=0);
+  close_enough($zero_output+0,7.3095590257839665e-07,
+   "C PQ encode returns the transfer function value at zero, not 0");
   my @matrix=map { @$_ } @{$fixture->{"matrix"}};
   my ($output,$status)=command_output($binary,"inverse",@matrix);
   die "C matrix inverse helper failed" if($status!=0);
@@ -165,7 +249,85 @@ SKIP: {
    close_enough($actual[$index],$expected[$index],
     "C shared 3x3 inverse element $index");
   }
+  # pgen_matrix3_inverse is the reciprocal variant the native LUT solver
+  # calls, and it also cross-checks pgen_matrix3_determinant against the
+  # determinant it computes internally (exit 3 if they disagree).
+  my ($reciprocal_output,$reciprocal_status)=
+   command_output($binary,"inverse-reciprocal",@matrix);
+  die "C reciprocal inverse helper failed" if($reciprocal_status!=0);
+  my @reciprocal_actual=split(/\s+/,$reciprocal_output||"");
+  my @reciprocal_expected=map { @$_ } @{$fixture->{"inverse_reciprocal"}};
+  for my $index (0..8) {
+   close_enough($reciprocal_actual[$index],$reciprocal_expected[$index],
+    "C shared 3x3 reciprocal inverse element $index");
+  }
+  # PGEN_BRADFORD_MATRIX_INITIALIZER has exactly one shipped consumer, the
+  # native Patch Companion, which no test can build. Pin its coefficients
+  # here so a header edit cannot change them unnoticed.
+  my ($bradford_output,$bradford_status)=command_output($binary,"bradford");
+  die "C Bradford helper failed" if($bradford_status!=0);
+  my @bradford_actual=split(/\s+/,$bradford_output||"");
+  my @bradford_expected=map { @$_ } @{$fixture->{"bradford_cone_response"}};
+  for my $index (0..8) {
+   close_enough($bradford_actual[$index],$bradford_expected[$index],
+    "C shared Bradford cone-response element $index");
+  }
  }
+}
+
+# PGICCProfile.pm runs the profile builder with stderr discarded on three of
+# its routes, so an ImportError from a partial deploy used to reach the
+# operator as a bare "ICC profile creation failed". Both NumPy consumers now
+# answer in their own error protocol instead, and still exit non-zero.
+{
+ my $stub=tempdir("pgen-import-stub-XXXXXX",TMPDIR=>1,CLEANUP=>1);
+ open(my $stub_fh,">","$stub/numpy.py")
+  or die "Unable to write the NumPy stub: $!";
+ print $stub_fh "raise ImportError(\"No module named 'numpy'\")\n";
+ close($stub_fh);
+ local $ENV{"PYTHONPATH"}=$stub;
+
+ my ($builder_stdout,$builder_status)=command_output("sh","-c",
+  "\"\$1\" \"\$2\" /nonexistent-input.json /nonexistent-output 2>/dev/null",
+  "sh",$python,"$root/usr/bin/icc_profile_builder.py");
+ isnt($builder_status,0,
+  "the ICC profile builder exits non-zero when NumPy is unavailable");
+ like($builder_stdout||"",
+  qr/\{"status":"error","message":"ICC profile builder cannot start: [^"]*numpy[^"]*"\}/,
+  "the ICC profile builder answers on stdout in the caller's error protocol");
+
+ my ($companion_stderr,$companion_status)=command_output("sh","-c",
+  "\"\$1\" \"\$2\" a clut sdr b 2>&1 >/dev/null",
+  "sh",$python,"$root/usr/bin/icc_companion_lut.py");
+ isnt($companion_status,0,
+  "the Companion LUT builder exits non-zero when NumPy is unavailable");
+ like($companion_stderr||"",
+  qr/\ACompanion LUT builder cannot start: .*numpy/,
+  "the Companion LUT builder names the missing module on one line");
+}
+
+# The native Patch Companion is the only shipped consumer of
+# PGEN_BRADFORD_MATRIX_INITIALIZER and pgen_matrix3_inverse_divide, and no
+# test can build it: it is a desktop SDL3 application, so neither the
+# appliance nor a default CI runner has its headers, and installing an SDL3
+# toolchain in CI costs more than this gate is worth. Two mitigations instead.
+# The coefficients and both inverse variants are pinned against the fixture
+# above, so an absent SDL3 loses the compile and not the values; and where the
+# headers ARE present the source is syntax-checked, with a failure treated as
+# a failure rather than a skip.
+SKIP: {
+ skip "C compiler is unavailable",1 if($compiler_lookup!=0 || !$compiler_path);
+ my ($sdl_flags,$sdl_status)=command_output("sh","-c",
+  "pkg-config --cflags sdl3 2>/dev/null");
+ $sdl_flags="" if(!defined($sdl_flags));
+ $sdl_flags=~s/\s+\z//;
+ skip "SDL3 development headers are unavailable",1 if($sdl_status!=0);
+ my @check=($compiler_path,"-fsyntax-only","-std=c99",
+  grep { length } split(/\s+/,$sdl_flags),
+  "$root/usr/share/PGenerator/icc-companion-src/pgen-icc-companion.c");
+ system(@check);
+ is($?,0,
+  "native Patch Companion source still compiles against the shared C header");
 }
 
 sub source_text {
@@ -220,5 +382,11 @@ like($companion,qr{#include "\.\./\.\./\.\./\.\./src/common/pgen_colour_math\.h"
  "native companion uses the shared C header");
 unlike($solver.$companion,qr/2610(?:\.0)?\s*\/\s*16384/,
  "native C callers do not carry private ST 2084 constants");
+unlike($solver.$companion,qr/0\.8951\s*,\s*0\.2664/,
+ "native C callers take Bradford from the shared header initializer");
+like($companion,qr/PGEN_BRADFORD_MATRIX_INITIALIZER/,
+ "native companion still consumes the shared Bradford initializer");
+like($companion,qr/pgen_matrix3_inverse_divide/,
+ "native companion still consumes the shared per-cofactor 3x3 inverse");
 
 done_testing();

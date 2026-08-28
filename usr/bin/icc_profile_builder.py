@@ -22,24 +22,36 @@ import sys
 import tempfile
 import time
 
-import numpy as np
+# PGICCProfile.pm runs this builder with stderr discarded on three of its
+# routes, so an interpreter-level ImportError -- a partial deploy that left
+# NumPy or the shared maths module behind -- would reach the operator as a bare
+# "ICC profile creation failed" with the cause thrown away. Answer on stdout in
+# the protocol the caller already parses instead, and still exit non-zero.
+try:
+    import numpy as np
 
-from pgen_colour_math import (
-    BRADFORD,
-    PQ_C1,
-    PQ_C2,
-    PQ_C3,
-    PQ_M1,
-    PQ_M2,
-    bradford_adaptation as shared_bradford_adaptation,
-    matrix3_inverse,
-    matrix3_multiply as mat_mul,
-    matrix3_vector_multiply as mat_vec_mul,
-    pq_decode_nits as pq_to_nits,
-    pq_encode_nits as nits_to_pq,
-    sample_uniform_table as sample_table,
-    smoothstep,
-)
+    from pgen_colour_math import (
+        BRADFORD,
+        PQ_C1,
+        PQ_C2,
+        PQ_C3,
+        PQ_M1,
+        PQ_M2,
+        bradford_adaptation as shared_bradford_adaptation,
+        matrix3_inverse,
+        matrix3_multiply as mat_mul,
+        matrix3_vector_multiply as mat_vec_mul,
+        pq_decode_nits as pq_to_nits,
+        pq_encode_nits as nits_to_pq,
+        sample_uniform_table as sample_table,
+        smoothstep,
+    )
+except ImportError as import_error:
+    print(json.dumps(
+        {"status": "error",
+         "message": "ICC profile builder cannot start: {}".format(import_error)},
+        separators=(",", ":")))
+    sys.exit(1)
 
 
 PROFILE_TYPES = {
@@ -1354,11 +1366,20 @@ def rebuild_icc(profile, replacements):
 # rounding decision. The rules that keep them bit-identical:
 #
 #   * no np.dot / @ / einsum / arr.sum() for order-sensitive accumulations --
-#     three-term rows are written out so the left-to-right association of the
-#     scalar sum() is preserved,
+#     three-term rows are written out so the scalar sum()'s accumulation is
+#     reproduced. On the appliance's CPython 3.5 that sum is a plain
+#     left-to-right addition, which is what these rows match; from CPython 3.12
+#     sum() compensates (Neumaier) and can land one ulp away when the three
+#     terms span very different magnitudes, so a workstation comparison
+#     against sum() is the thing that is approximate here, not these rows,
 #   * every division inside a np.where is guarded on both branches, because
-#     np.where evaluates the branch it discards and the Perl caller parses this
-#     script's stdout: one RuntimeWarning corrupts the protocol,
+#     np.where evaluates the branch it discards: an unguarded divide emits a
+#     RuntimeWarning and fills the dead lane with inf or nan. The warning goes
+#     to stderr, not into the stdout protocol -- but the Companion route's
+#     caller captures stderr and shows it to the operator verbatim as the
+#     failure text, and a dead lane holding nan stops being dead the moment a
+#     later expression combines two branches instead of selecting between
+#     them,
 #   * squaring goes through _pow2 (see its comment),
 #   * quantization is always rint -> clip -> ">u2", which is exactly the scalar
 #     int(round(x)) then clamp for the finite values these tables hold.
@@ -1393,8 +1414,9 @@ def _np_sample_table(table, position):
 def _np_table_bisect(table, value):
     """Replay the scalar table bisection over a whole array of values.
 
-    Both scalar inverses converge on the rightmost index whose entry is still
-    below the requested value. Replaying the loop rather than translating it
+    Both scalar inverses converge on the rightmost index whose entry is at or
+    below the requested value (the test is ``<=``, so an entry equal to the
+    value keeps the search moving right). Replaying the loop rather than translating it
     into a searchsorted side keeps the plateau behaviour correct even if a
     table ever arrives non-monotonic.
     """
@@ -4560,10 +4582,11 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
             ridge = np.maximum(1e-12, (normal[0] + normal[4] + normal[8]) * 1e-7)
             for diagonal in (0, 4, 8):
                 normal[diagonal] = normal[diagonal] + ridge
-            # The dedicated +/- probes use a deliberately small device-code
-            # displacement, so the raw normal matrix can fall below the
-            # absolute determinant guard while still being well conditioned.
-            # Normalize its magnitude first, exactly as the scalar does.
+            # Normalize the normal matrix's magnitude before inversion,
+            # exactly as the scalar does, so mat_inv()'s absolute determinant
+            # guard tests conditioning rather than scale. (The dedicated +/-
+            # probe regime is the raw_measurement_model branch above; this
+            # function fits neighbourhoods, not probes.)
             if raw_measurement_model:
                 inverse, usable = _np_mat_inv3(normal)
             else:

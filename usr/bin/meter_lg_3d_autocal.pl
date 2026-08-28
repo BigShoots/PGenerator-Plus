@@ -1816,9 +1816,9 @@ sub _lut_node_u16 {
 # for one cube per invocation and hands back the complete u16 vector. Splitting
 # out only fm_invert would mean shipping 215k doubles each way as text, which
 # costs more in sprintf than the whole-cube helper costs end to end.
-# Appliance benchmarks and the complete code-for-code parity sweep live in
-# MATH_SPEED.md and t/lg_3d_lut_native_parity.t. Keep measurements out of this
-# source comment so a faster model or a larger fixture cannot make it stale.
+# The complete code-for-code parity sweep lives in
+# t/lg_3d_lut_native_parity.t. Keep measurements out of this source comment so
+# a faster model or a larger fixture cannot make it stale.
 #
 # It is an OPTIMISATION, never a source of truth. Every failure path logs and
 # returns undef so the caller runs the existing Perl cube: a slow cube is
@@ -1826,6 +1826,16 @@ sub _lut_node_u16 {
 # the Perl path (A/B comparison, parity verification).
 
 our $_lut_native_bad=0;
+# Why the last request build refused. The block comment above promises that
+# every failure path logs; a bare "return undef" deep in the request builder
+# cannot, so it records a reason here and _lut_native_u16 logs it. A silent
+# refusal costs tens of minutes of Perl solve with nothing to explain it.
+our $_lut_native_reason="";
+
+sub _lut_native_refuse {
+ $_lut_native_reason=$_[0];
+ return undef;
+}
 our $_lut_native_seq=0;
 
 sub _lut_native_helper {
@@ -1887,18 +1897,25 @@ sub _lut_native_matrix {
 sub _lut_native_request {
  my ($model,$size,$order)=@_;
  local $_lut_native_bad=0;
+ $_lut_native_reason="";
  my $fm=$model->{"forward_model"};
- return undef if(ref($fm) ne "HASH");
+ return _lut_native_refuse("the model carries no forward model") if(ref($fm) ne "HASH");
  my $ramp=$fm->{"ramp"};
- return undef if(ref($ramp) ne "ARRAY" || scalar(@{$ramp}) != 3);
+ return _lut_native_refuse("the forward-model ramp is not three channels")
+  if(ref($ramp) ne "ARRAY" || scalar(@{$ramp}) != 3);
  my $gamma=$model->{"target_gamma"};
- return undef if(!defined($gamma) || $gamma eq "" || $gamma =~ /\s/ || length($gamma) > 31);
+ return _lut_native_refuse("the target gamma is not a helper-safe token")
+  if(!defined($gamma) || $gamma eq "" || $gamma =~ /\s/ || length($gamma) > 31);
  my $black=(ref($model->{"black"}) eq "ARRAY") ? $model->{"black"} : [0,0,0];
  my $fmb=(ref($fm->{"black"}) eq "ARRAY") ? $fm->{"black"} : [0,0,0];
  # fm_additive and the target chain both read a black; the helper carries one.
- for my $k (0..2) { return undef if(($fmb->[$k]||0) != ($black->[$k]||0)); }
+ for my $k (0..2) {
+  return _lut_native_refuse("the model black and the forward-model black differ")
+   if(($fmb->[$k]||0) != ($black->[$k]||0));
+ }
  my $gm=_lut_native_matrix(rgb_to_xyz_matrix_for_gamut($model->{"target_gamut"}));
- return undef if(!defined($gm));
+ return _lut_native_refuse("the target gamut has no usable RGB-to-XYZ matrix")
+  if(!defined($gm));
  my @req;
  push @req,"PGLUT3D 1";
  push @req,"size ".int($size);
@@ -1916,13 +1933,16 @@ sub _lut_native_request {
  push @req,"gamut_rgb2xyz ".$gm;
  if($model->{"gamut_drive_matrix"}) {
   my $drive=_lut_native_matrix($model->{"gamut_drive_matrix"});
-  return undef if(!defined($drive));
+  return _lut_native_refuse("the gamut drive matrix is not a finite 3x3")
+   if(!defined($drive));
   push @req,"seed matrix";
   push @req,"gamut_drive_matrix ".$drive;
  } else {
   my $peak=_lut_native_matrix($model->{"peak_inverse"});
-  return undef if(!defined($peak));
-  return undef if(ref($model->{"peak_y"}) ne "HASH" || ref($model->{"contrib"}) ne "HASH");
+  return _lut_native_refuse("the peak-inverse matrix is not a finite 3x3")
+   if(!defined($peak));
+  return _lut_native_refuse("the solve seed has no peak_y or contrib tables")
+   if(ref($model->{"peak_y"}) ne "HASH" || ref($model->{"contrib"}) ne "HASH");
   push @req,"seed solve";
   push @req,"peak_inverse ".$peak;
   push @req,"peak_y ".join(" ",map { _lut_native_num($model->{"peak_y"}{$_} || 1) } qw(red green blue));
@@ -1930,15 +1950,20 @@ sub _lut_native_request {
   my @kinds=qw(red green blue);
   for my $ch (0..2) {
    my $h=$model->{"contrib"}{$kinds[$ch]};
-   return undef if(ref($h) ne "HASH");
+   return _lut_native_refuse("$kinds[$ch] has no contribution table")
+    if(ref($h) ne "HASH");
    my @lv=sort { $a <=> $b } map { $_+0 } keys %{$h};
    # channel_inverse_level looks contrib up by the exact ramp_levels() key, so
    # a stray key would resolve differently in the helper's numeric match.
-   foreach my $l (@lv) { return undef if(!$ramp_level{$l}); }
+   foreach my $l (@lv) {
+    return _lut_native_refuse("$kinds[$ch] carries contribution level $l, which is not a ramp level")
+     if(!$ramp_level{$l});
+   }
    push @req,"contrib $ch ".scalar(@lv);
    foreach my $l (@lv) {
     my $v=$h->{$l};
-    return undef if(ref($v) ne "ARRAY");
+    return _lut_native_refuse("$kinds[$ch] contribution level $l is not a triple")
+     if(ref($v) ne "ARRAY");
     push @req,_lut_native_num($l)." "._lut_native_vec($v);
    }
   }
@@ -1952,16 +1977,19 @@ sub _lut_native_request {
   push @req,"white_axis ".scalar(@lv);
   foreach my $l (@lv) {
    my $v=$model->{"white_axis"}{$l};
-   return undef if(ref($v) ne "ARRAY");
+   return _lut_native_refuse("white-axis level $l is not a triple")
+    if(ref($v) ne "ARRAY");
    push @req,_lut_native_num($l)." "._lut_native_vec($v);
   }
  }
  for my $ch (0..2) {
   my $arr=$ramp->[$ch];
-  return undef if(ref($arr) ne "ARRAY" || !@{$arr});
+  return _lut_native_refuse("channel $ch has an empty measured ramp")
+   if(ref($arr) ne "ARRAY" || !@{$arr});
   push @req,"ramp $ch ".scalar(@{$arr});
   foreach my $s (@{$arr}) {
-   return undef if(ref($s) ne "ARRAY" || ref($s->[1]) ne "ARRAY");
+   return _lut_native_refuse("a channel $ch ramp sample is malformed")
+    if(ref($s) ne "ARRAY" || ref($s->[1]) ne "ARRAY");
    push @req,_lut_native_num($s->[0])." "._lut_native_vec($s->[1]);
   }
  }
@@ -1979,17 +2007,26 @@ sub _lut_native_request {
  push @req,"nonadd ".scalar(@na);
  push @req,@na;
  push @req,"end";
- return undef if($_lut_native_bad);
+ return _lut_native_refuse("a model value was NaN or infinite")
+  if($_lut_native_bad);
  return join("\n",@req)."\n";
 }
 
 # Fixed 64-node sample the runtime self-check re-solves in Perl: the 8 cube
-# corners, the neutral diagonal and its 1-step neighbourhood, then interior
-# nodes from a constant-seed LCG so the set is the same on every run and is
-# not aligned to the profile lattice. The diagonal is not decoration -- when
-# greys are solved it carries the smallest measured distance to an int() cut
-# point anywhere in the cube (2.27e-13 code units at the exact centre), so it
-# is the first place a libm or build-flag divergence would show.
+# corners, the neutral diagonal and its 1-step neighbourhood, then further
+# nodes drawn from a constant-seed LCG so the set is the same on every run and
+# is not aligned to the profile lattice. Those draws are over the whole 0..n-1
+# range per axis, so they can and do land on faces, edges and corners as well
+# as inside the cube.
+#
+# The diagonal is not decoration. When greys are solved it carries the
+# smallest distance to an int() cut point anywhere in the cube: the exact
+# centre node lands on 50.0 percent -- 2048.0 code units, a cut point exactly
+# -- on at least one channel, with the other two within about 1e-12 of it
+# (measured 6.8e-13 and 9.1e-13 on the t/lut_model_fixture.pl display at both
+# 17^3 and 33^3; the exact figures are model-dependent). That makes it the
+# first place a libm or build-flag divergence would show, and it is why
+# pgen_lut_solve.c reports the quantise margin rather than refusing on it.
 sub _lut_native_check_nodes {
  my ($size)=@_;
  my $hi=$size-1;
@@ -2028,18 +2065,29 @@ sub _lut_native_verify {
 
 sub _lut_native_u16 {
  my ($model,$size,$order)=@_;
- return undef if(!_lut_native_enabled());
- return undef if(ref($model) ne "HASH");
- return undef if(ref($model->{"forward_model"}) ne "HASH");
+ if(!_lut_native_enabled()) {
+  log_line("lut native: disabled by PGEN_AUTOCAL_LUT_NATIVE, Perl cube");
+  return undef;
+ }
+ if(ref($model) ne "HASH" || ref($model->{"forward_model"}) ne "HASH") {
+  log_line("lut native: model is not expressible in the helper protocol (no forward model), Perl cube");
+  return undef;
+ }
  # The helper implements only node_output_pct's forward-model branch. A
  # residual grid would be silently ignored, so refuse the model outright.
- return undef if($model->{"residual_grid"});
+ if($model->{"residual_grid"}) {
+  log_line("lut native: residual-grid model, Perl cube");
+  return undef;
+ }
  my $bin=_lut_native_helper();
  if(!-x $bin) {
   # An appliance deploy that rsyncs without permissions leaves the vendored
   # binary readable but not executable, which would otherwise cost 90 s per
   # cube in Perl on every run with nothing in the log to explain it.
-  return undef if(!-f $bin);
+  if(!-f $bin) {
+   log_line("lut native: helper $bin is not installed, Perl cube");
+   return undef;
+  }
   chmod(0755,$bin);
   if(!-x $bin) {
    log_line("lut native: $bin exists but is not executable ($!), Perl cube");
@@ -2054,7 +2102,11 @@ sub _lut_native_u16 {
   log_line("lut native: request build died ($err), Perl cube");
   return undef;
  }
- return undef if(!defined($req));
+ if(!defined($req)) {
+  my $why=($_lut_native_reason ne "") ? $_lut_native_reason : "unknown";
+  log_line("lut native: model not expressible in the helper protocol ($why), Perl cube");
+  return undef;
+ }
  # A run generates the export cube and the LG payload back to back, so pid and
  # second are not enough to keep the two staging directories apart.
  my $tmpdir=sprintf("/tmp/lutnat_%d_%d_%d",$$,time(),++$_lut_native_seq);
@@ -2083,7 +2135,9 @@ sub _lut_native_u16 {
  }
  if($pid == 0) {
   open(STDIN,'<',$reqpath) or exit 127;
-  exec($bin);
+  # Explicit indirect-object form: exec LIST would hand a helper path
+  # containing shell metacharacters to /bin/sh.
+  exec {$bin} $bin;
   exit 127;
  }
  binmode($rd);
@@ -2114,7 +2168,11 @@ sub _lut_native_u16 {
  if($status != 0) {
   my $why=defined($blob) ? (split(/\n/,$blob))[0] : "";
   $why="" if(!defined($why));
-  log_line(sprintf("lut native: helper exit %d%s, Perl cube",$status >> 8,($why ne "") ? " ($why)" : ""));
+  # $status is the raw wait status: a child killed by a signal reports exit 0
+  # in the high byte, which read as a clean run.
+  my $how=($status & 127) ? sprintf("killed by signal %d",$status & 127)
+   : sprintf("exit %d",$status >> 8);
+  log_line(sprintf("lut native: helper %s%s, Perl cube",$how,($why ne "") ? " ($why)" : ""));
   return undef;
  }
  my $want=3*$size*$size*$size;

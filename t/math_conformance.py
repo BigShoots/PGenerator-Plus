@@ -63,6 +63,18 @@ close_tree("matrix inverse",
 close_tree("matrix vector",
            math_core.matrix3_vector_multiply(FIXTURE["matrix"], FIXTURE["vector"]),
            FIXTURE["product"])
+# Zero is the one input the four runtimes do not agree on, so it cannot live
+# in the shared fixture. Python evaluates the transfer function at zero rather
+# than short-circuiting, as the C header does; Perl and the browser return
+# exactly 0. Pinned here so the divergence is deliberate and visible.
+close("PQ encode zero", math_core.pq_encode_nits(0.0),
+      7.3095590257839665e-07)
+close("PQ encode zero, peak clamped",
+      math_core.pq_encode_nits(0.0, clamp_peak=True),
+      7.3095590257839665e-07)
+
+close_tree("Bradford cone response",
+           math_core.BRADFORD, FIXTURE["bradford_cone_response"])
 close_tree("Bradford D65 to D50",
            math_core.bradford_adaptation(math_core.D65_WHITE,
                                          math_core.ICC_D50_WHITE),

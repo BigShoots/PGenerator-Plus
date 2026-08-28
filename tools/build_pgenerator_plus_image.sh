@@ -743,6 +743,80 @@ validate_colour_math_runtime() {
  log "Validated shared colour-math modules and native LUT helper"
 }
 
+# The vendored Pi 4 ATLAS/BLAS libraries and six of the NumPy extension
+# modules are DT_NEEDED against libgfortran.so.3, which the base appliance
+# image supplies and this repository deliberately does not ship (see
+# usr/lib/python3/dist-packages/PGENERATOR_NUMPY.md). Every other shipped
+# library has its architecture checked; the one dependency that is assumed
+# rather than shipped had nothing checking it at all, and its absence surfaces
+# on the device as an ImportError the first time an ICC build runs.
+#
+# Only the image builder can check this: an OTA overlay stages PGenerator's
+# own files, not a root filesystem, so there is nothing there to look in.
+validate_pi4_base_numerical_runtime() {
+ local candidate found=""
+
+ [[ "$TARGET" == "pi4-biasi" ]] || return 0
+ for candidate in usr/lib/arm-linux-gnueabihf/libgfortran.so.3 \
+                  usr/lib/libgfortran.so.3 \
+                  lib/arm-linux-gnueabihf/libgfortran.so.3 \
+                  lib/libgfortran.so.3; do
+  if [[ -e "$ROOT_MOUNT/$candidate" ]]; then
+   found="$candidate"
+   break
+  fi
+ done
+ if [[ -z "$found" ]]; then
+  found="$(find "$ROOT_MOUNT/usr/lib" "$ROOT_MOUNT/lib" -maxdepth 4 \
+   -name 'libgfortran.so.3*' -print -quit 2>/dev/null || true)"
+ fi
+ [[ -n "$found" ]] || \
+  die "Pi 4 base image has no libgfortran.so.3; the vendored ATLAS/BLAS libraries and NumPy extensions need it"
+ log "Validated the Pi 4 base numerical dependency: libgfortran.so.3"
+}
+
+# Pi 5 stages python3-numpy with "dpkg-deb -x", which unpacks file contents
+# and runs no maintainer scripts. libblas3 and liblapack3 create their
+# /usr/lib/<multiarch>/lib{blas,lapack}.so.3 entries from postinst through
+# update-alternatives, so on this root those links never exist and NumPy fails
+# to import on the device. Recreate what the postinst would have made.
+pi5_blas_multiarch_dir() {
+ printf '%s\n' "usr/lib/arm-linux-gnueabihf"
+}
+
+stage_pi5_blas_alternatives() {
+ local dir soname implementation
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ dir="$(pi5_blas_multiarch_dir)"
+ [[ -d "$ROOT_MOUNT/$dir" ]] || return 0
+ for soname in libblas.so.3 liblapack.so.3; do
+  [[ -e "$ROOT_MOUNT/$dir/$soname" ]] && continue
+  implementation="$(cd "$ROOT_MOUNT/$dir" 2>/dev/null && \
+   find . -mindepth 2 -maxdepth 3 -name "$soname" -print -quit 2>/dev/null || true)"
+  implementation="${implementation#./}"
+  if [[ -z "$implementation" ]]; then
+   log "No $soname implementation staged under /$dir; leaving the link to the validator"
+   continue
+  fi
+  ln -sfn "$implementation" "$ROOT_MOUNT/$dir/$soname"
+  log "Recreated the update-alternatives link /$dir/$soname -> $implementation"
+ done
+}
+
+validate_pi5_numerical_runtime() {
+ local dir soname
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ dir="$(pi5_blas_multiarch_dir)"
+ for soname in libblas.so.3 liblapack.so.3; do
+  # -e follows the link, so a dangling alternatives entry fails here too.
+  [[ -e "$ROOT_MOUNT/$dir/$soname" ]] || \
+   die "Pi 5 root has no resolvable /$dir/$soname; python3-numpy was staged with dpkg-deb -x, which never runs the update-alternatives postinst"
+ done
+ log "Validated the Pi 5 BLAS/LAPACK alternatives NumPy links against"
+}
+
 stage_argyll_runtime() {
  local bin src
  local missing=()
@@ -1694,6 +1768,7 @@ fix_permissions() {
   "usr/bin/meter_session.sh"
   "usr/bin/meter_usb_reset.sh"
   "usr/bin/oeminst"
+  "usr/bin/pgen_lut_solve"
   "usr/bin/pgsethdr"
   "usr/bin/pgenerator-bnep-hook.sh"
   "usr/bin/pgenerator-bt-agent"
@@ -1810,11 +1885,14 @@ main() {
  stage_argyll_runtime
  validate_pi4_legacy_runtime
  validate_colour_math_runtime
+ validate_pi4_base_numerical_runtime
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults
  install_pi5_runtime_packages
+ stage_pi5_blas_alternatives
  validate_pi5_runtime_dependencies
+ validate_pi5_numerical_runtime
  validate_pi5_argyll_runtime
  configure_pi5_bookworm_boot
  configure_pi5_headless_first_boot

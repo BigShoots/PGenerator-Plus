@@ -72,7 +72,19 @@ def pq_decode_nits(signal, clamp_signal=True, denominator_floor=1e-12,
 
 
 def pq_encode_nits(nits, clamp_peak=False):
-    """Encode absolute cd/m2 as an ST 2084 signal value."""
+    """Encode absolute cd/m2 as an ST 2084 signal value.
+
+    Zero is a deliberate divergence, not an oversight. This function and the C
+    header evaluate the transfer function at 0 and return its true value,
+    7.3095590257839665e-07; PGMath.pm's pq_encode_normalized and the browser's
+    pqEncodeNormalized short-circuit non-positive input to exactly 0. Both
+    behaviours are long-established in their own callers -- the Python and C
+    paths feed 16-bit ICC tables where the floor value round-trips, the Perl
+    and JavaScript paths feed pattern codes where a hard 0 is wanted -- and
+    changing either would move shipped output. Each language pins its own zero
+    in its own conformance test so the shared fixture's silence on the point
+    is not mistaken for agreement.
+    """
     nits = max(0.0, nits)
     if clamp_peak:
         nits = min(PQ_PEAK_NITS, nits)
@@ -128,6 +140,15 @@ def sample_uniform_table(table, position):
     return table[low] * (1.0 - fraction) + table[low + 1] * fraction
 
 
+# Both products keep sum() rather than an explicit three-term expression
+# because that is the established reduction and its results are already in
+# shipped profiles. Note what "established" means across interpreters: on the
+# appliance's CPython 3.5 sum() is a plain left-to-right addition, while from
+# CPython 3.12 it compensates (Neumaier) and can differ by an ulp when the
+# three terms span very different magnitudes. Callers here keep the terms
+# comparably scaled, so the two agree in practice; a workstation comparison
+# against an explicit left-to-right sum is the approximate side of that
+# comparison, not this one.
 def matrix3_multiply(left, right):
     """Multiply 3x3 matrices in the established scalar reduction order."""
     return [[sum(left[row][k] * right[k][column] for k in range(3))

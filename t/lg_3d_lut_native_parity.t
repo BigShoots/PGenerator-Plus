@@ -40,19 +40,53 @@ sub helper_runs {
  return (defined($out) && $out =~ /\APGLUT3D 1 error /) ? 1 : 0;
 }
 
+# Skipping is only ever allowed to mean "this dev box has no C toolchain".
+# A compiler that IS present and then fails to build pgen_lut_solve.c is a
+# defect in the code under test, and must fail rather than quietly delete the
+# byte-parity gate; CI refuses to skip for either reason.
+sub compiler_path {
+ my ($cc)=@_;
+ my $pid=open(my $rd,"-|","sh","-c",'command -v "$1" 2>/dev/null',"sh",$cc);
+ return undef if(!defined($pid));
+ local $/;
+ my $found=<$rd>;
+ close($rd);
+ return undef if($? != 0 || !defined($found));
+ $found=~s/\s+\z//;
+ return length($found) ? $found : undef;
+}
+
+sub refuse {
+ my ($reason)=@_;
+ plan tests => 1;
+ fail($reason);
+ exit 1;
+}
+
+my $ci=($ENV{"GITHUB_ACTIONS"} || $ENV{"CI"}) ? 1 : 0;
 my $bin=helper_runs($host) ? $host : (helper_runs($vendored) ? $vendored : undef);
 my $build_dir;
 if(!$bin) {
+ my $cc=$ENV{"CC"} || "cc";
+ my $cc_path=compiler_path($cc);
+ if(!$cc_path) {
+  refuse("no C compiler and no runnable pgen_lut_solve") if($ci);
+  plan skip_all => "no C compiler and no runnable pgen_lut_solve";
+ }
  $build_dir=tempdir(CLEANUP=>1);
  my $built="$build_dir/pgen_lut_solve";
  my $source="$Bin/../src/lut_solver/pgen_lut_solve.c";
- my $cc=$ENV{"CC"} || "cc";
- my @command=($cc,"-O2","-std=c99","-ffp-contract=off","-fno-fast-math",
+ my @command=($cc_path,"-O2","-std=c99","-ffp-contract=off","-fno-fast-math",
   "-fno-unsafe-math-optimizations","-o",$built,$source,"-lm");
  system(@command);
- $bin=$built if($? == 0 && helper_runs($built));
+ if($? != 0) {
+  my $why=($? & 127) ? "killed by signal ".($? & 127) : "exit ".($? >> 8);
+  refuse("$cc_path is available but failed to build $source ($why)");
+ }
+ refuse("the freshly built $source does not answer the helper protocol")
+  if(!helper_runs($built));
+ $bin=$built;
 }
-plan skip_all => "no C compiler and no runnable pgen_lut_solve" if(!$bin);
 $ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"}=$bin;
 
 do $worker;
@@ -75,77 +109,10 @@ sub quietly {
  return $want ? @out : $out[0];
 }
 
-# A synthetic WOLED whose per-channel response is deliberately not a clean
-# power and whose white subpixel adds a saturation-dependent gain, so the
-# measured forward model carries real ramps and real non-additivity rather
-# than something fm_invert can hit on the first step.
-sub build_model {
- my ($gamma,$gamut,$mode,$volume_n,$greys,$solve_only)=@_;
- my @black=(0.021,0.020,0.023);
- my %prim=(
-  red   => { x=>0.680, y=>0.320, peak=>21.5, g=>2.31 },
-  green => { x=>0.268, y=>0.690, peak=>70.5, g=>2.28 },
-  blue  => { x=>0.145, y=>0.052, peak=>8.0,  g=>2.40 },
- );
- my $ch=sub {
-  my ($k,$f)=@_;
-  my $p=$prim{$k};
-  my $y=($f <= 0) ? 0 : ($f ** $p->{g});
-  $y=$p->{peak}*$y*(1+0.035*sin(3.14159265358979*$f));
-  return [ ($p->{x}/$p->{y})*$y, $y, ((1-$p->{x}-$p->{y})/$p->{y})*$y ];
- };
- my $panel=sub {
-  my ($fr,$fg,$fb)=@_;
-  my $r=$ch->("red",$fr); my $g=$ch->("green",$fg); my $b=$ch->("blue",$fb);
-  my @v=map { $black[$_]+$r->[$_]+$g->[$_]+$b->[$_] } (0..2);
-  my $mx=$fr; $mx=$fg if($fg > $mx); $mx=$fb if($fb > $mx);
-  my $mn=$fr; $mn=$fg if($fg < $mn); $mn=$fb if($fb < $mn);
-  if($mx > 1e-9) {
-   my $sat=($mx-$mn)/$mx;
-   my $wg=1+0.31*(1-$sat)*(1-$sat)*$mx;
-   my $na=1-0.05*$sat*$sat*(1-$sat)*6.75*$mx;
-   @v=map { $_*$wg*$na } @v;
-   my $x=1+0.02*($fr-$fb)*$sat;
-   $v[0]*=$x; $v[2]/=$x;
-  }
-  return [@v];
- };
- my @patches=([0,0,0]);
- foreach my $l (skeleton_levels()) {
-  next if($l <= 0);
-  push @patches,[$l,$l,$l],[$l,0,0],[0,$l,0],[0,0,$l];
- }
- for(my $i=0;$i<$volume_n;$i++) { for(my $j=0;$j<$volume_n;$j++) { for(my $k=0;$k<$volume_n;$k++) {
-  push @patches,[100*$i/($volume_n-1),100*$j/($volume_n-1),100*$k/($volume_n-1)];
- }}}
- my (%seen,@nodes);
- foreach my $p (@patches) {
-  my $key=sprintf("%.3f/%.3f/%.3f",@{$p});
-  next if($seen{$key}++);
-  my ($fr,$fg,$fb)=map { $_/100 } @{$p};
-  push @nodes,{ fr=>$fr, fg=>$fg, fb=>$fb, xyz=>$panel->($fr,$fg,$fb) };
- }
- my $config={ method=>"hybrid", signal_mode=>$mode, target_gamma=>$gamma,
-  target_gamut=>$gamut, display_type=>"oled_generic", include_greyscale=>($greys?1:0) };
- # solve_only keeps the requested gamma and gamut on the model; the live LG
- # path rewrites both (HDR forces bt2020 and a DPG calibration gamma).
- $config->{"solve_only"}=1 if($solve_only);
- my @profile;
- foreach my $kind (qw(white red green blue)) {
-  my $xyz=($kind eq "white") ? $panel->(1,1,1)
-   : ($kind eq "red") ? $panel->(1,0,0) : ($kind eq "green") ? $panel->(0,1,0) : $panel->(0,0,1);
-  push @profile,{ step=>{kind=>$kind,level=>100,phase=>"profile"},
-   reading=>{X=>$xyz->[0],Y=>$xyz->[1],Z=>$xyz->[2]}, read_time=>0 };
- }
- my $k=$panel->(0,0,0);
- push @profile,{ step=>{kind=>"black",level=>0,phase=>"profile"},
-  reading=>{X=>$k->[0],Y=>$k->[1],Z=>$k->[2]}, read_time=>0 };
- my $model=model_from_readings("matrix",\@profile,$config);
- my $fm=build_measured_forward_model($model,\@nodes,$config);
- return undef if(ref($fm) ne "HASH");
- $model->{"forward_model"}=$fm;
- return $model;
-}
+# The synthetic display model both native-helper suites share.
+do "$Bin/lut_model_fixture.pl";
+die $@ if($@);
+die "Failed to load $Bin/lut_model_fixture.pl" if(!defined(&build_model));
 
 sub compare_cube {
  my ($model,$label,$size,$order)=@_;
@@ -237,6 +204,35 @@ if(($ENV{"PGEN_LUT_PARITY_QUICK"}||"") eq "") {
  my $model=build_model("bt1886","bt709","sdr",3,1,1);
  if($model) { $checked+=compare_cube($model,label_for($model,"full"),33,"r_fastest"); }
  else { fail("full-size model"); }
+}
+
+# neutral_neighborhood_identity_enabled forces the 1-step neighbourhood of the
+# neutral diagonal to identity as well, and the helper carries it as its own
+# protocol field. Nothing else in this sweep turns it on, so that branch of
+# neutral_identity_output had no byte-parity coverage on either side.
+{
+ my $guarded=build_model("bt1886","bt709","sdr",3,0,1);
+ my $plain=build_model("bt1886","bt709","sdr",3,0,1);
+ if(!$guarded || !$plain) {
+  fail("neutral-neighbourhood model");
+ } else {
+  $guarded->{"neutral_neighborhood_identity_enabled"}=1;
+  ok($guarded->{"neutral_axis_identity"},
+   "the neutral-neighbourhood fixture keeps identity greys, which the branch needs");
+  # Guard against a vacuous case: if the flag changed nothing, the parity
+  # checks below would pass without ever entering the branch.
+  my ($with)=_generate_lut_cube_serial($guarded,9);
+  my ($without)=_generate_lut_cube_serial($plain,9);
+  my $moved=0;
+  for(my $i=0;$i<scalar(@{$with});$i++) { $moved++ if($with->[$i] != $without->[$i]); }
+  cmp_ok($moved,">",0,
+   "the neutral-neighbourhood guard actually moves codes ($moved of "
+   .scalar(@{$with}).")");
+  foreach my $order ("r_slowest","r_fastest") {
+   $checked+=compare_cube($guarded,
+    label_for($guarded,"neutral-neighbourhood"),9,$order);
+  }
+ }
 }
 
 # The wire-in itself, with the production self-check live: both entry points

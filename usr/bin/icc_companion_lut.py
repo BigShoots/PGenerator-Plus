@@ -7,23 +7,39 @@ import re
 import struct
 import sys
 
-import numpy as np
+# The Perl caller captures this tool's stderr, so an ImportError from a
+# partial deploy is at least visible -- but as a multi-line traceback that
+# reaches the operator verbatim. Answer with the one-line message main()
+# already uses for every other failure, and exit non-zero.
+try:
+    import numpy as np
 
-from pgen_colour_math import (
-    BRADFORD,
-    PQ_C1,
-    PQ_C2,
-    PQ_C3,
-    PQ_M1,
-    PQ_M2,
-    bradford_adaptation as shared_bradford_adaptation,
-    matrix3_inverse,
-    matrix3_multiply as mat_mul,
-    matrix3_vector_multiply as mat_vec,
-)
+    from pgen_colour_math import (
+        BRADFORD,
+        PQ_C1,
+        PQ_C2,
+        PQ_C3,
+        PQ_M1,
+        PQ_M2,
+        bradford_adaptation as shared_bradford_adaptation,
+        matrix3_inverse,
+        matrix3_multiply as mat_mul,
+        matrix3_vector_multiply as mat_vec,
+    )
+except ImportError as import_error:
+    print("Companion LUT builder cannot start: {}".format(import_error),
+          file=sys.stderr)
+    sys.exit(1)
 
 
 GRID = 65
+
+# Nodes evaluated per pass. A 65-cube is 274,625 nodes and a .cube can ask for
+# 129^3; every stage below is elementwise or per-row, so the arithmetic is
+# unchanged by the split, but holding a dozen live (N, 3) float64 temporaries
+# at once is what the appliance cannot afford. Matches _BATCH_CHUNK in
+# icc_profile_builder.py, which chunks identical-shape work for the same reason.
+NODE_CHUNK = 8192
 
 
 def fail(message):
@@ -52,7 +68,9 @@ def tags(data):
 
 
 def inverse3(matrix):
-    # Keep the scalar operation order used by Main. BLAS/LAPACK is excellent
+    # Keep the scalar operation order this replaced -- the pre-rewrite body,
+    # recoverable with `git show upstream/main:usr/bin/icc_companion_lut.py`.
+    # BLAS/LAPACK is excellent
     # for large systems, but a 3x3 inverse is setup work and changing its
     # reduction order can move a value across a 16-bit quantisation boundary.
     inverse = matrix3_inverse(matrix, determinant_tolerance=1e-12)
@@ -104,10 +122,31 @@ def curve_values(tag):
 
 
 def inverse_curve(table, values):
-    """Invert a non-decreasing tone curve, matching the scalar bisection."""
-    values = np.clip(values, 0.0, 1.0)
-    high = np.clip(np.searchsorted(table, values, side="left"), 1, len(table) - 1)
-    low = high - 1
+    """Invert a tone curve by running the scalar bisection on every node at once.
+
+    np.searchsorted would be shorter but is only defined for sorted input, and
+    a curv tag in a supplied display profile is not guaranteed monotonic. On a
+    curve that dips, searchsorted picks a different bracket from the bisection
+    this replaced and the LUT moves by tens of 8-bit codes. The loop below
+    makes the same comparisons the scalar code made, in the same order, so the
+    result is identical for monotonic and non-monotonic curves alike.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    # The scalar clamp was max(0.0, min(1.0, value)), which turns a NaN into
+    # 1.0; np.clip would propagate it, so the NaN case is restored explicitly.
+    values = np.where(np.isnan(values), 1.0, np.clip(values, 0.0, 1.0))
+    low = np.zeros(values.shape, dtype=np.intp)
+    high = np.full(values.shape, len(table) - 1, dtype=np.intp)
+    # Every element starts on the same bracket but an odd width splits
+    # unevenly, so nodes settle after different iteration counts; "active"
+    # freezes each one exactly where "while high - low > 1" ended for it.
+    active = high - low > 1
+    while active.any():
+        middle = (low + high) // 2
+        below = table[middle] < values
+        low = np.where(active & below, middle, low)
+        high = np.where(active & ~below, middle, high)
+        active = high - low > 1
     y0 = table[low]
     y1 = table[high]
     span = y1 - y0
@@ -317,15 +356,32 @@ def lattice(size, red_fastest):
     return np.stack([red.ravel(), green.ravel(), blue.ravel()], axis=1)
 
 
+def quantize_u16(values):
+    """Quantize to big-endian u16 exactly as the scalar clamp-then-round did.
+
+    np.rint and int(round(x)) both round half to even, and the clip means the
+    scaled value can never leave the u16 range, so no second clamp is needed.
+    """
+    return np.rint(np.clip(values, 0.0, 1.0) * 65535.0).astype(">u2")
+
+
+def corrected_nodes(transform, rgb, signal_mode, white_nits, adaptation):
+    """Evaluate the lattice a chunk at a time, yielding each corrected block."""
+    for start in range(0, len(rgb), NODE_CHUNK):
+        block = rgb[start:start + NODE_CHUNK]
+        yield transform.apply(
+            source_xyz(block, signal_mode, white_nits, adaptation))
+
+
 def build(profile_path, method, signal_mode, output_path):
     transform, white_nits, adaptation = make_transform(profile_path, method, signal_mode)
     rgb = lattice(GRID, red_fastest=False)
-    corrected = transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation))
-    quantized = np.rint(np.clip(corrected, 0.0, 1.0) * 65535.0).astype(">u2")
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
-    output.extend(quantized.tobytes())
+    for corrected in corrected_nodes(transform, rgb, signal_mode, white_nits,
+                                     adaptation):
+        output.extend(quantize_u16(corrected).tobytes())
     write_atomic(output_path, output)
 
 
@@ -344,9 +400,10 @@ def build_cube(profile_path, method, signal_mode, output_path, size, title=None)
     # the PGLT payload above. Keeping the PGLT nesting here would hand external
     # tools an R<->B swapped lattice whose neutral axis still looks correct.
     rgb = lattice(size, red_fastest=True)
-    corrected = np.clip(transform.apply(source_xyz(rgb, signal_mode, white_nits, adaptation)), 0.0, 1.0)
-    for row in corrected:
-        lines.append("{:.9f} {:.9f} {:.9f}".format(row[0], row[1], row[2]))
+    for corrected in corrected_nodes(transform, rgb, signal_mode, white_nits,
+                                     adaptation):
+        for row in np.clip(corrected, 0.0, 1.0):
+            lines.append("{:.9f} {:.9f} {:.9f}".format(row[0], row[1], row[2]))
     write_atomic(output_path, "\n".join(lines) + "\n")
 
 

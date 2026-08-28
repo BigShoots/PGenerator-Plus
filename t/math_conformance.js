@@ -43,6 +43,20 @@ for(const row of fixture.pq_decode){
  close('JS PQ decode '+row.signal,runtime.decode(row.signal),row.nits);
 }
 
+// Zero is the one input the four runtimes do not agree on, so it cannot live
+// in the shared fixture. The browser short-circuits non-positive input to
+// exactly 0, as PGMath.pm does; pgen_colour_math.py and the C header return
+// the transfer function's true value at zero instead.
+checks++;
+if(runtime.encode(0)!==0)
+ throw new Error('JS PQ encode zero: '+runtime.encode(0)+' != 0');
+checks++;
+if(runtime.chartEncode(0)!==0)
+ throw new Error('JS chart PQ encode zero: '+runtime.chartEncode(0)+' != 0');
+checks++;
+if(runtime.encode(-5)!==0)
+ throw new Error('JS PQ encode negative: '+runtime.encode(-5)+' != 0');
+
 if((source.match(/const PGEN_PQ_M1=/g)||[]).length!==1)
  throw new Error('JavaScript has more than one PQ constant owner');
 if((source.match(/function meterChartPqEncodeNormalized\(nits\)\{\s*return pqEncodeNormalized\(nits\);\s*\}/g)||[]).length!==1)

@@ -34,8 +34,14 @@
    reach exactly 0.000e+00 on ordinary models while the emitted codes stay
    byte-identical: a near-tie in `tn < best_e` means the two trials are
    equally good and the answer does not move, and the exact mid-grey node
-   lands on literally 50.0 percent -- 2048.0 code units -- whenever greys are
-   solved instead of held at identity. Refusing on either would turn the
+   lands on literally 50.0 percent -- 2048.0 code units, a cut point exactly
+   -- on at least one channel whether greys are solved or held at identity.
+   With greys solved the other two channels of that node sit within about
+   1e-12 of the same cut (measured 6.8e-13 and 9.1e-13 on the synthetic
+   display in t/lut_model_fixture.pl, at both 17^3 and 33^3); the exact
+   figures are model-dependent, which is the whole reason this margin is
+   reported rather than gated. The same node and the same measurement are
+   described by _lut_native_check_nodes in meter_lg_3d_autocal.pl. Refusing on either would turn the
    helper permanently off on the models where it is worth the most. Parity at
    those nodes is guaranteed instead by the caller's 64-node runtime
    self-check, which covers the neutral diagonal, and by the byte-identical
@@ -47,7 +53,10 @@
 typedef struct { double lv; double xyz[3]; } samp;
 
 static int    g_size=17;
-static int    g_order=0;                  /* 1 = r slowest (.cube), 0 = r fastest (LG payload) */
+/* 1 = the order generate_lut_cube fills, red slowest; 0 = the LG payload
+   order, red fastest. NOT the .cube file order: standard .cube is red-FASTEST
+   and cube_text() transposes on write. */
+static int    g_order=0;
 static int    g_neutral_identity=1;
 static int    g_neutral_nbhd=0;
 static char   g_gamma_raw[32]="bt1886";   /* gamut_matrix_output's gexp test is case sensitive */
@@ -485,7 +494,7 @@ static void margin_note(double v,int r,int g,int b){
    REQUEST (stdin)                     bumped version => Perl refuses and falls back
      PGLUT3D 1                         magic + version, must be line 1
      size <int>                        9 | 17 | 33 | 65
-     order r_slowest | r_fastest       .cube fill order | LG payload fill order
+     order r_slowest | r_fastest       generate_lut_cube fill order | LG payload fill order
      neutral_axis_identity <0|1>
      neutral_neighborhood <0|1>
      target_gamma <token>              VERBATIM: gamut_matrix_output's gexp test
@@ -688,7 +697,9 @@ int main(int argc,char **argv){
  total=3*g_size*g_size*g_size;
  out=malloc(sizeof(unsigned short)*total);
  if(!out) fail("out-alloc");
- /* r_slowest fills r,g,b outer->inner (.cube); r_fastest fills b,g,r (LG). */
+ /* r_slowest fills r,g,b outer->inner, the order generate_lut_cube holds in
+    memory; cube_text() transposes that to standard red-fastest .cube on write.
+    r_fastest fills b,g,r outer->inner, the LG payload order. */
  for(ax0=0;ax0<g_size;ax0++){
   for(ax1=0;ax1<g_size;ax1++){
    for(ax2=0;ax2<g_size;ax2++){

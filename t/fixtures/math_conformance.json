@@ -2,6 +2,9 @@
   "provenance": {
     "pq": "SMPTE ST 2084 inverse EOTF and EOTF, absolute 10000 cd/m2 system",
     "bradford": "ICC-style Bradford D65 to D50 chromatic adaptation",
+    "bradford_cone_response": "Published Bradford cone-response coefficients; the Perl, Python and C runtimes must all carry these",
+    "inverse_reciprocal": "The same 3x3 inverse taken by multiply-by-reciprocal rather than per-cofactor division, as pgen_matrix3_inverse does",
+    "ictcp_coefficient_precision": "PGMath.pm and webui-app.js carry the 10-digit XYZ-to-Rec.2020 coefficients (1.7166511880); pgen_colour_math.py carries the established 7-digit ones (1.7166512). The divergence is retained deliberately for serial parity with existing output, which is why the ICtCp and Delta E ITP bounds below are 2e-7 rather than 2e-12. No C runtime implements ICtCp.",
     "purpose": "Language-neutral golden values for PGenerator+ runtime implementations; ICtCp and Delta E ITP references generated independently with Colour 0.4.7"
   },
   "pq_encode": [
@@ -33,12 +36,22 @@
     [-0.0381575361133824, 0.8312891796129737, -0.3652221313709458],
     [-0.02452984464431725, -0.17988552739165986, 1.1937857726901062]
   ],
+  "inverse_reciprocal": [
+    [0.5941673480512402, -0.08721722540201692, -0.027255382938130273],
+    [-0.03815753611338239, 0.8312891796129735, -0.3652221313709458],
+    [-0.02452984464431725, -0.17988552739165986, 1.1937857726901062]
+  ],
   "vector": [0.3, 0.5, 0.7],
   "product": [0.68, 0.96, 0.745],
   "bradford_d65_to_d50": [
     [1.0478860326551553, 0.02291878030643026, -0.05021610659334656],
     [0.02958180452564785, 0.9904835042653475, -0.01707871235979966],
     [-0.009251881778169477, 0.01507260824484967, 0.751678099525401]
+  ],
+  "bradford_cone_response": [
+    [0.8951, 0.2664, -0.1614],
+    [-0.7502, 1.7135, 0.0367],
+    [0.0389, -0.0685, 1.0296]
   ],
   "colour_0_4_7_ictcp_reference": [
     {

@@ -452,6 +452,11 @@ validate_colour_math_runtime() {
    file "$root/$rel" | grep -q 'ELF 32-bit.*ARM' || \
     die "Pi 4 numerical library /$rel is not a 32-bit ARM binary"
   done
+  # Those libraries and six NumPy extensions are also DT_NEEDED against
+  # libgfortran.so.3, which the base appliance supplies and this repository
+  # deliberately does not ship. An OTA overlay stages PGenerator's own files
+  # rather than a root filesystem, so there is nothing here to check it in;
+  # validate_pi4_base_numerical_runtime in the image builder owns that gate.
  else
   [[ ! -e "$root/usr/lib/python3/dist-packages/numpy-1.18.5.dist-info" ]] || \
    die "Pi 5 OTA must not contain the Pi 4 NumPy 1.18.5 runtime"
