@@ -38,11 +38,7 @@ usr/share/PGenerator/*.bak
 
 __pycache__/
 *.py[cod]
-
-# The Pi 4 appliance is pinned to CPython 3.5. NumPy's ARM extension modules
-# are part of the checked-in runtime, even though generated shared objects are
-# ignored elsewhere in the tree.
-!usr/lib/python3/dist-packages/numpy/**/*.so
+build/runtime-cache/
 
 # On-device / cross build outputs (renderer objects, linked binaries,
 # and the vc4 kernel-module build tree with its extracted kernel source)

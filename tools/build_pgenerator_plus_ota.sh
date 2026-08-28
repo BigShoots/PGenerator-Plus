@@ -14,6 +14,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 FRAGMENT_CHECKER="$REPO_ROOT/t/check_webui_package.pl"
+# shellcheck source=tools/runtime/pi4_numpy_runtime.sh
+. "$REPO_ROOT/tools/runtime/pi4_numpy_runtime.sh"
 
 FORCE_OUTPUT=0
 KEEP_STAGING=0
@@ -74,16 +76,6 @@ EXTERNAL_ICC_TOOL_PATHS=(
  "usr/share/PGenerator/icc-companion"
  "usr/share/PGenerator/icc-companion-src"
 )
-PI4_NUMPY_RUNTIME_PATHS=(
- "usr/lib/python3/dist-packages/numpy"
- "usr/lib/python3/dist-packages/numpy-1.18.5.dist-info"
- "usr/lib/libatlas.so.3"
- "usr/lib/libblas.so.3"
- "usr/lib/libcblas.so.3"
- "usr/lib/libf77blas.so.3"
- "usr/lib/liblapack.so.3"
-)
-
 log() {
  echo "[build-ota] $*"
 }
@@ -156,7 +148,7 @@ trap cleanup EXIT
 require_commands() {
  local missing=()
  local cmd
- for cmd in file install mktemp perl rsync sed strings tar; do
+ for cmd in ar awk cp curl file install mktemp perl rsync sed strings tar unzip; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -608,6 +600,10 @@ main() {
  require_commands
  prepare_paths
  stage_overlay
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
+  log "Staging the pinned external Pi 4 NumPy runtime"
+  hydrate_pi4_numpy_runtime "$STAGING_DIR"
+ fi
  validate_pi4_legacy_runtime
  validate_colour_math_runtime
  validate_pi5_staging_tree
@@ -620,4 +616,6 @@ main() {
  fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+ main "$@"
+fi

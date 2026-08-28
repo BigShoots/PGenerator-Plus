@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
+# shellcheck source=tools/runtime/pi4_numpy_runtime.sh
+. "$REPO_ROOT/tools/runtime/pi4_numpy_runtime.sh"
 ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof profcheck targen i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
@@ -134,16 +136,6 @@ EXTERNAL_ICC_TOOL_PATHS=(
  "usr/share/PGenerator/icc-companion"
  "usr/share/PGenerator/icc-companion-src"
 )
-PI4_NUMPY_RUNTIME_PATHS=(
- "usr/lib/python3/dist-packages/numpy"
- "usr/lib/python3/dist-packages/numpy-1.18.5.dist-info"
- "usr/lib/libatlas.so.3"
- "usr/lib/libblas.so.3"
- "usr/lib/libcblas.so.3"
- "usr/lib/libf77blas.so.3"
- "usr/lib/liblapack.so.3"
-)
-
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
 SKIP_BASE_CHECK=0
@@ -220,7 +212,7 @@ require_root() {
 require_commands() {
  local missing=()
  local cmd
- for cmd in awk cpio cp dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync umount; do
+ for cmd in ar awk cpio cp curl dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync tar umount unzip; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -1881,6 +1873,10 @@ main() {
  mount_boot_partition
  check_base_image
  overlay_tree
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
+  log "Staging the pinned external Pi 4 NumPy runtime"
+  hydrate_pi4_numpy_runtime "$ROOT_MOUNT"
+ fi
  validate_pi5_usrmerge_root
  stage_argyll_runtime
  validate_pi4_legacy_runtime
@@ -1909,4 +1905,6 @@ main() {
  finalize_image
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+ main "$@"
+fi
