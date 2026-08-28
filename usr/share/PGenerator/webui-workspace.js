@@ -20067,6 +20067,14 @@ function ccssPreviewSampleColor(index){
  return colors[index%colors.length];
 }
 
+function ccssPreviewIsRgbWithoutWhiteEmitter(payload){
+ const profileText=[payload&&payload.technology,payload&&payload.display,payload&&payload.description]
+  .filter(Boolean).join(' ').toUpperCase();
+ const hasWhiteEmitter=/\b(?:WRGB|RGBW|WOLED|W-OLED|W OLED)\b/.test(profileText);
+ const isRgbDisplay=/\bRGB\b|\bQD[- ]?OLED\b|\bJOLED\b/.test(profileText);
+ return isRgbDisplay&&!hasWhiteEmitter;
+}
+
 function ccssPreviewClear(message){
  ccssPreviewLastPayload=null;
  const meta=document.getElementById('ccssPreviewMeta');
@@ -20280,12 +20288,14 @@ function ccssPreviewRender(payload){
   meta.innerHTML=parts.join(' &middot; ');
  }
  if(legend){
+  const rgbWithoutWhiteEmitter=ccssPreviewIsRgbWithoutWhiteEmitter(payload);
   legend.innerHTML=samples.map((sample,index)=>{
    const color=ccssPreviewSampleColor(index);
-   const label=ccssPreviewEscapeHtml(sample.label||('Set '+(index+1)));
+   const isCombinedRgb=rgbWithoutWhiteEmitter&&index===3;
+   const label=ccssPreviewEscapeHtml(isCombinedRgb?'Combined RGB':(sample.label||('Set '+(index+1))));
    const peakNm=Number(sample.peak_nm)||0;
    const peakValue=Number(sample.peak_value)||0;
-   const peakText=peakNm>0
+   const peakText=!isCombinedRgb&&peakNm>0
     ? ('Peak '+Math.round(peakNm)+' nm'+(peakValue>0?' / '+peakValue.toFixed(3):''))
     : '';
    return '<div style="display:flex;align-items:center;gap:6px;font-size:.68rem;color:var(--text2);padding:4px 8px;background:#111723;border:1px solid #2a3140;border-radius:999px">'
