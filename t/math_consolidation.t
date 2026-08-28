@@ -174,6 +174,20 @@ sub command_output {
  return ($output,$?);
 }
 
+sub command_status_quiet {
+ my (@command)=@_;
+ my $pid=fork();
+ return 255 if(!defined($pid));
+ if($pid==0) {
+  open(STDOUT,">","/dev/null");
+  open(STDERR,">","/dev/null");
+  exec {$command[0]} @command;
+  exit 127;
+ }
+ waitpid($pid,0);
+ return $?;
+}
+
 my $python=$ENV{"PGEN_PYTHON"} || "python3";
 my ($python_output,$python_status)=command_output($python,"$Bin/math_conformance.py");
 is($python_status,0,"shared Python colour maths passes conformance")
@@ -203,13 +217,34 @@ SKIP: {
 my $compiler=$ENV{"CC"} || "cc";
 my ($compiler_path,$compiler_lookup)=command_output("sh","-c","command -v '$compiler' 2>/dev/null");
 $compiler_path=~s/\s+\z// if(defined($compiler_path));
+
+# The legacy appliance has /usr/bin/cc but deliberately ships no assembler, so
+# command -v alone does not identify a usable C toolchain. Probe a trivial
+# translation unit first. A broken probe may skip the optional C leg on a dev
+# box or appliance, but it still fails CI; once the probe succeeds, a failure
+# to build math_conformance.c remains a source defect and never becomes a skip.
+my $compiler_usable=($compiler_lookup==0 && $compiler_path) ? 1 : 0;
+my $compiler_probe_dir;
+if($compiler_usable) {
+ $compiler_probe_dir=tempdir(CLEANUP=>1);
+ my $probe_source="$compiler_probe_dir/probe.c";
+ my $probe_binary="$compiler_probe_dir/probe";
+ if(open(my $probe_fh,">",$probe_source)) {
+  print $probe_fh "int main(void) { return 0; }\n";
+  close($probe_fh);
+  my $probe_status=command_status_quiet(
+   $compiler_path,"-std=c99","-o",$probe_binary,$probe_source);
+  $compiler_usable=0 if($probe_status!=0 || !-x $probe_binary);
+ } else {
+  $compiler_usable=0;
+ }
+}
 SKIP: {
  my $c_checks=scalar(@{$fixture->{"pq_encode"}})
   +scalar(@{$fixture->{"pq_decode"}})+28;
- my $no_compiler=($compiler_lookup!=0 || !$compiler_path);
- fail("a C compiler must be installed in CI; the C conformance leg cannot be skipped")
-  if($no_compiler && $ci);
- skip "C compiler is unavailable",$c_checks if($no_compiler);
+ fail("a usable C toolchain must be installed in CI; the C conformance leg cannot be skipped")
+  if(!$compiler_usable && $ci);
+ skip "a usable C toolchain is unavailable",$c_checks if(!$compiler_usable);
  my $temporary=tempdir(CLEANUP=>1);
  my $binary="$temporary/math-conformance";
  my @build=($compiler_path,"-O2","-std=c99","-ffp-contract=off",
@@ -292,9 +327,13 @@ SKIP: {
   "sh",$python,"$root/usr/bin/icc_profile_builder.py");
  isnt($builder_status,0,
   "the ICC profile builder exits non-zero when NumPy is unavailable");
- like($builder_stdout||"",
-  qr/\{"status":"error","message":"ICC profile builder cannot start: [^"]*numpy[^"]*"\}/,
-  "the ICC profile builder answers on stdout in the caller's error protocol");
+ my $builder_error=eval { JSON::PP::decode_json($builder_stdout||"") };
+ ok(ref($builder_error) eq "HASH"
+   && ($builder_error->{"status"}||"") eq "error"
+   && ($builder_error->{"message"}||"")
+      =~ /\AICC profile builder cannot start: .*numpy/,
+  "the ICC profile builder answers on stdout in the caller's error protocol")
+  or diag($builder_stdout||"");
 
  my ($companion_stderr,$companion_status)=command_output("sh","-c",
   "\"\$1\" \"\$2\" a clut sdr b 2>&1 >/dev/null",
@@ -316,7 +355,7 @@ SKIP: {
 # headers ARE present the source is syntax-checked, with a failure treated as
 # a failure rather than a skip.
 SKIP: {
- skip "C compiler is unavailable",1 if($compiler_lookup!=0 || !$compiler_path);
+ skip "a usable C toolchain is unavailable",1 if(!$compiler_usable);
  my ($sdl_flags,$sdl_status)=command_output("sh","-c",
   "pkg-config --cflags sdl3 2>/dev/null");
  $sdl_flags="" if(!defined($sdl_flags));
