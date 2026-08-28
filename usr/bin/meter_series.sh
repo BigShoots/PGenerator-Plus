@@ -1419,6 +1419,40 @@ EOJSON
 # child from its stable base command, wait for the reading prompt. Colorimeters
 # only: a spectro restart would re-prompt for its white
 # tile, which cannot be answered mid-run headlessly.
+stop_spotread_child_for_restart() {
+ # A mode change is a normal transition, not a wedged-read recovery. Ask
+ # spotread to release the instrument before escalating: force-killing two
+ # children a few seconds apart left the i1Display3 USB interface unavailable
+ # during the observed SDR pre-cal run.
+ if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
+  printf "Q" >&3 2>/dev/null || true
+  exec 3>&-
+  METER_SERIES_FD_OPEN=0
+ fi
+ local waited=0
+ while (( waited < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
+  sleep 0.1
+  waited=$((waited + 1))
+ done
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  kill "$BG_PID" 2>/dev/null || true
+  pkill -TERM -x spotread 2>/dev/null || true
+  pkill -TERM -x spotread_sim 2>/dev/null || true
+  waited=0
+  while (( waited < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1 || pgrep -x spotread_sim >/dev/null 2>&1; }; do
+   sleep 0.1
+   waited=$((waited + 1))
+  done
+ fi
+ if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
+  pkill -9 -P "$BG_PID" 2>/dev/null || true
+  kill -9 "$BG_PID" 2>/dev/null || true
+ fi
+ pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null || true
+ pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null || true
+ BG_PID=""
+}
+
 restart_spotread_session() {
  [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 1
  [[ -z "$SR_CMD_BASE" ]] && return 1
@@ -1431,47 +1465,56 @@ restart_spotread_session() {
   aaa) SR_CMD="$SR_CMD -Y aaa" ;;
  esac
  echo "[$(date '+%H:%M:%S.%3N')] restarting spotread child: step=${STEP_NUM:-?} name=${NAME:-?} low_light=${CURRENT_LOW_LIGHT_MODE:-off}->$requested_mode" >> /tmp/meter_series_debug.log
- if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
-  exec 3>&-
-  METER_SERIES_FD_OPEN=0
- fi
- [[ -n "$BG_PID" ]] && kill -9 "$BG_PID" 2>/dev/null
- pkill -9 -x spotread 2>/dev/null
- pkill -9 -x spotread_sim 2>/dev/null
- sleep 1.5
- rm -f "$OUTFILE" "$CMDPIPE"
- touch "$OUTFILE"
- mkfifo "$CMDPIPE"
- cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
- BG_PID=$!
- exec 3>"$CMDPIPE"
- METER_SERIES_FD_OPEN=1
- local waited=0 refresh_done=0 clean=""
- while (( waited < 80 )); do
-  series_stop_requested && series_cancel_exit
-  clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-  if echo "$clean" | grep -q "to take a reading:"; then
-   CURRENT_LOW_LIGHT_MODE="$requested_mode"
-   echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK (${waited}x0.5s)" >> /tmp/meter_series_debug.log
-   return 0
+ stop_spotread_child_for_restart
+ # Match the persistent meter-session worker's recovery contract: allow the
+ # USB interface to settle, then give one clean re-exec after an initial
+ # claim/initialisation failure. Both attempts rebuild only the spotread child;
+ # the series state, patch list and accumulated readings remain intact.
+ local attempt waited refresh_done clean failure_line
+ for attempt in 1 2; do
+  sleep 1.5
+  rm -f "$OUTFILE" "$CMDPIPE"
+  touch "$OUTFILE"
+  mkfifo "$CMDPIPE"
+  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
+  BG_PID=$!
+  exec 3>"$CMDPIPE"
+  METER_SERIES_FD_OPEN=1
+  waited=0
+  refresh_done=0
+  clean=""
+  failure_line=""
+  while (( waited < 80 )); do
+   series_stop_requested && series_cancel_exit
+   clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
+   if echo "$clean" | grep -q "to take a reading:"; then
+    CURRENT_LOW_LIGHT_MODE="$requested_mode"
+    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK attempt=$attempt (${waited}x0.5s)" >> /tmp/meter_series_debug.log
+    return 0
+   fi
+   if (( refresh_done == 0 )) && refresh_cal_prompt "$clean"; then
+    post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
+    sleep 2
+    printf " " >&3
+    refresh_done=1
+    sleep 2
+    waited=$((waited + 8))
+    continue
+   fi
+   if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
+    failure_line=$(printf '%s\n' "$clean" | grep -iE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected" | tail -1 | tr -d '\n\r' | head -c 240)
+    echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt=$attempt instrument error: $failure_line" >> /tmp/meter_series_debug.log
+    break
+   fi
+   sleep 0.5
+   waited=$((waited + 1))
+  done
+  if [[ -z "$failure_line" ]]; then
+   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt=$attempt timed out" >> /tmp/meter_series_debug.log
   fi
-  if (( refresh_done == 0 )) && refresh_cal_prompt "$clean"; then
-   post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-   sleep 2
-   printf " " >&3
-   refresh_done=1
-   sleep 2
-   waited=$((waited + 8))
-   continue
-  fi
-  if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
-   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart: instrument error" >> /tmp/meter_series_debug.log
-   return 1
-  fi
-  sleep 0.5
-  waited=$((waited + 1))
+  stop_spotread_child_for_restart
  done
- echo "[$(date '+%H:%M:%S.%3N')] spotread session restart TIMED OUT" >> /tmp/meter_series_debug.log
+ echo "[$(date '+%H:%M:%S.%3N')] spotread session restart failed after 2 attempts" >> /tmp/meter_series_debug.log
  return 1
 }
 
@@ -2177,6 +2220,8 @@ for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 IRE=$(get_step_field $i ire)
 	 NAME=$(get_step_field $i name)
 	 SERIES_WHITE_REFERENCE=$(get_step_field $i series_white_reference)
+	 STEP_FINAL_WHITE_REFRESH=$(get_step_field $i final_white_refresh)
+	 STEP_TARGET_YN=$(get_step_field $i target_Yn)
 	 STEP_NUM=$((i + 1))
  if ! [[ "$R" =~ ^[0-9]+$ && "$G" =~ ^[0-9]+$ && "$B" =~ ^[0-9]+$ && "$INPUT_MAX" =~ ^[0-9]+$ ]] || ! is_number "$IRE" || [[ -z "$NAME" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] invalid series step: index=$i r=$R g=$G b=$B ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2492,6 +2537,8 @@ EOJSON
  # patch. Publish it through white_reading immediately so target luminance is
  # fixed before the first scored series patch is drawn.
  if [[ "$SERIES_WHITE_REFERENCE" == "True" || "$SERIES_WHITE_REFERENCE" == "true" || "$SERIES_WHITE_REFERENCE" == "1"
+       || "$STEP_FINAL_WHITE_REFRESH" == "True" || "$STEP_FINAL_WHITE_REFRESH" == "true" || "$STEP_FINAL_WHITE_REFRESH" == "1"
+       || ( "$SERIES_ID" == greyscale_* && "$STEP_TARGET_YN" == "1" )
        || "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
   WHITE_READING="$READING"
   WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)

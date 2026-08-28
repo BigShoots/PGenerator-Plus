@@ -2,6 +2,28 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir tempfile);
+use File::Spec;
+use JSON::PP;
+
+sub embedded_python_worker {
+ my ($source,$function)=@_;
+ my ($worker)=$source=~/\Q$function\E\(\)\s*\{.*?<<'PY'[^\n]*\n(.*?)\nPY\n\}/s;
+ return $worker;
+}
+
+sub run_python_worker {
+ my ($worker,$environment)=@_;
+ my ($fh,$path)=tempfile('pgen-meter-worker-XXXXXX',SUFFIX=>'.py',UNLINK=>1);
+ print {$fh} $worker;
+ close($fh);
+ local %ENV=(%ENV,%{$environment || {}});
+ open(my $out,'-|','python3',$path) or die "Unable to run $path: $!";
+ local $/;
+ my $output=<$out>;
+ close($out);
+ return (($? >> 8),defined($output)?$output:'');
+}
 
 my $worker="$Bin/../usr/bin/meter_lg_autocal.pl";
 do $worker;
@@ -208,7 +230,60 @@ like($series_source,qr/SR_CMD_BASE="\$SR_CMD"[\s\S]{0,500}?CURRENT_LOW_LIGHT_MOD
  'the series spotread child starts at explicit off with a stable base command');
 like($series_source,qr/restart_spotread_session[\s\S]{0,1800}?sleep 1\.5/,
  'series mode changes retain the USB release wait in the child restart path');
+like($series_source,qr/stop_spotread_child_for_restart[\s\S]{0,500}?printf "Q" >&3/,
+ 'series mode changes ask spotread to release the meter before escalating');
+like($series_source,qr/restart_spotread_session[\s\S]{0,3200}?for attempt in 1 2/,
+ 'series mode changes retry one clean child launch after an instrument error');
+unlike($series_source,qr/restart_spotread_session\(\) \{[\s\S]{0,800}?kill -9 "\$BG_PID"/,
+ 'the series restart path no longer force-kills the live child before a graceful close');
+like($series_source,qr/STEP_FINAL_WHITE_REFRESH=.*?final_white_refresh/,
+ 'the series loop reads the structural final-white marker');
+like($series_source,qr/\|\| "\$STEP_FINAL_WHITE_REFRESH" == "True"[\s\S]{0,700}?apply_series_white_reference_to_steps/s,
+ 'a greyscale final-white marker promotes the initial measured white into later step metadata');
 unlike($series_source,qr/LOW_LIGHT_FLAGS|x_aaa/,
  'the series worker does not force a legacy or composite averaging mode');
+
+# Reproduce the failed SDR pre-cal sequence with the recorded target metadata.
+# Before the fix the measured 406.513964 cd/m2 white was never serialized, so
+# 5% failed safe to off and forced an immediate a->off meter restart at step 3.
+my $worker_dir=tempdir('pgen-meter-low-light-XXXXXX',TMPDIR=>1,CLEANUP=>1);
+my $steps_path=File::Spec->catfile($worker_dir,'steps.json');
+my $steps=[
+ {name=>'100%',target_Yn=>1,final_white_refresh=>JSON::PP::true,series_target_black_y=>0},
+ {name=>'0%',target_Yn=>0,series_target_black_y=>0},
+ {name=>'5%',target_Yn=>0.000762564474113076,series_target_black_y=>0},
+ {name=>'10%',target_Yn=>0.0040248394242663,series_target_black_y=>0},
+];
+open(my $steps_fh,'>',$steps_path) or die "Unable to write $steps_path: $!";
+print {$steps_fh} JSON::PP->new->canonical->encode($steps);
+close($steps_fh);
+my $white_worker=embedded_python_worker($series_source,'apply_series_white_reference_to_steps');
+my $mode_worker=embedded_python_worker($series_source,'effective_low_light_mode_for_step');
+ok(defined($white_worker) && defined($mode_worker),
+ 'the production measured-white and low-light workers can be exercised directly');
+if(defined($white_worker) && defined($mode_worker)) {
+ my ($white_status)=run_python_worker($white_worker,{
+  STEPS_FILE=>$steps_path,WHITE_Y=>'406.513964',
+ });
+ is($white_status,0,'the recorded SDR white is attached to the remaining series steps');
+ open(my $updated_fh,'<',$steps_path) or die "Unable to read $steps_path: $!";
+ local $/;
+ my $updated=decode_json(<$updated_fh>);
+ close($updated_fh);
+ cmp_ok(abs($updated->[2]{series_target_white_y}-406.513964),'<',1e-9,
+  'the 5% step receives the measured white reference');
+ my @modes;
+ for my $index (0..3) {
+  my ($status,$mode)=run_python_worker($mode_worker,{
+   STEPS_FILE=>$steps_path,STEP_INDEX=>$index,SELECTED_MODE=>'a',
+   LOW_LIGHT_TRIGGER_VALUE=>'1',
+  });
+  is($status,0,"low-light selector runs for recorded step ".($index+1));
+  $mode=~s/\s+\z//;
+  push @modes,$mode;
+ }
+ is_deeply(\@modes,[qw(off a a off)],
+  'the recorded pre-cal sequence keeps averaging through 5% and exits it at 10%');
+}
 
 done_testing();
