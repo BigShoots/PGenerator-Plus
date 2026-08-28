@@ -4095,8 +4095,25 @@ function meterSeriesKeyIsNativePreset(key){
  return /^(?:greyscale-(?:2|11|21|26|30|100|101|256)|colors-(?:29|30)|saturations-(?:24|25))$/.test(String(key||''));
 }
 
+function meterSeriesSnapshotContentModes(snapshot){
+ const modes=new Set();
+ const add=value=>{
+  const mode=String(value||'').toLowerCase();
+  if(mode==='sdr'||mode==='hdr10'||mode==='hlg'||mode==='dv') modes.add(mode);
+ };
+ if(!snapshot||typeof snapshot!=='object') return modes;
+ add(snapshot.signal_mode);
+ (Array.isArray(snapshot.steps)?snapshot.steps:[]).forEach(step=>add(step&&step.signal_mode));
+ (Array.isArray(snapshot.readings)?snapshot.readings:[]).forEach(reading=>add(reading&&reading.signal_mode));
+ add(snapshot.white_reading&&snapshot.white_reading.signal_mode);
+ add(snapshot.black_reading&&snapshot.black_reading.signal_mode);
+ return modes;
+}
+
 function meterSeriesSnapshotSignalMode(snapshot,fallbackMode){
- const mode=String((snapshot&&snapshot.signal_mode)||fallbackMode||'sdr').toLowerCase();
+ const modes=meterSeriesSnapshotContentModes(snapshot);
+ if(modes.size===1) return Array.from(modes)[0];
+ const mode=String(fallbackMode||'sdr').toLowerCase();
  return mode||'sdr';
 }
 
@@ -4111,22 +4128,38 @@ function meterSeriesSnapshotForMode(snapshot,signalMode){
  if(!snapshot||typeof snapshot!=='object') return null;
  const mode=String(signalMode||'sdr').toLowerCase()||'sdr';
  const variants=(snapshot.mode_snapshots&&typeof snapshot.mode_snapshots==='object')?snapshot.mode_snapshots:null;
- if(variants&&variants[mode]&&typeof variants[mode]==='object') return variants[mode];
- return meterSeriesSnapshotSignalMode(snapshot,mode)===mode?meterSeriesSnapshotWithoutModeVariants(snapshot):null;
+ const candidate=(variants&&variants[mode]&&typeof variants[mode]==='object')
+  ?meterSeriesSnapshotWithoutModeVariants(variants[mode])
+  :meterSeriesSnapshotWithoutModeVariants(snapshot);
+ if(!candidate) return null;
+ // Do not let a legacy, untagged, or contaminated cache entry adopt whichever
+ // mode happens to be selected now. That fallback made HDR readings reappear
+ // in SDR after an output-mode change. A restorable snapshot must identify one
+ // and only one mode across its root metadata, steps, readings, and references.
+ const contentModes=meterSeriesSnapshotContentModes(candidate);
+ if(contentModes.size!==1||!contentModes.has(mode)) return null;
+ return candidate;
 }
 
 function meterStoreSeriesSnapshot(key,snapshot){
  if(!key||!snapshot||typeof snapshot!=='object') return;
  const bare=meterSeriesSnapshotWithoutModeVariants(snapshot);
- const mode=meterSeriesSnapshotSignalMode(bare,'sdr');
+ const bareModes=meterSeriesSnapshotContentModes(bare);
+ // New snapshots are always mode-stamped. Refuse to persist mixed or untagged
+ // content rather than creating another cross-mode cache variant.
+ if(bareModes.size!==1) return;
+ const mode=Array.from(bareModes)[0];
  const current=meterSeriesCache&&meterSeriesCache[key];
  const variants=(current&&current.mode_snapshots&&typeof current.mode_snapshots==='object')
   ? JSON.parse(JSON.stringify(current.mode_snapshots))
   : {};
  if(current){
   const prior=meterSeriesSnapshotWithoutModeVariants(current);
-  const priorMode=meterSeriesSnapshotSignalMode(prior,'sdr');
-  if(!variants[priorMode]||Number(prior.updated_at||0)>=Number(variants[priorMode].updated_at||0)) variants[priorMode]=prior;
+  const priorModes=meterSeriesSnapshotContentModes(prior);
+  if(priorModes.size===1){
+   const priorMode=Array.from(priorModes)[0];
+   if(!variants[priorMode]||Number(prior.updated_at||0)>=Number(variants[priorMode].updated_at||0)) variants[priorMode]=prior;
+  }
  }
  variants[mode]=bare;
  meterSeriesCache[key]={...bare,mode_snapshots:variants};
@@ -9983,8 +10016,13 @@ function meterGreyTargetSignal(ire,code){
   if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
   return nominal;
  }
- const headroomCode=meterGreyCodeLooksHeadroom(code);
- if(code!=null&&(meterChartIsHdr()||meterGreyAllowsHeadroomTargets()||headroomCode)) return meterGreySignalFractionFromCode(code);
+ // Every ordinary greyscale target follows the signal that was actually sent,
+ // including 8-bit SDR. Limiting code-based decoding to HDR, headroom, or
+ // values above 255 left 8-bit SDR on the nominal slot percentage: both code
+ // 213 Limited and code 230 Full targeted nominal 90% (79.311 nits at gamma
+ // 2.2 / 100-nit white) instead of their distinct quantized signals. Custom
+ // greyscale returned above remains intentionally anchored to the nominal slot.
+ if(code!=null) return meterGreySignalFractionFromCode(code);
  if(meterChartIsPq()) return meterGreyStimulusFraction(ire);
  return nominal;
 }
@@ -10891,7 +10929,12 @@ function meterGammaAxisCenteredOnTarget(measuredVals,targetVals,isHdr){
 
 function meterGreyChartTargetCode(step){
  if(!step) return null;
- if(!meterChartIsHdr()&&!meterGreyAllowsHeadroomTargets()) return null;
+ // Ordinary SDR targets must use the quantized patch code just like HDR and
+ // headroom targets. Returning null here forced the SDR target curve back to
+ // nominal IRE, so Limited and Full both showed 79.311 nits at 90%/gamma 2.2
+ // instead of their code-derived 79.223 and 79.692 nits. Custom Greyscale is
+ // still protected by meterGreyTargetSignal(), which intentionally ignores the
+ // supplied code and keeps its target on the nominal slot.
  return step.r_code!=null?step.r_code:step.r;
 }
 
