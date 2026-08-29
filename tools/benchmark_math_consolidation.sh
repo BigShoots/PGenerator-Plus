@@ -15,6 +15,7 @@ RUNS=20
 SEED=1729
 OUTPUT=""
 BENCH_PYTHON="${PGEN_BENCH_PYTHON:-python3}"
+BENCH_PERL="${PGEN_BENCH_PERL:-perl}"
 
 usage() {
  cat <<'EOF'
@@ -22,7 +23,7 @@ Usage: tools/benchmark_math_consolidation.sh --baseline DIR [options]
 
 Options:
   --candidate DIR   Candidate checkout or staged tree. Default: this checkout.
-  --workload NAME   python-startup, scalar-colour, or meter-average.
+  --workload NAME   perl-startup, python-startup, scalar-colour, or meter-average.
   --runs N          Number of paired samples. Default: 20. Startup requires 30.
   --seed N          Deterministic balanced AB/BA block seed. Default: 1729.
   --output PATH     Save the TSV samples. Default: temporary file plus stdout.
@@ -59,13 +60,14 @@ done
 [[ "$RUNS" =~ ^[0-9]+$ ]] && [[ "$RUNS" -gt 0 ]] || die "--runs must be a positive integer"
 [[ "$SEED" =~ ^[0-9]+$ ]] || die "--seed must be a non-negative integer"
 case "$WORKLOAD" in
- python-startup|scalar-colour|meter-average) ;;
+ perl-startup|python-startup|scalar-colour|meter-average) ;;
  *) die "Unsupported workload: $WORKLOAD" ;;
 esac
-if [[ "$WORKLOAD" == "python-startup" ]] && [[ "$RUNS" -lt 30 ]]; then
- die "python-startup requires at least 30 paired samples"
+if [[ "$WORKLOAD" == *-startup ]] && [[ "$RUNS" -lt 30 ]]; then
+ die "$WORKLOAD requires at least 30 paired samples"
 fi
 command -v "$BENCH_PYTHON" >/dev/null 2>&1 || die "Python is unavailable: $BENCH_PYTHON"
+command -v "$BENCH_PERL" >/dev/null 2>&1 || die "Perl is unavailable: $BENCH_PERL"
 
 TEMP_OUTPUT=0
 if [[ -z "$OUTPUT" ]]; then
@@ -118,7 +120,12 @@ env = dict(os.environ)
 env["PYTHONDONTWRITEBYTECODE"] = "1"
 stdin_data = None
 
-if workload == "python-startup":
+if workload == "perl-startup":
+    perl = os.environ.get("PGEN_BENCH_PERL", "perl")
+    command = [perl, "-I" + os.path.join(root, "usr", "share", "PGenerator"),
+               "-MPGCalibrationMath=dpg_smooth_blend_index",
+               "-e", "print dpg_smooth_blend_index(), qq{\\n}"]
+elif workload == "python-startup":
     code = ("import sys; sys.path.insert(0, sys.argv[1]); "
             "import pgen_colour_math; print(pgen_colour_math.PQ_C2)")
     command = [python, "-c", code, os.path.join(root, "usr", "bin")]

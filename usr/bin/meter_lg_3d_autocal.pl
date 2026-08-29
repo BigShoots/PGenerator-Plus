@@ -16,13 +16,13 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGMath qw(
- bt1886_relative_luminance_3d_root_blend delta_e_2000_xyz delta_e_itp_xyz
- matrix3_inverse matrix3_multiply matrix3_vector_multiply pq_decode_normalized
- pq_encode_normalized xyz_to_ictcp
+ delta_e_2000_xyz delta_e_itp_xyz matrix3_inverse matrix3_multiply
+ matrix3_vector_multiply pq_decode_normalized pq_encode_normalized xyz_to_ictcp
 );
 use PGCalibrationMath qw(
- autocal_xy_to_xyz_unit bounded_number dpg_smooth_blend_index named_gamut_matrix
- smooth_dpg_low_end
+ autocal_xy_to_xyz_unit bounded_number calibration_target_context
+ dpg_smooth_blend_index named_gamut_matrix smooth_dpg_low_end
+ target_linear_for_context target_relative_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
 
@@ -624,26 +624,40 @@ sub st2084_pq_to_linear {
  return pq_decode_normalized($signal);
 }
 
-sub target_gamma_linear {
- my ($signal,$gamma)=@_;
- $signal=clamp($signal,0,1);
+my %_autocal3d_target_context_cache;
+sub autocal3d_target_context_for {
+ my ($gamma,$signal_mode)=@_;
  $gamma=lc($gamma||"bt1886");
- return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055) ** 2.4) if($gamma eq "srgb");
- return st2084_pq_to_linear($signal) if($gamma eq "st2084");
- my $g=($gamma eq "2.2") ? 2.2 : 2.4;
- return $signal ** $g;
+ $gamma="2.4" if($gamma ne "bt1886" && $gamma ne "2.2"
+  && $gamma ne "2.4" && $gamma ne "srgb" && $gamma ne "st2084"
+  && $gamma ne "hlg");
+ $signal_mode=lc($signal_mode||(($gamma eq "st2084") ? "hdr10" : "sdr"));
+ $signal_mode="hlg" if($signal_mode ne "sdr" && $signal_mode ne "hdr10"
+  && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $key=join("|",$gamma,$signal_mode);
+ $_autocal3d_target_context_cache{$key}=calibration_target_context({
+  caller_policy=>"autocal_3d",target_gamma=>$gamma,
+  signal_mode=>$signal_mode,sdr_signal_peak=>100,
+ }) if(!exists($_autocal3d_target_context_cache{$key}));
+ return $_autocal3d_target_context_cache{$key};
+}
+
+sub target_gamma_linear {
+ my ($signal,$gamma,$context)=@_;
+ $context=autocal3d_target_context_for($gamma) if(ref($context) ne "HASH");
+ return target_linear_for_context(
+  $context,$signal);
 }
 
 sub target_relative_luminance {
- my ($signal,$gamma,$white_y,$black_y)=@_;
- $gamma=lc($gamma||"bt1886");
- return bt1886_relative_luminance_3d_root_blend(
-  $signal,$white_y,$black_y) if($gamma eq "bt1886");
- return target_gamma_linear($signal,$gamma);
+ my ($signal,$gamma,$white_y,$black_y,$context)=@_;
+ $context=autocal3d_target_context_for($gamma) if(ref($context) ne "HASH");
+ return target_relative_luminance_for_context(
+  $context,$signal,$white_y,$black_y);
 }
 
 sub target_rgb_to_xyz {
- my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut)=@_;
+ my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut,$target_context)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
  $gamma=lc($gamma||"bt1886");
  $target_gamut=sanitize_target_gamut($target_gamut);
@@ -652,14 +666,14 @@ sub target_rgb_to_xyz {
   my $black_y=$black->[1] || 0;
   my $range=$white_y-$black_y;
   $range=$white_y if($range <= 1e-9);
-  my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y);
-  my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y);
-  my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y);
+  my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y,$target_context);
+  my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y,$target_context);
+  my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y,$target_context);
   return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$range));
  }
- my $lr=target_gamma_linear($r,$gamma);
- my $lg=target_gamma_linear($g,$gamma);
- my $lb=target_gamma_linear($b,$gamma);
+ my $lr=target_gamma_linear($r,$gamma,$target_context);
+ my $lg=target_gamma_linear($g,$gamma,$target_context);
+ my $lb=target_gamma_linear($b,$gamma,$target_context);
  return rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$white_y);
 }
 
@@ -709,7 +723,11 @@ sub channel_inverse_level {
 sub matrix_for_level {
  my ($model,$level)=@_;
  my $black=$model->{"black"} || [0,0,0];
- my $lin=target_relative_luminance($level/100,$model->{"target_gamma"},$model->{"white_y"},$black->[1]||0);
+ $model->{"target_context"}=autocal3d_target_context_for(
+  $model->{"target_gamma"},$model->{"signal_mode"})
+  if(ref($model->{"target_context"}) ne "HASH");
+ my $lin=target_relative_luminance_for_context(
+  $model->{"target_context"},$level/100,$model->{"white_y"},$black->[1]||0);
  $lin=1 if($lin <= 1e-9);
  my @cols;
  foreach my $kind (qw(red green blue)) {
@@ -730,11 +748,12 @@ sub target_xyz_for_node {
  # Chromatic nodes reference the additive primary white (WRGB self-detection);
  # see model_from_readings. Falls back to white_y on additive displays.
  my $cw=$model->{"chromatic_white_y"} || $model->{"white_y"};
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,$model->{"black"},$model->{"target_gamut"});
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,
+  $model->{"black"},$model->{"target_gamut"},$model->{"target_context"});
 }
 
 sub post_check_target_xyz {
-	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y)=@_;
+	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y,$target_context)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
 	 # Chromatic patches score against the additive primary white (WRGB
 	 # self-detection); neutral patches keep white_y. Mirrors target_xyz_for_node
@@ -742,12 +761,15 @@ sub post_check_target_xyz {
 	 $chromatic_white_y=$white_y if(!defined($chromatic_white_y) || $chromatic_white_y <= 0);
 	 my $pick=sub { my ($r,$g,$b)=@_; return ($r==$g && $g==$b) ? $white_y : $chromatic_white_y; };
 	 $target_gamma||="bt1886";
+	 $target_context=autocal3d_target_context_for($target_gamma)
+	  if(ref($target_context) ne "HASH");
 	 $target_gamut=sanitize_target_gamut($target_gamut);
 	 my $gamma=lc($target_gamma);
 	 my ($r,$g,$b)=(0,0,0);
 	 if($gamma eq "bt1886" && (defined($step->{"signal_r_pct"}) || defined($step->{"signal_g_pct"}) || defined($step->{"signal_b_pct"}))) {
 	  my ($rr,$gg,$bb)=(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100);
-	  return target_rgb_to_xyz($rr,$gg,$bb,$target_gamma,$pick->($rr,$gg,$bb),$black,$target_gamut);
+	  return target_rgb_to_xyz($rr,$gg,$bb,$target_gamma,
+	   $pick->($rr,$gg,$bb),$black,$target_gamut,$target_context);
 	 } elsif(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
 	  $r=clamp($step->{"target_linear_r"}+0,0,1);
 	  $g=clamp($step->{"target_linear_g"}+0,0,1);
@@ -764,7 +786,8 @@ sub post_check_target_xyz {
 	  $g=($step->{"signal_g_pct"}||0)/100;
 	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
- return target_rgb_to_xyz($r,$g,$b,$target_gamma,$pick->($r,$g,$b),$black,$target_gamut);
+ return target_rgb_to_xyz($r,$g,$b,$target_gamma,
+  $pick->($r,$g,$b),$black,$target_gamut,$target_context);
 }
 
 sub summarize_post_check {
@@ -967,6 +990,7 @@ sub model_from_readings {
  # (undersaturated, per the reference relay capture). P3 is the panel's achievable gamut and the
  # series SCORING target -- NOT the cube's solve domain.
  $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10" && !$solve_only);
+ my $target_context=autocal3d_target_context_for($target_gamma,$signal_mode);
  my %by;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
@@ -1024,7 +1048,8 @@ sub model_from_readings {
    my $src=$by{"profile"}{$kind}{$level} || $by{"drift_start"}{$kind}{$level};
    if(!$src && $method eq "matrix") {
     my $peak=$by{"profile"}{$kind}{100};
-    my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
+    my $lin=target_relative_luminance_for_context(
+     $target_context,$level/100,$profile_white_y,$black_y);
     $contrib{$kind}{$level}=vec_scale(vec_sub($peak->{xyz},$black),$lin) if($peak);
     next;
    }
@@ -1037,7 +1062,8 @@ sub model_from_readings {
    $white_axis{$level}=apply_drift_correction($wsrc->{xyz},$black,$wsrc->{time},$drift);
   } elsif($method eq "matrix") {
    my $peak=$by{"profile"}{"white"}{100};
-   my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
+   my $lin=target_relative_luminance_for_context(
+    $target_context,$level/100,$profile_white_y,$black_y);
    $white_axis{$level}=vec_add($black,vec_scale(vec_sub($peak->{xyz},$black),$lin)) if($peak);
   } else {
    $white_axis{$level}=vec_add($black,vec_add($contrib{"red"}{$level}||[0,0,0],vec_add($contrib{"green"}{$level}||[0,0,0],$contrib{"blue"}{$level}||[0,0,0])));
@@ -1049,6 +1075,8 @@ sub model_from_readings {
   method=>$method,
   contrib=>\%contrib,
   target_gamma=>$target_gamma,
+  signal_mode=>$signal_mode,
+  target_context=>$target_context,
   black=>$black,
   white_y=>$white_y,
  },100);
@@ -1120,6 +1148,7 @@ sub model_from_readings {
   method => $method,
   signal_mode => $signal_mode,
   target_gamma => $target_gamma,
+  target_context => $target_context,
   signal_gamma => $signal_gamma,
   target_gamut => $target_gamut,
   black => $black,
@@ -1226,9 +1255,9 @@ sub gamut_matrix_output {
  # inverse must be 2.4 as well or the matrix domain would be asymmetric.
  my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
  my $lin=[
-  target_gamma_linear($ri/($size-1),$gamma),
-  target_gamma_linear($gi/($size-1),$gamma),
-  target_gamma_linear($bi/($size-1),$gamma),
+  target_gamma_linear($ri/($size-1),$gamma,$model->{"target_context"}),
+  target_gamma_linear($gi/($size-1),$gamma,$model->{"target_context"}),
+  target_gamma_linear($bi/($size-1),$gamma,$model->{"target_context"}),
  ];
  my $out=matrix_mul_vec($M,$lin);
  # WRGB chromatic luminance compensation, MID-saturation weighted. The
@@ -2145,14 +2174,18 @@ sub _trl_slope {
  # Numerical d(relative luminance)/d(signal) of the target curve at a signal
  # fraction; floored so near-black residuals cannot explode into huge
  # signal-domain moves (they are noise-dominated anyway).
- my ($f,$gamma,$white_y,$black_y)=@_;
+ my ($f,$gamma,$white_y,$black_y,$target_context)=@_;
  my $h=0.01;
  my $lo=$f-$h; $lo=0 if($lo < 0);
  my $hi=$f+$h; $hi=1 if($hi > 1);
  my $span=$hi-$lo;
  return 0.05 if($span <= 0);
- my $slope=(target_relative_luminance($hi,$gamma,$white_y,$black_y)
-           -target_relative_luminance($lo,$gamma,$white_y,$black_y))/$span;
+ $target_context=autocal3d_target_context_for($gamma)
+  if(ref($target_context) ne "HASH");
+ my $slope=(target_relative_luminance_for_context(
+             $target_context,$hi,$white_y,$black_y)
+           -target_relative_luminance_for_context(
+             $target_context,$lo,$white_y,$black_y))/$span;
  return ($slope > 0.05) ? $slope : 0.05;
 }
 
@@ -2172,9 +2205,9 @@ sub baseline_drive_pct {
   my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
   # Match gamut_matrix_output linearisation (power / srgb / pq via target_gamma_linear).
   my $lin=[
-   target_gamma_linear($fr,$gamma),
-   target_gamma_linear($fg,$gamma),
-   target_gamma_linear($fb,$gamma),
+   target_gamma_linear($fr,$gamma,$model->{"target_context"}),
+   target_gamma_linear($fg,$gamma,$model->{"target_context"}),
+   target_gamma_linear($fb,$gamma,$model->{"target_context"}),
   ];
   my $out=matrix_mul_vec($M,$lin);
   return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
@@ -2275,7 +2308,8 @@ sub build_residual_grid {
   if(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001 && ref($model->{"white_axis"}) eq "HASH") {
    $xyz_t=interpolate_vec_by_level($model->{"white_axis"},$fr*100);
   } else {
-   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,$model->{"target_gamut"});
+   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,
+    $model->{"target_gamut"},$model->{"target_context"});
   }
   if(ref($xyz_t) ne "ARRAY") { $skipped++; next; }
   my $delta=vec_sub($xyz_t,$xyz_m);
@@ -2299,7 +2333,8 @@ sub build_residual_grid {
     my $dsig=0;
     if(!$is_mono || $ch == $dom_ch) {
      my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
-     my $slope=_trl_slope($sf,$gamma,$white_y,$black_y);
+     my $slope=_trl_slope(
+      $sf,$gamma,$white_y,$black_y,$model->{"target_context"});
      $dsig=$dlin->[$ch]/$slope;
      if($is_mono && $dom_ch == $ch) {
       my $peak_y=0;
@@ -2636,11 +2671,14 @@ sub build_imported_lut {
  $state->{"message"}="Parsing ".$path;
  write_state($state);
  my $cube=parse_cube_file($path);
+ my $target_context=autocal3d_target_context_for(
+  $config->{"target_gamma"},$config->{"signal_mode"});
  my $model={
   method => "imported",
   signal_mode => $config->{"signal_mode"}||"sdr",
   target_gamut => $config->{"target_gamut"}||"bt709",
   target_gamma => $config->{"target_gamma"}||"",
+  target_context => $target_context,
   signal_gamma => $config->{"target_gamma"}||"",
   neutral_axis_source => "imported",
   imported_cube_path => $path,
@@ -2809,12 +2847,17 @@ sub profile_target_xyz_for_step {
  $black_y=0 if(!defined($black_y) || $black_y < 0 || $black_y >= $white_y);
  my $range_y=$white_y-$black_y;
  my $target_gamut=$config->{"target_gamut"}||"bt709";
+ my $target_gamma=$config->{"target_gamma"}||"bt1886";
+ my $target_context=autocal3d_target_context_for(
+  $target_gamma,$config->{"signal_mode"});
  my $black=rgb_to_xyz_for_gamut($target_gamut,1,1,1,$black_y);
  my $level=($step->{"level"}||0)/100;
- my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
+ my $gamma=target_relative_luminance_for_context(
+  $target_context,$level,$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  if($kind eq "node") {
-  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
+  my $chan=sub { target_relative_luminance_for_context(
+   $target_context,clamp(($_[0]||0)/100,0,1),$white_y,$black_y) };
   return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
    $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
  }
@@ -3416,6 +3459,8 @@ sub post_check_steps {
 	 my @steps;
 	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 	 my $target_gamma=$config->{"target_gamma"}||"bt1886";
+	 my $target_context=autocal3d_target_context_for(
+	  $target_gamma,$config->{"signal_mode"});
 	 my $max_bpc=$config->{"max_bpc"}||"";
 	 my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
 	 my @cc=(
@@ -3434,16 +3479,16 @@ sub post_check_steps {
 	   r=>patch_code_for_8bit_value($r,$signal_range,$max_bpc),
 	   g=>patch_code_for_8bit_value($g,$signal_range,$max_bpc),
 	   b=>patch_code_for_8bit_value($b,$signal_range,$max_bpc),
-	   target_linear_r=>target_gamma_linear($r/255,$target_gamma),
-	   target_linear_g=>target_gamma_linear($g/255,$target_gamma),
-	   target_linear_b=>target_gamma_linear($b/255,$target_gamma),
+	   target_linear_r=>target_gamma_linear($r/255,$target_gamma,$target_context),
+	   target_linear_g=>target_gamma_linear($g/255,$target_gamma,$target_context),
+	   target_linear_b=>target_gamma_linear($b/255,$target_gamma,$target_context),
 	   input_max=>$input_max
 	  };
 	 }
 	 foreach my $sat (25,50,75,100) {
 	  my $c=patch_code_for_percent($sat,$signal_range,$max_bpc);
 	  my $k=patch_code_for_percent(0,$signal_range,$max_bpc);
-	  my $linear=target_gamma_linear($sat/100,$target_gamma);
+	  my $linear=target_gamma_linear($sat/100,$target_gamma,$target_context);
 	  my @defs=(
 	   ["Red",$c,$k,$k,$linear,0,0],["Green",$k,$c,$k,0,$linear,0],["Blue",$k,$k,$c,0,0,$linear],
 	   ["Cyan",$k,$c,$c,0,$linear,$linear],["Magenta",$c,$k,$c,$linear,0,$linear],["Yellow",$c,$c,$k,$linear,$linear,0],
@@ -4780,6 +4825,14 @@ if($signal_mode eq "hdr10" && $method ne "matrix" && $method ne "imported") {
 $config->{"method"}=$method;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
+my $run_model_target_gamma=$config->{"solve_only"}
+ ? $config->{"target_gamma"}
+ : dpg_calibration_gamma($config,$signal_mode,$config->{"target_gamma"});
+my $run_target_context=autocal3d_target_context_for(
+ $run_model_target_gamma,$signal_mode);
+die "Unable to resolve 3D calibration target context\n"
+ if(ref($run_target_context) ne "HASH");
+$config->{"calibration_target_context"}={%{$run_target_context}};
 # Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
 # invent limited when the start path already aligned to conf. Empty still
 # defaults to limited only as a last-resort legacy fallback (pre-fix callers).
@@ -4847,6 +4900,7 @@ my $state={
  signal_mode => $config->{"signal_mode"},
  target_gamut => $config->{"target_gamut"},
  target_gamma => $config->{"target_gamma"},
+ calibration_target_context => {%{$run_target_context}},
  observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 };
 if($retry_upload_only) {
@@ -5443,7 +5497,11 @@ eval {
   $state->{"current_name"}=$step->{"name"};
   $state->{"message"}="Post-check ".($i+1)."/".scalar(@post);
   write_state($state);
-   my $expected_post_target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",$model->{"chromatic_white_y"});
+    my $expected_post_target=post_check_target_xyz(
+     $step,$model->{"white_y"}||100,
+     $model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",
+     $model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",
+     $model->{"chromatic_white_y"},$model->{"target_context"});
    $step->{"target_Y"}=$expected_post_target->[1]
     if(ref($expected_post_target) eq "ARRAY" && defined($expected_post_target->[1]));
    my ($reading,$error)=read_step($config,$step,$state);

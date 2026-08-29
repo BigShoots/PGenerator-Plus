@@ -14,10 +14,13 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGMath qw(
- akima_interpolate bt1886_luminance_1d_ab delta_e_itp_xyz pq_constants
- pq_decode_nits pq_decode_normalized pq_encode_normalized xyz_to_ictcp
+ akima_interpolate delta_e_itp_xyz pq_constants
+ pq_decode_nits pq_encode_normalized xyz_to_ictcp
 );
-use PGCalibrationMath qw(bounded_number dpg_smooth_blend_index smooth_dpg_low_end);
+use PGCalibrationMath qw(
+ bounded_number calibration_target_context dpg_smooth_blend_index
+ smooth_dpg_low_end target_linear_for_context target_luminance_for_context
+);
 use PGMeterReading qw(reading_xyz);
 
 our $PGAC_LOADED = 0;
@@ -42,6 +45,7 @@ our $LG_AUTOCAL_DDC_LAYOUT = "sdr26";
 our $LG_AUTOCAL_DARK_DETAIL = 0;
 our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
+our $LG_AUTOCAL_TARGET_CONTEXT;
 our $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS = [];
 # Active-range lowest-body DPG seed index(es) for the SDR26 1D spline.
 # Limited 2.3% → 21; Full 2.3% → 24. Set at the start of each SDR26 DPG run.
@@ -1165,26 +1169,36 @@ sub clamp_unit {
  return $value;
 }
 
+my %_autocal_target_context_cache;
+sub autocal_target_context_for {
+ my ($target_gamma,$signal_mode,$config)=@_;
+ $target_gamma=lc($target_gamma||"bt1886");
+ $target_gamma="2.4" if($target_gamma ne "bt1886" && $target_gamma ne "2.2"
+  && $target_gamma ne "2.4" && $target_gamma ne "srgb"
+  && $target_gamma ne "st2084" && $target_gamma ne "hlg");
+ $signal_mode=lc($signal_mode||"sdr");
+ $signal_mode="hlg" if($signal_mode ne "sdr" && $signal_mode ne "hdr10"
+  && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $peak=($signal_mode eq "sdr") ? autocal_sdr_signal_peak($config) : 100;
+ if(ref($LG_AUTOCAL_TARGET_CONTEXT) eq "HASH"
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"caller_policy"}||"") eq "autocal_1d"
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"target_gamma"}||"") eq $target_gamma
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"signal_mode"}||"") eq $signal_mode
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"sdr_signal_peak"}||0) == $peak) {
+  return $LG_AUTOCAL_TARGET_CONTEXT;
+ }
+ my $key=join("|",$target_gamma,$signal_mode,$peak);
+ $_autocal_target_context_cache{$key}=calibration_target_context({
+  caller_policy=>"autocal_1d",target_gamma=>$target_gamma,
+  signal_mode=>$signal_mode,sdr_signal_peak=>$peak,
+ }) if(!exists($_autocal_target_context_cache{$key}));
+ return $_autocal_target_context_cache{$key};
+}
+
 sub target_gamma_linear {
  my ($signal,$target_gamma,$signal_mode)=@_;
- $signal=0 if(!defined($signal));
- $signal+=0;
- $signal=0 if($signal < 0);
- $signal_mode=lc($signal_mode||"sdr");
- $signal=1 if($signal > 1 && $signal_mode ne "sdr");
- return 0 if($signal <= 0);
- $target_gamma=lc($target_gamma||"bt1886");
- if($target_gamma eq "srgb") {
-  return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055) ** 2.4);
- }
- if($signal_mode eq "dv" && $target_gamma eq "st2084") {
-  return $signal ** 2.2;
- }
- if($target_gamma eq "st2084") {
-  return pq_decode_normalized($signal);
- }
- my $gamma=($target_gamma eq "2.2") ? 2.2 : 2.4;
- return $signal ** $gamma;
+ my $context=autocal_target_context_for($target_gamma,$signal_mode);
+ return target_linear_for_context($context,$signal);
 }
 
 sub autocal_sdr_signal_peak {
@@ -1403,14 +1417,6 @@ sub target_luminance_for_step {
 	 #
 	 # HDR10 keeps signal = stimulus / 100 because the PQ EOTF saturates
 	 # at 100% by spec -- HDR has no headroom codes above 100 IRE.
-	 my $signal_peak=($mode eq "sdr") ? autocal_sdr_signal_peak() : 100.0;
-	 my $signal=$stimulus/$signal_peak;
-	 # Clamp >1.0 for HDR (PQ saturates at 100% by spec) AND for SDR
-	 # transports with NO super-white (signal_peak==100: Full / RGB-Limited),
-	 # where 100/105/109% all clamp to the same peak wire code -- their target
-	 # is the peak, not an unreachable >peak value. Only YCbCr-Limited
-	 # (signal_peak==109) keeps genuine super-white above 1.0.
-	 $signal=1 if($signal+0 > 1 && ($mode ne "sdr" || (defined($signal_peak) && $signal_peak == 100)));
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
 	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
@@ -1418,26 +1424,9 @@ sub target_luminance_for_step {
 	   close($trace_fh);
 	  }
 	 }
-	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
-	  $signal=0 if($signal < 0);
-	  # SDR BT.1886 normalises against the same legal peak the gamma-2.2
-	  # path uses (109 for Limited YCbCr, 100 otherwise -- see
-	  # autocal_sdr_signal_peak). The $signal divisor was set above.
-	  return bt1886_luminance_1d_ab($signal,$white_y,$black_y+0);
-	 }
-	 return 0 if($stimulus <= 0);
-	 # Old HDR legacy clamp: HDR clamps signals > 1.0 to 1.0 (the PQ
-	 # EOTF saturates there by spec). SDR has already passed through the
-	 # $mode ne "sdr" gate above, so this only affects HDR. The 1.1 cap
-	 # was the pre-ce1a637f SDR fallback for stimulus > 110% (the old
-	 # SDR limit); SDR is no longer capped here because the SDR26
-	 # 26-anchor table tops out at 109.
-	 $signal=1 if($signal > 1 && $mode ne "sdr");
-	 if($mode eq "hdr10" && $target_gamma eq "st2084") {
-	  my $pq_y=pq_decode_nits($signal);
-	  return ($pq_y > $white_y) ? $white_y : $pq_y;
-	 }
-	 return $white_y * target_gamma_linear($signal,$target_gamma,$signal_mode);
+	 my $context=autocal_target_context_for($target_gamma,$mode);
+	 return target_luminance_for_context(
+	  $context,$stimulus,$white_y,$black_y);
 }
 
 sub autocal_step_is_white {
@@ -21859,6 +21848,11 @@ $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$headroom_target_luminance;
 my $target_gamma=lc($config->{"target_gamma"}||"bt1886");
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
 my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+$signal_mode="hdr10" if($signal_mode eq "hdr");
+my $run_target_context=autocal_target_context_for($target_gamma,$signal_mode,$config);
+die "Unable to resolve calibration target context\n" if(ref($run_target_context) ne "HASH");
+$LG_AUTOCAL_TARGET_CONTEXT=$run_target_context;
+$config->{"calibration_target_context"}={%{$run_target_context}};
 $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 # Dark Detail is set here, before anything reads the slot list, so every
 # consumer of ddc_slots_for_layout sees a consistent ladder for the whole run.
@@ -21920,6 +21914,7 @@ my $state={
 		 headroom_target_luminance=>$headroom_target_luminance||undef,
 			 target_gamma=>$target_gamma,
 			 signal_mode=>$signal_mode,
+			 calibration_target_context=>{%{$run_target_context}},
 			 requested_signal_mode=>$signal_mode,
 			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
 			 display_type=>$config->{"display_type"}||"lcd",

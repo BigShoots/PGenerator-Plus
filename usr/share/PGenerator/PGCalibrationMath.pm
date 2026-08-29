@@ -4,10 +4,14 @@ use strict;
 use warnings;
 use Exporter qw(import);
 use Scalar::Util qw(looks_like_number);
-use PGMath qw(matrix3_inverse matrix3_vector_multiply);
+use PGMath qw(
+ bt1886_luminance_1d_ab bt1886_relative_luminance_3d_root_blend
+ matrix3_inverse matrix3_vector_multiply pq_decode_nits pq_decode_normalized
+);
 
 our @EXPORT_OK = qw(
  bounded_number
+ calibration_target_context
  calibration_rgb_to_xyz_matrix
  autocal_xy_to_xyz_unit
  dpg_smooth_blend_index
@@ -17,6 +21,9 @@ our @EXPORT_OK = qw(
  smooth_dpg_low_end
  standard_gamut_record
  standard_gamut_records
+ target_linear_for_context
+ target_luminance_for_context
+ target_relative_luminance_for_context
 );
 
 # The string coefficients are intentional. webui.pm assembles them directly
@@ -69,6 +76,139 @@ sub standard_gamut_record {
 
 sub standard_gamut_records {
  return _clone_record($STANDARD_GAMUTS);
+}
+
+sub _lock_flat_hashref {
+ my ($record)=@_;
+ return undef if(ref($record) ne "HASH");
+ Internals::SvREADONLY($record->{$_},1) for keys %{$record};
+ Internals::SvREADONLY(%{$record},1);
+ return $record;
+}
+
+sub calibration_target_context {
+ my ($input)=@_;
+ return undef if(ref($input) ne "HASH");
+ my $caller=lc($input->{"caller_policy"}||"");
+ return undef if($caller ne "autocal_1d" && $caller ne "autocal_3d");
+
+ my $mode=lc($input->{"signal_mode"}||"sdr");
+ $mode="hdr10" if($mode eq "hdr");
+ return undef if($mode ne "sdr" && $mode ne "hdr10"
+  && $mode ne "hlg" && $mode ne "dv");
+
+ my $gamma=lc($input->{"target_gamma"}||"bt1886");
+ $gamma="bt1886" if($gamma eq "1886");
+ $gamma="st2084" if($gamma eq "pq" || $gamma eq "smpte2084");
+ return undef if($gamma ne "bt1886" && $gamma ne "2.2"
+  && $gamma ne "2.4" && $gamma ne "srgb" && $gamma ne "st2084"
+  && $gamma ne "hlg");
+
+ my $peak=defined($input->{"sdr_signal_peak"})
+  ? bounded_number($input->{"sdr_signal_peak"},1,1_000_000) : 100;
+ return undef if(!defined($peak));
+
+ my $transfer;
+ if($caller eq "autocal_1d") {
+  $transfer="srgb" if($gamma eq "srgb");
+  $transfer="dv_gamma_2_2_tunnel" if($mode eq "dv" && $gamma eq "st2084");
+  $transfer="pq_normalized" if(!defined($transfer) && $gamma eq "st2084");
+  $transfer="power_2_2" if(!defined($transfer) && $gamma eq "2.2");
+  $transfer="bt1886_1d_ab" if(!defined($transfer) && $gamma eq "bt1886");
+  $transfer="power_2_4" if(!defined($transfer));
+ } else {
+  $transfer="bt1886_3d_root_blend_relative" if($gamma eq "bt1886");
+  $transfer="srgb" if(!defined($transfer) && $gamma eq "srgb");
+  $transfer="pq_normalized" if(!defined($transfer) && $gamma eq "st2084");
+  $transfer="power_2_2" if(!defined($transfer) && $gamma eq "2.2");
+  $transfer="power_2_4" if(!defined($transfer));
+ }
+
+ my $normalization=($caller eq "autocal_3d")
+  ? "relative_black_removed"
+  : (($mode eq "hdr10" && $gamma eq "st2084")
+     ? "absolute_nits_capped_at_white" : "white_scaled");
+ my $context={
+  schema=>"pgen-calibration-target-context-v1",
+  context_version=>1,
+  caller_policy=>$caller,
+  signal_mode=>$mode,
+  target_gamma=>$gamma,
+  sdr_signal_peak=>$peak+0,
+  transfer_policy=>$transfer,
+  normalization_policy=>$normalization,
+  dv_tunnel_policy=>(($mode eq "dv" && $gamma eq "st2084")
+   ? "gamma_2_2_when_target_label_st2084" : "none"),
+ };
+ return _lock_flat_hashref($context);
+}
+
+sub _is_target_context {
+ my ($context,$caller)=@_;
+ return 0 if(ref($context) ne "HASH"
+  || ($context->{"schema"}||"") ne "pgen-calibration-target-context-v1"
+  || ($context->{"context_version"}||0) != 1);
+ return 0 if(defined($caller) && ($context->{"caller_policy"}||"") ne $caller);
+ return 1;
+}
+
+sub _clamp_target_unit {
+ my ($value)=@_;
+ return 0 if(!defined($value) || $value < 0);
+ return 1 if($value > 1);
+ return $value;
+}
+
+sub target_linear_for_context {
+ my ($context,$signal)=@_;
+ return undef if(!_is_target_context($context));
+ $signal=0 if(!defined($signal));
+ $signal+=0;
+ if($context->{"caller_policy"} eq "autocal_3d") {
+  $signal=_clamp_target_unit($signal);
+ } else {
+  $signal=0 if($signal < 0);
+  $signal=1 if($signal > 1 && $context->{"signal_mode"} ne "sdr");
+  return 0 if($signal <= 0);
+ }
+ my $policy=$context->{"transfer_policy"};
+ return ($signal <= 0.04045) ? ($signal/12.92)
+  : ((($signal+0.055)/1.055) ** 2.4) if($policy eq "srgb");
+ return $signal ** 2.2 if($policy eq "power_2_2"
+  || $policy eq "dv_gamma_2_2_tunnel");
+ return pq_decode_normalized($signal) if($policy eq "pq_normalized");
+ return $signal ** 2.4;
+}
+
+sub target_luminance_for_context {
+ my ($context,$stimulus,$white_y,$black_y)=@_;
+ return undef if(!_is_target_context($context,"autocal_1d")
+  || !defined($stimulus) || !defined($white_y) || $white_y <= 0);
+ my $mode=$context->{"signal_mode"};
+ my $signal_peak=($mode eq "sdr") ? $context->{"sdr_signal_peak"} : 100;
+ my $signal=($stimulus+0)/$signal_peak;
+ $signal=1 if($signal > 1 && ($mode ne "sdr" || $signal_peak == 100));
+ if($mode eq "sdr" && $context->{"transfer_policy"} eq "bt1886_1d_ab"
+  && defined($black_y) && ($black_y+0) > 0) {
+  $signal=0 if($signal < 0);
+  return bt1886_luminance_1d_ab($signal,$white_y,$black_y+0);
+ }
+ return 0 if($stimulus <= 0);
+ $signal=1 if($signal > 1 && $mode ne "sdr");
+ if($mode eq "hdr10" && $context->{"target_gamma"} eq "st2084") {
+  my $pq_y=pq_decode_nits($signal);
+  return ($pq_y > $white_y) ? $white_y : $pq_y;
+ }
+ return $white_y*target_linear_for_context($context,$signal);
+}
+
+sub target_relative_luminance_for_context {
+ my ($context,$signal,$white_y,$black_y)=@_;
+ return undef if(!_is_target_context($context,"autocal_3d"));
+ return bt1886_relative_luminance_3d_root_blend(
+  $signal,$white_y,$black_y)
+  if($context->{"transfer_policy"} eq "bt1886_3d_root_blend_relative");
+ return target_linear_for_context($context,$signal);
 }
 
 sub gamut_xy_definition {
