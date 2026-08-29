@@ -20,6 +20,7 @@ use PGMath qw(
  matrix3_vector_multiply pq_decode_normalized pq_encode_normalized
  xyz_to_ictcp
 );
+use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -165,75 +166,6 @@ sub cancelled {
  return 1 if($cancelled);
  return 1 if(-f $stop_file);
  return 0;
-}
-
-# Post-calibration smoothing of the crowded low end of a 1D DPG.
-#
-# MUST STAY BYTE-EQUIVALENT to lg_autocal_26_smooth_dpg_low_end() in
-# usr/bin/meter_lg_autocal.pl. The two workers are standalone scripts with no
-# shared library, so this helper is duplicated exactly as the DPG tables are.
-#
-# Why it lives here as well: in a FULL workflow this worker is the last stage to
-# touch the 1D DPG, so this is the only place the smoothed curve survives. The
-# greyscale worker still applies it for a standalone run, where its own pass IS
-# the end.
-#
-# Rationale for the smoothing itself: each anchor converges independently to
-# dE <= target, but at low IRE that leaves tens of DPG counts of slack, and where
-# anchors sit only a few indexes apart that slack becomes a large SLOPE error
-# (measured: 5.6..64 counts/index below 10% against a stable ~30 above).
-# Interpolating exactly through mutually-inconsistent anchors leaves a kinked
-# curve and the levels BETWEEN anchors sit on the kinks.
-#
-# Hardware result (LG C2, SDR YCbCr Limited 10-bit, 216 cd/m2 peak, same series,
-# panel settled): on-anchor 0.49 -> 0.36, between-anchor 2.41 -> 1.86, max
-# 3.71 -> 2.46. A slope-domain refit that relocated anchors measured WORSE
-# (0.70 / 2.04), so this stays a gentle low-pass.
-#
-# Returns ($smoothed_arrayref, $entries_changed); ($dpg, 0) if it cannot run.
-our $LG_AUTOCAL_DPG_SMOOTH_FULL_IDX  = 240;
-our $LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX = 280;
-
-sub lg_autocal_26_smooth_dpg_low_end {
- my ($dpg)=@_;
- return ($dpg,0) if(ref($dpg) ne "ARRAY" || @{$dpg} != 3072);
- my $full=$LG_AUTOCAL_DPG_SMOOTH_FULL_IDX;
- my $blend=$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX;
- my $half=2;                       # 5-point window
- my @out;
- my $changed=0;
- foreach my $c (0,1,2) {
-  my @ch=@{$dpg}[($c*1024)..($c*1024+1023)];
-  my @sm=@ch;
-  foreach my $pass (1,2) {
-   my @prev=@sm;
-   for(my $i=1;$i<=$blend+$half;$i++) {
-    last if($i > 1023);
-    my $lo=$i-$half; $lo=0 if($lo < 0);
-    my $hi=$i+$half; $hi=1023 if($hi > 1023);
-    my $sum=0;
-    for(my $j=$lo;$j<=$hi;$j++) { $sum+=$prev[$j]; }
-    $sm[$i]=$sum/($hi-$lo+1);
-   }
-  }
-  my @res=@ch;
-  for(my $i=1;$i<=1023;$i++) {
-   my $w=0;
-   if($i <= $full) { $w=1; }
-   elsif($i <= $blend) { $w=($blend-$i)/($blend-$full); }
-   next if($w <= 0);
-   $res[$i]=sprintf("%.0f",$ch[$i]+($sm[$i]-$ch[$i])*$w)+0;
-  }
-  $res[0]=$ch[0];
-  for(my $i=1;$i<=1023;$i++) {
-   $res[$i]=$res[$i-1] if($res[$i] < $res[$i-1]);
-   $res[$i]=0 if($res[$i] < 0);
-   $res[$i]=65535 if($res[$i] > 65535);
-   $changed++ if($res[$i] != $ch[$i]);
-  }
-  push @out,@res;
- }
- return (\@out,$changed);
 }
 
 sub api_json {
@@ -5759,7 +5691,7 @@ eval {
    $final_dpg=$config->{"hdr20_1d_dpg_data"};
   }
   if(ref($final_dpg) eq "ARRAY") {
-   my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($final_dpg);
+   my ($smoothed,$changed)=smooth_dpg_low_end($final_dpg);
    if($changed) {
     $state->{"phase"}="dpg_shadow_smoothing";
     $state->{"current_name"}="1D DPG shadow smoothing";
@@ -5791,7 +5723,7 @@ eval {
     if($sm_ok) {
      $config->{"full_workflow_dpg_data"}=$smoothed;
      $config->{"hdr20_1d_dpg_data"}=$smoothed;
-     log_line("Final 1D DPG shadow smoothing: applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+     log_line("Final 1D DPG shadow smoothing: applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
     } else {
      log_line("Final 1D DPG shadow smoothing: upload FAILED, keeping the committed curve: ".$sm_msg);
      die (($state->{"calibration_recovery_message"}||$sm_msg)."\n") if(lg_calibration_end_retry_forbidden($state));

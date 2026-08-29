@@ -17,6 +17,7 @@ use PGMath qw(
  akima_interpolate delta_e_itp_xyz pq_constants pq_decode_nits
  pq_decode_normalized pq_encode_normalized xyz_to_ictcp
 );
+use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -431,79 +432,6 @@ sub ddc_dark_detail_fillers_for_layout {
 
 sub ddc_dark_detail_enabled {
  return $LG_AUTOCAL_DARK_DETAIL ? 1 : 0;
-}
-
-# Post-calibration smoothing of the crowded low end of a 1D DPG.
-#
-# Every anchor converges independently to dE <= target, but at low IRE that
-# still leaves tens of DPG counts of slack, and where anchors sit only a few
-# indexes apart that slack becomes a large SLOPE error. Measured on a real run:
-# anchor-to-anchor slope swung between 5.6 and 64 counts/index below 10% while
-# staying a stable ~30 above it. Interpolating EXACTLY through anchors that
-# disagree with each other leaves a kinked curve, and the levels BETWEEN the
-# anchors sit on those kinks -- which is what a fine-step verification series
-# actually measures.
-#
-# Hardware result (LG C2, SDR YCbCr Limited 10-bit, 216 cd/m2 peak; same panel,
-# same 41-point 2.5%-step series, panel settled between reads):
-#
-#   raw autocal curve   on-anchor 0.49   between-anchor 2.41   max 3.71
-#   after smoothing     on-anchor 0.36   between-anchor 1.86   max 2.46
-#
-# A more aggressive slope-domain refit was also tried and was WORSE on both
-# aggregates (0.70 / 2.04), so this deliberately stays a gentle low-pass rather
-# than trying to relocate the anchors.
-#
-# Five-point moving average, two passes, index 0 pinned to black, full weight up
-# to $SMOOTH_FULL_IDX and faded to zero by $SMOOTH_BLEND_IDX so there is no
-# seam, then forced monotonic. Everything above $SMOOTH_BLEND_IDX is returned
-# byte-identical. The index bounds are absolute rather than IRE-derived because
-# both layouts use a 1024-entry table whose anchors crowd in the bottom quarter.
-#
-# Returns ($smoothed_arrayref, $entries_changed); ($dpg, 0) if it cannot run.
-our $LG_AUTOCAL_DPG_SMOOTH_FULL_IDX  = 240;
-our $LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX = 280;
-
-sub lg_autocal_26_smooth_dpg_low_end {
- my ($dpg)=@_;
- return ($dpg,0) if(ref($dpg) ne "ARRAY" || @{$dpg} != 3072);
- my $full=$LG_AUTOCAL_DPG_SMOOTH_FULL_IDX;
- my $blend=$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX;
- my $half=2;                       # 5-point window
- my @out;
- my $changed=0;
- foreach my $c (0,1,2) {
-  my @ch=@{$dpg}[($c*1024)..($c*1024+1023)];
-  my @sm=@ch;
-  foreach my $pass (1,2) {
-   my @prev=@sm;
-   for(my $i=1;$i<=$blend+$half;$i++) {
-    last if($i > 1023);
-    my $lo=$i-$half; $lo=0 if($lo < 0);
-    my $hi=$i+$half; $hi=1023 if($hi > 1023);
-    my $sum=0;
-    for(my $j=$lo;$j<=$hi;$j++) { $sum+=$prev[$j]; }
-    $sm[$i]=$sum/($hi-$lo+1);
-   }
-  }
-  my @res=@ch;
-  for(my $i=1;$i<=1023;$i++) {
-   my $w=0;
-   if($i <= $full) { $w=1; }
-   elsif($i <= $blend) { $w=($blend-$i)/($blend-$full); }
-   next if($w <= 0);
-   $res[$i]=sprintf("%.0f",$ch[$i]+($sm[$i]-$ch[$i])*$w)+0;
-  }
-  $res[0]=$ch[0];
-  for(my $i=1;$i<=1023;$i++) {
-   $res[$i]=$res[$i-1] if($res[$i] < $res[$i-1]);
-   $res[$i]=0 if($res[$i] < 0);
-   $res[$i]=65535 if($res[$i] > 65535);
-   $changed++ if($res[$i] != $ch[$i]);
-  }
-  push @out,@res;
- }
- return (\@out,$changed);
 }
 
 # Linear interpolation of a ladder table paired BY POSITION with a label list.
@@ -16104,7 +16032,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
 		my $committed=(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY"
 			&& @{$state->{"hdr20_1d_dpg_data"}} == 3072) ? $state->{"hdr20_1d_dpg_data"} : $current_dpg;
-		my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
+		my ($smoothed,$changed)=smooth_dpg_low_end($committed);
 		if($changed) {
 			$state->{"current_name"}="HDR20 1D DPG (shadow smoothing)";
 			$state->{"phase"}="writing";
@@ -16122,7 +16050,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				$current_dpg=$smoothed;
 				$state->{"hdr20_1d_dpg_data"}=$smoothed;
 				$state->{"hdr20_1d_dpg_low_end_smoothed"}=JSON::PP::true;
-				log_line("HDR20 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+				log_line("HDR20 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
 			} else {
 				$state->{"hdr20_1d_dpg_low_end_smoothed"}=JSON::PP::false;
 				log_line("HDR20 1D DPG greyscale: low-end smoothing upload FAILED, keeping the unsmoothed curve: ".$smsg);
@@ -18003,7 +17931,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
   my $committed=(ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_data"}) eq "ARRAY"
    && @{$state->{"sdr_1d_dpg_data"}} == 3072) ? $state->{"sdr_1d_dpg_data"} : $current_dpg;
-  my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
+  my ($smoothed,$changed)=smooth_dpg_low_end($committed);
   if($changed) {
    $state->{"current_name"}="SDR26 1D DPG (shadow smoothing)";
    $state->{"phase"}="writing";
@@ -18020,7 +17948,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
     $current_dpg=$smoothed;
     $state->{"sdr_1d_dpg_data"}=$smoothed;
     $state->{"sdr_1d_dpg_low_end_smoothed"}=JSON::PP::true;
-    log_line("SDR26 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+    log_line("SDR26 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
    } else {
     $state->{"sdr_1d_dpg_low_end_smoothed"}=JSON::PP::false;
     log_line("SDR26 1D DPG greyscale: low-end smoothing upload FAILED, keeping the unsmoothed curve: ".$smsg);

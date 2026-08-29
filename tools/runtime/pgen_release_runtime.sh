@@ -51,6 +51,7 @@ PGEN_RELEASE_REQUIRED_MATH_FILES=(
  "usr/bin/pgen_meter_average.py"
  "usr/bin/pgen_meter_result.py"
  "usr/bin/pgen_series_steps.py"
+ "usr/share/PGenerator/PGCalibrationMath.pm"
  "usr/share/PGenerator/PGMath.pm"
 )
 
