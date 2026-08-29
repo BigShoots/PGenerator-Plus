@@ -37,6 +37,8 @@ copy(File::Spec->catfile($shared, "webui.pm"), File::Spec->catfile($temp, "webui
     or die "cannot stage webui.pm: $!";
 copy(File::Spec->catfile($shared, "PGMath.pm"), File::Spec->catfile($temp, "PGMath.pm"))
     or die "cannot stage PGMath.pm: $!";
+copy(File::Spec->catfile($shared, "PGCalibrationMath.pm"), File::Spec->catfile($temp, "PGCalibrationMath.pm"))
+    or die "cannot stage PGCalibrationMath.pm: $!";
 copy(File::Spec->catfile($shared, "PGICCProfile.pm"), File::Spec->catfile($temp, "PGICCProfile.pm"))
     or die "cannot stage PGICCProfile.pm: $!";
 copy(File::Spec->catfile($shared, "icc_profile.html"), File::Spec->catfile($temp, "icc_profile.html"))

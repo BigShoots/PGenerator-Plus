@@ -20,7 +20,10 @@ use PGMath qw(
  matrix3_vector_multiply pq_decode_normalized pq_encode_normalized
  xyz_to_ictcp
 );
-use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
+use PGCalibrationMath qw(
+ autocal_xy_to_xyz_unit dpg_smooth_blend_index named_gamut_matrix
+ smooth_dpg_low_end
+);
 use PGMeterReading qw(reading_xyz);
 
 our $PGAC_LOADED = 0;
@@ -585,46 +588,11 @@ sub matrix_inverse {
  return matrix3_inverse(@_);
 }
 
-my %rgb_to_xyz_matrix_cache;
-
-sub xy_to_xyz_unit {
- my ($x,$y)=@_;
- $y=1 if(!defined($y) || $y <= 0);
- return [ $x/$y, 1, (1-$x-$y)/$y ];
-}
-
-sub gamut_xy_definition {
- my ($target_gamut)=@_;
- $target_gamut=sanitize_target_gamut($target_gamut);
- return {
-  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.3127,0.3290],
- } if($target_gamut eq "p3d65");
- return {
-  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.314,0.351],
- } if($target_gamut eq "p3dci");
- return {
-  red => [0.708,0.292], green => [0.170,0.797], blue => [0.131,0.046], white => [0.3127,0.3290],
- } if($target_gamut eq "bt2020");
- return {
-  red => [0.640,0.330], green => [0.300,0.600], blue => [0.150,0.060], white => [0.3127,0.3290],
- };
-}
-
 sub rgb_to_xyz_matrix_for_gamut {
  my ($target_gamut)=@_;
  $target_gamut=sanitize_target_gamut($target_gamut);
- return $rgb_to_xyz_matrix_cache{$target_gamut} if($rgb_to_xyz_matrix_cache{$target_gamut});
- my $def=gamut_xy_definition($target_gamut);
- my $r=xy_to_xyz_unit(@{$def->{"red"}});
- my $g=xy_to_xyz_unit(@{$def->{"green"}});
- my $b=xy_to_xyz_unit(@{$def->{"blue"}});
- my $w=xy_to_xyz_unit(@{$def->{"white"}});
- my $m=matrix_from_columns($r,$g,$b);
- my $inv=matrix_inverse($m);
- my $scale=$inv ? matrix_mul_vec($inv,$w) : [1,1,1];
- my $matrix=matrix_from_columns(vec_scale($r,$scale->[0]),vec_scale($g,$scale->[1]),vec_scale($b,$scale->[2]));
- $rgb_to_xyz_matrix_cache{$target_gamut}=$matrix;
- return $matrix;
+ return named_gamut_matrix($target_gamut,matrix_source=>"derived",
+  caller_contract=>"autocal3d");
 }
 
 sub rgb_to_xyz_for_gamut {
@@ -1311,12 +1279,12 @@ sub native_rgb_to_xyz_matrix {
   return undef if(ref($xyz) ne "ARRAY");
   my $sum=($xyz->[0]||0)+($xyz->[1]||0)+($xyz->[2]||0);
   return undef if($sum <= 0);
-  push @cols,xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
+  push @cols,autocal_xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
  }
  my $m=matrix_from_columns($cols[0],$cols[1],$cols[2]);
  my $inv=matrix_inverse($m);
  return undef if(!$inv);
- my $w=xy_to_xyz_unit(0.3127,0.3290);
+ my $w=autocal_xy_to_xyz_unit(0.3127,0.3290);
  my $scale=matrix_mul_vec($inv,$w);
  return matrix_from_columns(vec_scale($cols[0],$scale->[0]),vec_scale($cols[1],$scale->[1]),vec_scale($cols[2],$scale->[2]));
 }

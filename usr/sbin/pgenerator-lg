@@ -18,6 +18,7 @@ BEGIN {
  unshift @INC,$shared if(-d $shared);
 }
 use PGMath qw(matrix3_inverse matrix3_multiply);
+use PGCalibrationMath qw(calibration_rgb_to_xyz_matrix);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -2882,20 +2883,10 @@ sub lg_dv_profile_mat_mult3 (@) {
 # encoding).
 sub lg_dv_profile_lms2rgb_matrix (@) {
  my ($red_x,$red_y,$green_x,$green_y,$blue_x,$blue_y,$white_x,$white_y)=@_;
- my ($wX,$wY,$wZ)=($white_x/$white_y, 1.0, (1-$white_x-$white_y)/$white_y);
- my $m=[
-  [ $red_x/$red_y, $green_x/$green_y, $blue_x/$blue_y ],
-  [ 1.0, 1.0, 1.0 ],
-  [ (1-$red_x-$red_y)/$red_y, (1-$green_x-$green_y)/$green_y, (1-$blue_x-$blue_y)/$blue_y ],
- ];
- my $minv=&lg_dv_profile_mat_inverse3($m);
- my @s;
- for my $i (0..2) { $s[$i]=$minv->[$i][0]*$wX + $minv->[$i][1]*$wY + $minv->[$i][2]*$wZ; }
- my $rgb_to_xyz=[
-  [ $m->[0][0]*$s[0], $m->[0][1]*$s[1], $m->[0][2]*$s[2] ],
-  [ $m->[1][0]*$s[0], $m->[1][1]*$s[1], $m->[1][2]*$s[2] ],
-  [ $m->[2][0]*$s[0], $m->[2][1]*$s[1], $m->[2][2]*$s[2] ],
- ];
+ my $rgb_to_xyz=calibration_rgb_to_xyz_matrix({
+  red=>[$red_x,$red_y],green=>[$green_x,$green_y],
+  blue=>[$blue_x,$blue_y],white=>[$white_x,$white_y],
+ },caller_contract=>"dolby_vision_profile");
  my $xyz_to_rgb=&lg_dv_profile_mat_inverse3($rgb_to_xyz);
  my $xyz_to_lms_raw=[
   [0.400238220153002, 0.707593156246992, -0.080805581487871],
