@@ -3,8 +3,39 @@ package PGCalibrationMath;
 use strict;
 use warnings;
 use Exporter qw(import);
+use Scalar::Util qw(looks_like_number);
 
-our @EXPORT_OK = qw(dpg_smooth_blend_index smooth_dpg_low_end);
+our @EXPORT_OK = qw(
+ bounded_number
+ dpg_smooth_blend_index
+ finite_number
+ smooth_dpg_low_end
+);
+
+# Perl 5.20 on the Pi does not export POSIX::isfinite. Keep the runtime-local
+# finite check here and make every domain owner add its own meaningful bounds.
+sub finite_number {
+ my ($value)=@_;
+ return undef if(!defined($value) || ref($value));
+ return undef if(!looks_like_number($value));
+ my $number;
+ {
+  no warnings qw(numeric overflow);
+  $number=$value+0;
+ }
+ return undef if($number != $number);
+ return undef if(abs($number) > 1e308);
+ return $number;
+}
+
+sub bounded_number {
+ my ($value,$minimum,$maximum)=@_;
+ my $number=finite_number($value);
+ return undef if(!defined($number));
+ return undef if(defined($minimum) && $number < $minimum);
+ return undef if(defined($maximum) && $number > $maximum);
+ return $number;
+}
 
 sub dpg_smooth_blend_index { return 280; }
 

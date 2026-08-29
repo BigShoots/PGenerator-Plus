@@ -53,6 +53,7 @@ PGEN_RELEASE_REQUIRED_MATH_FILES=(
  "usr/bin/pgen_series_steps.py"
  "usr/share/PGenerator/PGCalibrationMath.pm"
  "usr/share/PGenerator/PGMath.pm"
+ "usr/share/PGenerator/PGMeterReading.pm"
 )
 
 PGEN_RELEASE_REQUIRED_MATH_EXECUTABLES=(

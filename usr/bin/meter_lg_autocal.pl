@@ -18,6 +18,7 @@ use PGMath qw(
  pq_decode_normalized pq_encode_normalized xyz_to_ictcp
 );
 use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
+use PGMeterReading qw(reading_xyz);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -2626,21 +2627,11 @@ sub xyz_from_xy_y {
  return (($x*$Y)/$y,$Y,((1-$x-$y)*$Y)/$y);
 }
 
-sub reading_xyz {
- my ($reading)=@_;
- return (undef,undef,undef) if(ref($reading) ne "HASH");
- if(defined($reading->{"X"}) && defined($reading->{"Y"}) && defined($reading->{"Z"})) {
-  return ($reading->{"X"}+0,$reading->{"Y"}+0,$reading->{"Z"}+0);
- }
- my $Y=luminance($reading);
- return (undef,undef,undef) if(!defined($Y) || !defined($reading->{"x"}) || !defined($reading->{"y"}));
- return xyz_from_xy_y($reading->{"x"},$reading->{"y"},$Y);
-}
-
 sub delta_e_itp_gamma {
  my ($reading,$white_y,$target_x,$target_y,$target_luminance)=@_;
- my ($X,$Y,$Z)=reading_xyz($reading);
- return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ my $xyz=reading_xyz($reading);
+ return undef if(!defined($xyz));
+ my ($X,$Y,$Z)=@{$xyz};
  my $targetY=(defined($target_luminance) && $target_luminance > 0) ? ($target_luminance+0) : $Y;
  my ($Xr,$Yr,$Zr)=xyz_from_xy_y($target_x,$target_y,$targetY);
  return undef if(!defined($Xr) || !defined($Yr) || !defined($Zr));
@@ -2754,8 +2745,9 @@ sub autocal_delta_e {
 # the dE would be a tautology (target = measured).
 sub delta_e_itp_chroma_only {
  my ($reading,$target_x,$target_y,$target_luminance)=@_;
- my ($X,$Y,$Z)=reading_xyz($reading);
- return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ my $xyz=reading_xyz($reading);
+ return undef if(!defined($xyz));
+ my ($X,$Y,$Z)=@{$xyz};
  my $targetY=(defined($target_luminance) && $target_luminance > 0) ? ($target_luminance+0) : $Y;
  my ($Xr,$Yr,$Zr)=xyz_from_xy_y($target_x,$target_y,$targetY);
  return undef if(!defined($Xr) || !defined($Yr) || !defined($Zr));

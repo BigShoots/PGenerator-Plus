@@ -21,6 +21,7 @@ use PGMath qw(
  xyz_to_ictcp
 );
 use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
+use PGMeterReading qw(reading_xyz);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -557,19 +558,6 @@ sub build_hybrid_steps {
  }
  # Fallback: skeleton only if no client patches.
  return build_skeleton_steps($config);
-}
-
-sub reading_xyz {
- my ($reading)=@_;
- return undef if(ref($reading) ne "HASH");
- if(defined($reading->{"X"}) && defined($reading->{"Y"}) && defined($reading->{"Z"})) {
-  return [ $reading->{"X"}+0, $reading->{"Y"}+0, $reading->{"Z"}+0 ];
- }
- my $Y=defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0) : (defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef);
- my $x=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
- my $y=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
- return undef if(!defined($Y) || !defined($x) || !defined($y) || $y <= 0);
- return [ ($x/$y)*$Y, $Y, ((1-$x-$y)/$y)*$Y ];
 }
 
 sub vec_add { return [ $_[0][0]+$_[1][0], $_[0][1]+$_[1][1], $_[0][2]+$_[1][2] ]; }
