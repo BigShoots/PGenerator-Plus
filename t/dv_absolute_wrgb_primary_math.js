@@ -65,10 +65,14 @@ const context = {
   })
 };
 
+const endpointCodes = {
+  Red: [2008, 1153, 256], Green: [1499, 2008, 885], Blue: [1096, 810, 2008],
+  Cyan: [1545, 1991, 2008], Magenta: [1937, 1147, 2008], Yellow: [1995, 2008, 861]
+};
 context.meterReadings = [
-  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 256, b_code: 256, luminance: 18.361413, signal_mode: 'dv'},
-  {series_color: 'Green', sat_pct: 100, r_code: 256, g_code: 2008, b_code: 256, luminance: 58.190180, signal_mode: 'dv'},
-  {series_color: 'Blue', sat_pct: 100, r_code: 256, g_code: 256, b_code: 2008, luminance: 7.174204, signal_mode: 'dv'}
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256, luminance: 18.361413, signal_mode: 'dv'},
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885, luminance: 58.190180, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008, luminance: 7.174204, signal_mode: 'dv'}
 ];
 
 vm.createContext(context);
@@ -94,8 +98,7 @@ assert(ceilings[0] > 0 && ceilings[1] > 0 && ceilings[2] > 0,
 for (const [name, measured] of [
   ['Red', 18.361413], ['Green', 58.190180], ['Blue', 7.174204]
 ]) {
-  const rgb = context.meterGamutColorEndpointRgb(name);
-  const codes = rgb.map(active => active ? 2008 : 256);
+  const codes = endpointCodes[name];
   const target = context.meterWrgbStimulusTargetY({
     series_color: name, sat_pct: 100,
     r_code: codes[0], g_code: codes[1], b_code: codes[2], signal_mode: 'dv'
@@ -105,7 +108,7 @@ for (const [name, measured] of [
 
 const cyan = context.meterWrgbStimulusTargetY({
   series_color: 'Cyan', sat_pct: 100,
-  r_code: 256, g_code: 2008, b_code: 2008, signal_mode: 'dv'
+  r_code: endpointCodes.Cyan[0], g_code: endpointCodes.Cyan[1], b_code: endpointCodes.Cyan[2], signal_mode: 'dv'
 });
 close(cyan, 58.190180 + 7.174204, 1e-6,
   'Absolute DV secondary target uses the additive measured primary ceilings');
