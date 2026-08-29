@@ -321,9 +321,24 @@ patch_request_body() {
  printf '%s' "$payload"
 }
 
+record_simulated_patch() {
+ local r="$1" g="$2" b="$3" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
+ local source_range="FULL" tmp="/tmp/pgen_sim_pattern.json.$$.tmp"
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ [[ "$signal_range" == "1" ]] && source_range="LIMITED"
+ printf '{"ts":%s,"name":"patch","r":%s,"g":%s,"b":%s,"input_max":%s,"signal_mode":"%s","source_range":"%s","max_luma":%s}\n' \
+  "$(date +%s)" "$r" "$g" "$b" "$input_max" "$signal_mode" "$source_range" "$max_luma" > "$tmp" || return 1
+ chmod 666 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" /tmp/pgen_sim_pattern.json
+}
+
 post_patch() {
  if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
   post_companion_patch "$@"
+  return $?
+ fi
+ if (( METER_SIMULATED )); then
+  record_simulated_patch "$@"
   return $?
  fi
  curl -s --max-time 8 "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
@@ -333,6 +348,10 @@ post_patch() {
 post_patch_timeout() {
  if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
   post_companion_patch "$@"
+  return $?
+ fi
+ if (( METER_SIMULATED )); then
+  record_simulated_patch "$@"
   return $?
  fi
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
@@ -1310,9 +1329,11 @@ TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
 PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
+READ_POLL_SEC=0.3
 if (( METER_SIMULATED )); then
  DELAY_SEC=0
  PATTERN_DELAY_SEC=0
+ READ_POLL_SEC=0.01
 fi
 if [[ -z "$PATCH_INSERT_PATCH_ENABLED" ]]; then
  PATCH_INSERT_PATCH_ENABLED="$PATCH_INSERT"
@@ -2086,7 +2107,7 @@ EOJSON
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
-  sleep 0.3
+  sleep "$READ_POLL_SEC"
  done
 
  ELAPSED=$((SECONDS - READ_START))
@@ -2294,7 +2315,7 @@ EOJSON
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
-  sleep 0.3
+  sleep "$READ_POLL_SEC"
  done
 
  READING=""
@@ -2370,7 +2391,7 @@ EOJSON
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
-    sleep 0.3
+    sleep "$READ_POLL_SEC"
    done
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
@@ -2438,7 +2459,7 @@ EOJSON
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
-    sleep 0.3
+    sleep "$READ_POLL_SEC"
    done
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
@@ -2587,7 +2608,7 @@ EOJSON
     fi
     SCAN_OFFSET="$CUR_SIZE"
    fi
-   sleep 0.3
+   sleep "$READ_POLL_SEC"
   done
 
   REFRESH_READING=""

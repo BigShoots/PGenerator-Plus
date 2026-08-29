@@ -392,9 +392,24 @@ patch_request_body() {
  printf '%s' "$payload"
 }
 
+record_simulated_patch() {
+ local r="$1" g="$2" b="$3" signal_mode="$5" max_luma="$6" signal_range="$7" input_max="${9:-255}"
+ local source_range="FULL" tmp="/tmp/pgen_sim_pattern.json.$$.tmp"
+ [[ -z "$input_max" || "$input_max" == "-" ]] && input_max=255
+ [[ "$signal_range" == "1" ]] && source_range="LIMITED"
+ printf '{"ts":%s,"name":"patch","r":%s,"g":%s,"b":%s,"input_max":%s,"signal_mode":"%s","source_range":"%s","max_luma":%s}\n' \
+  "$(date +%s)" "$r" "$g" "$b" "$input_max" "$signal_mode" "$source_range" "$max_luma" > "$tmp" || return 1
+ chmod 666 "$tmp" 2>/dev/null || true
+ mv -f "$tmp" /tmp/pgen_sim_pattern.json
+}
+
 post_patch() {
  if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
   post_companion_patch "$@"
+  return $?
+ fi
+ if (( METER_SIMULATED )); then
+  record_simulated_patch "$@"
   return $?
  fi
  curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
@@ -404,6 +419,10 @@ post_patch() {
 post_patch_timeout() {
  if [[ "$PATTERN_PROVIDER" == "companion" ]]; then
   post_companion_patch "$@"
+  return $?
+ fi
+ if (( METER_SIMULATED )); then
+  record_simulated_patch "$@"
   return $?
  fi
  timeout 5 curl -s "$API_BASE/pattern" -X POST -H 'Content-Type: application/json' \
