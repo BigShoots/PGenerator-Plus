@@ -741,21 +741,35 @@ sub lg_message_register (@) {
   payload => {
    "client-key" => $client_key,
    forcePairing => &json_bool($force_pairing),
-   # webOS 26 rejects the old shared LG test certificate before it can show
-   # the pairing prompt. This unsigned outer manifest is also accepted by
-   # older webOS releases. Keep the permissions needed by picture control,
-   # PIN pairing, and the notification-backed Luna settings bridge together.
+   # New firmware rejects the old shared LG test identity and certificate,
+   # while older releases silently skip the PIN UI if the signed metadata
+   # block is absent. Use a generic PGenerator identity without a signatures
+   # block, and request the working permissions through the outer manifest.
    manifest => {
     appVersion => "1.0",
     manifestVersion => 1,
+    signed => {
+     created => "20260829",
+     appId => "com.pgenerator.remote",
+     localizedAppNames => { "" => "PGenerator" },
+     localizedVendorNames => { "" => "PGenerator" },
+     permissions => [
+      "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+      "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
+      "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
+      "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
+      "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
+     ],
+     serial => "pgenerator-webos-remote",
+    },
     permissions => [
-     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE",
+     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
      "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
      "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
      "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
      "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
      "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-     "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT"
+     "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","READ_UPDATE_INFO"
     ],
    },
    pairingType => $pairing_type,
