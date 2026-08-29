@@ -4777,10 +4777,11 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
-    # Chromatic HDR ColorChecker samples retain their established BT.2408
-    # diffuse-white stimulus. The four neutral samples use the normal series
-    # signal reference and are graded against the measured/manual white.
-    my $bt2408_ref_white_nits=203;
+    # HDR10 chromatic ColorChecker samples use the BT.2408 203-nit diffuse
+    # white stimulus. Absolute DV uses a 100-nit reference instead. The four
+    # neutral samples use the normal series signal reference and are graded
+    # against the measured/manual white in both modes.
+    my $colorchecker_ref_white_nits=($signal_mode eq "dv" && $dv_map_mode eq "1") ? 100 : 203;
     my $encode_linear=sub {
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
@@ -4923,10 +4924,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($r,$g,$b);
      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      $r=$encode_linear->($rl,$bt2408_ref_white_nits);
-      $g=$encode_linear->($gl,$bt2408_ref_white_nits);
-      $b=$encode_linear->($bl,$bt2408_ref_white_nits);
-      $target_Yn=$cc_white>0 ? $scaled_Yn*$bt2408_ref_white_nits/$cc_white : 0;
+      $r=$encode_linear->($rl,$colorchecker_ref_white_nits);
+      $g=$encode_linear->($gl,$colorchecker_ref_white_nits);
+      $b=$encode_linear->($bl,$colorchecker_ref_white_nits);
+      $target_Yn=$cc_white>0 ? $scaled_Yn*$colorchecker_ref_white_nits/$cc_white : 0;
      } else {
       $r=$encode_linear->($rl);
       $g=$encode_linear->($gl);

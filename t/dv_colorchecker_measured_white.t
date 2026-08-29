@@ -69,5 +69,26 @@ like(
  qr/\$target_white_use_measured.*?colorchecker_rebase_white/s,
  'server marks neutral rebasing only for Use measured Target White',
 );
+like(
+ $webui_source,
+ qr/\$colorchecker_ref_white_nits\s*=\s*\(\$signal_mode eq "dv" && \$dv_map_mode eq "1"\) \? 100 : 203/,
+ 'server uses 100 nits for Absolute DV and retains 203 nits for HDR10 ColorChecker',
+);
+
+my $webui_app = File::Spec->catfile($Bin, '..', 'usr', 'share', 'PGenerator', 'webui-app.js');
+open my $webui_app_fh, '<', $webui_app or die "cannot read $webui_app: $!";
+local $/;
+my $webui_app_source = <$webui_app_fh>;
+close $webui_app_fh;
+like(
+ $webui_app_source,
+ qr/hdrColorCheckerRefNits\s*=\s*dvAbsolute\s*\?\s*100\s*:\s*203/,
+ 'client classic ColorChecker matches the Absolute DV 100-nit reference',
+);
+like(
+ $webui_app_source,
+ qr/hdrReferenceNits\s*=\s*dvAbsolute\s*\?\s*100\s*:\s*203/,
+ 'client ColorChecker SG matches the Absolute DV 100-nit reference',
+);
 
 done_testing();

@@ -8590,7 +8590,9 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 // so unrelated custom and MacLeod-Boynton series retain their behavior.
 	 const wireSolveGamut=meterChartIsHlg()?GAMUT_PRESETS.bt2020:solveGamut;
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
-	 const hdrColorCheckerRefNits=203;
+	 // HDR10 retains its 203-nit diffuse-white stimulus. Absolute DV uses
+	 // 100 nits while neutral patches remain referenced to series white.
+	 const hdrColorCheckerRefNits=dvAbsolute?100:203;
 	 let useMeasuredWhite=true;
 	 try{
 	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
@@ -19003,8 +19005,9 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
  const solveGamut=(signalMode==='hlg')
   ?GAMUT_PRESETS.bt2020
   :((typeof meterStimulusSolveGamut==='function')?meterStimulusSolveGamut():GAMUT_PRESETS.bt709);
- const absoluteHdr=(signalMode==='hdr10')||(signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1');
- const hdrReferenceNits=203;
+ const dvAbsolute=signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1';
+ const absoluteHdr=(signalMode==='hdr10')||dvAbsolute;
+ const hdrReferenceNits=dvAbsolute?100:203;
  const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
  return (Array.isArray(names)?names:[]).map(name=>{
   const sourceIndex=METER_COLORCHECKER_SG_NAMES.indexOf(name);
