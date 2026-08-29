@@ -30,6 +30,8 @@ const BT2020 = [
 
 let mapMode = '1';
 let technology = 'oled_generic';
+let isDv = true;
+let signalMode = 'dv';
 const context = {
   window: {lgStatusState: {model_name: 'OLED65C2PUA'}},
   document: {getElementById: () => ({value: technology})},
@@ -37,7 +39,7 @@ const context = {
   meterActiveSeriesType: 'colors',
   meterChartIsPq: () => true,
   meterChartIsHdr: () => true,
-  meterChartIsDv: () => true,
+  meterChartIsDv: () => isDv,
   meterDvMapModeValue: () => mapMode,
   meterChartHdrPeak: () => 1000,
   meterHdrDiffuseScale: () => 1,
@@ -47,10 +49,11 @@ const context = {
     red: [1, 0, 0], green: [0, 1, 0], blue: [0, 0, 1],
     cyan: [0, 1, 1], magenta: [1, 0, 1], yellow: [1, 1, 0]
   })[String(name).toLowerCase()] || [1, 1, 1],
-  meterActiveChartSignalMode: () => 'dv',
+  meterActiveChartSignalMode: () => signalMode,
   meterColorTargetCodeRange: () => ({min: 256, span: 3504}),
   meterColorSeriesReferenceNits: () => 715.360759,
   meterCanonicalSeriesStep: () => null,
+  meterDecodeColorTargetChannel: code => context.meterDvStimulusLinearChannel(code),
   meterReadingLuminanceNits: rd => Number(rd && (rd.luminance != null ? rd.luminance : rd.Y)) || 0,
   meterReadingIsGreyscale: rd => {
     const r = rd && (rd.r_code != null ? rd.r_code : rd.r);
@@ -81,6 +84,8 @@ vm.runInContext([
   extractFunction('meterWrgbPrimaryCeilings'),
   extractFunction('meterChartPqDecodeNormalized'),
   extractFunction('meterDvStimulusLinearChannel'),
+  extractFunction('meterWrgbGamutSurfaceAnchors'),
+  extractFunction('meterWrgbGamutSurfaceTargetY'),
   extractFunction('meterWrgbStimulusTargetY')
 ].join('\n'), context);
 
@@ -144,6 +149,67 @@ const neutralBefore = context.meterWrgbStimulusTargetY(neutral);
 context.meterReadings = [{series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 256, b_code: 256, luminance: 1, signal_mode: 'dv'}];
 close(context.meterWrgbStimulusTargetY(neutral), neutralBefore, 1e-9,
   'neutral target is independent of WRGB primary ceilings');
+
+context.meterReadings = [
+  {name: 'White', r_code: 3760, g_code: 3760, b_code: 3760,
+   X: 674.593853, Y: 709.926711, Z: 772.328725, luminance: 709.926711, signal_mode: 'dv'},
+  {name: '100% Red', series_color: 'Red', sat_pct: 100,
+   r_code: 2008, g_code: 1153, b_code: 256,
+   X: 38.896120, Y: 18.314059, Z: 0.110782, luminance: 18.314059, signal_mode: 'dv'},
+  {name: '100% Green', series_color: 'Green', sat_pct: 100,
+   r_code: 1499, g_code: 2008, b_code: 885,
+   X: 22.909178, Y: 57.729028, Z: 4.452011, luminance: 57.729028, signal_mode: 'dv'},
+  {name: '100% Blue', series_color: 'Blue', sat_pct: 100,
+   r_code: 1096, g_code: 810, b_code: 2008,
+   X: 17.015666, Y: 7.064088, Z: 89.257092, luminance: 7.064088, signal_mode: 'dv'},
+  {name: '100% Cyan', series_color: 'Cyan', sat_pct: 100,
+   r_code: 1545, g_code: 1991, b_code: 2008,
+   X: 39.568580, Y: 66.525759, Z: 86.258195, luminance: 66.525759, signal_mode: 'dv'},
+  {name: '100% Magenta', series_color: 'Magenta', sat_pct: 100,
+   r_code: 1937, g_code: 1147, b_code: 2008,
+   X: 47.907715, Y: 21.372635, Z: 82.970096, luminance: 21.372635, signal_mode: 'dv'},
+  {name: '100% Yellow', series_color: 'Yellow', sat_pct: 100,
+   r_code: 1995, g_code: 2008, b_code: 861,
+   X: 53.082727, Y: 65.441343, Z: 3.907269, luminance: 65.441343, signal_mode: 'dv'}
+];
+const orange = {
+  name: 'Orange', r_code: 2041, g_code: 1770, b_code: 1282,
+  target_x: 0.512087, target_y: 0.410373, signal_mode: 'dv'
+};
+const orangeRawChannels = [2041, 1770, 1282].map(context.meterDvStimulusLinearChannel);
+const orangeRaw = context.linRgbToXyz(
+  orangeRawChannels[0], orangeRawChannels[1], orangeRawChannels[2], BT2020
+).Y;
+const orangeTarget = context.meterWrgbStimulusTargetY(orange);
+close(orangeTarget, 40.482543, 1e-5,
+  'seven-point gamut surface interpolates the Orange target');
+assert(orangeTarget < orangeRaw,
+  'surface target exposes the display-referenced result instead of raw PQ luminance');
+for (const [patch, low, high] of [
+  [{name: 'Orange Yellow', r_code: 2118, g_code: 1958, b_code: 1391,
+    target_x: 0.473379, target_y: 0.443246, signal_mode: 'dv'}, 62, 64],
+  [{name: 'Yellow', r_code: 2176, g_code: 2101, b_code: 1425,
+    target_x: 0.447920, target_y: 0.475618, signal_mode: 'dv'}, 87, 89]
+]) {
+  const target = context.meterWrgbStimulusTargetY(patch);
+  assert(target > low && target < high,
+    `${patch.name} receives an interpolated seven-point surface target: ${target}`);
+}
+close(orange._wrgb_authored_target_y, orangeRaw, 1e-9,
+  'raw PQ target remains attached for diagnostics');
+close(orange._wrgb_surface_target_y, orangeTarget, 1e-9,
+  'surface target remains attached for diagnostics');
+
+isDv = false;
+signalMode = 'hdr10';
+context.meterReadings.forEach(reading => { reading.signal_mode = 'hdr10'; });
+orange.signal_mode = 'hdr10';
+close(context.meterWrgbStimulusTargetY(orange), orangeTarget, 1e-9,
+  'HDR10 uses the same seven-point WRGB gamut surface');
+isDv = true;
+signalMode = 'dv';
+context.meterReadings.forEach(reading => { reading.signal_mode = 'dv'; });
+orange.signal_mode = 'dv';
 
 mapMode = '2';
 assert.deepStrictEqual(Object.keys(context.meterWrgbPrimaryCeilings()), [],
