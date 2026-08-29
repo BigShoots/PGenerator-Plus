@@ -19,7 +19,8 @@ use PGMath qw(
 );
 use PGCalibrationMath qw(
  bounded_number calibration_target_context dpg_smooth_blend_index
- smooth_dpg_low_end target_linear_for_context target_luminance_for_context
+ effective_de_limits_for_ire smooth_dpg_low_end target_linear_for_context
+ target_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
 
@@ -14646,7 +14647,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.6;
 	$acceptance_skip_fraction=0.0 if($acceptance_skip_fraction < 0.0);
 	$acceptance_skip_fraction=1.0 if($acceptance_skip_fraction > 1.0);
-	my $acceptance_skip_de=$acceptance_skip_fraction*$target_de;
 	# Meter luminance floor: below this the colorimeter reads ~0 and the gain
 	# loop has no gradient. (1.4% IRE was starting at ~0.002 nits, under the
 	# i1Display Pro Plus ~0.003-nits floor, so it quit at dE 30.) Sub-floor
@@ -15001,15 +15001,20 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# scale with the same effective target so the "instant-skip when
 		# already below 60% of target" path stays consistent with the
 		# convergence check.
-		my $_effective_target_de=$target_de;
-		my $_effective_skip_de=$acceptance_skip_de;
-		if($_anchor_ire <= $very_low_ire_threshold) {
-		 $_effective_target_de=$target_de*$target_de_very_low_multiplier;
-		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
-		} elsif($_anchor_ire <= $low_ire_threshold) {
-		 $_effective_target_de=$target_de*$target_de_low_multiplier;
-		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
-		}
+		my $_effective_de_limits=effective_de_limits_for_ire({
+		 ire=>$_anchor_ire,target_delta_e=>$target_de,
+		 skip_fraction=>$acceptance_skip_fraction,
+		 low_ire_threshold=>$low_ire_threshold,
+		 very_low_ire_threshold=>$very_low_ire_threshold,
+		 low_multiplier=>$target_de_low_multiplier,
+		 very_low_multiplier=>$target_de_very_low_multiplier,
+		 threshold_policy=>"inclusive",
+		});
+		die "Unable to resolve HDR20 effective dE limits\n"
+		 if(ref($_effective_de_limits) ne "HASH");
+		my $_effective_target_de=$_effective_de_limits->{"target_delta_e"};
+		my $_effective_skip_de=$_effective_de_limits->{"skip_delta_e"};
+		$state->{"current_effective_de_limits"}={%{$_effective_de_limits}};
 		my $y_prev=undef;
 		my $dpg_r_prev=undef;
 		my $dpg_g_prev=undef;
@@ -15485,6 +15490,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  dpg_idx_R=>$current_dpg->[$idx],
 			  dpg_idx_G=>$current_dpg->[$idx+1024],
 			  dpg_idx_B=>$current_dpg->[$idx+2048],
+			  effective_target_delta_e=>$_effective_target_de+0,
+			  effective_skip_delta_e=>$_effective_skip_de+0,
+			  effective_delta_e_tier=>$_effective_de_limits->{"tier"},
 			  converged=>$conv_now?JSON::PP::true:JSON::PP::false,
 			 };
 			 $hist->{$label}=$row;
@@ -15514,10 +15522,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					if(@$_r) {
 						$_r->[-1]{"de"}=sprintf("%.4f",$de+0);
 						$_r->[-1]{"acceptance_skip"}=JSON::PP::true;
-						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$acceptance_skip_de+0);
+						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$_effective_skip_de+0);
 					}
 				}
-				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$acceptance_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
+				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$_effective_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of effective target ".sprintf("%.2f",$_effective_target_de)."), moving on without one-more move");
 				write_state($state);
 				last;
 			}
@@ -16331,15 +16339,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
-  my $_effective_target_de=$target_de;
-  # The very-low boundary is 2.5 (not 2.0) so the 2.3% anchor lands in the
-  # very-low band. With the default 1.0 multipliers this branch changes
-  # nothing; it only takes effect when an expert override relaxes a tier.
-  if($_anchor_ire+0 < 2.5) {
-   $_effective_target_de=$target_de*$target_de_very_low_multiplier;
-  } elsif($_anchor_ire+0 < $low_ire_threshold) {
-   $_effective_target_de=$target_de*$target_de_low_multiplier;
-  }
  my $acceptance_de=lg_autocal_26_sdr26_dpg_accept_skip_threshold($config);
  # Acceptance must not exceed target (otherwise we accept patches that
  # haven't actually converged to the operator's set target).
@@ -16351,7 +16350,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.3;
  $skip_fraction=0.1 if($skip_fraction+0 < 0.1);
  $skip_fraction=1.0 if($skip_fraction > 1.0);
- my $skip_de=$skip_fraction*$_effective_target_de;
+ my $_effective_de_limits=effective_de_limits_for_ire({
+  ire=>$_anchor_ire,target_delta_e=>$target_de,
+  skip_fraction=>$skip_fraction,low_ire_threshold=>$low_ire_threshold,
+  very_low_ire_threshold=>2.5,low_multiplier=>$target_de_low_multiplier,
+  very_low_multiplier=>$target_de_very_low_multiplier,
+  threshold_policy=>"exclusive",
+ });
+ die "Unable to resolve SDR26 effective dE limits\n"
+  if(ref($_effective_de_limits) ne "HASH");
+ my $_effective_target_de=$_effective_de_limits->{"target_delta_e"};
+ my $skip_de=$_effective_de_limits->{"skip_delta_e"};
+ $state->{"current_effective_de_limits"}={%{$_effective_de_limits}};
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
   # Legal-peak (109%) persistent state. The "original target" reference
@@ -16719,6 +16729,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     best_de=>defined($best_de)?sprintf("%.4f",$best_de+0):undef,
     consecutive_reverts=>$consecutive_reverts+0,
     move_scaling=>sprintf("%.4f",$move_scaling+0),
+    effective_target_delta_e=>$_effective_target_de+0,
+    effective_skip_delta_e=>$skip_de+0,
+    effective_delta_e_tier=>$_effective_de_limits->{"tier"},
     converged=>$conv_now?JSON::PP::true:JSON::PP::false,
    };
    $hist->{$label}=$row;

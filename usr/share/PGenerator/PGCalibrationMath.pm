@@ -15,6 +15,7 @@ our @EXPORT_OK = qw(
  calibration_rgb_to_xyz_matrix
  autocal_xy_to_xyz_unit
  dpg_smooth_blend_index
+ effective_de_limits_for_ire
  finite_number
  gamut_xy_definition
  named_gamut_matrix
@@ -84,6 +85,43 @@ sub _lock_flat_hashref {
  Internals::SvREADONLY($record->{$_},1) for keys %{$record};
  Internals::SvREADONLY(%{$record},1);
  return $record;
+}
+
+sub effective_de_limits_for_ire {
+ my ($input)=@_;
+ return undef if(ref($input) ne "HASH");
+ my $ire=finite_number($input->{"ire"});
+ my $target=bounded_number($input->{"target_delta_e"},0,1_000_000);
+ my $skip_fraction=bounded_number($input->{"skip_fraction"},0,1);
+ my $low_threshold=bounded_number(
+  $input->{"low_ire_threshold"},0,1_000_000);
+ my $very_low_threshold=bounded_number(
+  $input->{"very_low_ire_threshold"},0,1_000_000);
+ my $low_multiplier=bounded_number($input->{"low_multiplier"},0,1_000_000);
+ my $very_low_multiplier=bounded_number(
+  $input->{"very_low_multiplier"},0,1_000_000);
+ return undef if(!defined($ire) || !defined($target) || $target <= 0
+  || !defined($skip_fraction) || !defined($low_threshold)
+  || !defined($very_low_threshold) || $very_low_threshold > $low_threshold
+  || !defined($low_multiplier) || $low_multiplier <= 0
+  || !defined($very_low_multiplier) || $very_low_multiplier <= 0);
+ my $policy=$input->{"threshold_policy"}||"";
+ return undef if($policy ne "inclusive" && $policy ne "exclusive");
+ my $very_low=($policy eq "inclusive")
+  ? ($ire <= $very_low_threshold) : ($ire < $very_low_threshold);
+ my $low=($policy eq "inclusive")
+  ? ($ire <= $low_threshold) : ($ire < $low_threshold);
+ my $tier=$very_low ? "very_low" : ($low ? "low" : "body");
+ my $multiplier=$very_low ? $very_low_multiplier : ($low ? $low_multiplier : 1);
+ my $effective_target=$target*$multiplier;
+ return _lock_flat_hashref({
+  target_delta_e=>$effective_target+0,
+  skip_delta_e=>($effective_target*$skip_fraction)+0,
+  tier=>$tier,
+  ire=>$ire+0,
+  skip_fraction=>$skip_fraction+0,
+  threshold_policy=>$policy,
+ });
 }
 
 sub calibration_target_context {
