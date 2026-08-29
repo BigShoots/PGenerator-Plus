@@ -16,9 +16,9 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGMath qw(
- delta_e_2000_xyz delta_e_itp_xyz matrix3_inverse matrix3_multiply
- matrix3_vector_multiply pq_decode_normalized pq_encode_normalized
- xyz_to_ictcp
+ bt1886_relative_luminance_3d_root_blend delta_e_2000_xyz delta_e_itp_xyz
+ matrix3_inverse matrix3_multiply matrix3_vector_multiply pq_decode_normalized
+ pq_encode_normalized xyz_to_ictcp
 );
 use PGCalibrationMath qw(
  autocal_xy_to_xyz_unit bounded_number dpg_smooth_blend_index named_gamut_matrix
@@ -634,29 +634,11 @@ sub target_gamma_linear {
  return $signal ** $g;
 }
 
-sub bt1886_luminance_y {
- my ($signal,$white_y,$black_y)=@_;
- $signal=clamp($signal,0,1);
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- $black_y=0 if($black_y >= $white_y);
- my $g=2.4;
- return (($white_y ** (1/$g) - $black_y ** (1/$g))*$signal + $black_y ** (1/$g)) ** $g;
-}
-
-sub bt1886_relative_luminance {
- my ($signal,$white_y,$black_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- my $range=$white_y-$black_y;
- return target_gamma_linear($signal,"2.4") if($range <= 1e-9);
- return clamp((bt1886_luminance_y($signal,$white_y,$black_y)-$black_y)/$range,0,1);
-}
-
 sub target_relative_luminance {
  my ($signal,$gamma,$white_y,$black_y)=@_;
  $gamma=lc($gamma||"bt1886");
- return bt1886_relative_luminance($signal,$white_y,$black_y) if($gamma eq "bt1886");
+ return bt1886_relative_luminance_3d_root_blend(
+  $signal,$white_y,$black_y) if($gamma eq "bt1886");
  return target_gamma_linear($signal,$gamma);
 }
 

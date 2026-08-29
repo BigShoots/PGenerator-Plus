@@ -14,8 +14,8 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGMath qw(
- akima_interpolate delta_e_itp_xyz pq_constants pq_decode_nits
- pq_decode_normalized pq_encode_normalized xyz_to_ictcp
+ akima_interpolate bt1886_luminance_1d_ab delta_e_itp_xyz pq_constants
+ pq_decode_nits pq_decode_normalized pq_encode_normalized xyz_to_ictcp
 );
 use PGCalibrationMath qw(bounded_number dpg_smooth_blend_index smooth_dpg_low_end);
 use PGMeterReading qw(reading_xyz);
@@ -1187,24 +1187,6 @@ sub target_gamma_linear {
  return $signal ** $gamma;
 }
 
-sub bt1886_eotf_luminance {
- my ($signal,$white_y,$black_y)=@_;
- return undef if(!defined($signal) || !defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- return $white_y * (($signal+0) ** 2.4) if($black_y <= 0);
- return $white_y if($black_y >= $white_y);
- my $gamma=2.4;
- my $white_root=$white_y ** (1/$gamma);
- my $black_root=$black_y ** (1/$gamma);
- my $den=$white_root-$black_root;
- return $white_y * (($signal+0) ** $gamma) if($den <= 0);
- my $a=$den ** $gamma;
- my $b=$black_root/$den;
- my $v=$signal+$b;
- $v=0 if($v < 0);
- return $a * ($v ** $gamma);
-}
-
 sub autocal_sdr_signal_peak {
  # The SDR target curve's reference divisor. With super-white usable
  # (Limited YCbCr -- codes 235..255 / 940..1023 sit above 100% on the
@@ -1441,7 +1423,7 @@ sub target_luminance_for_step {
 	  # SDR BT.1886 normalises against the same legal peak the gamma-2.2
 	  # path uses (109 for Limited YCbCr, 100 otherwise -- see
 	  # autocal_sdr_signal_peak). The $signal divisor was set above.
-	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
+	  return bt1886_luminance_1d_ab($signal,$white_y,$black_y+0);
 	 }
 	 return 0 if($stimulus <= 0);
 	 # Old HDR legacy clamp: HDR clamps signals > 1.0 to 1.0 (the PQ

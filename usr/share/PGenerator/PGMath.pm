@@ -7,6 +7,8 @@ use Exporter qw(import);
 our @EXPORT_OK=qw(
  akima_interpolate
  bradford_adapt_xyz
+ bt1886_luminance_1d_ab
+ bt1886_relative_luminance_3d_root_blend
  delta_e_2000_lab
  delta_e_2000_xyz
  delta_e_itp_xyz
@@ -120,6 +122,59 @@ sub delta_e_itp_xyz {
  my $dT=$a->{"T"}-$b->{"T"};
  my $dP=$a->{"P"}-$b->{"P"};
  return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
+}
+
+# The two AutoCal paths historically used mathematically related BT.1886
+# forms with different evaluation order and output domains. Keep both names:
+# serialized targets can differ at the last bit, and the 3D form normalizes
+# the display black back out while the 1D form returns absolute luminance.
+sub bt1886_luminance_1d_ab {
+ my ($signal,$white_y,$black_y)=@_;
+ return undef if(!defined($signal) || !defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ return $white_y * (($signal+0) ** 2.4) if($black_y <= 0);
+ return $white_y if($black_y >= $white_y);
+ my $gamma=2.4;
+ my $white_root=$white_y ** (1/$gamma);
+ my $black_root=$black_y ** (1/$gamma);
+ my $den=$white_root-$black_root;
+ return $white_y * (($signal+0) ** $gamma) if($den <= 0);
+ my $a=$den ** $gamma;
+ my $b=$black_root/$den;
+ my $v=$signal+$b;
+ $v=0 if($v < 0);
+ return $a * ($v ** $gamma);
+}
+
+sub _bt1886_clamp_unit {
+ my ($value)=@_;
+ $value=0 if(!defined($value));
+ return 0 if($value < 0);
+ return 1 if($value > 1);
+ return $value;
+}
+
+sub _bt1886_luminance_3d_root_blend {
+ my ($signal,$white_y,$black_y)=@_;
+ $signal=_bt1886_clamp_unit($signal);
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ $black_y=0 if($black_y >= $white_y);
+ my $gamma=2.4;
+ return (($white_y ** (1/$gamma) - $black_y ** (1/$gamma))*$signal
+  + $black_y ** (1/$gamma)) ** $gamma;
+}
+
+sub bt1886_relative_luminance_3d_root_blend {
+ my ($signal,$white_y,$black_y)=@_;
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ $black_y=0 if(!defined($black_y) || $black_y < 0);
+ my $range=$white_y-$black_y;
+ return _bt1886_clamp_unit($signal) ** 2.4 if($range <= 1e-9);
+ return _bt1886_clamp_unit(
+  (_bt1886_luminance_3d_root_blend($signal,$white_y,$black_y)-$black_y)
+  /$range
+ );
 }
 
 sub xyz_to_lab {
