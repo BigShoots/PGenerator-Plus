@@ -21,7 +21,10 @@ use strict;
 use warnings;
 use Time::HiRes qw(time);
 
-my $STATE_FILE = "/tmp/pgen_sim_pattern.json";
+my @STATE_FILES = (
+ "/var/lib/PGenerator/pgen_sim_pattern.json",
+ "/tmp/pgen_sim_pattern.json", # compatibility with older WebUI builds
+);
 my $SIM_PORT   = 99;
 
 # ---------------------------------------------------------------- CLI flags
@@ -135,7 +138,11 @@ sub read_state {
  my %s = (r=>0, g=>0, b=>0, input_max=>255, signal_mode=>"sdr",
           source_range=>"FULL", name=>"stop", complex=>0, max_luma=>1000);
  my $json = "";
- if (open(my $fh, "<", $STATE_FILE)) { local $/; $json = <$fh>; close($fh); }
+ foreach my $state_file (@STATE_FILES) {
+  next if (!-f $state_file);
+  if (open(my $fh, "<", $state_file)) { local $/; $json = <$fh>; close($fh); }
+  last if (defined($json) && $json ne "");
+ }
  return \%s if (!defined($json) || $json eq "");
  $s{name}=$1         if ($json =~ /"name"\s*:\s*"([^"]*)"/);
  $s{r}=$1            if ($json =~ /"r"\s*:\s*(-?\d+(?:\.\d+)?)/);

@@ -2261,7 +2261,10 @@ sub webui_meter_usb_power_health (@) {
 our $_meter_sim_port="99";
 my $_meter_sim_flag_primary="/var/lib/PGenerator/meter_simulation.flag";
 my $_meter_sim_flag_fallback="/tmp/meter_simulation.flag";
-my $_meter_sim_pattern_file="/tmp/pgen_sim_pattern.json";
+# Keep simulator state outside sticky /tmp. A root-owned stale /tmp file cannot
+# be atomically replaced by the unprivileged WebUI process even when the file
+# itself is mode 0666, which made every simulated read reuse an old pattern.
+my $_meter_sim_pattern_file="/var/lib/PGenerator/pgen_sim_pattern.json";
 
 sub webui_meter_simulation_enabled (@) {
  return 1 if(-f $_meter_sim_flag_primary || -f $_meter_sim_flag_fallback);
