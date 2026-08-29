@@ -16,6 +16,10 @@ int main(int argc,char **argv)
         printf("%.17g\n",pgen_pq_decode_nits(strtod(argv[2],NULL)));
         return 0;
     }
+    if(argc==3 && !strcmp(argv[1],"decode-normalized")) {
+        printf("%.17g\n",pgen_pq_decode_normalized(strtod(argv[2],NULL)));
+        return 0;
+    }
     if(argc==2 && !strcmp(argv[1],"bradford")) {
         /* The Patch Companion is the only shipped consumer of this
          * initializer and it cannot be built here, so its coefficients are

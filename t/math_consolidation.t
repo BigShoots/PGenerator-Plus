@@ -25,6 +25,14 @@ close($fixture_fh);
 
 sub close_enough {
  my ($actual,$expected,$label)=@_;
+ my $maximum=1.7976931348623157e308;
+ if(!defined($actual) || !defined($expected)
+  || $actual!=$actual || $expected!=$expected
+  || $actual>$maximum || $actual<-$maximum
+  || $expected>$maximum || $expected<-$maximum) {
+  fail("$label (comparison values must be finite)");
+  return;
+ }
  my $scale=abs($expected)>1 ? abs($expected) : 1;
  cmp_ok(abs($actual-$expected),"<=",2e-12*$scale,$label);
 }
@@ -41,11 +49,13 @@ foreach my $row (@{$fixture->{"pq_encode"}}) {
  close_enough(pq_encode_normalized($row->{"nits"}),$row->{"signal"},
   "Perl PQ encodes $row->{nits} cd/m2");
 }
-# Zero is the one input the four languages do NOT agree on, so the shared
-# fixture cannot carry it and each language pins its own. Perl and the browser
-# short-circuit to exactly 0; Python and C return the transfer function's true
-# value at zero. See the comment on PGMath::pq_encode_normalized.
-is(pq_encode_normalized(0),0,
+# Zero is an explicit policy difference. Perl and the browser short-circuit
+# to exactly 0; Python and C evaluate the transfer function at zero.
+my ($hard_zero_policy)=grep { $_->{"policy"} eq "hard_zero" }
+ @{$fixture->{"policy_rows"}{"pq_encode_zero"}};
+my ($transfer_floor_policy)=grep { $_->{"policy"} eq "transfer_floor" }
+ @{$fixture->{"policy_rows"}{"pq_encode_zero"}};
+is(pq_encode_normalized(0),$hard_zero_policy->{"signal"},
  "Perl PQ encode short-circuits zero to exactly 0");
 is(pq_encode_normalized(-5),0,
  "Perl PQ encode short-circuits negative input to exactly 0");
@@ -248,7 +258,7 @@ if($compiler_usable) {
 }
 SKIP: {
  my $c_checks=scalar(@{$fixture->{"pq_encode"}})
-  +scalar(@{$fixture->{"pq_decode"}})+28;
+  +2*scalar(@{$fixture->{"pq_decode"}})+28;
  fail("a usable C toolchain must be installed in CI; the C conformance leg cannot be skipped")
   if(!$compiler_usable && $ci);
  skip "a usable C toolchain is unavailable",$c_checks if(!$compiler_usable);
@@ -275,12 +285,17 @@ SKIP: {
    die "C PQ decode helper failed" if($status!=0);
    close_enough($output+0,$row->{"nits"},
     "C PQ decodes signal $row->{signal}");
+   my ($normalized_output,$normalized_status)=
+    command_output($binary,"decode-normalized",$row->{"signal"});
+   die "C normalized PQ decode helper failed" if($normalized_status!=0);
+   close_enough($normalized_output+0,$row->{"nits"}/10000,
+    "C normalized PQ decoder handles signal $row->{signal}");
   }
   # The C side of the zero divergence: no short-circuit, so the transfer
   # function's value at zero is what an ICC table gets.
   my ($zero_output,$zero_status)=command_output($binary,"encode",0);
   die "C PQ encode helper failed" if($zero_status!=0);
-  close_enough($zero_output+0,7.3095590257839665e-07,
+  close_enough($zero_output+0,$transfer_floor_policy->{"signal"},
    "C PQ encode returns the transfer function value at zero, not 0");
   my @matrix=map { @$_ } @{$fixture->{"matrix"}};
   my ($output,$status)=command_output($binary,"inverse",@matrix);

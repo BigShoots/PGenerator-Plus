@@ -36,6 +36,9 @@ checks = 0
 def close(label, actual, expected, tolerance=2e-12):
     global checks
     checks += 1
+    if not math.isfinite(float(actual)) or not math.isfinite(float(expected)):
+        raise AssertionError("{}: non-finite comparison {!r} != {!r}".format(
+            label, actual, expected))
     scale = max(1.0, abs(float(expected)))
     if abs(float(actual) - float(expected)) > tolerance * scale:
         raise AssertionError("{}: {!r} != {!r}".format(label, actual, expected))
@@ -74,11 +77,14 @@ if math_core.bradford_adaptation([0.0, 0.0, 0.0],
 # in the shared fixture. Python evaluates the transfer function at zero rather
 # than short-circuiting, as the C header does; Perl and the browser return
 # exactly 0. Pinned here so the divergence is deliberate and visible.
+TRANSFER_FLOOR_ZERO = next(
+    row for row in FIXTURE["policy_rows"]["pq_encode_zero"]
+    if row["policy"] == "transfer_floor")
 close("PQ encode zero", math_core.pq_encode_nits(0.0),
-      7.3095590257839665e-07)
+      TRANSFER_FLOOR_ZERO["signal"])
 close("PQ encode zero, peak clamped",
       math_core.pq_encode_nits(0.0, clamp_peak=True),
-      7.3095590257839665e-07)
+      TRANSFER_FLOOR_ZERO["signal"])
 # Boundary policies: the icc_finetune combination must return exactly the peak
 # past the denominator zero (signal ~1.99206), and the default bounded domain
 # must clamp an over-unity signal to the 1.0 result rather than exploding

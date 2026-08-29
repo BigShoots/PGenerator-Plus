@@ -13,6 +13,8 @@ my $root=File::Spec->rel2abs("$Bin/..");
 my $image="$root/tools/build_pgenerator_plus_image.sh";
 my $ota="$root/tools/build_pgenerator_plus_ota.sh";
 my $pi4_runtime="$root/tools/runtime/pi4_numpy_runtime.sh";
+my $release_runtime="$root/tools/runtime/pgen_release_runtime.sh";
+my $benchmark="$root/tools/benchmark_math_consolidation.sh";
 
 sub bash_status {
  my ($body,%environment)=@_;
@@ -21,9 +23,28 @@ sub bash_status {
  return $?;
 }
 
-is(bash_status('bash -n "$PGEN_IMAGE" "$PGEN_OTA" "$PGEN_PI4_RUNTIME"',
- PGEN_IMAGE=>$image,PGEN_OTA=>$ota,PGEN_PI4_RUNTIME=>$pi4_runtime),0,
+is(bash_status('bash -n "$PGEN_IMAGE" "$PGEN_OTA" "$PGEN_PI4_RUNTIME" "$PGEN_RELEASE_RUNTIME"',
+ PGEN_IMAGE=>$image,PGEN_OTA=>$ota,PGEN_PI4_RUNTIME=>$pi4_runtime,
+ PGEN_RELEASE_RUNTIME=>$release_runtime),0,
  "release builders pass shell syntax validation");
+is(bash_status('bash -n "$PGEN_BENCHMARK"',PGEN_BENCHMARK=>$benchmark),0,
+ "paired maths benchmark driver passes shell syntax validation");
+ok(-x $benchmark,"paired maths benchmark driver is executable");
+
+ok(-f $release_runtime,
+ "image and OTA release policy has one tracked owner");
+foreach my $builder ($image,$ota) {
+ open(my $builder_fh,"<",$builder) or die "Unable to read $builder: $!";
+ local $/;
+ my $builder_source=<$builder_fh>;
+ close($builder_fh);
+ like($builder_source,
+  qr{tools/runtime/pgen_release_runtime\.sh},
+  "$builder sources the shared release-runtime policy");
+ like($builder_source,
+  qr/pgen_release_validate_colour_math_runtime/,
+  "$builder delegates maths-artifact validation to the shared policy");
+}
 
 # Sourcing a release builder installs its EXIT trap, whose cleanup runs
 # "rm -rf $STAGING_DIR" (and umounts $ROOT_MOUNT). Handing those variables the

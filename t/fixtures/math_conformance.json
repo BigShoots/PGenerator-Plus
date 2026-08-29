@@ -7,6 +7,36 @@
     "ictcp_coefficient_precision": "PGMath.pm and webui-app.js carry the 10-digit XYZ-to-Rec.2020 coefficients (1.7166511880); pgen_colour_math.py carries the established 7-digit ones (1.7166512). The divergence is retained deliberately for serial parity with existing output, which is why the ICtCp and Delta E ITP bounds below are 2e-7 rather than 2e-12. No C runtime implements ICtCp.",
     "purpose": "Language-neutral golden values for PGenerator+ runtime implementations; ICtCp and Delta E ITP references generated independently with Colour 0.4.7"
   },
+  "policy_rows": {
+    "pq_encode_zero": [
+      {
+        "policy": "hard_zero",
+        "runtimes": ["perl", "browser"],
+        "nits": 0.0,
+        "signal": 0.0,
+        "source": "Existing PGenerator pattern-code boundary policy"
+      },
+      {
+        "policy": "transfer_floor",
+        "runtimes": ["python", "c"],
+        "nits": 0.0,
+        "signal": 7.3095590257839665e-7,
+        "source": "SMPTE ST 2084 inverse EOTF evaluated at zero"
+      }
+    ],
+    "matrix_inverse": [
+      {
+        "policy": "direct_division",
+        "expected_key": "inverse",
+        "source": "Per-cofactor division retained by ICC paths"
+      },
+      {
+        "policy": "reciprocal_multiplication",
+        "expected_key": "inverse_reciprocal",
+        "source": "Single reciprocal retained by the measured LUT solver"
+      }
+    ]
+  },
   "pq_encode": [
     {"nits": 0.0001, "signal": 0.0016671882178597882},
     {"nits": 0.1, "signal": 0.06233686566269587},

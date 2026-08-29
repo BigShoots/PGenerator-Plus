@@ -32,6 +32,9 @@ const runtime=eval('(()=>{'+constants+'\n'+bodies+
 let checks=0;
 function close(label,actual,expected){
  checks++;
+ if(typeof actual!=='number'||typeof expected!=='number'||
+    !isFinite(actual)||!isFinite(expected))
+  throw new Error(label+': non-finite comparison '+actual+' != '+expected);
  const tolerance=2e-12*Math.max(1,Math.abs(expected));
  if(Math.abs(actual-expected)>tolerance) throw new Error(label+': '+actual+' != '+expected);
 }
@@ -48,8 +51,9 @@ for(const row of fixture.pq_decode){
 // exactly 0, as PGMath.pm does; pgen_colour_math.py and the C header return
 // the transfer function's true value at zero instead.
 checks++;
-if(runtime.encode(0)!==0)
- throw new Error('JS PQ encode zero: '+runtime.encode(0)+' != 0');
+const hardZero=fixture.policy_rows.pq_encode_zero.find(row=>row.policy==='hard_zero');
+if(runtime.encode(0)!==hardZero.signal)
+ throw new Error('JS PQ encode zero: '+runtime.encode(0)+' != '+hardZero.signal);
 checks++;
 if(runtime.chartEncode(0)!==0)
  throw new Error('JS chart PQ encode zero: '+runtime.chartEncode(0)+' != 0');

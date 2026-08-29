@@ -4,6 +4,7 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
 use Time::HiRes qw(time);
+use Digest::SHA qw(sha256_hex);
 
 # The native cube solver (src/lut_solver/pgen_lut_solve.c) has to emit codes
 # that are BYTE-IDENTICAL to the Perl path, not merely close: fm_invert is a
@@ -20,8 +21,9 @@ use Time::HiRes qw(time);
 # 33^3 leg for a faster edit loop, but the landing gate is the full run.
 
 my $worker="$Bin/../usr/bin/meter_lg_3d_autocal.pl";
-my $host="$Bin/../src/lut_solver/build/pgen_lut_solve.host";
 my $vendored="$Bin/../usr/bin/pgen_lut_solve";
+my @parity_flags=("-O2","-std=c99","-ffp-contract=off","-fno-fast-math",
+ "-fno-unsafe-math-optimizations");
 
 sub helper_runs {
  my ($bin)=@_;
@@ -64,8 +66,9 @@ sub refuse {
 }
 
 my $ci=($ENV{"GITHUB_ACTIONS"} || $ENV{"CI"}) ? 1 : 0;
-my $bin=helper_runs($host) ? $host : (helper_runs($vendored) ? $vendored : undef);
+my $bin=helper_runs($vendored) ? $vendored : undef;
 my $build_dir;
+my $build_fingerprint;
 if(!$bin) {
  my $cc=$ENV{"CC"} || "cc";
  my $cc_path=compiler_path($cc);
@@ -76,8 +79,14 @@ if(!$bin) {
  $build_dir=tempdir(CLEANUP=>1);
  my $built="$build_dir/pgen_lut_solve";
  my $source="$Bin/../src/lut_solver/pgen_lut_solve.c";
- my @command=($cc_path,"-O2","-std=c99","-ffp-contract=off","-fno-fast-math",
-  "-fno-unsafe-math-optimizations","-o",$built,$source,"-lm");
+ open(my $source_fh,"<",$source) or refuse("cannot fingerprint $source: $!");
+ binmode($source_fh);
+ local $/;
+ my $source_bytes=<$source_fh>;
+ close($source_fh);
+ my $version=`"$cc_path" --version 2>&1`;
+ $build_fingerprint=sha256_hex(join("\0",$source_bytes,$cc_path,$version,@parity_flags,"-lm"));
+ my @command=($cc_path,@parity_flags,"-o",$built,$source,"-lm");
  system(@command);
  if($? != 0) {
   my $why=($? & 127) ? "killed by signal ".($? & 127) : "exit ".($? >> 8);
@@ -86,7 +95,22 @@ if(!$bin) {
  refuse("the freshly built $source does not answer the helper protocol")
   if(!helper_runs($built));
  $bin=$built;
+} else {
+ open(my $source_fh,"<","$Bin/../src/lut_solver/pgen_lut_solve.c")
+  or refuse("cannot fingerprint vendored solver source: $!");
+ binmode($source_fh);
+ local $/;
+ my $source_bytes=<$source_fh>;
+ close($source_fh);
+ open(my $binary_fh,"<",$vendored)
+  or refuse("cannot fingerprint vendored solver binary: $!");
+ binmode($binary_fh);
+ my $binary_bytes=<$binary_fh>;
+ close($binary_fh);
+ $build_fingerprint=sha256_hex(join("\0",$source_bytes,$binary_bytes,@parity_flags,"static-armhf"));
 }
+$build_fingerprint||="unavailable";
+diag("native parity build fingerprint: $build_fingerprint");
 $ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"}=$bin;
 
 do $worker;
