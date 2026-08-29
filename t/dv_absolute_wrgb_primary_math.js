@@ -145,6 +145,32 @@ context.meterReadings = [{series_color: 'Red', sat_pct: 100, r_code: 2008, g_cod
 close(context.meterWrgbStimulusTargetY(neutral), neutralBefore, 1e-9,
   'neutral target is independent of WRGB primary ceilings');
 
+const orange = {
+  name: 'Orange', r_code: 2041, g_code: 1770, b_code: 1282,
+  target_x: 0.512087, target_y: 0.410373, signal_mode: 'dv'
+};
+context.meterReadings = [
+  {name: 'White', r_code: 3760, g_code: 3760, b_code: 3760,
+   luminance: 715.360759, signal_mode: 'dv'},
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256,
+   luminance: 18.361413, signal_mode: 'dv'}
+];
+const orangeAfterWhiteRed = context.meterWrgbStimulusTargetY(orange);
+context.meterReadings.push(
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885,
+   luminance: 58.190180, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008,
+   luminance: 7.174204, signal_mode: 'dv'},
+  {series_color: 'Cyan', sat_pct: 100, r_code: 1545, g_code: 1991, b_code: 2008,
+   luminance: 64.1, signal_mode: 'dv'},
+  {series_color: 'Magenta', sat_pct: 100, r_code: 1937, g_code: 1147, b_code: 2008,
+   luminance: 23.2, signal_mode: 'dv'},
+  {series_color: 'Yellow', sat_pct: 100, r_code: 1995, g_code: 2008, b_code: 861,
+   luminance: 66.0, signal_mode: 'dv'}
+);
+close(context.meterWrgbStimulusTargetY(orange), orangeAfterWhiteRed, 1e-9,
+  'ordinary patch target stays fixed after later gamut endpoint reads');
+
 mapMode = '2';
 assert.deepStrictEqual(Object.keys(context.meterWrgbPrimaryCeilings()), [],
   'Relative DV remains on its authored WRGB response model');
