@@ -6643,9 +6643,11 @@ function meterColorSeriesReferenceNits(){
 }
 
 function meterWrgbChromaticReferenceNits(){
- // Deprecated compatibility hook. Display-referenced PQ series use the full
- // seven-anchor gamut surface below; a single additive-primary reference is
- // not sufficient for secondary or intermediate-hue luminance.
+ // Deprecated compatibility hook. A chart target must not be constructed
+ // from current-series primary measurements: doing so changes prior targets
+ // as R/G/B arrive and grades the display against its own output. All modes
+ // and all built-in/custom color series now use their authored signal target
+ // plus the run's white reference instead.
  return null;
 }
 
@@ -6716,151 +6718,14 @@ function meterWrgbPrimaryCeilings(){
  return out;
 }
 
-// Build a measured WRGB gamut-top description from the current series. The
-// six chromatic anchors are the 100% R/G/B/C/M/Y rows already appended to both
-// ColorChecker and saturation runs. Peak white supplies the white chromaticity
-// and luminance ceiling. Each chromatic anchor also keeps the PQ channel drive
-// at which it was measured so the same surface can be evaluated for ordinary
-// patches at a different drive without changing the visible series order.
-function meterWrgbGamutSurfaceAnchors(){
- const result={white:null,colors:{}};
- const seriesType=(typeof meterActiveSeriesType==='undefined')?'':String(meterActiveSeriesType||'');
- if((seriesType!=='colors'&&seriesType!=='saturations')
-  ||!meterChartIsHdr()||!meterChartIsPq()
-  ||(meterChartIsDv()&&meterDvMapModeValue()!=='1')
-  ||!meterWrgbTargetCompensationSelected()) return null;
- const currentMode=(typeof meterActiveChartSignalMode==='function')
-  ?String(meterActiveChartSignalMode()||'').toLowerCase():'';
- const rows=Array.isArray(meterReadings)?meterReadings:[];
- const xyzFor=rd=>{
-  if(!rd) return null;
-  let Y=Number(rd.luminance!=null?rd.luminance:rd.Y);
-  let X=Number(rd.X),Z=Number(rd.Z);
-  if(Number.isFinite(X)&&Number.isFinite(Y)&&Number.isFinite(Z)&&Y>0) return {X:X,Y:Y,Z:Z};
-  const x=Number(rd.x),y=Number(rd.y);
-  if(Number.isFinite(x)&&Number.isFinite(y)&&y>0&&Number.isFinite(Y)&&Y>0){
-   return {X:x/y*Y,Y:Y,Z:(1-x-y)/y*Y};
-  }
-  return null;
- };
- const codesFor=rd=>[
-  (rd&&rd.r_code!=null)?rd.r_code:(rd?rd.r:null),
-  (rd&&rd.g_code!=null)?rd.g_code:(rd?rd.g:null),
-  (rd&&rd.b_code!=null)?rd.b_code:(rd?rd.b:null)
- ];
- const channelNits=code=>meterChartIsDv()
-  ?meterDvStimulusLinearChannel(code)
-  :meterDecodeColorTargetChannel(code);
- rows.forEach(rd=>{
-  if(!rd) return;
-  const rdMode=String(rd.signal_mode||'').toLowerCase();
-  if(currentMode&&rdMode&&rdMode!==currentMode) return;
-  const xyz=xyzFor(rd);
-  if(!xyz) return;
-  const name=String(rd.name||'').trim().toLowerCase();
-  const codes=codesFor(rd);
-  if(!result.white&&(name==='white'||name==='100% white')
-   &&codes.every(v=>v!=null)&&Number(codes[0])===Number(codes[1])&&Number(codes[1])===Number(codes[2])){
-   const sum=xyz.X+xyz.Y+xyz.Z;
-   let referenceY=Number(xyz.Y);
-   try{
-    const selectedY=Number(meterColorSeriesReferenceNits());
-    if(Number.isFinite(selectedY)&&selectedY>0) referenceY=selectedY;
-   }catch(e){}
-   if(sum>0) result.white={x:xyz.X/sum,y:xyz.Y/sum,Y:referenceY,measuredY:xyz.Y};
-   return;
-  }
-  if(rd.series_color==null||Number(rd.sat_pct)<99.5) return;
-  const color=String(rd.series_color).trim().toLowerCase();
-  if(!/^(?:red|green|blue|cyan|magenta|yellow)$/.test(color)||result.colors[color]) return;
-  if(codes.some(v=>v==null)) return;
-  const drive=Math.max(channelNits(codes[0]),channelNits(codes[1]),channelNits(codes[2]));
-  if(Number.isFinite(drive)&&drive>0) result.colors[color]={xyz:xyz,drive:drive};
- });
- if(!result.white) return null;
- for(const color of ['red','green','blue','cyan','magenta','yellow']){
-  if(!result.colors[color]) return null;
- }
- return result;
-}
-
-// Intersect the target chromaticity ray with one of the six triangular faces
-// G-Y-W, Y-R-W, R-M-W, M-B-W, B-C-W, or C-G-W. This is a full gamut-surface
-// target: primaries and secondaries define the vertices, while every interior
-// chromatic patch receives an interpolated luminance. Target x/y remains the
-// authored value, so the measured anchors affect luminance only.
-function meterWrgbGamutSurfaceTargetY(reading,driveNits){
- if(!reading||!(driveNits>0)||meterReadingIsGreyscale(reading)) return null;
- const anchors=meterWrgbGamutSurfaceAnchors();
- if(!anchors) return null;
- let meta=reading;
- let tx=Number(meta.target_x),ty=Number(meta.target_y);
- if((!Number.isFinite(tx)||!Number.isFinite(ty)||ty<=0)&&typeof meterCanonicalSeriesStep==='function'){
-  const step=meterCanonicalSeriesStep(reading);
-  if(step){meta=step;tx=Number(step.target_x);ty=Number(step.target_y);}
- }
- if(!Number.isFinite(tx)||!Number.isFinite(ty)||ty<=0) return null;
- const effectiveDrive=Math.min(Number(driveNits),Number(anchors.white.Y));
- if(!(effectiveDrive>0)) return null;
- const whiteY=effectiveDrive;
- const wx=Number(anchors.white.x),wy=Number(anchors.white.y);
- if(!(Number.isFinite(wx)&&Number.isFinite(wy)&&wy>0)) return null;
- const points={
-  white:{X:wx/wy*whiteY,Y:whiteY,Z:(1-wx-wy)/wy*whiteY}
- };
- Object.keys(anchors.colors).forEach(color=>{
-  const anchor=anchors.colors[color];
-  const anchorDrive=Math.min(Number(anchor.drive),Number(anchors.white.Y));
-  const scale=anchorDrive>0?effectiveDrive/anchorDrive:0;
-  points[color]={X:anchor.xyz.X*scale,Y:anchor.xyz.Y*scale,Z:anchor.xyz.Z*scale};
- });
- const xy=point=>{
-  const sum=point.X+point.Y+point.Z;
-  return sum>0?{x:point.X/sum,y:point.Y/sum}:null;
- };
- const angle=(point,white)=>{
-  const p=xy(point),w=xy(white);
-  if(!p||!w) return NaN;
-  return (Math.atan2(p.y-w.y,p.x-w.x)*(-180/Math.PI)+450)%360;
- };
- const subtract=(a,b)=>[a.X-b.X,a.Y-b.Y,a.Z-b.Z];
- const cross=(a,b)=>[
-  a[1]*b[2]-a[2]*b[1],
-  a[2]*b[0]-a[0]*b[2],
-  a[0]*b[1]-a[1]*b[0]
- ];
- const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
- const targetAngle=(Math.atan2(ty-wy,tx-wx)*(-180/Math.PI)+450)%360;
- const sectors=[
-  ['green','yellow'],['yellow','red'],['red','magenta'],
-  ['magenta','blue'],['blue','cyan'],['cyan','green']
- ];
- for(const sector of sectors){
-  const a=points[sector[0]],b=points[sector[1]],w=points.white;
-  let start=angle(a,w),end=angle(b,w),target=targetAngle;
-  if(!(Number.isFinite(start)&&Number.isFinite(end)&&Number.isFinite(target))) continue;
-  if(end<start){
-   const shift=360-start;
-   start=0;
-   end=(end+shift)%360;
-   target=(target+shift)%360;
-  }
-  if(target+1e-7<start||target-1e-7>end) continue;
-  const normal=cross(subtract(b,a),subtract(w,a));
-  const ray=[tx/ty,1,(1-tx-ty)/ty];
-  const denominator=dot(normal,ray);
-  if(Math.abs(denominator)<1e-12) return null;
-  const targetY=dot(normal,[a.X,a.Y,a.Z])/denominator;
-  return Number.isFinite(targetY)&&targetY>=0?targetY:null;
- }
- return null;
-}
-
-// Target luminance normally comes directly from the authored patch stimulus.
-// A selected WRGB OLED instead uses the completed series' seven-anchor gamut
-// surface for every chromatic HDR10 or Absolute-DV ColorChecker/saturation
-// patch. Before all seven anchors exist, the established endpoint-only fallback
-// remains available. Greys always stay on the measured/manual white curve.
+// Target luminance normally comes directly from the authored patch stimulus:
+// decode each channel and form target Y in the selected analysis gamut.
+// Ordinary ColorChecker patches and saturation sweeps must not learn their
+// target from the measurements they grade. The one display-reference exception
+// is the six full-drive HDR ColorChecker endpoints on a selected WRGB OLED:
+// those are bounded by the run's measured filtered-primary ceilings because
+// the white-subpixel peak is physically unavailable to saturated colors.
+// Greys remain referenced to measured white.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
@@ -6901,18 +6766,13 @@ function meterWrgbStimulusTargetY(reading){
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=(_dvLum&&meterDvMapModeValue()==='1')||(!_dvLum&&meterChartIsHdr())
   ?meterContainerGamut():meterAnalysisGamut();
- const authoredXyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
- const surfaceY=meterWrgbGamutSurfaceTargetY(reading,Math.max(dr,dg,db));
- if(surfaceY!=null){
-  if(authoredXyz&&Number.isFinite(authoredXyz.Y)) reading._wrgb_authored_target_y=authoredXyz.Y;
-  reading._wrgb_surface_target_y=surfaceY;
-  return surfaceY;
- }
  // An HDR10 or Absolute-DV ColorChecker endpoint on a WRGB OLED cannot reach the
  // decoded PQ peak through its filtered color subpixels. Grade those six
  // endpoint patches against the additive output established by the measured
- // R/G/B endpoints. This is only the partial-run fallback while the C/M/Y
- // anchors needed by the full surface have not all arrived.
+ // R/G/B endpoints. Keep this narrowly scoped: Relative DV has its stable
+ // authored response model below, sub-100% saturation steps use their authored
+ // stimulus, and ordinary ColorChecker patches remain independent of measured
+ // results.
  const _endpointSeriesType=(typeof meterActiveSeriesType==='undefined')?'':String(meterActiveSeriesType||'');
  const _absoluteDvSaturationEndpoint=_dvLum&&meterDvMapModeValue()==='1'&&_endpointSeriesType==='saturations';
  const _hdrColorEndpoint=(!_dvLum||meterDvMapModeValue()==='1')
@@ -6937,7 +6797,7 @@ function meterWrgbStimulusTargetY(reading){
   const targetXyz=linRgbToXyz(dr,dg,db,targetGamut.rgbToXyz);
   return (targetXyz&&Number.isFinite(targetXyz.Y)&&targetXyz.Y>=0)?targetXyz.Y:null;
  }
- const xyz=authoredXyz;
+ const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
  if(_dvLum && meterDvMapModeValue()!=='1' && meterWrgbTargetCompensationSelected()){
   // Match the HDR WRGB target behavior: sub-peak/low-saturation content tracks
