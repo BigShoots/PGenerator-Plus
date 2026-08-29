@@ -47,14 +47,14 @@ PATCH_INSERT_TIME_ENABLED="${24:-0}"
 PATCH_INSERT_TIME_FREQUENCY_MS="${25:-5000}"
 PATCH_INSERT_TIME_DURATION_MS="${26:-5000}"
 PATCH_INSERT_TIME_LEVEL="${27:-25}"
-# Operator-selected low-light averaging mode. It is not the initial spotread
-# mode: the child always starts at off and changes only for a step below the
-# trigger.
+# Operator-selected application sample count for patches below the trigger.
 LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
 case "$LOW_LIGHT_MODE" in
  a|aa|aaa) ;;
  *) LOW_LIGHT_MODE="off" ;;
 esac
+# Preserve the established single-read spectrophotometer workflow.
+[[ "$REQUIRE_DEVICE_READY" == "1" ]] && LOW_LIGHT_MODE="off"
 # Precomputed pattern-insertion codes (mode-correct). The webui derives them
 # from the same closure the greyscale ladder uses, so an insertion patch at
 # the user-configured level lands on the same code a step at that stimulus
@@ -266,9 +266,10 @@ series_quit_spotread() {
   # Dark reads can leave spotread blocked inside libusb so an explicit Stop
   # must interrupt it. The kernel may emit a short -32/-71 enumeration burst
   # while that cancelled transaction is torn down. Record the monotonic time
-  # before TERM so the WebUI can ignore only this expected cancellation burst;
-  # spontaneous errors before it or errors that continue afterward still warn.
-  [[ "$quit_reason" == "cancel" ]] && record_series_cancel_usb_suppression
+  # before EVERY deliberate TERM -- cancel or terminal-error retirement alike
+  # -- so the WebUI ignores only this expected burst; spontaneous errors
+  # before it or errors that continue afterward still warn.
+  record_series_cancel_usb_suppression
   pkill -TERM -x spotread 2>/dev/null || true
  pkill -TERM -x spotread_sim 2>/dev/null || true
   local term_waited=0
@@ -353,6 +354,21 @@ companion_pattern_failure() {
 EOJSON
  series_quit_spotread "companion_error" 2>/dev/null || true
  companion_show_alignment
+ exit 1
+}
+
+# A trigger that did not produce exactly one parsed result leaves the
+# interactive spotread child in an unknown state. End the series and retire
+# the child before a delayed result can be assigned to a later patch.
+series_meter_read_failure_exit() {
+ local message="$1" error_code="${2:-meter_read_incomplete}" escaped
+ escaped=$(json_escape "$message")
+ write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$escaped","error":"$error_code","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ series_quit_spotread "$error_code"
+ companion_show_alignment
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 1
 }
 
@@ -700,9 +716,8 @@ print(steps[$idx].get('$field',''))
 " 2>/dev/null
 }
 
-# Persist a measured white reference into step metadata once it is available.
-# The per-step selector below consumes only serialized target metadata; it does
-# not use the previous patch's measured luminance as the next patch's decision.
+# Persist a measured white reference into step metadata once it is available
+# so chart targets and the saved series share the same live luminance anchor.
 apply_series_white_reference_to_steps() {
  local white_y="$1"
  [[ -f "$STEPS_FILE" ]] || return 1
@@ -751,9 +766,9 @@ finally:
 PY
 }
 
-# Return off or the operator-selected a/aa/aaa mode for one serialized step.
-# Direct absolute targets win; otherwise target_Yn is resolved against the
-# serialized white reference and floored at the serialized black reference.
+# Return the operator mode only for a step whose expected target luminance is
+# strictly below the trigger. Absolute targets win; otherwise target_Yn is
+# resolved against the serialized white/black references used by the charts.
 effective_low_light_mode_for_step() {
  local idx="$1"
  STEPS_FILE="$STEPS_FILE" STEP_INDEX="$idx" SELECTED_MODE="$LOW_LIGHT_MODE" LOW_LIGHT_TRIGGER_VALUE="$LOW_LIGHT_TRIGGER" python - <<'PY' 2>/dev/null
@@ -830,16 +845,13 @@ else:
 PY
 }
 
-ensure_spotread_low_light_for_step() {
- local idx="$1" desired
- # Spectrophotometers can require a physical white-tile prompt after a child
- # restart. Do not abort an otherwise valid series to change averaging mode
- # when the operator must remain in control of that setup sequence.
- [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 0
- desired=$(effective_low_light_mode_for_step "$idx")
- case "$desired" in a|aa|aaa) ;; *) desired="off" ;; esac
- [[ "$desired" == "${CURRENT_LOW_LIGHT_MODE:-off}" ]] && return 0
- restart_spotread_session "$desired"
+low_light_sample_count() {
+ case "${1:-off}" in
+  a) echo 2 ;;
+  aa) echo 3 ;;
+  aaa) echo 5 ;;
+  *) echo 1 ;;
+ esac
 }
 
 build_step_reading_json() {
@@ -866,6 +878,9 @@ except Exception:
 if not isinstance(reading, dict):
     sys.exit(1)
 reading["observer"] = os.environ.get("OBSERVER", "1931_2")
+reading.setdefault("sample_count", 1)
+reading.setdefault("requested_sample_count", 1)
+reading.setdefault("average_mode", "off")
 
 def finite_number(value):
     try:
@@ -1407,117 +1422,8 @@ write_state_json << EOJSON
 EOJSON
 
 # Full cleanup of any previous meter state. Called before starting a session
-# and again before any init retry. Kills every known meter process and
-# removes all stale temp files that could interfere with spotread startup
-# (held USB handles, stale FIFOs, cached port numbers that no longer exist).
-# After a read timeout the persistent spotread session is often WEDGED, not
-# just slow: i1D3-class meters intermittently reset on the USB bus (dmesg
-# shows "reset full-speed USB device"; 261 timeouts logged on one rig) and the
-# in-flight read never returns. Retrying on the dead session burns the retry
-# timeout, and every LATER step then fails the same way to the end of the run.
-# Bounce the session instead: kill the wedged reader, respawn the spotread
-# child from its stable base command, wait for the reading prompt. Colorimeters
-# only: a spectro restart would re-prompt for its white
-# tile, which cannot be answered mid-run headlessly.
-stop_spotread_child_for_restart() {
- # A mode change is a normal transition, not a wedged-read recovery. Ask
- # spotread to release the instrument before escalating: force-killing two
- # children a few seconds apart left the i1Display3 USB interface unavailable
- # during the observed SDR pre-cal run.
- if [[ "$METER_SERIES_FD_OPEN" == "1" ]]; then
-  printf "Q" >&3 2>/dev/null || true
-  exec 3>&-
-  METER_SERIES_FD_OPEN=0
- fi
- local waited=0
- while (( waited < 60 )) && [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; do
-  sleep 0.1
-  waited=$((waited + 1))
- done
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  kill "$BG_PID" 2>/dev/null || true
-  pkill -TERM -x spotread 2>/dev/null || true
-  pkill -TERM -x spotread_sim 2>/dev/null || true
-  waited=0
-  while (( waited < 20 )) && { kill -0 "$BG_PID" 2>/dev/null || pgrep -x spotread >/dev/null 2>&1 || pgrep -x spotread_sim >/dev/null 2>&1; }; do
-   sleep 0.1
-   waited=$((waited + 1))
-  done
- fi
- if [[ -n "$BG_PID" ]] && kill -0 "$BG_PID" 2>/dev/null; then
-  pkill -9 -P "$BG_PID" 2>/dev/null || true
-  kill -9 "$BG_PID" 2>/dev/null || true
- fi
- pgrep -x spotread >/dev/null 2>&1 && pkill -9 -x spotread 2>/dev/null || true
- pgrep -x spotread_sim >/dev/null 2>&1 && pkill -9 -x spotread_sim 2>/dev/null || true
- BG_PID=""
-}
-
-restart_spotread_session() {
- [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 1
- [[ -z "$SR_CMD_BASE" ]] && return 1
- local requested_mode="${1:-${CURRENT_LOW_LIGHT_MODE:-off}}"
- case "$requested_mode" in a|aa|aaa) ;; *) requested_mode="off" ;; esac
- SR_CMD="$SR_CMD_BASE"
- case "$requested_mode" in
-  a) SR_CMD="$SR_CMD -Y a" ;;
-  aa) SR_CMD="$SR_CMD -Y aa" ;;
-  aaa) SR_CMD="$SR_CMD -Y aaa" ;;
- esac
- echo "[$(date '+%H:%M:%S.%3N')] restarting spotread child: step=${STEP_NUM:-?} name=${NAME:-?} low_light=${CURRENT_LOW_LIGHT_MODE:-off}->$requested_mode" >> /tmp/meter_series_debug.log
- stop_spotread_child_for_restart
- # Match the persistent meter-session worker's recovery contract: allow the
- # USB interface to settle, then give one clean re-exec after an initial
- # claim/initialisation failure. Both attempts rebuild only the spotread child;
- # the series state, patch list and accumulated readings remain intact.
- local attempt waited refresh_done clean failure_line
- for attempt in 1 2; do
-  sleep 1.5
-  rm -f "$OUTFILE" "$CMDPIPE"
-  touch "$OUTFILE"
-  mkfifo "$CMDPIPE"
-  cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
-  BG_PID=$!
-  exec 3>"$CMDPIPE"
-  METER_SERIES_FD_OPEN=1
-  waited=0
-  refresh_done=0
-  clean=""
-  failure_line=""
-  while (( waited < 80 )); do
-   series_stop_requested && series_cancel_exit
-   clean=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
-   if echo "$clean" | grep -q "to take a reading:"; then
-    CURRENT_LOW_LIGHT_MODE="$requested_mode"
-    echo "[$(date '+%H:%M:%S.%3N')] spotread session restarted OK attempt=$attempt (${waited}x0.5s)" >> /tmp/meter_series_debug.log
-    return 0
-   fi
-   if (( refresh_done == 0 )) && refresh_cal_prompt "$clean"; then
-    post_patch_timeout 204 204 204 100 "$SIGNAL_MODE" "$MAX_LUMA" "$PATTERN_SIGNAL_RANGE"
-    sleep 2
-    printf " " >&3
-    refresh_done=1
-    sleep 2
-    waited=$((waited + 8))
-    continue
-   fi
-   if echo "$clean" | grep -qiE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected"; then
-    failure_line=$(printf '%s\n' "$clean" | grep -iE "Communications failure|Instrument initialisation failed|No device found|instrument is not connected" | tail -1 | tr -d '\n\r' | head -c 240)
-    echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt=$attempt instrument error: $failure_line" >> /tmp/meter_series_debug.log
-    break
-   fi
-   sleep 0.5
-   waited=$((waited + 1))
-  done
-  if [[ -z "$failure_line" ]]; then
-   echo "[$(date '+%H:%M:%S.%3N')] spotread session restart attempt=$attempt timed out" >> /tmp/meter_series_debug.log
-  fi
-  stop_spotread_child_for_restart
- done
- echo "[$(date '+%H:%M:%S.%3N')] spotread session restart failed after 2 attempts" >> /tmp/meter_series_debug.log
- return 1
-}
-
+# and again before any init retry. Kills every known meter process and removes
+# stale temp files that could interfere with a clean spotread startup.
 meter_full_cleanup() {
  # Kill all meter-related processes (wrappers, pipelines, spotread itself)
  pkill -9 -f 'meter_session.sh'          2>/dev/null
@@ -1631,11 +1537,8 @@ EOJSON
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
- # The wrapper and initial child start at explicit off. Per-step selection
- # below rebuilds only this spotread command from the stable base.
- SR_CMD_BASE="$SR_CMD"
- SR_CMD="$SR_CMD_BASE"
- CURRENT_LOW_LIGHT_MODE="off"
+ # Low-light repetition is implemented above spotread. The child always uses
+ # its normal adaptive integration and stays open for the complete series.
  # Disable AIO mode for i1D3 meters if requested
  if [[ "$DISABLE_AIO" == "1" ]]; then
   export I1D3_DISABLE_AIO=1
@@ -1853,6 +1756,70 @@ else:
   echo "{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}"
   return 0
  fi
+ return 1
+}
+
+# Take one more sample on the already-open spotread process. The caller has
+# displayed and settled the patch once; this helper only sends a new trigger.
+capture_series_average_sample() {
+ local read_timeout="$1"
+ local prev_count scan_offset read_start cur_count new_output cur_size
+ local retried_comm=0 zero_discards=0 prompt_reason="" parsed=""
+ SERIES_AVERAGE_PARSED=""
+ prev_count=$(count_results)
+ scan_offset=$(output_size)
+ printf " " >&3
+ read_start=$SECONDS
+ while (( SECONDS - read_start < read_timeout )); do
+  series_stop_requested && series_cancel_exit
+  cur_count=$(count_results)
+  if (( cur_count > prev_count )); then
+   parsed=$(parse_latest_result)
+   if [[ -n "$parsed" ]]; then
+    if nonblack_zero_reading "$parsed" "$IRE" "$R" "$G" "$B"; then
+     if (( zero_discards < ZERO_READ_RETRIES )); then
+      zero_discards=$((zero_discards + 1))
+      echo "[$(date '+%H:%M:%S.%3N')] null averaging sample; re-reading $zero_discards/$ZERO_READ_RETRIES step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      prev_count="$cur_count"
+      scan_offset=$(output_size)
+      read_start=$SECONDS
+      printf " " >&3
+      continue
+     fi
+     return 2
+    fi
+    SERIES_AVERAGE_PARSED="$parsed"
+    return 0
+   fi
+  fi
+  new_output=$(clean_output_since "$scan_offset")
+  if [[ -n "$new_output" ]]; then
+   cur_size=$(output_size)
+   if [[ $retried_comm -eq 0 && "$new_output" == *"Spot read failed due to communication problem"* ]]; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication problem during averaging sample; retrying once step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+    retried_comm=1
+    read_timeout=$((read_timeout + 15))
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
+   fi
+   if (( retried_comm == 1 )) && { [[ "$new_output" == *"Spot read failed due to communication problem"* ]] \
+      || [[ "$new_output" == *"to take a reading:"* ]]; }; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no averaging result; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+    return 1
+   fi
+   if prompt_reason=$(manual_ready_prompt_reason "$new_output"); then
+    handle_series_manual_prompt "$STEP_NUM" "$NAME" "$prompt_reason" || return 1
+    read_start=$SECONDS
+    read_timeout=$((read_timeout + 30))
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
+   fi
+   scan_offset="$cur_size"
+  fi
+  sleep 0.3
+ done
  return 1
 }
 
@@ -2133,9 +2100,9 @@ EOJSON
     if ! handle_series_manual_prompt "0" "Reading 100% white for target Y" "$PROMPT_REASON"; then
      break
     fi
-    printf " " >&3
     SCAN_OFFSET=$(output_size)
     READ_START=$SECONDS
+    printf " " >&3
     continue
    fi
    SCAN_OFFSET="$CUR_SIZE"
@@ -2166,6 +2133,11 @@ print(json.dumps(r))
   fi
  else
   echo "[$(date '+%H:%M:%S')] GOT_RESULT was false, WHITE_READING stays null" >> "$DEBUG_LOG"
+ fi
+
+ if [[ "$WHITE_READING" == "null" ]]; then
+  cat "$DEBUG_LOG" >> /tmp/white_read_series.log 2>/dev/null
+  series_meter_read_failure_exit "Initial white-reference read did not complete; series stopped before a late result could contaminate the first patch"
  fi
  
  echo "[$(date '+%H:%M:%S')] Final WHITE_READING=$WHITE_READING" >> "$DEBUG_LOG"
@@ -2232,16 +2204,6 @@ EOJSON
  series_quit_spotread
  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 1
- fi
-
- if ! ensure_spotread_low_light_for_step "$i"; then
-  LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed at step $STEP_NUM")
-  write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
-EOJSON
-  series_quit_spotread
-  rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
-  exit 1
  fi
 
  # Update state: displaying
@@ -2318,6 +2280,7 @@ EOJSON
  GOT_RESULT=false
  RETRIED_COMM=0
  COMM_RETRY_SEEN=0
+ READ_INCOMPLETE=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
   series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
@@ -2330,28 +2293,36 @@ EOJSON
    CUR_SIZE=$(output_size)
    if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during read - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-    printf " " >&3
     RETRIED_COMM=1
     COMM_RETRY_SEEN=1
     READ_TIMEOUT=$((READ_TIMEOUT + 15))
     SCAN_OFFSET=$(output_size)
+    printf " " >&3
     continue
+   fi
+   if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+      || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result; retiring child step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+    READ_INCOMPLETE=1
+    break
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
     if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
+     READ_INCOMPLETE=1
      break
     fi
-    printf " " >&3
     READ_START=$SECONDS
     READ_TIMEOUT=$((READ_TIMEOUT + 30))
     SCAN_OFFSET=$(output_size)
+    printf " " >&3
     continue
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
   sleep 0.3
  done
+ $GOT_RESULT || READ_INCOMPLETE=1
 
  READING=""
  if $GOT_RESULT; then
@@ -2371,12 +2342,18 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
+  if (( READ_INCOMPLETE == 1 )); then
+   series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+  fi
   echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   PATCH_NO_READING_RETRIES=$NO_READING_RETRIES
-  # A communication error means spotread rejected the trigger rather than
-  # measuring the patch. Give that patch one clean redisplay/read cycle. Keep
-  # ordinary timeouts at zero retries so an unresponsive meter cannot add a
-  # minute to every patch in a finite series.
+  # Only completed-but-unusable reads reach this retry: an implausibly dim
+  # HDR profile reading (cleared above with COMM_RETRY_SEEN set) or a result
+  # that would not parse. An incomplete trigger never gets here -- it took
+  # the terminal exit above, because a second trigger after an unaccounted
+  # one lets the late first result be adopted by a later patch. Give the
+  # dim-reading case one clean redisplay/read cycle; keep ordinary retries
+  # at the configured count.
   if (( COMM_RETRY_SEEN == 1 && PATCH_NO_READING_RETRIES < 1 )); then
    PATCH_NO_READING_RETRIES=1
   fi
@@ -2407,32 +2384,43 @@ EOJSON
      CUR_SIZE=$(output_size)
      if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during no-reading retry - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-      printf " " >&3
       RETRIED_COMM=1
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
+     fi
+     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during no-reading recovery; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      break
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
       if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
        break
       fi
-      printf " " >&3
       READ_START=$SECONDS
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
     sleep 0.3
    done
+   if ! $GOT_RETRY; then
+    series_meter_read_failure_exit "Meter retry did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   fi
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
     if [[ -n "$PARSED" ]]; then
      READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
     fi
+   fi
+   if [[ -z "$READING" ]]; then
+    series_meter_read_failure_exit "Meter retry returned an unparseable result for $NAME; series stopped"
    fi
    if [[ -n "$READING" ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] no reading retry recovered: step=$STEP_NUM ire=$IRE retry=$no_reading_retry name=$NAME" >> /tmp/meter_series_debug.log
@@ -2475,32 +2463,43 @@ EOJSON
      CUR_SIZE=$(output_size)
      if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during zero retry - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-      printf " " >&3
       RETRIED_COMM=1
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
+     fi
+     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during zero confirmation; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      break
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
       if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
        break
       fi
-      printf " " >&3
       READ_START=$SECONDS
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
     sleep 0.3
    done
+   if ! $GOT_RETRY; then
+    series_meter_read_failure_exit "Meter zero-confirmation read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   fi
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
     if [[ -n "$PARSED" ]]; then
      ZERO_RETRY_READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
     fi
+   fi
+   if [[ -z "$ZERO_RETRY_READING" ]]; then
+    series_meter_read_failure_exit "Meter zero-confirmation read returned an unparseable result for $NAME; series stopped"
    fi
    if [[ -n "$ZERO_RETRY_READING" ]] && ! nonblack_zero_reading "$ZERO_RETRY_READING" "$IRE" "$R" "$G" "$B"; then
     echo "[$(date '+%H:%M:%S.%3N')] zero read guard recovered: step=$STEP_NUM ire=$IRE retry=$zero_retry name=$NAME" >> /tmp/meter_series_debug.log
@@ -2522,6 +2521,63 @@ EOJSON
   fi
  fi
 
+ # Application-level low-light averaging: collect distinct physical samples
+ # from the same child, then reduce linear XYZ through the shared math module.
+ AVERAGING_FAILED=0
+ AVERAGING_FAILURE_DETAIL=""
+ AVERAGE_MODE=$(effective_low_light_mode_for_step "$i")
+ AVERAGE_SAMPLE_COUNT=$(low_light_sample_count "$AVERAGE_MODE")
+ if [[ -n "$READING" && "$READING" != *'"error"'* && "$READING" != *'"measured_zero"'* && "$READING" != *'"null_read"'* ]] && (( AVERAGE_SAMPLE_COUNT > 1 )); then
+  AVERAGE_SAMPLES_JSON="$READING"
+  for (( average_index=2; average_index<=AVERAGE_SAMPLE_COUNT; average_index++ )); do
+   write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (sample $average_index/$AVERAGE_SAMPLE_COUNT)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   capture_series_average_sample "$(read_timeout_seconds "$IRE")"
+   SAMPLE_RC=$?
+   if (( SAMPLE_RC != 0 )); then
+    echo "[$(date '+%H:%M:%S.%3N')] averaging sample failed: step=$STEP_NUM sample=$average_index/$AVERAGE_SAMPLE_COUNT rc=$SAMPLE_RC name=$NAME" >> /tmp/meter_series_debug.log
+    AVERAGING_FAILED=1
+    if (( SAMPLE_RC == 2 )); then
+     AVERAGING_FAILURE_DETAIL="Meter averaging sample $average_index of $AVERAGE_SAMPLE_COUNT read persistent zeros at a light-driving patch for $NAME; series stopped rather than average contradictory samples"
+    else
+     AVERAGING_FAILURE_DETAIL="Meter averaging sample $average_index of $AVERAGE_SAMPLE_COUNT timed out or failed for $NAME; series stopped before a late result could contaminate another patch"
+    fi
+    break
+   fi
+   AVERAGE_SAMPLES_JSON="$AVERAGE_SAMPLES_JSON,$SERIES_AVERAGE_PARSED"
+  done
+  if (( AVERAGING_FAILED == 0 )); then
+   AVERAGED_READING=$(printf '[%s]' "$AVERAGE_SAMPLES_JSON" | PGEN_AVERAGE_MODE="$AVERAGE_MODE" PGEN_REQUESTED_SAMPLE_COUNT="$AVERAGE_SAMPLE_COUNT" /usr/bin/python3 /usr/bin/pgen_meter_average.py 2>>/tmp/meter_series_debug.log) || AVERAGED_READING=""
+   if [[ -n "$AVERAGED_READING" ]]; then
+    READING=$(build_step_reading_json "$i" "$AVERAGED_READING" 2>/dev/null || true)
+    if [[ -z "$READING" ]]; then
+     # The samples were all good; losing them to a wrapper failure must not
+     # quietly become a missing patch in the saved series.
+     AVERAGING_FAILED=1
+     AVERAGING_FAILURE_DETAIL="Averaged reading for $NAME could not be wrapped as a step record; series stopped rather than record the patch as missing"
+    fi
+   else
+    AVERAGING_FAILED=1
+    AVERAGING_FAILURE_DETAIL="Meter averaging calculation failed for $NAME; series stopped before an unaveraged result could be recorded"
+   fi
+  fi
+  if (( AVERAGING_FAILED == 1 )); then
+   # An additional trigger may still complete after our timeout. Continuing
+   # would let that late result shift every following patch by one. An exact
+   # averaging set is therefore all-or-nothing: publish a terminal error and
+   # retire this child before any later patch can be measured.
+   AVERAGING_ERROR=$(json_escape "$AVERAGING_FAILURE_DETAIL")
+   write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$AVERAGING_ERROR","error":"averaging_incomplete","requested_sample_count":$AVERAGE_SAMPLE_COUNT,"readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   series_quit_spotread "averaging_incomplete"
+   companion_show_alignment
+   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+   exit 1
+  fi
+ fi
+
  NORMALIZED_READING=$(normalize_oled_zero_black_reading "$READING" 2>/dev/null || true)
  if [[ -n "$NORMALIZED_READING" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] oled zero black normalized: step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2529,6 +2585,8 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
+  # Every averaging failure has already taken the terminal exit above, so an
+  # empty reading here is a completed-but-unparseable single read.
   echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$PATCH_NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
@@ -2585,15 +2643,6 @@ if series_requires_final_white_refresh && (( TOTAL > 0 )); then
  FIRST_NAME=$(get_step_field 0 name)
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  if ! ensure_spotread_low_light_for_step 0; then
-   LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed for final white refresh")
-   write_state_json << EOJSON
-{"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
-EOJSON
-   series_quit_spotread
-   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
-   exit 1
-  fi
   write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$FIRST_NAME (refresh displaying)","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
@@ -2628,21 +2677,26 @@ EOJSON
     CUR_SIZE=$(output_size)
     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
      echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during refresh reading - retrying once (+15s) step=1 ire=$FIRST_IRE name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
-     printf " " >&3
      RETRIED_COMM=1
      READ_TIMEOUT=$((READ_TIMEOUT + 15))
      SCAN_OFFSET=$(output_size)
+     printf " " >&3
      continue
+    fi
+    if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+       || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no final-white result; retiring child name=$FIRST_NAME" >> /tmp/meter_series_debug.log
+     break
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
 	     if ! handle_series_manual_prompt "1" "$FIRST_NAME (refresh)" "$PROMPT_REASON"; then
 	      break
 	     fi
-     printf " " >&3
      READ_START=$SECONDS
      READ_TIMEOUT=$((READ_TIMEOUT + 30))
      SCAN_OFFSET=$(output_size)
+     printf " " >&3
      continue
     fi
     SCAN_OFFSET="$CUR_SIZE"
@@ -2656,6 +2710,10 @@ EOJSON
    if [[ -n "$PARSED" ]]; then
     REFRESH_READING=$(build_step_reading_json 0 "$PARSED" 2>/dev/null)
    fi
+  fi
+
+  if [[ -z "$REFRESH_READING" ]]; then
+   series_meter_read_failure_exit "Final white-reference read did not complete for $FIRST_NAME; series stopped without publishing stale white data"
   fi
 
   if [[ -n "$REFRESH_READING" ]]; then

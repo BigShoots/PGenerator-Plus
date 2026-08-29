@@ -3107,6 +3107,14 @@ sub autocal3d_low_light_mode_for_step {
  return ($expected_y < $trigger) ? $mode : "off";
 }
 
+sub low_light_sample_count {
+ my ($mode)=@_;
+ return 2 if(($mode||"") eq "a");
+ return 3 if(($mode||"") eq "aa");
+ return 5 if(($mode||"") eq "aaa");
+ return 1;
+}
+
 sub read_request_id {
  my ($step)=@_;
  my $name=$step->{"phase"}."_".$step->{"kind"}."_".format_percent($step->{"level"});
@@ -3327,19 +3335,41 @@ sub read_step_once {
  $read_timeout=10 if($read_timeout < 10);
  $read_timeout=300 if($read_timeout > 300);
  $payload->{"read_timeout"}=int($read_timeout);
- # Keep the wrapper/session at off and always send the effective child mode,
- # including off, for the target Y of this exact step.
+ # Average repeated physical readings below the target-Y trigger without
+ # changing or reopening the Argyll process.
  $payload->{"low_light_session"}={ mode => "off", enabled => json_false() };
- my $active_mode=autocal3d_low_light_mode_for_step($config,$step);
- $payload->{"low_light"}={ mode => $active_mode, enabled => ($active_mode ne "off") ? json_true() : json_false() };
+ my $active_low_light=autocal3d_low_light_mode_for_step($config,$step);
+ $payload->{"low_light"}={
+  mode => $active_low_light,
+  enabled => ($active_low_light ne "off") ? json_true() : json_false(),
+ };
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
- my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"});
+ # The session extends its per-sample budget by 30s after one communication
+ # retry and reuses the extended value for every later sample, so a
+ # multi-sample set legitimately outlives a bare per-sample multiple. The
+ # grace stops this worker retiring a session ~50s before an aaa set that
+ # took one comm retry would have returned.
+ my $read_sample_count=low_light_sample_count($active_low_light);
+ my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
+ my $poll_transport_failures=0;
  while(time() < $deadline) {
   return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
   my $status=$result->{"status"}||"";
+  my $poll_message=$result->{"message"}||"";
+  # One status-poll transport failure does not cancel the already-submitted
+  # physical read. Re-poll the same request once; a second consecutive failure
+  # is returned so the caller can retire the ambiguous session.
+  if($status eq "error" && $poll_message=~/^Web UI API (?:timed out|read failed|is unavailable)/i) {
+   $poll_transport_failures++;
+   log_line("Meter result poll transport error; keeping request_id=$request_id in flight: $poll_message");
+   return (undef,$poll_message) if($poll_transport_failures > 1);
+   sleep(0.25);
+   next;
+  }
+  $poll_transport_failures=0;
   if($status eq "ok" && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
    next if(($result->{"request_id"}||"") ne "" && ($result->{"request_id"}||"") ne $request_id);
    my $reading=$result->{"readings"}[0];
@@ -3371,14 +3401,11 @@ sub fixture_reading_for_step {
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
-# Consecutive-transient-failure counter for the meter session (mirrors the
-# greyscale worker's logic). A single read timeout is usually a poll hiccup
-# that clears by re-reading on the EXISTING spotread session. Tearing the
-# session down (/api/meter/session/stop) forces a fresh spotread to reopen +
-# reclaim the i1Display3 USB interface, and that reopen races the kernel/usbhid
-# state ("did not claim interface 0 before use") -> kernel device reset -> meter
-# offline -> WebUI drops. So only tear down after repeated consecutive transient
-# failures, not the first one. Reset to 0 on any successful read.
+# Consecutive-transient-failure counter for errors that do not prove a logical
+# read is still in flight (mirrors the greyscale worker). Poll transport errors
+# are handled inside read_step_once, while incomplete/ambiguous reads are
+# retired immediately below. Other one-off errors keep the child to avoid an
+# unnecessary USB reopen and its kernel interface-claim race.
 my $_meter_session_consecutive_transient_failures=0;
 my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
 
@@ -3390,6 +3417,21 @@ sub maybe_reset_meter_session_after_read_error {
  my ($error)=@_;
  $error="" if(!defined($error));
  $error=~s/[\r\n]+/ /g;
+ # Individual GET poll transport failures are absorbed inside read_step_once.
+ # A timeout that reaches here is an incomplete logical read (or an ambiguous
+ # POST), so another patch must not reuse this child.
+ if($error=~/meter session closed for clean retry|meter read timed out|Web UI API (?:timed out|read failed|is unavailable)/i) {
+  log_line("Retiring meter session after an incomplete or ambiguous read: $error");
+  my $stop=api_json("POST","/api/meter/session/stop",undef,25);
+  # This branch fires when the API transport is already failing, so the stop
+  # itself can fail; record it, because the ambiguous child then survives and
+  # only the request_id checks in read_step_once stand between its late
+  # result and the next patch.
+  log_line("Meter session stop was not confirmed: ".((ref($stop) eq "HASH" && $stop->{"message"}) ? $stop->{"message"} : "no response"))
+   if(ref($stop) ne "HASH" || ($stop->{"status"}||"") eq "error");
+  $_meter_session_consecutive_transient_failures=0;
+  return;
+ }
  return unless($error =~ /timeout|session|spotread|unavailable/i);
  $_meter_session_consecutive_transient_failures++;
  if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {

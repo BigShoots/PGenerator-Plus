@@ -140,6 +140,61 @@ def sample_uniform_table(table, position):
     return table[low] * (1.0 - fraction) + table[low + 1] * fraction
 
 
+def average_xyz_measurements(readings):
+    """Return an accurate arithmetic mean of repeated meter measurements.
+
+    XYZ is linear, so it is the correct space in which to average repeated
+    physical readings.  ``math.fsum`` avoids the order-dependent rounding of
+    a naive sum.  Derived xy and CCT values are calculated once from the mean
+    XYZ; averaging those nonlinear values would be mathematically wrong.
+    """
+    if not isinstance(readings, (list, tuple)) or not readings:
+        raise ValueError("at least one reading is required")
+    if len(readings) > 100:
+        raise ValueError("too many readings")
+
+    def finite_number(reading, key):
+        if not isinstance(reading, dict):
+            raise ValueError("every reading must be an object")
+        value = reading.get(key)
+        if isinstance(value, bool):
+            raise ValueError("%s is not numeric" % key)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("%s is not numeric" % key)
+        if not math.isfinite(value):
+            raise ValueError("%s is not finite" % key)
+        return value
+
+    count = len(readings)
+    xyz = tuple(
+        math.fsum(finite_number(reading, key) for reading in readings) / count
+        for key in ("X", "Y", "Z")
+    )
+    total = math.fsum(xyz)
+    if total > 1e-15:
+        x = xyz[0] / total
+        y = xyz[1] / total
+    else:
+        x = 0.0
+        y = 0.0
+
+    cct = 0
+    denominator = 0.1858 - y
+    if y > 0.0 and abs(denominator) > 1e-15:
+        n = (x - 0.3320) / denominator
+        estimate = 449.0 * n ** 3 + 3525.0 * n ** 2 + 6823.3 * n + 5520.33
+        if math.isfinite(estimate):
+            cct = int(round(estimate))
+
+    return {
+        "X": xyz[0], "Y": xyz[1], "Z": xyz[2],
+        "x": x, "y": y, "luminance": xyz[1], "cct": cct,
+        "sample_count": count,
+    }
+
+
 # Both products keep sum() rather than an explicit three-term expression
 # because that is the established reduction and its results are already in
 # shipped profiles. Note what "established" means across interpreters: on the

@@ -13000,7 +13000,12 @@ async function meterCheckStatus(){
  // connected meter without waiting for a busy flag to clear. Once the
  // meter is known, a stale busy flag from a previous tab or in-flight
  // read won't blank the status card.
- if(meterDetected && (meterContinuousActive||meterContinuousSuspendedForLgWrite||meterLgGreyBusy||meterAutoCalRunning||meterActionPending)){
+ if(meterDetected && (
+  meterContinuousActive||meterContinuousSuspendedForLgWrite||meterLgGreyBusy
+  ||meterAutoCalRunning||meterLg3dAutoCalRunning||meterFullAutoCalRunning
+  ||meterDvAutoCalProfileRunning||meterDvProfileStandaloneRunning
+  ||meterActionPending||window._meterToneMapBusy
+ )){
   setConnectionBusyStatus('Busy');
   return;
  }
@@ -14748,11 +14753,9 @@ function meterRestoreSeriesBeepPref(){
  try{ el.checked=localStorage.getItem(METER_SERIES_BEEP_KEY)==='1'; }catch(e){}
 }
 
-// Calibration-card low-light handler: applies the selected spotread mode
-// to reads whose expected target luminance is below the trigger. The mode
-// is a spotread flag-set built by meterLowLightFlags(). Server-side
-// default is off (no mode), so the single-read path is preserved when the
-// handler is disabled or the body is missing.
+// Calibration-card low-light handler: below the target-luminance trigger,
+// take 2/3/5 physical samples on one persistent meter process. The server
+// averages linear XYZ and derives xy/CCT from the result.
 const METER_LOW_LIGHT_KEY='pgen.meter.lowLight';
 function meterSetLowLightHandler(){
  const enabled=document.getElementById('meterLowLightEnabled');
@@ -14786,22 +14789,6 @@ function meterRestoreLowLightHandler(){
  else if(base.indexOf('x_')===0){ base=base.slice(2); }
  if(Array.from(mode.options).some(o=>o.value===base)) mode.value=base;
  if(typeof saved.trigger==='number'&&saved.trigger>0) trigger.value=saved.trigger;
-}
-
-// Map the low-light mode value to the spotread flag set. Returns an
-// empty string for 'off' (no flag). Spotread flags:
-//   -Y a   = 2-read avg
-//   -Y aa  = 3-read avg
-//   -Y aaa = 5-read avg
-function meterLowLightFlags(mode){
- const m=String(mode||'off');
- switch(m){
-  case 'a':     return '-Y a';
-  case 'aa':    return '-Y aa';
-  case 'aaa':   return '-Y aaa';
-  case 'off':   return '';
-  default:      return '';
- }
 }
 
 // Target White / Target Black override state (white-peak and black-floor

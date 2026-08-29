@@ -164,6 +164,8 @@ make_path("$stage/usr/bin","$stage/usr/share/PGenerator",
  "$stage/usr/lib/python3/dist-packages");
 copy("$root/usr/bin/pgen_colour_math.py","$stage/usr/bin/pgen_colour_math.py")
  or die "Unable to stage Python maths module: $!";
+copy("$root/usr/bin/pgen_meter_average.py","$stage/usr/bin/pgen_meter_average.py")
+ or die "Unable to stage meter averaging helper: $!";
 copy("$root/usr/share/PGenerator/PGMath.pm","$stage/usr/share/PGenerator/PGMath.pm")
  or die "Unable to stage Perl maths module: $!";
 copy("$root/usr/bin/pgen_lut_solve","$stage/usr/bin/pgen_lut_solve")

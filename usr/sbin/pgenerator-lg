@@ -291,6 +291,16 @@ $MAX_CONNECT_TIMEOUT=5;
 # Grace period for reaping a socat child that is still stuck in connect().
 $CONNECT_CHILD_REAP_GRACE=3;
 $MAX_FRAME_SIZE=1024*1024;
+$LG_REMOTE_APP_SIGNATURE=(
+ "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
+ "ctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR".
+ "+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRy".
+ "aMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4".
+ "RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n".
+ "50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM".
+ "2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQoj".
+ "oa7NQnAtw=="
+);
 
 ###############################################
 #              JSON Helpers                   #
@@ -739,36 +749,196 @@ sub lg_message_register (@) {
  my $client_key=shift(@_);
  my $pairing_type_arg=shift(@_);
  my $force_pairing_arg=shift(@_);
+ my $manifest_profile=lc(shift(@_)||"legacy_signed");
  my $pairing_type=uc($pairing_type_arg||"PROMPT");
  my $force_pairing=$force_pairing_arg ? 1 : 0;
  $client_key="" if(!defined($client_key));
  $pairing_type="PROMPT" if($pairing_type !~ /^(PROMPT|PIN|COMBINED|LGSWITCH-PIN)$/);
+ $manifest_profile="legacy_signed" if($manifest_profile ne "unsigned");
+ my $manifest;
+ if($manifest_profile eq "unsigned") {
+  $manifest={
+   appVersion => "1.0",
+   manifestVersion => 1,
+   permissions => [
+    "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE",
+    "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
+    "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
+    "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
+    "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
+    "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+    "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT"
+   ],
+  };
+ } else {
+  $manifest={
+   appVersion => "1.1",
+   manifestVersion => 1,
+   # WRITE_SETTINGS / WRITE_NOTIFICATION_ALERT stay in the OUTER list even
+   # though the signed block also carries them: a TV that accepts this
+   # manifest but ignores the signed block still registers successfully (the
+   # unsigned fallback fires only on an error), and the Luna settings bridge
+   # then needs them granted on the outer request.
+   permissions => [
+    "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
+    "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
+    "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
+    "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
+    "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
+    "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+    "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT"
+   ],
+   signatures => [{ signature => $LG_REMOTE_APP_SIGNATURE, signatureVersion => 1 }],
+   signed => {
+    appId => "com.lge.test",
+    created => "20140509",
+    localizedAppNames => {
+     "" => "LG Remote App",
+     "ko-KR" => "\x{B9AC}\x{BAA8}\x{CEE8} \x{C571}",
+     "zxx-XX" => "\x{041B}\x{0413} R\x{044D}\x{043C}ot\x{044D} A\x{041F}\x{041F}",
+    },
+    localizedVendorNames => { "" => "LG Electronics" },
+    permissions => [
+     "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+     "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
+     "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
+     "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
+     "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
+    ],
+    serial => "2f930e2d2cfe083771f68e4fe7bb07",
+    vendorId => "com.lge",
+   },
+  };
+ }
  return {
   type => "register",
   id => "register_0",
   payload => {
    "client-key" => $client_key,
    forcePairing => &json_bool($force_pairing),
-   # webOS 26 rejects the old shared LG test certificate before it can show
-   # the pairing prompt. This unsigned outer manifest is also accepted by
-   # older webOS releases. Keep the permissions needed by picture control,
-   # PIN pairing, and the notification-backed Luna settings bridge together.
-   manifest => {
-    appVersion => "1.0",
-    manifestVersion => 1,
-    permissions => [
-     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE",
-     "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
-     "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
-     "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
-     "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
-     "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-     "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT"
-    ],
-   },
+   manifest => $manifest,
    pairingType => $pairing_type,
   },
  };
+}
+
+# Successful registration manifests are memoized per TV for the daemon's
+# life, keyed by ip+model, so the paired webOS 26 set does not pay a
+# signed-probe, socket teardown, and full re-handshake on EVERY subsequent
+# command. A different TV appearing on the same address re-probes; a failed
+# memoized registration clears its entry so the next attempt re-probes too.
+my %_lg_registration_manifest_for;
+
+# Older LG generations need the signed registration manifest for calibration
+# and DDC permissions. webOS 26 rejects that certificate before pairing, so a
+# registration error gets one fresh-socket retry with the unsigned manifest.
+# The retry is bounded and only happens before any TV operation is sent.
+sub lg_register_session_with_compatibility (@) {
+ my ($ip,$session,$client_key,$pairing_type,$force_pairing,$connect_timeout,$hello_info,$system_info)=@_;
+ $hello_info={} if(ref($hello_info) ne "HASH");
+ $system_info={} if(ref($system_info) ne "HASH");
+ my $response;
+ my $memo_key=$ip."|".($system_info->{"modelName"}||"");
+
+ if(($_lg_registration_manifest_for{$memo_key}||"") eq "unsigned") {
+  if(!&websocket_send_json($session,&lg_message_register($client_key,$pairing_type,$force_pairing,"unsigned"))) {
+   &websocket_close($session);
+   return &json_error("Unable to send LG registration request");
+  }
+  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+  if(ref($response) ne "HASH" || ($response->{"type"}||"") eq "error") {
+   delete($_lg_registration_manifest_for{$memo_key});
+   my $unsigned_error=(ref($response) eq "HASH") ? ($response->{"error"}||"LG registration failed") : "No LG registration response";
+   &websocket_close($session);
+   return &json_error($unsigned_error,{ unsigned_registration_error => $unsigned_error });
+  }
+  return &json_ok({
+   session => $session,
+   response => $response,
+   hello_info => $hello_info,
+   system_info => $system_info,
+   registration_manifest => "unsigned",
+   registration_fallback => &json_true(),
+  });
+ }
+
+ if(!&websocket_send_json($session,&lg_message_register($client_key,$pairing_type,$force_pairing,"legacy_signed"))) {
+  &websocket_close($session);
+  return &json_error("Unable to send LG registration request");
+ }
+ $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+ if(ref($response) ne "HASH") {
+  &websocket_close($session);
+  return &json_error("No LG registration response");
+ }
+ if(($response->{"type"}||"") ne "error") {
+  $_lg_registration_manifest_for{$memo_key}="legacy_signed";
+  return &json_ok({
+   session => $session,
+   response => $response,
+   hello_info => $hello_info,
+   system_info => $system_info,
+   registration_manifest => "legacy_signed",
+   registration_fallback => &json_false(),
+  });
+ }
+
+ my $legacy_error=$response->{"error"}||"LG rejected the signed registration manifest";
+ # A pairing the operator explicitly declined must not trigger the unsigned
+ # retry: the retry re-registers and would re-display the pairing prompt for
+ # a single action. The certificate rejection this fallback exists for
+ # arrives before any prompt is shown.
+ if($legacy_error=~/pairing[^a-z]*(?:denied|rejected|cancel)|(?:denied|cancel)[^a-z]*pairing|user[^a-z]*(?:denied|cancel)/i) {
+  &websocket_close($session);
+  return &json_error($legacy_error,{ legacy_registration_error => $legacy_error });
+ }
+ # The downgrade costs the client key its TEST_PROTECTED/TEST_SECURE
+ # calibration permissions, so a later calibration failure must be traceable
+ # to this moment rather than looking unrelated.
+ &diag_log_append("register:unsigned-fallback",{ ip => $ip, legacy_error => $legacy_error });
+ &websocket_close($session);
+ $session=&websocket_open($ip,$connect_timeout + 2);
+ return &json_error("LG rejected the signed registration manifest and the unsigned retry could not reconnect.",{ legacy_registration_error => $legacy_error }) if(ref($session) ne "HASH");
+
+ if(!&websocket_send_json($session,&lg_message_hello())) {
+  &websocket_close($session);
+  return &json_error("Unable to send LG hello request for unsigned registration retry",{ legacy_registration_error => $legacy_error });
+ }
+ $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+ if(ref($response) ne "HASH" || ($response->{"type"}||"") ne "hello") {
+  &websocket_close($session);
+  return &json_error("LG did not acknowledge the unsigned registration retry hello",{ legacy_registration_error => $legacy_error });
+ }
+ $hello_info=(ref($response->{"payload"}) eq "HASH") ? $response->{"payload"} : {};
+ $response=&lg_request($session,"get_sys_info_unsigned_retry","system/getSystemInfo",{},$connect_timeout + 2);
+ $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
+
+ if(!&websocket_send_json($session,&lg_message_register($client_key,$pairing_type,$force_pairing,"unsigned"))) {
+  &websocket_close($session);
+  return &json_error("Unable to send unsigned LG registration retry",{ legacy_registration_error => $legacy_error });
+ }
+ $response=&websocket_recv_json($session,$connect_timeout + 2,"");
+ if(ref($response) ne "HASH") {
+  &websocket_close($session);
+  return &json_error("No response to unsigned LG registration retry",{ legacy_registration_error => $legacy_error });
+ }
+ if(($response->{"type"}||"") eq "error") {
+  my $unsigned_error=$response->{"error"}||"LG registration failed";
+  &websocket_close($session);
+  return &json_error($unsigned_error,{
+   legacy_registration_error => $legacy_error,
+   unsigned_registration_error => $unsigned_error,
+  });
+ }
+ $_lg_registration_manifest_for{$memo_key}="unsigned";
+ return &json_ok({
+  session => $session,
+  response => $response,
+  hello_info => $hello_info,
+  system_info => $system_info,
+  registration_manifest => "unsigned",
+  registration_fallback => &json_true(),
+ });
 }
 
 # The TV tells us in its hello payload which pairing types it supports
@@ -882,6 +1052,8 @@ sub lg_authenticated_session (@) {
  my $needs_pin_pairing=0;
  my $message="";
  my $response;
+ my $registration_manifest="legacy_signed";
+ my $registration_fallback=0;
 
  eval {
   &websocket_send_json($session,&lg_message_hello()) or die "Unable to send hello request\n";
@@ -893,10 +1065,14 @@ sub lg_authenticated_session (@) {
   $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
   $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
 
-  &websocket_send_json($session,&lg_message_register($client_key)) or die "Unable to send registration request\n";
-  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
-  die "No registration response from TV\n" if(ref($response) ne "HASH");
-  die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
+  my $registration=&lg_register_session_with_compatibility($ip,$session,$client_key,"PROMPT",0,$connect_timeout,$hello_info,$system_info);
+  die (($registration->{"message"}||"LG registration failed")."\n") if(($registration->{"status"}||"") ne "ok");
+  $session=$registration->{"session"};
+  $response=$registration->{"response"};
+  $hello_info=$registration->{"hello_info"};
+  $system_info=$registration->{"system_info"};
+  $registration_manifest=$registration->{"registration_manifest"}||"legacy_signed";
+  $registration_fallback=$registration->{"registration_fallback"} ? 1 : 0;
 
   if(($response->{"type"}||"") eq "registered") {
    $client_key=$response->{"payload"}{"client-key"}||$client_key;
@@ -946,6 +1122,8 @@ sub lg_authenticated_session (@) {
   hello_info => $hello_info,
   system_info => $system_info,
   software_info => $software_info,
+  registration_manifest => $registration_manifest,
+  registration_fallback => &json_bool($registration_fallback),
   message => $message,
  };
 }
@@ -5558,7 +5736,13 @@ sub lg_generation_info (@) {
  $platform_year=2000+$1 if($platform =~ /W(\d{2})/i);
  my $series="";
  if($model_lc =~ /oled\d*([a-z])(\d+|x)/) {
-  $series=uc($1.$2);
+  my ($family,$series_token)=($1,$2);
+  # European model names can append a numeric tuner/region code directly to
+  # the generation, for example G3 + 6LA and G5 + 4LW. Keep synthetic/future
+  # multi-digit generations such as C10AUA intact; their suffix has 3 letters.
+  $series_token=substr($series_token,0,1)
+   if($series_token =~ /^\d{2}$/ && $model_lc =~ /oled\d*[a-z]\d{2}[a-z]{2}(?:[._-]|$)/);
+  $series=uc($family.$series_token);
  }
  my $webos_major=0;
  $webos_major=$1 if($product =~ /webostv\s+(\d+)/i);
@@ -5567,8 +5751,8 @@ sub lg_generation_info (@) {
  # Infer the model year from LG's single-character OLED generation suffix so
  # C8/C9/CX and equivalent B/G/E/W models retain the no-readback profile.
  my $series_year=0;
- if($series =~ /^[A-Z](6|7|8|9|X|1)$/) {
-  my %year_for_suffix=(6=>2016,7=>2017,8=>2018,9=>2019,X=>2020,1=>2021);
+ if($series =~ /^[A-Z](6|7|8|9|X|1|2|3|4|5)$/) {
+  my %year_for_suffix=(6=>2016,7=>2017,8=>2018,9=>2019,X=>2020,1=>2021,2=>2022,3=>2023,4=>2024,5=>2025);
   $series_year=$year_for_suffix{$1}||0;
  }
  my $ddc_only=0;
@@ -5589,7 +5773,7 @@ sub lg_generation_info (@) {
  $classification_source = "webos_major"   if($classification_source eq "fallback" && $webos_major);
 
  my $generation_id = "lg_unknown";
- if($platform_year >= 2022) { $generation_id = "lg2022plus_oled"; }
+ if($platform_year >= 2022 || $series_year >= 2022) { $generation_id = "lg2022plus_oled"; }
  elsif($platform_year == 2021 || $series_year == 2021) { $generation_id = "lg2021_oled"; }
  elsif(($platform_year >= 2016 && $platform_year <= 2020) || ($series_year >= 2016 && $series_year <= 2020)) {
   $generation_id="lg".($platform_year||$series_year)."_oled";
@@ -7277,6 +7461,8 @@ sub lg_connect_pin_wait_workflow (@) {
  my $client_key=$initial_client_key;
  my $response;
  my $result={};
+ my $registration_manifest="legacy_signed";
+ my $registration_fallback=0;
 
  eval {
   &websocket_send_json($session,&lg_message_hello()) or die "Unable to send hello request\n";
@@ -7288,10 +7474,14 @@ sub lg_connect_pin_wait_workflow (@) {
   $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
   $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
 
-  &websocket_send_json($session,&lg_message_register($initial_client_key,$pairing_type,1)) or die "Unable to send registration request\n";
-  $response=&websocket_recv_json($session,$connect_timeout + 2,"");
-  die "No registration response from TV\n" if(ref($response) ne "HASH");
-  die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
+  my $registration=&lg_register_session_with_compatibility($ip,$session,$initial_client_key,$pairing_type,1,$connect_timeout,$hello_info,$system_info);
+  die (($registration->{"message"}||"LG registration failed")."\n") if(($registration->{"status"}||"") ne "ok");
+  $session=$registration->{"session"};
+  $response=$registration->{"response"};
+  $hello_info=$registration->{"hello_info"};
+  $system_info=$registration->{"system_info"};
+  $registration_manifest=$registration->{"registration_manifest"}||"legacy_signed";
+  $registration_fallback=$registration->{"registration_fallback"} ? 1 : 0;
 
   if(($response->{"type"}||"") eq "registered") {
    $client_key=$response->{"payload"}{"client-key"}||"";
@@ -7387,6 +7577,8 @@ sub lg_connect_pin_wait_workflow (@) {
    pair_prompted => &json_true(),
    prompt_style => $prompt_style,
    pairing_mode => $pairing_type,
+   registration_manifest => $registration_manifest,
+   registration_fallback => &json_bool($registration_fallback),
    message => ($pairing_type eq "PIN") ? "LG TV PIN pairing completed." : "LG TV pairing completed.",
    hello_info => $hello_info,
    system_info => $system_info,

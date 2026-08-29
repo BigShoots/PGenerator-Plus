@@ -63,6 +63,13 @@ close_tree("matrix inverse",
 close_tree("matrix vector",
            math_core.matrix3_vector_multiply(FIXTURE["matrix"], FIXTURE["vector"]),
            FIXTURE["product"])
+checks += 1
+if math_core.matrix3_inverse([[1, 2, 3], [4, 5, 6], [5, 7, 9]]) is not None:
+    raise AssertionError("singular matrix (row3 = row1 + row2) must invert to None")
+checks += 1
+if math_core.bradford_adaptation([0.0, 0.0, 0.0],
+                                 math_core.ICC_D50_WHITE) is not None:
+    raise AssertionError("degenerate source white must yield None, not junk scaling")
 # Zero is the one input the four runtimes do not agree on, so it cannot live
 # in the shared fixture. Python evaluates the transfer function at zero rather
 # than short-circuiting, as the C header does; Perl and the browser return
@@ -72,6 +79,17 @@ close("PQ encode zero", math_core.pq_encode_nits(0.0),
 close("PQ encode zero, peak clamped",
       math_core.pq_encode_nits(0.0, clamp_peak=True),
       7.3095590257839665e-07)
+# Boundary policies: the icc_finetune combination must return exactly the peak
+# past the denominator zero (signal ~1.99206), and the default bounded domain
+# must clamp an over-unity signal to the 1.0 result rather than exploding
+# through the floored denominator.
+close("PQ decode past denominator zero, historical policy",
+      math_core.pq_decode_nits(2.5, clamp_signal=False,
+                               nonpositive_result=10000.0),
+      10000.0, tolerance=0.0)
+close("PQ decode over-unity signal, default clamp",
+      math_core.pq_decode_nits(2.5), math_core.pq_decode_nits(1.0),
+      tolerance=0.0)
 
 close_tree("Bradford cone response",
            math_core.BRADFORD, FIXTURE["bradford_cone_response"])

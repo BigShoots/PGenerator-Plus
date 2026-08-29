@@ -132,6 +132,13 @@ my $direct_expected=[
 is_deeply(matrix3_inverse($direct_matrix,0,1),$direct_expected,
  "shared inverse retains direct-division binary64 order when requested");
 
+# Degenerate inputs must refuse, not divide by ~0: row3 = row1 + row2.
+ok(!defined(matrix3_inverse([[1,2,3],[4,5,6],[5,7,9]])),
+ "Perl shared inverse returns undef for a singular matrix");
+is_deeply([bradford_adapt_xyz(0.31,0.42,0.18,0,0.3290,0.3127,0.3290)],
+ [0.31,0.42,0.18],
+ "Perl Bradford leaves XYZ unadapted for a degenerate source white");
+
 my @adapted=bradford_adapt_xyz(0.31,0.42,0.18,
  0.3127,0.3290,0.3457,0.3585);
 my @adapted_expected=(

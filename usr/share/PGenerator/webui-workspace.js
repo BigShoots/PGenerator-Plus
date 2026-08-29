@@ -7284,6 +7284,31 @@ function meterFullAutoCalStatusRunId(status){
  return String(status.full_autocal_run_id||status.run_id||'');
 }
 
+// Starting an AutoCal worker first retires any live-white/manual meter
+// session. The server deliberately allows that graceful USB handoff roughly
+// 20 seconds before its final cleanup backstops run, so the generic 10-second
+// fetch timeout can expire even though the requested worker is then launched
+// successfully. Keep the browser busy guard alive for the whole safe handoff
+// window. If the response is still lost, only adopt a running greyscale worker
+// whose run id exactly matches this browser's Full AutoCal run.
+const METER_AUTOCAL_WORKER_START_TIMEOUT_MS=30000;
+async function meterFullAutoCalAdoptGreyscaleStart(response,expectedRunId,expectedPhase){
+ if(response&&response.status==='started') return response;
+ const wanted=String(expectedRunId||'');
+ if(!wanted) return response;
+ let probe=null;
+ try{ probe=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:8000}); }catch(e){}
+ // The run id is shared by every 1D phase of one Full AutoCal, so a phase
+ // match is required too: without it, a still-running earlier phase would
+ // convert a legitimately rejected start into a fake success and the browser
+ // would watch live charts with no worker behind them.
+ if(probe&&probe.status==='running'&&meterFullAutoCalStatusRunId(probe)===wanted
+    &&String(probe.full_autocal_phase||'')===String(expectedPhase||'')){
+  return {status:'started',message:probe.current_name||'LG Auto Cal already running'};
+ }
+ return response;
+}
+
 function meterFullAutoCalStatusMatchesRun(status){
  const statusRunId=meterFullAutoCalStatusRunId(status);
  if(meterFullAutoCalRunId&&statusRunId&&statusRunId!==meterFullAutoCalRunId) return false;
@@ -8823,13 +8848,14 @@ function meterFullAutoCalTouchupTargetY(){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:post3dBody,
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
+  r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'post-3d-polish');
   if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start committed polish');
   meterActionPending=false;
 	  meterAutoCalSetOverlay(false,{phase:'running',current_name:'Committed polish started',message:'Showing live charts'});
@@ -8996,13 +9022,14 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:touchupBody,
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
+  r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'touchup-greyscale');
   if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start greyscale touch-up');
   meterActionPending=false;
   toast('Full Auto Cal greyscale touch-up started');
@@ -9917,7 +9944,7 @@ async function meterAutoCalConfirmAndStart(){
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
   meterAutoCalWizardContextActive=false;
-  const r=await fetchJSON('/api/meter/lg-autocal',{
+  let r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify(meterAutoCalMeasurementSignalContext({
@@ -9989,8 +10016,9 @@ async function meterAutoCalConfirmAndStart(){
     low_light:meterLowLightReadState(),
     steps:autocalSteps
    })),
-   _timeoutMs:10000
+   _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
   });
+  if(fullWorkflow) r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'first-greyscale');
   if(!r||r.status!=='started'){
    if(meterAutoCalSpectroSetupActive){
     meterAutoCalSpectroSetupActive=false;
@@ -11408,7 +11436,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload),
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r)) break;

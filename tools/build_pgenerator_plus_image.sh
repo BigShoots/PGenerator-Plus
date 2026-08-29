@@ -704,6 +704,8 @@ validate_colour_math_runtime() {
 
  [[ -f "$root/usr/bin/pgen_colour_math.py" ]] || \
   die "Math runtime is missing /usr/bin/pgen_colour_math.py"
+ [[ -f "$root/usr/bin/pgen_meter_average.py" ]] || \
+  die "Math runtime is missing /usr/bin/pgen_meter_average.py"
  [[ -f "$root/usr/share/PGenerator/PGMath.pm" ]] || \
   die "Math runtime is missing /usr/share/PGenerator/PGMath.pm"
  [[ -x "$root/usr/bin/pgen_lut_solve" ]] || \

@@ -1959,9 +1959,9 @@ sub autocal_low_light_number {
  return $number;
 }
 
-# Resolve expected Y for the step about to be read. This deliberately uses the
-# current step metadata and the same target-luminance helper as the solver. It
-# never derives the next mode from the previous measured Y.
+# Resolve expected Y for the step about to be read through the same target
+# luminance helper used by the solver. The previous measured Y is deliberately
+# not used to decide how many samples the next patch receives.
 sub autocal_expected_target_y_for_low_light {
  my ($config,$step)=@_;
  return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
@@ -2002,6 +2002,14 @@ sub autocal_low_light_mode_for_step {
  my $expected_y=autocal_expected_target_y_for_low_light($config,$step);
  return "off" if(!defined($expected_y) || $expected_y < 0);
  return ($expected_y < $trigger) ? $mode : "off";
+}
+
+sub low_light_sample_count {
+ my ($mode)=@_;
+ return 2 if(($mode||"") eq "a");
+ return 3 if(($mode||"") eq "aa");
+ return 5 if(($mode||"") eq "aaa");
+ return 1;
 }
 
 sub body_luma_bias_display_allowed {
@@ -4993,17 +5001,14 @@ sub low_shadow_sample_read_timeout {
 sub transient_read_error {
  my ($error)=@_;
  return 0 if(!defined($error) || $error eq "");
- return ($error =~ /tim(?:e|ed)\s*out|timeout|communication|fifo|session|spotread|unavailable|invalid web ui api|unable to start meter read/i) ? 1 : 0;
+ return ($error =~ /tim(?:e|ed)\s*out|timeout|communication|fifo|session|spotread|respawn|unavailable|invalid web ui api|unable to start meter read/i) ? 1 : 0;
 }
 
-# Consecutive-transient-failure counter for the meter session. A single read
-# timeout is usually a poll hiccup that clears by re-reading on the EXISTING
-# spotread session. Tearing the session down (/api/meter/session/stop) forces a
-# fresh spotread to reopen + reclaim the i1Display3 USB interface, and that
-# reopen races the kernel/usbhid state -> "did not claim interface 0 before use"
-# -> kernel device reset -> meter offline. So only tear down after repeated
-# consecutive transient failures, not the first one. Reset to 0 on any
-# successful read (see reset_meter_session_success below).
+# Consecutive-transient-failure counter for errors that do not prove a logical
+# read is still in flight. Poll transport failures are handled inside
+# read_step_once, while an incomplete/ambiguous logical read is retired
+# immediately below. Keeping the threshold for other one-off errors avoids an
+# unnecessary USB reopen and its kernel interface-claim race.
 my $_meter_session_consecutive_transient_failures=0;
 my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
 
@@ -5015,6 +5020,22 @@ sub reset_meter_session_after_read_error {
  my ($error)=@_;
  $error="" if(!defined($error));
  $error=~s/[\r\n]+/ /g;
+ # read_step_once now absorbs individual GET polling failures. Any timeout
+ # that reaches this function therefore means the logical read itself is
+ # incomplete (or a POST may have been accepted without a response). Never
+ # submit another patch to that potentially in-flight child.
+ if($error=~/meter session closed for clean retry|meter read timed out|Web UI API (?:timed out|read failed|is unavailable)/i) {
+  log_line("Retiring meter session after an incomplete or ambiguous read: $error");
+  my $stop=api_json("POST","/api/meter/session/stop",undef,25);
+  # This branch fires when the API transport is already failing, so the stop
+  # itself can fail; record it, because the ambiguous child then survives and
+  # only the request_id checks in read_step_once stand between its late
+  # result and the next patch.
+  log_line("Meter session stop was not confirmed: ".((ref($stop) eq "HASH" && $stop->{"message"}) ? $stop->{"message"} : "no response"))
+   if(ref($stop) ne "HASH" || ($stop->{"status"}||"") eq "error");
+  $_meter_session_consecutive_transient_failures=0;
+  return;
+ }
  $_meter_session_consecutive_transient_failures++;
  if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {
   # First transient failure: let the caller retry on the existing session
@@ -21370,11 +21391,20 @@ sub invalid_low_shadow_reading {
 
 sub read_step {
 		 my ($config,$step,$state_ref)=@_;
-		 my $attempts=defined($config->{"read_attempts"}) ? int($config->{"read_attempts"}) : 5;
+	 my $attempts=defined($config->{"read_attempts"}) ? int($config->{"read_attempts"}) : 5;
  $attempts=1 if($attempts < 1);
  $attempts=5 if($attempts > 5);
  my $last_error="";
-	 if(autocal_step_is_low_shadow($step) && !(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"})) {
+	 # When the operator's low-light handler already repeats this patch
+	 # (2/3/5 samples reduced in linear XYZ), the low-shadow median ladder is
+	 # deliberately stood down: stacking both would read the patch up to 15
+	 # times, and the mean of a full averaging set is the operator's chosen
+	 # estimator. The median ladder remains the default outlier guard whenever
+	 # the handler leaves the patch at one sample.
+	 my $application_average_mode=autocal_low_light_mode_for_step($config,$step);
+	 if(autocal_step_is_low_shadow($step)
+	    && low_light_sample_count($application_average_mode) == 1
+	    && !(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"})) {
 	  my @samples;
 	  my $sample_count=low_shadow_sample_count_for_step($config,$step);
 	  my $sample_timeout=low_shadow_sample_read_timeout($config,$step);
@@ -21811,8 +21841,9 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
-		 # Keep the persistent wrapper/session at off. Only its spotread child
-		 # changes when the current step crosses the target-Y trigger.
+		 # Argyll ignores -Y averaging on i1Display3. Ask the persistent meter
+		 # session for 2/3/5 physical samples instead, only below the target-Y
+		 # trigger. The spotread process remains open throughout.
 		 $payload->{"low_light_session"}={ mode => "off", enabled => JSON::PP::false };
 		 my $active_low_light=autocal_low_light_mode_for_step($config,$step);
 		 $payload->{"low_light"}={
@@ -21829,11 +21860,31 @@ sub read_step_once {
 			 $start_timeout=70 if($ire <= 5 && !(ref($step) eq "HASH" && $step->{"autocal_probe_stimulus"}));
 			 my $start=api_json("POST","/api/meter/read",$payload,$start_timeout);
 		 return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
-		 my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"});
+		 # The session extends its per-sample budget by 30s after one communication
+		 # retry and reuses the extended value for every later sample, so a
+		 # multi-sample set legitimately outlives a bare per-sample multiple. The
+		 # grace stops this worker retiring a session ~50s before an aaa set that
+		 # took one comm retry would have returned.
+		 my $read_sample_count=low_light_sample_count($active_low_light);
+		 my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
+		 my $poll_transport_failures=0;
 		 while(time() < $deadline) {
 		  return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
 	  my $status=$result->{"status"}||"";
+	  my $poll_message=$result->{"message"}||"";
+	  # A polling socket can time out while the already-submitted physical read
+	  # is still running. Re-poll the SAME request once; returning immediately
+	  # would let the caller submit a second logical patch while the first result
+	  # is still in flight.
+	  if($status eq "error" && $poll_message=~/^Web UI API (?:timed out|read failed|is unavailable)/i) {
+	   $poll_transport_failures++;
+	   log_line("Meter result poll transport error; keeping request_id=$request_id in flight: $poll_message");
+	   return (undef,$poll_message) if($poll_transport_failures > 1);
+	   sleep(0.25);
+	   next;
+	  }
+	  $poll_transport_failures=0;
 	  if($status eq "ok" && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
 	   my $result_request_id=$result->{"request_id"}||"";
 	   if($result_request_id ne $request_id) {

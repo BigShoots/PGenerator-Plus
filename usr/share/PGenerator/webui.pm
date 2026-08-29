@@ -795,6 +795,14 @@ sub webui_route_is_concurrent_safe (@) {
  # /api/stats reads /proc/sysfs plus a 2s response cache; its cross-call CPU
  # delta baseline is :shared, so the pool does not corrupt the percentage.
  return 1 if($path eq "/api/stats" || $path eq "/api/info");
+ # A meter read is performed by the external session daemon, which publishes
+ # its state in an atomic JSON file. Polling that file does not compete for
+ # the meter, so it must not queue behind slow display commands on the single
+ # serialized lane. A queued poll can otherwise exceed the worker's transport
+ # deadline even though the physical read is healthy. The route's one side
+ # effect -- stopping a session whose state file has sat stale past its
+ # timeout -- is idempotent and fires only for a read that is already lost.
+ return 1 if($method eq "GET" && $path eq "/api/meter/read/result");
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active. The three pairing
@@ -2130,6 +2138,14 @@ my $_meter_boot_recovery_attempted :shared = 0;
 my $_meter_last_reset_time :shared = 0;
 my $_meter_last_seen_time :shared = 0;
 my $_meter_last_good_status :shared = '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}';
+# :shared - the read/result poll runs on the concurrent lane while
+# POST /api/meter/read runs serialized. $_meter_read_command_started is a
+# self-expiring claim: while a serialized read command is (recently) active,
+# the poll's stale-state reaper must not tear down the session that command
+# may be mid-way through starting. $_meter_stale_reap_last debounces the
+# reaper itself so concurrent pollers cannot stack teardowns.
+my $_meter_read_command_started :shared = 0;
+my $_meter_stale_reap_last :shared = 0;
 
 sub webui_meter_usb_present (@) {
  my ($usb_id)=@_;
@@ -2430,7 +2446,44 @@ sub webui_meter_status_prune_disconnected (@) {
 sub webui_meter_status (@) {
  my $spotread_running=`pgrep -x spotread 2>/dev/null; pgrep -x spotread_sim 2>/dev/null`;
  my $session_alive=&webui_meter_session_alive();
- my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
+ # AutoCal intentionally has short gaps between workers and clean meter
+ # sessions. Treat the workflow as busy throughout those hand-offs: a live
+ # `spotread -?` inventory probe can claim/reset the i1Display3 while the old
+ # session is releasing USB or the replacement is starting. The recently
+ # completed 1D state carries full_workflow until the browser launches 3D, so
+ # keep a bounded transition grace rather than probing inside that gap.
+ my $autocal_busy=0;
+ foreach my $state_file ($_meter_lg_autocal_file,$_meter_lg_3d_autocal_file) {
+  next if(!-f $state_file);
+  my $state="";
+  if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>; close($sf); }
+  if($state=~/"status"\s*:\s*"(?:running|starting|setup)"/i) {
+   # A worker killed without a terminal state write leaves "running" behind
+   # forever, which would pin the meter Busy with no tab open to clear it.
+   # Latch only for a live worker, with a short grace for the launch window
+   # between the state write and the setsid'd worker appearing in pgrep.
+   my $state_age=time()-((stat($state_file))[9] || 0);
+   my $worker_pattern=($state_file eq $_meter_lg_autocal_file)
+    ? '[m]eter_lg_autocal\.pl' : '[m]eter_lg_3d_autocal\.pl';
+   my $worker_alive=`pgrep -f '$worker_pattern' 2>/dev/null`;
+   if($state_age < 15 || $worker_alive=~/\d/) {
+    $autocal_busy=1;
+    last;
+   }
+   next;
+  }
+  if($state_file eq $_meter_lg_autocal_file
+     && $state=~/"full_workflow"\s*:\s*true/i
+     && $state=~/"full_autocal_phase"\s*:\s*"first-greyscale"/i
+     && $state=~/"status"\s*:\s*"complete"/i) {
+   my $mtime=(stat($state_file))[9] || 0;
+   if($mtime > 0 && time()-$mtime < 90) {
+    $autocal_busy=1;
+    last;
+   }
+  }
+ }
+ my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive || $autocal_busy) ? 1 : 0;
  if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
   my $pruned=&webui_meter_status_prune_disconnected($_meter_last_good_status);
   if($pruned ne $_meter_last_good_status) {
@@ -2602,10 +2655,14 @@ sub webui_meter_session_start_ready () {
 sub webui_meter_read_state_write (@) {
  my ($json)=@_;
  $json='{"status":"idle"}' if(!defined($json) || $json eq "");
- if(open(my $fh,">",$_meter_read_file)) {
+ # tmp+rename: the result poll now reads this file from the concurrent lane,
+ # so a truncate-then-write here would hand it a torn or empty state.
+ my $tmp=$_meter_read_file.".tmp.".$$.".".threads->tid();
+ if(open(my $fh,">",$tmp)) {
   print $fh $json;
   close($fh);
-  chmod(0666,$_meter_read_file);
+  chmod(0666,$tmp);
+  rename($tmp,$_meter_read_file) or unlink($tmp);
  }
 }
 
@@ -3018,6 +3075,11 @@ sub webui_meter_session_start (@) {
 sub webui_meter_read (@) {
  my ($body)=@_;
 
+ # Claim the meter for this serialized command so the concurrent result-poll
+ # lane holds its stale-state reaper while this handler may be mid-way
+ # through a long session bring-up. Self-expiring; nothing to release.
+ $_meter_read_command_started=time();
+
  # The meter is exclusively owned by ccxxmake during profile creation. Refuse to
  # (re)start the spotread session so a stray continuous-read loop (e.g. a stale
  # browser tab still polling) cannot reclaim the instrument out from under
@@ -3177,26 +3239,18 @@ sub webui_meter_read (@) {
 		 $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
 		 my $request_id="";
 		 $request_id=$1 if($body=~/"request_id"\s*:\s*"([A-Za-z0-9_.:-]{1,96})"/);
-			 # Low Light Handler averaging mode for this read (off/a/aa/aaa).
-			 # Passed to the meter session so dim autocal/single reads use
-			 # multi-read averaging instead of a noisy single read. The
-			 # per-read mode flows via the READ command so the SESSION-LEVEL
-			 # METER_AVERAGING (and the want_config 7th field) can stay
-			 # stable across reads even when this value flips every read.
+			 # The low-light mode is an application repeat count for this read. It
+			 # is never passed to Argyll as a process option.
 			 my $avg_mode="off";
-			 my $avg_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"enabled"\s*:\s*true/i) ? 1 : 0;
-			 $avg_mode=lc($1) if($avg_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(a|aa|aaa)"/);
-			 $avg_mode="off" unless($avg_enabled && ($avg_mode eq "a" || $avg_mode eq "aa" || $avg_mode eq "aaa"));
-			 # An EXPLICIT per-read "off" must reach the READ command as "off",
-			 # not be coerced to ""/"-" (inherit): "-" inherits whatever mode the
-			 # running spotread was last respawned with, so a worker that only
-			 # ever sends the averaging transitions IN would latch averaging on
-			 # for reads that must not average (the 3D profile's peak reads).
-			 # Keep the wrapper/session identity stable at explicit off. Averaging is
-			 # a property of the spotread child for this read, carried by READ below.
-			 # Copying the per-read mode into METER_AVERAGING makes the whole wrapper
-			 # session effectively averaged and defeats the luminance trigger.
+			 if($body=~/"low_light"\s*:\s*\{/i) {
+			  my $avg_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"enabled"\s*:\s*true/i) ? 1 : 0;
+			  $avg_mode=lc($1) if($avg_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(a|aa|aaa)"/);
+			  $avg_mode="off" unless($avg_enabled && ($avg_mode eq "a" || $avg_mode eq "aa" || $avg_mode eq "aaa"));
+			 }
 			 my $session_avg_mode="off";
+			 # Preserve the existing single-read spectrophotometer workflow.
+			 $avg_mode="off" if($require_device_ready);
+			 my $average_sample_count=($avg_mode eq "aaa") ? 5 : (($avg_mode eq "aa") ? 3 : (($avg_mode eq "a") ? 2 : 1));
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -3253,8 +3307,7 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- # The 7th field stays at off for the wrapper's whole life. Only the spotread
- # child changes mode through the per-read READ field below.
+ # The legacy 7th session field stays off: sample count is per READ command.
  my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer|$pattern_provider";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
@@ -3296,8 +3349,8 @@ sub webui_meter_read (@) {
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
-  # Session-level averaging is always off. Per-read averaging is applied by
-  # respawning only the spotread child after the explicit READ mode is parsed.
+  # Start spotread once in its normal adaptive mode ($session_avg_mode is
+  # pinned to off); application sampling never respawns it.
   if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer,$pattern_provider)) {
     return &webui_meter_session_start_error_json($want_config);
   }
@@ -3307,17 +3360,17 @@ sub webui_meter_read (@) {
  # can't return the previous reading by mistake.
  my $state_before_send=&webui_meter_read_state_read();
  if($state_before_send!~/"awaiting_ready"\s*:\s*true/i && $state_before_send!~/"status"\s*:\s*"setup"/i) {
+	  my $operation_timeout=($read_timeout >= 10 ? $read_timeout : 170)*$average_sample_count;
+	  $operation_timeout=1800 if($operation_timeout > 1800);
 	  my $pending_state=$calibrate_only
 	   ? '{"status":"measuring","setup_busy":true,"message":"Preparing meter calibration...","timeout_sec":210}'
-	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$read_timeout.'}';
-	  if(open(my $fh,">",$_meter_read_file)) { print $fh $pending_state; close($fh); }
+	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$operation_timeout.'}';
+	  &webui_meter_read_state_write($pending_state);
  }
 
  # Send the READ command to the daemon. The session helper applies this
  # settle delay before each reading, even when the current patch is reused.
- # The trailing 15th field is the PER-READ low_light mode: meter_session.sh
- # uses it to decide whether to respawn spotread with -Y averaging flags for this
- # specific read (the session-level METER_AVERAGING stays put).
+ # The trailing 15th field selects 1/2/3/5 physical samples on the same child.
 			 my $read_command=$calibrate_only ? "CALIBRATE" : "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
@@ -3366,9 +3419,24 @@ sub webui_meter_read_result (@) {
      my $requested=$1+0;
      $timeout_sec=$requested+30 if($requested >= 10);
      $timeout_sec=40 if($timeout_sec < 40);
-     $timeout_sec=330 if($timeout_sec > 330);
+     $timeout_sec=1830 if($timeout_sec > 1830);
     }
     if($age > $timeout_sec) {
+     # This poll runs on the concurrent lane. A serialized read command may
+     # be mid-way through a long session bring-up with the previous state
+     # file still on disk -- it owns recovery, so hold the reaper while one
+     # is recent. Debounce the teardown so simultaneous pollers seeing the
+     # same stale file cannot stack session stops.
+     if(time() - $_meter_read_command_started < 150) {
+      return '{"status":"measuring"}';
+     }
+     {
+      lock($_meter_stale_reap_last);
+      if(time() - $_meter_stale_reap_last < 30) {
+       return '{"status":"error","message":"Read timed out"}';
+      }
+      $_meter_stale_reap_last=time();
+     }
      &log("WebUI: meter read state stale for ${age}s; stopping meter session");
      &webui_meter_session_stop();
      &webui_meter_read_state_write('{"status":"error","message":"Read timed out"}');
@@ -3855,9 +3923,8 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # Low-light handler configuration for the series worker. The selected mode
- # and trigger remain separate so meter_series.sh can choose the effective
- # child mode from each serialized step's expected target luminance.
+ # The series worker interprets mode as an application sample count and uses it
+ # only below the target-luminance trigger. spotread remains open throughout.
  my $low_light_mode="off";
  my $low_light_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"enabled"\s*:\s*true/i) ? 1 : 0;
  if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
@@ -5474,9 +5541,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # Low-light mode and trigger are positional arguments, not environment
- # prefixes. The mode remains the operator-selected a/aa/aaa value; the
- # series worker starts spotread at off and applies the trigger per step.
+ # Low-light mode and trigger are positional arguments. The worker keeps one
+ # spotread process and takes 2/3/5 application samples only below the trigger.
  # Precompute the mode-correct insertion codes via the shared helper so the
  # worker just SENDS them rather than recomputing. Without this, the
  # insertion flash used a hard-coded linear 0..255 formula and was wrong on
