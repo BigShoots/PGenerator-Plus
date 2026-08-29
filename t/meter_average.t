@@ -252,7 +252,7 @@ like($math_source,qr/def average_xyz_measurements[\s\S]{0,1800}?math\.fsum/,
 open(my $hfh,'<',$helper) or die "Unable to read $helper: $!";
 my $helper_source=<$hfh>;
 close($hfh);
-like($helper_source,qr/from pgen_colour_math import average_xyz_measurements/,
- 'the command helper delegates to the shared colour-math module');
+like($helper_source,qr/from pgen_meter_result import average_main/,
+ 'the compatibility command delegates in-process to the shared result helper');
 
 done_testing();

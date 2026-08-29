@@ -7859,11 +7859,12 @@ function meterTargetChromaticityForReading(reading){
 // target readout needs. Returns null outside a sane display range.
 function meterCctFromXy(x,y){
  if(!(Number.isFinite(x)&&Number.isFinite(y))) return null;
+ if(y<=0) return null;
  const d=0.1858-y;
- if(Math.abs(d)<1e-9) return null;
+ if(Math.abs(d)<=1e-15) return null;
  const n=(x-0.3320)/d;
  const cct=449*n*n*n+3525*n*n+6823.3*n+5520.33;
- return (cct>1000&&cct<25000)?cct:null;
+ return (cct>=1000&&cct<=25000)?cct:null;
 }
 
 function meterIreIsPeakHeadroom(ire){

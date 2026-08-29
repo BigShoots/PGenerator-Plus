@@ -1,0 +1,72 @@
+{
+  "provenance": {
+    "cct_equation": "McCamy cubic, n=(x-0.3320)/(0.1858-y), as published for chromaticity near the Planckian locus",
+    "expected_generation": "Expected integers were evaluated independently from the stated cubic with binary64 arithmetic and nearest-integer rounding",
+    "xyz_units": "Relative CIE XYZ; Y is also the luminance field for these fixtures",
+    "raw_yxy_policy": "A raw spotread record preserves the separately printed Yxy triple; only missing Yxy is derived from XYZ"
+  },
+  "cct_from_xy": [
+    {"name": "D65", "x": 0.3127, "y": 0.3290, "cct": 6505},
+    {"name": "illuminant A", "x": 0.44757, "y": 0.40745, "cct": 2857},
+    {"name": "equal energy", "x": 0.3333333333333333, "y": 0.3333333333333333, "cct": 5459},
+    {"name": "blue primary", "x": 0.15, "y": 0.06, "cct": 1667},
+    {"name": "black", "x": 0.0, "y": 0.0, "cct": 0},
+    {"name": "McCamy denominator singularity", "x": 0.332, "y": 0.1858, "cct": 0},
+    {"name": "outside useful display range", "x": 0.5, "y": 0.1, "cct": 0}
+  ],
+  "xyz_derived_fields": [
+    {
+      "name": "D65",
+      "xyz": [0.9504559, 1.0, 1.0890578],
+      "x": 0.31269998881729005,
+      "y": 0.3289999975983,
+      "luminance": 1.0,
+      "cct": 6505
+    },
+    {
+      "name": "black",
+      "xyz": [0.0, 0.0, 0.0],
+      "x": 0.0,
+      "y": 0.0,
+      "luminance": 0.0,
+      "cct": 0
+    },
+    {
+      "name": "sum below tolerance",
+      "xyz": [1e-16, 1e-16, 1e-16],
+      "x": 0.0,
+      "y": 0.0,
+      "luminance": 1e-16,
+      "cct": 0
+    },
+    {
+      "name": "non-positive sum with negative component",
+      "xyz": [-1.0, 0.25, 0.25],
+      "x": 0.0,
+      "y": 0.0,
+      "luminance": 0.25,
+      "cct": 0
+    },
+    {
+      "name": "negative component with positive sum",
+      "xyz": [-0.1, 1.0, 1.0],
+      "x": -0.052631578947368425,
+      "y": 0.5263157894736842,
+      "luminance": 1.0,
+      "cct": 18372
+    }
+  ],
+  "paired_raw_spotread": {
+    "line": "Result is XYZ: 0.950456 1.000000 1.089058, Yxy: 0.999874 0.312700 0.329000",
+    "expected": {
+      "X": 0.950456,
+      "Y": 1.0,
+      "Z": 1.089058,
+      "luminance": 0.999874,
+      "x": 0.3127,
+      "y": 0.329,
+      "cct": 6505
+    },
+    "note": "Printed luminance differs from rounded XYZ Y by 0.000126 and remains authoritative for a raw parse"
+  }
+}

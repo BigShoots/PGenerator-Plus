@@ -17,6 +17,11 @@ from __future__ import division
 import math
 
 
+def _isfinite(value):
+    """Python 2.7/3.5-compatible finite check for appliance entry points."""
+    return not math.isinf(value) and not math.isnan(value)
+
+
 PQ_M1 = 2610.0 / 16384.0
 PQ_M2 = 2523.0 / 32.0
 PQ_C1 = 3424.0 / 4096.0
@@ -49,6 +54,63 @@ ICTCP_RGB_TO_LMS = (
 
 def clamp(value, lower, upper):
     return max(lower, min(upper, value))
+
+
+def finite_number(value, name="value"):
+    """Return a binary64 value or reject booleans and non-finite input."""
+    if isinstance(value, bool):
+        raise ValueError("%s is not numeric" % name)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("%s is not numeric" % name)
+    if not _isfinite(value):
+        raise ValueError("%s is not finite" % name)
+    return value
+
+
+def cct_from_xy(x, y):
+    """Estimate display CCT with McCamy's cubic and explicit failure rules.
+
+    Finite input is required. Black, the equation's denominator singularity,
+    and estimates outside the useful 1,000--25,000 K display range return 0.
+    The function deliberately uses ``0.1858 - y``: reversing that denominator
+    is a sign error that reports D65 near 4,664 K instead of about 6,505 K.
+    """
+    x = finite_number(x, "x")
+    y = finite_number(y, "y")
+    denominator = 0.1858 - y
+    if y <= 0.0 or abs(denominator) <= 1e-15:
+        return 0
+    n = (x - 0.3320) / denominator
+    estimate = 449.0 * n ** 3 + 3525.0 * n ** 2 + 6823.3 * n + 5520.33
+    if not _isfinite(estimate) or estimate < 1000.0 or estimate > 25000.0:
+        return 0
+    return int(round(estimate))
+
+
+def xyz_derived_fields(X, Y, Z, sum_tolerance=1e-15):
+    """Derive xy, luminance, and CCT once from a finite XYZ triple.
+
+    Negative finite components retain the historical arithmetic. If the XYZ
+    sum is at or below the explicit tolerance, chromaticity and CCT are zero.
+    """
+    X = finite_number(X, "X")
+    Y = finite_number(Y, "Y")
+    Z = finite_number(Z, "Z")
+    total = math.fsum((X, Y, Z))
+    if total > sum_tolerance:
+        x = X / total
+        y = Y / total
+    else:
+        x = 0.0
+        y = 0.0
+    return {
+        "x": x,
+        "y": y,
+        "luminance": Y,
+        "cct": cct_from_xy(x, y),
+    }
 
 
 def pq_decode_nits(signal, clamp_signal=True, denominator_floor=1e-12,
@@ -153,46 +215,22 @@ def average_xyz_measurements(readings):
     if len(readings) > 100:
         raise ValueError("too many readings")
 
-    def finite_number(reading, key):
+    def reading_number(reading, key):
         if not isinstance(reading, dict):
             raise ValueError("every reading must be an object")
-        value = reading.get(key)
-        if isinstance(value, bool):
-            raise ValueError("%s is not numeric" % key)
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            raise ValueError("%s is not numeric" % key)
-        if not math.isfinite(value):
-            raise ValueError("%s is not finite" % key)
-        return value
+        return finite_number(reading.get(key), key)
 
     count = len(readings)
     xyz = tuple(
-        math.fsum(finite_number(reading, key) for reading in readings) / count
+        math.fsum(reading_number(reading, key) for reading in readings) / count
         for key in ("X", "Y", "Z")
     )
-    total = math.fsum(xyz)
-    if total > 1e-15:
-        x = xyz[0] / total
-        y = xyz[1] / total
-    else:
-        x = 0.0
-        y = 0.0
-
-    cct = 0
-    denominator = 0.1858 - y
-    if y > 0.0 and abs(denominator) > 1e-15:
-        n = (x - 0.3320) / denominator
-        estimate = 449.0 * n ** 3 + 3525.0 * n ** 2 + 6823.3 * n + 5520.33
-        if math.isfinite(estimate):
-            cct = int(round(estimate))
-
-    return {
+    result = {
         "X": xyz[0], "Y": xyz[1], "Z": xyz[2],
-        "x": x, "y": y, "luminance": xyz[1], "cct": cct,
         "sample_count": count,
     }
+    result.update(xyz_derived_fields(xyz[0], xyz[1], xyz[2]))
+    return result
 
 
 # Both products keep sum() rather than an explicit three-term expression

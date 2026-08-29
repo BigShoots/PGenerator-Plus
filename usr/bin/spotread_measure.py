@@ -10,6 +10,9 @@ Usage: spotread_measure.py [options]
 """
 import os, sys, subprocess, select, time, re, json
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pgen_colour_math import cct_from_xy
+
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Argyll tries its built-in keys first, and non-i1D3 drivers ignore it.
 os.environ.setdefault("I1D3_ESCAPE", "c9bfafe002871166")
@@ -129,11 +132,7 @@ def run_spotread(args, count=1, timeout_per_read=30):
                     x_chrom = float(m.group(5))
                     y_chrom = float(m.group(6))
 
-                    # Compute CCT (McCamy's approximation)
-                    cct = 0
-                    if y_chrom > 0:
-                        n = (x_chrom - 0.3320) / (y_chrom - 0.1858)
-                        cct = int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33))
+                    cct = cct_from_xy(x_chrom, y_chrom)
 
                     results.append({
                         "X": round(X, 6),

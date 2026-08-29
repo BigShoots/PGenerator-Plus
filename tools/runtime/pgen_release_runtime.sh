@@ -49,6 +49,7 @@ PGEN_RELEASE_EXTERNAL_ICC_TOOL_PATHS=(
 PGEN_RELEASE_REQUIRED_MATH_FILES=(
  "usr/bin/pgen_colour_math.py"
  "usr/bin/pgen_meter_average.py"
+ "usr/bin/pgen_meter_result.py"
  "usr/share/PGenerator/PGMath.pm"
 )
 

@@ -5,6 +5,7 @@ const path=require('path');
 const root=path.resolve(__dirname,'..');
 const source=fs.readFileSync(path.join(root,'usr/share/PGenerator/webui-app.js'),'utf8');
 const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/math_conformance.json'),'utf8'));
+const measurementFixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/measurement_conformance.json'),'utf8'));
 
 function functionSource(name){
  const start=source.indexOf('function '+name+'(');
@@ -25,9 +26,9 @@ const constants=constantNames.map(name=>{
  return match[0];
 }).join('\n');
 const bodies=['clampNum','pqEncodeNormalized','meterChartPqEncodeNormalized',
- 'meterChartPqDecodeNormalized'].map(functionSource).join('\n');
+ 'meterChartPqDecodeNormalized','meterCctFromXy'].map(functionSource).join('\n');
 const runtime=eval('(()=>{'+constants+'\n'+bodies+
- '\nreturn {encode:pqEncodeNormalized,chartEncode:meterChartPqEncodeNormalized,decode:meterChartPqDecodeNormalized};})()');
+ '\nreturn {encode:pqEncodeNormalized,chartEncode:meterChartPqEncodeNormalized,decode:meterChartPqDecodeNormalized,cct:meterCctFromXy};})()');
 
 let checks=0;
 function close(label,actual,expected){
@@ -60,6 +61,17 @@ if(runtime.chartEncode(0)!==0)
 checks++;
 if(runtime.encode(-5)!==0)
  throw new Error('JS PQ encode negative: '+runtime.encode(-5)+' != 0');
+
+for(const row of measurementFixture.cct_from_xy){
+ checks++;
+ const estimate=runtime.cct(row.x,row.y);
+ const actual=estimate==null?0:Math.round(estimate);
+ if(actual!==row.cct)
+  throw new Error('JS CCT '+row.name+': '+actual+' != '+row.cct);
+}
+checks++;
+if(runtime.cct(NaN,0.3)!==null)
+ throw new Error('JS CCT must reject non-finite chromaticity');
 
 if((source.match(/const PGEN_PQ_M1=/g)||[]).length!==1)
  throw new Error('JavaScript has more than one PQ constant owner');

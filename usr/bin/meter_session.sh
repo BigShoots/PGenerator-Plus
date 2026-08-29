@@ -22,6 +22,11 @@
 
 set -o pipefail
 
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
+PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
+
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Built-in i1D3 keys remain first in Argyll's key list; other meter drivers
 # never consume this variable.
@@ -538,68 +543,19 @@ find_port() {
 }
 
 count_results() {
- local n
- n=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -c "Result is XYZ:" 2>/dev/null) || true
- echo "${n:-0}" | tr -d '[:space:]'
+ local line n=0
+ while IFS= read -r line; do
+  [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
+ done < "$OUTFILE" 2>/dev/null
+ echo "$n"
 }
 
 parse_latest_result() {
- local clean_out result_line
- clean_out=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
- result_line=$(echo "$clean_out" | grep "Result is XYZ:" | tail -1)
- [[ -z "$result_line" ]] && return 1
- local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
- xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
- yxy_part=$(echo "$result_line" | sed 's/.*Yxy:\s*//')
- X=$(echo "$xyz_part" | awk '{print $1}')
- Y=$(echo "$xyz_part" | awk '{print $2}')
- Z=$(echo "$xyz_part" | awk '{print $3}')
- lum=$(echo "$yxy_part" | awk '{print $1}')
- x_chr=$(echo "$yxy_part" | awk '{print $2}')
- y_chr=$(echo "$yxy_part" | awk '{print $3}')
- cct=0
- if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
-  cct=$(python -c "
-x=$x_chr; y=$y_chr
-if y > 0:
- n = (x - 0.3320) / (0.1858 - y)
- print(int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33)))
-else:
- print(0)
-" 2>/dev/null || echo 0)
- fi
- ts=$(date +%s)
- echo "{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}"
- return 0
+ "$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" parse < "$OUTFILE"
 }
 
 parse_latest_result_text() {
- local clean_out="$1" result_line
- result_line=$(printf '%s\n' "$clean_out" | grep "Result is XYZ:" | tail -1)
- [[ -z "$result_line" ]] && return 1
- local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
- xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
- yxy_part=$(echo "$result_line" | sed 's/.*Yxy:\s*//')
- X=$(echo "$xyz_part" | awk '{print $1}')
- Y=$(echo "$xyz_part" | awk '{print $2}')
- Z=$(echo "$xyz_part" | awk '{print $3}')
- lum=$(echo "$yxy_part" | awk '{print $1}')
- x_chr=$(echo "$yxy_part" | awk '{print $2}')
- y_chr=$(echo "$yxy_part" | awk '{print $3}')
- cct=0
- if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
-  cct=$(python -c "
-x=$x_chr; y=$y_chr
-if y > 0:
- n = (x - 0.3320) / (0.1858 - y)
- print(int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33)))
-else:
- print(0)
-" 2>/dev/null || echo 0)
- fi
- ts=$(date +%s)
- echo "{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}"
- return 0
+ printf '%s\n' "$1" | "$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" parse
 }
 
 # --- Null-read guard -------------------------------------------------------
@@ -1430,7 +1386,7 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 	      SAMPLES_JSON="$SAMPLES_JSON,$ADDITIONAL_PARSED"
 	     done
 	     if $GOT_RESULT; then
-	      PARSED_RESULT=$(printf '[%s]' "$SAMPLES_JSON" | PGEN_AVERAGE_MODE="$CMD_LOW_LIGHT_MODE" PGEN_REQUESTED_SAMPLE_COUNT="$REQUESTED_SAMPLE_COUNT" /usr/bin/python3 /usr/bin/pgen_meter_average.py 2>"$OUTFILE.avgerr") || PARSED_RESULT=""
+	      PARSED_RESULT=$(printf '[%s]' "$SAMPLES_JSON" | PGEN_AVERAGE_MODE="$CMD_LOW_LIGHT_MODE" PGEN_REQUESTED_SAMPLE_COUNT="$REQUESTED_SAMPLE_COUNT" "$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" average 2>"$OUTFILE.avgerr") || PARSED_RESULT=""
 	      if [[ -z "$PARSED_RESULT" ]]; then
 	       GOT_RESULT=false
 	       READ_FAILURE_MESSAGE="Meter averaging calculation failed"

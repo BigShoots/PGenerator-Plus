@@ -397,7 +397,7 @@ like($webui_source,qr/meterFullAutoCalStatusRunId\(probe\)===wanted[\s\S]{0,120}
  'a lost start response adopts only the worker running the phase that was just requested');
 like($series_source,qr/effective_low_light_mode_for_step\(\)/,
  'the series selects sample count from the existing target-Y metadata');
-like($series_source,qr/capture_series_average_sample[\s\S]{0,10000}?pgen_meter_average\.py/s,
+like($series_source,qr/capture_series_average_sample[\s\S]{0,10000}?PGEN_METER_RESULT_HELPER[\s\S]{0,100}?average/s,
  'the series captures repeated samples on one child and uses the shared reducer');
 like($series_source,qr/REQUIRE_DEVICE_READY.*?LOW_LIGHT_MODE="off"/,
  'the series disables colorimeter averaging for spectrophotometers');
