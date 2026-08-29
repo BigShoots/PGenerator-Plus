@@ -8583,6 +8583,16 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 const wireSolveGamut=meterChartIsHlg()?GAMUT_PRESETS.bt2020:solveGamut;
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
 	 const hdrColorCheckerRefNits=203;
+	 let useMeasuredWhite=true;
+	 try{
+	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
+	 }catch(e){}
+	 const neutralRebaseMeta=(linear)=>absoluteHdrColorChecker&&useMeasuredWhite?{
+	  colorchecker_rebase_white:true,
+	  colorchecker_linear_r:linear,colorchecker_linear_g:linear,colorchecker_linear_b:linear,
+	  colorchecker_code_min:min,colorchecker_code_span:max-min
+	 }:{};
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
 	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
 	 meterColorCheckerClassicSource().forEach(src=>{
@@ -8595,7 +8605,8 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
+	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
+	    ...neutralRebaseMeta(src.gray)});
 	   return;
 	  }
     const ref=xyToUnitXyz(src.x,src.y);

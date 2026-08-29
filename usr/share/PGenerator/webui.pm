@@ -3716,7 +3716,7 @@ sub webui_custom_series_steps_from_body (@) {
   last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
-  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
+  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
    $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
@@ -3763,6 +3763,12 @@ sub webui_custom_series_steps_from_body (@) {
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
   $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  if($obj=~/"colorchecker_rebase_white"\s*:\s*true/i) {
+   $step.=',"colorchecker_rebase_white":true';
+   foreach my $key (qw(colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
+    $step.=',"'.$key.'":'.($num{$key}+0) if(defined $num{$key});
+   }
+  }
   $step.="}";
   push @out,$step;
  }
@@ -5022,13 +5028,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      my $code=$encode_linear->($level);
 	      my $ire=int($level*100 + .5);
 	      my $target_Yn_for_step=$level;
-	      if($signal_mode eq "dv" && $span_code>0) {
+	      if($signal_mode eq "dv" && $dv_map_mode ne "1" && $span_code>0) {
 	       my $norm=($code-$min_code)/$span_code;
 	       $norm=0 if($norm < 0); $norm=1 if($norm > 1);
 	       $target_Yn_for_step=$decode_linear->($norm);
 	       $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 	      }
-	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+	      my $rebase_json=(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) && $target_white_use_measured)
+	       ? ",\"colorchecker_rebase_white\":true,\"colorchecker_linear_r\":$level,\"colorchecker_linear_g\":$level,\"colorchecker_linear_b\":$level,\"colorchecker_code_min\":$min_code,\"colorchecker_code_span\":$span_code"
+	       : "";
+	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$rebase_json}";
 	      next;
 	     }
       my ($target_x,$target_y,$Yn)=@vals;

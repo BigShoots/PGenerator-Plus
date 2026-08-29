@@ -11970,6 +11970,12 @@ async function meterRunSeries(options){
 		   input_max:(step.input_max!=null&&step.input_max!=='')?step.input_max:_stepInputMax,
 		   name:step.name,target_x:step.target_x,target_y:step.target_y,target_Yn:step.target_Yn,
 		   custom_target_nits:step.custom_target_nits,
+		   colorchecker_rebase_white:step.colorchecker_rebase_white,
+		   colorchecker_linear_r:step.colorchecker_linear_r,
+		   colorchecker_linear_g:step.colorchecker_linear_g,
+		   colorchecker_linear_b:step.colorchecker_linear_b,
+		   colorchecker_code_min:step.colorchecker_code_min,
+		   colorchecker_code_span:step.colorchecker_code_span,
 		   series_color:step.series_color,sat_pct:step.sat_pct,stimulus:step.stimulus,
 		   signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct
 		  });

@@ -701,8 +701,8 @@ apply_series_white_reference_to_steps() {
  local white_y="$1"
  [[ -f "$STEPS_FILE" ]] || return 1
  [[ "$white_y" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]] || return 1
- STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
-import json, os, tempfile
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" SIGNAL_MODE="$SIGNAL_MODE" DV_MAP_MODE="$DV_MAP_MODE" python - <<'PY' 2>/dev/null
+import json, math, os, tempfile
 
 def finite(value):
     return value == value and value not in (float("inf"), float("-inf"))
@@ -722,13 +722,52 @@ except Exception:
 if not isinstance(steps, list):
     raise SystemExit(1)
 changed = False
+signal_mode = str(os.environ.get("SIGNAL_MODE", "")).lower()
+dv_map_mode = str(os.environ.get("DV_MAP_MODE", ""))
+
+def number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    return value if finite(value) else None
+
+def pq_encode_normalized(nits):
+    nits = max(0.0, min(10000.0, float(nits)))
+    if nits <= 0:
+        return 0.0
+    m1 = 2610.0 / 16384.0
+    m2 = 2523.0 / 32.0
+    c1 = 3424.0 / 4096.0
+    c2 = 2413.0 / 128.0
+    c3 = 2392.0 / 128.0
+    linear = nits / 10000.0
+    p = linear ** m1
+    return ((c1 + c2 * p) / (1 + c3 * p)) ** m2
 
 for step in steps:
     if not isinstance(step, dict):
         continue
-    if "series_target_white_y" not in step and "lg_target_white_y" not in step:
+    rebase = step.get("colorchecker_rebase_white") is True
+    if rebase or ("series_target_white_y" not in step and "lg_target_white_y" not in step):
         step["series_target_white_y"] = white_y
         changed = True
+    if not rebase or not (signal_mode == "hdr10" or (signal_mode == "dv" and dv_map_mode == "1")):
+        continue
+    code_min = number(step.get("colorchecker_code_min"))
+    code_span = number(step.get("colorchecker_code_span"))
+    linear = [number(step.get("colorchecker_linear_%s" % channel)) for channel in ("r", "g", "b")]
+    if code_min is None or code_span is None or code_span <= 0 or any(value is None for value in linear):
+        continue
+    for key, value in zip(("r", "g", "b"), linear):
+        value = max(0.0, min(1.0, value))
+        code = int(code_min + pq_encode_normalized(value * white_y) * code_span + 0.5)
+        code = max(int(math.ceil(code_min)), min(int(math.floor(code_min + code_span)), code))
+        if step.get(key) != code:
+            step[key] = code
+            changed = True
 if not changed:
     raise SystemExit(0)
 directory = os.path.dirname(path) or "."
