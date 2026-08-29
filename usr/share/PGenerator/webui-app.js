@@ -6677,15 +6677,18 @@ function meterWrgbTargetCompensationSelected(){
  return false;
 }
 
-// Per-primary HDR luminance ceilings derived from the current ColorChecker
+// Per-primary HDR and Absolute-DV luminance ceilings derived from the current ColorChecker
 // run's R/G/B endpoint reads. This is deliberately not a general
 // chart reference: ordinary ColorChecker patches and saturation sweeps retain
 // their authored, measurement-independent target. The ceilings are consumed
-// only by the HDR ColorChecker 100% primary/secondary endpoint path below.
+// only by the HDR10 / Absolute-DV ColorChecker 100% primary/secondary endpoint
+// path below. Relative DV retains its authored response model.
 function meterWrgbPrimaryCeilings(){
  const out={};
  if(typeof meterActiveSeriesType==='undefined'||meterActiveSeriesType!=='colors') return out;
- if(!meterChartIsHdr()||meterChartIsDv()||!meterWrgbTargetCompensationSelected()) return out;
+ if(!meterChartIsHdr()
+  ||(meterChartIsDv()&&meterDvMapModeValue()!=='1')
+  ||!meterWrgbTargetCompensationSelected()) return out;
  const gamut=meterAnalysisGamut();
  const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
  const idx={red:0,green:1,blue:2};
@@ -6761,13 +6764,14 @@ function meterWrgbStimulusTargetY(reading){
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=(_dvLum&&meterDvMapModeValue()==='1')||(!_dvLum&&meterChartIsHdr())
   ?meterContainerGamut():meterAnalysisGamut();
- // An HDR ColorChecker endpoint on a WRGB OLED cannot reach the
+ // An HDR10 or Absolute-DV ColorChecker endpoint on a WRGB OLED cannot reach the
  // decoded PQ peak through its filtered color subpixels. Grade those six
  // endpoint patches against the additive output established by the measured
- // R/G/B endpoints. Keep this narrowly scoped: DV has its stable authored
- // response model below, saturation sweeps use their own sub-peak stimulus,
- // and ordinary ColorChecker patches remain independent of measured results.
- const _hdrColorEndpoint=!_dvLum
+ // R/G/B endpoints. Keep this narrowly scoped: Relative DV has its stable
+ // authored response model below, saturation sweeps use their own sub-peak
+ // stimulus, and ordinary ColorChecker patches remain independent of measured
+ // results.
+ const _hdrColorEndpoint=(!_dvLum||meterDvMapModeValue()==='1')
   && typeof meterActiveSeriesType!=='undefined'&&meterActiveSeriesType==='colors'
   && meterChartIsHdr()&&meterWrgbTargetCompensationSelected()
   && !meterReadingIsGreyscale(reading)
