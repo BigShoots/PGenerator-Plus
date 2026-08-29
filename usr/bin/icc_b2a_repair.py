@@ -105,7 +105,7 @@ def analyse_measurements(fmt, rows, target=(0.3127, 0.3290)):
 
 ENC = 32768.0/65535.0
 KNEE = 0.70
-D50 = (0.9642, 1.0, 0.8249)
+D50 = ICC_D50_WHITE
 
 def a2b_evaluator(d, tags):
     if 'A2B0' not in tags:
@@ -203,11 +203,6 @@ def load_calibration_curves():
             all(len(c) >= 2 for c in curves)):
         return None
     return curves
-
-def _pq_code(nits):
-    """PQ signal code for an absolute luminance - the request domain the
-    calibration curves are indexed by."""
-    return pq_encode_nits(nits, clamp_peak=True)
 
 def choose_anchor_mode(cal, plateau_pct):
     """Pick the corridor's calibration anchor from panel geometry.

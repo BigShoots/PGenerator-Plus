@@ -17,7 +17,7 @@ use PGMath qw(
  akima_interpolate delta_e_itp_xyz pq_constants pq_decode_nits
  pq_decode_normalized pq_encode_normalized xyz_to_ictcp
 );
-use PGCalibrationMath qw(dpg_smooth_blend_index smooth_dpg_low_end);
+use PGCalibrationMath qw(bounded_number dpg_smooth_blend_index smooth_dpg_low_end);
 use PGMeterReading qw(reading_xyz);
 
 our $PGAC_LOADED = 0;
@@ -1076,8 +1076,10 @@ sub sync_state_picture {
 sub luminance {
  my ($reading)=@_;
  return undef if(ref($reading) ne "HASH");
- return $reading->{"luminance"}+0 if(defined($reading->{"luminance"}));
- return $reading->{"Y"}+0 if(defined($reading->{"Y"}));
+ return bounded_number($reading->{"luminance"},-10_000_000,10_000_000)
+  if(defined($reading->{"luminance"}));
+ return bounded_number($reading->{"Y"},-10_000_000,10_000_000)
+  if(defined($reading->{"Y"}));
  return undef;
 }
 
@@ -1879,15 +1881,6 @@ sub target_luminance_for_autocal_step {
 			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 		}
 
-sub autocal_low_light_number {
- my ($value)=@_;
- return undef if(!defined($value) || ref($value));
- return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
- my $number=$value+0;
- return undef if($number != $number);
- return $number;
-}
-
 # Resolve expected Y for the step about to be read through the same target
 # luminance helper used by the solver. The previous measured Y is deliberately
 # not used to decide how many samples the next patch receives.
@@ -1896,7 +1889,7 @@ sub autocal_expected_target_y_for_low_light {
  return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
  foreach my $key (qw(target_Y target_luminance)) {
   next if(!exists($step->{$key}));
-  my $direct=autocal_low_light_number($step->{$key});
+  my $direct=bounded_number($step->{$key},-10_000_000,10_000_000);
   return (defined($direct) && $direct >= 0) ? $direct : undef;
  }
  my $state=(ref($LG_AUTOCAL_STATE) eq "HASH") ? $LG_AUTOCAL_STATE : {};
@@ -1909,7 +1902,7 @@ sub autocal_expected_target_y_for_low_light {
   $state->{"setup_luminance_reference"},
   $config->{"setup_luminance_reference"}
  ) {
-  my $number=autocal_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number > 0) { $white_y=$number; last; }
  }
  return undef if(!defined($white_y));
@@ -1917,7 +1910,7 @@ sub autocal_expected_target_y_for_low_light {
  my $target=target_luminance_for_autocal_step(
   $white_y,$step,$config->{"target_gamma"}||"bt1886",$config->{"signal_mode"}||"sdr",$black_y
  );
- $target=autocal_low_light_number($target);
+ $target=bounded_number($target,-10_000_000,10_000_000);
  return (defined($target) && $target >= 0) ? $target : undef;
 }
 
@@ -1926,7 +1919,7 @@ sub autocal_low_light_mode_for_step {
  return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- my $trigger=autocal_low_light_number($config->{"low_light"}{"trigger"});
+ my $trigger=bounded_number($config->{"low_light"}{"trigger"},0,10_000_000);
  return "off" if(!defined($trigger) || $trigger <= 0);
  my $expected_y=autocal_expected_target_y_for_low_light($config,$step);
  return "off" if(!defined($expected_y) || $expected_y < 0);
@@ -2661,23 +2654,23 @@ sub autocal_delta_e_formula {
 # values are logged once per key/value so a typo'd config is visible in the
 # run log rather than silently calibrating to a different target.
 my %_autocal_target_de_warned;
-my $_autocal_target_de_numeric=qr/^\+?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 sub autocal_solver_target_delta_e {
  my ($config,$override_key,$fallback)=@_;
- my $numeric=$_autocal_target_de_numeric;
- $fallback=0.5 if(!defined($fallback) || $fallback !~ $numeric || ($fallback+0) <= 0);
- my $target=$fallback+0;
+ my $fallback_number=bounded_number($fallback,0,1_000_000);
+ $fallback_number=0.5 if(!defined($fallback_number) || $fallback_number <= 0);
+ my $target=$fallback_number+0;
  my $source=undef;
  if(ref($config) eq "HASH") {
   foreach my $key (grep { defined($_) && $_ ne "" } ($override_key,"target_delta_e")) {
    next if(!defined($config->{$key}));
    my $value=$config->{$key};
    $value =~ s/^\s+|\s+$//g;
-   if($value !~ $numeric || ($value+0) <= 0) {
+   my $number=bounded_number($value,0,1_000_000);
+   if(!defined($number) || $number <= 0) {
     log_line("AutoCal target: ignoring unusable ".$key."=\"".$config->{$key}."\", treating as unset") if(!$_autocal_target_de_warned{$key."\0".$config->{$key}}++);
     next;
    }
-   $target=$value+0;
+   $target=$number+0;
    $source=$key;
    last;
   }

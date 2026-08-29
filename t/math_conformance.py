@@ -97,6 +97,20 @@ close("PQ decode over-unity signal, default clamp",
       math_core.pq_decode_nits(2.5), math_core.pq_decode_nits(1.0),
       tolerance=0.0)
 
+close("bounded sRGB decode clamps below zero",
+      math_core.srgb_to_linear_bounded(-0.5), 0.0, tolerance=0.0)
+close("bounded sRGB decode clamps above one",
+      math_core.srgb_to_linear_bounded(1.5), 1.0, tolerance=0.0)
+close("unbounded sRGB decode keeps the signed linear segment",
+      math_core.srgb_to_linear_unbounded(-0.5), -0.5 / 12.92,
+      tolerance=0.0)
+close("bounded sRGB encode clamps above one",
+      math_core.linear_to_srgb_bounded(1.5), 0.9999999999999999,
+      tolerance=0.0)
+close("unbounded sRGB encode keeps the signed linear segment",
+      math_core.linear_to_srgb_unbounded(-0.5), -0.5 * 12.92,
+      tolerance=0.0)
+
 close_tree("Bradford cone response",
            math_core.BRADFORD, FIXTURE["bradford_cone_response"])
 close_tree("Bradford D65 to D50",
@@ -170,6 +184,10 @@ ownership = (
     ("builder PQ encode", builder.nits_to_pq, math_core.pq_encode_nits),
     ("builder table sampling", builder.sample_table, math_core.sample_uniform_table),
     ("builder smoothstep", builder.smoothstep, math_core.smoothstep),
+    ("builder bounded sRGB decode", builder.srgb_to_linear,
+     math_core.srgb_to_linear_bounded),
+    ("builder bounded sRGB encode", builder.linear_to_srgb,
+     math_core.linear_to_srgb_bounded),
     ("companion matrix multiply", companion.mat_mul, math_core.matrix3_multiply),
     ("companion matrix vector", companion.mat_vec, math_core.matrix3_vector_multiply),
     ("finetune matrix inverse", finetune.mat_inv, math_core.matrix3_inverse),
@@ -178,6 +196,10 @@ ownership = (
     ("finetune table sampling", finetune.sample_values,
      math_core.sample_uniform_table),
     ("finetune smoothstep", finetune.smoothstep, math_core.smoothstep),
+    ("finetune unbounded sRGB decode", finetune.srgb_eotf,
+     math_core.srgb_to_linear_unbounded),
+    ("finetune unbounded sRGB encode", finetune.srgb_inverse,
+     math_core.linear_to_srgb_unbounded),
     ("repair matrix vector", repair.mmul_b, math_core.matrix3_vector_multiply),
     ("repair table sampling", repair.sample_curve,
      math_core.sample_uniform_table),

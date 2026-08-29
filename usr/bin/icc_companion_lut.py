@@ -16,6 +16,8 @@ try:
 
     from pgen_colour_math import (
         BRADFORD,
+        D65_WHITE,
+        ICC_D50_WHITE,
         PQ_C1,
         PQ_C2,
         PQ_C3,
@@ -247,8 +249,6 @@ def srgb_linear(values):
                     ((np.maximum(values, 0.04045) + 0.055) / 1.055) ** 2.4)
 
 
-PCS_WHITE = (0.9642, 1.0, 0.8249)
-SOURCE_WHITE_D65 = (0.9504559, 1.0, 1.0890578)
 SRGB_TO_XYZ = (
     (0.4123908, 0.3575843, 0.1804808),
     (0.2126390, 0.7151687, 0.0721923),
@@ -334,7 +334,7 @@ def make_transform(profile_path, method, signal_mode):
     white_nits = profile_luminance(profile_tags) if signal_mode == "hdr10" else 1.0
     # Source RGB is D65 in both supported signal modes. The profile's media
     # white and chad describe its measured display, not the source colourspace.
-    adaptation = chromatic_adaptation(SOURCE_WHITE_D65, PCS_WHITE)
+    adaptation = chromatic_adaptation(D65_WHITE, ICC_D50_WHITE)
     return transform, white_nits, adaptation
 
 

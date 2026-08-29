@@ -34,6 +34,11 @@ BRADFORD = (
     (-0.7502, 1.7135, 0.0367),
     (0.0389, -0.0685, 1.0296),
 )
+BRADFORD_INVERSE = (
+    (0.9869929054667123, -0.14705425642099013, 0.15996265166373122),
+    (0.43230526972339456, 0.5183602715367776, 0.0492912282128556),
+    (-0.008528664575177328, 0.04004282165408487, 0.9684866957875501),
+)
 
 ICC_D50_WHITE = (0.9642, 1.0, 0.8249)
 D65_WHITE = (0.9504559, 1.0, 1.0890578)
@@ -67,6 +72,30 @@ def finite_number(value, name="value"):
     if not _isfinite(value):
         raise ValueError("%s is not finite" % name)
     return value
+
+
+def srgb_to_linear_unbounded(value):
+    """Decode sRGB without clipping caller-owned extended-range values."""
+    if value <= 0.04045:
+        return value / 12.92
+    return ((value + 0.055) / 1.055) ** 2.4
+
+
+def srgb_to_linear_bounded(value):
+    """Decode sRGB after clipping to the normalized signal domain."""
+    return srgb_to_linear_unbounded(clamp(value, 0.0, 1.0))
+
+
+def linear_to_srgb_unbounded(value):
+    """Encode linear light without clipping caller-owned extended range."""
+    if value <= 0.0031308:
+        return value * 12.92
+    return 1.055 * value ** (1.0 / 2.4) - 0.055
+
+
+def linear_to_srgb_bounded(value):
+    """Encode linear light after clipping to the normalized domain."""
+    return linear_to_srgb_unbounded(clamp(value, 0.0, 1.0))
 
 
 def cct_from_xy(x, y):
@@ -189,6 +218,66 @@ def delta_e_itp_xyz(xyz_a, xyz_b, pq_encoder=None,
         delta_i * delta_i + 0.25 * delta_t * delta_t + delta_p * delta_p)
 
 
+def xyz_to_lab(xyz, white, ratio_policy="signed_linear"):
+    """Convert XYZ to Lab under an explicitly named negative-ratio policy."""
+    if ratio_policy not in ("signed_linear", "ratio_floor_1e_minus_9"):
+        raise ValueError("unknown XYZ-to-Lab ratio policy")
+
+    def f(value):
+        return (value ** (1.0 / 3.0)
+                if value > (6.0 / 29.0) ** 3
+                else value / (3 * (6.0 / 29.0) ** 2) + 4.0 / 29.0)
+
+    ratios = [xyz[index] / white[index] for index in range(3)]
+    if ratio_policy == "ratio_floor_1e_minus_9":
+        ratios = [max(1e-9, value) for value in ratios]
+    fx, fy, fz = [f(value) for value in ratios]
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+
+
+def delta_e_2000_lab(lab_a, lab_b):
+    """CIEDE2000 between two Lab triples, preserving scalar evaluation order."""
+    l1, a1, b1 = lab_a
+    l2, a2, b2 = lab_b
+    c1 = math.hypot(a1, b1)
+    c2 = math.hypot(a2, b2)
+    cm = (c1 + c2) / 2.0
+    g = (0.5 * (1 - math.sqrt(cm ** 7 / (cm ** 7 + 25.0 ** 7)))
+         if cm > 0 else 0.0)
+    a1p, a2p = a1 * (1 + g), a2 * (1 + g)
+    c1p, c2p = math.hypot(a1p, b1), math.hypot(a2p, b2)
+    h1 = math.degrees(math.atan2(b1, a1p)) % 360 if (b1 or a1p) else 0.0
+    h2 = math.degrees(math.atan2(b2, a2p)) % 360 if (b2 or a2p) else 0.0
+    dl = l2 - l1
+    dc = c2p - c1p
+    dh = (0.0 if c1p * c2p == 0 else
+          (h2 - h1 - 360 if h2 - h1 > 180 else
+           h2 - h1 + 360 if h2 - h1 < -180 else h2 - h1))
+    dhp = 2 * math.sqrt(c1p * c2p) * math.sin(math.radians(dh) / 2.0)
+    lm = (l1 + l2) / 2.0
+    cmp_ = (c1p + c2p) / 2.0
+    if c1p * c2p == 0:
+        hm = h1 + h2
+    elif abs(h1 - h2) <= 180:
+        hm = (h1 + h2) / 2.0
+    else:
+        hm = ((h1 + h2 + 360) / 2.0 if h1 + h2 < 360
+              else (h1 + h2 - 360) / 2.0)
+    tt = (1 - 0.17 * math.cos(math.radians(hm - 30))
+          + 0.24 * math.cos(math.radians(2 * hm))
+          + 0.32 * math.cos(math.radians(3 * hm + 6))
+          - 0.20 * math.cos(math.radians(4 * hm - 63)))
+    sl = 1 + (0.015 * (lm - 50) ** 2) / math.sqrt(20 + (lm - 50) ** 2)
+    sc = 1 + 0.045 * cmp_
+    sh = 1 + 0.015 * cmp_ * tt
+    rt = (-2 * math.sqrt(cmp_ ** 7 / (cmp_ ** 7 + 25.0 ** 7))
+          * math.sin(math.radians(
+              60 * math.exp(-(((hm - 275) / 25.0) ** 2))))
+          if cmp_ > 0 else 0.0)
+    return math.sqrt((dl / sl) ** 2 + (dc / sc) ** 2 + (dhp / sh) ** 2
+                     + rt * (dc / sc) * (dhp / sh))
+
+
 def smoothstep(value):
     value = clamp(float(value), 0.0, 1.0)
     return value * value * (3.0 - 2.0 * value)
@@ -291,8 +380,5 @@ def bradford_adaptation(source_white, destination_white,
          if row == column else 0.0 for column in range(3)]
         for row in range(3)
     ]
-    inverse = matrix3_inverse(BRADFORD)
-    if inverse is None:
-        return None
     return matrix3_multiply(
-        inverse, matrix3_multiply(scale, BRADFORD))
+        BRADFORD_INVERSE, matrix3_multiply(scale, BRADFORD))

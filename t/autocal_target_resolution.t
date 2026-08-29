@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use JSON::PP;
 
 my $worker="$Bin/../usr/bin/meter_lg_autocal.pl";
 do $worker;
@@ -32,6 +33,12 @@ is(autocal_solver_target_delta_e({target_delta_e=>10},'lg_autocal_hdr20_dpg_targ
 is(autocal_solver_target_delta_e({target_delta_e=>20},'lg_autocal_hdr20_dpg_target_de',0.5),10,'targets above the UI range are capped consistently');
 is(autocal_solver_target_delta_e({target_delta_e=>0.01},'lg_autocal_hdr20_dpg_target_de',0.5),0.1,'targets below the UI range are capped consistently');
 is(autocal_solver_target_delta_e({target_delta_e=>'invalid'},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'invalid targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>'NaN'},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'non-finite targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>'Inf'},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'infinite targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>'-Inf'},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'negative-infinite targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>'1e999'},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'overflowing exponent targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>''},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'empty targets use the fallback');
+is(autocal_solver_target_delta_e({target_delta_e=>JSON::PP::true()},'lg_autocal_hdr20_dpg_target_de',0.5),0.5,'JSON booleans are not numeric targets');
 
 my $source;
 {
@@ -55,5 +62,7 @@ my $hdr_uses=()=$source=~/autocal_solver_target_delta_e\(\$config,"lg_autocal_hd
 is($hdr_uses,1,'the HDR solver uses the shared resolver');
 my $main_uses=()=$source=~/autocal_solver_target_delta_e\(\$config,undef,0\.5\)/g;
 is($main_uses,1,'the main-body target uses the shared resolver');
+unlike($source,qr/^sub\s+autocal_(?:low_light_number|finite_number)\b/m,
+ 'the worker has no private numeric coercer');
 
 done_testing();

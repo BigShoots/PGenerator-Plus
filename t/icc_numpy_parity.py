@@ -282,8 +282,8 @@ exact("companion MatrixTransform.apply",
 # does not have to hold a dozen live (N, 3) temporaries. Every stage is
 # elementwise or per-row, so chunking must not move a single byte -- checked
 # here on both signal routes at the real production grid.
-adaptation = COMPANION.chromatic_adaptation(COMPANION.SOURCE_WHITE_D65,
-                                            COMPANION.PCS_WHITE)
+adaptation = COMPANION.chromatic_adaptation(COMPANION.D65_WHITE,
+                                            COMPANION.ICC_D50_WHITE)
 full_lattice = COMPANION.lattice(COMPANION.GRID, red_fastest=False)
 for route, nits in (("sdr", 1.0), ("hdr10", 600.0)):
     whole = COMPANION.quantize_u16(matrix_transform.apply(

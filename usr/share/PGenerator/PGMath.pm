@@ -7,6 +7,8 @@ use Exporter qw(import);
 our @EXPORT_OK=qw(
  akima_interpolate
  bradford_adapt_xyz
+ delta_e_2000_lab
+ delta_e_2000_xyz
  delta_e_itp_xyz
  matrix3_inverse
  matrix3_multiply
@@ -16,6 +18,7 @@ our @EXPORT_OK=qw(
  pq_decode_normalized
  pq_encode_normalized
  xyz_to_ictcp
+ xyz_to_lab
 );
 
 # Published Bradford cone-response matrices. The inverse coefficients retain
@@ -117,6 +120,100 @@ sub delta_e_itp_xyz {
  my $dT=$a->{"T"}-$b->{"T"};
  my $dP=$a->{"P"}-$b->{"P"};
  return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
+}
+
+sub xyz_to_lab {
+ my ($xyz,$white,$ratio_policy)=@_;
+ return undef if(ref($xyz) ne "ARRAY" || ref($white) ne "ARRAY"
+  || @{$xyz} < 3 || @{$white} < 3);
+ $ratio_policy||="signed_linear";
+ return undef if($ratio_policy ne "signed_linear"
+  && $ratio_policy ne "ratio_floor_1e_minus_9");
+ my @ratio;
+ for my $index (0..2) {
+  return undef if(!defined($white->[$index]) || $white->[$index] == 0);
+  my $value=($xyz->[$index]||0)/$white->[$index];
+  $value=1e-9 if($ratio_policy eq "ratio_floor_1e_minus_9" && $value < 1e-9);
+  push @ratio,$value;
+ }
+ my $f=sub {
+  my ($value)=@_;
+  my $epsilon=216/24389;
+  my $kappa=24389/27;
+  return ($value > $epsilon) ? ($value ** (1/3))
+   : (($kappa*$value+16)/116);
+ };
+ my ($fx,$fy,$fz)=map { $f->($_) } @ratio;
+ return [116*$fy-16,500*($fx-$fy),200*($fy-$fz)];
+}
+
+sub _degrees_to_radians { return $_[0]*4*atan2(1,1)/180; }
+sub _radians_to_degrees { return $_[0]*180/(4*atan2(1,1)); }
+
+sub delta_e_2000_lab {
+ my ($lab1,$lab2)=@_;
+ return undef if(ref($lab1) ne "ARRAY" || ref($lab2) ne "ARRAY"
+  || @{$lab1} < 3 || @{$lab2} < 3);
+ my ($l1,$a1,$b1)=@{$lab1};
+ my ($l2,$a2,$b2)=@{$lab2};
+ my $c1=sqrt($a1*$a1+$b1*$b1);
+ my $c2=sqrt($a2*$a2+$b2*$b2);
+ my $avg_c=($c1+$c2)/2;
+ my $avg_c7=$avg_c**7;
+ my $g=0.5*(1-sqrt($avg_c7/($avg_c7+25**7)));
+ my $a1p=(1+$g)*$a1;
+ my $a2p=(1+$g)*$a2;
+ my $c1p=sqrt($a1p*$a1p+$b1*$b1);
+ my $c2p=sqrt($a2p*$a2p+$b2*$b2);
+ my $h1p=($c1p==0) ? 0 : _radians_to_degrees(atan2($b1,$a1p));
+ my $h2p=($c2p==0) ? 0 : _radians_to_degrees(atan2($b2,$a2p));
+ $h1p+=360 if($h1p < 0);
+ $h2p+=360 if($h2p < 0);
+ my $dlp=$l2-$l1;
+ my $dcp=$c2p-$c1p;
+ my $dhp=0;
+ if($c1p*$c2p != 0) {
+  my $dh=$h2p-$h1p;
+  if(abs($dh) <= 180) { $dhp=$dh; }
+  elsif($h2p <= $h1p) { $dhp=$dh+360; }
+  else { $dhp=$dh-360; }
+ }
+ my $dhp_term=2*sqrt($c1p*$c2p)*sin(_degrees_to_radians($dhp/2));
+ my $avg_lp=($l1+$l2)/2;
+ my $avg_cp=($c1p+$c2p)/2;
+ my $avg_hp=0;
+ if($c1p*$c2p == 0) {
+  $avg_hp=$h1p+$h2p;
+ } elsif(abs($h1p-$h2p) <= 180) {
+  $avg_hp=($h1p+$h2p)/2;
+ } elsif($h1p+$h2p < 360) {
+  $avg_hp=($h1p+$h2p+360)/2;
+ } else {
+  $avg_hp=($h1p+$h2p-360)/2;
+ }
+ my $t=1 - 0.17*cos(_degrees_to_radians($avg_hp-30))
+  + 0.24*cos(_degrees_to_radians(2*$avg_hp))
+  + 0.32*cos(_degrees_to_radians(3*$avg_hp+6))
+  - 0.20*cos(_degrees_to_radians(4*$avg_hp-63));
+ my $delta_theta=30*exp(-((($avg_hp-275)/25)**2));
+ my $avg_cp7=$avg_cp**7;
+ my $rc=2*sqrt($avg_cp7/($avg_cp7+25**7));
+ my $sl=1+(0.015*(($avg_lp-50)**2))/sqrt(20+(($avg_lp-50)**2));
+ my $sc=1+0.045*$avg_cp;
+ my $sh=1+0.015*$avg_cp*$t;
+ my $rt=-sin(_degrees_to_radians(2*$delta_theta))*$rc;
+ my $v1=$dlp/$sl;
+ my $v2=$dcp/$sc;
+ my $v3=$dhp_term/$sh;
+ return sqrt($v1*$v1+$v2*$v2+$v3*$v3+$rt*$v2*$v3);
+}
+
+sub delta_e_2000_xyz {
+ my ($xyz1,$xyz2,$white,$ratio_policy)=@_;
+ my $lab1=xyz_to_lab($xyz1,$white,$ratio_policy);
+ my $lab2=xyz_to_lab($xyz2,$white,$ratio_policy);
+ return undef if(!$lab1 || !$lab2);
+ return delta_e_2000_lab($lab1,$lab2);
 }
 
 sub matrix3_vector_multiply {

@@ -49,6 +49,18 @@ is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>5}),'off',
  '1D keeps one sample exactly at the target-Y trigger');
 is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>'invalid'}),'off',
  '1D fails safe to one sample for invalid target Y');
+is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>'NaN'}),'off',
+ '1D fails safe to one sample for non-finite target Y');
+is(autocal_low_light_mode_for_step({%{$low_light_config},low_light=>{%{$low_light_config->{low_light}},trigger=>'Inf'}},{target_Y=>1}),'off',
+ '1D fails safe to one sample for an infinite trigger');
+is(autocal_low_light_mode_for_step({%{$low_light_config},low_light=>{%{$low_light_config->{low_light}},trigger=>'1e999'}},{target_Y=>1}),'off',
+ '1D fails safe to one sample for an overflowing-exponent trigger');
+is(autocal_low_light_mode_for_step({%{$low_light_config},low_light=>{%{$low_light_config->{low_light}},trigger=>''}},{target_Y=>1}),'off',
+ '1D fails safe to one sample for an empty trigger');
+is(autocal_low_light_mode_for_step({%{$low_light_config},low_light=>{%{$low_light_config->{low_light}},trigger=>JSON::PP::true()}},{target_Y=>1}),'off',
+ '1D fails safe to one sample for a JSON-boolean trigger');
+is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>10_000_001}),'off',
+ '1D rejects target Y outside its finite input domain');
 is(autocal_requested_sample_count($low_light_config,'aa'),3,
  '1D executes the numeric application sample count');
 {
@@ -281,6 +293,18 @@ is(LowLight3DWorker::autocal3d_low_light_mode_for_step($low_light_3d_config,{tar
  '3D keeps one sample exactly at the target-Y trigger');
 is(LowLight3DWorker::autocal3d_low_light_mode_for_step($low_light_3d_config,{target_Y=>undef}),'off',
  '3D fails safe to one sample for invalid target Y');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step($low_light_3d_config,{target_Y=>'NaN'}),'off',
+ '3D fails safe to one sample for non-finite target Y');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step({%{$low_light_3d_config},low_light=>{%{$low_light_3d_config->{low_light}},trigger=>'Inf'}},{target_Y=>1}),'off',
+ '3D fails safe to one sample for an infinite trigger');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step({%{$low_light_3d_config},low_light=>{%{$low_light_3d_config->{low_light}},trigger=>'1e999'}},{target_Y=>1}),'off',
+ '3D fails safe to one sample for an overflowing-exponent trigger');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step({%{$low_light_3d_config},low_light=>{%{$low_light_3d_config->{low_light}},trigger=>''}},{target_Y=>1}),'off',
+ '3D fails safe to one sample for an empty trigger');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step({%{$low_light_3d_config},low_light=>{%{$low_light_3d_config->{low_light}},trigger=>JSON::PP::true()}},{target_Y=>1}),'off',
+ '3D fails safe to one sample for a JSON-boolean trigger');
+is(LowLight3DWorker::autocal3d_low_light_mode_for_step($low_light_3d_config,{target_Y=>10_000_001}),'off',
+ '3D rejects target Y outside its finite input domain');
 my $profile_step={kind=>'node',level=>10,signal_r_pct=>10,signal_g_pct=>10,signal_b_pct=>10};
 my $profile_target=LowLight3DWorker::profile_target_xyz_for_step($profile_step,$low_light_3d_config,100,0);
 my $profile_expected=LowLight3DWorker::autocal3d_expected_target_y_for_low_light($low_light_3d_config,$profile_step);
@@ -328,6 +352,8 @@ like($source3d,qr/my \$read_sample_count=autocal3d_requested_sample_count\(\$con
 
 unlike($source3d,qr/very_low_ire_threshold|sub low_light_mode_for_reading/,
  'the 3D worker has no IRE-band or forced-aaa override');
+unlike($source3d,qr/^sub\s+autocal3d_(?:low_light_number|finite_number)\b/m,
+ 'the 3D worker has no private numeric coercer');
 like($source3d,qr/calibration_end_retry_forbidden/,'the 3D worker records a foreign-close prohibition');
 like($source3d,qr/if\(\$upload_requested[^\n]+!lg_calibration_end_retry_forbidden\(\$state\)\)[\s\S]{0,200}?\/api\/lg\/calibration-mode/s,
  'the 3D terminal cleanup endpoint is gated off after an accepted write with unconfirmed CAL_END');

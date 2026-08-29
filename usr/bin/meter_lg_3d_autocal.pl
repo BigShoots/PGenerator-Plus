@@ -16,12 +16,12 @@ BEGIN {
  unshift @INC,"$script_dir/../share/PGenerator";
 }
 use PGMath qw(
- delta_e_itp_xyz matrix3_inverse matrix3_multiply
+ delta_e_2000_xyz delta_e_itp_xyz matrix3_inverse matrix3_multiply
  matrix3_vector_multiply pq_decode_normalized pq_encode_normalized
  xyz_to_ictcp
 );
 use PGCalibrationMath qw(
- autocal_xy_to_xyz_unit dpg_smooth_blend_index named_gamut_matrix
+ autocal_xy_to_xyz_unit bounded_number dpg_smooth_blend_index named_gamut_matrix
  smooth_dpg_low_end
 );
 use PGMeterReading qw(reading_xyz);
@@ -660,8 +660,6 @@ sub target_relative_luminance {
  return target_gamma_linear($signal,$gamma);
 }
 
-sub bt709_rgb_to_xyz { return rgb_to_xyz_for_gamut("bt709",@_); }
-
 sub target_rgb_to_xyz {
  my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
@@ -753,12 +751,6 @@ sub target_xyz_for_node {
  return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,$model->{"black"},$model->{"target_gamut"});
 }
 
-sub srgb_to_linear {
- my $v=shift;
- $v=clamp($v,0,1);
- return ($v <= 0.04045) ? ($v/12.92) : ((($v+0.055)/1.055)**2.4);
-}
-
 sub post_check_target_xyz {
 	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
@@ -791,83 +783,6 @@ sub post_check_target_xyz {
 	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
  return target_rgb_to_xyz($r,$g,$b,$target_gamma,$pick->($r,$g,$b),$black,$target_gamut);
-}
-
-sub lab_f {
- my $t=shift;
- my $e=216/24389;
- my $k=24389/27;
- return ($t > $e) ? ($t ** (1/3)) : (($k*$t+16)/116);
-}
-
-sub xyz_to_lab {
- my ($xyz,$white_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- my $xr=($xyz->[0]||0)/(0.95047*$white_y);
- my $yr=($xyz->[1]||0)/$white_y;
- my $zr=($xyz->[2]||0)/(1.08883*$white_y);
- my $fx=lab_f($xr);
- my $fy=lab_f($yr);
- my $fz=lab_f($zr);
- return [116*$fy-16,500*($fx-$fy),200*($fy-$fz)];
-}
-
-sub deg2rad { return $_[0]*4*atan2(1,1)/180; }
-sub rad2deg { return $_[0]*180/(4*atan2(1,1)); }
-
-sub delta_e_2000 {
- my ($xyz1,$xyz2,$white_y)=@_;
- my $lab1=xyz_to_lab($xyz1,$white_y);
- my $lab2=xyz_to_lab($xyz2,$white_y);
- my ($l1,$a1,$b1)=@{$lab1};
- my ($l2,$a2,$b2)=@{$lab2};
- my $c1=sqrt($a1*$a1+$b1*$b1);
- my $c2=sqrt($a2*$a2+$b2*$b2);
- my $avg_c=($c1+$c2)/2;
- my $avg_c7=$avg_c**7;
- my $g=0.5*(1-sqrt($avg_c7/($avg_c7+25**7)));
- my $a1p=(1+$g)*$a1;
- my $a2p=(1+$g)*$a2;
- my $c1p=sqrt($a1p*$a1p+$b1*$b1);
- my $c2p=sqrt($a2p*$a2p+$b2*$b2);
- my $h1p=($c1p==0) ? 0 : rad2deg(atan2($b1,$a1p));
- my $h2p=($c2p==0) ? 0 : rad2deg(atan2($b2,$a2p));
- $h1p+=360 if($h1p < 0);
- $h2p+=360 if($h2p < 0);
- my $dlp=$l2-$l1;
- my $dcp=$c2p-$c1p;
- my $dhp=0;
- if($c1p*$c2p != 0) {
-  my $dh=$h2p-$h1p;
-  if(abs($dh) <= 180) { $dhp=$dh; }
-  elsif($h2p <= $h1p) { $dhp=$dh+360; }
-  else { $dhp=$dh-360; }
- }
- my $dhp_term=2*sqrt($c1p*$c2p)*sin(deg2rad($dhp/2));
- my $avg_lp=($l1+$l2)/2;
- my $avg_cp=($c1p+$c2p)/2;
- my $avg_hp=0;
- if($c1p*$c2p == 0) {
-  $avg_hp=$h1p+$h2p;
- } elsif(abs($h1p-$h2p) <= 180) {
-  $avg_hp=($h1p+$h2p)/2;
- } elsif($h1p+$h2p < 360) {
-  $avg_hp=($h1p+$h2p+360)/2;
- } else {
-  $avg_hp=($h1p+$h2p-360)/2;
- }
- my $t=1 - 0.17*cos(deg2rad($avg_hp-30)) + 0.24*cos(deg2rad(2*$avg_hp)) + 0.32*cos(deg2rad(3*$avg_hp+6)) - 0.20*cos(deg2rad(4*$avg_hp-63));
- my $delta_theta=30*exp(-((($avg_hp-275)/25)**2));
- my $avg_cp7=$avg_cp**7;
- my $rc=2*sqrt($avg_cp7/($avg_cp7+25**7));
- my $sl=1+(0.015*(($avg_lp-50)**2))/sqrt(20+(($avg_lp-50)**2));
- my $sc=1+0.045*$avg_cp;
- my $sh=1+0.015*$avg_cp*$t;
- my $rt=-sin(deg2rad(2*$delta_theta))*$rc;
- my $v1=$dlp/$sl;
- my $v2=$dcp/$sc;
- my $v3=$dhp_term/$sh;
- return sqrt($v1*$v1+$v2*$v2+$v3*$v3+$rt*$v2*$v3);
 }
 
 sub summarize_post_check {
@@ -1404,19 +1319,6 @@ sub fm_additive {
  my $B=_fm_ramp_interp($fm->{"ramp"}[2],$db);
  my $bl=$fm->{"black"};
  return [ map { $R->[$_]+$G->[$_]+$B->[$_]-2*($bl->[$_]||0) } (0..2) ];
-}
-sub _fm_vol_axis {
- my ($vlv,$v)=@_;                 # -> (i0,t) over sorted vol levels
- my $n=scalar(@{$vlv});
- $v=0 if($v < 0); $v=1 if($v > 1);
- return (0,0) if($n < 2 || $v <= $vlv->[0]);
- for(my $i=0;$i<$n-1;$i++) {
-  if($v <= $vlv->[$i+1]) {
-   my $sp=$vlv->[$i+1]-$vlv->[$i];
-   return ($i, ($sp > 0) ? ($v-$vlv->[$i])/$sp : 0);
-  }
- }
- return ($n-2,1);
 }
 # Non-additivity correction at an arbitrary drive. Sparse grid trilinear used
 # to DROP missing cell corners without renormalising, which under-reported
@@ -2916,15 +2818,6 @@ sub read_timeout_for_step {
  return 120;
 }
 
-sub autocal3d_low_light_number {
- my ($value)=@_;
- return undef if(!defined($value) || ref($value));
- return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
- my $number=$value+0;
- return undef if($number != $number);
- return $number;
-}
-
 # Shared profile target math. Fixture reads and Low Light Handler selection use
 # this same path so there is no second transfer-function implementation.
 sub profile_target_xyz_for_step {
@@ -2955,7 +2848,7 @@ sub autocal3d_expected_target_y_for_low_light {
  return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
  foreach my $key (qw(target_Y dv_absolute_target_y custom_target_nits)) {
   next if(!exists($step->{$key}));
-  my $direct=autocal3d_low_light_number($step->{$key});
+  my $direct=bounded_number($step->{$key},-10_000_000,10_000_000);
   return (defined($direct) && $direct >= 0) ? $direct : undef;
  }
  my $black_y=0;
@@ -2964,7 +2857,7 @@ sub autocal3d_expected_target_y_for_low_light {
   (!$config->{"target_black_use_measured"} ? $config->{"target_black_luminance"} : undef),
   $config->{"fixture_black_y"}
  ) {
-  my $number=autocal3d_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number >= 0) { $black_y=$number; last; }
  }
  return $black_y if(($step->{"kind"}||"") eq "black");
@@ -2974,12 +2867,13 @@ sub autocal3d_expected_target_y_for_low_light {
   (!$config->{"target_white_use_measured"} ? $config->{"target_white_luminance"} : undef),
   $config->{"fixture_white_y"}
  ) {
-  my $number=autocal3d_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number > 0) { $white_y=$number; last; }
  }
  return undef if(!defined($white_y));
  my $target=profile_target_xyz_for_step($step,$config,$white_y,$black_y);
- my $target_y=(ref($target) eq "ARRAY") ? autocal3d_low_light_number($target->[1]) : undef;
+ my $target_y=(ref($target) eq "ARRAY")
+  ? bounded_number($target->[1],-10_000_000,10_000_000) : undef;
  return (defined($target_y) && $target_y >= 0) ? $target_y : undef;
 }
 
@@ -2988,7 +2882,7 @@ sub autocal3d_low_light_mode_for_step {
  return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- my $trigger=autocal3d_low_light_number($config->{"low_light"}{"trigger"});
+ my $trigger=bounded_number($config->{"low_light"}{"trigger"},0,10_000_000);
  return "off" if(!defined($trigger) || $trigger <= 0);
  my $expected_y=autocal3d_expected_target_y_for_low_light($config,$step);
  return "off" if(!defined($expected_y) || $expected_y < 0);
@@ -4038,29 +3932,6 @@ sub hdr20_postcal_prefix_shelf {
  }
  $out[0]=0; $out[1024]=0; $out[2048]=0;
  return \@out;
-}
-
-# One converge-step: given the current magnitude M, the measured lift
-# (measY / targetY), the damper, gain, and tolerance, return the next M.
-# Pushes DOWN while lift > 1 (panel lifted); clamp M >= 0. Returns undef
-# if abs(lift-1) <= tol (caller treats as "converged, exit loop").
-sub hdr20_postcal_converge_step {
- my ($M,$lift,$damp,$gain,$tol)=@_;
- $M=0 if(!defined($M));
- $M=$M+0;
- $lift=1 if(!defined($lift) || $lift+0 == 0);
- $lift=$lift+0;
- $damp=0.5 if(!defined($damp) || $damp+0 == 0);
- $damp=$damp+0;
- $gain=150 if(!defined($gain));
- $gain=$gain+0;
- $tol=0.15 if(!defined($tol));
- $tol=$tol+0;
- return undef if(abs($lift-1) <= $tol);
- my $delta=$damp*($lift-1)*$gain;
- my $next=$M+$delta;
- $next=0 if($next < 0);
- return $next+0;
 }
 
 # Load the per-TV seed matrix from disk. Returns the seed magnitude in
@@ -5608,7 +5479,11 @@ eval {
     $post_entry->{"target_y"}=$target->[1]/$sum;
     $post_entry->{"target_Yn"}=$target->[1]/($model->{"white_y"}||100);
    }
-   $post_entry->{"delta_e_2000"}=delta_e_2000($measured,$target,$model->{"white_y"}||100);
+   my $de_white_y=$model->{"white_y"}||100;
+   $post_entry->{"delta_e_2000"}=delta_e_2000_xyz(
+    $measured,$target,
+    [0.95047*$de_white_y,$de_white_y,1.08883*$de_white_y],
+    "signed_linear");
    1;
   };
   if(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {

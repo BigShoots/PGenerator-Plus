@@ -406,6 +406,23 @@ unlike($python_callers,qr/2610(?:\.0)?\s*\/\s*16384/,
  "Python callers do not carry private ST 2084 constants");
 unlike($python_callers,qr/^def\s+(?:smoothstep|sample_uniform_table|matrix3_multiply|matrix3_vector_multiply)\b/m,
  "Python callers do not redefine shared scalar helpers");
+unlike($python_callers,
+ qr/^\s*(?:D50|PCS_WHITE|SOURCE_WHITE_D65)\s*=\s*\(0\.9642|^\s*(?:SOURCE_WHITE_D65)\s*=\s*\(0\.9504559/m,
+ "Python callers reuse identical D50 and D65 constants from the shared owner");
+
+my $builder_source=source_text("$root/usr/bin/icc_profile_builder.py");
+unlike($builder_source,qr/^def\s+(?:calibration_curves|windows_hdr_commuting_adjustment_luts)\b/m,
+ "confirmed unreferenced ICC builder maths is deleted instead of moved");
+my ($xy_matrix_body)=$builder_source=~/(def xy_matrix\b.*?)(?=\ndef |\z)/s;
+my ($measured_matrix_body)=$builder_source=~/(def measured_primary_matrix\b.*?)(?=\ndef |\z)/s;
+is(()=($xy_matrix_body||"")=~/mat_inv\(base\)/g,1,
+ "xy_matrix computes its base inverse once");
+is(()=($measured_matrix_body||"")=~/mat_inv\(matrix\)/g,1,
+ "measured_primary_matrix computes its base inverse once");
+
+my $repair_source=source_text("$root/usr/bin/icc_b2a_repair.py");
+unlike($repair_source,qr/^def\s+_pq_code\b/m,
+ "the confirmed unreferenced B2A helper is deleted");
 
 my $perl_callers=join("\n",map { source_text("$root/$_") }
  qw(usr/bin/meter_lg_autocal.pl usr/bin/meter_lg_3d_autocal.pl
@@ -414,6 +431,9 @@ unlike($perl_callers,qr/^sub\s+(?:pq_encode_normalized|pq_decode_normalized|pq_d
  "Perl callers do not redefine shared transfer or ICtCp maths");
 unlike($perl_callers,qr/my \@M=\(\[0\.8951,0\.2664,-0\.1614\]/,
  "Perl callers do not carry a private Bradford implementation");
+unlike(source_text("$root/usr/bin/meter_lg_3d_autocal.pl"),
+ qr/^sub\s+(?:bt709_rgb_to_xyz|srgb_to_linear|_fm_vol_axis|hdr20_postcal_converge_step)\b/m,
+ "confirmed unreferenced 3D maths is deleted instead of moved");
 
 my $lg_server=source_text("$root/usr/sbin/pgenerator-lg");
 like($lg_server,qr/use PGMath qw\(matrix3_inverse matrix3_multiply\)/,

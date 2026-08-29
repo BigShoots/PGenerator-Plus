@@ -32,6 +32,8 @@ try:
 
     from pgen_colour_math import (
         BRADFORD,
+        D65_WHITE,
+        ICC_D50_WHITE,
         PQ_C1,
         PQ_C2,
         PQ_C3,
@@ -41,9 +43,11 @@ try:
         matrix3_inverse,
         matrix3_multiply as mat_mul,
         matrix3_vector_multiply as mat_vec_mul,
+        linear_to_srgb_bounded as linear_to_srgb,
         pq_decode_nits as pq_to_nits,
         pq_encode_nits as nits_to_pq,
         sample_uniform_table as sample_table,
+        srgb_to_linear_bounded as srgb_to_linear,
         smoothstep,
     )
 except ImportError as import_error:
@@ -351,7 +355,8 @@ def xy_matrix(primaries, white):
     base = [[columns[c][r] for c in range(3)] for r in range(3)]
     wx, wy = white
     white_xyz = [wx / wy, 1.0, (1.0 - wx - wy) / wy]
-    scales = [sum(mat_inv(base)[r][c] * white_xyz[c] for c in range(3)) for r in range(3)]
+    base_inverse = mat_inv(base)
+    scales = [sum(base_inverse[r][c] * white_xyz[c] for c in range(3)) for r in range(3)]
     return [[base[r][c] * scales[c] for c in range(3)] for r in range(3)]
 
 
@@ -363,7 +368,8 @@ def measured_primary_matrix(black, white, primaries):
     # Real displays are not perfectly additive. Scale each column so their
     # sum lands on the measured white while retaining measured chromaticity.
     measured_white = [(white["xyz"][axis] - black_xyz[axis]) / white_y for axis in range(3)]
-    scales = [sum(mat_inv(matrix)[r][c] * measured_white[c] for c in range(3)) for r in range(3)]
+    matrix_inverse = mat_inv(matrix)
+    scales = [sum(matrix_inverse[r][c] * measured_white[c] for c in range(3)) for r in range(3)]
     return [[matrix[r][c] * scales[c] for c in range(3)] for r in range(3)]
 
 
@@ -371,20 +377,6 @@ def s15fixed16(value):
     if value <= -32768 or value >= 32768:
         fail("MHC2 matrix value is outside the supported range")
     return struct.pack(">i", int(round(value * 65536.0)))
-
-
-def srgb_to_linear(value):
-    value = max(0.0, min(1.0, value))
-    if value <= 0.04045:
-        return value / 12.92
-    return ((value + 0.055) / 1.055) ** 2.4
-
-
-def linear_to_srgb(value):
-    value = max(0.0, min(1.0, value))
-    if value <= 0.0031308:
-        return value * 12.92
-    return 1.055 * (value ** (1.0 / 2.4)) - 0.055
 
 
 # Entries in the per-channel calibration curve written to vcgt. A 1D curve can
@@ -500,56 +492,6 @@ def vcgt_from_mhc2(matrix, adjustment_luts, wire, entries=VCGT_ENTRIES):
         for index in range(entries):
             previous = max(previous, curves[channel][index])
             curves[channel][index] = previous
-    return curves
-
-
-def calibration_curves(rows, black, white, primaries, profile_type, target_transfer,
-                       entries=VCGT_ENTRIES, balance_white=True):
-    """Per-channel 1D calibration: profile value -> panel device value.
-
-    This is the stage ArgyllCMS produces with dispcal and stores in vcgt, and
-    the reason its workflow calibrates before it profiles. Linearising each
-    channel first means the cLUT fitted afterwards only has to model a
-    well-behaved display, instead of a near-black response that changes faster
-    than its grid can represent.
-
-    The target spans the panel's own black-to-peak range so the curve always
-    covers the full device range: an absolute PQ target would saturate at the
-    measured peak and leave everything above it mapped to device maximum.
-    """
-    channel_samples = neutral_channel_samples(rows, black, primaries)
-    black_nits = max(0.0, black["xyz"][1])
-    peak_nits = max(white["xyz"][1], black_nits + 1e-4)
-    span = peak_nits - black_nits
-    peak_pq = nits_to_pq(peak_nits) if profile_type in ("kde-hdr", "windows-hdr") else 0.0
-    black_ratio = black_nits / peak_nits if peak_nits > 0 else 0.0
-    channel_targets = [1.0, 1.0, 1.0]
-    if peak_pq > 0.0 and balance_white:
-        physical = measured_primary_matrix(black, white, primaries)
-        wire = mhc2_wire_matrix("windows-hdr")
-        channel_targets = mat_vec_mul(mat_mul(mat_inv(physical), wire),
-                                      (1.0, 1.0, 1.0))
-        maximum_target = max(channel_targets)
-        if min(channel_targets) <= 1e-6 or maximum_target <= 1e-6:
-            fail("HDR calibration has an invalid neutral white target")
-        channel_targets = [value / maximum_target for value in channel_targets]
-    curves = []
-    for channel in range(3):
-        values = []
-        previous = 0.0
-        for index in range(entries):
-            position = index / float(entries - 1)
-            if peak_pq > 0.0:
-                target = (pq_to_nits(position * peak_pq) - black_nits) / span
-            else:
-                target = target_transfer_to_linear(position, target_transfer or "srgb", black_ratio)
-            target = max(0.0, min(1.0, target * channel_targets[channel]))
-            device = invert_channel_response(channel_samples[channel], target)
-            previous = max(previous, max(0.0, min(1.0, device)))
-            values.append(previous)
-        values[0] = 0.0
-        values[-1] = 1.0
-        curves.append(values)
     return curves
 
 
@@ -3338,8 +3280,7 @@ def windows_hdr_b2a_source_evaluator(profile):
     if white_nits <= 0.0:
         fail("Windows HDR cLUT matching requires positive profile luminance")
     evaluate_b2a = mft2_b2a_evaluator(profile)
-    adaptation = bradford_adaptation(
-        (0.9504559, 1.0, 1.0890578), (0.9642, 1.0, 0.8249))
+    adaptation = bradford_adaptation(D65_WHITE, ICC_D50_WHITE)
     bt2020_xyz = (
         (0.6369580, 0.1446169, 0.1688810),
         (0.2627002, 0.6779981, 0.0593017),
@@ -3576,7 +3517,7 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
     if white_nits <= 0.0:
         return profile
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     replacements = {}
     for signature, payload in read_icc_tags(profile):
         if signature not in (b"B2A0", b"B2A1") or signature in replacements:
@@ -3615,8 +3556,7 @@ def windows_hdr_b2a_with_ladder_trim(profile, rows, source_start=None,
                       struct.unpack_from(">9i", payload, 12)]
             clut = [value / 65535.0 for value in struct.unpack_from(
                 ">{}H".format(clut_values), payload, clut_start)]
-            adaptation = bradford_adaptation(
-                (0.9504559, 1.0, 1.0890578), (0.9642, 1.0, 0.8249))
+            adaptation = bradford_adaptation(D65_WHITE, ICC_D50_WHITE)
             bt2020_xyz = (
                 (0.6369580, 0.1446169, 0.1688810),
                 (0.2627002, 0.6779981, 0.0593017),
@@ -3918,7 +3858,7 @@ def windows_hdr_b2a_with_peak_drive(profile, rows, plateau_start=0.77):
     if white_nits <= 0.0:
         return profile
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     replacements = {}
     for signature, payload in read_icc_tags(profile):
         if signature not in (b"B2A0", b"B2A1") or signature in replacements:
@@ -4047,7 +3987,7 @@ def windows_hdr_b2a_with_shadow_luts(profile, reference_luts, corrected_luts,
     if white_nits <= 0.0:
         fail("Windows HDR shadow matching requires positive profile luminance")
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     replacements = {}
     for signature, payload in read_icc_tags(profile):
         if signature not in (b"B2A0", b"B2A1") or signature in replacements:
@@ -4309,7 +4249,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
                                  dtype=np.float64)
 
     evaluate = mft2_a2b_evaluator(profile)
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     d65 = (0.3127 / 0.329, 1.0, (1.0 - 0.3127 - 0.329) / 0.329)
     chad_payload = dict(read_icc_tags(profile)).get(b"chad")
     if not chad_payload or len(chad_payload) < 44 or chad_payload[:4] != b"sf32":
@@ -4874,7 +4814,7 @@ def profile_with_measured_chad(profile, black, white):
     source_white = [
         (white["xyz"][axis] - black_xyz[axis]) / span for axis in range(3)
     ]
-    adaptation = bradford_adaptation(source_white, (0.9642, 1.0, 0.8249))
+    adaptation = bradford_adaptation(source_white, ICC_D50_WHITE)
     payload = b"sf32" + b"\0\0\0\0" + b"".join(
         s15fixed16(adaptation[row][column])
         for row in range(3) for column in range(3)
@@ -5000,95 +4940,6 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
             endpoint = luts[channel][endpoint_start - 1]
             for index in range(endpoint_start, entries):
                 luts[channel][index] = endpoint
-    return luts
-
-
-def windows_hdr_commuting_adjustment_luts(matrix, modeled_luts, black, white,
-                                           calibrated_peak, entries=None):
-    """Reduce modeled HDR MHC2 curves to a matrix-safe common tone trim.
-
-    The MHC2 matrix is linear and precedes the post-PQ 1DLUTs. A separate
-    per-channel inverse derived from the same neutral measurements can correct
-    the panel's white point a second time after the matrix, particularly on an
-    OLED shoulder where the inverse is poorly conditioned. Preserve the
-    modeled neutral luminance correction as one common light-domain factor,
-    while leaving chromatic correction to the matrix. A common factor commutes
-    with the matrix in linear light and cannot invent channel separation on a
-    display whose measured response does not need it.
-
-    Near black, small absolute meter errors produce large ratios and a common
-    code move can still expose unequal physical channel toes. Keep only the
-    matrix plus neutral-headroom compensation through 25% PQ, then blend the
-    measured common tone correction in by 35%. Fine-tune can add a bounded
-    channel residual later, after measuring the actually applied profile.
-    """
-    if (len(modeled_luts) != 3 or min(len(curve) for curve in modeled_luts) < 2
-            or len(set(len(curve) for curve in modeled_luts)) != 1):
-        fail("HDR MHC2 modeled curves are invalid")
-    if entries is None:
-        entries = len(modeled_luts[0])
-    if entries != len(modeled_luts[0]):
-        fail("HDR MHC2 commuting curves must preserve the modeled table size")
-
-    wire = mhc2_wire_matrix("windows-hdr")
-    rgb_adjustment = mat_mul(mat_inv(wire), mat_mul(matrix, wire))
-    final_gains = mat_vec_mul(rgb_adjustment, (1.0, 1.0, 1.0))
-    if min(final_gains) <= 1e-6:
-        fail("HDR MHC2 calibration matrix has an invalid neutral response")
-
-    black_nits = max(0.0, black["xyz"][1])
-    raw_peak = max(white["xyz"][1], black_nits + 0.0001)
-    calibrated_span = max(calibrated_peak - black_nits, 0.0001)
-    pre_headroom_maximum = (raw_peak - black_nits) / calibrated_span
-    scale = max(final_gains) / pre_headroom_maximum
-    if not math.isfinite(scale) or scale <= 1e-6 or scale > 1.0001:
-        fail("HDR MHC2 neutral-headroom scale is invalid")
-    scale = min(1.0, scale)
-    source_limit = min(1.0, nits_to_pq(calibrated_peak))
-
-    def baseline_output(position):
-        return nits_to_pq(pq_to_nits(position) / scale)
-
-    def common_factor(source_position):
-        source_position = max(0.0, min(source_limit, source_position))
-        source_nits = pq_to_nits(source_position)
-        ratios = []
-        for channel in range(3):
-            curve_input = nits_to_pq(source_nits * final_gains[channel])
-            baseline = baseline_output(curve_input)
-            baseline_nits = pq_to_nits(baseline)
-            modeled = sample_table(modeled_luts[channel], curve_input)
-            if baseline_nits > 1e-8:
-                ratios.append(pq_to_nits(modeled) / baseline_nits)
-        factor = sorted(ratios)[len(ratios) // 2] if ratios else 1.0
-        factor = max(0.25, min(4.0, factor))
-        if source_position <= 0.25:
-            weight = 0.0
-        elif source_position >= 0.35:
-            weight = 1.0
-        else:
-            weight = (source_position - 0.25) / 0.10
-            weight = smoothstep(weight)
-        return 1.0 + weight * (factor - 1.0)
-
-    luts = []
-    for channel in range(3):
-        limit_input = nits_to_pq(
-            pq_to_nits(source_limit) * final_gains[channel])
-        values = []
-        previous = 0.0
-        for index in range(entries):
-            position = index / float(entries - 1)
-            active_input = min(position, limit_input)
-            source_position = nits_to_pq(
-                pq_to_nits(active_input) / final_gains[channel])
-            value = nits_to_pq(
-                pq_to_nits(baseline_output(active_input))
-                * common_factor(source_position))
-            previous = max(previous, max(0.0, min(1.0, value)))
-            values.append(previous)
-        values[0] = 0.0
-        luts.append(values)
     return luts
 
 
@@ -5303,7 +5154,7 @@ def reshape_hdr_b2a_for_pq(profile, white_y, incorporated_calibration=None, grid
     virtual-device domain and put the calibration in the high-resolution B2A
     output shapers. This preserves sharp HDR rolloffs that a 3D grid cannot.
     """
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
     # KWin's HDR ICC path accepts the full mft2 range through its direct parser.
     # Stay within LittleCMS' signed 16-bit stage limit while retaining enough
@@ -5556,7 +5407,7 @@ def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
     Only the original characterization model is consumed.
     """
     forward = mft2_a2b_evaluator(forward_profile)
-    d50 = (0.9642, 1.0, 0.8249)
+    d50 = ICC_D50_WHITE
     replacements = {}
     refined_payloads = {}
     changed = False
