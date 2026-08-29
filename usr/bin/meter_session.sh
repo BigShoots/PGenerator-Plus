@@ -1190,8 +1190,14 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
-		     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
-		     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="$CURRENT_LOW_LIGHT_MODE"
+	     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
+	     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="$CURRENT_LOW_LIGHT_MODE"
+	     # The virtual meter ignores integration/averaging controls and has no
+	     # panel that needs to settle. Keep every simulated trigger immediate.
+	     if (( METER_SIMULATED )); then
+	      SETTLE_MS=0
+	      CMD_LOW_LIGHT_MODE="$CURRENT_LOW_LIGHT_MODE"
+	     fi
 
 	   # If the per-read low_light mode differs from the currently-running
 	   # spotread's, respawn ONLY spotread (1-3s) instead of the wrapper

@@ -19,7 +19,7 @@
 
 use strict;
 use warnings;
-use Time::HiRes qw(sleep time);
+use Time::HiRes qw(time);
 
 my $STATE_FILE = "/tmp/pgen_sim_pattern.json";
 my $SIM_PORT   = 99;
@@ -35,6 +35,14 @@ if (grep { $_ eq "-?" || $_ eq "--help" } @ARGV) {
 
 $| = 1;
 binmode(STDIN);
+
+# `script` gives the child a pseudo-terminal in canonical mode. Real spotread
+# switches that terminal to character-at-a-time input itself; without doing the
+# same here, the worker's single-space read trigger remains buffered until a
+# newline or EOF and every simulated read times out.
+if (-t STDIN) {
+ system("stty", "-icanon", "-echo", "min", "1", "time", "0");
+}
 
 # --------------------------------------------------------- display model
 # Deterministic per-session imperfections plus per-read noise.
@@ -231,7 +239,6 @@ sub measure_xyz {
 }
 
 # ------------------------------------------------------------ protocol loop
-sleep(0.8);   # mimic instrument init
 print "Simulated instrument 'PGenerator Simulated Meter' on port $SIM_PORT\n";
 print "Current calibration response:\n";
 
@@ -250,12 +257,10 @@ while (sysread(STDIN, $c, 1)) {
   last;
  }
  if (lc($c) eq "k") {
-  sleep(0.6);
   print "\nCalibration complete\n";
   prompt();
   next;
  }
- sleep(0.35 + rand(0.25));   # integration time
  my ($X,$Y,$Z,$x,$y) = measure_xyz();
  printf "\n Result is XYZ: %.6f %.6f %.6f, Yxy: %.6f %.6f %.6f\n",
   $X, $Y, $Z, $Y, $x, $y;

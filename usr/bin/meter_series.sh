@@ -826,6 +826,9 @@ PY
 
 ensure_spotread_low_light_for_step() {
  local idx="$1" desired
+ # Averaging changes only affect physical instruments. Restarting the virtual
+ # meter for them adds latency without changing its synthetic result.
+ (( METER_SIMULATED )) && return 0
  # Spectrophotometers can require a physical white-tile prompt after a child
  # restart. Do not abort an otherwise valid series to change averaging mode
  # when the operator must remain in control of that setup sequence.
@@ -1195,6 +1198,9 @@ PY
 
 maybe_pattern_insert_before_step() {
  local step_index="${1:-0}" ire="${2:-0}"
+ # The synthetic display model has no temporal retention or thermal drift, so
+ # stabilization flashes and their waits have no meaning for simulated reads.
+ (( METER_SIMULATED )) && return 0
  (( step_index > 0 )) || return 0
  local now elapsed
 if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
@@ -1304,6 +1310,10 @@ TOTAL=$(get_step_count)
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
 PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
+if (( METER_SIMULATED )); then
+ DELAY_SEC=0
+ PATTERN_DELAY_SEC=0
+fi
 if [[ -z "$PATCH_INSERT_PATCH_ENABLED" ]]; then
  PATCH_INSERT_PATCH_ENABLED="$PATCH_INSERT"
 fi
@@ -1325,6 +1335,11 @@ FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
+if (( METER_SIMULATED )); then
+ FIRST_STEP_EXTRA_SEC=0
+ FRESH_DV_FIRST_WHITE_EXTRA_SEC=0
+ DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=0
+fi
 # A failed patch must not silently poison a validation or profiling series.
 # Give an absent result one bounded redisplay/read retry. An exact all-zero
 # result on a non-black patch is quick to detect and has proved transient on
