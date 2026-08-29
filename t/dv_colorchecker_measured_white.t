@@ -71,8 +71,8 @@ like(
 );
 like(
  $webui_source,
- qr/\$colorchecker_ref_white_nits\s*=\s*\(\$signal_mode eq "dv" && \$dv_map_mode eq "1"\) \? 100 : 203/,
- 'server uses 100 nits for Absolute DV and retains 203 nits for HDR10 ColorChecker',
+ qr/\$colorchecker_ref_white_nits\s*=\s*100/,
+ 'server uses 100 nits for HDR10 and Absolute DV ColorChecker',
 );
 
 my $webui_app = File::Spec->catfile($Bin, '..', 'usr', 'share', 'PGenerator', 'webui-app.js');
@@ -82,13 +82,13 @@ my $webui_app_source = <$webui_app_fh>;
 close $webui_app_fh;
 like(
  $webui_app_source,
- qr/hdrColorCheckerRefNits\s*=\s*dvAbsolute\s*\?\s*100\s*:\s*203/,
- 'client classic ColorChecker matches the Absolute DV 100-nit reference',
+ qr/hdrColorCheckerRefNits\s*=\s*100/,
+ 'client classic ColorChecker uses the HDR 100-nit reference',
 );
 like(
  $webui_app_source,
- qr/hdrReferenceNits\s*=\s*dvAbsolute\s*\?\s*100\s*:\s*203/,
- 'client ColorChecker SG matches the Absolute DV 100-nit reference',
+ qr/hdrReferenceNits\s*=\s*100/,
+ 'client ColorChecker SG uses the HDR 100-nit reference',
 );
 
 done_testing();

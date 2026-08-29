@@ -4777,11 +4777,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
-    # HDR10 chromatic ColorChecker samples use the BT.2408 203-nit diffuse
-    # white stimulus. Absolute DV uses a 100-nit reference instead. The four
-    # neutral samples use the normal series signal reference and are graded
-    # against the measured/manual white in both modes.
-    my $colorchecker_ref_white_nits=($signal_mode eq "dv" && $dv_map_mode eq "1") ? 100 : 203;
+    # HDR10 and Absolute-DV chromatic ColorChecker samples use a 100-nit
+    # reference. The four neutral samples use the normal series signal
+    # reference and are graded against the measured/manual white in both modes.
+    my $colorchecker_ref_white_nits=100;
     my $encode_linear=sub {
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
