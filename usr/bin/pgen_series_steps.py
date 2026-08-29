@@ -10,7 +10,7 @@ import sys
 
 
 SCHEMA_NAME = "pgen-series-steps"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 READING_FIELDS = (
     "input_max", "patch_size", "stimulus", "signal_r_pct",
     "signal_g_pct", "signal_b_pct", "signal_mode", "target_gamma",
@@ -158,7 +158,14 @@ def write_field(value):
     sys.stdout.buffer.write(data)
 
 
-def normalize(path, generation, selected_mode, trigger, observer):
+def normalize(path, generation, selected_mode, requested_count, trigger,
+              observer):
+    try:
+        requested_count = int(requested_count)
+    except (TypeError, ValueError):
+        raise ValueError("requested_sample_count is not an integer")
+    if requested_count not in (1, 2, 3, 5):
+        raise ValueError("requested_sample_count is outside its domain")
     with open(path) as handle:
         steps = json.load(handle)
     if not isinstance(steps, list):
@@ -172,12 +179,13 @@ def normalize(path, generation, selected_mode, trigger, observer):
     for index, step in enumerate(steps):
         codes, input_max, ire, name = validate_step(step, index)
         full_json = json.dumps(step, separators=(",", ":"), allow_nan=False)
+        active_mode = effective_low_light_mode(step, selected_mode, trigger)
         fields = (
             index, codes[0], codes[1], codes[2], input_max,
             step.get("patch_size", ""), step.get("read_delay_ms", ""),
             step["ire"], name, step.get("series_white_reference", ""),
             step.get("final_white_refresh", ""), step.get("target_Yn", ""),
-            effective_low_light_mode(step, selected_mode, trigger),
+            active_mode, requested_count if active_mode != "off" else 1,
             step.get("autocal_white_reference", ""), full_json,
             reading_metadata(step, codes, observer),
         )
@@ -187,13 +195,13 @@ def normalize(path, generation, selected_mode, trigger, observer):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 6 or argv[0] != "normalize":
+    if len(argv) != 7 or argv[0] != "normalize":
         sys.stderr.write(
             "usage: pgen_series_steps.py normalize PATH GENERATION MODE "
-            "TRIGGER OBSERVER\n")
+            "REQUESTED_SAMPLE_COUNT TRIGGER OBSERVER\n")
         return 1
     try:
-        normalize(argv[1], argv[2], argv[3], argv[4], argv[5])
+        normalize(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6])
     except (IOError, OSError, TypeError, ValueError) as exc:
         sys.stderr.write("series-step normalization failed: %s\n" % exc)
         return 1

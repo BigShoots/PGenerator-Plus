@@ -40,6 +40,7 @@ is(autocal_committed_max(0.42,undef),0.42,'a missing final measurement is never 
 autocal_set_target_overrides(undef,undef);
 my $low_light_config={
  low_light=>{enabled=>1,mode=>'aa',trigger=>5},
+ low_light_requested_sample_count=>3,
  target_gamma=>'2.2',signal_mode=>'sdr',target_luminance=>100,
 };
 is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>4.999}),'aa',
@@ -48,8 +49,8 @@ is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>5}),'off',
  '1D keeps one sample exactly at the target-Y trigger');
 is(autocal_low_light_mode_for_step($low_light_config,{target_Y=>'invalid'}),'off',
  '1D fails safe to one sample for invalid target Y');
-is_deeply([map { low_light_sample_count($_) } qw(off a aa aaa)],[1,2,3,5],
- '1D maps the public modes to exact application sample counts');
+is(autocal_requested_sample_count($low_light_config,'aa'),3,
+ '1D executes the numeric application sample count');
 {
  no warnings qw(redefine once);
  local $main::LG_AUTOCAL_CONFIG={signal_range=>1,pattern_signal_range=>1};
@@ -72,12 +73,15 @@ is_deeply([map { low_light_sample_count($_) } qw(off a aa aaa)],[1,2,3,5],
  };
  my ($reading,$error)=read_step_once({
   low_light=>{enabled=>1,mode=>'a',trigger=>1},signal_mode=>'sdr',
+  low_light_requested_sample_count=>2,
   display_type=>'oled_generic',target_gamma=>'2.2',target_gamut=>'bt709',target_luminance=>100,signal_range=>1,
  },{r=>16,g=>16,b=>16,ire=>0,stimulus=>0,name=>'0%'},1);
  ok(!defined($error) && ref($reading) eq 'HASH','the captured 1D black read completes');
  is($result_gets,2,'the 1D worker re-polls the same request after one result-poll transport timeout');
  is($captured->{low_light_session}{mode},'off','the 1D read never changes the Argyll process mode');
  is($captured->{low_light}{mode},'a','the 1D black read requests two physical application samples');
+ is($captured->{low_light}{requested_sample_count},2,
+  'the 1D request carries the numeric execution contract');
 }
 
 # The transport-retry budget is exactly one: a second consecutive poll failure
@@ -198,8 +202,8 @@ like($source,qr/low_light_session"\}=\{ mode => "off", enabled => JSON::PP::fals
  'the 1D worker keeps Argyll normal and requests thresholded application samples');
 like($source,qr/my \@layout_slots=ddc_slots_for_layout\([^\n]+\);/,
  'the Dark Detail log counts the slot list rather than its final value');
-like($session_source,qr/low_light_sample_count\(\)[\s\S]{0,180}?a\) echo 2[\s\S]{0,180}?aaa\) echo 5/,
- 'the persistent session maps low-light modes to 1/2/3/5 samples');
+like($session_source,qr/CMD_REQUESTED_SAMPLE_COUNT[\s\S]{0,1200}?REQUESTED_SAMPLE_COUNT="\$CMD_REQUESTED_SAMPLE_COUNT"/,
+ 'the persistent session executes the numeric sample-count contract');
 like($session_source,qr/capture_additional_average_sample[\s\S]{0,5000}?ADDITIONAL_PARSED/,
  'additional samples are captured from the existing spotread process');
 unlike($session_source,qr/if \[\[ "\$CMD_LOW_LIGHT_MODE" != "\$CURRENT_LOW_LIGHT_MODE"/,
@@ -218,7 +222,7 @@ like($session_source,qr/if \[\[ "\$CMD_CONTINUOUS" == "1" \]\][\s\S]{0,250}?READ
  'a non-continuous timeout retires the child before another logical patch');
 like($session_source,qr/release the USB interface[\s\S]{0,300}?sleep 1/,
  'meter respawn allows the USB interface to settle before reopening');
-like($source,qr/my \$read_sample_count=low_light_sample_count\(\$active_low_light\);[\s\S]{0,120}?read_timeout_for_step\(\$step,\$payload->\{"read_timeout"\}\)\*\$read_sample_count\+\(\$read_sample_count > 1 \? 45 : 0\)/,
+like($source,qr/my \$read_sample_count=autocal_requested_sample_count\(\$config,\$active_low_light\);[\s\S]{0,2000}?read_timeout_for_step\(\$step,\$payload->\{"read_timeout"\}\)\*\$read_sample_count\+\(\$read_sample_count > 1 \? 45 : 0\)/,
  'the 1D read deadline scales with the sample count plus the comm-retry grace');
 {
  no warnings qw(redefine once);
@@ -266,6 +270,7 @@ $SIG{TERM}="DEFAULT";
 
 my $low_light_3d_config={
  low_light=>{enabled=>1,mode=>'a',trigger=>2},
+ low_light_requested_sample_count=>2,
  target_gamma=>'2.2',target_gamut=>'bt709',
  target_white_use_measured=>0,target_white_luminance=>100,
  target_black_use_measured=>0,target_black_luminance=>0,
@@ -308,6 +313,8 @@ cmp_ok(abs($profile_expected-$profile_target->[1]),'<',0.0000001,
  is($result_gets,2,'the 3D worker re-polls the same request after one result-poll transport timeout');
  is($captured->{low_light_session}{mode},'off','the 3D read never changes the Argyll process mode');
  is($captured->{low_light}{mode},'a','the 3D black read requests two physical application samples');
+ is($captured->{low_light}{requested_sample_count},2,
+  'the 3D request carries the numeric execution contract');
 }
 
 open(my $w3,'<',$worker3d) or die "Unable to read $worker3d: $!";
@@ -316,7 +323,7 @@ my $source3d=<$w3>;
 close($w3);
 like($source3d,qr/low_light_session"\}=\{ mode => "off", enabled => json_false\(\) \}[\s\S]{0,180}?autocal3d_low_light_mode_for_step\(\$config,\$step\)[\s\S]{0,180}?\$payload->\{"low_light"\}/,
  'the 3D worker keeps Argyll normal and requests thresholded application samples');
-like($source3d,qr/my \$read_sample_count=low_light_sample_count\(\$active_low_light\);[\s\S]{0,120}?read_timeout_for_step\(\$step,\$payload->\{"read_timeout"\}\)\*\$read_sample_count\+\(\$read_sample_count > 1 \? 45 : 0\)/,
+like($source3d,qr/my \$read_sample_count=autocal3d_requested_sample_count\(\$config,\$active_low_light\);[\s\S]{0,1200}?read_timeout_for_step\(\$step,\$payload->\{"read_timeout"\}\)\*\$read_sample_count\+\(\$read_sample_count > 1 \? 45 : 0\)/,
  'the 3D read deadline scales with the sample count plus the comm-retry grace');
 
 unlike($source3d,qr/very_low_ire_threshold|sub low_light_mode_for_reading/,
@@ -369,9 +376,9 @@ like($webui_source,qr/readPayload\.low_light=meterEffectiveLowLightReadState\(st
  'manual reads always carry an explicit effective low-light state');
 like($webui_source,qr/my \$session_avg_mode="off"/,
  'the WebUI keeps the physical meter process in normal adaptive mode');
-like($webui_source,qr/my \$avg_enabled=.*?"enabled".*?true[\s\S]{0,300}?\$avg_mode="off" unless\(\$avg_enabled/s,
+like($webui_source,qr/sub webui_low_light_request_contract[\s\S]{0,900}?\$mode="off" if\(!\$enabled \|\| \$force_off\)/s,
  'the WebUI fails a disabled or malformed per-read state to off');
-like($webui_source,qr/\$avg_mode="off" if\(\$require_device_ready\)/,
+like($webui_source,qr/webui_low_light_request_contract\(\$body,\$require_device_ready\)/,
  'the WebUI preserves the established single-read spectrophotometer workflow');
 like($webui_source,qr/my \$cmd_low_light_mode=\$avg_mode/,
  'the WebUI sends the effective application sample mode in every READ command');
@@ -452,7 +459,7 @@ if(defined($white_worker)) {
  cmp_ok(abs($updated->[2]{series_target_white_y}-406.513964),'<',1e-9,
   'the 5% step receives the measured white reference');
  my $normalizer="$Bin/../usr/bin/pgen_series_steps.py";
- open(my $normalized,'-|','python3',$normalizer,'normalize',$steps_path,1,'a',1,'1931_2')
+ open(my $normalized,'-|','python3',$normalizer,'normalize',$steps_path,1,'a',2,1,'1931_2')
   or die "Unable to run $normalizer: $!";
  local $/;
  my $stream=<$normalized>||'';
@@ -460,7 +467,7 @@ if(defined($white_worker)) {
  is($? >> 8,0,'low-light selector runs while preparing the measured-white generation');
  my @normalized_fields=split(/\0/,$stream,-1);
  splice(@normalized_fields,0,4);
- my @modes=map { $normalized_fields[$_*16+12] } (0..3);
+ my @modes=map { $normalized_fields[$_*17+12] } (0..3);
  is_deeply(\@modes,[qw(off a a off)],
   'recorded SDR steps repeat below one nit and stay single at/above it');
 }

@@ -139,8 +139,10 @@ isnt($short_status,0,'an incomplete requested sample set is rejected');
  isnt($mismatch_status,0,'a requested count that disagrees with the delivered samples is rejected');
  like($mismatch_error,qr/sample count does not match/i,'the count mismatch names its failure');
  my $four=[({X=>1,Y=>1,Z=>1}) x 4];
- my ($mode_status)=run_average($four,'aa',4);
- isnt($mode_status,0,'a count that matches the input but not the mode table is rejected');
+ my ($mode_status,$mode_output)=run_average($four,'aa',4);
+ is($mode_status,0,'the reducer executes a matching numeric count without owning the UI table');
+ is(decode_json($mode_output)->{requested_sample_count},4,
+  'numeric request metadata survives reduction');
  my ($bad_requested_status)=run_average([{X=>1,Y=>1,Z=>1}],'off','abc');
  isnt($bad_requested_status,0,'a non-integer requested sample count is rejected');
  my $err=gensym;
@@ -152,95 +154,6 @@ isnt($short_status,0,'an incomplete requested sample set is rejected');
  my $ignored_err=<$err>;
  waitpid($pid,0);
  isnt(($? >> 8),0,'non-JSON stdin is rejected');
-}
-
-# Every copy of the mode -> sample-count table must agree. The helper rejects
-# any count that disagrees with its own table, so a drift in one copy turns
-# every below-trigger patch into a terminal abort at runtime.
-{
- my %expected=(off=>1,a=>2,aa=>3,aaa=>5);
- my @modes=qw(off a aa aaa);
- use File::Temp qw(tempdir);
- my $tempdir=tempdir(CLEANUP=>1);
-
- sub read_source {
-  my ($path)=@_;
-  open(my $fh,'<',$path) or die "Unable to read $path: $!";
-  local $/;
-  my $source=<$fh>;
-  close($fh);
-  return $source;
- }
-
- sub shell_counts {
-  my ($path,$label)=@_;
-  my $source=read_source($path);
-  my ($function)=$source=~/^(low_light_sample_count\(\)\s*\{.*?^\})/ms;
-  die "low_light_sample_count not found in $path" if(!defined($function));
-  my $script="$tempdir/$label.sh";
-  open(my $fh,'>',$script) or die "Unable to write $script: $!";
-  print {$fh} "$function\nlow_light_sample_count \"\$1\"\n";
-  close($fh);
-  my %counts;
-  foreach my $mode (@modes) {
-   my $count=qx(bash "$script" "$mode");
-   chomp($count);
-   $counts{$mode}=$count+0;
-  }
-  return \%counts;
- }
-
- sub perl_worker_counts {
-  my ($path,$package)=@_;
-  my $source=read_source($path);
-  my ($sub_text)=$source=~/^(sub low_light_sample_count \{.*?\n\})/ms;
-  die "low_light_sample_count not found in $path" if(!defined($sub_text));
-  eval "package $package; $sub_text; 1" or die $@;
-  my %counts;
-  foreach my $mode (@modes) {
-   no strict 'refs';
-   $counts{$mode}=&{"${package}::low_light_sample_count"}($mode);
-  }
-  return \%counts;
- }
-
- sub webui_counts {
-  my ($path)=@_;
-  my $source=read_source($path);
-  my ($ternary)=$source=~/my \$average_sample_count=(\(.*?\));/;
-  die "average sample count ternary not found in $path" if(!defined($ternary));
-  my %counts;
-  foreach my $mode (@modes) {
-   my $count=eval "my \$avg_mode='$mode'; $ternary";
-   die $@ if($@);
-   $counts{$mode}=$count;
-  }
-  return \%counts;
- }
-
- sub helper_counts {
-  my %counts;
-  foreach my $mode (@modes) {
-   my $samples=[({X=>0.5,Y=>0.5,Z=>0.5}) x $expected{$mode}];
-   my ($status,$output)=run_average($samples,$mode,$expected{$mode});
-   die "helper rejected mode $mode at its own expected count" if($status != 0);
-   $counts{$mode}=decode_json($output)->{sample_count};
-  }
-  return \%counts;
- }
-
- is_deeply(shell_counts("$Bin/../usr/bin/meter_series.sh",'series'),\%expected,
-  'meter_series.sh maps modes to 1/2/3/5 samples');
- is_deeply(shell_counts("$Bin/../usr/bin/meter_session.sh",'session'),\%expected,
-  'meter_session.sh maps modes to 1/2/3/5 samples');
- is_deeply(perl_worker_counts("$Bin/../usr/bin/meter_lg_autocal.pl",'SampleCount1D'),\%expected,
-  'the 1D worker maps modes to 1/2/3/5 samples');
- is_deeply(perl_worker_counts("$Bin/../usr/bin/meter_lg_3d_autocal.pl",'SampleCount3D'),\%expected,
-  'the 3D worker maps modes to 1/2/3/5 samples');
- is_deeply(webui_counts("$Bin/../usr/share/PGenerator/webui.pm"),\%expected,
-  'webui.pm maps modes to 1/2/3/5 samples');
- is_deeply(helper_counts(),\%expected,
-  'the averaging helper accepts exactly the shared sample counts');
 }
 
 open(my $mfh,'<',$math) or die "Unable to read $math: $!";

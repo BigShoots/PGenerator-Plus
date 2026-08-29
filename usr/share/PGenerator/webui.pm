@@ -3072,6 +3072,64 @@ sub webui_meter_session_start (@) {
  return 0;
 }
 
+sub webui_low_light_sample_count {
+ my ($mode)=@_;
+ my %counts=(off=>1,a=>2,aa=>3,aaa=>5);
+ $mode=lc($mode||"off");
+ return exists($counts{$mode}) ? $counts{$mode} : 1;
+}
+
+# Resolve the transitional presentation mode and numeric execution contract at
+# the common server ingress. Mode-only payloads remain compatible for one
+# release; every downstream worker receives only the resolved integer.
+sub webui_low_light_request_contract {
+ my ($body,$force_off)=@_;
+ $body="" if(!defined($body));
+ my $mode="off";
+ my $enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"enabled"\s*:\s*true/i) ? 1 : 0;
+ if($enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"mode"\s*:\s*"(a|aa|aaa)"/i) {
+  $mode=lc($1);
+ }
+ $mode="off" if(!$enabled || $force_off);
+ my $expected=&webui_low_light_sample_count($mode);
+ my $has_count=($body=~/"(?:low_light_requested_sample_count|requested_sample_count)"\s*:/i) ? 1 : 0;
+ my $provided;
+ if($body=~/"(?:low_light_requested_sample_count|requested_sample_count)"\s*:\s*"?([0-9]+)"?\s*(?=[,}])/i) {
+  $provided=int($1);
+ }
+ my $error="";
+ if($has_count && !defined($provided)) {
+  $error="requested_sample_count must be an integer";
+ } elsif(!$force_off && defined($provided) && $provided != $expected) {
+  $error="requested_sample_count does not match low-light mode";
+ }
+ return {
+  mode=>$mode,
+  requested_sample_count=>$expected,
+  legacy_mode_only=>$has_count ? 0 : 1,
+  error=>$error,
+ };
+}
+
+sub webui_low_light_stamp_request {
+ my ($body,$force_off)=@_;
+ my $contract=&webui_low_light_request_contract($body,$force_off);
+ return ($body,$contract->{"error"}) if(($contract->{"error"}||"") ne "");
+ my $mode=$contract->{"mode"};
+ my $count=$contract->{"requested_sample_count"};
+ if($body=~/"low_light_requested_sample_count"\s*:/) {
+  $body=~s/"low_light_requested_sample_count"\s*:\s*"?[^,}\s]+"?/"low_light_requested_sample_count":$count/;
+ } else {
+  $body=~s/\}\s*\z/,"low_light_requested_sample_count":$count}/;
+ }
+ if($body=~/"low_light_effective_mode"\s*:/) {
+  $body=~s/"low_light_effective_mode"\s*:\s*"[^"]*"/"low_light_effective_mode":"$mode"/;
+ } else {
+  $body=~s/\}\s*\z/,"low_light_effective_mode":"$mode"}/;
+ }
+ return ($body,"");
+}
+
 sub webui_meter_read (@) {
  my ($body)=@_;
 
@@ -3239,18 +3297,15 @@ sub webui_meter_read (@) {
 		 $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
 		 my $request_id="";
 		 $request_id=$1 if($body=~/"request_id"\s*:\s*"([A-Za-z0-9_.:-]{1,96})"/);
-			 # The low-light mode is an application repeat count for this read. It
-			 # is never passed to Argyll as a process option.
-			 my $avg_mode="off";
-			 if($body=~/"low_light"\s*:\s*\{/i) {
-			  my $avg_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"enabled"\s*:\s*true/i) ? 1 : 0;
-			  $avg_mode=lc($1) if($avg_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(a|aa|aaa)"/);
-			  $avg_mode="off" unless($avg_enabled && ($avg_mode eq "a" || $avg_mode eq "aa" || $avg_mode eq "aaa"));
+			 # Resolve presentation mode to the numeric execution contract once.
+			 # The value is never passed to Argyll as a process option.
+			 my $low_light_contract=&webui_low_light_request_contract($body,$require_device_ready);
+			 if(($low_light_contract->{"error"}||"") ne "") {
+			  return '{"status":"error","message":"'.$low_light_contract->{"error"}.'"}';
 			 }
+			 my $avg_mode=$low_light_contract->{"mode"};
+			 my $average_sample_count=$low_light_contract->{"requested_sample_count"};
 			 my $session_avg_mode="off";
-			 # Preserve the existing single-read spectrophotometer workflow.
-			 $avg_mode="off" if($require_device_ready);
-			 my $average_sample_count=($avg_mode eq "aaa") ? 5 : (($avg_mode eq "aa") ? 3 : (($avg_mode eq "a") ? 2 : 1));
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
 		  if(open(my $dfh,"<",$_meter_diagnostic_read_lock)) { local $/; $diag_token=<$dfh>; close($dfh); }
@@ -3364,13 +3419,13 @@ sub webui_meter_read (@) {
 	  $operation_timeout=1800 if($operation_timeout > 1800);
 	  my $pending_state=$calibrate_only
 	   ? '{"status":"measuring","setup_busy":true,"message":"Preparing meter calibration...","timeout_sec":210}'
-	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$operation_timeout.'}';
+	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$operation_timeout.',"low_light_mode":"'.$avg_mode.'","requested_sample_count":'.$average_sample_count.'}';
 	  &webui_meter_read_state_write($pending_state);
  }
 
  # Send the READ command to the daemon. The session helper applies this
  # settle delay before each reading, even when the current patch is reused.
- # The trailing 15th field selects 1/2/3/5 physical samples on the same child.
+ # The trailing numeric field selects the physical samples on the same child.
 			 my $read_command=$calibrate_only ? "CALIBRATE" : "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
@@ -3378,7 +3433,7 @@ sub webui_meter_read (@) {
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
 			 my $cmd_low_light_mode=$avg_mode;
 			 my $cmd_continuous=$is_continuous ? "1" : "0";
-			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous" if(!$calibrate_only);
+			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous $average_sample_count" if(!$calibrate_only);
 		 $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
@@ -3923,14 +3978,15 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # The series worker interprets mode as an application sample count and uses it
- # only below the target-luminance trigger. spotread remains open throughout.
- my $low_light_mode="off";
- my $low_light_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"enabled"\s*:\s*true/i) ? 1 : 0;
- if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
-  $low_light_mode=lc($1);
-  $low_light_mode="off" unless($low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa");
+ # Resolve the series' application sample count once at API ingress. The
+ # presentation mode remains in metadata while the worker executes the integer.
+ my $low_light_contract=&webui_low_light_request_contract($body,$require_device_ready);
+ if(($low_light_contract->{"error"}||"") ne "") {
+  return '{"status":"error","message":"'.$low_light_contract->{"error"}.'"}';
  }
+ my $low_light_mode=$low_light_contract->{"mode"};
+ my $low_light_requested_sample_count=$low_light_contract->{"requested_sample_count"};
+ my $low_light_enabled=($low_light_mode ne "off") ? 1 : 0;
  my $low_light_trigger="";
  $low_light_trigger=$1+0 if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"trigger"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/i);
  $low_light_trigger="" if($low_light_trigger ne "" && $low_light_trigger<=0);
@@ -5532,7 +5588,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	 }
 
 	 # Write initial state
-	 my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[],$series_meta_json}";
+	 my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[],\"low_light_mode\":\"$low_light_mode\",\"requested_sample_count\":$low_light_requested_sample_count,$series_meta_json}";
  if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
  my $ready_file=&webui_meter_series_ready_file($series_id);
  &webui_meter_series_ready_cleanup();
@@ -5541,8 +5597,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # Low-light mode and trigger are positional arguments. The worker keeps one
- # spotread process and takes 2/3/5 application samples only below the trigger.
+ # Low-light mode, trigger, and resolved numeric count are positional arguments.
+ # The worker keeps one spotread process and repeats only below the trigger.
  # Precompute the mode-correct insertion codes via the shared helper so the
  # worker just SENDS them rather than recomputing. Without this, the
  # insertion flash used a hard-coded linear 0..255 formula and was wrong on
@@ -5574,7 +5630,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # command) makes the sudo invocation match no rule, so sudo demands a
  # password and the launch silently fails ("Process died unexpectedly").
  # Trailing args keep the authorized command intact.
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' '$low_light_requested_sample_count' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -6012,6 +6068,10 @@ sub webui_meter_lg_autocal_start (@) {
  $body=&webui_meter_lg_autocal_body_with_defaults($body);
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ my ($contract_body,$contract_error)=&webui_low_light_stamp_request(
+  $body,($body=~/"require_device_ready"\s*:\s*true/i ? 1 : 0));
+ return '{"status":"error","message":"'.$contract_error.'"}' if($contract_error ne "");
+ $body=$contract_body;
  if(&webui_meter_lg_autocal_running()) {
   return '{"status":"started","message":"LG Auto Cal already running"}' if(&webui_meter_lg_autocal_same_run_running($body));
   return '{"status":"error","message":"LG Auto Cal is already running"}';
@@ -6414,6 +6474,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  }
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ my ($contract_body,$contract_error)=&webui_low_light_stamp_request(
+  $body,($body=~/"require_device_ready"\s*:\s*true/i ? 1 : 0));
+ return '{"status":"error","message":"'.$contract_error.'"}' if($contract_error ne "");
+ $body=$contract_body;
  my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
  return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  if(&webui_meter_lg_3d_autocal_running()) {

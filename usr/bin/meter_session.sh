@@ -10,7 +10,7 @@
 #   meter_session.sh <display_type> <ccss_file> <refresh_rate> <disable_aio> [signal_mode] [max_luma] [meter_port] [idle_timeout] [require_device_ready] [averaging] [meter_usb_id] [observer] [pattern_provider]
 #
 # Commands (one per line, written to /tmp/meter_session.cmd):
-#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode] [continuous]
+#   READ <r> <g> <b> <patch_size> <ire> <name> [settle_ms] [signal_mode] [max_luma] [pattern_signal_range] [transport_signal_range] [request_id] [input_max] [read_timeout] [low_light_mode] [continuous] [requested_sample_count]
 #   STOP
 #
 # settle_ms (optional, default 0) is the post-display settle wait applied
@@ -641,15 +641,6 @@ null_meter_reading() {
   }'
 }
 
-low_light_sample_count() {
- case "${1:-off}" in
-  a) echo 2 ;;
-  aa) echo 3 ;;
-  aaa) echo 5 ;;
-  *) echo 1 ;;
- esac
-}
-
 # Capture one additional physical sample from the already-open spotread
 # process. The measurement patch remains displayed and settled; only a fresh
 # trigger is sent. Results are returned through ADDITIONAL_PARSED so the
@@ -1154,10 +1145,10 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
    ;;
   READ\ *)
 	    STARTUP_CALIBRATION_COMPLETED=0
-	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE] [CONTINUOUS]
-	    # LOW_LIGHT_MODE (15th, optional) selects 1/2/3/5 application samples.
-	    # It never changes or respawns the spotread process.
-	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT CMD_LOW_LIGHT_MODE CMD_CONTINUOUS <<< "$line"
+	    # Parse: READ R G B PSIZE IRE NAME [SETTLE_MS] [SIGNAL_MODE] [MAX_LUMA] [PATTERN_SIGNAL_RANGE] [TRANSPORT_SIGNAL_RANGE] [REQUEST_ID] [INPUT_MAX] [READ_TIMEOUT] [LOW_LIGHT_MODE] [CONTINUOUS] [REQUESTED_SAMPLE_COUNT]
+	    # The final integer is the execution contract. LOW_LIGHT_MODE is retained
+	    # only for result telemetry and never changes or respawns spotread.
+	    read -r _ R G B PSIZE IRE NAME SETTLE_MS SIGNAL_MODE MAX_LUMA SIGNAL_RANGE TRANSPORT_SIGNAL_RANGE REQUEST_ID INPUT_MAX CMD_READ_TIMEOUT CMD_LOW_LIGHT_MODE CMD_CONTINUOUS CMD_REQUESTED_SAMPLE_COUNT <<< "$line"
    [[ -z "$PSIZE" ]] && PSIZE=10
    [[ -z "$IRE" ]] && IRE=0
    [[ -z "$NAME" ]] && NAME="manual"
@@ -1171,13 +1162,20 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     [[ -z "$CMD_READ_TIMEOUT" ]] && CMD_READ_TIMEOUT=""
 		     [[ -z "$CMD_LOW_LIGHT_MODE" ]] && CMD_LOW_LIGHT_MODE="off"
 		     [[ -z "$CMD_CONTINUOUS" ]] && CMD_CONTINUOUS="0"
+		     [[ -z "$CMD_REQUESTED_SAMPLE_COUNT" ]] && CMD_REQUESTED_SAMPLE_COUNT="1"
 		     [[ "$SIGNAL_RANGE" == "-" ]] && SIGNAL_RANGE=""
 		     [[ "$TRANSPORT_SIGNAL_RANGE" == "-" ]] && TRANSPORT_SIGNAL_RANGE=""
 		     [[ "$INPUT_MAX" == "-" ]] && INPUT_MAX=255
 		     [[ "$CMD_READ_TIMEOUT" == "-" ]] && CMD_READ_TIMEOUT=""
 		     [[ "$CMD_LOW_LIGHT_MODE" == "-" ]] && CMD_LOW_LIGHT_MODE="off"
 		     case "$CMD_LOW_LIGHT_MODE" in a|aa|aaa) ;; *) CMD_LOW_LIGHT_MODE="off" ;; esac
-		     REQUESTED_SAMPLE_COUNT=$(low_light_sample_count "$CMD_LOW_LIGHT_MODE")
+		     case "$CMD_REQUESTED_SAMPLE_COUNT" in
+		      1|2|3|5) REQUESTED_SAMPLE_COUNT="$CMD_REQUESTED_SAMPLE_COUNT" ;;
+		      *)
+		       write_state "{\"status\":\"error\",\"request_id\":\"$REQUEST_ID\",\"message\":\"Invalid requested_sample_count\"}"
+		       continue
+		       ;;
+		     esac
 		     STATE_TIMEOUT_PER_SAMPLE=170
 		     if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( CMD_READ_TIMEOUT >= 10 )); then
 		      STATE_TIMEOUT_PER_SAMPLE="$CMD_READ_TIMEOUT"

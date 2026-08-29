@@ -2,7 +2,7 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level] [low_light_mode] [insert_patch_code] [insert_time_code] [color_format] [meter_usb_id] [observer] [pattern_provider] [min_luma] [max_cll] [max_fall] [low_light_trigger]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level] [low_light_mode] [insert_patch_code] [insert_time_code] [color_format] [meter_usb_id] [observer] [pattern_provider] [min_luma] [max_cll] [max_fall] [low_light_trigger] [requested_sample_count]
 
 set -o pipefail
 
@@ -91,6 +91,12 @@ LOW_LIGHT_TRIGGER="${38:-}"
 if ! [[ "$LOW_LIGHT_TRIGGER" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
  LOW_LIGHT_TRIGGER=""
 fi
+REQUESTED_SAMPLE_COUNT="${39:-1}"
+case "$REQUESTED_SAMPLE_COUNT" in
+ 1|2|3|5) ;;
+ *) echo "Invalid requested_sample_count" >&2; exit 1 ;;
+esac
+[[ "$LOW_LIGHT_MODE" == "off" ]] && REQUESTED_SAMPLE_COUNT=1
 COMPANION_COMMAND_FILE="/var/lib/PGenerator/icc-companion/command.json"
 COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
@@ -708,6 +714,7 @@ declare -a PREPARED_STEP_INPUT_MAX PREPARED_STEP_PATCH_SIZE
 declare -a PREPARED_STEP_READ_DELAY_MS PREPARED_STEP_IRE PREPARED_STEP_NAME
 declare -a PREPARED_STEP_SERIES_WHITE_REFERENCE PREPARED_STEP_FINAL_WHITE_REFRESH
 declare -a PREPARED_STEP_TARGET_YN PREPARED_STEP_LOW_LIGHT_MODE
+declare -a PREPARED_STEP_REQUESTED_SAMPLE_COUNT
 declare -a PREPARED_STEP_AUTOCAL_WHITE_REFERENCE PREPARED_STEP_FULL_JSON
 declare -a PREPARED_STEP_READING_METADATA
 
@@ -721,7 +728,8 @@ prepare_series_steps() {
  stream=$(mktemp "${TMPDIR:-/tmp}/pgen_series_steps_${SERIES_ID}_XXXXXX") || return 1
  STEP_GENERATION=$((STEP_GENERATION + 1))
  if ! "$PGEN_PYTHON3" "$PGEN_SERIES_STEPS_HELPER" normalize "$STEPS_FILE" \
-   "$STEP_GENERATION" "$LOW_LIGHT_MODE" "${LOW_LIGHT_TRIGGER:-}" "$OBSERVER" \
+   "$STEP_GENERATION" "$LOW_LIGHT_MODE" "$REQUESTED_SAMPLE_COUNT" \
+   "${LOW_LIGHT_TRIGGER:-}" "$OBSERVER" \
    > "$stream"; then
   rm -f "$stream"
   return 1
@@ -731,6 +739,7 @@ prepare_series_steps() {
  PREPARED_STEP_READ_DELAY_MS=(); PREPARED_STEP_IRE=(); PREPARED_STEP_NAME=()
  PREPARED_STEP_SERIES_WHITE_REFERENCE=(); PREPARED_STEP_FINAL_WHITE_REFRESH=()
  PREPARED_STEP_TARGET_YN=(); PREPARED_STEP_LOW_LIGHT_MODE=()
+ PREPARED_STEP_REQUESTED_SAMPLE_COUNT=()
  PREPARED_STEP_AUTOCAL_WHITE_REFERENCE=(); PREPARED_STEP_FULL_JSON=()
  PREPARED_STEP_READING_METADATA=()
  exec 8< "$stream"
@@ -738,7 +747,7 @@ prepare_series_steps() {
   && read_step_stream_field generation && read_step_stream_field count || {
    exec 8<&-; rm -f "$stream"; return 1;
   }
- if [[ "$schema" != "pgen-series-steps" || "$version" != "1" \
+ if [[ "$schema" != "pgen-series-steps" || "$version" != "2" \
        || "$generation" != "$STEP_GENERATION" || ! "$count" =~ ^[0-9]+$ ]]; then
   exec 8<&-
   rm -f "$stream"
@@ -746,7 +755,7 @@ prepare_series_steps() {
  fi
  for (( index=0; index<count; index++ )); do
   local stream_index r g b input_max patch_size read_delay_ms ire name
-  local white_reference final_white_refresh target_yn low_light_mode
+  local white_reference final_white_refresh target_yn low_light_mode requested_sample_count
   local autocal_white_reference full_json reading_metadata
   read_step_stream_field stream_index && read_step_stream_field r \
    && read_step_stream_field g && read_step_stream_field b \
@@ -754,7 +763,7 @@ prepare_series_steps() {
    && read_step_stream_field read_delay_ms && read_step_stream_field ire \
    && read_step_stream_field name && read_step_stream_field white_reference \
    && read_step_stream_field final_white_refresh && read_step_stream_field target_yn \
-   && read_step_stream_field low_light_mode \
+   && read_step_stream_field low_light_mode && read_step_stream_field requested_sample_count \
    && read_step_stream_field autocal_white_reference \
    && read_step_stream_field full_json && read_step_stream_field reading_metadata || {
     exec 8<&-; rm -f "$stream"; return 1;
@@ -766,6 +775,7 @@ prepare_series_steps() {
   PREPARED_STEP_NAME[index]="$name"; PREPARED_STEP_SERIES_WHITE_REFERENCE[index]="$white_reference"
   PREPARED_STEP_FINAL_WHITE_REFRESH[index]="$final_white_refresh"
   PREPARED_STEP_TARGET_YN[index]="$target_yn"; PREPARED_STEP_LOW_LIGHT_MODE[index]="$low_light_mode"
+  PREPARED_STEP_REQUESTED_SAMPLE_COUNT[index]="$requested_sample_count"
   PREPARED_STEP_AUTOCAL_WHITE_REFERENCE[index]="$autocal_white_reference"
   PREPARED_STEP_FULL_JSON[index]="$full_json"
   PREPARED_STEP_READING_METADATA[index]="$reading_metadata"
@@ -832,15 +842,6 @@ PY
 effective_low_light_mode_for_step() {
  local idx="$1"
  printf '%s\n' "${PREPARED_STEP_LOW_LIGHT_MODE[$idx]:-off}"
-}
-
-low_light_sample_count() {
- case "${1:-off}" in
-  a) echo 2 ;;
-  aa) echo 3 ;;
-  aaa) echo 5 ;;
-  *) echo 1 ;;
- esac
 }
 
 build_step_reading_json() {
@@ -2397,7 +2398,7 @@ EOJSON
  AVERAGING_FAILED=0
  AVERAGING_FAILURE_DETAIL=""
  AVERAGE_MODE=$(effective_low_light_mode_for_step "$i")
- AVERAGE_SAMPLE_COUNT=$(low_light_sample_count "$AVERAGE_MODE")
+ AVERAGE_SAMPLE_COUNT="${PREPARED_STEP_REQUESTED_SAMPLE_COUNT[$i]:-1}"
  if [[ -n "$READING" && "$READING" != *'"error"'* && "$READING" != *'"measured_zero"'* && "$READING" != *'"null_read"'* ]] && (( AVERAGE_SAMPLE_COUNT > 1 )); then
   AVERAGE_SAMPLES_JSON="$READING"
   for (( average_index=2; average_index<=AVERAGE_SAMPLE_COUNT; average_index++ )); do

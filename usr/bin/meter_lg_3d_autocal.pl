@@ -3107,12 +3107,13 @@ sub autocal3d_low_light_mode_for_step {
  return ($expected_y < $trigger) ? $mode : "off";
 }
 
-sub low_light_sample_count {
- my ($mode)=@_;
- return 2 if(($mode||"") eq "a");
- return 3 if(($mode||"") eq "aa");
- return 5 if(($mode||"") eq "aaa");
- return 1;
+sub autocal3d_requested_sample_count {
+ my ($config,$active_mode)=@_;
+ return 1 if(($active_mode||"off") eq "off");
+ return 1 if(ref($config) ne "HASH");
+ my $count=$config->{"low_light_requested_sample_count"};
+ return 1 if(!defined($count) || $count!~/^(?:1|2|3|5)$/);
+ return int($count);
 }
 
 sub read_request_id {
@@ -3339,9 +3340,11 @@ sub read_step_once {
  # changing or reopening the Argyll process.
  $payload->{"low_light_session"}={ mode => "off", enabled => json_false() };
  my $active_low_light=autocal3d_low_light_mode_for_step($config,$step);
+ my $read_sample_count=autocal3d_requested_sample_count($config,$active_low_light);
  $payload->{"low_light"}={
   mode => $active_low_light,
   enabled => ($active_low_light ne "off") ? json_true() : json_false(),
+  requested_sample_count => $read_sample_count,
  };
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
@@ -3351,7 +3354,6 @@ sub read_step_once {
  # multi-sample set legitimately outlives a bare per-sample multiple. The
  # grace stops this worker retiring a session ~50s before an aaa set that
  # took one comm retry would have returned.
- my $read_sample_count=low_light_sample_count($active_low_light);
  my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
  my $poll_transport_failures=0;
  while(time() < $deadline) {

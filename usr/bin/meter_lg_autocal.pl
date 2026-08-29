@@ -2004,12 +2004,13 @@ sub autocal_low_light_mode_for_step {
  return ($expected_y < $trigger) ? $mode : "off";
 }
 
-sub low_light_sample_count {
- my ($mode)=@_;
- return 2 if(($mode||"") eq "a");
- return 3 if(($mode||"") eq "aa");
- return 5 if(($mode||"") eq "aaa");
- return 1;
+sub autocal_requested_sample_count {
+ my ($config,$active_mode)=@_;
+ return 1 if(($active_mode||"off") eq "off");
+ return 1 if(ref($config) ne "HASH");
+ my $count=$config->{"low_light_requested_sample_count"};
+ return 1 if(!defined($count) || $count!~/^(?:1|2|3|5)$/);
+ return int($count);
 }
 
 sub body_luma_bias_display_allowed {
@@ -21403,7 +21404,7 @@ sub read_step {
 	 # the handler leaves the patch at one sample.
 	 my $application_average_mode=autocal_low_light_mode_for_step($config,$step);
 	 if(autocal_step_is_low_shadow($step)
-	    && low_light_sample_count($application_average_mode) == 1
+	    && autocal_requested_sample_count($config,$application_average_mode) == 1
 	    && !(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"})) {
 	  my @samples;
 	  my $sample_count=low_shadow_sample_count_for_step($config,$step);
@@ -21846,9 +21847,11 @@ sub read_step_once {
 		 # trigger. The spotread process remains open throughout.
 		 $payload->{"low_light_session"}={ mode => "off", enabled => JSON::PP::false };
 		 my $active_low_light=autocal_low_light_mode_for_step($config,$step);
+		 my $read_sample_count=autocal_requested_sample_count($config,$active_low_light);
 		 $payload->{"low_light"}={
 		  mode => $active_low_light,
 		  enabled => ($active_low_light ne "off") ? JSON::PP::true : JSON::PP::false,
+		  requested_sample_count => $read_sample_count,
 		 };
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
@@ -21865,7 +21868,6 @@ sub read_step_once {
 		 # multi-sample set legitimately outlives a bare per-sample multiple. The
 		 # grace stops this worker retiring a session ~50s before an aaa set that
 		 # took one comm retry would have returned.
-		 my $read_sample_count=low_light_sample_count($active_low_light);
 		 my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
 		 my $poll_transport_failures=0;
 		 while(time() < $deadline) {

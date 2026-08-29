@@ -60,17 +60,16 @@ def average_record(readings, mode=None, requested_sample_count=None,
     averaged = average_xyz_measurements(readings)
     requested = (len(readings) if requested_sample_count is None
                  else int(requested_sample_count))
+    if requested < 1 or requested > 100:
+        raise ValueError("requested sample count is outside its domain")
     if requested != len(readings):
         raise ValueError("requested sample count does not match actual readings")
     result = dict(readings[0])
     result.update(averaged)
     result["timestamp"] = int(time.time() if timestamp is None else timestamp)
     if mode is not None:
-        expected_by_mode = {"off": 1, "a": 2, "aa": 3, "aaa": 5}
-        if mode not in expected_by_mode:
+        if mode not in ("off", "a", "aa", "aaa"):
             raise ValueError("unsupported average mode")
-        if requested != expected_by_mode[mode]:
-            raise ValueError("sample count does not match the requested mode")
         result["average_mode"] = mode
     result["requested_sample_count"] = requested
     return result
