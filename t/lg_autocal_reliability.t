@@ -395,8 +395,10 @@ like($webui_source,qr/full_autocal_phase:[\s\S]{0,80}?'first-greyscale'[\s\S]{0,
  'the first greyscale start keeps its busy guard through the safe handoff and adoption probe');
 like($webui_source,qr/meterFullAutoCalStatusRunId\(probe\)===wanted[\s\S]{0,120}?probe\.full_autocal_phase[\s\S]{0,60}?expectedPhase/s,
  'a lost start response adopts only the worker running the phase that was just requested');
-like($series_source,qr/effective_low_light_mode_for_step\(\)/,
- 'the series selects sample count from the existing target-Y metadata');
+like($series_source,qr/prepare_series_steps\(\)[\s\S]{0,1800}?PGEN_SERIES_STEPS_HELPER/,
+ 'the series normalizes target and display metadata once per generation');
+unlike($series_source,qr/get_step_field|get_step_count/,
+ 'the steady-state series loop has no per-field step parser');
 like($series_source,qr/capture_series_average_sample[\s\S]{0,10000}?PGEN_METER_RESULT_HELPER[\s\S]{0,100}?average/s,
  'the series captures repeated samples on one child and uses the shared reducer');
 like($series_source,qr/REQUIRE_DEVICE_READY.*?LOW_LIGHT_MODE="off"/,
@@ -415,7 +417,7 @@ like($series_source,qr/Initial white-reference read did not complete[\s\S]{0,300
  'the required DV white pre-read fails terminally if it has no exact result');
 like($series_source,qr/Final white-reference read did not complete[\s\S]{0,300}?without publishing stale white data/s,
  'the required final white refresh cannot silently publish the old white reading');
-like($series_source,qr/STEP_FINAL_WHITE_REFRESH=.*?final_white_refresh/,
+like($series_source,qr/STEP_FINAL_WHITE_REFRESH=.*?PREPARED_STEP_FINAL_WHITE_REFRESH/,
  'the series loop reads the structural final-white marker');
 like($series_source,qr/\|\| "\$STEP_FINAL_WHITE_REFRESH" == "True"[\s\S]{0,700}?apply_series_white_reference_to_steps/s,
  'a greyscale final-white marker promotes the initial measured white into later step metadata');
@@ -427,19 +429,18 @@ unlike($series_source,qr/LOW_LIGHT_FLAGS|x_aaa/,
 my $worker_dir=tempdir('pgen-meter-low-light-XXXXXX',TMPDIR=>1,CLEANUP=>1);
 my $steps_path=File::Spec->catfile($worker_dir,'steps.json');
 my $steps=[
- {name=>'100%',target_Yn=>1,final_white_refresh=>JSON::PP::true,series_target_black_y=>0},
- {name=>'0%',target_Yn=>0,series_target_black_y=>0},
- {name=>'5%',target_Yn=>0.000762564474113076,series_target_black_y=>0},
- {name=>'10%',target_Yn=>0.0040248394242663,series_target_black_y=>0},
+ {r=>255,g=>255,b=>255,input_max=>255,ire=>100,name=>'100%',target_Yn=>1,final_white_refresh=>JSON::PP::true,series_target_black_y=>0},
+ {r=>0,g=>0,b=>0,input_max=>255,ire=>0,name=>'0%',target_Yn=>0,series_target_black_y=>0},
+ {r=>13,g=>13,b=>13,input_max=>255,ire=>5,name=>'5%',target_Yn=>0.000762564474113076,series_target_black_y=>0},
+ {r=>26,g=>26,b=>26,input_max=>255,ire=>10,name=>'10%',target_Yn=>0.0040248394242663,series_target_black_y=>0},
 ];
 open(my $steps_fh,'>',$steps_path) or die "Unable to write $steps_path: $!";
 print {$steps_fh} JSON::PP->new->canonical->encode($steps);
 close($steps_fh);
 my $white_worker=embedded_python_worker($series_source,'apply_series_white_reference_to_steps');
-my $mode_worker=embedded_python_worker($series_source,'effective_low_light_mode_for_step');
-ok(defined($white_worker) && defined($mode_worker),
- 'the production measured-white and target-trigger workers can be exercised directly');
-if(defined($white_worker) && defined($mode_worker)) {
+ok(defined($white_worker),
+ 'the production measured-white worker can be exercised directly');
+if(defined($white_worker)) {
  my ($white_status)=run_python_worker($white_worker,{
   STEPS_FILE=>$steps_path,WHITE_Y=>'406.513964',
  });
@@ -450,16 +451,16 @@ if(defined($white_worker) && defined($mode_worker)) {
  close($updated_fh);
  cmp_ok(abs($updated->[2]{series_target_white_y}-406.513964),'<',1e-9,
   'the 5% step receives the measured white reference');
- my @modes;
- for my $index (0..3) {
-  my ($status,$mode)=run_python_worker($mode_worker,{
-   STEPS_FILE=>$steps_path,STEP_INDEX=>$index,SELECTED_MODE=>'a',
-   LOW_LIGHT_TRIGGER_VALUE=>'1',
-  });
-  is($status,0,"low-light selector runs for recorded step ".($index+1));
-  $mode=~s/\s+\z//;
-  push @modes,$mode;
- }
+ my $normalizer="$Bin/../usr/bin/pgen_series_steps.py";
+ open(my $normalized,'-|','python3',$normalizer,'normalize',$steps_path,1,'a',1,'1931_2')
+  or die "Unable to run $normalizer: $!";
+ local $/;
+ my $stream=<$normalized>||'';
+ close($normalized);
+ is($? >> 8,0,'low-light selector runs while preparing the measured-white generation');
+ my @normalized_fields=split(/\0/,$stream,-1);
+ splice(@normalized_fields,0,4);
+ my @modes=map { $normalized_fields[$_*16+12] } (0..3);
  is_deeply(\@modes,[qw(off a a off)],
   'recorded SDR steps repeat below one nit and stay single at/above it');
 }

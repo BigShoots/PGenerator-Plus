@@ -48,6 +48,9 @@ def parse_spotread_result(text, timestamp=None):
             "cct": cct_from_xy(x, y),
         })
     result["timestamp"] = int(time.time() if timestamp is None else timestamp)
+    result["sample_count"] = 1
+    result["requested_sample_count"] = 1
+    result["average_mode"] = "off"
     return result
 
 

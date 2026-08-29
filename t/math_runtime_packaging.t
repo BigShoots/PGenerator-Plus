@@ -189,6 +189,8 @@ copy("$root/usr/bin/pgen_meter_average.py","$stage/usr/bin/pgen_meter_average.py
  or die "Unable to stage meter averaging compatibility helper: $!";
 copy("$root/usr/bin/pgen_meter_result.py","$stage/usr/bin/pgen_meter_result.py")
  or die "Unable to stage shared meter result helper: $!";
+copy("$root/usr/bin/pgen_series_steps.py","$stage/usr/bin/pgen_series_steps.py")
+ or die "Unable to stage series-step normalizer: $!";
 copy("$root/usr/share/PGenerator/PGMath.pm","$stage/usr/share/PGenerator/PGMath.pm")
  or die "Unable to stage Perl maths module: $!";
 copy("$root/usr/bin/pgen_lut_solve","$stage/usr/bin/pgen_lut_solve")

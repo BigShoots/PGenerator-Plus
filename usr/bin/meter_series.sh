@@ -13,6 +13,7 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
 PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
+PGEN_SERIES_STEPS_HELPER="${PGEN_SERIES_STEPS_HELPER:-$SCRIPT_DIR/pgen_series_steps.py}"
 
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Built-in i1D3 keys remain first in Argyll's key list; other meter drivers
@@ -701,21 +702,78 @@ write_state_on_exit() {
 trap 'write_state_on_exit' EXIT
 trap 'series_cancel_exit' TERM INT
 
-get_step_count() {
- python -c "
-import json,sys
-steps=json.load(open('$STEPS_FILE'))
-print(len(steps))
-" 2>/dev/null
+STEP_GENERATION=0
+declare -a PREPARED_STEP_R PREPARED_STEP_G PREPARED_STEP_B
+declare -a PREPARED_STEP_INPUT_MAX PREPARED_STEP_PATCH_SIZE
+declare -a PREPARED_STEP_READ_DELAY_MS PREPARED_STEP_IRE PREPARED_STEP_NAME
+declare -a PREPARED_STEP_SERIES_WHITE_REFERENCE PREPARED_STEP_FINAL_WHITE_REFRESH
+declare -a PREPARED_STEP_TARGET_YN PREPARED_STEP_LOW_LIGHT_MODE
+declare -a PREPARED_STEP_AUTOCAL_WHITE_REFERENCE PREPARED_STEP_FULL_JSON
+declare -a PREPARED_STEP_READING_METADATA
+
+read_step_stream_field() {
+ local variable="$1"
+ IFS= read -r -d '' "$variable" <&8
 }
 
-get_step_field() {
- local idx="$1" field="$2"
- python -c "
-import json
-steps=json.load(open('$STEPS_FILE'))
-print(steps[$idx].get('$field',''))
-" 2>/dev/null
+prepare_series_steps() {
+ local stream schema version generation count index
+ stream=$(mktemp "${TMPDIR:-/tmp}/pgen_series_steps_${SERIES_ID}_XXXXXX") || return 1
+ STEP_GENERATION=$((STEP_GENERATION + 1))
+ if ! "$PGEN_PYTHON3" "$PGEN_SERIES_STEPS_HELPER" normalize "$STEPS_FILE" \
+   "$STEP_GENERATION" "$LOW_LIGHT_MODE" "${LOW_LIGHT_TRIGGER:-}" "$OBSERVER" \
+   > "$stream"; then
+  rm -f "$stream"
+  return 1
+ fi
+ PREPARED_STEP_R=(); PREPARED_STEP_G=(); PREPARED_STEP_B=()
+ PREPARED_STEP_INPUT_MAX=(); PREPARED_STEP_PATCH_SIZE=()
+ PREPARED_STEP_READ_DELAY_MS=(); PREPARED_STEP_IRE=(); PREPARED_STEP_NAME=()
+ PREPARED_STEP_SERIES_WHITE_REFERENCE=(); PREPARED_STEP_FINAL_WHITE_REFRESH=()
+ PREPARED_STEP_TARGET_YN=(); PREPARED_STEP_LOW_LIGHT_MODE=()
+ PREPARED_STEP_AUTOCAL_WHITE_REFERENCE=(); PREPARED_STEP_FULL_JSON=()
+ PREPARED_STEP_READING_METADATA=()
+ exec 8< "$stream"
+ read_step_stream_field schema && read_step_stream_field version \
+  && read_step_stream_field generation && read_step_stream_field count || {
+   exec 8<&-; rm -f "$stream"; return 1;
+  }
+ if [[ "$schema" != "pgen-series-steps" || "$version" != "1" \
+       || "$generation" != "$STEP_GENERATION" || ! "$count" =~ ^[0-9]+$ ]]; then
+  exec 8<&-
+  rm -f "$stream"
+  return 1
+ fi
+ for (( index=0; index<count; index++ )); do
+  local stream_index r g b input_max patch_size read_delay_ms ire name
+  local white_reference final_white_refresh target_yn low_light_mode
+  local autocal_white_reference full_json reading_metadata
+  read_step_stream_field stream_index && read_step_stream_field r \
+   && read_step_stream_field g && read_step_stream_field b \
+   && read_step_stream_field input_max && read_step_stream_field patch_size \
+   && read_step_stream_field read_delay_ms && read_step_stream_field ire \
+   && read_step_stream_field name && read_step_stream_field white_reference \
+   && read_step_stream_field final_white_refresh && read_step_stream_field target_yn \
+   && read_step_stream_field low_light_mode \
+   && read_step_stream_field autocal_white_reference \
+   && read_step_stream_field full_json && read_step_stream_field reading_metadata || {
+    exec 8<&-; rm -f "$stream"; return 1;
+   }
+  [[ "$stream_index" == "$index" ]] || { exec 8<&-; rm -f "$stream"; return 1; }
+  PREPARED_STEP_R[index]="$r"; PREPARED_STEP_G[index]="$g"; PREPARED_STEP_B[index]="$b"
+  PREPARED_STEP_INPUT_MAX[index]="$input_max"; PREPARED_STEP_PATCH_SIZE[index]="$patch_size"
+  PREPARED_STEP_READ_DELAY_MS[index]="$read_delay_ms"; PREPARED_STEP_IRE[index]="$ire"
+  PREPARED_STEP_NAME[index]="$name"; PREPARED_STEP_SERIES_WHITE_REFERENCE[index]="$white_reference"
+  PREPARED_STEP_FINAL_WHITE_REFRESH[index]="$final_white_refresh"
+  PREPARED_STEP_TARGET_YN[index]="$target_yn"; PREPARED_STEP_LOW_LIGHT_MODE[index]="$low_light_mode"
+  PREPARED_STEP_AUTOCAL_WHITE_REFERENCE[index]="$autocal_white_reference"
+  PREPARED_STEP_FULL_JSON[index]="$full_json"
+  PREPARED_STEP_READING_METADATA[index]="$reading_metadata"
+ done
+ exec 8<&-
+ rm -f "$stream"
+ TOTAL="$count"
+ return 0
 }
 
 # Persist a measured white reference into step metadata once it is available
@@ -773,78 +831,7 @@ PY
 # resolved against the serialized white/black references used by the charts.
 effective_low_light_mode_for_step() {
  local idx="$1"
- STEPS_FILE="$STEPS_FILE" STEP_INDEX="$idx" SELECTED_MODE="$LOW_LIGHT_MODE" LOW_LIGHT_TRIGGER_VALUE="$LOW_LIGHT_TRIGGER" python - <<'PY' 2>/dev/null
-import json, os
-
-def finite(value):
-    return value == value and value not in (float("inf"), float("-inf"))
-
-def number(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        value = float(value)
-    except Exception:
-        return None
-    return value if finite(value) else None
-
-mode = os.environ.get("SELECTED_MODE", "off")
-if mode not in ("a", "aa", "aaa"):
-    print("off")
-    raise SystemExit(0)
-trigger = number(os.environ.get("LOW_LIGHT_TRIGGER_VALUE"))
-if trigger is None or trigger <= 0:
-    print("off")
-    raise SystemExit(0)
-try:
-    with open(os.environ.get("STEPS_FILE", "")) as fh:
-        steps = json.load(fh)
-    step = steps[int(os.environ.get("STEP_INDEX", "-1"))]
-except Exception:
-    print("off")
-    raise SystemExit(0)
-if not isinstance(step, dict):
-    print("off")
-    raise SystemExit(0)
-
-expected = None
-absolute_present = False
-for key in ("target_Y", "dv_absolute_target_y"):
-    if key in step:
-        absolute_present = True
-        expected = number(step.get(key))
-        if expected is None or expected < 0:
-            print("off")
-            raise SystemExit(0)
-        break
-if not absolute_present and "custom_target_nits" in step:
-    absolute_present = True
-    expected = number(step.get("custom_target_nits"))
-    if expected is None or expected <= 0:
-        print("off")
-        raise SystemExit(0)
-if not absolute_present:
-    target_yn = number(step.get("target_Yn"))
-    black_y = number(step.get("series_target_black_y"))
-    if black_y is None or black_y < 0:
-        black_y = 0.0
-    if target_yn is not None and target_yn >= 0:
-        if target_yn == 0:
-            expected = black_y
-        else:
-            white_y = None
-            for key in ("dv_absolute_white_y", "series_target_white_y", "lg_target_white_y"):
-                candidate = number(step.get(key))
-                if candidate is not None and candidate > 0:
-                    white_y = candidate
-                    break
-            if white_y is not None:
-                expected = max(black_y, target_yn * white_y)
-if expected is None or expected < 0 or not finite(expected):
-    print("off")
-else:
-    print(mode if expected < trigger else "off")
-PY
+ printf '%s\n' "${PREPARED_STEP_LOW_LIGHT_MODE[$idx]:-off}"
 }
 
 low_light_sample_count() {
@@ -859,88 +846,19 @@ low_light_sample_count() {
 build_step_reading_json() {
  local idx="$1" parsed_json="${2:-}"
  [[ -n "$parsed_json" ]] || parsed_json="{}"
- python - "$idx" "$STEPS_FILE" "$parsed_json" <<'PY'
-import json, math, os, sys
-
-try:
-    index = int(sys.argv[1])
-except Exception:
-    index = 0
-
-try:
-    steps_file = sys.argv[2]
-except Exception:
-    steps_file = ""
-
-try:
-    reading = json.loads(sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "{}")
-except Exception:
-    sys.exit(1)
-
-if not isinstance(reading, dict):
-    sys.exit(1)
-reading["observer"] = os.environ.get("OBSERVER", "1931_2")
-reading.setdefault("sample_count", 1)
-reading.setdefault("requested_sample_count", 1)
-reading.setdefault("average_mode", "off")
-
-def finite_number(value):
-    try:
-        value = float(value)
-    except Exception:
-        return False
-    return math.isfinite(value) if hasattr(math, "isfinite") else value == value and value not in (float("inf"), float("-inf"))
-
-has_measurement = (
-    finite_number(reading.get("X")) and
-    finite_number(reading.get("Y")) and
-    finite_number(reading.get("Z")) and
-    finite_number(reading.get("luminance"))
-)
-
-if not has_measurement and "error" not in reading:
-    sys.exit(1)
-
-try:
-    with open(steps_file) as fh:
-        steps = json.load(fh)
-    step = steps[index] if 0 <= index < len(steps) else {}
-except Exception:
-    step = {}
-
-def copy_field(name):
-    if name in step:
-        reading[name] = step[name]
-
-if "ire" in step:
-    reading["ire"] = step["ire"]
-if "name" in step:
-    reading["name"] = step["name"]
-for dst, src in (("r_code", "r"), ("g_code", "g"), ("b_code", "b")):
-    if src in step:
-        reading[dst] = step[src]
-
-for field in (
-	"input_max", "patch_size", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
-	"signal_mode", "target_gamma", "max_luma", "dv_map_mode",
-	"analysis_ire", "target_ire", "transport_stimulus",
-	"final_white_refresh",
-	"target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
-	"dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
-	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
-    "series_target_white_y", "lg_target_white_y", "series_target_black_y",
-	"series_type", "series_color", "sat_pct", "point_role", "series_mode",
-	"series_white_reference",
-	"icc_reuse_signature",
-    "autocal_code", "autocal_white_reference", "autocal_reference_only",
-    "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",
-    "autocal_legal_white_anchor", "ddc_target_ire", "autocal_order_ire",
-    "autocal_target_label", "preview_r", "preview_g", "preview_b"
-):
-    copy_field(field)
-
-print(json.dumps(reading, separators=(",", ":")))
-PY
+ local metadata="${PREPARED_STEP_READING_METADATA[$idx]:-}"
+ local payload="${parsed_json#\{}"
+ payload="${payload%\}}"
+ if [[ "$payload" == *'"error":'* && "$payload" != *'"sample_count":'* ]]; then
+  metadata="$metadata,\"sample_count\":1,\"requested_sample_count\":1,\"average_mode\":\"off\""
+ fi
+ if [[ -n "$metadata" && -n "$payload" ]]; then
+  printf '{%s,%s}\n' "$metadata" "$payload"
+ elif [[ -n "$metadata" ]]; then
+  printf '{%s}\n' "$metadata"
+ else
+  printf '{%s}\n' "$payload"
+ fi
 }
 
 dv_absolute_greyscale_series_active() {
@@ -1343,7 +1261,11 @@ find_port() {
 
 cleanup_stale_series_step_files
 
-TOTAL=$(get_step_count)
+TOTAL=0
+if ! prepare_series_steps; then
+ echo "[$(date '+%H:%M:%S.%3N')] series-step normalization failed before meter startup" >> /tmp/meter_series_debug.log
+ exit 1
+fi
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
 PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
@@ -1404,10 +1326,9 @@ series_uses_initial_white_reference() {
 series_requires_final_white_refresh() {
  [[ "$SERIES_ID" == greyscale_* ]] || return 1
  (( TOTAL > 2 )) || return 1
- local first_white_reference final_white_refresh
- first_white_reference=$(get_step_field 0 autocal_white_reference)
+ local first_white_reference="${PREPARED_STEP_AUTOCAL_WHITE_REFERENCE[0]:-}"
  [[ "$first_white_reference" == "True" || "$first_white_reference" == "true" || "$first_white_reference" == "1" ]] && return 1
- final_white_refresh=$(get_step_field 0 final_white_refresh)
+ local final_white_refresh="${PREPARED_STEP_FINAL_WHITE_REFRESH[0]:-}"
  [[ "$final_white_refresh" == "True" || "$final_white_refresh" == "true" || "$final_white_refresh" == "1" ]]
 }
 
@@ -1992,7 +1913,7 @@ echo "[$(date '+%H:%M:%S.%3N')] meter_series.sh started: SERIES_ID=$SERIES_ID" >
 if series_uses_initial_white_reference; then
  echo "[$(date '+%H:%M:%S')] WHITE PRE-READ GATE ENTERED for SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
  if [[ -f "$STEPS_FILE" ]]; then
-  FIRST_R=$(get_step_field 0 r)
+  FIRST_R="${PREPARED_STEP_R[0]:-}"
   if [[ "$FIRST_R" =~ ^[0-9]+$ ]]; then
    WHITE_CODE="$FIRST_R"
   fi
@@ -2098,7 +2019,10 @@ fi
 if [[ "$WHITE_READING" != "null" ]]; then
  WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
  if [[ -n "$WHITE_REFERENCE_Y" ]]; then
-  apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+  if apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y"; then
+   prepare_series_steps || series_meter_read_failure_exit \
+    "Series steps could not be regenerated after the white-reference update"
+  fi
  fi
 fi
 
@@ -2111,8 +2035,8 @@ DV_ABSOLUTE_TARGETS_APPLIED=0
 # first series reading so DV Colors/Sat Sweep do not immediately measure the
 # same white step a second time.
 if series_uses_initial_white_reference && [[ "$WHITE_READING" != "null" ]] && (( TOTAL > 0 )); then
- FIRST_IRE=$(get_step_field 0 ire)
- FIRST_NAME=$(get_step_field 0 name)
+ FIRST_IRE="${PREPARED_STEP_IRE[0]:-}"
+ FIRST_NAME="${PREPARED_STEP_NAME[0]:-}"
  FIRST_READING=$(build_step_reading_json 0 "$WHITE_READING" 2>/dev/null || echo "")
  if [[ -n "$FIRST_READING" ]]; then
   READINGS="$FIRST_READING"
@@ -2126,21 +2050,21 @@ fi
 
 for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 series_stop_requested && series_cancel_exit
-	 R=$(get_step_field $i r)
-	 G=$(get_step_field $i g)
-	 B=$(get_step_field $i b)
-	 INPUT_MAX=$(get_step_field $i input_max)
+	 R="${PREPARED_STEP_R[$i]:-}"
+	 G="${PREPARED_STEP_G[$i]:-}"
+	 B="${PREPARED_STEP_B[$i]:-}"
+	 INPUT_MAX="${PREPARED_STEP_INPUT_MAX[$i]:-}"
 	 [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
-	 STEP_PATCH_SIZE=$(get_step_field $i patch_size)
+	 STEP_PATCH_SIZE="${PREPARED_STEP_PATCH_SIZE[$i]:-}"
 	 if ! is_number "$STEP_PATCH_SIZE" || ! awk "BEGIN { exit !($STEP_PATCH_SIZE >= 1 && $STEP_PATCH_SIZE <= 100) }" 2>/dev/null; then
 	  STEP_PATCH_SIZE="$PATCH_SIZE"
 	 fi
-	 READ_DELAY_MS=$(get_step_field $i read_delay_ms)
-	 IRE=$(get_step_field $i ire)
-	 NAME=$(get_step_field $i name)
-	 SERIES_WHITE_REFERENCE=$(get_step_field $i series_white_reference)
-	 STEP_FINAL_WHITE_REFRESH=$(get_step_field $i final_white_refresh)
-	 STEP_TARGET_YN=$(get_step_field $i target_Yn)
+	 READ_DELAY_MS="${PREPARED_STEP_READ_DELAY_MS[$i]:-}"
+	 IRE="${PREPARED_STEP_IRE[$i]:-}"
+	 NAME="${PREPARED_STEP_NAME[$i]:-}"
+	 SERIES_WHITE_REFERENCE="${PREPARED_STEP_SERIES_WHITE_REFERENCE[$i]:-}"
+	 STEP_FINAL_WHITE_REFRESH="${PREPARED_STEP_FINAL_WHITE_REFRESH[$i]:-}"
+	 STEP_TARGET_YN="${PREPARED_STEP_TARGET_YN[$i]:-}"
 	 STEP_NUM=$((i + 1))
  if ! [[ "$R" =~ ^[0-9]+$ && "$G" =~ ^[0-9]+$ && "$B" =~ ^[0-9]+$ && "$INPUT_MAX" =~ ^[0-9]+$ ]] || ! is_number "$IRE" || [[ -z "$NAME" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] invalid series step: index=$i r=$R g=$G b=$B ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2548,7 +2472,10 @@ EOJSON
   WHITE_READING="$READING"
   WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
   if [[ -n "$WHITE_REFERENCE_Y" ]]; then
-   apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+   if apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y"; then
+    prepare_series_steps || series_meter_read_failure_exit \
+     "Series steps could not be regenerated after the white-reference update"
+   fi
   fi
  fi
 
@@ -2565,6 +2492,8 @@ EOJSON
   if [[ -z "$WHITE_Y" ]]; then
    dv_absolute_targets_failed "the 100% reading carried no usable luminance"
   elif apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
+   prepare_series_steps || series_meter_read_failure_exit \
+    "Series steps could not be regenerated after the Dolby Vision target update"
    DV_ABSOLUTE_TARGETS_APPLIED=1
    WHITE_READING="$READING"
    echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log
@@ -2581,13 +2510,13 @@ done
 # sweep is running, then refreshes white once more at the end when marked so
 # the saved 100% result reflects the warmed-up display.
 if series_requires_final_white_refresh && (( TOTAL > 0 )); then
-	FIRST_R=$(get_step_field 0 r)
-	FIRST_G=$(get_step_field 0 g)
-	FIRST_B=$(get_step_field 0 b)
-	FIRST_INPUT_MAX=$(get_step_field 0 input_max)
+	FIRST_R="${PREPARED_STEP_R[0]:-}"
+	FIRST_G="${PREPARED_STEP_G[0]:-}"
+	FIRST_B="${PREPARED_STEP_B[0]:-}"
+	FIRST_INPUT_MAX="${PREPARED_STEP_INPUT_MAX[0]:-}"
 	[[ -z "$FIRST_INPUT_MAX" ]] && FIRST_INPUT_MAX=255
- FIRST_IRE=$(get_step_field 0 ire)
- FIRST_NAME=$(get_step_field 0 name)
+ FIRST_IRE="${PREPARED_STEP_IRE[0]:-}"
+ FIRST_NAME="${PREPARED_STEP_NAME[0]:-}"
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   write_state_json << EOJSON
