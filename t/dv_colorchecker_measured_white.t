@@ -74,11 +74,6 @@ like(
  qr/\$colorchecker_ref_white_nits\s*=\s*100/,
  'server uses 100 nits for HDR10 and Absolute DV ColorChecker',
 );
-like(
- $webui_source,
- qr/\(\$signal_mode eq "hdr10" \|\| \(\$signal_mode eq "dv" && \$dv_map_mode eq "1"\)\).*?\$series_stimulus_linear=\$colorchecker_ref_white_nits\/10000/s,
- 'server applies the same 100-nit reference to ColorChecker primaries and secondaries',
-);
 
 my $webui_app = File::Spec->catfile($Bin, '..', 'usr', 'share', 'PGenerator', 'webui-app.js');
 open my $webui_app_fh, '<', $webui_app or die "cannot read $webui_app: $!";
@@ -94,16 +89,6 @@ like(
  $webui_app_source,
  qr/hdrReferenceNits\s*=\s*100/,
  'client ColorChecker SG uses the HDR 100-nit reference',
-);
-like(
- $webui_app_source,
- qr/const level=absolutePq \? 100\/10000 : meterGamutStimulusLinearLevel\(\)/,
- 'client selection builder applies the 100-nit endpoint reference',
-);
-unlike(
- $webui_app_source,
- qr/function meterWrgbPrimaryCeilings\(/,
- 'ColorChecker endpoint targets do not depend on measured primary ceilings',
 );
 
 done_testing();

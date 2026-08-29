@@ -17,97 +17,167 @@ function extractFunction(name) {
   throw new Error(`unterminated ${name}`);
 }
 
-let mode = 'hdr10';
-let mapMode = '1';
-const targetMatrix = [
+const P3 = [
   [0.48663243, 0.26566758, 0.19817182],
   [0.22897456, 0.69173852, 0.07928691],
-  [0, 0.04511331, 1.04394437]
+  [0.00000000, 0.04511331, 1.04394437]
 ];
-const containerMatrix = [
-  [0.63695805, 0.14461690, 0.16888098],
-  [0.2, 0.7, 0.1],
-  [0, 0.02807269, 1.06098506]
+const BT2020 = [
+  [0.6369580483, 0.1446169036, 0.1688809752],
+  [0.2627002120, 0.6779980715, 0.0593017165],
+  [0.0000000000, 0.0280726930, 1.0609850577]
 ];
+
+let mapMode = '1';
+let technology = 'oled_generic';
 const context = {
+  window: {lgStatusState: {model_name: 'OLED65C2PUA'}},
+  document: {getElementById: () => ({value: technology})},
+  getDisplayTechnology: () => technology,
+  meterActiveSeriesType: 'colors',
   meterChartIsPq: () => true,
   meterChartIsHdr: () => true,
-  meterChartIsDv: () => mode === 'dv',
+  meterChartIsDv: () => true,
   meterDvMapModeValue: () => mapMode,
-  meterSaturationSolveGamut: () => ({xyzToRgb: []}),
-  meterSaturationAxisGamut: () => ({}),
-  meterGamutColorEndpointXY: () => ({x: 0.68, y: 0.32}),
-  xyzToLinRgb: () => [1, 0.2, 0],
-  meterGamutStimulusLinearLevel: () => 0.5,
-  meterEncodeSaturationLinear: value => Math.round(value * 10000),
-  meterBuildFullGamutTargetLinearRgb: () => [1, 0, 0],
-  meterTargetSolveGamut: () => ({rgbToXyz: targetMatrix}),
-  meterTargetWhitePoint: () => ({x: 0.3127, y: 0.329}),
-  meterColorSeriesReferenceNits: () => 700,
-  linRgbToXyz: (r, g, b, matrix) => ({
-    X: matrix[0][0] * r + matrix[0][1] * g + matrix[0][2] * b,
-    Y: matrix[1][0] * r + matrix[1][1] * g + matrix[1][2] * b,
-    Z: matrix[2][0] * r + matrix[2][1] * g + matrix[2][2] * b
-  }),
-  meterContainerGamut: () => ({rgbToXyz: containerMatrix}),
-  meterAnalysisGamut: () => ({rgbToXyz: targetMatrix}),
-  meterDecodeColorTargetChannel: code => Number(code),
-  meterDvStimulusLinearChannel: code => Number(code),
+  meterChartHdrPeak: () => 1000,
+  meterHdrDiffuseScale: () => 1,
+  meterAnalysisGamut: () => ({rgbToXyz: P3}),
+  meterContainerGamut: () => ({rgbToXyz: BT2020}),
+  meterGamutColorEndpointRgb: name => ({
+    red: [1, 0, 0], green: [0, 1, 0], blue: [0, 0, 1],
+    cyan: [0, 1, 1], magenta: [1, 0, 1], yellow: [1, 1, 0]
+  })[String(name).toLowerCase()] || [1, 1, 1],
+  meterActiveChartSignalMode: () => 'dv',
+  meterColorTargetCodeRange: () => ({min: 256, span: 3504}),
+  meterColorSeriesReferenceNits: () => 715.360759,
   meterCanonicalSeriesStep: () => null,
-  meterWrgbTargetCompensationSelected: () => true,
-  meterReadingIsGreyscale: () => false,
-  meterActiveSeriesType: 'colors',
-  meterReadings: []
+  meterReadingLuminanceNits: rd => Number(rd && (rd.luminance != null ? rd.luminance : rd.Y)) || 0,
+  meterReadingIsGreyscale: rd => {
+    const r = rd && (rd.r_code != null ? rd.r_code : rd.r);
+    const g = rd && (rd.g_code != null ? rd.g_code : rd.g);
+    const b = rd && (rd.b_code != null ? rd.b_code : rd.b);
+    return r != null && g != null && b != null && Number(r) === Number(g) && Number(g) === Number(b);
+  },
+  linRgbToXyz: (r, g, b, M) => ({
+    X: M[0][0] * r + M[0][1] * g + M[0][2] * b,
+    Y: M[1][0] * r + M[1][1] * g + M[1][2] * b,
+    Z: M[2][0] * r + M[2][1] * g + M[2][2] * b
+  })
 };
+
+const endpointCodes = {
+  Red: [2008, 1153, 256], Green: [1499, 2008, 885], Blue: [1096, 810, 2008],
+  Cyan: [1545, 1991, 2008], Magenta: [1937, 1147, 2008], Yellow: [1995, 2008, 861]
+};
+context.meterReadings = [
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256, luminance: 18.361413, signal_mode: 'dv'},
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885, luminance: 58.190180, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008, luminance: 7.174204, signal_mode: 'dv'}
+];
 
 vm.createContext(context);
 vm.runInContext([
-  extractFunction('meterBuildColorCheckerEndpointStepRgb'),
-  extractFunction('meterBuildColorCheckerEndpointTargetStepMeta'),
-  extractFunction('meterColorCheckerFullSatTargetXYZ'),
+  extractFunction('meterWrgbTargetCompensationSelected'),
+  extractFunction('meterWrgbPrimaryCeilings'),
+  extractFunction('meterChartPqDecodeNormalized'),
+  extractFunction('meterDvStimulusLinearChannel'),
   extractFunction('meterWrgbStimulusTargetY')
 ].join('\n'), context);
 
-for (const signalMode of ['hdr10', 'dv']) {
-  mode = signalMode;
-  mapMode = '1';
-  assert.deepStrictEqual(
-    Array.from(context.meterBuildColorCheckerEndpointStepRgb('Red')),
-    [100, 20, 0],
-    `${signalMode} ColorChecker endpoint uses a 100/10000 PQ-linear level`
-  );
-
-  const meta = context.meterBuildColorCheckerEndpointTargetStepMeta('Red');
-  assert(Math.abs(meta.target_Yn - (0.22897456 * 100 / 700)) < 1e-12,
-    `${signalMode} endpoint target is 100-nit absolute, normalized to series white`);
-
-  const reading = {series_color: 'Red', sat_pct: 100, r_code: 100, g_code: 20, b_code: 0};
-  const before = context.meterWrgbStimulusTargetY(reading);
-  context.meterReadings = [
-    {series_color: 'Red', sat_pct: 100, Y: 1},
-    {series_color: 'Green', sat_pct: 100, Y: 500},
-    {series_color: 'Blue', sat_pct: 100, Y: 2}
-  ];
-  const after = context.meterWrgbStimulusTargetY(reading);
-  assert.strictEqual(before, 34, `${signalMode} endpoint reports its native PQ target`);
-  assert.strictEqual(after, before,
-    `${signalMode} endpoint target is independent of measured primary results`);
-  context.meterReadings = [];
-
-  const fallback = context.meterColorCheckerFullSatTargetXYZ('Red');
-  assert(Math.abs(fallback.Y - 22.897456) < 1e-9,
-    `${signalMode} endpoint fallback target is the target primary at 100 nits`);
+function close(actual, expected, tolerance, message) {
+  assert(Math.abs(actual - expected) <= tolerance,
+    `${message}: got ${actual}, expected ${expected} +/- ${tolerance}`);
 }
 
-mode = 'dv';
-mapMode = '2';
-assert.deepStrictEqual(
-  Array.from(context.meterBuildColorCheckerEndpointStepRgb('Red')),
-  [5000, 1000, 0],
-  'Relative DV retains its established gamma-tunnel endpoint level'
+assert.strictEqual(context.meterWrgbTargetCompensationSelected(), true,
+  'the selected WOLED technology is detected');
+const ceilings = context.meterWrgbPrimaryCeilings();
+assert(ceilings[0] > 0 && ceilings[1] > 0 && ceilings[2] > 0,
+  'Absolute DV exposes measured WRGB primary ceilings');
+
+for (const [name, measured] of [
+  ['Red', 18.361413], ['Green', 58.190180], ['Blue', 7.174204]
+]) {
+  const codes = endpointCodes[name];
+  const target = context.meterWrgbStimulusTargetY({
+    series_color: name, sat_pct: 100,
+    r_code: codes[0], g_code: codes[1], b_code: codes[2], signal_mode: 'dv'
+  });
+  close(target, measured, 1e-6, `${name} target follows its measured filtered-primary ceiling`);
+}
+
+const cyan = context.meterWrgbStimulusTargetY({
+  series_color: 'Cyan', sat_pct: 100,
+  r_code: endpointCodes.Cyan[0], g_code: endpointCodes.Cyan[1], b_code: endpointCodes.Cyan[2], signal_mode: 'dv'
+});
+close(cyan, 58.190180 + 7.174204, 1e-6,
+  'Absolute DV secondary target uses the additive measured primary ceilings');
+
+context.meterActiveSeriesType = 'saturations';
+context.meterReadings = [
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256, luminance: 18.431602, signal_mode: 'dv'},
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885, luminance: 58.307092, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008, luminance: 7.155143, signal_mode: 'dv'}
+];
+const sweepRed = context.meterWrgbStimulusTargetY({
+  series_color: 'Red', sat_pct: 100,
+  r_code: endpointCodes.Red[0], g_code: endpointCodes.Red[1], b_code: endpointCodes.Red[2], signal_mode: 'dv'
+});
+close(sweepRed, 18.431602, 1e-6,
+  'Absolute DV saturation endpoint uses its measured WRGB primary ceiling');
+
+const sweepRed75 = context.meterWrgbStimulusTargetY({
+  series_color: 'Red', sat_pct: 75,
+  r_code: 2008, g_code: 1396, b_code: 1264, signal_mode: 'dv'
+});
+const sweepRed75Raw = (() => {
+  const channels = [2008, 1396, 1264].map(context.meterDvStimulusLinearChannel);
+  return context.linRgbToXyz(channels[0], channels[1], channels[2], BT2020).Y;
+})();
+close(sweepRed75, sweepRed75Raw, 1e-9,
+  'sub-100% saturation target remains the authored PQ stimulus');
+
+const neutral = {r_code: 1882, g_code: 1882, b_code: 1882, signal_mode: 'dv'};
+context.meterActiveSeriesType = 'colors';
+context.meterReadings = [];
+const neutralBefore = context.meterWrgbStimulusTargetY(neutral);
+context.meterReadings = [{series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 256, b_code: 256, luminance: 1, signal_mode: 'dv'}];
+close(context.meterWrgbStimulusTargetY(neutral), neutralBefore, 1e-9,
+  'neutral target is independent of WRGB primary ceilings');
+
+const orange = {
+  name: 'Orange', r_code: 2041, g_code: 1770, b_code: 1282,
+  target_x: 0.512087, target_y: 0.410373, signal_mode: 'dv'
+};
+context.meterReadings = [
+  {name: 'White', r_code: 3760, g_code: 3760, b_code: 3760,
+   luminance: 715.360759, signal_mode: 'dv'},
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256,
+   luminance: 18.361413, signal_mode: 'dv'}
+];
+const orangeAfterWhiteRed = context.meterWrgbStimulusTargetY(orange);
+context.meterReadings.push(
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885,
+   luminance: 58.190180, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008,
+   luminance: 7.174204, signal_mode: 'dv'},
+  {series_color: 'Cyan', sat_pct: 100, r_code: 1545, g_code: 1991, b_code: 2008,
+   luminance: 64.1, signal_mode: 'dv'},
+  {series_color: 'Magenta', sat_pct: 100, r_code: 1937, g_code: 1147, b_code: 2008,
+   luminance: 23.2, signal_mode: 'dv'},
+  {series_color: 'Yellow', sat_pct: 100, r_code: 1995, g_code: 2008, b_code: 861,
+   luminance: 66.0, signal_mode: 'dv'}
 );
+close(context.meterWrgbStimulusTargetY(orange), orangeAfterWhiteRed, 1e-9,
+  'ordinary patch target stays fixed after later gamut endpoint reads');
 
-assert(!source.includes('function meterWrgbPrimaryCeilings('),
-  'PQ ColorChecker endpoint grading no longer derives targets from measured primaries');
+mapMode = '2';
+assert.deepStrictEqual(Object.keys(context.meterWrgbPrimaryCeilings()), [],
+  'Relative DV remains on its authored WRGB response model');
 
-console.log('HDR10 and Absolute-DV 100-nit ColorChecker endpoint regression OK');
+mapMode = '1';
+technology = 'qdoled';
+assert.deepStrictEqual(Object.keys(context.meterWrgbPrimaryCeilings()), [],
+  'QD-OLED bypasses WRGB primary ceilings');
+
+console.log('Absolute DV WRGB primary luminance math regression OK');
