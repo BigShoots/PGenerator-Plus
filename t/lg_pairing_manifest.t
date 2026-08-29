@@ -13,18 +13,25 @@ my $helper="$Bin/../usr/sbin/pgenerator-lg";
 die $@ if($@);
 die "Failed to load $helper" if(!defined(&lg_message_register));
 
-my $message=lg_message_register("","PIN",1);
-my $manifest=$message->{payload}{manifest};
-my $signed=$manifest->{signed};
-my %outer=map { $_ => 1 } @{$manifest->{permissions}||[]};
+my $c2_message=lg_message_register("","PIN",1,{ deviceOSReleaseVersion => "10.3.1" });
+my $c2_manifest=$c2_message->{payload}{manifest};
+my %c2_signed=map { $_ => 1 } @{$c2_manifest->{signed}{permissions}||[]};
 
-is($message->{payload}{pairingType},"PIN","PIN pairing type is preserved");
-ok($message->{payload}{forcePairing},"forced pairing is preserved");
-is($signed->{appId},"com.pgenerator.remote","generic PGenerator identity is used");
-is($signed->{localizedAppNames}{""},"PGenerator","pairing identity has a display name");
-ok(!exists($manifest->{signatures}),"blacklisted legacy certificate is not sent");
-ok($outer{WRITE_SETTINGS},"picture-settings permission is requested outside signed metadata");
-ok($outer{WRITE_NOTIFICATION_ALERT},"notification bridge permission is requested outside signed metadata");
-ok($outer{TEST_OPEN} && $outer{TEST_PROTECTED},"legacy pairing permissions remain available");
+is($c2_message->{payload}{pairingType},"PIN","PIN pairing type is preserved");
+ok($c2_message->{payload}{forcePairing},"forced pairing is preserved");
+is($c2_manifest->{signed}{appId},"com.lge.test","pre-webOS 26 TV uses the calibration-capable identity");
+ok(ref($c2_manifest->{signatures}) eq "ARRAY","pre-webOS 26 TV receives the legacy certificate");
+ok($c2_signed{TEST_SECURE} && $c2_signed{WRITE_SETTINGS},"legacy identity requests calibration permissions");
+
+my $webos26_message=lg_message_register("","PIN",1,{ deviceOSReleaseVersion => "11.0.0" });
+my $webos26_manifest=$webos26_message->{payload}{manifest};
+my %webos26_outer=map { $_ => 1 } @{$webos26_manifest->{permissions}||[]};
+
+is($webos26_manifest->{signed}{appId},"com.pgenerator.remote","webOS 26 uses the generic PGenerator identity");
+is($webos26_manifest->{signed}{localizedAppNames}{""},"PGenerator","generic identity has a display name");
+ok(!exists($webos26_manifest->{signatures}),"webOS 26 is not sent the rejected legacy certificate");
+ok($webos26_outer{WRITE_SETTINGS},"webOS 26 requests picture-settings permission outside signed metadata");
+ok($webos26_outer{WRITE_NOTIFICATION_ALERT},"webOS 26 requests notification bridge permission outside signed metadata");
+ok($webos26_outer{TEST_OPEN} && $webos26_outer{TEST_PROTECTED},"generic manifest keeps pairing permissions");
 
 done_testing();

@@ -283,6 +283,16 @@ $MAX_CONNECT_TIMEOUT=5;
 # Grace period for reaping a socat child that is still stuck in connect().
 $CONNECT_CHILD_REAP_GRACE=3;
 $MAX_FRAME_SIZE=1024*1024;
+$LG_REMOTE_APP_SIGNATURE=(
+ "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbm".
+ "ctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR".
+ "+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRy".
+ "aMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4".
+ "RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n".
+ "50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM".
+ "2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQoj".
+ "oa7NQnAtw=="
+);
 
 ###############################################
 #              JSON Helpers                   #
@@ -727,10 +737,86 @@ sub lg_message_hello (@) {
  return { id => "hello", type => "hello", payload => {} };
 }
 
+sub lg_registration_manifest_style (@) {
+ my $hello_info=shift;
+ return "legacy" if(ref($hello_info) ne "HASH");
+ my $release=$hello_info->{"deviceOSReleaseVersion"}||"";
+ return "generic" if($release =~ /^(\d+)/ && int($1) >= 11);
+ return "legacy";
+}
+
+sub lg_registration_manifest (@) {
+ my $hello_info=shift;
+ if(&lg_registration_manifest_style($hello_info) eq "legacy") {
+  return {
+   appVersion => "1.1",
+   manifestVersion => 1,
+   permissions => [
+    "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
+    "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
+    "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
+    "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
+    "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
+    "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+    "READ_INSTALLED_APPS","READ_SETTINGS"
+   ],
+   signatures => [{ signature => $LG_REMOTE_APP_SIGNATURE, signatureVersion => 1 }],
+   signed => {
+    appId => "com.lge.test",
+    created => "20140509",
+    localizedAppNames => {
+     "" => "LG Remote App",
+     "ko-KR" => "\x{B9AC}\x{BAA8}\x{CEE8} \x{C571}",
+     "zxx-XX" => "\x{041B}\x{0413} R\x{044D}\x{043C}ot\x{044D} A\x{041F}\x{041F}",
+    },
+    localizedVendorNames => { "" => "LG Electronics" },
+    permissions => [
+     "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+     "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
+     "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
+     "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
+     "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
+    ],
+    serial => "2f930e2d2cfe083771f68e4fe7bb07",
+    vendorId => "com.lge",
+   },
+  };
+ }
+
+ return {
+  appVersion => "1.0",
+  manifestVersion => 1,
+  signed => {
+   created => "20260829",
+   appId => "com.pgenerator.remote",
+   localizedAppNames => { "" => "PGenerator" },
+   localizedVendorNames => { "" => "PGenerator" },
+   permissions => [
+    "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+    "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
+    "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
+    "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
+    "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
+   ],
+   serial => "pgenerator-webos-remote",
+  },
+  permissions => [
+   "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
+   "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
+   "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
+   "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
+   "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
+   "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
+   "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","READ_UPDATE_INFO"
+  ],
+ };
+}
+
 sub lg_message_register (@) {
  my $client_key=shift(@_);
  my $pairing_type_arg=shift(@_);
  my $force_pairing_arg=shift(@_);
+ my $hello_info=shift(@_);
  my $pairing_type=uc($pairing_type_arg||"PROMPT");
  my $force_pairing=$force_pairing_arg ? 1 : 0;
  $client_key="" if(!defined($client_key));
@@ -741,37 +827,10 @@ sub lg_message_register (@) {
   payload => {
    "client-key" => $client_key,
    forcePairing => &json_bool($force_pairing),
-   # New firmware rejects the old shared LG test identity and certificate,
-   # while older releases silently skip the PIN UI if the signed metadata
-   # block is absent. Use a generic PGenerator identity without a signatures
-   # block, and request the working permissions through the outer manifest.
-   manifest => {
-    appVersion => "1.0",
-    manifestVersion => 1,
-    signed => {
-     created => "20260829",
-     appId => "com.pgenerator.remote",
-     localizedAppNames => { "" => "PGenerator" },
-     localizedVendorNames => { "" => "PGenerator" },
-     permissions => [
-      "TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-      "READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH",
-      "WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER",
-      "READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO",
-      "UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"
-     ],
-     serial => "pgenerator-webos-remote",
-    },
-    permissions => [
-     "LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED",
-     "CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING",
-     "CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN",
-     "READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE",
-     "READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE",
-     "READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD",
-     "READ_INSTALLED_APPS","READ_SETTINGS","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","READ_UPDATE_INFO"
-    ],
-   },
+   # The hello release selects the manifest. Older TVs need the certified LG
+   # identity for calibration permissions; webOS 26 rejects that identity and
+   # uses the generic PGenerator manifest instead.
+   manifest => &lg_registration_manifest($hello_info),
    pairingType => $pairing_type,
   },
  };
@@ -899,7 +958,7 @@ sub lg_authenticated_session (@) {
   $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
   $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
 
-  &websocket_send_json($session,&lg_message_register($client_key)) or die "Unable to send registration request\n";
+  &websocket_send_json($session,&lg_message_register($client_key,undef,undef,$hello_info)) or die "Unable to send registration request\n";
   $response=&websocket_recv_json($session,$connect_timeout + 2,"");
   die "No registration response from TV\n" if(ref($response) ne "HASH");
   die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
@@ -7311,7 +7370,7 @@ sub lg_connect_pin_wait_workflow (@) {
   $response=&lg_request($session,"get_sys_info","system/getSystemInfo",{},$connect_timeout + 2);
   $system_info=$response->{"payload"} if(ref($response) eq "HASH" && ref($response->{"payload"}) eq "HASH" && ($response->{"type"}||"") ne "error");
 
-  &websocket_send_json($session,&lg_message_register($initial_client_key,$pairing_type,1)) or die "Unable to send registration request\n";
+  &websocket_send_json($session,&lg_message_register($initial_client_key,$pairing_type,1,$hello_info)) or die "Unable to send registration request\n";
   $response=&websocket_recv_json($session,$connect_timeout + 2,"");
   die "No registration response from TV\n" if(ref($response) ne "HASH");
   die (($response->{"error"}||"LG registration failed")."\n") if(($response->{"type"}||"") eq "error");
