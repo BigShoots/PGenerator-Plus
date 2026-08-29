@@ -6677,15 +6677,17 @@ function meterWrgbTargetCompensationSelected(){
  return false;
 }
 
-// Per-primary HDR and Absolute-DV luminance ceilings derived from the current ColorChecker
-// run's R/G/B endpoint reads. This is deliberately not a general
-// chart reference: ordinary ColorChecker patches and saturation sweeps retain
-// their authored, measurement-independent target. The ceilings are consumed
-// only by the HDR10 / Absolute-DV ColorChecker 100% primary/secondary endpoint
-// path below. Relative DV retains its authored response model.
+// Per-primary HDR and Absolute-DV luminance ceilings derived from the current
+// series' R/G/B endpoint reads. This is deliberately not a general chart
+// reference: ordinary ColorChecker patches and sub-100% saturation steps retain
+// their authored, measurement-independent target. The ceilings are consumed by
+// HDR10 ColorChecker endpoints and by Absolute-DV ColorChecker / saturation
+// endpoints. Relative DV retains its authored response model.
 function meterWrgbPrimaryCeilings(){
  const out={};
- if(typeof meterActiveSeriesType==='undefined'||meterActiveSeriesType!=='colors') return out;
+ const seriesType=(typeof meterActiveSeriesType==='undefined')?'':String(meterActiveSeriesType||'');
+ const absoluteDvSaturation=seriesType==='saturations'&&meterChartIsDv()&&meterDvMapModeValue()==='1';
+ if(seriesType!=='colors'&&!absoluteDvSaturation) return out;
  if(!meterChartIsHdr()
   ||(meterChartIsDv()&&meterDvMapModeValue()!=='1')
   ||!meterWrgbTargetCompensationSelected()) return out;
@@ -6768,11 +6770,13 @@ function meterWrgbStimulusTargetY(reading){
  // decoded PQ peak through its filtered color subpixels. Grade those six
  // endpoint patches against the additive output established by the measured
  // R/G/B endpoints. Keep this narrowly scoped: Relative DV has its stable
- // authored response model below, saturation sweeps use their own sub-peak
+ // authored response model below, sub-100% saturation steps use their authored
  // stimulus, and ordinary ColorChecker patches remain independent of measured
  // results.
+ const _endpointSeriesType=(typeof meterActiveSeriesType==='undefined')?'':String(meterActiveSeriesType||'');
+ const _absoluteDvSaturationEndpoint=_dvLum&&meterDvMapModeValue()==='1'&&_endpointSeriesType==='saturations';
  const _hdrColorEndpoint=(!_dvLum||meterDvMapModeValue()==='1')
-  && typeof meterActiveSeriesType!=='undefined'&&meterActiveSeriesType==='colors'
+  && (_endpointSeriesType==='colors'||_absoluteDvSaturationEndpoint)
   && meterChartIsHdr()&&meterWrgbTargetCompensationSelected()
   && !meterReadingIsGreyscale(reading)
   && reading.series_color!=null&&Number(reading.sat_pct)>=99.5;

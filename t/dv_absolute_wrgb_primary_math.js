@@ -113,7 +113,32 @@ const cyan = context.meterWrgbStimulusTargetY({
 close(cyan, 58.190180 + 7.174204, 1e-6,
   'Absolute DV secondary target uses the additive measured primary ceilings');
 
+context.meterActiveSeriesType = 'saturations';
+context.meterReadings = [
+  {series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 1153, b_code: 256, luminance: 18.431602, signal_mode: 'dv'},
+  {series_color: 'Green', sat_pct: 100, r_code: 1499, g_code: 2008, b_code: 885, luminance: 58.307092, signal_mode: 'dv'},
+  {series_color: 'Blue', sat_pct: 100, r_code: 1096, g_code: 810, b_code: 2008, luminance: 7.155143, signal_mode: 'dv'}
+];
+const sweepRed = context.meterWrgbStimulusTargetY({
+  series_color: 'Red', sat_pct: 100,
+  r_code: endpointCodes.Red[0], g_code: endpointCodes.Red[1], b_code: endpointCodes.Red[2], signal_mode: 'dv'
+});
+close(sweepRed, 18.431602, 1e-6,
+  'Absolute DV saturation endpoint uses its measured WRGB primary ceiling');
+
+const sweepRed75 = context.meterWrgbStimulusTargetY({
+  series_color: 'Red', sat_pct: 75,
+  r_code: 2008, g_code: 1396, b_code: 1264, signal_mode: 'dv'
+});
+const sweepRed75Raw = (() => {
+  const channels = [2008, 1396, 1264].map(context.meterDvStimulusLinearChannel);
+  return context.linRgbToXyz(channels[0], channels[1], channels[2], BT2020).Y;
+})();
+close(sweepRed75, sweepRed75Raw, 1e-9,
+  'sub-100% saturation target remains the authored PQ stimulus');
+
 const neutral = {r_code: 1882, g_code: 1882, b_code: 1882, signal_mode: 'dv'};
+context.meterActiveSeriesType = 'colors';
 context.meterReadings = [];
 const neutralBefore = context.meterWrgbStimulusTargetY(neutral);
 context.meterReadings = [{series_color: 'Red', sat_pct: 100, r_code: 2008, g_code: 256, b_code: 256, luminance: 1, signal_mode: 'dv'}];
