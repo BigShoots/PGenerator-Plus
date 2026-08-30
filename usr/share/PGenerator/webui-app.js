@@ -3829,6 +3829,7 @@ let meterCcssCreateTargetPort='';
 let meterCcssCreateJsonLoaded=false;
 let meterReadings=[];
 let meterWhiteReading=null;
+let meterColorLabWhiteLatch=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterLastChartSignature='';
 let meterSeriesChartRevision=0;
@@ -6931,7 +6932,23 @@ function meterChartBlackLevel(readings){
 
 function meterColorLabWhite(){
  const white=meterFindMeasuredWhiteReading();
- if(white&&white.X>0&&white.Y>0&&white.Z>0) return {X:white.X,Y:white.Y,Z:white.Z};
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const seriesId=String((typeof meterSharedSeriesId!=='undefined'&&meterSharedSeriesId)||'');
+ const seriesKey=String((typeof meterActiveSeriesKey!=='undefined'&&meterActiveSeriesKey)||'');
+ const latchKey=mode+'|'+(seriesId?('id:'+seriesId):('key:'+seriesKey));
+ if(white&&white.X>0&&white.Y>0&&white.Z>0){
+  const value={X:Number(white.X),Y:Number(white.Y),Z:Number(white.Z)};
+  // Series polling replaces the global reading array as each measurement
+  // arrives. A deferred redraw can run during that handoff and briefly see no
+  // white, even though this run measured it first. Keep the measured Lab white
+  // tied to this exact series so prior patch errors cannot jump to the generic
+  // mastering-white fallback and back while later patches are read.
+  meterColorLabWhiteLatch={key:latchKey,value:value};
+  return value;
+ }
+ if(meterColorLabWhiteLatch&&meterColorLabWhiteLatch.key===latchKey){
+  return {...meterColorLabWhiteLatch.value};
+ }
  const refY=Math.max(1,meterColorReferenceNits());
  const wp=meterTargetWhitePoint();
  return {X:wp.X*refY,Y:refY,Z:wp.Z*refY};
