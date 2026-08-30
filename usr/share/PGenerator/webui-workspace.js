@@ -16392,7 +16392,8 @@ function meterCieDrawLumErrorHalo(ctx,px,py,deltaPct,scale){
 
 // ── Observer-native 3D colour spaces ─────────────────────────────────────────
 // Canvas-2D software projection of actual tristimulus/cone coordinates.
-// Drag rotates (orbit), wheel zooms, double-click resets.
+// Left-drag rotates (orbit), right/middle-drag pans, wheel zooms and
+// double-click resets.
 function meterCie3dLegacyChromaBounds(){
  const mode=meterChromaticityChartMode();
  if(mode.indexOf('ciemb_')===0){
@@ -16532,7 +16533,7 @@ function meterUpdateCie3dLabel(){
  lab.textContent=meterCie3dViewEnabled()?axis.threeD:axis.title;
  const help=document.querySelector('#meterCie3dViewLabel .meter-help-tip');
  if(help){
-  help.title=axis.threeD+': drag = rotate, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
+  help.title=axis.threeD+': left-drag = rotate, right-drag = pan, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
  }
  const gamutLabel=document.getElementById('meterCieOptGamutLabel');
  const locusLabel=document.getElementById('meterCieOptLocusLabel');
@@ -16540,8 +16541,12 @@ function meterUpdateCie3dLabel(){
   if(gamutLabel) gamutLabel.title='Show the hue-circle target envelope in the opponent chromaticity plane';
   if(locusLabel) locusLabel.title='Show the cone-opponent reference sphere and coordinate grid';
  }else{
-  if(gamutLabel) gamutLabel.title='Show the target colourspace triangle';
-  if(locusLabel) locusLabel.title='Show the spectral locus outline and its chromaticity gradient';
+  if(gamutLabel) gamutLabel.title=meterCie3dViewEnabled()
+   ?'Show a normalized target-colourspace reference slice. In true 3D XYZ it will not pass through targets at other luminance levels.'
+   :'Show the target colourspace triangle';
+  if(locusLabel) locusLabel.title=meterCie3dViewEnabled()
+   ?'Show a normalized spectral-locus reference slice. The spectral locus has no inherent luminance, so its 3D slice is contextual rather than a target boundary.'
+   :'Show the spectral locus outline and its chromaticity gradient';
  }
  const xyy=document.getElementById('meterXYYColorLabel');
  if(xyy){
@@ -16954,10 +16959,9 @@ function drawCIEChart3DLegacy(readings,opts){
  const yMax=Math.max(cie3dComputeYMax(readings||[],isPreset), injected.length?cie3dComputeYMax(injected,true):1);
  _cie3d.yMax=yMax;
  const layout=cie3dMakeLayout(ctx,yMax);
- // Markers keep a constant WORLD size: scale their pixel size with the wheel
- // zoom so they shrink when zooming out and grow when zooming in (positions
- // already scale via baseScale; without this the dots stay fixed-size).
- const markerScale=Math.max(0.35,Math.min(3,_cie3d.scale||1));
+ // Markers are screen-space annotations. Their positions zoom with the data,
+ // but their boxes and stroke widths must not grow into opaque blocks.
+ const markerScale=1;
  const prims=[]; // {z, draw:fn}
  const bounds=meterCie3dBounds();
  // Background
@@ -17317,7 +17321,11 @@ function drawCIEChart3D(readings,opts){
  }
  const bounds=meterCie3dBoundsForVectors(framingVectors);
  const layout=cie3dMakeLayout(ctx,bounds);
- const markerScale=Math.max(.35,Math.min(3,_cie3d.scale||1));
+ // Keep annotations screen-space sized. Wheel zoom already changes projected
+ // positions; multiplying marker size and stroke width by zoom made dense
+ // lattice targets cover one another after only a few wheel ticks.
+ const markerDensityScale=records.length>=80?.68:(records.length>=40?.82:1);
+ const markerPerspectiveScale=point=>Math.max(.72,Math.min(1.32,Math.sqrt(Math.max(.1,Number(point&&point.persp)||1))));
  const prims=[];
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  if(!opponentMode||meterCieViewOpts.locus){
@@ -17375,7 +17383,7 @@ function drawCIEChart3D(readings,opts){
  const d65=cie3dProjectVector(d65Vector,layout);
  prims.push({z:d65.z,draw:()=>{
   ctx.fillStyle=pgThemeColor('--text-primary','#fff');
-  ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2*markerScale,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(d65.sx,d65.sy,3.2,0,Math.PI*2);ctx.fill();
   ctx.fillStyle=pgThemeColor('--chart-label','#d8e2f2');ctx.font='9px sans-serif';ctx.textAlign='left';
   ctx.fillText('D65',d65.sx+5,d65.sy+3);
  }});
@@ -17412,36 +17420,36 @@ function drawCIEChart3D(readings,opts){
   if(pT){
    const p0=cie3dProject(rec.targetVector.a,rec.targetVector.b,bounds.cMin,layout);
    if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pT.z),draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(targetColor,.45);ctx.lineWidth=Math.max(.5,markerScale);
+    ctx.strokeStyle=meterColorWithAlpha(targetColor,.45);ctx.lineWidth=.75;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pT.sx,pT.sy);ctx.stroke();
    }});
    prims.push({z:pT.z+.02,draw:()=>{
-    const sq=3.2*pT.persp*markerScale;
-    ctx.strokeStyle=targetStroke;ctx.lineWidth=Math.max(.5,(selected?1.8:1.4)*markerScale);
+    const sq=3.2*markerDensityScale*markerPerspectiveScale(pT);
+    ctx.strokeStyle=targetStroke;ctx.lineWidth=selected?1.6:1.05;
     ctx.strokeRect(pT.sx-sq,pT.sy-sq,sq*2,sq*2);
    }});
-   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:Math.max(8,12*markerScale),reading:rd});
+   hitZones.push({sx:pT.sx,sy:pT.sy,z:pT.z,radius:12,reading:rd});
   }
   if(pM){
    const p0=cie3dProject(rec.measuredVector.a,rec.measuredVector.b,bounds.cMin,layout);
    if(meterCieViewOpts.dropLines) prims.push({z:Math.min(p0.z,pM.z),draw:()=>{
-    ctx.strokeStyle=meterColorWithAlpha(measuredColor,.5);ctx.lineWidth=Math.max(.5,markerScale);
+    ctx.strokeStyle=meterColorWithAlpha(measuredColor,.5);ctx.lineWidth=.75;
     ctx.beginPath();ctx.moveTo(p0.sx,p0.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();
    }});
    if(pT) prims.push({z:(pT.z+pM.z)/2,draw:()=>{
     ctx.save();ctx.strokeStyle=meterColorWithAlpha(targetColor,.78);
-    ctx.lineWidth=Math.max(.6,1.5*markerScale);ctx.setLineDash([4,3]);
+    ctx.lineWidth=1;ctx.setLineDash([4,3]);
     ctx.beginPath();ctx.moveTo(pT.sx,pT.sy);ctx.lineTo(pM.sx,pM.sy);ctx.stroke();ctx.restore();
    }});
    if(meterCieViewOpts.lumRings&&colorInclLum&&rec.lum.deltaPct!=null){
-    prims.push({z:pM.z+.05,draw:()=>meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,rec.lum.deltaPct,pM.persp*markerScale)});
+    prims.push({z:pM.z+.05,draw:()=>meterCieDrawLumErrorHalo(ctx,pM.sx,pM.sy,rec.lum.deltaPct,markerDensityScale*markerPerspectiveScale(pM))});
    }
    prims.push({z:pM.z+.03,draw:()=>{
-    const r=2.8*pM.persp*markerScale;
+    const r=2.8*markerDensityScale*markerPerspectiveScale(pM);
     ctx.fillStyle=measuredColor;ctx.beginPath();ctx.arc(pM.sx,pM.sy,r,0,Math.PI*2);ctx.fill();
-    if(selected){ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5*markerScale,0,Math.PI*2);ctx.stroke();}
+    if(selected){ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(pM.sx,pM.sy,r+2.5,0,Math.PI*2);ctx.stroke();}
    }});
-   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:Math.max(8,12*markerScale),reading:rd});
+   hitZones.push({sx:pM.sx,sy:pM.sy,z:pM.z,radius:12,reading:rd});
   }
  });
  prims.sort((a,b)=>b.z-a.z);
@@ -17450,7 +17458,7 @@ function drawCIEChart3D(readings,opts){
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
- ctx.fillText(axis.title+'  \u00B7  drag rotate \u00B7 wheel zoom',ctx.w-12,28);
+ ctx.fillText(axis.title+'  \u00B7  left drag rotate \u00B7 right drag pan \u00B7 wheel zoom',ctx.w-12,28);
  if(!meterCieTargetsAvailable()){
   ctx.fillStyle=pgThemeColor('--chart-empty','#79869d');
   ctx.fillText('Reference targets need spectral data',ctx.w-12,42);
@@ -17500,13 +17508,13 @@ function cie3dRedraw(){
 function cie3dOnPointerDown(e){
  if(!meterCie3dViewEnabled()) return;
  const canvas=e.currentTarget;
- const rect=canvas.getBoundingClientRect();
+ if(e.pointerType==='mouse'&&e.button!==0&&e.button!==1&&e.button!==2) return;
  _cie3d.dragging=true;
  _cie3d.moved=false;
  _cie3d.lastX=e.clientX;
  _cie3d.lastY=e.clientY;
- // Match the RGB cube view: any drag rotates, wheel zooms, no pan.
- _cie3d.mode='orbit';
+ _cie3d.mode=(e.button===2||e.button===1)?'pan':'orbit';
+ canvas.style.cursor=_cie3d.mode==='pan'?'move':'grabbing';
  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
  e.preventDefault();
 }
@@ -17567,10 +17575,12 @@ function cie3dOnPointerUp(e){
  const canvas=e.currentTarget;
  const wasDrag=_cie3d.dragging;
  const moved=_cie3d.moved;
+ const wasPan=_cie3d.mode==='pan';
  _cie3d.dragging=false;
  _cie3d.mode=null;
+ canvas.style.cursor='grab';
  try{ canvas.releasePointerCapture(e.pointerId); }catch(err){}
- if(!wasDrag||moved||meterSeriesRunning) return;
+ if(!wasDrag||moved||wasPan||meterSeriesRunning) return;
  // Click-to-select
  const rect=canvas.getBoundingClientRect();
  const hit=cie3dFindHit(e.clientX-rect.left,e.clientY-rect.top);
