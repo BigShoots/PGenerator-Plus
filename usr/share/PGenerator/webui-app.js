@@ -7298,10 +7298,17 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const x=wp.x+sat*(endpoint.x-wp.x);
  const y=wp.y+sat*(endpoint.y-wp.y);
  if(y<=0) return [0,0,0];
- const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
- const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ // Set the luminance ceiling in the selected target gamut first. Converting
+ // the chromaticity to the transport gamut and normalizing there makes the
+ // authored luminance depend on the container. P3 red inside BT.2020 is the
+ // worst case because that extra normalization raises it by about one third.
+ const X=x/y,Z=(1-x-y)/y;
+ const axisCoeffs=xyzToLinRgb(X,1,Z,axisGamut.xyzToRgb);
+ const axisMax=Math.max(axisCoeffs[0],axisCoeffs[1],axisCoeffs[2],1e-9);
  const level=meterSaturationStimulusLinearLevel(colorName);
- return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
+ const targetY=level/axisMax;
+ const transportCoeffs=xyzToLinRgb(X*targetY,targetY,Z*targetY,solveGamut.xyzToRgb);
+ return transportCoeffs.map(v=>Math.max(0,v));
 }
 
 function meterBuildFullGamutTargetLinearRgb(colorName){
