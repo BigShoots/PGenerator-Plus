@@ -6,6 +6,8 @@ import os
 import re
 import struct
 import sys
+import tempfile
+from contextlib import contextmanager
 
 # The Perl caller captures this tool's stderr, so an ImportError from a
 # partial deploy is at least visible -- but as a multi-line traceback that
@@ -39,9 +41,11 @@ GRID = 65
 # Nodes evaluated per pass. A 65-cube is 274,625 nodes and a .cube can ask for
 # 129^3; every stage below is elementwise or per-row, so the arithmetic is
 # unchanged by the split, but holding a dozen live (N, 3) float64 temporaries
-# at once is what the appliance cannot afford. Matches _BATCH_CHUNK in
-# icc_profile_builder.py, which chunks identical-shape work for the same reason.
-NODE_CHUNK = 8192
+# at once is what the appliance cannot afford. Binary output reaches a stable
+# throughput plateau at 8192 nodes. Formatted text is already on its plateau at
+# 2048, which keeps its temporary strings and arrays smaller.
+PGLT_NODE_CHUNK = 8192
+CUBE_NODE_CHUNK = 2048
 
 
 def fail(message):
@@ -338,22 +342,51 @@ def make_transform(profile_path, method, signal_mode):
     return transform, white_nits, adaptation
 
 
+@contextmanager
+def atomic_writer(output_path, binary):
+    """Yield a symlink-safe 0600 sibling and replace output only on success."""
+    directory = os.path.dirname(os.path.abspath(output_path))
+    prefix = ".{}.tmp.".format(os.path.basename(output_path))
+    descriptor, temporary = tempfile.mkstemp(prefix=prefix, dir=directory)
+    handle = None
+    try:
+        handle = os.fdopen(descriptor, "wb" if binary else "w")
+        descriptor = None
+        yield handle
+        handle.close()
+        handle = None
+        os.replace(temporary, output_path)
+        temporary = None
+    finally:
+        if handle is not None:
+            handle.close()
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def write_atomic(output_path, payload):
-    mode = "wb" if isinstance(payload, (bytes, bytearray)) else "w"
-    temporary = output_path + ".tmp.{}".format(os.getpid())
-    with open(temporary, mode) as handle:
+    with atomic_writer(output_path, isinstance(payload, (bytes, bytearray))) as handle:
         handle.write(payload)
-    os.replace(temporary, output_path)
 
 
-def lattice(size, red_fastest):
-    """All grid nodes as an (size^3, 3) array in the requested nesting order."""
-    axis = np.arange(size) / (size - 1.0)
+def lattice_coordinates(size, start, stop, red_fastest):
+    """One float64 coordinate block in the requested exact nesting order."""
+    index = np.arange(start, stop, dtype=np.int64)
     if red_fastest:
-        blue, green, red = np.meshgrid(axis, axis, axis, indexing="ij")
+        blue = index // (size * size)
+        green = (index // size) % size
+        red = index % size
     else:
-        red, green, blue = np.meshgrid(axis, axis, axis, indexing="ij")
-    return np.stack([red.ravel(), green.ravel(), blue.ravel()], axis=1)
+        red = index // (size * size)
+        green = (index // size) % size
+        blue = index % size
+    return np.stack((red, green, blue), axis=1).astype(
+        np.float64) / (size - 1.0)
 
 
 def quantize_u16(values):
@@ -365,22 +398,25 @@ def quantize_u16(values):
     return np.rint(np.clip(values, 0.0, 1.0) * 65535.0).astype(">u2")
 
 
-def corrected_nodes(transform, rgb, signal_mode, white_nits, adaptation):
+def corrected_nodes(transform, size, red_fastest, signal_mode, white_nits,
+                    adaptation, chunk_size):
     """Evaluate the lattice a chunk at a time, yielding each corrected block."""
-    for start in range(0, len(rgb), NODE_CHUNK):
-        block = rgb[start:start + NODE_CHUNK]
+    total = size ** 3
+    for start in range(0, total, chunk_size):
+        block = lattice_coordinates(
+            size, start, min(total, start + chunk_size), red_fastest)
         yield transform.apply(
             source_xyz(block, signal_mode, white_nits, adaptation))
 
 
 def build(profile_path, method, signal_mode, output_path):
     transform, white_nits, adaptation = make_transform(profile_path, method, signal_mode)
-    rgb = lattice(GRID, red_fastest=False)
     output = bytearray(b"PGLT" + bytes((1, GRID, 3, 0)))
     output.extend(struct.pack(">I", GRID ** 3))
     output.extend(b"\0\0\0\0")
-    for corrected in corrected_nodes(transform, rgb, signal_mode, white_nits,
-                                     adaptation):
+    for corrected in corrected_nodes(
+            transform, GRID, False, signal_mode, white_nits, adaptation,
+            PGLT_NODE_CHUNK):
         output.extend(quantize_u16(corrected).tobytes())
     write_atomic(output_path, output)
 
@@ -392,19 +428,24 @@ def build_cube(profile_path, method, signal_mode, output_path, size, title=None)
     if title is None:
         title = "{} {} ICC correction".format(
             re.sub(r"\.ic[cm]$", "", os.path.basename(profile_path), flags=re.I), signal_mode)
-    lines = ['TITLE "{}"'.format(title.replace('"', "'")),
-             "LUT_3D_SIZE {}".format(size),
-             "DOMAIN_MIN 0.0 0.0 0.0",
-             "DOMAIN_MAX 1.0 1.0 1.0"]
+    header = '\n'.join([
+        'TITLE "{}"'.format(title.replace('"', "'")),
+        "LUT_3D_SIZE {}".format(size),
+        "DOMAIN_MIN 0.0 0.0 0.0",
+        "DOMAIN_MAX 1.0 1.0 1.0",
+    ]) + '\n'
     # Standard .cube node order is red-fastest/blue-slowest -- the reverse of
     # the PGLT payload above. Keeping the PGLT nesting here would hand external
     # tools an R<->B swapped lattice whose neutral axis still looks correct.
-    rgb = lattice(size, red_fastest=True)
-    for corrected in corrected_nodes(transform, rgb, signal_mode, white_nits,
-                                     adaptation):
-        for row in np.clip(corrected, 0.0, 1.0):
-            lines.append("{:.9f} {:.9f} {:.9f}".format(row[0], row[1], row[2]))
-    write_atomic(output_path, "\n".join(lines) + "\n")
+    with atomic_writer(output_path, binary=False) as handle:
+        handle.write(header)
+        for corrected in corrected_nodes(
+                transform, size, True, signal_mode, white_nits, adaptation,
+                CUBE_NODE_CHUNK):
+            clipped = np.clip(corrected, 0.0, 1.0)
+            handle.write("".join(
+                "{:.9f} {:.9f} {:.9f}\n".format(row[0], row[1], row[2])
+                for row in clipped))
 
 
 def main():

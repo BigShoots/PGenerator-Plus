@@ -3137,8 +3137,10 @@ def _sample_mft2_clut_tetrahedral(table, grid, coordinates):
     ]
 
 
-def mft2_a2b_evaluator(profile):
+def mft2_a2b_evaluator(profile, storage_mode):
     """Return a raw-device RGB to relative-PCS evaluator for A2B0."""
+    if storage_mode not in ("scalar", "batch"):
+        fail("A2B0 evaluator storage mode must be scalar or batch")
     payload = dict(read_icc_tags(profile)).get(b"A2B0")
     if not payload or len(payload) < 52 or payload[:4] != b"mft2":
         fail("Measured HDR calibration requires an mft2 A2B0 transform")
@@ -3162,16 +3164,14 @@ def mft2_a2b_evaluator(profile):
         offset = output_start + channel * output_entries * 2
         output_tables.append(_np_mft2_tables(payload, offset, output_entries))
     clut = _np_mft2_tables(payload, clut_start, clut_values)
-    # Both representations are kept deliberately. Single-triple callers stay on
-    # the scalar lists, where per-call NumPy dispatch would cost more than it
-    # saves; the lattice solvers hand in an (N, 3) array and get one back.
-    scalar_input_tables = [table.tolist() for table in input_tables]
-    scalar_output_tables = [table.tolist() for table in output_tables]
-    scalar_clut = clut.tolist()
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
 
-    def evaluate(rgb):
-        if not isinstance(rgb, np.ndarray) or rgb.ndim == 1:
+    if storage_mode == "scalar":
+        scalar_input_tables = [table.tolist() for table in input_tables]
+        scalar_output_tables = [table.tolist() for table in output_tables]
+        scalar_clut = clut.tolist()
+
+        def evaluate_scalar(rgb):
             shaped = [sample_table(scalar_input_tables[channel], rgb[channel])
                       for channel in range(3)]
             transformed = [
@@ -3181,6 +3181,13 @@ def mft2_a2b_evaluator(profile):
             encoded = _sample_mft2_clut_tetrahedral(scalar_clut, grid, transformed)
             return [sample_table(scalar_output_tables[channel], encoded[channel])
                     / xyz_to_mft for channel in range(3)]
+        evaluate_scalar.storage_mode = storage_mode
+        evaluate_scalar.retained_clut_values = len(scalar_clut)
+        return evaluate_scalar
+
+    def evaluate_batch(rgb):
+        if not isinstance(rgb, np.ndarray) or rgb.ndim != 2:
+            fail("Batch A2B0 evaluator requires an (N, 3) NumPy array")
         shaped = np.empty(rgb.shape, dtype=np.float64)
         for channel in range(3):
             shaped[:, channel] = _np_sample_table(input_tables[channel],
@@ -3193,10 +3200,12 @@ def mft2_a2b_evaluator(profile):
                 output_tables[channel], encoded[:, channel]) / xyz_to_mft
         return result
 
-    return evaluate
+    evaluate_batch.storage_mode = storage_mode
+    evaluate_batch.retained_clut_values = int(clut.size)
+    return evaluate_batch
 
 
-def mft2_b2a_evaluator(profile):
+def mft2_b2a_evaluator(profile, storage_mode):
     """Return a relative-PCS XYZ to device RGB evaluator for B2A0.
 
     This deliberately matches the Patch Companion's explicit cLUT path:
@@ -3205,6 +3214,8 @@ def mft2_b2a_evaluator(profile):
     and the Companion prevents the two Windows handling choices from growing
     different neutral responses.
     """
+    if storage_mode not in ("scalar", "batch"):
+        fail("B2A0 evaluator storage mode must be scalar or batch")
     payload = dict(read_icc_tags(profile)).get(b"B2A0")
     if not payload or len(payload) < 52 or payload[:4] != b"mft2":
         fail("Windows HDR cLUT matching requires an mft2 B2A0 transform")
@@ -3228,13 +3239,14 @@ def mft2_b2a_evaluator(profile):
         offset = output_start + channel * output_entries * 2
         output_tables.append(_np_mft2_tables(payload, offset, output_entries))
     clut = _np_mft2_tables(payload, clut_start, clut_values)
-    scalar_input_tables = [table.tolist() for table in input_tables]
-    scalar_output_tables = [table.tolist() for table in output_tables]
-    scalar_clut = clut.tolist()
     xyz_to_mft = 65536.0 / (2.0 * 65535.0)
 
-    def evaluate(xyz):
-        if not isinstance(xyz, np.ndarray) or xyz.ndim == 1:
+    if storage_mode == "scalar":
+        scalar_input_tables = [table.tolist() for table in input_tables]
+        scalar_output_tables = [table.tolist() for table in output_tables]
+        scalar_clut = clut.tolist()
+
+        def evaluate_scalar(xyz):
             mapped = [
                 sum(matrix[row * 3 + column] * xyz[column] for column in range(3))
                 for row in range(3)
@@ -3245,6 +3257,13 @@ def mft2_b2a_evaluator(profile):
             encoded = _sample_mft2_clut(scalar_clut, grid, shaped)
             return [sample_table(scalar_output_tables[channel], encoded[channel])
                     for channel in range(3)]
+        evaluate_scalar.storage_mode = storage_mode
+        evaluate_scalar.retained_clut_values = len(scalar_clut)
+        return evaluate_scalar
+
+    def evaluate_batch(xyz):
+        if not isinstance(xyz, np.ndarray) or xyz.ndim != 2:
+            fail("Batch B2A0 evaluator requires an (N, 3) NumPy array")
         mapped = _np_mat3_apply(matrix, xyz)
         shaped = np.empty(xyz.shape, dtype=np.float64)
         for channel in range(3):
@@ -3257,7 +3276,9 @@ def mft2_b2a_evaluator(profile):
                                                   encoded[:, channel])
         return result
 
-    return evaluate
+    evaluate_batch.storage_mode = storage_mode
+    evaluate_batch.retained_clut_values = int(clut.size)
+    return evaluate_batch
 
 
 def windows_hdr_b2a_neutral_evaluator(profile):
@@ -3279,7 +3300,7 @@ def windows_hdr_b2a_source_evaluator(profile):
     white_nits = read_s15fixed16(lumi, 12)
     if white_nits <= 0.0:
         fail("Windows HDR cLUT matching requires positive profile luminance")
-    evaluate_b2a = mft2_b2a_evaluator(profile)
+    evaluate_b2a = mft2_b2a_evaluator(profile, "scalar")
     adaptation = bradford_adaptation(D65_WHITE, ICC_D50_WHITE)
     bt2020_xyz = (
         (0.6369580, 0.1446169, 0.1688810),
@@ -4248,7 +4269,7 @@ def hdr_profile_calibration_from_a2b(profile, rows, fallback, entries=4096,
     response_values = np.asarray([value for _code, value in response_neutral],
                                  dtype=np.float64)
 
-    evaluate = mft2_a2b_evaluator(profile)
+    evaluate = mft2_a2b_evaluator(profile, "batch")
     d50 = ICC_D50_WHITE
     d65 = (0.3127 / 0.329, 1.0, (1.0 - 0.3127 - 0.329) / 0.329)
     chad_payload = dict(read_icc_tags(profile)).get(b"chad")
@@ -4916,7 +4937,7 @@ def windows_hdr_profile_adjustment_luts(profile, rows, fallback, black, white,
                     for channel in range(3)]
             exact_probe = [list(curve) for curve in luts]
             if apply_mhc2_profile_exact_white_tail(
-                    exact_probe, mft2_a2b_evaluator(model_profile), chad,
+                    exact_probe, mft2_a2b_evaluator(model_profile, "scalar"), chad,
                     damping=3.0):
                 weakest = min(held)
                 spread = max(held) - weakest
@@ -5406,7 +5427,7 @@ def refine_hdr_b2a_from_forward_model(profile, forward_profile, white_y):
     output shapers and unreachable plateau region from the reshaped profile.
     Only the original characterization model is consumed.
     """
-    forward = mft2_a2b_evaluator(forward_profile)
+    forward = mft2_a2b_evaluator(forward_profile, "batch")
     d50 = ICC_D50_WHITE
     replacements = {}
     refined_payloads = {}

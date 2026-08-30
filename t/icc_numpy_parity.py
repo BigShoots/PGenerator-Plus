@@ -176,6 +176,59 @@ exact("builder tetrahedral cLUT",
       [BUILDER._sample_mft2_clut_tetrahedral(clut, grid, row)
        for row in coordinates])
 
+
+def _mft2_profile(signature, grid_size=5, table_entries=17):
+    identity = (65536, 0, 0, 0, 65536, 0, 0, 0, 65536)
+    payload = bytearray(b"mft2" + b"\0" * 4
+                        + bytes((3, 3, grid_size, 0))
+                        + struct.pack(">9i", *identity)
+                        + struct.pack(">HH", table_entries, table_entries))
+    table_values = [int(round(index * 65535.0 / (table_entries - 1)))
+                    for index in range(table_entries)]
+    for _channel in range(3):
+        payload.extend(struct.pack(">{}H".format(table_entries), *table_values))
+    clut_values = grid_size ** 3 * 3
+    payload.extend(struct.pack(">{}H".format(clut_values), *[
+        (index * 7919 + 17) % 65536 for index in range(clut_values)]))
+    for _channel in range(3):
+        payload.extend(struct.pack(">{}H".format(table_entries), *table_values))
+    header = bytearray(128)
+    header[36:40] = b"acsp"
+    offset = 144
+    return (bytes(header) + struct.pack(">I4sII", 1, signature, offset,
+                                        len(payload)) + bytes(payload),
+            clut_values)
+
+
+def _closure_values(function):
+    return [cell.cell_contents for cell in (function.__closure__ or ())]
+
+
+# Evaluator construction declares the one representation its caller needs.
+# The batch form must not retain the large scalar-list twin, and the scalar
+# form must not retain the large NumPy cLUT twin.
+for label, factory, signature in (
+        ("A2B0", BUILDER.mft2_a2b_evaluator, b"A2B0"),
+        ("B2A0", BUILDER.mft2_b2a_evaluator, b"B2A0")):
+    profile, retained_clut_values = _mft2_profile(signature)
+    scalar_evaluator = factory(profile, "scalar")
+    batch_evaluator = factory(profile, "batch")
+    require_scalar_lists = [value for value in _closure_values(scalar_evaluator)
+                            if isinstance(value, list)
+                            and len(value) == retained_clut_values]
+    forbidden_scalar_arrays = [value for value in _closure_values(scalar_evaluator)
+                               if isinstance(value, np.ndarray)
+                               and value.size == retained_clut_values]
+    forbidden_batch_lists = [value for value in _closure_values(batch_evaluator)
+                             if isinstance(value, list)
+                             and len(value) == retained_clut_values]
+    if len(require_scalar_lists) != 1 or forbidden_scalar_arrays or forbidden_batch_lists:
+        raise AssertionError("{} evaluator retained both cLUT storage modes".format(label))
+    evaluator_input = np.clip(values(300).reshape(-1, 3), 0.0, 1.0)
+    exact("{} explicit scalar/batch evaluator parity".format(label),
+          batch_evaluator(evaluator_input),
+          [scalar_evaluator(row) for row in evaluator_input])
+
 vectors = values(18000).reshape(-1, 3)
 matrix = [0.81231, -0.09417, 0.2269,
           0.1538, 0.7732, 0.0730,
@@ -284,20 +337,24 @@ exact("companion MatrixTransform.apply",
 # here on both signal routes at the real production grid.
 adaptation = COMPANION.chromatic_adaptation(COMPANION.D65_WHITE,
                                             COMPANION.ICC_D50_WHITE)
-full_lattice = COMPANION.lattice(COMPANION.GRID, red_fastest=False)
+full_lattice = COMPANION.lattice_coordinates(
+    COMPANION.GRID, 0, COMPANION.GRID ** 3, red_fastest=False)
 for route, nits in (("sdr", 1.0), ("hdr10", 600.0)):
     whole = COMPANION.quantize_u16(matrix_transform.apply(
         COMPANION.source_xyz(full_lattice, route, nits, adaptation))).tobytes()
     chunked = b"".join(
         COMPANION.quantize_u16(block).tobytes()
         for block in COMPANION.corrected_nodes(
-            matrix_transform, full_lattice, route, nits, adaptation))
+            matrix_transform, COMPANION.GRID, False, route, nits, adaptation,
+            COMPANION.PGLT_NODE_CHUNK))
     exact_bytes("companion {} build is chunk-invariant".format(route),
                 chunked, whole)
 
 for size in (2, 5, 17):
-    slow = COMPANION.lattice(size, red_fastest=False)
-    fast = COMPANION.lattice(size, red_fastest=True)
+    slow = COMPANION.lattice_coordinates(
+        size, 0, size ** 3, red_fastest=False)
+    fast = COMPANION.lattice_coordinates(
+        size, 0, size ** 3, red_fastest=True)
     scalar_slow = [[red / (size - 1.0), green / (size - 1.0),
                     blue / (size - 1.0)]
                    for red in range(size) for green in range(size)
