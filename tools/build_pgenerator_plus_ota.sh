@@ -19,6 +19,15 @@ FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
 # shellcheck source=tools/runtime/pgen_release_runtime.sh
 . "$REPO_ROOT/tools/runtime/pgen_release_runtime.sh"
 
+# apply_release_modes(): the file-mode policy shared with the image
+# builder and enforced by the manifest checker.
+if [[ ! -f "$SCRIPT_DIR/release_modes.sh" ]]; then
+ echo "ERROR: missing $SCRIPT_DIR/release_modes.sh (release file-mode policy)" >&2
+ exit 1
+fi
+# shellcheck source=release_modes.sh
+. "$SCRIPT_DIR/release_modes.sh"
+
 FORCE_OUTPUT=0
 KEEP_STAGING=0
 ALLOW_REMOVALS=0
@@ -292,14 +301,7 @@ stage_overlay() {
 
  remove_external_icc_tools
 
- if [[ -d "$STAGING_DIR/usr/share/PGenerator/update-migrations.d" ]]; then
-  find "$STAGING_DIR/usr/share/PGenerator/update-migrations.d" -type f -name '*.sh' \
-   -exec chmod 0755 {} +
- fi
-for rel in etc/init.d/fake-hwclock etc/init.d/ntp etc/cron.hourly/fake-hwclock; do
- [[ -f "$STAGING_DIR/$rel" ]] && chmod 0755 "$STAGING_DIR/$rel"
-done
-if [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
+ if [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
  chmod 0440 "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator"
 fi
 
@@ -342,6 +344,7 @@ mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
  : > "$STAGING_DIR/var/lib/PGenerator/operations.txt"
  rm -f "$STAGING_DIR/usr/share/PGenerator/meter_settings.json"
  rm -f "$STAGING_DIR/usr/sbin/PGeneratord.hdr"
+
 }
 
 validate_pi4_legacy_runtime() {
@@ -504,6 +507,7 @@ validate_tarball() {
 }
 
 main() {
+ local exec_count
  parse_args "$@"
  load_target_manifest
  require_commands
@@ -513,6 +517,18 @@ main() {
   log "Staging the pinned external Pi 4 NumPy runtime"
   hydrate_pi4_numpy_runtime "$STAGING_DIR"
  fi
+ # Last, once the staged file set is final (the NumPy runtime hydrates after
+ # the overlay): the checkout's own mode bits are not trustworthy.
+ # core.filemode=false means git records 100644 for nearly every runtime
+ # file, so a build run from a fresh clone or worktree stages scripts 0664 —
+ # that is how 2.11.6 and 2.11.7 shipped a non-executable
+ # /etc/init.d/rcPGenerator and stopped the daemon from ever starting again.
+ # Derive the exec bits from the source trees instead, normalize packaged
+ # directory modes, and record the result in the payload so
+ # pgenerator-update can reapply the same bits on the device.
+ exec_count="$(apply_release_modes "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
+  || die "Could not apply the release executable-bit policy"
+ log "Applied executable bits to $exec_count staged program files"
  validate_pi4_legacy_runtime
  validate_colour_math_runtime
  validate_pi5_staging_tree
