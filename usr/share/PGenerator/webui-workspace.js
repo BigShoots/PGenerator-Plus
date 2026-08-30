@@ -16520,6 +16520,8 @@ function meterCie3dOpponentSpherePrimitives(ctx,prims,layout,bounds){
 const CIE3D_DEFAULT={yaw:0.85,pitch:0.72,dist:2.4,panX:0,panY:0.02,scale:1};
 const CIE3D_PITCH_MIN=0.05;
 const CIE3D_PITCH_MAX=1.52; // just shy of π/2 so axes stay readable
+const CIE3D_SCALE_MIN=0.35;
+const CIE3D_SCALE_MAX=14;
 let _cie3d={
  yaw:CIE3D_DEFAULT.yaw,pitch:CIE3D_DEFAULT.pitch,dist:CIE3D_DEFAULT.dist,
  panX:CIE3D_DEFAULT.panX,panY:CIE3D_DEFAULT.panY,scale:CIE3D_DEFAULT.scale,
@@ -17605,7 +17607,7 @@ function cie3dOnWheel(e){
  if(!meterCie3dViewEnabled()) return;
  e.preventDefault();
  const factor=e.deltaY>0?0.92:1.08;
- _cie3d.scale=Math.max(0.35,Math.min(4.5,_cie3d.scale*factor));
+ _cie3d.scale=Math.max(CIE3D_SCALE_MIN,Math.min(CIE3D_SCALE_MAX,_cie3d.scale*factor));
  cie3dRedrawSoon();
 }
 function cie3dOnDblClick(e){
