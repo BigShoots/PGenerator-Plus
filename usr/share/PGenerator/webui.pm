@@ -778,6 +778,12 @@ $WEBUI_COMPUTE_WORKER_COUNT=1;
 $WEBUI_GENERAL_QUEUE_MAX=128;
 $WEBUI_FAST_QUEUE_MAX=256;
 $WEBUI_COMPUTE_QUEUE_MAX=1;
+# Calibration workers give pattern requests a 10-second transport deadline.
+# Refuse a queued pattern before that deadline is exhausted so a client that
+# has already given up cannot change the displayed patch later.
+$WEBUI_PRIORITY_REQUEST_MAX_AGE=8;
+my $_webui_priority_sequence :shared = 0;
+my $_webui_priority_latest_dispatched :shared = 0;
 
 sub webui_route_is_concurrent_safe (@) {
  # Allowlist, deliberately conservative: a route qualifies only if its handler
@@ -842,9 +848,53 @@ sub webui_route_is_general_priority (@) {
 }
 
 sub webui_route_enqueue (@) {
- my ($queue,$fd,$priority)=@_;
- if($priority) { $queue->insert(0,$fd); }
+ my ($queue,$fd,$priority,$accepted_at)=@_;
+ if($priority) {
+  $accepted_at=Time::HiRes::time() if(!defined($accepted_at));
+  my $sequence;
+  {
+   lock($_webui_priority_sequence);
+   $sequence=++$_webui_priority_sequence;
+  }
+  my $entry=join(":","pgen-priority-v1",$sequence,
+   sprintf("%.6f",$accepted_at),$fd);
+  $queue->insert(0,$entry);
+ }
  else { $queue->enqueue($fd); }
+}
+
+sub webui_route_queue_entry (@) {
+ my $entry=shift;
+ return undef if(!defined($entry));
+ if(!ref($entry)
+  && $entry=~/^pgen-priority-v1:(\d+):(\d+(?:\.\d+)?):(\d+)$/) {
+  return {
+   fd=>$3+0,
+   priority=>1,
+   sequence=>$1+0,
+   accepted_at=>$2+0,
+  };
+ }
+ return undef if(ref($entry) || $entry!~/^\d+$/);
+ return {fd=>$entry+0,priority=>0,sequence=>0,accepted_at=>0};
+}
+
+sub webui_priority_request_expired (@) {
+ my ($record,$now)=@_;
+ return 0 if(ref($record) ne "HASH" || !$record->{"priority"});
+ $now=Time::HiRes::time() if(!defined($now));
+ return 1 if(!$record->{"accepted_at"}
+  || ($now-$record->{"accepted_at"})>$WEBUI_PRIORITY_REQUEST_MAX_AGE);
+ my $stale=0;
+ {
+  lock($_webui_priority_latest_dispatched);
+  if($record->{"sequence"}<=$_webui_priority_latest_dispatched) {
+   $stale=1;
+  } else {
+   $_webui_priority_latest_dispatched=$record->{"sequence"};
+  }
+ }
+ return $stale;
 }
 
 sub webui_renderer_restart_status_path (@) {
@@ -1105,6 +1155,7 @@ sub webui_http (@) {
     next;
    }
    # Complete (or oversized) header: now it is worth a worker.
+   my $accepted_at=$pending{$fno}->[1];
    $sel->remove($h);
    delete($pending{$fno});
    my $fd=eval { POSIX::dup($fno) };
@@ -1115,7 +1166,7 @@ sub webui_http (@) {
    }
    my $priority=($lane eq "general")
     ? &webui_route_is_general_priority($peek_method,$peek_path,$peer_host) : 0;
-   &webui_route_enqueue($queue,$fd,$priority);
+   &webui_route_enqueue($queue,$fd,$priority,$accepted_at);
   }
   # Reclaim sockets that connected but never produced a usable request.
   if(scalar(keys %pending)) {
@@ -1147,7 +1198,13 @@ sub webui_http_worker (@) {
  my $lane=shift;
  $SIG{PIPE}='IGNORE';
  my $queue=($lane eq "fast") ? $_webui_fast_queue : (($lane eq "compute") ? $_webui_compute_queue : $_webui_worker_queue);
- while(defined(my $fd=$queue->dequeue())) {
+ while(defined(my $entry=$queue->dequeue())) {
+  my $record=&webui_route_queue_entry($entry);
+  if(ref($record) ne "HASH") {
+   &log("WebUI: worker $worker_id discarded malformed queue entry");
+   next;
+  }
+  my $fd=$record->{"fd"};
   my $client;
   eval {
    $client=IO::Socket::INET->new_from_fd($fd,"+<");
@@ -1160,6 +1217,14 @@ sub webui_http_worker (@) {
   if(!$client) {
    &log("WebUI: worker $worker_id could not adopt fd $fd: $@");
    eval { POSIX::close($fd); };
+   next;
+  }
+  if(&webui_priority_request_expired($record)) {
+   my $msg='{"status":"error","retryable":false,"message":"Calibration pattern request expired before execution"}';
+   print $client "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: ".length($msg)."\r\nConnection: close\r\n\r\n$msg";
+   &log("WebUI: discarded stale loopback pattern request sequence ".$record->{"sequence"});
+   eval { shutdown($client, 2); };
+   eval { close($client); };
    next;
   }
   eval { &webui_handle_request($client); };
