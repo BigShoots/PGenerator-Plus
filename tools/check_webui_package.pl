@@ -21,8 +21,8 @@ my @fragments = qw(
     usr/share/PGenerator/webui-lg.js
 );
 
-# The served page also reads these from disk (server-side splice and
-# <script src> routes); a release without them ships a broken UI too.
+# The served page also reads these from disk through server-side splices and
+# script routes. A release without them ships a broken UI too.
 my @page_assets = qw(
     usr/share/PGenerator/icc_profile.html
     usr/share/PGenerator/icc_profile.css
@@ -40,7 +40,7 @@ while (my $entry = <$tar_fh>) {
 }
 close $tar_fh or die "tar could not read $archive\n";
 
-# macOS bsdtar can embed AppleDouble metadata companions; a device would
+# macOS bsdtar can embed AppleDouble metadata companions. A device would
 # extract them as junk files and the name checks below would not see them.
 my @apple_double = sort grep { m{(?:\A|/)\._} } keys %entries;
 if (@apple_double) {
@@ -54,7 +54,7 @@ if (@missing) {
 }
 
 # A cumulative archive must contain the ten current fragment names, not a
-# mixture of the new split and stale/renamed webui-* files.  Paths without a
+# mixture of the new split and stale or renamed webui-* files. Paths without a
 # hyphen or .html suffix after "webui", such as webui.pm, stay out of this
 # check by construction.
 my %expected = map { $_ => 1 } @fragments;
@@ -75,8 +75,8 @@ die "expected exactly " . scalar(@fragments)
     . " Web UI fragment paths, found " . scalar(@fragment_entries) . "\n"
     unless @fragment_entries == @fragments;
 
-# Names are not enough: a truncated fragment would pass every check above and
-# boot every updated device onto the recovery page.  One extraction pass
+# Names are not enough. A truncated fragment would pass every check above and
+# boot every updated device onto the recovery page. One extraction pass
 # verifies each file actually carries content.
 my $extract_dir = tempdir("pgenerator-webui-check-XXXXXX", TMPDIR => 1, CLEANUP => 1);
 system("tar", "-xzf", $archive, "-C", $extract_dir, @fragments, @page_assets) == 0

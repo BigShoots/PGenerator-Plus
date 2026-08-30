@@ -8,6 +8,7 @@ Backup/
 v2.1/
 docs/
 tests/
+t/
 tools/scripts/
 tools/dv_helper
 tools/read_csc

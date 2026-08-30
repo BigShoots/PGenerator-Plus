@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
-FRAGMENT_CHECKER="$REPO_ROOT/t/check_webui_package.pl"
+FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
 # shellcheck source=tools/runtime/pi4_numpy_runtime.sh
 . "$REPO_ROOT/tools/runtime/pi4_numpy_runtime.sh"
 # shellcheck source=tools/runtime/pgen_release_runtime.sh
