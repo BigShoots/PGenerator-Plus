@@ -478,6 +478,7 @@ ok(defined($white_worker),
 if(defined($white_worker)) {
  my ($white_status)=run_python_worker($white_worker,{
   STEPS_FILE=>$steps_path,WHITE_Y=>'406.513964',
+  PGEN_BIN_DIR=>File::Spec->catdir($Bin,'..','usr','bin'),
  });
  is($white_status,0,'the recorded SDR white is attached to the remaining series steps');
  open(my $updated_fh,'<',$steps_path) or die "Unable to read $steps_path: $!";

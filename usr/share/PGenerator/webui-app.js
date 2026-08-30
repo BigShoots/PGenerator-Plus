@@ -6720,50 +6720,10 @@ function meterWrgbTargetCompensationSelected(){
  return false;
 }
 
-// Per-primary HDR luminance ceilings derived from the current ColorChecker
-// run's R/G/B endpoint reads. This is deliberately not a general
-// chart reference: ordinary ColorChecker patches and saturation sweeps retain
-// their authored, measurement-independent target. The ceilings are consumed
-// only by the HDR ColorChecker 100% primary/secondary endpoint path below.
-function meterWrgbPrimaryCeilings(){
- const out={};
- if(typeof meterActiveSeriesType==='undefined'||meterActiveSeriesType!=='colors') return out;
- if(!meterChartIsHdr()||meterChartIsDv()||!meterWrgbTargetCompensationSelected()) return out;
- const gamut=meterAnalysisGamut();
- const Yrow=(gamut&&gamut.rgbToXyz)?gamut.rgbToXyz[1]:[0.2627,0.6780,0.0593];
- const idx={red:0,green:1,blue:2};
- const curMode=(typeof meterActiveChartSignalMode==='function')
-  ?String(meterActiveChartSignalMode()||'').toLowerCase():'';
- (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
-  if(!rd||!rd.series_color||Number(rd.sat_pct)<99.5) return;
-  const color=String(rd.series_color).toLowerCase();
-  if(!(color in idx)) return;
-  const rdMode=String(rd.signal_mode||'').toLowerCase();
-  if(curMode&&rdMode&&rdMode!==curMode) return;
-  const codes=[
-   (rd.r_code!=null)?rd.r_code:rd.r,
-   (rd.g_code!=null)?rd.g_code:rd.g,
-   (rd.b_code!=null)?rd.b_code:rd.b
-  ];
-  // series_color + sat_pct identifies the dedicated ColorChecker endpoint.
-  // Do not require a near-full code: HDR10 endpoints are now encoded at the
-  // measured-white PQ level (typically about 75% signal), not at 10,000 nits.
-  if(codes.some(v=>v==null)) return;
-  const i=idx[color];
-  const measuredY=meterReadingLuminanceNits(rd);
-  if(measuredY>0&&Yrow[i]>0&&!(out[i]>0)) out[i]=measuredY/Yrow[i];
- });
- return out;
-}
-
 // Target luminance normally comes directly from the authored patch stimulus:
 // decode each channel and form target Y in the selected analysis gamut.
-// Ordinary ColorChecker patches and saturation sweeps must not learn their
-// target from the measurements they grade. The one display-reference exception
-// is the six full-drive HDR ColorChecker endpoints on a selected WRGB OLED:
-// those are bounded by the run's measured filtered-primary ceilings because
-// the white-subpixel peak is physically unavailable to saturated colors.
-// Greys remain referenced to measured white.
+// ColorChecker patches and saturation sweeps must not learn their target from
+// the measurements they grade. Greys remain referenced to measured white.
 // Returns the decoded target Y (cd/m^2), or null when not applicable (non-PQ
 // signal, or the stimulus codes cannot be resolved).
 
@@ -6804,34 +6764,6 @@ function meterWrgbStimulusTargetY(reading){
  let db=_dvLum?meterDvStimulusLinearChannel(b):meterDecodeColorTargetChannel(b);
  const gamut=(_dvLum&&meterDvMapModeValue()==='1')||(!_dvLum&&meterChartIsHdr())
   ?meterContainerGamut():meterAnalysisGamut();
- // An HDR ColorChecker endpoint on a WRGB OLED cannot reach the
- // decoded PQ peak through its filtered color subpixels. Grade those six
- // endpoint patches against the additive output established by the measured
- // R/G/B endpoints. Keep this narrowly scoped: DV has its stable authored
- // response model below, saturation sweeps use their own sub-peak stimulus,
- // and ordinary ColorChecker patches remain independent of measured results.
- const _hdrColorEndpoint=!_dvLum
-  && typeof meterActiveSeriesType!=='undefined'&&meterActiveSeriesType==='colors'
-  && meterChartIsHdr()&&meterWrgbTargetCompensationSelected()
-  && !meterReadingIsGreyscale(reading)
-  && reading.series_color!=null&&Number(reading.sat_pct)>=99.5;
- if(_hdrColorEndpoint){
-  const ceil=meterWrgbPrimaryCeilings();
-  // dr/dg/db are BT.2020 container channels. Apply WRGB primary ceilings in
-  // the selected target-gamut basis instead, otherwise mixed P3-in-BT.2020
-  // codes are mistaken for desaturated P3 channels during target grading.
-  const endpointRgb=meterGamutColorEndpointRgb(String(reading.series_color));
-  const endpointNits=Math.max(dr,dg,db);
-  dr=Math.max(0,Number(endpointRgb[0])||0)*endpointNits;
-  dg=Math.max(0,Number(endpointRgb[1])||0)*endpointNits;
-  db=Math.max(0,Number(endpointRgb[2])||0)*endpointNits;
-  if(ceil[0]>0) dr=Math.min(dr,ceil[0]);
-  if(ceil[1]>0) dg=Math.min(dg,ceil[1]);
-  if(ceil[2]>0) db=Math.min(db,ceil[2]);
-  const targetGamut=meterAnalysisGamut();
-  const targetXyz=linRgbToXyz(dr,dg,db,targetGamut.rgbToXyz);
-  return (targetXyz&&Number.isFinite(targetXyz.Y)&&targetXyz.Y>=0)?targetXyz.Y:null;
- }
  const xyz=linRgbToXyz(dr,dg,db,gamut.rgbToXyz);
  if(!(xyz&&Number.isFinite(xyz.Y)&&xyz.Y>=0)) return null;
  if(_dvLum && meterDvMapModeValue()!=='1' && meterWrgbTargetCompensationSelected()){
@@ -7282,10 +7214,9 @@ function meterBuildSaturationStepRgb(colorName,satPercent){
  return rgb.map(v=>meterEncodeSaturationLinear(v,colorName));
 }
 
-// ColorChecker's appended 100% primaries/secondaries are gamut endpoints at
-// the ColorChecker endpoint drive (HDR10 measured white, DV 50%, SDR/HLG 75%).
-// They deliberately do not use the native saturation sweep's fixed 50% HDR
-// drive.
+// ColorChecker's appended 100% primaries/secondaries use the same 100-nit
+// reference as its other chromatic patches in HDR10 and Absolute DV. Relative
+// DV, SDR and HLG retain their existing mode-specific endpoint levels.
 // Keep this client builder aligned with webui_meter_series_start so Read
 // Selection and a full series send the same patch for the same thumbnail.
 function meterBuildColorCheckerEndpointStepRgb(colorName){
@@ -7294,33 +7225,28 @@ function meterBuildColorCheckerEndpointStepRgb(colorName){
  // expresses a P3-D65 endpoint as mixed RGB inside its BT.2020 wire container.
  // Keep this aligned with the server builder so a thumbnail reread cannot
  // silently substitute a different gamut axis.
- const hdr10=meterChartIsPq()&&!meterChartIsDv();
+ const absolutePq=meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1');
  const endpoint=meterGamutColorEndpointXY(colorName,meterSaturationAxisGamut());
  const x=endpoint.x,y=endpoint.y;
  if(!(y>0)) return [0,0,0];
  const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
  const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
- // The full-series server anchors HDR10 endpoint codes to the measured series
- // white so they stay inside the characterized range. Apply the same level to
- // browser-built Read Selection steps; meterGamutStimulusLinearLevel() is 1.0
- // for HDR10 and would otherwise restore the old 10,000-nit code path.
- const endpointReferenceNits=hdr10?Number(meterColorSeriesReferenceNits()):0;
- const level=hdr10
-  ? Math.max(0,Math.min(1,(endpointReferenceNits>0?endpointReferenceNits:1000)/10000))
-  : meterGamutStimulusLinearLevel();
+ const level=absolutePq ? 100/10000 : meterGamutStimulusLinearLevel();
  return coeffs.map(v=>meterEncodeSaturationLinear(Math.max(0,v/maxCoeff)*level,colorName));
 }
 
 function meterBuildColorCheckerEndpointTargetStepMeta(colorName){
- const level=meterGamutStimulusLinearLevel();
+ const absolutePq=meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1');
+ const level=absolutePq?1:meterGamutStimulusLinearLevel();
  const rgb=meterBuildFullGamutTargetLinearRgb(colorName).map(v=>v*level);
  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
  const sum=xyz.X+xyz.Y+xyz.Z;
  const wp=meterTargetWhitePoint();
+ const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
  return {
   target_x:sum>0?xyz.X/sum:wp.x,
   target_y:sum>0?xyz.Y/sum:wp.y,
-  target_Yn:Math.max(0,xyz.Y||0)
+  target_Yn:Math.max(0,(absolutePq?xyz.Y*100/seriesWhite:xyz.Y)||0)
  };
 }
 
@@ -7421,6 +7347,11 @@ function meterBuildFullGamutTargetLinearRgb(colorName){
 }
 
 function meterColorCheckerFullSatTargetXYZ(colorName){
+ if(meterChartIsPq()&&(!meterChartIsDv()||meterDvMapModeValue()==='1')){
+  const rgb=meterBuildFullGamutTargetLinearRgb(colorName);
+  const xyz=linRgbToXyz(rgb[0],rgb[1],rgb[2],meterTargetSolveGamut().rgbToXyz);
+  return {X:xyz.X*100,Y:xyz.Y*100,Z:xyz.Z*100};
+ }
  return meterSaturationTargetXYZ(colorName,100);
 }
 
@@ -7783,19 +7714,15 @@ function meterTargetXYZForReading(reading){
   let _wrgbStimY=null;
   const _activeColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
   const _greyReading=meterReadingIsGreyscale(reading);
-  // WRGB OLED luminance. A white-subpixel panel tracks the PQ signal, so
-  // ColorChecker reflectance patches and saturation sweeps target the absolute
-  // value their stimulus encodes. Only the six full-drive HDR ColorChecker
-  // endpoints are bounded by the measured filtered-primary ceilings, keeping a
-  // full-code secondary from exceeding the achievable additive primary sum.
+  // PQ ColorChecker patches and saturation sweeps target the absolute value
+  // their stimulus encodes, including the six 100-nit ColorChecker endpoints.
   // Chromaticity always stays on target_x/target_y.
   // Greys are clamped to measured white (white uses the W subpixel and exceeds
   // the primary sum). The additive reference (meterWrgbChromaticReferenceNits)
   // remains only as the non-PQ / no-codes fallback for chromatic patches.
   // WRGB OLED chromatic refY (additive primary sum) is ONLY used by the
   // chromatic-target fallback path (no stimulus codes / non-PQ). The
-  // PQ stimulus-decode path below is measurement-independent for ordinary
-  // patches; the explicit full-drive endpoint exception is handled inside it.
+  // The PQ stimulus-decode path below is measurement-independent.
   if(_activeColorSeries && meterChartIsHdr() && !_greyReading && meterWrgbChromaticReferenceNits()>0){
    const _wrgbRef=meterWrgbChromaticReferenceNits();
    if(_wrgbRef>0) refY=_wrgbRef;
@@ -8613,7 +8540,19 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 // so unrelated custom and MacLeod-Boynton series retain their behavior.
 	 const wireSolveGamut=meterChartIsHlg()?GAMUT_PRESETS.bt2020:solveGamut;
 	 const seriesWhite=Math.max(1,Number(meterColorSeriesReferenceNits())||1);
-	 const hdrColorCheckerRefNits=203;
+	 // HDR10 and Absolute DV use a 100-nit chromatic reference. Neutral
+	 // patches remain independently referenced to series white.
+	 const hdrColorCheckerRefNits=100;
+	 let useMeasuredWhite=true;
+	 try{
+	  const targetWhite=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+	  useMeasuredWhite=!targetWhite||targetWhite.useMeasured!==false;
+	 }catch(e){}
+	 const neutralRebaseMeta=(linear)=>absoluteHdrColorChecker&&useMeasuredWhite?{
+	  colorchecker_rebase_white:true,
+	  colorchecker_linear_r:linear,colorchecker_linear_g:linear,colorchecker_linear_b:linear,
+	  colorchecker_code_min:min,colorchecker_code_span:max-min
+	 }:{};
 	 steps.push({ire:100,r:max,g:max,b:max,name:'White',target_x:wp.x,target_y:wp.y,target_Yn:1,input_max:inputMax});
 	 steps.push({ire:0,r:min,g:min,b:min,name:'Black',target_x:wp.x,target_y:wp.y,target_Yn:0,input_max:inputMax});
 	 meterColorCheckerClassicSource().forEach(src=>{
@@ -8626,7 +8565,8 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
-	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax});
+	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
+	    ...neutralRebaseMeta(src.gray)});
 	   return;
 	  }
     const ref=xyToUnitXyz(src.x,src.y);
@@ -17445,7 +17385,10 @@ function meterLg3dPrepareChartContext(opts){
  // Profiling CIE defaults: Targets off (no meaningful verification targets).
  try{
   if(typeof meterLatticeDefault3dView==='function'){
-   meterLatticeDefault3dView((series&&series.id!=null)?series.id:(meterActiveSeriesKey==='lg-3d-matrix-profile'?'matrix':null));
+   meterLatticeDefault3dView(
+    (series&&series.id!=null)?series.id:(meterActiveSeriesKey==='lg-3d-matrix-profile'?'matrix':null),
+    {force:!!o.forceViewDefault}
+   );
   }
  }catch(e){}
  return true;
@@ -17562,7 +17505,7 @@ function meterInstallMatrixProfileSeries(opts){
  try{ meterResetLiveReadingDisplay(); }catch(e){}
  try{ meterUpdateDeltaEFormControl(); }catch(e){}
  try{ meterUpdateReadButtons(); }catch(e){}
- try{ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView('matrix'); }catch(e){}
+ try{ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView('matrix',{force:true}); }catch(e){}
  return true;
 }
 // When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.
@@ -18999,8 +18942,9 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
  const solveGamut=(signalMode==='hlg')
   ?GAMUT_PRESETS.bt2020
   :((typeof meterStimulusSolveGamut==='function')?meterStimulusSolveGamut():GAMUT_PRESETS.bt709);
- const absoluteHdr=(signalMode==='hdr10')||(signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1');
- const hdrReferenceNits=203;
+ const dvAbsolute=signalMode==='dv'&&typeof meterDvMapModeValue==='function'&&meterDvMapModeValue()==='1';
+ const absoluteHdr=(signalMode==='hdr10')||dvAbsolute;
+ const hdrReferenceNits=100;
  const seriesWhite=Math.max(1,Number((typeof meterColorSeriesReferenceNits==='function')?meterColorSeriesReferenceNits():100)||100);
  return (Array.isArray(names)?names:[]).map(name=>{
   const sourceIndex=METER_COLORCHECKER_SG_NAMES.indexOf(name);

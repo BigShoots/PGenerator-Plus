@@ -852,7 +852,7 @@ respawn_spotread () {
   cat "$CMDPIPE" | script -qfc "$SR_CMD" /dev/null > "$OUTFILE" 2>&1 &
   BG_PID=$!
   exec 3>"$CMDPIPE"
-  log "respawn: spotread respawned (bg_pid=$BG_PID mode=$new_mode attempt=$_retry)"
+  log "respawn: spotread respawned (bg_pid=$BG_PID reason=$respawn_reason attempt=$_retry)"
   # Wait for "to take a reading:" — colorimeters re-ready in <2s; allow
   # up to 15s for the i1d3 AIO to re-init after a mode change. The
   # second iteration of the outer retry loop gives a second 15s window
@@ -863,7 +863,7 @@ respawn_spotread () {
    _co=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
    echo "$_co" | grep -q "to take a reading:" && break
    if (( _refresh_done == 0 )) && refresh_cal_prompt "$_co"; then
-    log "performing refresh-rate calibration during low-light respawn"
+    log "performing refresh-rate calibration during continuous-read recovery"
     post_patch_timeout 204 204 204 100 "$SIGNAL_MODE_DEFAULT" "$MAX_LUMA_DEFAULT" ""
     sleep 2
     printf " " >&3
@@ -873,18 +873,18 @@ respawn_spotread () {
     continue
    fi
    if colorimeter_dark_cal_prompt "$_co"; then
-    if ! perform_colorimeter_dark_calibration "low-light respawn"; then
+    if ! perform_colorimeter_dark_calibration "continuous-read recovery"; then
      write_state '{"status":"error","message":"Meter dark calibration did not complete"}'
      return 1
     fi
-    CURRENT_LOW_LIGHT_MODE="$new_mode"
+    CURRENT_LOW_LIGHT_MODE="off"
     return 0
    fi
    sleep 0.1
    _rt=$(( _rt + 1 ))
   done
   if sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -q "to take a reading:"; then
-   CURRENT_LOW_LIGHT_MODE="$new_mode"
+   CURRENT_LOW_LIGHT_MODE="off"
    return 0
   fi
   log "respawn: spotread failed to ready within 15s on attempt $_retry, will retry with clean re-exec"
@@ -1182,6 +1182,10 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		     fi
 		     STATE_TIMEOUT=$((STATE_TIMEOUT_PER_SAMPLE * REQUESTED_SAMPLE_COUNT))
 		     (( STATE_TIMEOUT > 1800 )) && STATE_TIMEOUT=1800
+		     # The virtual meter has no panel that needs to settle. Keep each
+		     # simulated trigger immediate without changing the numeric sample
+		     # contract used by physical and simulated paths.
+		     (( METER_SIMULATED )) && SETTLE_MS=0
 
 	   # Mark measuring so the polling endpoint knows a read is in flight.
 	   write_state "{\"status\":\"measuring\",\"request_id\":\"$REQUEST_ID\",\"timeout_sec\":$STATE_TIMEOUT}"

@@ -2285,7 +2285,10 @@ sub webui_meter_usb_power_health (@) {
 our $_meter_sim_port="99";
 my $_meter_sim_flag_primary="/var/lib/PGenerator/meter_simulation.flag";
 my $_meter_sim_flag_fallback="/tmp/meter_simulation.flag";
-my $_meter_sim_pattern_file="/tmp/pgen_sim_pattern.json";
+# Keep simulator state outside sticky /tmp. A root-owned stale /tmp file cannot
+# be atomically replaced by the unprivileged WebUI process even when the file
+# itself is mode 0666, which made every simulated read reuse an old pattern.
+my $_meter_sim_pattern_file="/var/lib/PGenerator/pgen_sim_pattern.json";
 
 sub webui_meter_simulation_enabled (@) {
  return 1 if(-f $_meter_sim_flag_primary || -f $_meter_sim_flag_fallback);
@@ -3803,7 +3806,7 @@ sub webui_custom_series_steps_from_body (@) {
   last if(scalar(@out)>=$max_patches);
   my $obj=$1;
   my %num;
-  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct)) {
+  foreach my $key (qw(ire r g b input_max patch_size target_x target_y target_Yn custom_target_nits stimulus signal_r_pct signal_g_pct signal_b_pct sat_pct colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
    $num{$key}=$1 if($obj=~/"$key"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);
   }
   next unless(defined $num{"r"} && defined $num{"g"} && defined $num{"b"});
@@ -3850,6 +3853,12 @@ sub webui_custom_series_steps_from_body (@) {
   $step.=",\"target_y\":".($num{"target_y"}+0) if(defined $num{"target_y"});
   $step.=",\"target_Yn\":".($num{"target_Yn"}+0) if(defined $num{"target_Yn"});
   $step.=",\"custom_target_nits\":".($num{"custom_target_nits"}+0) if(defined $num{"custom_target_nits"});
+  if($obj=~/"colorchecker_rebase_white"\s*:\s*true/i) {
+   $step.=',"colorchecker_rebase_white":true';
+   foreach my $key (qw(colorchecker_linear_r colorchecker_linear_g colorchecker_linear_b colorchecker_code_min colorchecker_code_span)) {
+    $step.=',"'.$key.'":'.($num{$key}+0) if(defined $num{$key});
+   }
+  }
   $step.="}";
   push @out,$step;
  }
@@ -4859,10 +4868,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     my @SOLVE_RGB_TO_XYZ=@{$primaries{$solve_key}{RGB_TO_XYZ}};
     my @RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
     my $dv_classic_scale=0.68;
-    # Chromatic HDR ColorChecker samples retain their established BT.2408
-    # diffuse-white stimulus. The four neutral samples use the normal series
-    # signal reference and are graded against the measured/manual white.
-    my $bt2408_ref_white_nits=203;
+    # HDR10 and Absolute-DV chromatic ColorChecker samples use a 100-nit
+    # reference. The four neutral samples use the normal series signal
+    # reference and are graded against the measured/manual white in both modes.
+    my $colorchecker_ref_white_nits=100;
     my $encode_linear=sub {
      my ($linear,$ref_nits_override)=@_;
      $linear=0 if(!defined $linear || $linear < 0);
@@ -5005,10 +5014,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      my ($r,$g,$b);
      if($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) {
       my $cc_white=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
-      $r=$encode_linear->($rl,$bt2408_ref_white_nits);
-      $g=$encode_linear->($gl,$bt2408_ref_white_nits);
-      $b=$encode_linear->($bl,$bt2408_ref_white_nits);
-      $target_Yn=$cc_white>0 ? $scaled_Yn*$bt2408_ref_white_nits/$cc_white : 0;
+      $r=$encode_linear->($rl,$colorchecker_ref_white_nits);
+      $g=$encode_linear->($gl,$colorchecker_ref_white_nits);
+      $b=$encode_linear->($bl,$colorchecker_ref_white_nits);
+      $target_Yn=$cc_white>0 ? $scaled_Yn*$colorchecker_ref_white_nits/$cc_white : 0;
      } else {
       $r=$encode_linear->($rl);
       $g=$encode_linear->($gl);
@@ -5113,13 +5122,16 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	      my $code=$encode_linear->($level);
 	      my $ire=int($level*100 + .5);
 	      my $target_Yn_for_step=$level;
-	      if($signal_mode eq "dv" && $span_code>0) {
+	      if($signal_mode eq "dv" && $dv_map_mode ne "1" && $span_code>0) {
 	       my $norm=($code-$min_code)/$span_code;
 	       $norm=0 if($norm < 0); $norm=1 if($norm > 1);
 	       $target_Yn_for_step=$decode_linear->($norm);
 	       $target_Yn_for_step=0 if($target_Yn_for_step < 0);
 	      }
-	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max}";
+	      my $rebase_json=(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) && $target_white_use_measured)
+	       ? ",\"colorchecker_rebase_white\":true,\"colorchecker_linear_r\":$level,\"colorchecker_linear_g\":$level,\"colorchecker_linear_b\":$level,\"colorchecker_code_min\":$min_code,\"colorchecker_code_span\":$span_code"
+	       : "";
+	      push @steps, "{\"ire\":$ire,\"r\":$code,\"g\":$code,\"b\":$code,\"name\":\"$name\",\"target_x\":$target_wx,\"target_y\":$target_wy,\"target_Yn\":$target_Yn_for_step,\"input_max\":$chroma_input_max$rebase_json}";
 	      next;
 	     }
       my ($target_x,$target_y,$Yn)=@vals;
@@ -5130,9 +5142,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   # Endpoint names describe the selected target gamut. In HDR10 that is
   # normally P3-D65 carried in a BT.2020 container, so derive the endpoint xy
   # from the target matrix and reverse-solve it through the container matrix
-  # $MI. The measured-white stimulus level below keeps those mixed BT.2020
-  # codes inside the characterized range instead of driving them at 10,000
-  # cd/m2.
+  # $MI. HDR10 and Absolute-DV use the same fixed 100-nit ColorChecker
+  # reference as the other chromatic patches in this series.
   my @STIM_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
   my $series_level_pct=(($signal_mode eq "hdr10") ? 100 : (($signal_mode eq "dv") ? 50 : 75));
    my $encode_saturation_linear=sub {
@@ -5171,18 +5182,12 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
     $series_level_linear=1 if($signal_mode eq "sdr" || $signal_mode eq "hlg");
     $series_level_linear=.5 if($signal_mode eq "dv");
    }
-   # 100% colour endpoints must stay inside the measured display range. In
-   # HDR10 the full-drive container level is 10,000 cd/m2: encoding endpoints
-   # there sends codes the characterization never measured, so every corrected
-   # path (compositor or application cLUT) grades them against inverse-table
-   # extrapolation and the reads collapse toward white. Anchor the wire
-   # stimulus to the measured series white instead. Target math is unchanged:
-   # target_Yn stays relative to the same measured white, and WRGB displays
-   # keep their separate endpoint grading.
+   # Standard ColorChecker endpoints are authored at 100 nits in absolute PQ
+   # modes. White remains the full-code peak measurement above; only the six
+   # chromatic endpoints use this fixed diffuse-white reference.
    my $series_stimulus_linear=$series_level_linear;
-   if($signal_mode eq "hdr10" && $points!=29) {
-    my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):1000);
-    $series_stimulus_linear=$white_ref/10000 if($white_ref>0 && $white_ref<=10000);
+   if(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) && $points!=29) {
+    $series_stimulus_linear=$colorchecker_ref_white_nits/10000;
    }
    my $build_color_series_full_sat_codes=sub {
     my ($r_mix,$g_mix,$b_mix)=@_;
@@ -5225,6 +5230,10 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $target_x=$target_mix_sum>0?$target_mix_X/$target_mix_sum:$target_wx;
 	     my $target_y=$target_mix_sum>0?$target_mix_Y/$target_mix_sum:$target_wy;
 	     my $target_Yn_for_step=$series_level_linear*$target_mix_Y;
+	     if(($signal_mode eq "hdr10" || ($signal_mode eq "dv" && $dv_map_mode eq "1")) && $points!=29) {
+	      my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
+	      $target_Yn_for_step=$white_ref>0 ? ($colorchecker_ref_white_nits/$white_ref)*$target_mix_Y : 0;
+	     }
 	     if($points==29 && $signal_mode eq "hdr10") {
 	      my $white_ref=($series_target_white_y_num>0)?$series_target_white_y_num:((($max_luma+0)>0)?($max_luma+0):100);
 	      $target_Yn_for_step=$white_ref>0 ? (94.37844/$white_ref)*$target_mix_Y : 0;

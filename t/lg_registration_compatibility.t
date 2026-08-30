@@ -59,6 +59,33 @@ ok(scalar(grep { $_ eq 'WRITE_SETTINGS' } @{$unsigned->{payload}{manifest}{permi
 
 {
  my @sent;
+ my @received=({ type=>'registered', payload=>{ 'client-key'=>'webos26-key' } });
+ my $opened=0;
+ my $closed=0;
+ no warnings qw(redefine once);
+ local *main::websocket_send_json=sub (@) { push(@sent,$_[1]); return 1; };
+ local *main::websocket_recv_json=sub (@) { return shift(@received); };
+ local *main::websocket_open=sub (@) { $opened++; return { retry=>1 }; };
+ local *main::websocket_close=sub (@) { $closed++; return 1; };
+ my $result=lg_register_session_with_compatibility(
+  '10.0.0.26',{ initial=>1 },'webos26-key','PIN',1,5,
+  { deviceOS=>'webOS', deviceOSReleaseVersion=>'11.0.0' },
+  { modelName=>'OLED55G66LA' }
+ );
+ is($result->{status},'ok','webOS 26 registration uses its hello-selected identity');
+ is($result->{registration_manifest},'generic','webOS 26 reports the generic manifest');
+ ok(!$result->{registration_fallback},'hello-selected generic registration is not a fallback');
+ is(scalar(@sent),1,'webOS 26 sends one registration attempt');
+ is($sent[0]{payload}{manifest}{signed}{appId},'com.pgenerator.remote',
+  'webOS 26 receives the generic PGenerator identity');
+ ok(!exists($sent[0]{payload}{manifest}{signatures}),
+  'webOS 26 is not sent the rejected legacy certificate');
+ is($opened,0,'webOS 26 does not reconnect for a known manifest policy');
+ is($closed,0,'webOS 26 keeps the original socket open');
+}
+
+{
+ my @sent;
  my @received=(
   { type=>'error', error=>'certificate rejected' },
   { type=>'hello', payload=>{ deviceOS=>'webOS', deviceOSReleaseVersion=>'10.0.0' } },

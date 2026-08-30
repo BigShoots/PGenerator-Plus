@@ -792,8 +792,13 @@ apply_series_white_reference_to_steps() {
  local white_y="$1"
  [[ -f "$STEPS_FILE" ]] || return 1
  [[ "$white_y" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]] || return 1
- STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
-import json, os, tempfile
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" SIGNAL_MODE="$SIGNAL_MODE" DV_MAP_MODE="$DV_MAP_MODE" PGEN_BIN_DIR="$SCRIPT_DIR" python - <<'PY' 2>/dev/null
+import json, math, os, sys, tempfile
+
+for candidate in (os.environ.get("PGEN_BIN_DIR", ""), "/usr/bin"):
+    if candidate and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+from pgen_colour_math import pq_encode_nits
 
 def finite(value):
     return value == value and value not in (float("inf"), float("-inf"))
@@ -813,13 +818,45 @@ except Exception:
 if not isinstance(steps, list):
     raise SystemExit(1)
 changed = False
+signal_mode = str(os.environ.get("SIGNAL_MODE", "")).lower()
+dv_map_mode = str(os.environ.get("DV_MAP_MODE", ""))
+
+def number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    return value if finite(value) else None
+
+def pq_encode_normalized(nits):
+    nits = max(0.0, min(10000.0, float(nits)))
+    if nits <= 0:
+        return 0.0
+    return pq_encode_nits(nits, clamp_peak=True)
 
 for step in steps:
     if not isinstance(step, dict):
         continue
-    if "series_target_white_y" not in step and "lg_target_white_y" not in step:
+    rebase = step.get("colorchecker_rebase_white") is True
+    if rebase or ("series_target_white_y" not in step and "lg_target_white_y" not in step):
         step["series_target_white_y"] = white_y
         changed = True
+    if not rebase or not (signal_mode == "hdr10" or (signal_mode == "dv" and dv_map_mode == "1")):
+        continue
+    code_min = number(step.get("colorchecker_code_min"))
+    code_span = number(step.get("colorchecker_code_span"))
+    linear = [number(step.get("colorchecker_linear_%s" % channel)) for channel in ("r", "g", "b")]
+    if code_min is None or code_span is None or code_span <= 0 or any(value is None for value in linear):
+        continue
+    for key, value in zip(("r", "g", "b"), linear):
+        value = max(0.0, min(1.0, value))
+        code = int(code_min + pq_encode_normalized(value * white_y) * code_span + 0.5)
+        code = max(int(math.ceil(code_min)), min(int(math.floor(code_min + code_span)), code))
+        if step.get(key) != code:
+            step[key] = code
+            changed = True
 if not changed:
     raise SystemExit(0)
 directory = os.path.dirname(path) or "."
@@ -1157,6 +1194,9 @@ PY
 
 maybe_pattern_insert_before_step() {
  local step_index="${1:-0}" ire="${2:-0}"
+ # The synthetic display model has no temporal retention or thermal drift, so
+ # stabilization flashes and their waits have no meaning for simulated reads.
+ (( METER_SIMULATED )) && return 0
  (( step_index > 0 )) || return 0
  local now elapsed
 if [[ "$PATCH_INSERT_TIME_ENABLED" == "1" ]]; then
@@ -1270,6 +1310,12 @@ fi
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
 PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
+READ_POLL_SEC=0.3
+if (( METER_SIMULATED )); then
+ DELAY_SEC=0
+ PATTERN_DELAY_SEC=0
+ READ_POLL_SEC=0.01
+fi
 if [[ -z "$PATCH_INSERT_PATCH_ENABLED" ]]; then
  PATCH_INSERT_PATCH_ENABLED="$PATCH_INSERT"
 fi
@@ -1291,6 +1337,11 @@ FIRST_STEP_EXTRA_SEC=2
 FRESH_DAEMON_WINDOW_SEC=180
 FRESH_DV_FIRST_WHITE_EXTRA_SEC=8
 DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=5
+if (( METER_SIMULATED )); then
+ FIRST_STEP_EXTRA_SEC=0
+ FRESH_DV_FIRST_WHITE_EXTRA_SEC=0
+ DV_GREYSCALE_FIRST_WHITE_WARMUP_SEC=0
+fi
 # A failed patch must not silently poison a validation or profiling series.
 # Give an absent result one bounded redisplay/read retry. An exact all-zero
 # result on a non-black patch is quick to detect and has proved transient on
@@ -1976,7 +2027,7 @@ EOJSON
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
-  sleep 0.3
+  sleep "$READ_POLL_SEC"
  done
 
  ELAPSED=$((SECONDS - READ_START))
@@ -2192,7 +2243,7 @@ EOJSON
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
-  sleep 0.3
+  sleep "$READ_POLL_SEC"
  done
  $GOT_RESULT || READ_INCOMPLETE=1
 
@@ -2280,7 +2331,7 @@ EOJSON
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
-    sleep 0.3
+    sleep "$READ_POLL_SEC"
    done
    if ! $GOT_RETRY; then
     series_meter_read_failure_exit "Meter retry did not complete for $NAME; series stopped before a late result could contaminate another patch"
@@ -2359,7 +2410,7 @@ EOJSON
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
-    sleep 0.3
+    sleep "$READ_POLL_SEC"
    done
    if ! $GOT_RETRY; then
     series_meter_read_failure_exit "Meter zero-confirmation read did not complete for $NAME; series stopped before a late result could contaminate another patch"
@@ -2578,7 +2629,7 @@ EOJSON
     fi
     SCAN_OFFSET="$CUR_SIZE"
    fi
-   sleep 0.3
+   sleep "$READ_POLL_SEC"
   done
 
   REFRESH_READING=""

@@ -453,8 +453,8 @@ ok(defined($white_reference_worker) && defined($dv_target_worker),
  "shell-embedded Python workers remain independently identifiable");
 like($dv_target_worker || "",qr/from pgen_colour_math import pq_decode_nits, pq_encode_nits.*?def pq_decode_normalized/s,
  "DV target worker imports shared PQ maths in the Python block that uses it");
-unlike($white_reference_worker || "",qr/from pgen_colour_math/,
- "white-reference worker does not contain the unrelated PQ import");
+like($white_reference_worker || "",qr/from pgen_colour_math import pq_encode_nits.*?def pq_encode_normalized/s,
+ "white-reference worker imports shared PQ maths for ColorChecker rebasing");
 unlike($shell,qr/2610(?:\.0)?\s*\/\s*16384/,
  "shell-embedded Python has no private ST 2084 constants");
 

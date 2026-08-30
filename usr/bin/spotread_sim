@@ -28,7 +28,10 @@ BEGIN {
 use PGMath qw(pq_decode_nits);
 use PGCalibrationMath qw(calibration_rgb_to_xyz_matrix);
 
-my $STATE_FILE = "/tmp/pgen_sim_pattern.json";
+my @STATE_FILES = (
+ "/var/lib/PGenerator/pgen_sim_pattern.json",
+ "/tmp/pgen_sim_pattern.json", # compatibility with older WebUI builds
+);
 my $SIM_PORT   = 99;
 
 # ---------------------------------------------------------------- CLI flags
@@ -42,6 +45,14 @@ if (grep { $_ eq "-?" || $_ eq "--help" } @ARGV) {
 
 $| = 1;
 binmode(STDIN);
+
+# `script` gives the child a pseudo-terminal in canonical mode. Real spotread
+# switches that terminal to character-at-a-time input itself; without doing the
+# same here, the worker's single-space read trigger remains buffered until a
+# newline or EOF and every simulated read times out.
+if (-t STDIN) {
+ system("stty", "-icanon", "-echo", "min", "1", "time", "0");
+}
 
 # --------------------------------------------------------- display model
 # Deterministic per-session imperfections plus per-read noise.
@@ -96,7 +107,11 @@ sub read_state {
  my %s = (r=>0, g=>0, b=>0, input_max=>255, signal_mode=>"sdr",
           source_range=>"FULL", name=>"stop", complex=>0, max_luma=>1000);
  my $json = "";
- if (open(my $fh, "<", $STATE_FILE)) { local $/; $json = <$fh>; close($fh); }
+ foreach my $state_file (@STATE_FILES) {
+  next if (!-f $state_file);
+  if (open(my $fh, "<", $state_file)) { local $/; $json = <$fh>; close($fh); }
+  last if (defined($json) && $json ne "");
+ }
  return \%s if (!defined($json) || $json eq "");
  $s{name}=$1         if ($json =~ /"name"\s*:\s*"([^"]*)"/);
  $s{r}=$1            if ($json =~ /"r"\s*:\s*(-?\d+(?:\.\d+)?)/);
@@ -200,7 +215,6 @@ sub measure_xyz {
 }
 
 # ------------------------------------------------------------ protocol loop
-sleep(0.8);   # mimic instrument init
 print "Simulated instrument 'PGenerator Simulated Meter' on port $SIM_PORT\n";
 print "Current calibration response:\n";
 
@@ -219,12 +233,10 @@ while (sysread(STDIN, $c, 1)) {
   last;
  }
  if (lc($c) eq "k") {
-  sleep(0.6);
   print "\nCalibration complete\n";
   prompt();
   next;
  }
- sleep(0.35 + rand(0.25));   # integration time
  my ($X,$Y,$Z,$x,$y) = measure_xyz();
  printf "\n Result is XYZ: %.6f %.6f %.6f, Yxy: %.6f %.6f %.6f\n",
   $X, $Y, $Z, $Y, $x, $y;
