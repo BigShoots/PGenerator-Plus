@@ -10,6 +10,11 @@
 
 set -o pipefail
 
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
+PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
+
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Argyll tries its built-in keys first, so supported retail/OEM i1D3 meters
 # keep their existing initialization path. Non-i1D3 drivers ignore this.
@@ -451,9 +456,11 @@ take_readings() {
 
  # count_results: strip ANSI, count result lines
  count_results() {
-  local n
-  n=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$outfile" 2>/dev/null | tr -d '\r' | grep -c "Result is XYZ:" 2>/dev/null) || true
-  echo "${n:-0}" | tr -d '[:space:]'
+  local line n=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+   [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
+  done < "$outfile" 2>/dev/null
+  echo "$n"
  }
 
  # Take readings
@@ -465,51 +472,23 @@ take_readings() {
   printf " " >&3
 
   # Wait for result
-  local read_start=$SECONDS
+  local read_start=$SECONDS got_result=0
   while (( SECONDS - read_start < timeout_per )); do
    local cur_count
    cur_count=$(count_results)
    if (( cur_count > prev_count )); then
+    got_result=1
     break
    fi
    sleep 0.1
   done
 
-  # Parse latest result - strip ANSI codes first
-  local clean_out
-  clean_out=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$outfile" 2>/dev/null | tr -d '\r')
-  local result_line
-  result_line=$(echo "$clean_out" | grep "Result is XYZ:" | tail -1)
-  if [[ -n "$result_line" ]]; then
-   # Parse: "Result is XYZ: X Y Z, Yxy: lum x y"
-   local xyz_part yxy_part
-   xyz_part=$(echo "$result_line" | sed 's/.*XYZ:\s*//' | sed 's/,.*//')
-   yxy_part=$(echo "$result_line" | sed 's/.*Yxy:\s*//')
-
-   local X Y Z lum x_chr y_chr
-   X=$(echo "$xyz_part" | awk '{print $1}')
-   Y=$(echo "$xyz_part" | awk '{print $2}')
-   Z=$(echo "$xyz_part" | awk '{print $3}')
-   lum=$(echo "$yxy_part" | awk '{print $1}')
-   x_chr=$(echo "$yxy_part" | awk '{print $2}')
-   y_chr=$(echo "$yxy_part" | awk '{print $3}')
-
-   # McCamy CCT approximation
-   local cct=0
-   if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
-    cct=$(python -c "
-x=$x_chr; y=$y_chr
-if y > 0:
- n = (x - 0.3320) / (0.1858 - y)
- print(int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33)))
-else:
- print(0)
-" 2>/dev/null || echo 0)
-   fi
-
-   local ts
-   ts=$(date +%s)
-   readings+=("{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}")
+  local parsed=""
+  if (( got_result == 1 )); then
+   parsed=$("$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" parse < "$outfile" 2>/dev/null) || parsed=""
+  fi
+  if [[ -n "$parsed" ]]; then
+   readings+=("$parsed")
    i=$((i + 1))
 
    # Wait for prompt again if more readings needed
@@ -544,13 +523,16 @@ else:
  pkill -9 -x spotread 2>/dev/null
  rm -f "$outfile" "$cmdpipe"
 
- # Build JSON output
+ # Build JSON output. A shortfall is an error, not a smaller ok: a strict
+ # parse rejection mid-run must not be indistinguishable from a clean
+ # shorter run.
  local readings_json
  readings_json=$(printf "%s," "${readings[@]}" | sed 's/,$//')
- if (( ${#readings[@]} > 0 )); then
+ if (( ${#readings[@]} == count )); then
   printf '{"status":"ok","readings":[%s],"count":%d}\n' "$readings_json" "${#readings[@]}"
  else
-  printf '{"status":"error","readings":[],"count":0,"error":"No readings obtained"}\n'
+  printf '{"status":"error","readings":[%s],"count":%d,"requested":%d,"error":"Obtained %d of %d readings"}\n' \
+   "$readings_json" "${#readings[@]}" "$count" "${#readings[@]}" "$count"
  fi
 }
 

@@ -14,6 +14,7 @@ my @fragments = qw(
     usr/share/PGenerator/webui-layout.css
     usr/share/PGenerator/webui-body.html
     usr/share/PGenerator/webui-logo-dark.html
+    usr/share/PGenerator/webui-colour-math.js
     usr/share/PGenerator/webui-app.js
     usr/share/PGenerator/webui-workspace.js
     usr/share/PGenerator/webui-lg-card.html
@@ -52,7 +53,7 @@ if (@missing) {
     die "missing Web UI files from $archive:\n  " . join("\n  ", @missing) . "\n";
 }
 
-# A cumulative archive must contain the nine current fragment names, not a
+# A cumulative archive must contain the ten current fragment names, not a
 # mixture of the new split and stale or renamed webui-* files. Paths without a
 # hyphen or .html suffix after "webui", such as webui.pm, stay out of this
 # check by construction.

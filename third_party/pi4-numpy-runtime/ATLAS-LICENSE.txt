@@ -1,0 +1,61 @@
+This package was debianized by Camm Maguire <camm@enhanced.com> on
+Tue, 14 Sep 1999 09:28:44 -0400 and rewritten by Sylvestre Ledru
+<sylvestre.ledru@inria.fr> on September 2009.
+
+It was downloaded from http://math-atlas.sourceforge.net/
+
+Upstream Authors:
+	R. Clint Whaley <atlas@cs.utk.edu>
+	Jack Dongarra <atlas@cs.utk.edu>
+	Jeff Horner
+	Peter Soendergaard
+	Antoine P. Petitet
+	Julian Ruhe
+	Tim Mattox
+	Hank Dietz
+	Camm Maguire
+
+Copyright:
+	(C) Copyright 1997-2008 All Rights Reserved
+	(C) 1996-2011 R. Clint Whaley
+	(C) 1998 Jeff Horner
+	(C) 2001 Peter Soendergaard
+	(C) 1999 Antoine P. Petitet
+	(C) 2001 Julian Ruhe
+	(C) 2003 Tim Mattox
+	(C) 2003 Hank Dietz
+	(C) 2003 Camm Maguire
+	(C) 1999 The Australian National University
+
+
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions, and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+   3. The name of the ATLAS group or the names of its contributers may
+      not be used to endorse or promote products derived from this
+      software without specific written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+`AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE ATLAS GROUP OR ITS CONTRIBUTORS
+ BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+
+On alpha architectures, the standard builds use K. GOTO's kernels
+contributed to the ATLAS project under the LGPL.  Therefore on these
+platforms, the distributed prebuilt libraries, as well as any user
+built library using this kernel, is licensed under the LGPL.
+
+On Debian GNU/Linux systems, the complete text of the GNU Lesser General
+Public License can be found in `/usr/share/common-licenses/LGPL-2'.

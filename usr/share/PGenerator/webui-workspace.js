@@ -143,7 +143,7 @@ async function meterDeleteCustomSeriesById(id){
  if(wasActive){
   meterActiveSeriesKey='';
   meterSeriesSteps=null;
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterSetSeriesTab(meterSeriesTab);
  }
  toast('Custom series deleted');
@@ -1160,9 +1160,11 @@ function meterCustomSeriesStepTargets(step,series,patch){
  return out;
 }
 
-function meterBuildCustomSeriesSteps(series){
+function meterBuildCustomSeriesSteps(series,options){
  if(!series) return [];
- const sourcePatches=meterCustomSeriesPatches(series);
+ const sourcePatches=(options&&options.preview)
+  ?meterCustomSeriesDisplayPatches(series,METER_SERIES_DISPLAY_LIMIT)
+  :meterCustomSeriesPatches(series);
  if(!Array.isArray(sourcePatches)||!sourcePatches.length) return [];
  const tenBit=meterPatchBitDepth()===10;
  const inputMax=tenBit?1023:255;
@@ -2079,13 +2081,13 @@ async function meterImportWizardCommit(){
 }
 
 // Build steps client-side (mirrors server logic in webui_meter_series_start)
-function meterBuildStepsJS(type,points){
+function meterBuildStepsJS(type,points,options){
  if(type==='greyscale' && points===256) points=100;
 	 const steps=[];
 	 const customSeries=(Number(points)>=900)?meterCustomSeriesById(points):null;
 	 if(customSeries){
 	  if(customSeries.builtin_verification) steps.push(...meterBuildBuiltinColorCheckerSteps(customSeries));
-	  else steps.push(...meterBuildCustomSeriesSteps(customSeries));
+	  else steps.push(...meterBuildCustomSeriesSteps(customSeries,options));
 	  return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 	 }
 	 if(type==='greyscale'){
@@ -2178,6 +2180,12 @@ function meterBuildStepsJS(type,points){
   });
  }
 	 return meterApplyColorSeriesTargetWhiteReference(steps,type,points);
+}
+
+// This expansion exists only to provide an instant local preview. The ordered
+// steps returned by /api/meter/series are authoritative once a run starts.
+function meterBuildPreviewStepsJS(type,points){
+ return meterBuildStepsJS(type,points,{preview:true});
 }
 
 function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
@@ -2816,9 +2824,11 @@ async function meterSelectSeries(type,points,opts){
  // From this point the UI is operating on a local selection, not a
  // recovered shared series snapshot.
  meterSharedSeriesId=null;
- meterReadings=[];
+ meterReplaceReadings([]);
  meterWhiteReading=null;
  meterSeriesSteps=null;
+ meterExecutedSeriesSteps=null;
+ meterExecutedSeriesId=null;
  meterGreyscaleScrollRatio=0;
  meterGreyscaleLowEndPinned=false;
  meterGreyscaleLastCurrentKey=null;
@@ -2841,11 +2851,11 @@ async function meterSelectSeries(type,points,opts){
  // draw so the first Hybrid/lattice load is not blocked (stale ColorChecker).
  try{ if(typeof meterSync3dLutTabChartVisibility==='function') meterSync3dLutTabChartVisibility(); }catch(e){}
  // Build steps
- const steps=meterBuildStepsJS(type,points);
+ const steps=meterBuildPreviewStepsJS(type,points);
  meterSeriesSteps=steps;
  // Drop any leftover readings that do not belong to this series (e.g. ColorChecker
  // samples still in memory after loading a custom grid).
- try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
+ try{ meterReplaceReadings(meterFilterReadingsForCurrentSteps(meterReadings||[],type)); }catch(e){}
  // Automated pre/post-cal reports are fresh verification reads. They must not
  // restore cached steps because the DV cache is grouped by signal mode, while
  // Relative and Absolute use different patch encoders inside that same mode.
@@ -2853,7 +2863,7 @@ async function meterSelectSeries(type,points,opts){
  // Absolute sends gamma-2.2 codes through the PQ viewing path and produces the
  // severely distorted readings the report is intended to diagnose.
  if(!opts.bypassCache&&meterRestoreSeriesFromCache(key,{type:type,points:points,signalMode:meterActiveSeriesSignalMode,steps:steps})){
-  try{ meterReadings=meterFilterReadingsForCurrentSteps(meterReadings||[],type); }catch(e){}
+  try{ meterReplaceReadings(meterFilterReadingsForCurrentSteps(meterReadings||[],type)); }catch(e){}
   // Lattice cache snapshots can carry server-shaped steps (the server
   // expansion computes no chart targets). The freshly built client steps are
   // name-identical (parity-locked) and DO carry target_x/y/Yn — prefer them,
@@ -6122,7 +6132,7 @@ async function meterAutoCalApplyStatus(status){
 		 if(status.autocal&&String(status.status||'').toLowerCase()==='running') meterSelectedThumbIre=null;
 		 const statusChartReadings=meterAutoCalStatusChartReadings(status,currentKey);
 		 if(statusChartReadings.length){
-	  meterReadings=statusChartReadings;
+	  meterReplaceReadings(statusChartReadings);
 	  const white=meterFindSeriesWhiteReading(meterReadings);
 	  // Prefer LIVE measured peak (Full 100 / Limited 109) while cal is
 	  // running. status.target_luminance / calibrated_white_luminance can
@@ -7287,6 +7297,31 @@ function meterFullAutoCalStatusPhase(status){
 function meterFullAutoCalStatusRunId(status){
  if(!status) return '';
  return String(status.full_autocal_run_id||status.run_id||'');
+}
+
+// Starting an AutoCal worker first retires any live-white/manual meter
+// session. The server deliberately allows that graceful USB handoff roughly
+// 20 seconds before its final cleanup backstops run, so the generic 10-second
+// fetch timeout can expire even though the requested worker is then launched
+// successfully. Keep the browser busy guard alive for the whole safe handoff
+// window. If the response is still lost, only adopt a running greyscale worker
+// whose run id exactly matches this browser's Full AutoCal run.
+const METER_AUTOCAL_WORKER_START_TIMEOUT_MS=30000;
+async function meterFullAutoCalAdoptGreyscaleStart(response,expectedRunId,expectedPhase){
+ if(response&&response.status==='started') return response;
+ const wanted=String(expectedRunId||'');
+ if(!wanted) return response;
+ let probe=null;
+ try{ probe=await fetchJSON('/api/meter/lg-autocal/status',{_quiet:true,_timeoutMs:8000}); }catch(e){}
+ // The run id is shared by every 1D phase of one Full AutoCal, so a phase
+ // match is required too: without it, a still-running earlier phase would
+ // convert a legitimately rejected start into a fake success and the browser
+ // would watch live charts with no worker behind them.
+ if(probe&&probe.status==='running'&&meterFullAutoCalStatusRunId(probe)===wanted
+    &&String(probe.full_autocal_phase||'')===String(expectedPhase||'')){
+  return {status:'started',message:probe.current_name||'LG Auto Cal already running'};
+ }
+ return response;
 }
 
 function meterFullAutoCalStatusMatchesRun(status){
@@ -8745,7 +8780,7 @@ function meterFullAutoCalTouchupTargetY(){
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowPost3dPolish:true};
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
   meterSelectedThumbIre=null;
@@ -8828,13 +8863,14 @@ function meterFullAutoCalTouchupTargetY(){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:post3dBody,
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
+  r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'post-3d-polish');
   if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start committed polish');
   meterActionPending=false;
 	  meterAutoCalSetOverlay(false,{phase:'running',current_name:'Committed polish started',message:'Showing live charts'});
@@ -8915,7 +8951,7 @@ async function meterFullAutoCalStartTouchup(lutStatus){
   const wp=(meterFullAutoCalConfig&&meterFullAutoCalConfig.wp)||meterTargetWhitePoint();
   const autocalSteps=meterAutoCalBuildBackendSteps(whiteStep,meterSeriesSteps);
   meterAutoCalPendingConfig={dtype,ccss_override:ccssOverride,patternSignalRange,wp,adjustable,whiteStep,fullWorkflowTouchup:true};
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterWhiteReading=null;
   meterCurrentPatchStep=null;
   meterSelectedThumbIre=null;
@@ -9001,13 +9037,14 @@ async function meterFullAutoCalStartTouchup(lutStatus){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:touchupBody,
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!meterFullAutoCalTransitionBusy(r)) break;
    meterSetWorkflowProgress({status:'running',current_step:0,total_steps:1,current_name:'Waiting for 3D LUT AutoCal cleanup'},{workflow:'full',label:'Waiting for 3D LUT AutoCal cleanup'});
    await new Promise(resolve=>setTimeout(resolve,900+(attempt*400)));
   }
+  r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'touchup-greyscale');
   if(!r||r.status!=='started') throw new Error((r&&r.message)||'Unable to start greyscale touch-up');
   meterActionPending=false;
   toast('Full Auto Cal greyscale touch-up started');
@@ -9037,7 +9074,7 @@ function meterFullAutoCalRestoreCompletedGreyscaleChart(status){
  meterSeriesSteps=meterFullAutoCalCloneValue(status.steps);
  const chartReadings=meterAutoCalStatusChartReadings(status,null);
  if(!chartReadings.length) return false;
- meterReadings=chartReadings;
+ meterReplaceReadings(chartReadings);
  const white=meterFindSeriesWhiteReading(meterReadings);
  if(white) meterWhiteReading=white;
  const completed=new Set(meterReadings.filter(r=>r&&meterReadingHasLuminance(r)).map(r=>meterStepNameKey(r)));
@@ -9443,7 +9480,7 @@ async function meterStartAutoCal(options){
  meterAutoCalPreflightResetDone=false;
  meterAutoCalPreflightLgGeneration=null;
  meterAutoCalResetInProgress=false;
- meterReadings=[];
+ meterReplaceReadings([]);
  meterAutoCalLevelPreflight=null;
  meterWhiteReading=null;
  meterCurrentPatchStep=null;
@@ -9922,7 +9959,7 @@ async function meterAutoCalConfirmAndStart(){
    meterSpectroSetupApply({keepBusy:true,message:'Preparing the meter\u2026'},'/api/meter/series/ready');
   }
   meterAutoCalWizardContextActive=false;
-  const r=await fetchJSON('/api/meter/lg-autocal',{
+  let r=await fetchJSON('/api/meter/lg-autocal',{
    method:'POST',
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify(meterAutoCalMeasurementSignalContext({
@@ -9994,8 +10031,9 @@ async function meterAutoCalConfirmAndStart(){
     low_light:meterLowLightReadState(),
     steps:autocalSteps
    })),
-   _timeoutMs:10000
+   _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
   });
+  if(fullWorkflow) r=await meterFullAutoCalAdoptGreyscaleStart(r,meterFullAutoCalRunId,'first-greyscale');
   if(!r||r.status!=='started'){
    if(meterAutoCalSpectroSetupActive){
     meterAutoCalSpectroSetupActive=false;
@@ -10170,7 +10208,7 @@ function meterLg3dApplyPostCheckStatus(status){
 	 meterShow3dLutAutoCalContext();
  meterResetSeriesButtons();
  meterSeriesSteps=readings.map(meterLg3dPostCheckStep);
- meterReadings=readings;
+ meterReplaceReadings(readings);
  const whiteY=Number(status&&status.post_check_white_y);
  if(Number.isFinite(whiteY)&&whiteY>0){
   meterWhiteReading={name:'White Ref',ire:100,luminance:whiteY,Y:whiteY,r_code:255,g_code:255,b_code:255,autocal_reference_only:true};
@@ -10659,7 +10697,7 @@ function meterLg3dApplyLatticeProfileStatus(status){
     ? meterStampReadingStepMeta(Object.assign({},rd),step)
     : Object.assign({},rd);
   });
- meterReadings=readings;
+ meterReplaceReadings(readings);
  const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd))
   ||readings.find(rd=>String(rd.name||'')==='100/100/100'&&meterReadingHasLuminance(rd));
  // Never keep a previous series white ref once the volume profile owns the UI.
@@ -10870,7 +10908,7 @@ function meterLg3dApplyProfileStatus(status){
  meterResetSeriesButtons();
  try{ meterSetAutoCalSeriesChoice('3d-lut'); }catch(e){}
  meterSeriesSteps=readings.map(meterLg3dMatrixProfileStep);
- meterReadings=readings;
+ meterReplaceReadings(readings);
  try{ if(typeof meterUpdateColorChartMode==='function') meterUpdateColorChartMode(true); }catch(e){}
  const whiteRd=readings.find(rd=>String(rd.kind||'').toLowerCase()==='white'&&meterReadingHasLuminance(rd));
  if(whiteRd) meterWhiteReading=whiteRd;
@@ -11293,12 +11331,14 @@ async function meterStartLg3dAutoCal(options){
  const transportRange=(typeof config!=='undefined'&&config&&config.rgb_quant_range!=null&&String(config.rgb_quant_range)!=='')
   ? String(config.rgb_quant_range)
   : String(getVal('rgb_quant_range')||'2');
- // Pull the greyscale stage's measured peak luminance + DPG array out of
- // the cached firstStatus so the 3D worker can upload the HDR tone map
- // after its 3D LUT, all inside the same CAL_START session.
+ // Pull the greyscale stage's committed DPG out of cached firstStatus for
+ // final shadow smoothing. HDR also supplies its measured peak so the worker
+ // can finish the 3D LUT and tone map inside one CAL_START session.
  const firstStatusResult=(meterFullAutoCalResults&&meterFullAutoCalResults.first)||{};
  const firstStatusPeak=Number(firstStatusResult.hdr20_1d_tonemap_peak_luminance||firstStatusResult.hdr_tone_map_peak_luminance||0);
- const firstStatusDpg=firstStatusResult.hdr20_1d_dpg_data;
+ const firstStatusDpg=signalMode==='sdr'
+  ? firstStatusResult.sdr_1d_dpg_data
+  : firstStatusResult.hdr20_1d_dpg_data;
  const payload=meterAutoCalMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',
@@ -11413,7 +11453,7 @@ refresh_rate:getMeterRefreshRate()||undefined,
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload),
-    _timeoutMs:10000
+    _timeoutMs:METER_AUTOCAL_WORKER_START_TIMEOUT_MS
    });
    if(r&&r.status==='started') break;
    if(!fullWorkflow||!meterFullAutoCalTransitionBusy(r)) break;
@@ -11714,6 +11754,7 @@ function meterSolveCubeSizeRadios(selected){
 // Build 3D LUT: confirm greyscale policy + export cube size, measure the
 // series, solve, then offer .cube / .3dl download on the completion modal.
 async function meterBuild3dLutSeries(){
+ if(meterSeriesCacheDirtyKeys&&meterSeriesCacheDirtyKeys.size) meterFlushScheduledSeriesCache();
  if(meterActionPending){toast('Meter operation already in progress',true);return false;}
  if(!meterSeriesSteps||!meterActiveSeriesType){toast('Select a series first',true);return false;}
  const volume=(typeof meterActiveVolumeProfileSeries==='function')?meterActiveVolumeProfileSeries():null;
@@ -11758,6 +11799,7 @@ async function meterRunSelectedPatches(){
 // Run a full automated series, or a thumbnail subset from Read Selection.
 async function meterRunSeries(options){
  options=options||{};
+ if(meterSeriesCacheDirtyKeys&&meterSeriesCacheDirtyKeys.size) meterFlushScheduledSeriesCache();
  const requestedDvMapModeOverride=(String(options.dvMapModeOverride||'')==='1')?'1':((String(options.dvMapModeOverride||'')==='2')?'2':'');
  const requestedTargetGamutOverride=/^(?:bt709|bt2020|p3d65|p3dci)$/.test(String(options.targetGamutOverride||'').toLowerCase())
   ?String(options.targetGamutOverride).toLowerCase():'';
@@ -11784,7 +11826,7 @@ async function meterRunSeries(options){
 	  if(requestedDvMapModeOverride) meterActiveSeriesDvMapMode=requestedDvMapModeOverride;
 	  meterSetActiveSeriesChartContext();
 	  if(requestedDvMapModeOverride) meterActiveSeriesDvMapMode=requestedDvMapModeOverride;
-	  meterSeriesSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+	  meterSeriesSteps=meterBuildPreviewStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
 	 }
  const rebuiltVisibleSteps=meterVisibleSeriesSteps();
  meterSelectionRunStepKeys=requestedSelection.length
@@ -11820,7 +11862,10 @@ async function meterRunSeries(options){
   });
  }
  meterSeriesSelectionRunActive=!!(selectedRunSteps&&selectedRunSteps.length);
- const runStepCount=meterSeriesSelectionRunActive?selectedRunSteps.length:meterSeriesSteps.length;
+ const activeRunSeries=meterCustomSeriesById(meterActiveSeriesPoints);
+ const runStepCount=meterSeriesSelectionRunActive
+  ?selectedRunSteps.length
+  :(activeRunSeries?meterProfilingSeriesPatchCount(activeRunSeries):meterSeriesSteps.length);
  // Read Selection keeps the existing chart and merges new samples in.
  // Full Read Series still starts from a clean slate.
  meterSelectionWillMeasureWhite=!!(selectedRunSteps&&selectedRunSteps.some(s=>meterStepIsNeutralEndpoint(s,100)
@@ -11848,7 +11893,7 @@ async function meterRunSeries(options){
   if(meterSelectionWillMeasureWhite) meterWhiteReading=null;
  }else{
   meterClearSelectionBaseline();
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterWhiteReading=savedWhiteSnapshot;
   meterSeriesBaselineBlack=savedBlackSnapshot;
  }
@@ -11876,6 +11921,8 @@ async function meterRunSeries(options){
  meterGreyscaleLowEndPinned=false;
  meterGreyscaleLastCurrentKey=null;
  meterSharedSeriesId=null;
+ meterExecutedSeriesSteps=null;
+ meterExecutedSeriesId=null;
  document.getElementById('meterExportRow').style.display='';
  document.getElementById('meterProgress').style.display='';
  document.getElementById('meterProgressLabel').textContent='Connecting to meter...';
@@ -11985,6 +12032,7 @@ async function meterRunSeries(options){
 		   signal_r_pct:step.signal_r_pct,signal_g_pct:step.signal_g_pct,signal_b_pct:step.signal_b_pct
 		  });
 		  if(meterSeriesSelectionRunActive&&Array.isArray(selectedRunSteps)){
+		   _seriesBody.selection_run=true;
 		   _seriesBody.custom_series=true;
 		   _seriesBody.custom_steps=selectedRunSteps.map(_serializeStep);
 		  } else if((meterActiveSeriesIsCustom()
@@ -12029,6 +12077,8 @@ async function meterRunSeries(options){
 	  toast((meterSeriesSelectionRunActive?'Selection':'Series')+' started: '+r.total_steps+' steps');
 	  meterSetActiveSeriesChartContext(r);
 	  if(r.series_id) meterSharedSeriesId=String(r.series_id);
+  meterInstallServerSeriesSteps(r,meterActiveSeriesType,meterActiveSeriesPoints,
+   meterSeriesSelectionRunActive||meterServerSeriesIsSelection(r));
   if(meterSeriesPolling) clearInterval(meterSeriesPolling);
   meterSeriesPolling=setInterval(meterPollSeries,meterSeriesPollIntervalMs*runCaps.pollScale);
 	  await meterPollSeries();
@@ -12081,18 +12131,8 @@ async function meterPollSeries(){
 		 meterSeriesAwaitingReady=!!r.awaiting_ready;
 		 meterSeriesSpectroSetupApplyFromStatus(r);
 		 meterSetActiveSeriesChartContext(r);
-		 if(!meterSeriesSelectionRunActive&&Array.isArray(r.steps)&&r.steps.length>0){
-		  const _activeLattice=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
-		  if(_activeLattice&&_activeLattice.kind==='lattice'&&Array.isArray(meterSeriesSteps)&&meterSeriesSteps.length===r.steps.length){
-		   // Lattice steps are expanded identically client/server (locked by the
-		   // parity regressions); keep the client copy — it carries the chart
-		   // target_x/y/Yn fields the server expansion does not compute.
-		  } else {
-	  const _workerSteps=meterCanonicalRecoveredSteps(meterActiveSeriesType,meterActiveSeriesPoints,r.steps,r.status||'running');
-	  meterSeriesSteps=meterRecoveryDisplaySteps(meterActiveSeriesType,meterActiveSeriesPoints,_workerSteps);
-	  meterSeriesSteps=meterApplyColorSeriesTargetWhiteReference(meterSeriesSteps,meterActiveSeriesType);
-		  }
-	 }
+		 meterInstallServerSeriesSteps(r,meterActiveSeriesType,meterActiveSeriesPoints,
+		  meterSeriesSelectionRunActive||meterServerSeriesIsSelection(r));
  // Selection mid-greys: ignore worker white_reading unless this selection
  // re-measured 100% — otherwise a partial run can replace the series peak.
  if(r.white_reading&&r.white_reading.luminance!=null
@@ -12166,11 +12206,11 @@ async function meterPollSeries(){
 	   const baseline=Array.isArray(meterSelectionBaselineReadings)
 	    ?meterSelectionBaselineReadings
 	    :(Array.isArray(meterReadings)?meterReadings:[]);
-	   meterReadings=meterAttachSeriesMeta(
+	   meterReplaceReadings(meterAttachSeriesMeta(
 	    meterRestoreSelectionWhiteReference(meterMergeSeriesReadings(baseline,incoming))
-	   );
+	   ));
 	  }else{
-	   meterReadings=incoming;
+	   meterReplaceReadings(incoming);
 	  }
   // Only set white reference from actual 100% reading — never use
   // "brightest so far" during a running series, because that changes
@@ -12180,7 +12220,7 @@ async function meterPollSeries(){
   // Selection mid-greys: restore the pre-run white so we never invent a
   // synthetic peak from the brightest selected patch after the run.
   if(meterSeriesSelectionRunActive&&!meterSelectionWillMeasureWhite){
-   meterReadings=meterRestoreSelectionWhiteReference(meterReadings);
+   meterReplaceReadings(meterRestoreSelectionWhiteReference(meterReadings));
   }
   // If we don't yet have an actual 100% measurement, use the same mode-aware
   // synthetic reference as one-off reads. Never replace a still-valid selection
@@ -12270,7 +12310,7 @@ async function meterPollSeries(){
   // greyscale error math keeps the original series peak.
   if(meterSeriesSelectionRunActive&&!meterSelectionWillMeasureWhite){
    try{
-    meterReadings=meterAttachSeriesMeta(meterRestoreSelectionWhiteReference(meterReadings||[]));
+    meterReplaceReadings(meterAttachSeriesMeta(meterRestoreSelectionWhiteReference(meterReadings||[])));
     const isColorDone=meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations';
     const sortedDone=isColorDone?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0));
     drawAllCharts(sortedDone);
@@ -16785,9 +16825,8 @@ function meterDrawCubeViewNow(){
  ctx.fillStyle='#8fb2ff';ctx.fillText('B',corners[4].sx-8,corners[4].sy+10);
  ctx.fillStyle='#e8ecf6';ctx.fillText('W',corners[7].sx+8,corners[7].sy-6);
  // nodes from the expanded lattice patches; sampled above 4096 for draw speed
- let patches=meterCustomSeriesPatches(series).filter(p=>Number.isFinite(p.frac_r)&&Number.isFinite(p.frac_g)&&Number.isFinite(p.frac_b));
- const total=patches.length;
- if(patches.length>4096&&typeof meterSampleSteps==='function') patches=meterSampleSteps(patches,4096);
+ let patches=meterCustomSeriesDisplayPatches(series,METER_SERIES_DISPLAY_LIMIT).filter(p=>Number.isFinite(p.frac_r)&&Number.isFinite(p.frac_g)&&Number.isFinite(p.frac_b));
+ const total=meterProfilingSeriesPatchCount(series);
  const measuredMap=new Map();
  if(!isPreset&&Array.isArray(items)){
   items.forEach(rd=>{ if(rd&&rd.name) measuredMap.set(rd.name,rd); });
@@ -18936,10 +18975,10 @@ function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange,cont
  if(!readings.length) return null;
  const key=type+'-'+stamp;
  const ctx=context||{};
- readings.forEach(rd=>{rd.series_type=type;rd.signal_mode=mode;if(ctx.target_gamma)rd.target_gamma=ctx.target_gamma;if(ctx.max_luma)rd.max_luma=ctx.max_luma;});
+ readings.forEach(rd=>{rd.series_type=type;rd.signal_mode=mode;if(ctx.target_gamma)rd.target_gamma=ctx.target_gamma;if(ctx.max_luma)rd.max_luma=ctx.max_luma;if(ctx.calibration_target_context)rd.calibration_target_context=JSON.parse(JSON.stringify(ctx.calibration_target_context));});
  const steps=readings.map(rd=>{const step={...rd,plot_ire:rd.ire,nominal_ire:rd.ire,series_type:type,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,measurement_only:true};['X','Y','Z','x','y','luminance','raw_X','raw_Y','raw_Z','lux','spectrum','source_format'].forEach(key=>delete step[key]);return step;});
  const white=(type==='greyscale')?readings.reduce((best,rd)=>!best||Number(rd.ire)>Number(best.ire)?rd:best,null):null;
- meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null,updated_at:Date.now()};
+ meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,calibration_target_context:ctx.calibration_target_context?JSON.parse(JSON.stringify(ctx.calibration_target_context)):null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null,updated_at:Date.now()};
  return key;
 }
 
@@ -18973,6 +19012,7 @@ async function meterImportHcfrChcFile(input){
   // ColorChecker steps. Their PQ encoding, target luminance and gamut helpers
   // otherwise inherit the live output mode (often SDR) during import.
   meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma});
+  importContext.calibration_target_context=meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null;
   const stamp=Date.now(),keys=[];importContext.session_id=stamp;meterActiveHcfrSessionId=stamp;
   const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
   const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode,sourceRange,importContext,'grayscale');if(gkey)keys.push(gkey);
@@ -19226,6 +19266,8 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
 	   max_luma:(resolved.max_luma!=null)?resolved.max_luma:((current&&current.max_luma!=null)?current.max_luma:null),
 	   dv_map_mode:resolved.dv_map_mode||((current&&current.dv_map_mode)?current.dv_map_mode:null),
 	   dv_interface:resolved.dv_interface||((current&&current.dv_interface)?current.dv_interface:null),
+	   calibration_target_context:resolved.calibration_target_context?JSON.parse(JSON.stringify(resolved.calibration_target_context)):
+	    ((current&&current.calibration_target_context)?JSON.parse(JSON.stringify(current.calibration_target_context)):null),
 	   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
 	   black_reading:resolved.black_reading?JSON.parse(JSON.stringify(resolved.black_reading)):null,
 	   steps:JSON.parse(JSON.stringify(steps)),
@@ -19252,6 +19294,7 @@ function meterApplyClearedState(showToastMsg){
 	   max_luma:meterActiveSeriesMaxLuma||null,
 	   dv_map_mode:meterActiveSeriesDvMapMode||null,
 	   dv_interface:meterActiveSeriesDvInterface||null,
+	   calibration_target_context:meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null,
 	   white_reading:null,
 	   black_reading:null,
 	   steps:clearedSteps,
@@ -19264,7 +19307,7 @@ function meterApplyClearedState(showToastMsg){
  }
  meterPersistSeriesCache();
  meterSeriesChartRevision++;
- meterReadings=[];
+ meterReplaceReadings([]);
  meterWhiteReading=null;
  meterSeriesBaselineBlack=null;
  meterSeriesAwaitingReady=false;
@@ -21269,7 +21312,7 @@ function meterSyncActiveSeriesSignalMode(){
  meterActiveSeriesMaxLuma=null;
  meterActiveSeriesDvMapMode=null;
  meterActiveSeriesDvInterface=null;
- const steps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+ const steps=meterBuildPreviewStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
  if(meterRestoreSeriesFromCache(meterActiveSeriesKey,{
   type:meterActiveSeriesType,
   points:meterActiveSeriesPoints,
@@ -21279,7 +21322,7 @@ function meterSyncActiveSeriesSignalMode(){
 
  meterSeriesChartRevision++;
  meterSeriesSteps=steps;
- meterReadings=[];
+ meterReplaceReadings([]);
  meterWhiteReading=null;
  meterSharedSeriesId=null;
  meterCurrentPatchStep=null;
@@ -21363,7 +21406,7 @@ function meterRefreshActiveSeriesCharts(options){
 	  }
 	 }
 	 const sortedSteps=isColor?[...meterSeriesSteps]:meterGreyscaleSeriesSteps(meterSeriesSteps);
-	 meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType));
+	 meterReplaceReadings(meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(meterReadings||[],meterActiveSeriesType)));
  // Regrading is an explicit target-definition operation, not part of a
  // presentation refresh. The Target Gamma handler opts into it; workspace
  // navigation, chart resizes and Grey ref changes retain the run's targets.

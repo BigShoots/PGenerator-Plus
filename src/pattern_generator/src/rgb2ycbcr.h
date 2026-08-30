@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <cmath>
+
 class RGB
 {
 public:
@@ -65,23 +67,52 @@ public:
 	}
 };
 
-static YCbCr RGB2YCbCr(RGB rgb, int bits, int colorimetry, int rgb_quant_range) {
-	float coeffs[2][3] =
+struct YCbCrPolicy
+{
+	int bits;
+	int colorimetry;
+	int quant_range;
+	int luma_scale;
+	int chroma_scale;
+	int offset;
+	int normalizer;
+	float kr;
+	float kg;
+	float kb;
+	float cb_divisor;
+	float cr_divisor;
+
+	static YCbCrPolicy Create(int requested_bits, int requested_colorimetry,
+	                         int requested_quant_range)
 	{
-	{ 0.2126, 0.7152, 0.0722}, 
-	{ 0.2627, 0.6780, 0.0593}, 
-	};
-	/* Full range 0-255: 256/255, Studio range: 256/219, Limited range: 224/219 */
-	int scalar1;
-	int scalar2;
-	int scalar_limit1 = 224 << (bits - 8);
-	int scalar_limit2 = 219 << (bits - 8);
-	int scalar_full1 = 256 << (bits - 8);
-	int scalar_full2 = 255 << (bits - 8);
-	int offset = 128 << (bits - 8);
+		YCbCrPolicy policy;
+		policy.bits=(requested_bits==10 || requested_bits==12) ? requested_bits : 8;
+		policy.colorimetry=requested_colorimetry;
+		policy.quant_range=(requested_quant_range==1) ? 1 : 2;
+		const int shift=policy.bits-8;
+		policy.luma_scale=(policy.quant_range==1 ? 219 : 255) << shift;
+		policy.chroma_scale=(policy.quant_range==1 ? 224 : 256) << shift;
+		policy.offset=128 << shift;
+		policy.normalizer=(256 << shift)-1;
+		if(requested_colorimetry==9) {
+			policy.kr=0.2627f;
+			policy.kg=0.6780f;
+			policy.kb=0.0593f;
+			policy.cb_divisor=1.8814f;
+			policy.cr_divisor=1.4746f;
+		} else {
+			policy.kr=0.2126f;
+			policy.kg=0.7152f;
+			policy.kb=0.0722f;
+			policy.cb_divisor=1.8556f;
+			policy.cr_divisor=1.5748f;
+		}
+		return policy;
+	}
+};
+
+static YCbCr RGB2YCbCr(RGB rgb, const YCbCrPolicy &policy) {
 	int R, G, B;
-	int idx = 0;
-	float d = 1.8556f, e = 1.5748f;
 	
 	// Pattern values already arrive in the active draw depth selected by BITS.
 	R = rgb.R;
@@ -97,68 +128,27 @@ static YCbCr RGB2YCbCr(RGB rgb, int bits, int colorimetry, int rgb_quant_range) 
 //		G = G * 0.856305 + 64;
 //		B = B * 0.856305 + 64;
 //	}	
-	if (rgb_quant_range == 1) {
-		scalar1=scalar_limit1;
-		scalar2=scalar_limit2;
-	}
-	if (rgb_quant_range == 2) {
-		scalar1=scalar_full1;
-		scalar2=scalar_full2;
-	}
-	if (colorimetry == 2) {
-		idx = 0;
-		d = 1.8556;
-		e = 1.5748;
-	}	
-	if (colorimetry == 9) {
-		idx = 1;
-		d = 1.8814;
-		e = 1.4746;
-	}
-	int Y = std::round((coeffs[idx][0] * R + coeffs[idx][1]* G + coeffs[idx][2] * B));
-	int Cb = std::round(((-coeffs[idx][0]/d) * R - (coeffs[idx][1]/d) * G + ((d/2)/d) * B)*scalar1/scalar2 + offset); // Chrominance Blue
-	int Cr = std::round((((e/2)/e) * R - (coeffs[idx][1]/e) * G - (coeffs[idx][2]/e) * B)*scalar1/scalar2 + offset); // Chrominance Red
+	int Y = std::round(policy.kr*R + policy.kg*G + policy.kb*B);
+	int Cb = std::round(((-policy.kr/policy.cb_divisor)*R
+		-(policy.kg/policy.cb_divisor)*G + 0.5f*B)
+		*policy.chroma_scale/policy.luma_scale + policy.offset);
+	int Cr = std::round((0.5f*R-(policy.kg/policy.cr_divisor)*G
+		-(policy.kb/policy.cr_divisor)*B)
+		*policy.chroma_scale/policy.luma_scale + policy.offset);
 
 	return YCbCr(Y, Cb, Cr); 
 }
 
-static RGB YCbCrToRGB(YCbCr ycbcr, int bits, int colorimetry, int rgb_quant_range) {
-	float coeffs[2][3] =
-	{
-	{ 0.2126, 0.7152, 0.0722}, 
-	{ 0.2627, 0.6780, 0.0593}, 
-	};
-	/* Full range 0-255: 256/255, Studio range: 256/219, Limited range: 224/219 */
-	int scalar1;
-	int scalar2;
-	int scalar_limit1 = 224 << (bits - 8);
-	int scalar_limit2 = 219 << (bits - 8);
-	int scalar_full1 = 256 << (bits - 8);
-	int scalar_full2 = 255 << (bits - 8);
-	int offset = 128 << (bits - 8);
-	int idx = 0;
-	float d = 1.8556f, e = 1.5748f;
-	if (rgb_quant_range == 1) {
-		scalar1=scalar_limit1;
-		scalar2=scalar_limit2;
-	}
-	if (rgb_quant_range == 2) {
-		scalar1=scalar_full1;
-		scalar2=scalar_full2;
-	}
-	if (colorimetry == 2) {
-		idx = 0;
-		d = 1.8556;
-		e = 1.5748;
-	}	
-	if (colorimetry == 9) {
-		idx = 1;
-		d = 1.8814;
-		e = 1.4746;
-	}	
-	float r = ycbcr.Y + (ycbcr.Cr - offset) * scalar2/scalar1 * e;
-	float g = ycbcr.Y + (ycbcr.Cb - offset) * scalar2/scalar1 * -coeffs[idx][2]*d/coeffs[idx][1] + (ycbcr.Cr - offset) * scalar2/scalar1 * -coeffs[idx][0]*e/coeffs[idx][1];
-	float b = ycbcr.Y + (ycbcr.Cb - offset) * scalar2/scalar1 * d;
+static RGB YCbCrToRGB(YCbCr ycbcr, const YCbCrPolicy &policy) {
+	/* Left-to-right (x*luma_scale)/chroma_scale keeps the legacy rounding:
+	   precomputing luma_scale/chroma_scale adds a second float rounding that
+	   shifts +-1 code at 12-bit limited range. */
+	float r=ycbcr.Y+(ycbcr.Cr-policy.offset)*policy.luma_scale/policy.chroma_scale*policy.cr_divisor;
+	float g=ycbcr.Y+(ycbcr.Cb-policy.offset)*policy.luma_scale/policy.chroma_scale
+		*-policy.kb*policy.cb_divisor/policy.kg
+		+(ycbcr.Cr-policy.offset)*policy.luma_scale/policy.chroma_scale
+		*-policy.kr*policy.cr_divisor/policy.kg;
+	float b=ycbcr.Y+(ycbcr.Cb-policy.offset)*policy.luma_scale/policy.chroma_scale*policy.cb_divisor;
 
 	return RGB((int)r, (int)g, (int)b);
 }
