@@ -10,14 +10,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 
-# apply_release_exec_bits(): the executable-bit policy shared with the OTA
+# apply_release_modes(): the file-mode policy shared with the OTA
 # builder and enforced by the manifest checker.
-if [[ ! -f "$SCRIPT_DIR/release_exec_bits.sh" ]]; then
- echo "ERROR: missing $SCRIPT_DIR/release_exec_bits.sh (release executable-bit policy)" >&2
+if [[ ! -f "$SCRIPT_DIR/release_modes.sh" ]]; then
+ echo "ERROR: missing $SCRIPT_DIR/release_modes.sh (release file-mode policy)" >&2
  exit 1
 fi
-# shellcheck source=release_exec_bits.sh
-. "$SCRIPT_DIR/release_exec_bits.sh"
+# shellcheck source=release_modes.sh
+. "$SCRIPT_DIR/release_modes.sh"
 
 ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof profcheck targen i1d3ccss oeminst dispread dispcal)
@@ -1632,7 +1632,7 @@ fix_permissions() {
  # scripts 0664. The policy also records what it marked in
  # usr/share/PGenerator/release-exec-manifest.txt inside the image.
  local exec_count
- exec_count="$(apply_release_exec_bits "$ROOT_MOUNT" "$REPO_ROOT" "${TARGET_OVERLAY_REL:+$REPO_ROOT/$TARGET_OVERLAY_REL}")" \
+ exec_count="$(apply_release_modes "$ROOT_MOUNT" "$REPO_ROOT" "${TARGET_OVERLAY_REL:+$REPO_ROOT/$TARGET_OVERLAY_REL}")" \
   || die "Could not apply the release executable-bit policy"
  log "Applied executable bits to $exec_count program files in the image root"
 

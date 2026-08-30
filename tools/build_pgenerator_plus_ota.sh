@@ -15,14 +15,14 @@ VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
 
-# apply_release_exec_bits(): the executable-bit policy shared with the image
+# apply_release_modes(): the file-mode policy shared with the image
 # builder and enforced by the manifest checker.
-if [[ ! -f "$SCRIPT_DIR/release_exec_bits.sh" ]]; then
- echo "ERROR: missing $SCRIPT_DIR/release_exec_bits.sh (release executable-bit policy)" >&2
+if [[ ! -f "$SCRIPT_DIR/release_modes.sh" ]]; then
+ echo "ERROR: missing $SCRIPT_DIR/release_modes.sh (release file-mode policy)" >&2
  exit 1
 fi
-# shellcheck source=release_exec_bits.sh
-. "$SCRIPT_DIR/release_exec_bits.sh"
+# shellcheck source=release_modes.sh
+. "$SCRIPT_DIR/release_modes.sh"
 
 FORCE_OUTPUT=0
 KEEP_STAGING=0
@@ -402,7 +402,7 @@ mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
  # record them in the payload so pgenerator-update can reapply them on the
  # device after extraction.
  local exec_count
- exec_count="$(apply_release_exec_bits "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
+ exec_count="$(apply_release_modes "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
   || die "Could not apply the release executable-bit policy"
  log "Applied executable bits to $exec_count staged program files"
 }

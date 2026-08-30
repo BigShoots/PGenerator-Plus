@@ -489,6 +489,11 @@ case "$cmd" in
 
   restore_exec_bits "$EXEC_MANIFEST_FILE"
 
+  # A payload built with a widened umask packages these group-writable, and
+  # extraction applies that to the live tree. OpenSSH then refuses to start
+  # because /var is group-writable, taking SSH down with it.
+  chmod 0755 / /etc /lib /usr /var 2>/dev/null || true
+
   chmod +x /usr/sbin/pgenerator-* 2>/dev/null || true
   chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
   chmod +x /etc/init.d/PGenerator /etc/init.d/rcPGenerator /etc/init.d/dhcp 2>/dev/null || true
