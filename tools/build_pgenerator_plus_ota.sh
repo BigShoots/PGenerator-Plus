@@ -17,6 +17,10 @@ FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
 
 # apply_release_exec_bits(): the executable-bit policy shared with the image
 # builder and enforced by the manifest checker.
+if [[ ! -f "$SCRIPT_DIR/release_exec_bits.sh" ]]; then
+ echo "ERROR: missing $SCRIPT_DIR/release_exec_bits.sh (release executable-bit policy)" >&2
+ exit 1
+fi
 # shellcheck source=release_exec_bits.sh
 . "$SCRIPT_DIR/release_exec_bits.sh"
 
