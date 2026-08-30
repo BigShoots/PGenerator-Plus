@@ -21,9 +21,15 @@ current UI mode, transfer function or normalization policy.
 
 ## Measurement and series ownership
 
-`pgen_meter_result.py` owns parse and average result derivation. The shell
-workflows pass a numeric requested sample count; UI labels such as `a`, `aa`
-and `aaa` are presentation and telemetry only.
+`pgen_meter_result.py` owns parse and average result derivation. The
+low-light modes `a`, `aa` and `aaa` select Argyll's `-Y a`/`-Y aa`/`-Y aaa`
+integration on the spotread child (the meter helpers respawn the child when
+the per-step mode changes); live comparison on an i1Display Pro Plus showed
+software-averaged short reads produce multi-x near-black outliers where one
+`-Y aa` read is stable. The numeric requested sample count remains part of
+the wire contract, resolves to one physical read per low-light mode, and the
+averaging path stays available to callers that request extra samples
+explicitly.
 
 Each series generation is normalised once into a fixed record stream. The
 browser may build an immediate preview, capped at 4,096 lattice patches, but

@@ -3175,7 +3175,14 @@ sub webui_meter_session_start (@) {
 
 sub webui_low_light_sample_count {
  my ($mode)=@_;
- my %counts=(off=>1,a=>2,aa=>3,aaa=>5);
+ # Low-light a/aa/aaa select Argyll's -Y integration modes inside the meter
+ # helpers; they are NOT application-level repeat counts. Live comparison on
+ # an i1Display Pro Plus against an OLED near-black patch showed repeated
+ # short reads averaging in software produce multi-x outliers where a single
+ # -Y aa read is stable, so every mode maps to exactly one physical read.
+ # The averaging plumbing stays for callers that request extra samples
+ # explicitly through pgen_meter_average.py.
+ my %counts=(off=>1,a=>1,aa=>1,aaa=>1);
  $mode=lc($mode||"off");
  return exists($counts{$mode}) ? $counts{$mode} : 1;
 }
