@@ -19065,10 +19065,10 @@ function meterHcfrImportSnapshot(type,readings,label,stamp,mode,sourceRange,cont
  if(!readings.length) return null;
  const key=type+'-'+stamp;
  const ctx=context||{};
- readings.forEach(rd=>{rd.series_type=type;rd.signal_mode=mode;if(ctx.target_gamma)rd.target_gamma=ctx.target_gamma;if(ctx.max_luma)rd.max_luma=ctx.max_luma;});
+ readings.forEach(rd=>{rd.series_type=type;rd.signal_mode=mode;if(ctx.target_gamma)rd.target_gamma=ctx.target_gamma;if(ctx.max_luma)rd.max_luma=ctx.max_luma;if(ctx.calibration_target_context)rd.calibration_target_context=JSON.parse(JSON.stringify(ctx.calibration_target_context));});
  const steps=readings.map(rd=>{const step={...rd,plot_ire:rd.ire,nominal_ire:rd.ire,series_type:type,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,measurement_only:true};['X','Y','Z','x','y','luminance','raw_X','raw_Y','raw_Z','lux','spectrum','source_format'].forEach(key=>delete step[key]);return step;});
  const white=(type==='greyscale')?readings.reduce((best,rd)=>!best||Number(rd.ire)>Number(best.ire)?rd:best,null):null;
- meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null,updated_at:Date.now()};
+ meterSeriesCache[key]={type:type,points:stamp,signal_mode:mode,target_gamma:ctx.target_gamma||null,max_luma:ctx.max_luma||null,calibration_target_context:ctx.calibration_target_context?JSON.parse(JSON.stringify(ctx.calibration_target_context)):null,steps:steps,readings:readings,white_reading:white,status:'complete',source_format:'hcfr-chc',source_label:label,source_rgb_range:sourceRange||null,source_session_id:ctx.session_id||stamp,source_group:sourceGroup||type,hcfr_preferences:ctx.hcfr_preferences?JSON.parse(JSON.stringify(ctx.hcfr_preferences)):null,updated_at:Date.now()};
  return key;
 }
 
@@ -19102,6 +19102,7 @@ async function meterImportHcfrChcFile(input){
   // ColorChecker steps. Their PQ encoding, target luminance and gamut helpers
   // otherwise inherit the live output mode (often SDR) during import.
   meterSetActiveSeriesChartContext({signal_mode:mode,target_gamma:importContext.target_gamma,max_luma:importContext.max_luma});
+  importContext.calibration_target_context=meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null;
   const stamp=Date.now(),keys=[];importContext.session_id=stamp;meterActiveHcfrSessionId=stamp;
   const gs=parsed.groups.grayscale.validItems.map((c,i,a)=>meterHcfrImportedReading(c,(a.length>1?Math.round(i*100/(a.length-1)):0)+'%',a.length>1?i*100/(a.length-1):0));
   const gkey=meterHcfrImportSnapshot('greyscale',gs,file.name,stamp,mode,sourceRange,importContext,'grayscale');if(gkey)keys.push(gkey);
@@ -19355,6 +19356,8 @@ function meterPreserveOtherSeriesCacheOnClear(clearedKey){
 	   max_luma:(resolved.max_luma!=null)?resolved.max_luma:((current&&current.max_luma!=null)?current.max_luma:null),
 	   dv_map_mode:resolved.dv_map_mode||((current&&current.dv_map_mode)?current.dv_map_mode:null),
 	   dv_interface:resolved.dv_interface||((current&&current.dv_interface)?current.dv_interface:null),
+	   calibration_target_context:resolved.calibration_target_context?JSON.parse(JSON.stringify(resolved.calibration_target_context)):
+	    ((current&&current.calibration_target_context)?JSON.parse(JSON.stringify(current.calibration_target_context)):null),
 	   white_reading:resolved.white_reading?JSON.parse(JSON.stringify(resolved.white_reading)):null,
 	   black_reading:resolved.black_reading?JSON.parse(JSON.stringify(resolved.black_reading)):null,
 	   steps:JSON.parse(JSON.stringify(steps)),
@@ -19381,6 +19384,7 @@ function meterApplyClearedState(showToastMsg){
 	   max_luma:meterActiveSeriesMaxLuma||null,
 	   dv_map_mode:meterActiveSeriesDvMapMode||null,
 	   dv_interface:meterActiveSeriesDvInterface||null,
+	   calibration_target_context:meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null,
 	   white_reading:null,
 	   black_reading:null,
 	   steps:clearedSteps,

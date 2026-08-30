@@ -18,7 +18,8 @@ BEGIN {
  unshift @INC,$module_dir if($module_dir ne "" && !grep { $_ eq $module_dir } @INC);
 }
 use PGMath ();
-use PGCalibrationMath qw(standard_gamut_records);
+use PGCalibrationMath qw(calibration_target_context standard_gamut_records);
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 use Fcntl qw(O_NONBLOCK O_WRONLY);
 use Time::HiRes ();
 # Required for the ":shared" attributes and lock() below: webui_http dispatches
@@ -4617,10 +4618,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      dv_series_full_range => ($dv_series_full_range ? 1 : 0),
     );
     $_opts_for_grey{"active_table"}=$lg_hdr20_active_table if($lg_hdr20_codes && ref($lg_hdr20_active_table) eq "HASH");
+    my $grey_signal_code_policy=&webui_signal_code_policy(
+     $signal_mode,$lim,\%_opts_for_grey);
     my $grey_code_for_stim=sub {
      my ($stimulus_pct)=@_;
-     my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
-     return $c;
+     my $result=signal_percent_to_code($grey_signal_code_policy,$stimulus_pct);
+     die "Unable to convert greyscale signal percent\n" if(!$result);
+     return $result->{code};
     };
    # Sample the helper once to discover the series-level input_max. The
    # standard SDR/HDR10/HLG/extended/legal-SDR-DDC branches now honor the
@@ -4632,7 +4636,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    # else. Sample at 50% IRE — mid-range, inside the bit-depth math —
    # and stash the returned input_max for the $extra stamp below.
    my $series_input_max=255;
-   my ($_sample_c,$_sample_im)=&webui_grey_code_for_stimulus(50,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
+   my $_sample_result=signal_percent_to_code($grey_signal_code_policy,50);
+   my ($_sample_c,$_sample_im)=($_sample_result->{code},$_sample_result->{input_max});
    $series_input_max=$_sample_im if(defined $_sample_im && $_sample_im >= 0 && ($_sample_im == 255 || $_sample_im == 1023));
    # Reference first, then black for contrast, then the remaining LG 26pt
    # steps ascend from near black through headroom. The delayed legal-white
@@ -5536,7 +5541,48 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	 my $series_dv_map_mode_json=&_webui_json_escape($dv_map_mode);
 	 my $series_dv_interface_json=&_webui_json_escape(($signal_mode eq "dv") ? "$dv_interface" : "");
 	 my $series_max_luma_num=($max_luma+0);
-	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
+	 my $series_pattern_bits=($signal_mode eq "dv") ? 12
+	  : ((int($pgenerator_conf{"max_bpc"}||8)>=10) ? 10 : 8);
+	 my $series_transport_bits=int($pgenerator_conf{"max_bpc"}||$series_pattern_bits);
+	 $series_transport_bits=8 if($series_transport_bits!=8
+	  && $series_transport_bits!=10 && $series_transport_bits!=12);
+	 my $series_headroom_strategy="none";
+	 my $series_headroom_max=100;
+	 if($type eq "greyscale" && $signal_mode eq "sdr"
+	  && $points==26 && $lg_autocal_26 && $greyscale_patch_limited
+	  && int($series_color_format||0)!=0) {
+	  $series_headroom_strategy="lg_sdr26_ladder";
+	  $series_headroom_max=109;
+	 } elsif($type eq "greyscale" && $points==2
+	  && int($series_color_format||0)!=0 && $signal_mode ne "dv") {
+	  $series_headroom_strategy="legal_superwhite";
+	  $series_headroom_max=109;
+	 } elsif($type eq "greyscale" && $signal_mode eq "sdr"
+	  && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21))) {
+	  $series_headroom_strategy="extended_sdr";
+	 }
+	 my $series_target_context=calibration_target_context({
+	  caller_policy=>"browser_chart",
+	  signal_mode=>$signal_mode,
+	  target_gamma=>$target_gamma,
+	  signal_peak_nits=>$series_max_luma_num,
+	  white_nits=>($series_target_white_y_num>0 ? $series_target_white_y_num : 0),
+	  black_nits=>($series_target_black_y_num ne "" ? $series_target_black_y_num+0 : 0),
+	  pattern_range=>(int($pattern_signal_range||0)==1 ? "limited" : "full"),
+	  transport_range=>(int($transport_signal_range||0)==1 ? "limited" : "full"),
+	  pattern_bits=>$series_pattern_bits,
+	  transport_bits=>$series_transport_bits,
+	  headroom_strategy=>$series_headroom_strategy,
+	  headroom_max_percent=>$series_headroom_max,
+	  dv_map_mode=>(($signal_mode eq "dv") ? $dv_map_mode : "none"),
+	  dv_interface=>(($signal_mode eq "dv") ? "$dv_interface" : "none"),
+	  target_gamut=>($target_gamut||"auto"),
+	 });
+	 return '{"status":"error","message":"Invalid calibration target context"}'
+	  if(!$series_target_context);
+	 require JSON::PP;
+	 my $series_target_context_json=JSON::PP->new->canonical(1)->encode({%{$series_target_context}});
+	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\",\"calibration_target_context\":$series_target_context_json";
 	 my $series_step_meta=",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
 	 @steps=map {
 	  my $step=$_;
@@ -11350,265 +11396,41 @@ sub webui_pattern_pq_encode_normalized (@) {
 #   dv_series       0/1        use DV tunnel branch
 #   dv_series_code_bits 8/10/12  source-code precision inside the tunnel
 #   dv_series_full_range 0/1  use full tunnel range
+sub webui_signal_code_policy (@) {
+ my ($signal_mode,$signal_range,$opts_hr)=@_;
+ $opts_hr={} if(ref($opts_hr) ne "HASH");
+ my %resolved=(%{$opts_hr},signal_mode=>$signal_mode,signal_range=>$signal_range);
+
+ # Resolve legacy flag precedence at this ingress boundary. SignalCodePolicy
+ # itself rejects contradictory strategies so no hot conversion needs to
+ # repeat these product-policy decisions.
+ my @precedence=qw(two_point_ycbcr_headroom autocal_26_codes hdr20_codes
+  dv_series extended_sdr_codes legal_sdr_ddc_codes);
+ my $selected="";
+ foreach my $candidate (@precedence) {
+  if(!$selected && $resolved{$candidate}) { $selected=$candidate; next; }
+  $resolved{$candidate}=0 if($selected);
+ }
+ if(defined($resolved{max_bpc}) && $resolved{max_bpc} ne "") {
+  $resolved{max_bpc}=(int($resolved{max_bpc})>=10) ? 10 : 8;
+ }
+ if($selected eq "autocal_26_codes"
+  && (!defined($resolved{color_format}) || $resolved{color_format} eq "")) {
+  $resolved{color_format}=(defined($pgenerator_conf{"color_format"})
+   && $pgenerator_conf{"color_format"} ne "")
+   ? int($pgenerator_conf{"color_format"}) : 0;
+ }
+ my $policy=signal_code_policy(\%resolved);
+ die "Unable to resolve signal-code policy\n" if(!defined($policy));
+ return $policy;
+}
+
 sub webui_grey_code_for_stimulus (@) {
  my ($stimulus_pct,$signal_mode,$target_gamma,$signal_range,$opts_hr)=@_;
- # Preserve the unclamped stimulus for the 10-bit LIMITED lg_autocal_26_codes
- # sub-branch so the legal-expanded super-white ladder (105% / 109%) can
- # reach the canonical super-white formula instead of being flattened to
- # 100% by the function-level clamp below. All other branches observe the
- # clamp.
- my $raw_stim_for_ac26_ltd=defined($stimulus_pct) ? ($stimulus_pct+0) : 0;
- $stimulus_pct+=0;
- $stimulus_pct=0 if($stimulus_pct < 0);
- $stimulus_pct=100 if($stimulus_pct > 100);
- $signal_mode=lc($signal_mode||"sdr");
- $signal_range+=0 if(defined($signal_range) && $signal_range ne "");
- $opts_hr={} if(ref($opts_hr) ne "HASH");
- my $code=0;
- my $input_max=255;
- my $lg_hdr20_codes=$opts_hr->{"hdr20_codes"} ? 1 : 0;
- my $lg_autocal_26=$opts_hr->{"autocal_26"} ? 1 : 0;
- my $lg_autocal_26_codes=$opts_hr->{"autocal_26_codes"} ? 1 : 0;
- my $lg_extended_sdr_codes=$opts_hr->{"extended_sdr_codes"} ? 1 : 0;
- my $lg_legal_sdr_ddc_codes=$opts_hr->{"legal_sdr_ddc_codes"} ? 1 : 0;
- my $two_point_ycbcr_headroom=$opts_hr->{"two_point_ycbcr_headroom"} ? 1 : 0;
- my $dv_series=$opts_hr->{"dv_series"} ? 1 : 0;
- my $dv_series_code_bits=$opts_hr->{"dv_series_code_bits"};
- $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10 && $dv_series_code_bits!=12));
- my $dv_series_full_range=$opts_hr->{"dv_series_full_range"} ? 1 : 0;
- my $dv_series_code_max=($dv_series_code_bits==12) ? 4095 : (($dv_series_code_bits==10) ? 1023 : 255);
- my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : ($dv_series_code_bits==12?256:($dv_series_code_bits==10?64:16))) : 0;
- my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? $dv_series_code_max : ($dv_series_code_bits==12?3504:($dv_series_code_bits==10?876:219))) : 255;
- my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- $input_max=$dv_series_code_max if($dv_series);
- if($two_point_ycbcr_headroom) {
-  # YCbCr Limited keeps the nominal legal ramp through 100%, then exposes
-  # super-white through 109%. RGB Limited deliberately does not enter this
-  # branch and remains capped at 235/940.
-  my $_tp_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
-  my $_tp_min=$_tp_bits==10 ? 64 : 16;
-  my $_tp_legal=$_tp_bits==10 ? 940 : 235;
-  my $_tp_max=$_tp_bits==10 ? 1023 : 255;
-  my $_tp_stim=$raw_stim_for_ac26_ltd+0;
-  $_tp_stim=0 if($_tp_stim < 0);
-  $_tp_stim=109 if($_tp_stim > 109);
-  if($_tp_stim <= 100) {
-   $code=int($_tp_min + $_tp_stim/100*($_tp_legal-$_tp_min) + .5);
-  } else {
-   $code=int($_tp_legal + ($_tp_stim-100)/9*($_tp_max-$_tp_legal) + .5);
-  }
-  $code=$_tp_min if($code < $_tp_min);
-  $code=$_tp_max if($code > $_tp_max);
-  $input_max=$_tp_max;
-  return ($code,$input_max);
- }
- if($lg_autocal_26_codes) {
-  # 8-bit link: no headroom and no 10-bit legal-expanded ladder. Drive plain
-  # 8-bit codes that match the worker's patch_code_for_stimulus 8-bit path
-  # (full 0..255, limited 16..235) so the displayed/inserted codes agree with
-  # what is actually sent. >100% has no 8-bit headroom, so it clamps to peak.
-  # The DPG slot indexing is unaffected (it is keyed by IRE via @sdr26_indexes
-  # in the worker, not by this drive code).
-  my $_ac26_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
-  # Limited transport has TWO sub-modes that must NOT be conflated
-  # (per user direction):
-  #   RGB Limited    -> codes 16..235 ONLY (109% clamps to 235).
-  #   YCbCr Limited  -> codes 16..255, 100%=235, 109%=255 via super-white.
-  # 10-bit follows the same axis rules scaled ×4.
-  my $_ac26_cf=(defined $opts_hr->{"color_format"} && $opts_hr->{"color_format"} ne "")
-   ? int($opts_hr->{"color_format"})
-   : (defined $pgenerator_conf{"color_format"} && $pgenerator_conf{"color_format"} ne ""
-      ? int($pgenerator_conf{"color_format"}) : 0);
-  my $_ac26_is_ycbcr=(($_ac26_cf == 1) || ($_ac26_cf == 2)) ? 1 : 0;
-  if($_ac26_bits == 8) {
-   if($signal_range) {
-    if($_ac26_is_ycbcr) {
-     # YCbCr Limited 8-bit: legal ramp <=100% (16..235 via 16+S/100*219),
-     # super-white ramp >100% (235+(S-100)/9*20 -> 109%=255).
-     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-     $_ac26_s=0 if($_ac26_s < 0);
-     $_ac26_s=109 if($_ac26_s > 109);
-     if($_ac26_s <= 100) {
-      $code=int(16 + ($_ac26_s/100)*219 + .5);
-     } else {
-      $code=int(235 + ($_ac26_s-100)/9*(255-235) + .5);
-     }
-     $code=16 if($code < 16); $code=255 if($code > 255);
-    } else {
-     # RGB Limited 8-bit: codes 16..235 only. 105/109% clamp to 235 (no
-     # super-white headroom).
-     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-     $_ac26_s=0 if($_ac26_s < 0);
-     $_ac26_s=100 if($_ac26_s > 100);
-     $code=int(16 + ($_ac26_s/100)*219 + .5);
-     $code=16 if($code < 16); $code=235 if($code > 235);
-    }
-   } else {
-    # Full: no codes above white -- 100% is the peak (255), so >100% clamps to 255.
-    # Full range has no super-white headroom, so the clamped $stimulus_pct is
-    # the right input here (the legal-expanded raw ladder is limited-only).
-    my $s=$stimulus_pct; $s=100 if($s > 100);
-    $code=int(($s/100)*255 + .5); $code=0 if($code < 0); $code=255 if($code > 255);
-   }
-   $input_max=255;
-   return ($code,$input_max);
-  }
-  if(!$signal_range) {
-   # 10-bit Full SDR: 8bit<<2 (same map as worker DPG index). Peak=1023.
-   my $s=$stimulus_pct+0; $s=0 if($s < 0); $s=100 if($s > 100);
-   if($s >= 99.95) {
-    $code=1023;
-   } else {
-    my $b8=int($s/100*255 + .5);
-    $b8=0 if($b8 < 0); $b8=255 if($b8 > 255);
-    $code=$b8 << 2;
-   }
-   $input_max=1023;
-   return ($code,$input_max);
-  }
-  my %lg_autocal_26_code=(
-   "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
-   "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
-  );
-  # 10-bit LIMITED canonical compute. RGB Limited clamps super-white at 940;
-  # YCbCr Limited uses the full 64..1023 ladder with the super-white ramp
-  # 940+(S-100)/9*83. $raw_stim_for_ac26_ltd bypasses the function-level
-  # 100% clamp so the super-white formula can fire on 105/109 stimuli.
-  my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-  $_ac26_s=0 if($_ac26_s < 0);
-  if($_ac26_is_ycbcr) {
-   $_ac26_s=109 if($_ac26_s > 109);
-   if($_ac26_s <= 100) {
-    $code=int(64 + $_ac26_s/100*876 + .5);
-   } else {
-    $code=int(940 + ($_ac26_s-100)/9*(1023-940) + .5);
-   }
-   $code=64 if($code < 64);
-   $code=1023 if($code > 1023);
-  } else {
-   # RGB Limited 10-bit: legal ladder <=100%, super-white clamps at 940.
-   $_ac26_s=100 if($_ac26_s > 100);
-   $code=int(64 + $_ac26_s/100*876 + .5);
-   $code=64 if($code < 64);
-   $code=940 if($code > 940);
-  }
-  $input_max=1023;
-  return ($code,$input_max);
- }
- if($lg_hdr20_codes) {
-  my %lg_hdr20_code=(
-   "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
-   "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
-  );
-  my %lg_hdr20_code_10bit_limited=(
-   "1.4"=>76,"2"=>80,"2.7"=>88,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,
-   "30"=>328,"35"=>372,"40"=>416,"45"=>460,"50"=>504,"60"=>588,"70"=>676,"80"=>764,"90"=>852,"100"=>940
-  );
-  my %lg_hdr20_code_10bit_full=(
-   "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
-   "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
-  );
-  # HDR10 8-bit full table (0..255). The 8-bit limited case reuses
-  # %lg_hdr20_code (the 16..235 numeric values are identical).
-  my %lg_hdr20_code_8bit_full=(
-   "1.4"=>4,"2"=>5,"2.7"=>7,"4"=>10,"5"=>13,"7"=>18,"10"=>26,"15"=>38,"20"=>51,"25"=>64,
-   "30"=>77,"35"=>89,"40"=>102,"45"=>115,"50"=>128,"60"=>153,"70"=>179,"80"=>204,"90"=>230,"100"=>255
-  );
-  my %lg_hdr20_stimulus=();
-  foreach my $key (keys %lg_hdr20_code) { $lg_hdr20_stimulus{$key}=$key+0; }
-  my $lg_hdr20_active_table=\%lg_hdr20_code;
-  # HDR10 26pt table selection follows max_bpc: 8 -> 8-bit codes (limited
-  # 16..235 by reusing %lg_hdr20_code, or full 0..255 via
-  # %lg_hdr20_code_8bit_full) and input_max=255; 10 -> 10-bit codes (limited
-  # 64..940 or full 0..1023) and input_max=1023. Caller supplies the active
-  # max_bpc via $opts_hr->{"max_bpc"}; default 10 keeps the original
-  # behavior when the option is absent.
-  my $_wb_hdr20_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
-  if($opts_hr->{"active_table"} && ref($opts_hr->{"active_table"}) eq "HASH") {
-   $lg_hdr20_active_table=$opts_hr->{"active_table"};
-  } elsif($_wb_hdr20_bits == 8) {
-   $lg_hdr20_active_table=\%lg_hdr20_code if($opts_hr->{"hdr20_use_limited"});
-   $lg_hdr20_active_table=\%lg_hdr20_code_8bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
-  } else {
-   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($opts_hr->{"hdr20_use_limited"});
-   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
-  }
-  my $lg_hdr20_min_code=($_wb_hdr20_bits == 10 && $opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 0 : ($_wb_hdr20_bits == 8 ? 0 : 64);
-  my $lg_hdr20_span_code=($_wb_hdr20_bits == 10)
-   ? (($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 1023 : 876)
-   : 255;
-  my $slot_key="";
-  foreach my $slot (keys %lg_hdr20_stimulus) {
-   if(abs($lg_hdr20_stimulus{$slot}-$stimulus_pct) < 0.01) { $slot_key=$slot; last; }
-  }
-  $code=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
-  $code=$lg_hdr20_min_code if($code < $lg_hdr20_min_code);
-  $code=$lg_hdr20_min_code + $lg_hdr20_span_code if($code > $lg_hdr20_min_code + $lg_hdr20_span_code);
-  $input_max=($_wb_hdr20_bits == 8) ? 255 : 1023;
-  return ($code,$input_max);
- }
- if($dv_series) {
-  my $stim=$stimulus_pct/100;
-  $stim=0 if($stim < 0);
-  $stim=1 if($stim > 1);
-  $code=int($dv_series_code_min + $stim*$dv_series_code_span + .5);
-  $code=$dv_series_code_min if($code < $dv_series_code_min);
-  $code=$dv_series_code_limit if($code > $dv_series_code_limit);
-  return ($code,$input_max);
- }
- my $lim=(defined($signal_range) && int($signal_range)==1) ? 1 : 0;
- # Greyscale bit-depth plumbing: when max_bpc>=10 (10-bit link), the 8-bit
- # codes below would land on a 10-bit wire as ~23% signal (e.g. 8-bit 235
- # = 10-bit 235 / 1023 = 23%), crushing the entire stimulus range. Before
- # this fix the standard SDR/HDR10/HLG/extended/legal-DDC branches always
- # returned 8-bit codes with $input_max=255, and webui_meter_series_start
- # never stamped `input_max` for those branches, so meter_series.sh /
- # pattern_request_body saw no input_max + codes <=255 and dispatched an
- # 8-bit pattern over the 10-bit wire. Mirror the JS bit-depth scaling in
- # meterGreyCodeRange(): 10-bit limited min=64 span=876 (matches the
- # HDR10 10-bit Limited table: 100% -> 940 = 64 + 876), 10-bit full
- # min=0 span=1023 (matches the HDR10 10-bit Full table: 100% -> 1023),
- # 10-bit extended-sdr min=64 span=956 (matches the JS extended branch).
- # 12-bit links are coerced to 10-bit here, matching meterPatchBitDepth().
- my $_wb_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
- if($lg_extended_sdr_codes) {
-  # Extended SDR is the LG "16..255" ladder: legal black, FULL white. Its top
-  # is 100% at full scale, so at 10 bits that is 64..1023 (span 959), derived
-  # natively from the stimulus rather than by upshifting the 8-bit ladder.
-  # It was 64 + pct*956, i.e. the 8-bit span 239 multiplied by 4, which carried
-  # 8-bit quantisation into every point of a 10-bit ladder and left the top at
-  # 1020. (Do not confuse this with the SDR-26 super-white ladder, where 1023
-  # is 109% and 100% is 940 -- that is a different curve and is built by the
-  # autocal_26_codes branch above, which returns before reaching here.)
-  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
-  if($_wb_bits == 10) {
-   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*959 + .5);
-  }
- } elsif($lg_legal_sdr_ddc_codes) {
-  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
-  if($_wb_bits == 10) {
-   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*876 + .5);
-  }
- } elsif($signal_mode eq "hdr10") {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- } elsif($signal_mode eq "hlg") {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- } else {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- }
- $input_max=($_wb_bits == 10) ? 1023 : 255;
- $code=0 if($code < 0);
- $code=$input_max if($code > $input_max);
- return ($code,$input_max);
+ my $policy=&webui_signal_code_policy($signal_mode,$signal_range,$opts_hr);
+ my $result=signal_percent_to_code($policy,$stimulus_pct);
+ die "Unable to convert signal percent to code\n" if(!defined($result));
+ return ($result->{code},$result->{input_max});
 }
 
 # The stabilization pattern is an idle-state policy rather than a new
@@ -12608,6 +12430,7 @@ my %_webui_asset_allowed = map { $_ => 1 } qw(
  webui-layout.css
  webui-body.html
  webui-logo-dark.html
+ webui-colour-math.js
  webui-app.js
  webui-workspace.js
  webui-lg-card.html
@@ -12772,6 +12595,7 @@ sub webui_html (@) {
                     ["__PG_CSS_LAYOUT__","webui-layout.css"],
                     ["__PG_BODY__","webui-body.html"],
                     ["__PG_LOGO_DARK__","webui-logo-dark.html"],
+                    ["__PG_JS_COLOUR_MATH__","webui-colour-math.js"],
                     ["__PG_JS_APP__","webui-app.js"],
                     ["__PG_JS_WORKSPACE__","webui-workspace.js"]) {
   my ($marker,$name)=@{$asset};

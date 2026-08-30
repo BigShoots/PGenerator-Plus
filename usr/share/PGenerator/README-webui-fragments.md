@@ -10,7 +10,7 @@ Do not run Prettier, ESLint `--fix`, a formatter-on-save rule, or a tabs-to-
 spaces conversion over these files. Their bytes are covered by
 `t/webui_html_golden.t`; changing whitespace, line endings, or placeholder
 lines changes the rendered response. `icc_profile.html` is spliced into the
-same hashed page, so it is exactly as byte-sensitive as the nine fragments;
+same hashed page, so it is exactly as byte-sensitive as the ten fragments;
 `icc_profile.css`, `icc_profile.js`, and `hcfr_chc.js` are served verbatim
 from `/assets/` and must not be reformatted either.
 
@@ -37,7 +37,7 @@ bytes and LF endings intact, and do not add banner comments inside fragments.
 Migration notes and explanations belong here instead.
 
 Before publishing an OTA archive, verify that the cumulative overlay contains
-all nine exact fragment paths with content, plus the four page assets the
+all ten exact fragment paths with content, plus the four page assets the
 served UI also reads from disk (`icc_profile.html`, `icc_profile.css`,
 `icc_profile.js`, `hcfr_chc.js`):
 

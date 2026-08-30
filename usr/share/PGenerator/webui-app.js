@@ -2094,24 +2094,6 @@ function isPqStimulusMode(){
  const sm=getVal('signal_mode');
  return sm==='hdr10'||sm==='dv';
 }
-function clampNum(v,min,max){
- v=parseFloat(v);
- if(isNaN(v))v=min;
- if(v<min)return min;
- if(v>max)return max;
- return v;
-}
-const PGEN_PQ_M1=2610/16384;
-const PGEN_PQ_M2=2523/32;
-const PGEN_PQ_C1=3424/4096;
-const PGEN_PQ_C2=2413/128;
-const PGEN_PQ_C3=2392/128;
-function pqEncodeNormalized(nits){
- const l=clampNum(nits,0,10000)/10000;
- if(l<=0)return 0;
- const p=Math.pow(l,PGEN_PQ_M1);
- return Math.pow((PGEN_PQ_C1+PGEN_PQ_C2*p)/(1+PGEN_PQ_C3*p),PGEN_PQ_M2);
-}
 function getPatternPeakCode(){
  const maxCode=getPatternTargetMax();
  if(isPqStimulusMode()){
@@ -4933,30 +4915,6 @@ function meterSharedSeriesShouldRecover(status,opts){
  return false;
 }
 
-// D65 reference white chromaticity
-const D65={x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890};
-
-function xyToUnitXyz(x,y){
- if(!(x>0) || !(y>0) || x+y>=1) return {X:D65.X,Y:1,Z:D65.Z};
- return {X:x/y,Y:1,Z:(1-x-y)/y};
-}
-
-const METER_BRADFORD_M=[[0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]];
-const METER_BRADFORD_MI=[[0.9869929,-0.1470543,0.1599627],[0.4323053,0.5183603,0.0492912],[-0.0085287,0.0400428,0.9684867]];
-function meterBradfordAdaptXyz(X,Y,Z,fromWhite,toWhite){
- const fx=Number(fromWhite&&fromWhite.x),fy=Number(fromWhite&&fromWhite.y);
- const tx=Number(toWhite&&toWhite.x),ty=Number(toWhite&&toWhite.y);
- if(!(fx>0&&fy>0&&tx>0&&ty>0)) return {X:X,Y:Y,Z:Z};
- if(Math.abs(fx-tx)<1e-7&&Math.abs(fy-ty)<1e-7) return {X:X,Y:Y,Z:Z};
- const mul=(M,v)=>[M[0][0]*v[0]+M[0][1]*v[1]+M[0][2]*v[2],M[1][0]*v[0]+M[1][1]*v[1]+M[1][2]*v[2],M[2][0]*v[0]+M[2][1]*v[1]+M[2][2]*v[2]];
- const ws=xyToUnitXyz(fx,fy),wd=xyToUnitXyz(tx,ty);
- const cs=mul(METER_BRADFORD_M,[ws.X,ws.Y,ws.Z]);
- const cd=mul(METER_BRADFORD_M,[wd.X,wd.Y,wd.Z]);
- const c=mul(METER_BRADFORD_M,[X,Y,Z]);
- const scaled=[c[0]*(cs[0]!==0?cd[0]/cs[0]:1),c[1]*(cs[1]!==0?cd[1]/cs[1]:1),c[2]*(cs[2]!==0?cd[2]/cs[2]:1)];
- const out=mul(METER_BRADFORD_MI,scaled);
- return {X:out[0],Y:out[1],Z:out[2]};
-}
 function meterAdaptReferenceXyzToTargetWhite(X,Y,Z){
  const wp=(typeof meterTargetWhitePoint==='function')?meterTargetWhitePoint():D65;
  return meterBradfordAdaptXyz(X,Y,Z,D65,wp);
@@ -5473,6 +5431,8 @@ function meterGreyTargetGammaSelection(){
  // older series snapshot is still cached. For SDR, always honor the dropdown
  // (2.7.2 behaviour) so a non-bt1886 snapshot cannot bypass the BT.1886
  // black-level lift on a calibrated SDR panel.
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
+ if(context&&context.caller_policy==='browser_chart') return context.target_gamma;
  if((typeof meterChartIsHdr==='function') && meterChartIsHdr() &&
     (typeof meterHdrAutoCalUsesPowerGammaChartMath==='function') &&
     meterHdrAutoCalUsesPowerGammaChartMath()){
@@ -5552,6 +5512,8 @@ function meterGreyChartTargetGammaSelection(){
 }
 
 function meterGreyChartUsesPqTarget(){
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
+ if(context&&context.caller_policy==='browser_chart') return context.transfer_policy==='pq_absolute';
  if(meterHdrAutoCalUsesPowerGammaChartMath()) return false;
  if(meterChartIsDv()){
   // Honor the operator's Target Gamma dropdown: ST 2084 -> PQ charts,
@@ -5633,6 +5595,53 @@ function meterPatchInputMax(){
  return bits===12?4095:(bits===10?1023:255);
 }
 
+const meterPreviewSignalCodePolicies=new Map();
+function meterPreviewSignalCodePolicy(options){
+ const opts=options||{};
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
+ const mode=context&&context.caller_policy==='browser_chart'
+  ?context.signal_mode
+  :(meterChartIsDv()?'dv':(meterChartIsPq()?'hdr10':(meterChartIsHlg()?'hlg':'sdr')));
+ const full=mode!=='dv'&&(context&&context.caller_policy==='browser_chart'
+  ?context.pattern_range==='full'
+  :(meterGreyscaleUsesFullSourceRange()||!meterPatchUsesVideoRange()));
+ const input={
+  signal_mode:mode,
+  pattern_range:full?'full':'limited',
+  transport_range:context&&context.caller_policy==='browser_chart'
+   ?context.transport_range:(full?'full':'limited'),
+  max_bpc:context&&context.caller_policy==='browser_chart'
+   ?context.pattern_bits:meterPatchBitDepth()
+ };
+ if(mode==='dv'){
+  input.dv_series=1;
+  input.dv_series_code_bits=12;
+  input.dv_series_full_range=0;
+  input.dv_interface=context&&context.dv_interface?context.dv_interface:'standard';
+ }
+ if(opts.lgExtendedSdr) input.extended_sdr_codes=1;
+ if(opts.lgLegalSdrDdc) input.legal_sdr_ddc_codes=1;
+ if(opts.lgAutocal26){
+  input.autocal_26_codes=1;
+  input.color_format=opts.colorFormat!=null
+   ?Number(opts.colorFormat):(parseInt(meterOutputFormatValue()||'0',10)||0);
+ }
+ if(opts.twoPointYcbcr) input.two_point_ycbcr_headroom=1;
+ const key=JSON.stringify(input);
+ if(meterPreviewSignalCodePolicies.has(key)) return meterPreviewSignalCodePolicies.get(key);
+ const policy=signalCodePolicy(input);
+ if(!policy) return null;
+ if(meterPreviewSignalCodePolicies.size>=32) meterPreviewSignalCodePolicies.clear();
+ meterPreviewSignalCodePolicies.set(key,policy);
+ return policy;
+}
+
+function meterPreviewSignalCode(percent,options){
+ const policy=meterPreviewSignalCodePolicy(options);
+ const result=policy?signalPercentToCode(policy,percent):null;
+ return result?result.code:0;
+}
+
 // HDR10 (10-bit PQ) 100% white code depends on the panel's quant range.
 // Limited 10-bit -> 940 (94% of 1023, BT.709-style 100% white).
 // Full 10-bit    -> 1023 (100% of full range).
@@ -5641,18 +5650,13 @@ function meterLgHdrHundredPercentCodeForRange(){
 }
 
 function meterActiveSeriesCodesAre8Bit(){
- // True when the current greyscale series' patch codes are 8-bit (white
- // r_code ~235/255) even though the transport (max_bpc) is 10-bit. The
- // white/100% patch is read first, so its r_code reliably indicates the
- // series code bit-depth (235 -> 8-bit, 940/1023 -> 10-bit). Returns false
- // when unknown so codes that already match the range are left alone.
+ // One-release cache adapter. Bit depth comes from stamped input_max, never
+ // from whether a code happens to be greater than 255.
  let w=(typeof meterWhiteReading!=='undefined' && meterWhiteReading) ? meterWhiteReading : null;
- if((!w || w.r_code==null) && Array.isArray(meterReadings)){
-  w=meterReadings.find(function(r){ return r && (Number(r.ire)===100 || r.final_white_refresh) && (r.r_code!=null || r.r!=null); }) || w;
+ if((!w || w.input_max==null) && Array.isArray(meterReadings)){
+  w=meterReadings.find(function(r){ return r && r.input_max!=null; }) || w;
  }
- if(!w) return false;
- const wc=Number(w.r_code!=null?w.r_code:w.r);
- return Number.isFinite(wc) && wc>0 && wc<=255;
+ return !!(w&&Number(w.input_max)===255);
 }
 
 // The SDR-26 super-white ladder is NOT the extended-SDR ladder, even though
@@ -5671,36 +5675,33 @@ function meterGreySdr26HeadroomCodeRange(){
 }
 function meterGreySignalFractionFromCode(code){
  let numeric=Number(code);
- const range=meterGreyCodeRange();
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
  // Bit-depth reconciliation: the manual greyscale series read can emit 8-bit
  // codes (white=235) while max_bpc=10 makes meterGreyCodeRange 10-bit; scale
  // the 8-bit code to 10-bit so (code-min)/span is correct. No-op for genuinely
  // 10-bit series (white>255) and for 8-bit transports (max_bpc=8).
- if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10 && Number.isFinite(numeric) && numeric<=255 && meterActiveSeriesCodesAre8Bit()){
+ const targetBits=context&&context.caller_policy==='browser_chart'
+  ?Number(context.pattern_bits):meterPatchBitDepth();
+ if(targetBits===10
+  && Number.isFinite(numeric) && meterActiveSeriesCodesAre8Bit()){
   numeric=numeric*4;
  }
- if(meterChartIsDv()){
-  return Math.max(0,Math.min(1,((numeric||0)-range.min)/range.span));
- }
-if(Number.isFinite(numeric) && (meterGreyAllowsHeadroomTargets() || numeric>255)){
-   // SDR-26 headroom decode uses its OWN range, not meterGreyCodeRange(): the
-   // two ladders share endpoints but not meaning, and they were sharing one
-   // constant. See meterGreySdr26HeadroomCodeRange().
-   //
-   // The chart normalises against the TOP of the ladder, so the 109% anchor
-   // must come back as exactly 1.0: grey target Y for 109 = peak * signal^γ
-   // and the peak anchor needs signal 1.0. With the old span (956) code 1023
-   // returned 1.003 and only the clamp below hid it -- the bisection in
-   // meterGreySolvePeakFromHeadroomReading would otherwise solve peak =
-   // measured_Y / 1.003^γ, ~0.75% low, and every body anchor (50-105) would
-   // show a proportionally low target Y, inflating ΔE ITP across the upper
-   // greyscale. With span 959 (64..1023) it is exactly 1.0 arithmetically;
-   // the clamp stays as a guard rather than as the mechanism.
-   const hr=meterGreyAllowsHeadroomTargets()?meterGreySdr26HeadroomCodeRange():range;
-   const headroomPeak=(numeric-hr.min>=hr.span*0.95) && numeric>=hr.min+hr.span;
-   return Math.max(0,Math.min(headroomPeak?1.0:1.1,(numeric-hr.min)/hr.span));
-  }
- return Math.max(0,Math.min(1,(numeric-range.min)/range.span));
+ const headroom=context&&context.caller_policy==='browser_chart'
+  ?context.headroom_strategy:'none';
+ const options={};
+ if(headroom==='lg_sdr26_ladder'){
+  options.lgAutocal26=true;
+  options.colorFormat=1;
+ }else if(headroom==='legal_superwhite') options.twoPointYcbcr=true;
+ else if(headroom==='extended_sdr') options.lgExtendedSdr=true;
+ else if(typeof meterGreyAllowsHeadroomTargets==='function'&&meterGreyAllowsHeadroomTargets()) options.lgAutocal26=true;
+ const policy=meterPreviewSignalCodePolicy(options);
+ const fraction=policy?codeToSignalFraction(policy,numeric):null;
+ if(!Number.isFinite(fraction)) return 0;
+ // SDR26 chart targets normalize the named 109% legal peak to the run white.
+ if(headroom==='lg_sdr26_ladder'||(!context&&options.lgAutocal26))
+  return Math.max(0,Math.min(1,fraction/1.09));
+ return Math.max(0,Math.min(policy&&policy.allows_above_nominal_white?1.09:1,fraction));
 }
 
 function meterSignalFractionFromCode(code){
@@ -5801,50 +5802,11 @@ function meterCodeFromSignalPercent(percent){
 }
 
 function meterLgSdrExtendedCodeFromPercent(percent){
- const clamped=clampNum(percent,0,100)/100;
- if(clamped<=0) return 0;   // 0% is true black, below legal black, at both depths
- // Derive the code natively at the transport depth. This was 8-bit-only
- // (16+pct*239) regardless of max_bpc, so on a 10-bit link it either shipped an
- // 8-bit code or, once upshifted, carried 8-bit quantisation the whole way up.
- // Extended SDR runs legal black to FULL white, so 10-bit is 64..1023.
- if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10) return Math.round(64+clamped*959);
- return Math.round(16+clamped*239);
+ return meterPreviewSignalCode(percent,{lgExtendedSdr:true});
 }
 
 function meterLgSdrLegalHeadroomCodeFromPercent(percent){
-	 const s=clampNum(percent,0,109.5);
-	 const bits=meterPatchBitDepth();
-	 const limited=meterIsLimitedRange();
-	 if(!limited){
-		// Full range: no headroom above 100%. 10-bit uses 8bit<<2 so the
-		// patch samples the same LUT entry the SDR26 DPG solver adjusts.
-		const clamped=Math.max(0,Math.min(100,s));
-		if(bits===10){
-			if(clamped>=99.95) return 1023;
-			return (Math.round(clamped/100*255)<<2);
-		}
-		return Math.round(clamped/100*255);
-	 }
-	 // Limited: dispatch on RGB vs YCbCr (RGB clamps at legal peak,
-	 // YCbCr ramps into super-white).
-	 const fmt=meterOutputFormatValue();
-	 const isYcbcr=(fmt==='1'||fmt==='2');
-	 if(bits===10){
-		if(isYcbcr){
-			// YCbCr Limited 10-bit: 64..1023 with super-white ramp.
-			const c=s<=100 ? 64+s/100*876 : 940+(s-100)/9*83;
-			return Math.max(64,Math.min(1023,Math.round(c)));
-		}
-		// RGB Limited 10-bit: 64..940 only.
-		return Math.max(64,Math.min(940,Math.round(64+s/100*876)));
-	 }
-	 if(isYcbcr){
-		// YCbCr Limited 8-bit: 16..255 with super-white ramp.
-		const c=s<=100 ? 16+s/100*219 : 235+(s-100)/9*20;
-		return Math.max(16,Math.min(255,Math.round(c)));
-	 }
-	 // RGB Limited 8-bit: 16..235 only.
-	 return Math.max(16,Math.min(235,Math.round(16+s/100*219)));
+ return meterPreviewSignalCode(percent,{lgAutocal26:true});
 }
 
 function meterLgAutoCalStimulusFromCode(code){
@@ -6051,55 +6013,11 @@ function meterSdr26ChartPeakIre(){
 //   - YCbCr Limited (4:2:2 or 4:4:4) has codes 16..255 with 235 at 100%
 //     and 255 at 109% via the legal super-white ramp.
 function meterLgAutoCalCodeForSlot(slot){
- const idx=METER_LG_GREY_AUTOCAL_26_SLOTS.findIndex(v=>Math.abs(Number(v)-Number(slot))<0.001);
- const bits=meterPatchBitDepth();
- const max=bits===10?1023:255;
- const numSlot=Number(slot);
- // Full range (RGB Full or YCbCr Full): SDR 10-bit uses 8bit<<2 so
- // thumbs/chart step codes match the worker DPG index + pattern code.
- // Super-white clamps to peak -- Full transport has no headroom above 100%.
- if(!meterPatchUsesVideoRange()){
-  const s=Math.max(0,Math.min(100,numSlot));
-  if(bits===10){
-   if(s>=99.95) return 1023;
-   return (Math.round(s/100*255)<<2);
-  }
-  return Math.round(s/100*max);
- }
- // Limited transport: dispatch on colorspace + bit-depth.
- const fmt=meterOutputFormatValue();          // '0' = RGB, '1' = YCbCr 4:2:2, '2' = YCbCr 4:4:4
- const isYcbcr=(fmt==='1'||fmt==='2');
- if(bits===10){
-  if(isYcbcr){
-   // YCbCr Limited 10-bit: codes 64..1023 (100=940, 109=1023, super-white
-   // ramp 940+(S-100)/9*83). Use the empirical 26-entry table for the
-   // exact ladder slots; formula for in-between.
-   if(idx>=0) return METER_LG_GREY_AUTOCAL_26_CODES[idx];
-   const s=numSlot;
-   if(s<=100) return Math.max(64,Math.min(940,Math.round(64+s/100*876)));
-   return Math.max(64,Math.min(1023,Math.round(940+(s-100)/9*83)));
-  }
-  // RGB Limited 10-bit: codes 64..940 ONLY (109% clamps to 940). Use
-  // the table for the ladder, with super-white slots capped at 940.
-  if(idx>=0) return Math.min(940, METER_LG_GREY_AUTOCAL_26_CODES[idx]);
-  return Math.max(64,Math.min(940,Math.round(64+numSlot/100*876)));
- }
- // 8-bit Limited
- if(isYcbcr){
-  // YCbCr Limited 8-bit: legal ramp ≤100% (16..235 via 16+S/100*219),
-  // super-white ramp >100% (235+(S-100)/9*20 → 109%=255).
-  const s=numSlot;
-  if(s<=100) return Math.max(16,Math.min(235,Math.round(16+s/100*219)));
-  return Math.max(16,Math.min(255,Math.round(235+(s-100)/9*20)));
- }
- // RGB Limited 8-bit: codes 16..235 only (109% clamps to 235).
- return Math.max(16,Math.min(235,Math.round(16+numSlot/100*219)));
+ return meterPreviewSignalCode(slot,{lgAutocal26:true});
 }
 
 function meterLgSdrLegalDdcCodeFromPercent(percent){
- const clamped=clampNum(percent,0,100)/100;
- if(clamped<=0) return 0;
- return Math.round(16+clamped*219);
+ return meterPreviewSignalCode(percent,{lgLegalSdrDdc:true});
 }
 
 function meterLgSdrLegalStimulusFromCode(code){
@@ -6110,54 +6028,7 @@ function meterLgSdrLegalStimulusFromCode(code){
 }
 
 function meterCodeFromSignalPercentWithOptions(percent,opts){
- opts=opts||{};
- if(opts.lgExtendedSdr) return meterLgSdrExtendedCodeFromPercent(percent);
- if(opts.lgLegalSdrDdc) return meterLgSdrLegalDdcCodeFromPercent(percent);
- const ire=clampNum(percent,0,100);
- // SDR Full 10-bit: derive the code from the stimulus AT the transport bit
- // depth -- round(pct*1023/100).
- //
- // This used to be 8bit<<2. That map belongs to the SDR-26 AutoCal ladder and
- // still lives there in meterLgAutoCalCodeForSlot(), because those client-side
- // codes have to equal the ones the AutoCal WORKER builds for itself
- // (@sdr26_codes in meter_lg_autocal.pl, from the same 8bit<<2 helper) or the
- // chart and step strip stop matching the run. Note the DPG write index itself
- // is NOT code-derived -- the solver picks it by IRE lookup ($idx_for_sdr over
- // @sdr26_labels/@sdr26_indexes) -- so AutoCal's ladder is about agreeing with
- // the worker, not about steering node selection. Either way it was
- // ALSO applied here, which is every OTHER SDR consumer -- above all the plain
- // 11/21/30/100-point greyscale series read built by meterBuildStepsJS(). A
- // series read is a measurement, not a LUT-node write: it wants the finest
- // stimulus resolution the link can carry. 8bit<<2 yields only 256 distinct
- // values inside a 10-bit container (every code a multiple of 4, ~0.392% per
- // step) instead of the ~0.098% true 10-bit gives, i.e. it bakes 8-bit
- // quantisation into a 10-bit signal.
- //
- // It also silently destroyed data. The SERVER builds the steps a series read
- // actually measures (webui_grey_code_for_stimulus, which uses round(pct*1023
- // /100) here) and stamps those codes onto every reading as r_code/g_code/
- // b_code; the browser then matches readings to its own rebuilt steps BY CODE.
- // The two ladders agree only at 0/50/70/100, so an 11-point greyscale lost 7
- // of its 11 measured patches -- reproducibly, mid-calibration, with no
- // indication anything was missing.
- //
- // AutoCal is unaffected by this change: the SDR-26 body codes come from
- // meterLgAutoCalCodeForSlot(), its SDR 0%/100% anchors are literals, and the
- // remaining meterCodeFromSignalPercentWithOptions() call sites inside
- // meterBuildLgAutoCalSteps() are all HDR10/DV-guarded -- and this branch
- // cannot fire for HDR or DV.
- if(typeof meterPatchBitDepth==='function' && meterPatchBitDepth()===10
-    && typeof meterIsLimitedRange==='function' && !meterIsLimitedRange()
-    && typeof meterChartIsHdr==='function' && !meterChartIsHdr()
-    && typeof meterChartIsDv==='function' && !meterChartIsDv()){
-  return Math.round(ire/100*1023);
- }
- const clamped=ire/100;
- const range=meterGreyCodeRange();
- if(meterChartIsDv()){
-  return Math.round(range.min+clamped*range.span);
- }
- return Math.round(range.min+clamped*range.span);
+ return meterPreviewSignalCode(percent,opts||{});
 }
 
 function meterActualSignalPercent(percent){
@@ -7852,19 +7723,6 @@ function meterTargetChromaticityForReading(reading){
  const s=xyz.X+xyz.Y+xyz.Z;
  const wp=meterTargetWhitePoint();
  return s>0?{x:xyz.X/s,y:xyz.Y/s}:{x:wp.x,y:wp.y};
-}
-
-// Approximate correlated colour temperature from CIE xy (McCamy 1992).
-// Good to a few K near the blackbody locus, which is all the live-reading
-// target readout needs. Returns null outside a sane display range.
-function meterCctFromXy(x,y){
- if(!(Number.isFinite(x)&&Number.isFinite(y))) return null;
- if(y<=0) return null;
- const d=0.1858-y;
- if(Math.abs(d)<=1e-15) return null;
- const n=(x-0.3320)/d;
- const cct=449*n*n*n+3525*n*n+6823.3*n+5520.33;
- return (cct>=1000&&cct<=25000)?cct:null;
 }
 
 function meterIreIsPeakHeadroom(ire){
@@ -9922,35 +9780,10 @@ function meterDvRelativeWhiteGamma(whiteY,peak){
  return isFinite(gamma)?gamma:null;
 }
 
-function bt1886Eotf(v,Lw,Lb){
- Lw=Lw||100;Lb=Lb||0;
- const g=2.4;
- const a=Math.pow(Math.pow(Lw,1/g)-Math.pow(Lb,1/g),g);
- const b=Math.pow(Lb,1/g)/(Math.pow(Lw,1/g)-Math.pow(Lb,1/g));
- return a*Math.pow(Math.max(0,v+b),g);
-}
-
-function gammaEotf(v,gamma){return Math.pow(Math.max(0,v),gamma);}
-
-function srgbEotf(v){return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);}
-
 // Pure power / sRGB targets with a raised black: scale from 0..peak then hard-
 // floor at Lb. That produces the classic clip kink on EOTF/luminance charts
 // (shadow codes whose power-law target sits below Lb map to the black shelf).
 // BT.1886 does NOT use this — it bends smoothly into Lb via a*(v+b)^g.
-function meterPowerTargetLuminance(signal,peak,gamma,Lb){
- const p=(peak>0)?peak:0;
- const y=gammaEotf(Math.max(0,Math.min(1,Number(signal)||0)),gamma)*p;
- const floor=Math.max(0,Number(Lb)||0);
- return floor>0?Math.max(y,floor):y;
-}
-function meterSrgbTargetLuminance(signal,peak,Lb){
- const p=(peak>0)?peak:0;
- const y=srgbEotf(Math.max(0,Math.min(1,Number(signal)||0)))*p;
- const floor=Math.max(0,Number(Lb)||0);
- return floor>0?Math.max(y,floor):y;
-}
-
 // Black level for bending the MEASURED trace along the target's shape between
 // samples. Power 2.2/2.4 and sRGB hard-floor the target at Lb, and that shelf
 // is a target-side clamp, not a transfer curve any display follows. Shaping
@@ -9964,9 +9797,11 @@ function meterTargetShapeBlackLevel(Lb){
  const black=Math.max(0,Number(Lb)||0);
  if(!(black>0)) return 0;
  try{
-  const tgt=String(((typeof meterGreyChartTargetGammaSelection==='function')
-   ?meterGreyChartTargetGammaSelection()
-   :((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'').toLowerCase();
+  const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
+  const tgt=String((context&&context.caller_policy==='browser_chart')?context.target_gamma:
+   (((typeof meterGreyChartTargetGammaSelection==='function')
+    ?meterGreyChartTargetGammaSelection()
+    :((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():''))||'')).toLowerCase();
   if(tgt==='srgb') return 0;
   const g=parseFloat(tgt);
   if(g>0&&isFinite(g)) return 0;
@@ -9975,6 +9810,7 @@ function meterTargetShapeBlackLevel(Lb){
 }
 
 function targetEotf(v,Lw,Lb){
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
  // DV Absolute uses PQ/ST2084. DV Relative uses the normal power-gamma path
  // below so chart targets follow the standard 2.2 tunnel curve.
  if(meterChartIsDv() && meterDvMapModeValue()==='1'){
@@ -9985,8 +9821,14 @@ function targetEotf(v,Lw,Lb){
  // Normal HDR10 analysis is PQ. During LG HDR calibration mode, reference-style
  // 1D LUT greyscale adjustment uses a power-gamma workspace; keep that local
  // to the live AutoCal charts so post-cal series reads remain PQ.
- const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
- if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(v,Lw,Lb);
+ const usesPqTarget=context&&context.caller_policy==='browser_chart'
+  ?context.transfer_policy==='pq_absolute'
+  :((typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr());
+ if(usesPqTarget||(context&&context.transfer_policy==='hlg_display')||meterChartIsHlg()) return meterChartTargetLuminance(v,Lw,Lb);
+ if(context&&context.caller_policy==='browser_chart'){
+  const target=browserTargetLuminanceForContext(context,v,Lw,Lb);
+  if(target!=null) return target;
+ }
  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
  if(tgt==='bt1886') return bt1886Eotf(v,Lw,Lb);
  if(tgt==='st2084') return meterChartPqDecodeNormalized(v);
@@ -10154,6 +9996,7 @@ function meterOnHdrDiffuseWhiteAutoChange(){
 }
 
 function meterGreyTargetLuminance(ire,Lw,Lb,code){
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
  if(meterChartIsDv() && meterDvMapModeValue()==='1'){
   const peak=(Lw>0)?Lw:100;
   return meterDvAbsoluteChartTargetLuminance(ire,peak,code);
@@ -10164,8 +10007,14 @@ function meterGreyTargetLuminance(ire,Lw,Lb,code){
  }
  const peak=(Lw>0)?Lw:(meterChartIsHdr()?meterChartHdrPeak():1);
  const signal=meterGreyTargetSignal(ire,code);
- const usesPqTarget=(typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr();
- if(usesPqTarget||meterChartIsHlg()) return meterChartTargetLuminance(signal,peak,Lb||0);
+ const usesPqTarget=context&&context.caller_policy==='browser_chart'
+  ?context.transfer_policy==='pq_absolute'
+  :((typeof meterGreyChartUsesPqTarget==='function')?meterGreyChartUsesPqTarget():meterChartIsHdr());
+ if(usesPqTarget||(context&&context.transfer_policy==='hlg_display')||meterChartIsHlg()) return meterChartTargetLuminance(signal,peak,Lb||0);
+ if(context&&context.caller_policy==='browser_chart'){
+  const target=browserTargetLuminanceForContext(context,signal,peak,Lb||0);
+  if(target!=null) return target;
+ }
  const tgt=(typeof meterGreyChartTargetGammaSelection==='function')?meterGreyChartTargetGammaSelection():((typeof meterGreyTargetGammaSelection==='function')?meterGreyTargetGammaSelection():((document.getElementById('meterTargetGamma')||{}).value||''));
  // BT.1886: black-aware smooth bend into Lb (a*(v+b)^g).
  // Power 2.2/2.4 and sRGB: black-oblivious curve hard-floored at Lb so a
@@ -10991,26 +10840,73 @@ function meterChartHdrPeak(){
  return Math.min(10000,peak);
 }
 
+function meterCalibrationTargetContextFromSource(source,metaStep,metaReading){
+ const src=source||{};
+ const step=metaStep||{};
+ const reading=metaReading||{};
+ const stamped=src.calibration_target_context||step.calibration_target_context||reading.calibration_target_context;
+ const explicitTarget=Object.prototype.hasOwnProperty.call(src,'target_gamma')?String(src.target_gamma||'').toLowerCase():'';
+ if(stamped&&typeof stamped==='object'&&(!explicitTarget||explicitTarget===String(stamped.target_gamma||'').toLowerCase())){
+  const validated=calibrationTargetContext(stamped);
+  if(validated) return validated;
+ }
+ // One-release legacy adapter for snapshots made before context v1. Mutable
+ // controls are read only here, while constructing the replacement record.
+ const signal=String(src.signal_mode||src.requested_signal_mode||step.signal_mode||reading.signal_mode||meterChartSignalMode()||'sdr').toLowerCase();
+ let target=String(src.target_gamma||step.target_gamma||reading.target_gamma||'').toLowerCase();
+ if(!target&&signal==='dv'&&typeof meterDvAutoTargetGamma==='function') target=String(meterDvAutoTargetGamma()||'').toLowerCase();
+ if(!target){
+  const targetGammaEl=document.getElementById('meterTargetGamma');
+  target=String((targetGammaEl&&targetGammaEl.value)||'').toLowerCase();
+ }
+ if(!target) target=signal==='hdr10'?'st2084':(signal==='hlg'?'hlg':'bt1886');
+ const maxLumaEl=document.getElementById('max_luma');
+ const signalPeak=Number(src.max_luma!=null?src.max_luma:(step.max_luma!=null?step.max_luma:(reading.max_luma!=null?reading.max_luma:(maxLumaEl&&maxLumaEl.value))));
+ const dvMapEl=document.getElementById('dv_map_mode');
+ const dvMap=src.dv_map_mode!=null?src.dv_map_mode:(step.dv_map_mode!=null?step.dv_map_mode:(reading.dv_map_mode!=null?reading.dv_map_mode:((dvMapEl&&dvMapEl.value)||'')));
+ const dvInterfaceEl=document.getElementById('dv_interface');
+ const dvInterface=src.dv_interface!=null?src.dv_interface:(step.dv_interface!=null?step.dv_interface:(reading.dv_interface!=null?reading.dv_interface:((dvInterfaceEl&&dvInterfaceEl.value)||'')));
+ const rangeEl=document.getElementById('rgb_quant_range');
+ const transportLimited=String((rangeEl&&rangeEl.value)||'2')==='1';
+ const patternLimited=(typeof meterPatchUsesVideoRange==='function')?meterPatchUsesVideoRange():transportLimited;
+ const patternBits=(typeof meterPatchBitDepth==='function')?meterPatchBitDepth():(signal==='dv'?12:8);
+ const transportBits=(()=>{const n=Number((document.getElementById('max_bpc')||{}).value);return [8,10,12].includes(n)?n:patternBits;})();
+ let headroom='none',headroomMax=100;
+ if(signal==='sdr'&&typeof meterGreyAllowsHeadroomTargets==='function'&&meterGreyAllowsHeadroomTargets()){
+  headroom='lg_sdr26_ladder'; headroomMax=109;
+ }else if(signal==='sdr'&&typeof meterLgGreyscaleUsesExtendedSdr==='function'&&meterLgGreyscaleUsesExtendedSdr(meterActiveSeriesPoints)){
+  headroom='extended_sdr';
+ }
+ const white=Number(src.series_target_white_y!=null?src.series_target_white_y:(step.series_target_white_y!=null?step.series_target_white_y:reading.series_target_white_y));
+ const black=Number(src.series_target_black_y!=null?src.series_target_black_y:(step.series_target_black_y!=null?step.series_target_black_y:reading.series_target_black_y));
+ return calibrationTargetContext({
+  caller_policy:'browser_chart',signal_mode:signal,target_gamma:target,
+  signal_peak_nits:Number.isFinite(signalPeak)&&signalPeak>=0?signalPeak:(signal==='sdr'?100:1000),
+  white_nits:Number.isFinite(white)&&white>=0?white:0,
+  black_nits:Number.isFinite(black)&&black>=0?black:0,
+  pattern_range:patternLimited?'limited':'full',
+  transport_range:transportLimited?'limited':'full',
+  pattern_bits:patternBits,transport_bits:transportBits,
+  headroom_strategy:headroom,headroom_max_percent:headroomMax,
+  dv_map_mode:signal==='dv'?dvMap:'none',
+  dv_interface:signal==='dv'?dvInterface:'none',
+  target_gamut:String(src.target_gamut||step.target_gamut||reading.target_gamut||((document.getElementById('meterTargetGamut')||{}).value)||'auto')
+ });
+}
+
 function meterSetActiveSeriesChartContext(source){
  const src=source||{};
- const metaStep=(Array.isArray(src.steps)?src.steps.find(st=>st&&(st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode||st.dv_interface)):null)||{};
- const metaReading=(Array.isArray(src.readings)?src.readings.find(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode||rd.dv_interface)):null)||{};
- const signal=String((src.signal_mode||src.requested_signal_mode||metaStep.signal_mode||metaReading.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
- meterActiveSeriesSignalMode=signal;
- const target=String(src.target_gamma||metaStep.target_gamma||metaReading.target_gamma||'').toLowerCase();
- if(target) meterActiveSeriesTargetGamma=target;
- else if(signal==='dv'&&typeof meterDvAutoTargetGamma==='function') meterActiveSeriesTargetGamma=String(meterDvAutoTargetGamma()||'').toLowerCase()||null;
- else {
-  const targetGammaEl=document.getElementById('meterTargetGamma');
-  meterActiveSeriesTargetGamma=String((targetGammaEl&&targetGammaEl.value)||'').toLowerCase()||null;
- }
- const maxLumaEl=document.getElementById('max_luma');
- const maxLuma=Number((src.max_luma!=null)?src.max_luma:((metaStep.max_luma!=null)?metaStep.max_luma:((metaReading.max_luma!=null)?metaReading.max_luma:(maxLumaEl&&maxLumaEl.value))));
- meterActiveSeriesMaxLuma=(maxLuma>0&&isFinite(maxLuma))?maxLuma:null;
- const dvMapEl=document.getElementById('dv_map_mode');
- meterActiveSeriesDvMapMode=String((src.dv_map_mode!=null)?src.dv_map_mode:((metaStep.dv_map_mode!=null)?metaStep.dv_map_mode:((metaReading.dv_map_mode!=null)?metaReading.dv_map_mode:((dvMapEl&&dvMapEl.value)||'')))).toLowerCase()||null;
- const dvInterfaceEl=document.getElementById('dv_interface');
- meterActiveSeriesDvInterface=String((src.dv_interface!=null)?src.dv_interface:((metaStep.dv_interface!=null)?metaStep.dv_interface:((metaReading.dv_interface!=null)?metaReading.dv_interface:((dvInterfaceEl&&dvInterfaceEl.value)||'')))).toLowerCase()||null;
+ const metaStep=(Array.isArray(src.steps)?src.steps.find(st=>st&&(st.calibration_target_context||st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode||st.dv_interface)):null)||{};
+ const metaReading=(Array.isArray(src.readings)?src.readings.find(rd=>rd&&(rd.calibration_target_context||rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode||rd.dv_interface)):null)||{};
+ const context=meterCalibrationTargetContextFromSource(src,metaStep,metaReading);
+ if(!context) return null;
+ meterActiveCalibrationTargetContext=context;
+ meterActiveSeriesSignalMode=context.signal_mode;
+ meterActiveSeriesTargetGamma=context.target_gamma;
+ meterActiveSeriesMaxLuma=context.signal_peak_nits>0?context.signal_peak_nits:null;
+ meterActiveSeriesDvMapMode=context.dv_map_mode==='absolute'?'1':(context.dv_map_mode==='relative'?'2':null);
+ meterActiveSeriesDvInterface=context.dv_interface==='low_latency'?'1':(context.dv_interface==='standard'?'0':null);
+ return context;
 }
 
 // The meter pane mirrors the main HDR metadata controls so peak/min only
@@ -11077,47 +10973,6 @@ function meterUpdateHdrConfigVisibility(){
  meterUpdateHdrDiffuseWhiteVisibility();
 }
 
-function meterChartPqEncodeNormalized(nits){
- return pqEncodeNormalized(nits);
-}
-
-function meterChartPqDecodeNormalized(code){
- const clamped=Math.max(0,Math.min(1,code||0));
- if(clamped<=0) return 0;
- const p=Math.pow(clamped,1/PGEN_PQ_M2);
- const num=Math.max(p-PGEN_PQ_C1,0);
- const den=PGEN_PQ_C2-PGEN_PQ_C3*p;
- if(den<=0) return 10000;
- return 10000*Math.pow(num/den,1/PGEN_PQ_M1);
-}
-
-function xyzToICtCp(X,Y,Z){
- X=Number(X)||0; Y=Number(Y)||0; Z=Number(Z)||0;
- const R= 1.7166511880*X -0.3556707838*Y -0.2533662814*Z;
- const G=-0.6666843518*X +1.6164812366*Y +0.0157685458*Z;
- const B= 0.0176398574*X -0.0427706133*Y +0.9421031212*Z;
- const L=(1688*Math.max(0,R)+2146*Math.max(0,G)+262*Math.max(0,B))/4096;
- const M=(683*Math.max(0,R)+2951*Math.max(0,G)+462*Math.max(0,B))/4096;
- const S=(99*Math.max(0,R)+309*Math.max(0,G)+3688*Math.max(0,B))/4096;
- const Lp=meterChartPqEncodeNormalized(L);
- const Mp=meterChartPqEncodeNormalized(M);
- const Sp=meterChartPqEncodeNormalized(S);
- return {
-  I:0.5*Lp+0.5*Mp,
-  T:(6610*Lp-13613*Mp+7003*Sp)/4096,
-  P:(17933*Lp-17390*Mp-543*Sp)/4096
- };
-}
-
-function deltaEITP(X1,Y1,Z1,X2,Y2,Z2){
- const a=xyzToICtCp(X1,Y1,Z1);
- const b=xyzToICtCp(X2,Y2,Z2);
- const dI=a.I-b.I;
- const dT=a.T-b.T;
- const dP=a.P-b.P;
- return 720*Math.sqrt(dI*dI+0.25*dT*dT+dP*dP);
-}
-
 // Chroma-only dE ITP -- same scale (720) and ITP transform, but with the
 // luminance / intensity term (dI) dropped. Used for the SDR26 109% legal
 // peak in the chart so its dE mirrors what the autocal worker computes
@@ -11126,14 +10981,6 @@ function deltaEITP(X1,Y1,Z1,X2,Y2,Z2){
 // dE includes the dI term against a (correctly suppressed) {0,0,0}
 // target reference and reads as a huge number; with this it reads as
 // the actual chromaticity gap to D65 the calibration is closing.
-function deltaEITPChromaOnly(X1,Y1,Z1,X2,Y2,Z2){
- const a=xyzToICtCp(X1,Y1,Z1);
- const b=xyzToICtCp(X2,Y2,Z2);
- const dT=a.T-b.T;
- const dP=a.P-b.P;
- return 720*Math.sqrt(0.25*dT*dT+dP*dP);
-}
-
 // SDR26 peak detector for the chart path (chroma-only / no luminance target).
 // Limited legal peak = 109; Full peak = 100. Must NOT match Limited's
 // legal-white reference at 100% (ddc_target_ire 99 / legal_white_anchor).
@@ -11300,10 +11147,7 @@ function xyzToLab(X,Y,Z,Xn,Yn,Zn){
   const wp=meterTargetWhitePoint();
   Xn=wp.X; Yn=wp.Y; Zn=wp.Z;
  }
- const e=216/24389, k=24389/27;
- function f(t){return t>e?Math.cbrt(t):(k*t+16)/116;}
- const fx=f(X/Xn),fy=f(Y/Yn),fz=f(Z/Zn);
- return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)};
+ return xyzToLabWithWhite(X,Y,Z,Xn,Yn,Zn,'signed_linear');
 }
 
 // HCFR-style CIELUV ΔE using the same L*u*v* reference math.
@@ -11662,45 +11506,6 @@ function hcfrGreyRef(ire, Ym, Lw, Lb, modeOrIncl, code, gwWeight, targetYOverrid
  };
 }
 
-// Simplified deltaE2000
-function deltaE2000(lab1,lab2){ const dL=lab2.L-lab1.L;
- const C1=Math.sqrt(lab1.a*lab1.a+lab1.b*lab1.b);
- const C2=Math.sqrt(lab2.a*lab2.a+lab2.b*lab2.b);
- const Cb=(C1+C2)/2;
- const G=0.5*(1-Math.sqrt(Math.pow(Cb,7)/(Math.pow(Cb,7)+Math.pow(25,7))));
- const a1p=lab1.a*(1+G),a2p=lab2.a*(1+G);
- const C1p=Math.sqrt(a1p*a1p+lab1.b*lab1.b);
- const C2p=Math.sqrt(a2p*a2p+lab2.b*lab2.b);
- const dCp=C2p-C1p;
- let h1p=(a1p===0&&lab1.b===0)?0:Math.atan2(lab1.b,a1p)*180/Math.PI; if(h1p<0) h1p+=360;
- let h2p=(a2p===0&&lab2.b===0)?0:Math.atan2(lab2.b,a2p)*180/Math.PI; if(h2p<0) h2p+=360;
- const Cprod=C1p*C2p;
- let dhp;
- if(Cprod===0){ dhp=0; }
- else {
-  dhp=h2p-h1p;
-  if(dhp>180) dhp-=360;
-  else if(dhp<-180) dhp+=360;
- }
- const dHp=2*Math.sqrt(Cprod)*Math.sin(dhp*Math.PI/360);
- const Lbp=(lab1.L+lab2.L)/2;
- const Cbp=(C1p+C2p)/2;
- let Hbp;
- if(Cprod===0){ Hbp=h1p+h2p; }
- else {
-  const dh=Math.abs(h1p-h2p);
-  if(dh<=180) Hbp=(h1p+h2p)/2;
-  else if(h1p+h2p<360) Hbp=(h1p+h2p+360)/2;
-  else Hbp=(h1p+h2p-360)/2;
- }
- const T=1-0.17*Math.cos((Hbp-30)*Math.PI/180)+0.24*Math.cos(2*Hbp*Math.PI/180)+0.32*Math.cos((3*Hbp+6)*Math.PI/180)-0.20*Math.cos((4*Hbp-63)*Math.PI/180);
- const SL=1+0.015*Math.pow(Lbp-50,2)/Math.sqrt(20+Math.pow(Lbp-50,2));
- const SC=1+0.045*Cbp;
- const SH=1+0.015*Cbp*T;
- const RT=-2*Math.sqrt(Math.pow(Cbp,7)/(Math.pow(Cbp,7)+Math.pow(25,7)))*Math.sin(60*Math.exp(-Math.pow((Hbp-275)/25,2))*Math.PI/180);
- return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dCp/SC,2)+Math.pow(dHp/SH,2)+RT*(dCp/SC)*(dHp/SH));
-}
-
 // CIE 1976 Lab ΔE (Euclidean distance in L*a*b*).
 function deltaE76Lab(l1,l2){
  const dL=l1.L-l2.L, da=l1.a-l2.a, db=l1.b-l2.b;
@@ -11735,74 +11540,6 @@ function deltaECMC(l1,l2,lParam,cParam){
  const SC=0.0638*C1/(1+0.0131*C1)+0.638;
  const SH=SC*(F*T+1-F);
  return Math.sqrt(Math.pow(dL/(l*SL),2)+Math.pow(dC/(c*SC),2)+dHsq/(SH*SH));
-}
-
-// Barten (1999) CSF-derived JND at average field luminance L (cd/m²).
-// Returns the L* increment per 1 JND at that luminance (approx; from
-// ITU-R BT.2246-7 §7). Clamps to a safe floor so SL never vanishes.
-function bartenJND(L){
- const Lc=Math.max(0.005, L);
- // Simplified Barten JND normalized to 1 unit at ~100 nit: ΔL/L scales with
- // Lc^(-0.5) in the low-nit region and approaches Weber (≈0.0106) at 100+ nit.
- const weber=0.0106;
- const dL_over_L = weber * Math.sqrt(100/Lc) ;
- // Convert relative threshold to an L* delta: dL* ≈ 116/3 * f'(Y/Yn) * ΔY/Yn.
- // For perceptual weighting we only need a monotonic scale — return dL*/unit.
- const Yn=100;
- const r=Lc/Yn;
- const fprime = (r>0.008856) ? (1/3)*Math.pow(r,-2/3) : 903.2963/116;
- const dLstar = 116 * fprime * (Lc * dL_over_L) / Yn;
- return Math.max(dLstar, 0.05);
-}
-
-// dE2000 with SL replaced by a Barten-JND-scaled lightness term so
-// "1 ΔE ≈ 1 JND" across the HDR luminance range. Hybrid JND formulation
-// derived from Barten CSF so near-black is not overweighted.
-function deltaE2000JND(lab1,lab2,Ym,Yref){
- const dL=lab2.L-lab1.L;
- const C1=Math.sqrt(lab1.a*lab1.a+lab1.b*lab1.b);
- const C2=Math.sqrt(lab2.a*lab2.a+lab2.b*lab2.b);
- const Cb=(C1+C2)/2;
- const G=0.5*(1-Math.sqrt(Math.pow(Cb,7)/(Math.pow(Cb,7)+Math.pow(25,7))));
- const a1p=lab1.a*(1+G),a2p=lab2.a*(1+G);
- const C1p=Math.sqrt(a1p*a1p+lab1.b*lab1.b);
- const C2p=Math.sqrt(a2p*a2p+lab2.b*lab2.b);
- const dCp=C2p-C1p;
- let h1p=(a1p===0&&lab1.b===0)?0:Math.atan2(lab1.b,a1p)*180/Math.PI; if(h1p<0) h1p+=360;
- let h2p=(a2p===0&&lab2.b===0)?0:Math.atan2(lab2.b,a2p)*180/Math.PI; if(h2p<0) h2p+=360;
- const Cprod=C1p*C2p;
- let dhp;
- if(Cprod===0){ dhp=0; }
- else {
-  dhp=h2p-h1p;
-  if(dhp>180) dhp-=360;
-  else if(dhp<-180) dhp+=360;
- }
- const dHp=2*Math.sqrt(Cprod)*Math.sin(dhp*Math.PI/360);
- const Cbp=(C1p+C2p)/2;
- let Hbp;
- if(Cprod===0){ Hbp=h1p+h2p; }
- else {
-  const dh=Math.abs(h1p-h2p);
-  if(dh<=180) Hbp=(h1p+h2p)/2;
-  else if(h1p+h2p<360) Hbp=(h1p+h2p+360)/2;
-  else Hbp=(h1p+h2p-360)/2;
- }
- const T=1-0.17*Math.cos((Hbp-30)*Math.PI/180)+0.24*Math.cos(2*Hbp*Math.PI/180)+0.32*Math.cos((3*Hbp+6)*Math.PI/180)-0.20*Math.cos((4*Hbp-63)*Math.PI/180);
- // SL replaced with Barten JND at the field-average luminance. Falls back
- // to the standard CIEDE2000 SL when Ym/Yref are not supplied.
- let SL;
- if(Ym>0 || Yref>0){
-  const Lfield=Math.max(Ym||0, Yref||0, 0.005);
-  SL=bartenJND(Lfield);
- } else {
-  const Lbp=(lab1.L+lab2.L)/2;
-  SL=1+0.015*Math.pow(Lbp-50,2)/Math.sqrt(20+Math.pow(Lbp-50,2));
- }
- const SC=1+0.045*Cbp;
- const SH=1+0.015*Cbp*T;
- const RT=-2*Math.sqrt(Math.pow(Cbp,7)/(Math.pow(Cbp,7)+Math.pow(25,7)))*Math.sin(60*Math.exp(-Math.pow((Hbp-275)/25,2))*Math.PI/180);
- return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dCp/SC,2)+Math.pow(dHp/SH,2)+RT*(dCp/SC)*(dHp/SH));
 }
 
 // Reads the greyscale ΔE form selector. AutoCal and new installs default to ITP.
@@ -13212,14 +12949,7 @@ function meterRecoverSeries(s){
  meterSeriesSteps=steps;
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
- const metaStep=(Array.isArray(steps)?steps.find(st=>st&&(st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode||st.dv_interface)):null)||{};
- const metaReading=(s.readings&&Array.isArray(s.readings)?s.readings.find(rd=>rd&&(rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode||rd.dv_interface)):null)||{};
- meterActiveSeriesSignalMode=String((s.signal_mode||metaStep.signal_mode||metaReading.signal_mode||meterChartSignalMode()||'sdr')).toLowerCase();
- meterActiveSeriesTargetGamma=String((s.target_gamma||metaStep.target_gamma||metaReading.target_gamma||'')).toLowerCase()||null;
- const activeMaxLuma=Number((s.max_luma!=null?s.max_luma:(metaStep.max_luma!=null?metaStep.max_luma:metaReading.max_luma)));
- meterActiveSeriesMaxLuma=(activeMaxLuma>0&&isFinite(activeMaxLuma))?activeMaxLuma:null;
- meterActiveSeriesDvMapMode=String((s.dv_map_mode||metaStep.dv_map_mode||metaReading.dv_map_mode||'')).toLowerCase()||null;
- meterActiveSeriesDvInterface=String((s.dv_interface||metaStep.dv_interface||metaReading.dv_interface||'')).toLowerCase()||null;
+ meterSetActiveSeriesChartContext({...s,steps:steps});
  meterActiveSeriesKey=(s&&s.cache_key)?String(s.cache_key):(type+'-'+points);
  meterSharedSeriesId=s.series_id||null;
  if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView(points);
@@ -13404,6 +13134,8 @@ function meterStampReadingStepMeta(reading,step){
 	 if(step.max_luma!=null) reading.max_luma=step.max_luma;
 	 if(step.dv_map_mode!=null) reading.dv_map_mode=step.dv_map_mode;
 	 if(step.dv_interface!=null) reading.dv_interface=step.dv_interface;
+	 if(step.calibration_target_context&&typeof step.calibration_target_context==='object') reading.calibration_target_context={...step.calibration_target_context};
+	 else if(typeof meterActiveCalibrationTargetContext!=='undefined'&&meterActiveCalibrationTargetContext) reading.calibration_target_context={...meterActiveCalibrationTargetContext};
 	 if(step.analysis_ire!=null) reading.analysis_ire=step.analysis_ire;
  if(step.target_ire!=null) reading.target_ire=step.target_ire;
  if(step.transport_stimulus!=null) reading.transport_stimulus=step.transport_stimulus;
@@ -13645,6 +13377,7 @@ function meterCacheSeriesState(status,options){
 	  max_luma:meterActiveSeriesMaxLuma||null,
 	  dv_map_mode:meterActiveSeriesDvMapMode||null,
 	  dv_interface:meterActiveSeriesDvInterface||null,
+	  calibration_target_context:meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null,
 	  observer_readings:observerReadings,
 	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
 	  black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
@@ -13691,6 +13424,8 @@ function meterRestoreSeriesFromCache(key){
 	  target_gamma:cached.target_gamma,
 	  max_luma:cached.max_luma,
 	  dv_map_mode:cached.dv_map_mode,
+	  dv_interface:cached.dv_interface,
+	  calibration_target_context:cached.calibration_target_context?JSON.parse(JSON.stringify(cached.calibration_target_context)):null,
 	  steps:JSON.parse(JSON.stringify(cached.steps)),
   readings:restoredReadings,
   white_reading:restoredWhite,
@@ -16233,6 +15968,7 @@ let meterActiveSeriesTargetGamma=null; // target transfer function tied to activ
 let meterActiveSeriesMaxLuma=null; // HDR/DV peak tied to active series snapshot
 let meterActiveSeriesDvMapMode=null; // DV absolute/relative mode tied to active series snapshot
 let meterActiveSeriesDvInterface=null; // DV standard/low-latency interface tied to active series snapshot
+let meterActiveCalibrationTargetContext=null; // immutable context v1 tied to active series snapshot
 let meterCurrentPatchStep=null; // currently displayed patch step object
 let meterPatternDisplayToken=0; // invalidates queued patch-display requests
 let meterPatternDisplayQueue=Promise.resolve(); // serialize latest-wins display writes

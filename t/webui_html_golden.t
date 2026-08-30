@@ -29,7 +29,7 @@ my $shared = File::Spec->catdir($repo, "usr", "share", "PGenerator");
 my @modules = qw(version command variables conf info file log pattern daemon
                  client resolve discovery lg webui bash serial);
 my @fragments = qw(webui.html webui-theme.css webui-layout.css webui-body.html
-                   webui-logo-dark.html webui-app.js webui-workspace.js
+                   webui-logo-dark.html webui-colour-math.js webui-app.js webui-workspace.js
                    webui-lg-card.html webui-lg.js);
 
 chdir $shared or die "cannot chdir to $shared: $!";

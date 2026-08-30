@@ -128,7 +128,8 @@ sub calibration_target_context {
  my ($input)=@_;
  return undef if(ref($input) ne "HASH");
  my $caller=lc($input->{"caller_policy"}||"");
- return undef if($caller ne "autocal_1d" && $caller ne "autocal_3d");
+ return undef if($caller ne "autocal_1d" && $caller ne "autocal_3d"
+  && $caller ne "browser_chart");
 
  my $mode=lc($input->{"signal_mode"}||"sdr");
  $mode="hdr10" if($mode eq "hdr");
@@ -147,7 +148,15 @@ sub calibration_target_context {
  return undef if(!defined($peak));
 
  my $transfer;
- if($caller eq "autocal_1d") {
+ if($caller eq "browser_chart") {
+  $transfer="hlg_display" if($mode eq "hlg" || $gamma eq "hlg");
+  $transfer="pq_absolute" if(!defined($transfer) && $gamma eq "st2084");
+  $transfer="srgb" if(!defined($transfer) && $gamma eq "srgb");
+  $transfer="power_2_2" if(!defined($transfer) && $gamma eq "2.2");
+  $transfer="bt1886_chart_ab" if(!defined($transfer) && $gamma eq "bt1886");
+  $transfer="power_2_4" if(!defined($transfer));
+ }
+ elsif($caller eq "autocal_1d") {
   $transfer="srgb" if($gamma eq "srgb");
   $transfer="dv_gamma_2_2_tunnel" if($mode eq "dv" && $gamma eq "st2084");
   $transfer="pq_normalized" if(!defined($transfer) && $gamma eq "st2084");
@@ -164,8 +173,11 @@ sub calibration_target_context {
 
  my $normalization=($caller eq "autocal_3d")
   ? "relative_black_removed"
-  : (($mode eq "hdr10" && $gamma eq "st2084")
-     ? "absolute_nits_capped_at_white" : "white_scaled");
+  : (($caller eq "browser_chart")
+     ? (($transfer eq "pq_absolute" || $transfer eq "hlg_display")
+        ? "absolute_nits" : "white_scaled")
+     : (($mode eq "hdr10" && $gamma eq "st2084")
+        ? "absolute_nits_capped_at_white" : "white_scaled"));
  my $context={
   schema=>"pgen-calibration-target-context-v1",
   context_version=>1,
@@ -178,6 +190,67 @@ sub calibration_target_context {
   dv_tunnel_policy=>(($mode eq "dv" && $gamma eq "st2084")
    ? "gamma_2_2_when_target_label_st2084" : "none"),
  };
+ if($caller eq "browser_chart") {
+  my $signal_peak=defined($input->{"signal_peak_nits"})
+   ? bounded_number($input->{"signal_peak_nits"},0,10_000)
+   : (($mode eq "sdr") ? 100 : 1_000);
+  my $white=defined($input->{"white_nits"})
+   ? bounded_number($input->{"white_nits"},0,1_000_000) : 0;
+  my $black=defined($input->{"black_nits"})
+   ? bounded_number($input->{"black_nits"},0,1_000_000) : 0;
+  return undef if(!defined($signal_peak) || !defined($white)
+   || !defined($black));
+  my $pattern_range=lc($input->{"pattern_range"}||"full");
+  my $transport_range=lc($input->{"transport_range"}||$pattern_range);
+  return undef if(($pattern_range ne "full" && $pattern_range ne "limited")
+   || ($transport_range ne "full" && $transport_range ne "limited"));
+  my $pattern_bits=defined($input->{"pattern_bits"})
+   ? int($input->{"pattern_bits"}) : (($mode eq "dv") ? 12 : 8);
+  my $transport_bits=defined($input->{"transport_bits"})
+   ? int($input->{"transport_bits"}) : $pattern_bits;
+  return undef if(($pattern_bits != 8 && $pattern_bits != 10 && $pattern_bits != 12)
+   || ($transport_bits != 8 && $transport_bits != 10 && $transport_bits != 12));
+  my $headroom=lc($input->{"headroom_strategy"}||"none");
+  return undef if($headroom ne "none" && $headroom ne "legal_superwhite"
+   && $headroom ne "extended_sdr" && $headroom ne "lg_sdr26_ladder");
+  my $headroom_max=defined($input->{"headroom_max_percent"})
+   ? bounded_number($input->{"headroom_max_percent"},100,1_000) : 100;
+  return undef if(!defined($headroom_max)
+   || ($headroom eq "none" && $headroom_max != 100));
+  my $dv_map=lc($input->{"dv_map_mode"}||"");
+  $dv_map="absolute" if($dv_map eq "1");
+  $dv_map="relative" if($dv_map eq "2");
+  $dv_map=($mode eq "dv") ? "relative" : "none" if($dv_map eq "");
+  return undef if($dv_map ne "none" && $dv_map ne "absolute"
+   && $dv_map ne "relative");
+  return undef if($mode ne "dv" && $dv_map ne "none");
+  my $dv_interface=lc($input->{"dv_interface"}||"");
+  $dv_interface="standard" if($dv_interface eq "0");
+  $dv_interface="low_latency" if($dv_interface eq "1" || $dv_interface eq "ll");
+  $dv_interface=($mode eq "dv") ? "standard" : "none" if($dv_interface eq "");
+  return undef if($dv_interface ne "none" && $dv_interface ne "standard"
+   && $dv_interface ne "low_latency");
+  return undef if($mode ne "dv" && $dv_interface ne "none");
+  my $gamma_exponent=($gamma eq "2.2") ? 2.2
+   : (($gamma eq "2.4" || $gamma eq "bt1886") ? 2.4 : 0);
+  $context->{"gamma_exponent"}=$gamma_exponent+0;
+  $context->{"white_nits"}=$white+0;
+  $context->{"black_nits"}=$black+0;
+  $context->{"signal_peak_nits"}=$signal_peak+0;
+  $context->{"pattern_range"}=$pattern_range;
+  $context->{"transport_range"}=$transport_range;
+  $context->{"pattern_bits"}=$pattern_bits;
+  $context->{"transport_bits"}=$transport_bits;
+  $context->{"headroom_strategy"}=$headroom;
+  $context->{"headroom_max_percent"}=$headroom_max+0;
+  $context->{"dv_map_mode"}=$dv_map;
+  $context->{"dv_interface"}=$dv_interface;
+  $context->{"dv_tunnel_policy"}=($mode eq "dv")
+   ? (($dv_map eq "absolute")
+      ? "st2084_absolute_map" : "gamma_2_2_relative_map")
+   : "none";
+  $context->{"target_gamut"}=lc($input->{"target_gamut"}||"auto");
+ }
  return _lock_flat_hashref($context);
 }
 

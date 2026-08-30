@@ -197,6 +197,10 @@ copy("$root/usr/share/PGenerator/PGCalibrationMath.pm","$stage/usr/share/PGenera
  or die "Unable to stage calibration maths module: $!";
 copy("$root/usr/share/PGenerator/PGMeterReading.pm","$stage/usr/share/PGenerator/PGMeterReading.pm")
  or die "Unable to stage meter-reading module: $!";
+copy("$root/usr/share/PGenerator/PGSignalCode.pm","$stage/usr/share/PGenerator/PGSignalCode.pm")
+ or die "Unable to stage signal-code module: $!";
+copy("$root/usr/share/PGenerator/webui-colour-math.js","$stage/usr/share/PGenerator/webui-colour-math.js")
+ or die "Unable to stage browser colour-maths fragment: $!";
 copy("$root/usr/bin/pgen_lut_solve","$stage/usr/bin/pgen_lut_solve")
  or die "Unable to stage native LUT helper: $!";
 chmod(0755,"$stage/usr/bin/pgen_lut_solve");

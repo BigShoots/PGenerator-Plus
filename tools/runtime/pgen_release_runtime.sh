@@ -54,6 +54,8 @@ PGEN_RELEASE_REQUIRED_MATH_FILES=(
  "usr/share/PGenerator/PGCalibrationMath.pm"
  "usr/share/PGenerator/PGMath.pm"
  "usr/share/PGenerator/PGMeterReading.pm"
+ "usr/share/PGenerator/PGSignalCode.pm"
+ "usr/share/PGenerator/webui-colour-math.js"
 )
 
 PGEN_RELEASE_REQUIRED_MATH_EXECUTABLES=(

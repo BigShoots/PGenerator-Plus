@@ -39,12 +39,14 @@ copy(File::Spec->catfile($shared, "PGMath.pm"), File::Spec->catfile($temp, "PGMa
     or die "cannot stage PGMath.pm: $!";
 copy(File::Spec->catfile($shared, "PGCalibrationMath.pm"), File::Spec->catfile($temp, "PGCalibrationMath.pm"))
     or die "cannot stage PGCalibrationMath.pm: $!";
+copy(File::Spec->catfile($shared, "PGSignalCode.pm"), File::Spec->catfile($temp, "PGSignalCode.pm"))
+    or die "cannot stage PGSignalCode.pm: $!";
 copy(File::Spec->catfile($shared, "PGICCProfile.pm"), File::Spec->catfile($temp, "PGICCProfile.pm"))
     or die "cannot stage PGICCProfile.pm: $!";
 copy(File::Spec->catfile($shared, "icc_profile.html"), File::Spec->catfile($temp, "icc_profile.html"))
     or die "cannot stage icc_profile.html: $!";
 my @fragments = qw(webui.html webui-theme.css webui-layout.css webui-body.html
-                   webui-logo-dark.html webui-app.js webui-workspace.js
+                   webui-logo-dark.html webui-colour-math.js webui-app.js webui-workspace.js
                    webui-lg-card.html webui-lg.js);
 my $missing = "webui-app.js";
 for my $fragment (@fragments) {

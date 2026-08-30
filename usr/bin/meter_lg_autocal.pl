@@ -23,6 +23,7 @@ use PGCalibrationMath qw(
  target_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -2337,65 +2338,57 @@ sub lg_extended_sdr_16_255_enabled {
  return 0;
 }
 
+my %PATCH_SIGNAL_CODE_POLICIES;
+sub patch_signal_code_policy_for_config {
+ my ($config)=@_;
+ die "Patch config is required\n" if(ref($config) ne "HASH");
+ my $mode=lc($config->{signal_mode}||"sdr");
+ $mode="hdr10" if($mode eq "hdr");
+ my $pattern_range=$config->{pattern_signal_range}
+  || $config->{signal_range} || $config->{transport_signal_range} || "";
+ my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
+ my $transport=$config->{transport_signal_range};
+ my $transport_limited=(defined($transport) && $transport ne "")
+  ? (int($transport)==1 ? 1 : 0) : $limited;
+ my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
+ my %input=(
+  signal_mode=>$mode,
+  pattern_range=>($limited ? "limited" : "full"),
+  transport_range=>($transport_limited ? "limited" : "full"),
+ );
+ if($mode eq "hdr10") {
+  $input{max_bpc}=10;
+ } elsif($sdr_headroom) {
+  $input{max_bpc}=10;
+  $input{autocal_26_codes}=1;
+  # This worker historically exposes its 10-bit Limited 105/109 slots.
+  # Keep that workflow policy named even if the transport is RGB; the Web UI
+  # server has a separate color-format-aware chart policy.
+  $input{color_format}=$limited ? 1 : 0;
+ } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
+  $input{max_bpc}=8;
+  $input{extended_sdr_codes}=1;
+ } else {
+  $input{max_bpc}=8;
+ }
+ my $key=join(":",map { defined($input{$_}) ? $input{$_} : "" }
+  qw(signal_mode pattern_range transport_range max_bpc autocal_26_codes
+     color_format extended_sdr_codes));
+ return $PATCH_SIGNAL_CODE_POLICIES{$key}
+  if($PATCH_SIGNAL_CODE_POLICIES{$key});
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 1D patch signal-code policy\n" if(!$policy);
+ $PATCH_SIGNAL_CODE_POLICIES{$key}=$policy;
+ return $policy;
+}
+
 sub patch_code_for_stimulus {
-	 my ($config,$stimulus)=@_;
-	 $stimulus=0 if(!defined($stimulus));
-	 $stimulus=0 if($stimulus < 0);
-	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
-	 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
-	 my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
-	 # Super-white headroom (>100%) exists only in LIMITED range (codes
-	 # 236..255 in 8-bit, 941..1023 in 10-bit) regardless of bit depth -- the
-	 # 105/109 ladder anchors live there. Full range has no codes above white,
-	 # so cap stimulus at 100% (peak) only when full.
-	 my $headroom=($sdr_headroom || $limited) ? 109.5 : 100;
-	 $stimulus=$headroom if($stimulus > $headroom);
-	 # HDR10 is always 10-bit. Legal range depends on panel quant range.
-	 # Limited 10-bit -> 64-940. Full 10-bit -> 0-1023. Returns early so the
-	 # SDR-only clamp below (which would clamp 10-bit codes to 255) is
-	 # bypassed.
-	 my $hdr10=lc($config->{"signal_mode"}||"sdr") eq "hdr10";
-	 my $code;
-	 if($hdr10) {
-	  if($limited) {
-	   $code=int(64 + ($stimulus/100)*876 + .5);
-	  } else {
-	   # Full HDR10 stays linear 0..1023 (PQ domain; not the SDR 8bit<<2 map).
-	   $code=int(($stimulus/100)*1023 + .5);
-	  }
-	  $code=64   if($code < 64   && $limited);
-	  $code=0    if($code < 0    && !$limited);
-	  $code=940  if($code > 940  && $limited);
-	  $code=1023 if($code > 1023 && !$limited);
-	  return $code;
-	 }
-	 if($limited && $sdr_headroom) {
-	  # Canonical 10-bit LIMITED stimulus->code. For S<=100 use the linear
-	  # legal-range formula round(64 + S/100*876) (50%->502, 100%->940).
-	  # For S>100 (legal-expanded super-white), remap from the legal
-	  # white (940) to the legal peak (1023) over the 9-step 100%..109%
-	  # ladder: round(940 + (S-100)/9*(1023-940)). This makes 105%->986
-	  # and 109%->1023 instead of the prior linear extension (984, 1019)
-	  # which left a 4-code gap between 109% and the panel peak. Below
-	  # 100%, the linear formula and the S<=100 split are unchanged.
-	  if($stimulus <= 100) {
-	   $code=int(64 + ($stimulus/100)*876 + .5);
-	  } else {
-	   $code=int(940 + ($stimulus-100)/9*(1023-940) + .5);
-	  }
-	 } elsif($sdr_headroom) {
-	  # Full-range SDR 10-bit: same 8bit<<2 map as the DPG index so the
-	  # patch samples the LUT entry the solver adjusts (see
-	  # lg_autocal_sdr26_dpg_full_index_for_ire). Not linear *1023.
-	  $code=lg_autocal_sdr26_dpg_full_index_for_ire($stimulus,1023);
-	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
-	  $code=($stimulus <= 0) ? 0 : int(16 + ($stimulus/100)*239 + .5);
-	 } else {
-	  $code=$limited ? int(16 + ($stimulus/100)*219 + .5) : int(($stimulus/100)*255 + .5);
-	 }
-	 $code=($limited && $sdr_headroom) ? 64 : 0 if($code < 0);
-	 $code=$sdr_headroom ? 1023 : 255 if($code > ($sdr_headroom ? 1023 : 255));
-	 return $code;
+ my ($config,$stimulus)=@_;
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy_for_config($config),
+  defined($stimulus) ? $stimulus : 0);
+ die "Unable to convert 1D patch signal percent\n" if(!$result);
+ return $result->{code};
 }
 
 sub shifted_stimulus_step {
@@ -4995,29 +4988,6 @@ sub sanitize_count {
  return $raw;
 }
 
-sub _patch_insert_code_for_level {
- # Legacy fallback only. Modern webui binaries inject a precomputed
- # "<patch_insert_*_code>:<patch_insert_*_input_max>" pair into the
- # config so the insertion patch matches the same code the greyscale
- # ladder would emit for that stimulus in the active output mode. This
- # remains for older webui binaries that do not inject the fields.
- my ($level_pct,$signal_mode,$max_luma)=@_;
- $level_pct=0 if($level_pct+0 < 0);
- $level_pct=100 if($level_pct+0 > 100);
- $max_luma//=1000;
- # For HDR10 the code must be PQ-encoded so the configured level
- # percentage maps to the correct visible luminance. Without PQ
- # encoding, code 26 (10%) through PQ EOTF is only ~0.4 nits --
- # essentially black on an OLED. PQ-encoding 10% of 1000 nits (100
- # nits) gives code ~143, which is a clearly visible grey flash.
- if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
-  my $target_nits=($level_pct/100.0)*$max_luma;
-  my $pq_signal=pq_encode_normalized($target_nits);
-  return int($pq_signal*255.0 + 0.5);
- }
- return int(($level_pct/100.0)*255.0 + 0.5);
-}
-
 sub _patch_insert_resolve {
  # Returns ($code,$input_max) for a single insertion type. Prefers the
  # webui-precomputed pair (mode-correct, matches the greyscale ladder);
@@ -5031,13 +5001,25 @@ sub _patch_insert_resolve {
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
  }
- if(defined($config->{"signal_mode"}) && lc($config->{"signal_mode"}) eq "dv") {
-  my $pct=$level+0;
-  $pct=0 if($pct < 0);
-  $pct=100 if($pct > 100);
-  return (int(256.0+($pct/100.0)*3504.0+0.5),4095);
+ my $mode=lc($config->{"signal_mode"}||"sdr");
+ my %input=(signal_mode=>$mode,pattern_range=>"full",
+  transport_range=>"full",max_bpc=>8);
+ if($mode eq "hdr10") {
+  $input{pq_luminance_percent}=1;
+  $input{signal_peak_nits}=($config->{"max_luma"}||1000)+0;
+ } elsif($mode eq "dv") {
+  $input{pattern_range}="limited";
+  $input{transport_range}="limited";
+  $input{dv_series}=1;
+  $input{dv_series_code_bits}=12;
+  $input{dv_series_full_range}=0;
+  $input{dv_interface}=$config->{"dv_interface"}||"standard";
  }
- return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 1D insertion signal-code policy\n" if(!$policy);
+ my $result=signal_percent_to_code($policy,$level);
+ die "Unable to convert 1D insertion signal percent\n" if(!$result);
+ return ($result->{code},$result->{input_max});
 }
 
 sub apply_pattern_insert_before_read {

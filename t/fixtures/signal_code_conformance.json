@@ -1,0 +1,66 @@
+{
+  "schema": "pgen-signal-code-conformance-v1",
+  "provenance": {
+    "source": "webui_grey_code_for_stimulus at 5d289d42 plus uncommitted Phase 4 context-only changes",
+    "units": "stimulus_percent to integer wire code and explicit input_max",
+    "rounding": "positive half-up: int(value + 0.5)",
+    "capture": "Every legacy branch was evaluated before PGSignalCode.pm replaced it."
+  },
+  "rows": [
+    {"name":"sdr_8_full_mid","stimulus_percent":50,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8},"expected":{"code":128,"input_max":255}},
+    {"name":"sdr_8_limited_black","stimulus_percent":0,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8},"expected":{"code":16,"input_max":255}},
+    {"name":"sdr_10_full_white","stimulus_percent":100,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":10},"expected":{"code":1023,"input_max":1023}},
+    {"name":"sdr_10_limited_mid","stimulus_percent":50,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10},"expected":{"code":502,"input_max":1023}},
+    {"name":"hdr10_8_limited_mid","stimulus_percent":50,"signal_mode":"hdr10","signal_range":"limited","options":{"max_bpc":8},"expected":{"code":126,"input_max":255}},
+    {"name":"hdr10_10_full_mid","stimulus_percent":50,"signal_mode":"hdr10","signal_range":"full","options":{"max_bpc":10},"expected":{"code":512,"input_max":1023}},
+    {"name":"hlg_8_full_mid","stimulus_percent":50,"signal_mode":"hlg","signal_range":"full","options":{"max_bpc":8},"expected":{"code":128,"input_max":255}},
+    {"name":"hlg_10_limited_mid","stimulus_percent":50,"signal_mode":"hlg","signal_range":"limited","options":{"max_bpc":10},"expected":{"code":502,"input_max":1023}},
+    {"name":"sdr_pattern_limited_transport_full","stimulus_percent":50,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"transport_range":"full"},"expected":{"code":126,"input_max":255}},
+    {"name":"sdr_pattern_full_transport_limited","stimulus_percent":50,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8,"transport_range":"limited"},"expected":{"code":128,"input_max":255}},
+
+    {"name":"hdr20_8_full_slot","stimulus_percent":1.4,"signal_mode":"hdr10","signal_range":"full","options":{"max_bpc":8,"hdr20_codes":1,"hdr20_use_limited":1,"hdr20_full":1},"expected":{"code":4,"input_max":255}},
+    {"name":"hdr20_8_limited_slot","stimulus_percent":1.4,"signal_mode":"hdr10","signal_range":"limited","options":{"max_bpc":8,"hdr20_codes":1,"hdr20_use_limited":1,"hdr20_full":0},"expected":{"code":19,"input_max":255}},
+    {"name":"hdr20_10_full_slot","stimulus_percent":1.4,"signal_mode":"hdr10","signal_range":"full","options":{"max_bpc":10,"hdr20_codes":1,"hdr20_use_limited":1,"hdr20_full":1},"expected":{"code":14,"input_max":1023}},
+    {"name":"hdr20_10_limited_slot","stimulus_percent":1.4,"signal_mode":"hdr10","signal_range":"limited","options":{"max_bpc":10,"hdr20_codes":1,"hdr20_use_limited":1,"hdr20_full":0},"expected":{"code":76,"input_max":1023}},
+    {"name":"hdr20_custom_table","stimulus_percent":50,"signal_mode":"hdr10","signal_range":"limited","options":{"max_bpc":10,"hdr20_codes":1,"hdr20_use_limited":1,"active_table":{"50":777}},"expected":{"code":777,"input_max":1023}},
+
+    {"name":"sdr26_8_full_headroom_clamps","stimulus_percent":109,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8,"autocal_26_codes":1,"color_format":0},"expected":{"code":255,"input_max":255}},
+    {"name":"sdr26_8_rgb_limited_headroom_clamps","stimulus_percent":109,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"autocal_26_codes":1,"color_format":0},"expected":{"code":235,"input_max":255}},
+    {"name":"sdr26_8_ycbcr_limited_105","stimulus_percent":105,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"autocal_26_codes":1,"color_format":1},"expected":{"code":246,"input_max":255}},
+    {"name":"sdr26_8_ycbcr_limited_peak","stimulus_percent":109,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"autocal_26_codes":1,"color_format":1},"expected":{"code":255,"input_max":255}},
+    {"name":"sdr26_10_full_99","stimulus_percent":99,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":10,"autocal_26_codes":1,"color_format":0},"expected":{"code":1008,"input_max":1023}},
+    {"name":"sdr26_10_rgb_limited_headroom_clamps","stimulus_percent":109,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"autocal_26_codes":1,"color_format":0},"expected":{"code":940,"input_max":1023}},
+    {"name":"sdr26_10_ycbcr_limited_mid","stimulus_percent":50,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"autocal_26_codes":1,"color_format":1},"expected":{"code":502,"input_max":1023}},
+    {"name":"sdr26_10_ycbcr_limited_105","stimulus_percent":105,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"autocal_26_codes":1,"color_format":1},"expected":{"code":986,"input_max":1023}},
+    {"name":"sdr26_10_ycbcr_limited_peak","stimulus_percent":109,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"autocal_26_codes":1,"color_format":1},"expected":{"code":1023,"input_max":1023}},
+
+    {"name":"two_point_8_ycbcr_superwhite","stimulus_percent":105,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"two_point_ycbcr_headroom":1},"expected":{"code":246,"input_max":255}},
+    {"name":"two_point_10_ycbcr_superwhite","stimulus_percent":105,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"two_point_ycbcr_headroom":1},"expected":{"code":986,"input_max":1023}},
+
+    {"name":"dv_8_limited_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":8,"dv_series_full_range":0},"expected":{"code":126,"input_max":255}},
+    {"name":"dv_8_full_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"full","options":{"dv_series":1,"dv_series_code_bits":8,"dv_series_full_range":1},"expected":{"code":128,"input_max":255}},
+    {"name":"dv_10_limited_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":10,"dv_series_full_range":0},"expected":{"code":502,"input_max":1023}},
+    {"name":"dv_10_full_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"full","options":{"dv_series":1,"dv_series_code_bits":10,"dv_series_full_range":1},"expected":{"code":512,"input_max":1023}},
+    {"name":"dv_12_limited_black","stimulus_percent":0,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":12,"dv_series_full_range":0},"expected":{"code":256,"input_max":4095}},
+    {"name":"dv_12_limited_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":12,"dv_series_full_range":0},"expected":{"code":2008,"input_max":4095}},
+    {"name":"dv_12_limited_white","stimulus_percent":100,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":12,"dv_series_full_range":0},"expected":{"code":3760,"input_max":4095}},
+    {"name":"dv_12_full_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"full","options":{"dv_series":1,"dv_series_code_bits":12,"dv_series_full_range":1},"expected":{"code":2048,"input_max":4095}},
+    {"name":"dv_12_low_latency_limited_mid","stimulus_percent":50,"signal_mode":"dv","signal_range":"limited","options":{"dv_series":1,"dv_series_code_bits":12,"dv_series_full_range":0,"dv_interface":"low_latency"},"expected":{"code":2008,"input_max":4095}},
+
+    {"name":"extended_sdr_8_black","stimulus_percent":0,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"extended_sdr_codes":1},"expected":{"code":0,"input_max":255}},
+    {"name":"extended_sdr_8_mid","stimulus_percent":50,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"extended_sdr_codes":1},"expected":{"code":136,"input_max":255}},
+    {"name":"extended_sdr_10_white","stimulus_percent":100,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"extended_sdr_codes":1},"expected":{"code":1023,"input_max":1023}},
+    {"name":"legal_sdr_8_black","stimulus_percent":0,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"legal_sdr_ddc_codes":1},"expected":{"code":0,"input_max":255}},
+    {"name":"legal_sdr_8_mid","stimulus_percent":50,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8,"legal_sdr_ddc_codes":1},"expected":{"code":126,"input_max":255}},
+    {"name":"legal_sdr_10_white","stimulus_percent":100,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":10,"legal_sdr_ddc_codes":1},"expected":{"code":940,"input_max":1023}},
+
+    {"name":"hdr10_insertion_100_nits","stimulus_percent":10,"signal_mode":"hdr10","signal_range":"full","options":{"max_bpc":8,"pq_luminance_percent":1,"signal_peak_nits":1000},"expected":{"code":130,"input_max":255}},
+    {"name":"hdr10_insertion_250_nits","stimulus_percent":25,"signal_mode":"hdr10","signal_range":"full","options":{"max_bpc":8,"pq_luminance_percent":1,"signal_peak_nits":1000},"expected":{"code":154,"input_max":255}},
+
+    {"name":"negative_clamps","stimulus_percent":-5,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8},"expected":{"code":0,"input_max":255}},
+    {"name":"above_nominal_clamps","stimulus_percent":110,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8},"expected":{"code":255,"input_max":255}},
+    {"name":"half_up_full_even_to_odd","stimulus_percent":0.9803921568627451,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8},"expected":{"code":3,"input_max":255}},
+    {"name":"half_up_full_odd_to_even","stimulus_percent":1.3725490196078431,"signal_mode":"sdr","signal_range":"full","options":{"max_bpc":8},"expected":{"code":4,"input_max":255}},
+    {"name":"half_up_limited_even_to_odd","stimulus_percent":1.1415525114155252,"signal_mode":"sdr","signal_range":"limited","options":{"max_bpc":8},"expected":{"code":19,"input_max":255}}
+  ]
+}

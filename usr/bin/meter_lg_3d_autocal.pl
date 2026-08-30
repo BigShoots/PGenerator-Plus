@@ -25,6 +25,7 @@ use PGCalibrationMath qw(
  target_linear_for_context target_relative_luminance_for_context
 );
 use PGMeterReading qw(reading_xyz);
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -353,26 +354,42 @@ sub target_gamma_label {
 # span 1023 (matches the HDR10 10-bit Full table: 100% -> 1023). Default
 # to 8-bit when max_bpc is missing or empty so legacy callers keep their
 # existing wire format.
+my %PATCH_SIGNAL_CODE_POLICIES;
+sub patch_signal_code_policy {
+ my ($signal_range,$max_bpc)=@_;
+ my $limited=(!defined($signal_range) || $signal_range eq ""
+  || int($signal_range)==1) ? 1 : 0;
+ my $bits=(!defined($max_bpc) || $max_bpc eq ""
+  || int($max_bpc)>=10) ? 10 : 8;
+ my $key="$limited:$bits";
+ return $PATCH_SIGNAL_CODE_POLICIES{$key}
+  if($PATCH_SIGNAL_CODE_POLICIES{$key});
+ my $policy=signal_code_policy({
+  signal_mode=>"sdr",
+  pattern_range=>($limited ? "limited" : "full"),
+  transport_range=>($limited ? "limited" : "full"),
+  max_bpc=>$bits,
+ });
+ die "Unable to resolve 3D patch signal-code policy\n" if(!$policy);
+ $PATCH_SIGNAL_CODE_POLICIES{$key}=$policy;
+ return $policy;
+}
+
 sub patch_code_for_percent {
  my ($pct,$signal_range,$max_bpc)=@_;
- $pct=clamp($pct,0,100);
- my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
- my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
- if($bits == 10) {
-  return $limited ? int(64 + ($pct/100)*876 + 0.5) : int(($pct/100)*1023 + 0.5);
- }
- return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy($signal_range,$max_bpc),$pct);
+ die "Unable to convert 3D patch signal percent\n" if(!$result);
+ return $result->{code};
 }
 
 sub patch_code_for_8bit_value {
  my ($value,$signal_range,$max_bpc)=@_;
  $value=clamp($value,0,255);
- my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
- my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
- if($bits == 10) {
-  return $limited ? int(64 + ($value/255)*876 + 0.5) : int(($value/255)*1023 + 0.5);
- }
- return $limited ? int(16 + ($value/255)*219 + 0.5) : int($value + 0.5);
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy($signal_range,$max_bpc),$value/255*100);
+ die "Unable to convert 3D patch byte\n" if(!$result);
+ return $result->{code};
 }
 
 sub patch_step {
@@ -2962,22 +2979,6 @@ sub _pi_sanitize_count {
  return $raw;
 }
 
-sub _patch_insert_code_for_level {
- # Fallback when the webui did not inject precomputed code/input_max
- # pairs (the 3D worker config does not carry them). HDR10 codes must
- # be PQ-encoded so the configured level maps to a visible luminance.
- my ($level_pct,$signal_mode,$max_luma)=@_;
- $level_pct=0 if($level_pct+0 < 0);
- $level_pct=100 if($level_pct+0 > 100);
- $max_luma//=1000;
- if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
-  my $target_nits=($level_pct/100.0)*$max_luma;
-  my $pq_signal=pq_encode_normalized($target_nits);
-  return int($pq_signal*255.0 + 0.5);
- }
- return int(($level_pct/100.0)*255.0 + 0.5);
-}
-
 sub _patch_insert_resolve {
  my ($config,$kind,$level)=@_;
  my $code_key="patch_insert_".$kind."_code";
@@ -2987,7 +2988,25 @@ sub _patch_insert_resolve {
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
  }
- return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
+ my $mode=lc($config->{"signal_mode"}||"sdr");
+ my %input=(signal_mode=>$mode,pattern_range=>"full",
+  transport_range=>"full",max_bpc=>8);
+ if($mode eq "hdr10") {
+  $input{pq_luminance_percent}=1;
+  $input{signal_peak_nits}=($config->{"max_luma"}||1000)+0;
+ } elsif($mode eq "dv") {
+  $input{pattern_range}="limited";
+  $input{transport_range}="limited";
+  $input{dv_series}=1;
+  $input{dv_series_code_bits}=12;
+  $input{dv_series_full_range}=0;
+  $input{dv_interface}=$config->{"dv_interface"}||"standard";
+ }
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 3D insertion signal-code policy\n" if(!$policy);
+ my $result=signal_percent_to_code($policy,$level);
+ die "Unable to convert 3D insertion signal percent\n" if(!$result);
+ return ($result->{code},$result->{input_max});
 }
 
 # Blank the panel after profiling finishes and before the (often multi-minute)
