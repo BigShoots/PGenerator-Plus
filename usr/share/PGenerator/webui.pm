@@ -2671,7 +2671,12 @@ sub webui_meter_read_state_write (@) {
   print $fh $json;
   close($fh);
   chmod(0666,$tmp);
-  rename($tmp,$_meter_read_file) or unlink($tmp);
+  if(!rename($tmp,$_meter_read_file)) {
+   &log("meter read state write lost: rename failed: $!");
+   unlink($tmp);
+  }
+ } else {
+  &log("meter read state write lost: open failed: $!");
  }
 }
 

@@ -148,7 +148,10 @@ def pq_decode_nits(signal, clamp_signal=True, denominator_floor=1e-12,
 
     Production signal paths use the default bounded ST 2084 domain.  The
     optional policies exist only to preserve the historical behaviour of a
-    caller that deliberately accepts values outside that domain.
+    caller that deliberately accepts values outside that domain.  A
+    non-finite signal is a caller error: unlike the removed inline decoder
+    (which clamped NaN to 1.0 and reported 10,000 nits) this propagates
+    towards zero, and callers gate finiteness before decoding.
     """
     signal = max(0.0, signal)
     if clamp_signal:

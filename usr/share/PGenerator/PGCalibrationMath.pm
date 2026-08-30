@@ -206,9 +206,10 @@ sub calibration_target_context {
   return undef if(($pattern_range ne "full" && $pattern_range ne "limited")
    || ($transport_range ne "full" && $transport_range ne "limited"));
   my $pattern_bits=defined($input->{"pattern_bits"})
-   ? int($input->{"pattern_bits"}) : (($mode eq "dv") ? 12 : 8);
+   ? finite_number($input->{"pattern_bits"}) : (($mode eq "dv") ? 12 : 8);
   my $transport_bits=defined($input->{"transport_bits"})
-   ? int($input->{"transport_bits"}) : $pattern_bits;
+   ? finite_number($input->{"transport_bits"}) : $pattern_bits;
+  return undef if(!defined($pattern_bits) || !defined($transport_bits));
   return undef if(($pattern_bits != 8 && $pattern_bits != 10 && $pattern_bits != 12)
    || ($transport_bits != 8 && $transport_bits != 10 && $transport_bits != 12));
   my $headroom=lc($input->{"headroom_strategy"}||"none");

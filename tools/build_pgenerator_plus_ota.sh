@@ -112,7 +112,7 @@ trap cleanup EXIT
 require_commands() {
  local missing=()
  local cmd
- for cmd in ar awk cp curl file install mktemp perl rsync sed strings tar unzip; do
+ for cmd in ar awk cp curl file install mktemp perl rsync sed strings tar unzip xz; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi

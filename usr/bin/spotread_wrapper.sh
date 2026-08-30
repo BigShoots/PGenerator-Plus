@@ -457,7 +457,7 @@ take_readings() {
  # count_results: strip ANSI, count result lines
  count_results() {
   local line n=0
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
    [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
   done < "$outfile" 2>/dev/null
   echo "$n"
@@ -523,13 +523,16 @@ take_readings() {
  pkill -9 -x spotread 2>/dev/null
  rm -f "$outfile" "$cmdpipe"
 
- # Build JSON output
+ # Build JSON output. A shortfall is an error, not a smaller ok: a strict
+ # parse rejection mid-run must not be indistinguishable from a clean
+ # shorter run.
  local readings_json
  readings_json=$(printf "%s," "${readings[@]}" | sed 's/,$//')
- if (( ${#readings[@]} > 0 )); then
+ if (( ${#readings[@]} == count )); then
   printf '{"status":"ok","readings":[%s],"count":%d}\n' "$readings_json" "${#readings[@]}"
  else
-  printf '{"status":"error","readings":[],"count":0,"error":"No readings obtained"}\n'
+  printf '{"status":"error","readings":[%s],"count":%d,"requested":%d,"error":"Obtained %d of %d readings"}\n' \
+   "$readings_json" "${#readings[@]}" "$count" "${#readings[@]}" "$count"
  fi
 }
 

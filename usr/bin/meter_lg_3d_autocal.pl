@@ -907,7 +907,8 @@ sub summarize_post_check {
  my $readings=shift;
  $readings=[] if(ref($readings) ne "ARRAY");
  my @rows=grep { ref($_) eq "HASH" && defined($_->{"delta_e_2000"}) } @{$readings};
- return { count => 0 } if(!@rows);
+ my @unscored=grep { ref($_) eq "HASH" && !defined($_->{"delta_e_2000"}) } @{$readings};
+ return { count => 0, unscored_count => scalar(@unscored) } if(!@rows);
  my $sum=0;
  my $max=$rows[0];
  foreach my $row (@rows) {
@@ -916,6 +917,7 @@ sub summarize_post_check {
  }
  return {
   count => scalar(@rows),
+  unscored_count => scalar(@unscored),
   mean_delta_e_2000 => $sum/@rows,
   max_delta_e_2000 => $max->{"delta_e_2000"},
   max_name => $max->{"name"}||"",
@@ -1077,17 +1079,20 @@ sub apply_volume_drift_to_profile_readings {
  return { corrected=>0, anchors=>scalar(@{$anchors||[]}) } if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
  $black=[0,0,0] if(ref($black) ne "ARRAY");
  my $n=0;
+ my $skipped=0;
  foreach my $entry (@{$profile_readings}) {
   next if(ref($entry) ne "HASH");
   my $xyz=reading_xyz($entry->{"reading"});
-  next if(!$xyz);
+  if(!$xyz) { $skipped++; next; }
   my $t=$entry->{"read_time"}||time();
   my $c=apply_volume_drift_correction($xyz,$black,$t,$anchors);
   reading_set_xyz($entry->{"reading"},$c);
   $entry->{"drift_corrected"}=1;
   $n++;
  }
- return { corrected=>$n, anchors=>scalar(@{$anchors}) };
+ log_line("volume drift correction skipped $skipped unrepresentable readings")
+  if($skipped);
+ return { corrected=>$n, skipped=>$skipped, anchors=>scalar(@{$anchors}) };
 }
 
 sub model_from_readings {
@@ -1113,6 +1118,8 @@ sub model_from_readings {
  $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10" && !$solve_only);
  my $target_context=autocal3d_target_context_for($target_gamma,$signal_mode);
  my %by;
+ my %invalid;
+ my $invalid_count=0;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
   my $step=$entry->{"step"} || {};
@@ -1121,10 +1128,23 @@ sub model_from_readings {
   my $level=defined($step->{"level"}) ? ($step->{"level"}+0) : undef;
   next if($kind eq "" || !defined($level));
   my $xyz=reading_xyz($reading);
-  next if(!$xyz);
+  if(!$xyz) {
+   $invalid{$step->{"phase"}||"profile"}{$kind}{$level}=1;
+   $invalid_count++;
+   next;
+  }
   my $phase=$step->{"phase"}||"profile";
   $by{$phase}{$kind}{$level}={ xyz=>$xyz, time=>($entry->{"read_time"}||$reading->{"timestamp"}||time()) };
  }
+ # Fail closed on the model anchors: a white/black profile reading that was
+ # measured but is not representable must abort the solve, not silently give
+ # way to the ideal fallback endpoints below.
+ die "Measured profile white reading is not representable - re-measure before solving\n"
+  if($invalid{"profile"}{"white"}{100});
+ die "Measured profile black reading is not representable - re-measure before solving\n"
+  if($invalid{"profile"}{"black"}{0});
+ log_line("model_from_readings: dropped $invalid_count unrepresentable readings")
+  if($invalid_count);
  my $black=$by{"profile"}{"black"}{0}{xyz} || [0,0,0];
  my $black_y=$black->[1] || 0;
  my $fallback_white=rgb_to_xyz_for_gamut($target_gamut,1,1,1,100);
@@ -2733,18 +2753,31 @@ sub run_solve_only {
  my $lattice=$config->{"lattice_readings"};
  $lattice=[] if(ref($lattice) ne "ARRAY");
  my %corner_kind=( "1,1,1"=>"white", "1,0,0"=>"red", "0,1,0"=>"green", "0,0,1"=>"blue", "0,0,0"=>"black" );
- my %corners; my @nodes;
+ my %corners; my @nodes; my @unusable;
  foreach my $rd (@{$lattice}) {
   next if(ref($rd) ne "HASH");
   my $name=$rd->{"name"}||"";
   next unless($name =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
   my ($fr,$fg,$fb)=($1/100,$2/100,$3/100);
   my $xyz=reading_xyz($rd);
-  next if(!$xyz && $fr+$fg+$fb > 0.001);
-  $xyz ||= [0,0,0];
+  if(!$xyz) {
+   # A named node whose reading is missing or not representable (for
+   # example a no_reading timeout placeholder) must refuse the solve, not
+   # silently thin the lattice or fabricate an exact-zero black.
+   push @unusable,$name;
+   next;
+  }
   my $ck=join(",",map { $_ >= 0.999 ? 1 : ($_ <= 0.001 ? 0 : "x") } ($fr,$fg,$fb));
   $corners{$corner_kind{$ck}}=$xyz if(exists $corner_kind{$ck});
   push @nodes,{ fr=>$fr, fg=>$fg, fb=>$fb, xyz=>$xyz };
+ }
+ if(@unusable) {
+  my $shown=join(", ",@unusable[0..($#unusable > 4 ? 4 : $#unusable)]);
+  $shown.=" and ".(scalar(@unusable)-5)." more" if(scalar(@unusable) > 5);
+  $state->{"status"}="error";
+  $state->{"message"}=scalar(@unusable)." lattice readings are not usable ($shown) - re-measure the lattice";
+  write_state($state);
+  exit 1;
  }
  foreach my $need (qw(white red green blue)) {
   if(!$corners{$need}) {
@@ -5748,6 +5781,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
+   die "post-check reading is not representable\n" if(!$measured);
    my $target=$expected_post_target;
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
@@ -5765,6 +5799,14 @@ eval {
     "signed_linear");
    1;
   };
+  if($@) {
+   # A verification patch whose scoring failed must stay visible: record the
+   # failure so summarize_post_check counts it instead of silently improving
+   # the post-check mean/max by omission.
+   my $score_error=$@; $score_error =~ s/\s+$//;
+   $post_entry->{"score_error"}=$score_error;
+   log_line("post-check scoring failed for ".($step->{"name"}||"?").": $score_error");
+  }
   if(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
    $post_entry->{"series_color"}=$1;
    $post_entry->{"sat_pct"}=$2+0;

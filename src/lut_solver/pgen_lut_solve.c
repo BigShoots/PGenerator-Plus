@@ -1,7 +1,8 @@
 /* Batched 3D LUT node solve for usr/bin/meter_lg_3d_autocal.pl.
    One invocation per cube: the model arrives on stdin as text, the complete
-   u16 code vector leaves on stdout as text. Every routine here mirrors the
-   Perl sub it is named after so the two can be diffed line for line.
+   u16 code vector leaves on stdout as text. Every routine here mirrors a
+   PGMath/worker Perl sub (named in its comment) so the two can be diffed
+   line for line.
 
    Parity is the contract, not speed. fm_invert is a discrete-branch search:
    a last-ulp difference does not shift the answer by 1e-13, it flips an
@@ -74,6 +75,7 @@ static samp   g_wax[MAXLVL]; static int g_nwax=0, g_have_wax=0;
 static samp   g_contrib[3][MAXLVL]; static int g_ncontrib[3]={-1,-1,-1};
 static double g_peak_y[3]={1,1,1};
 static double g_peak_inverse[3][3];
+static int g_have_gm=0, g_have_drive=0, g_have_peak_inverse=0;
 static double (*g_naf)[3]=NULL, (*g_nad)[3]=NULL; static int g_nna=-1;
 
 enum gamma_mode {
@@ -195,7 +197,7 @@ static void fm_forward(double dr,double dg,double db,double *o){
  for(k=0;k<3;k++) o[k]+=acc[k]/sw;
 }
 
-/* matrix_inverse */
+/* PGMath matrix3_inverse (via the shared header) */
 static int mat_inv(const double m[3][3],double out[3][3]){
  double det,ad,rel;
  int valid=pgen_matrix3_inverse(m,out,1e-12,&det);
@@ -205,7 +207,7 @@ static int mat_inv(const double m[3][3],double out[3][3]){
  return valid;
 }
 
-/* matrix_mul_vec */
+/* PGMath matrix3_vector_multiply */
 static void mat_vec(const double m[3][3],const double *v,double *o){
  o[0]=m[0][0]*v[0]+m[0][1]*v[1]+m[0][2]*v[2];
  o[1]=m[1][0]*v[0]+m[1][1]*v[1]+m[1][2]*v[2];
@@ -225,7 +227,7 @@ static double gamma_linear(double s,enum gamma_mode mode){
  return pow(s,(mode==GAMMA_22) ? 2.2 : 2.4);
 }
 
-/* bt1886_luminance_y */
+/* PGMath _bt1886_luminance_3d_root_blend */
 static double bt1886_luminance_y(double s,double wy,double by){
  double g=2.4;
  s=clampd(s,0,1);
@@ -235,7 +237,7 @@ static double bt1886_luminance_y(double s,double wy,double by){
  return pow((pow(wy,1/g) - pow(by,1/g))*s + pow(by,1/g),g);
 }
 
-/* bt1886_relative_luminance */
+/* PGMath bt1886_relative_luminance_3d_root_blend */
 static double bt1886_rel(double s,double wy,double by){
  double range;
  if(!(wy > 0)) wy=100;
@@ -531,7 +533,7 @@ static void margin_note(double v,int r,int g,int b){
      ramp <ch> <n>                     n lines of <level_frac> <X> <Y> <Z>,
                                        ASCENDING; all three channels required
      nonadd <m>                        m lines of <fr> <fg> <fb> <dX> <dY> <dZ>
-                                       in fm_nonadd_samples ARRAY ORDER -- the
+                                       in the model nonadd_samples ARRAY ORDER -- the
                                        IDW accumulation is order-dependent, so
                                        re-sorting here would break bit parity
      end
@@ -619,9 +621,9 @@ static void read_request(void){
   else if(!strcmp(key,"chromatic_white_y")) parse_doubles(after_key(line),1,&g_chroma_white_y,"chromatic_white_y");
   else if(!strcmp(key,"node_white_y")) parse_doubles(after_key(line),1,&g_node_white_y,"node_white_y");
   else if(!strcmp(key,"black")) parse_doubles(after_key(line),3,g_black,"black");
-  else if(!strcmp(key,"gamut_rgb2xyz")) parse_doubles(after_key(line),9,&g_gm[0][0],"gamut_rgb2xyz");
-  else if(!strcmp(key,"gamut_drive_matrix")) parse_doubles(after_key(line),9,&g_drive[0][0],"gamut_drive_matrix");
-  else if(!strcmp(key,"peak_inverse")) parse_doubles(after_key(line),9,&g_peak_inverse[0][0],"peak_inverse");
+  else if(!strcmp(key,"gamut_rgb2xyz")){ parse_doubles(after_key(line),9,&g_gm[0][0],"gamut_rgb2xyz"); g_have_gm=1; }
+  else if(!strcmp(key,"gamut_drive_matrix")){ parse_doubles(after_key(line),9,&g_drive[0][0],"gamut_drive_matrix"); g_have_drive=1; }
+  else if(!strcmp(key,"peak_inverse")){ parse_doubles(after_key(line),9,&g_peak_inverse[0][0],"peak_inverse"); g_have_peak_inverse=1; }
   else if(!strcmp(key,"peak_y")) parse_doubles(after_key(line),3,g_peak_y,"peak_y");
   else if(!strcmp(key,"seed")){
    char v[32];
@@ -687,6 +689,11 @@ static void validate_request(void){
  for(ch=0;ch<3;ch++) if(g_nramp[ch] < 1) fail("missing-ramp");
  if(g_seed_matrix < 0) fail("missing-seed");
  if(!g_seed_matrix) for(ch=0;ch<3;ch++) if(g_ncontrib[ch] < 0) fail("missing-contrib");
+ /* The matrices are as load-bearing as the curves: an absent directive would
+    leave an all-zero file-scope matrix and a full cube of wrong codes. */
+ if(!g_have_gm) fail("missing-gamut-rgb2xyz");
+ if(g_seed_matrix && !g_have_drive) fail("missing-drive-matrix");
+ if(!g_seed_matrix && !g_have_peak_inverse) fail("missing-peak-inverse");
 }
 
 /* Resolve all request-wide policy and materialise the bounded lookup state

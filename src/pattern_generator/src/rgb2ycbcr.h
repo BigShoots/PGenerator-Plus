@@ -140,13 +140,15 @@ static YCbCr RGB2YCbCr(RGB rgb, const YCbCrPolicy &policy) {
 }
 
 static RGB YCbCrToRGB(YCbCr ycbcr, const YCbCrPolicy &policy) {
-	const float scale=static_cast<float>(policy.luma_scale)/policy.chroma_scale;
-	float r=ycbcr.Y+(ycbcr.Cr-policy.offset)*scale*policy.cr_divisor;
-	float g=ycbcr.Y+(ycbcr.Cb-policy.offset)*scale
+	/* Left-to-right (x*luma_scale)/chroma_scale keeps the legacy rounding:
+	   precomputing luma_scale/chroma_scale adds a second float rounding that
+	   shifts +-1 code at 12-bit limited range. */
+	float r=ycbcr.Y+(ycbcr.Cr-policy.offset)*policy.luma_scale/policy.chroma_scale*policy.cr_divisor;
+	float g=ycbcr.Y+(ycbcr.Cb-policy.offset)*policy.luma_scale/policy.chroma_scale
 		*-policy.kb*policy.cb_divisor/policy.kg
-		+(ycbcr.Cr-policy.offset)*scale
+		+(ycbcr.Cr-policy.offset)*policy.luma_scale/policy.chroma_scale
 		*-policy.kr*policy.cr_divisor/policy.kg;
-	float b=ycbcr.Y+(ycbcr.Cb-policy.offset)*scale*policy.cb_divisor;
+	float b=ycbcr.Y+(ycbcr.Cb-policy.offset)*policy.luma_scale/policy.chroma_scale*policy.cb_divisor;
 
 	return RGB((int)r, (int)g, (int)b);
 }

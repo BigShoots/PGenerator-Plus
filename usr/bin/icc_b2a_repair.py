@@ -25,7 +25,6 @@ from pgen_colour_math import (
     bradford_adaptation,
     matrix3_inverse,
     matrix3_vector_multiply as mmul_b,
-    pq_encode_nits,
     sample_uniform_table as sample_curve,
 )
 

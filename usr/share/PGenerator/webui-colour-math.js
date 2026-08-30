@@ -66,6 +66,12 @@ function srgbEotf(v){return srgbDecodeUnbounded(v);}
 
 function bt1886Eotf(v,Lw,Lb){
  Lw=Lw||100;Lb=Lb||0;
+ // Degenerate measured endpoints follow bt1886Luminance1dAb: a negative or
+ // non-finite value is a missing endpoint, and black at or above white
+ // returns white flat instead of feeding NaN into the chart target.
+ if(!(Lw>0)) Lw=100;
+ if(!(Lb>0)) Lb=0;
+ if(Lb>=Lw) return Lw;
  const g=2.4;
  const a=Math.pow(Math.pow(Lw,1/g)-Math.pow(Lb,1/g),g);
  const b=Math.pow(Lb,1/g)/(Math.pow(Lw,1/g)-Math.pow(Lb,1/g));
@@ -87,7 +93,7 @@ function meterSrgbTargetLuminance(signal,peak,Lb){
 }
 
 function browserTargetLuminanceForContext(context,signal,peak,Lb){
- if(!context||context.caller_policy!=='browser_chart') return null;
+ if(!context||context.schema!=='pgen-calibration-target-context-v1'||context.context_version!==1||context.caller_policy!=='browser_chart') return null;
  const input=Math.max(0,Math.min(1,Number(signal)||0));
  if(context.transfer_policy==='bt1886_chart_ab') return bt1886Eotf(input,peak,Lb||0);
  if(context.transfer_policy==='srgb') return meterSrgbTargetLuminance(input,peak,Lb||0);
@@ -145,11 +151,16 @@ function signalCodePolicy(input){
  let nominalWhite=limited?(bits===12?3760:(bits===10?940:235)):inputMax;
  let allowsHeadroom=false,maximumStimulus=100;
  let percentDomain='container_signal_percent',tunnelMode='none',activeTable=null;
- const colorFormat=input.color_format==null?0:Number.parseInt(input.color_format,10);
+ // Absent or empty means RGB (Perl parity); a provided value must be an
+ // integer 0..2 (Number, not parseInt, so '1.7' is rejected, not truncated).
+ const colorFormat=(input.color_format==null||input.color_format==='')?0:Number(input.color_format);
  if(!Number.isInteger(colorFormat)||colorFormat<0||colorFormat>2) return null;
  if(strategy==='two_point_ycbcr_headroom'){
-  if(!limited) return null;
-  allowsHeadroom=true;maximumStimulus=109;percentDomain='nominal_ire_percent';
+  // Full range has no superwhite headroom: degrade to the nominal domain
+  // (autocal_26_codes precedent) instead of rejecting the policy.
+  allowsHeadroom=limited;
+  maximumStimulus=allowsHeadroom?109:100;
+  percentDomain='nominal_ire_percent';
  }else if(strategy==='autocal_26_codes'){
   const ycbcr=colorFormat===1||colorFormat===2;
   allowsHeadroom=limited&&ycbcr;
@@ -163,7 +174,9 @@ function signalCodePolicy(input){
   if(!source||typeof source!=='object'||Array.isArray(source)) return null;
   activeTable={};
   for(const [key,value] of Object.entries(source)){
-   if(!Number.isFinite(Number(key))||!Number.isFinite(Number(value))||Number(value)<0) return null;
+   // key.trim()!=='' mirrors Perl's looks_like_number, which rejects the
+   // empty string that Number() would silently read as 0.
+   if(String(key).trim()===''||!Number.isFinite(Number(key))||!Number.isFinite(Number(value))||Number(value)<0) return null;
    activeTable[key]=Math.trunc(Number(value));
   }
   activeTable=Object.freeze(activeTable);
@@ -595,11 +608,20 @@ function calibrationTargetContext(input){
    'gamma_2_2_when_target_label_st2084':'none'
  };
  if(caller==='browser_chart'){
-  const finiteOr=(value,fallback)=>Number.isFinite(Number(value))?Number(value):fallback;
-  const signalPeak=finiteOr(input.signal_peak_nits,mode==='sdr'?100:1000);
-  const white=finiteOr(input.white_nits,0);
-  const black=finiteOr(input.black_nits,0);
-  if(signalPeak<0||signalPeak>10000||white<0||black<0) return null;
+  // Mirrors PGCalibrationMath: an absent value takes the default, but a
+  // provided value that is non-numeric, non-finite, or out of bounds
+  // rejects the whole context instead of silently taking the default.
+  const boundedOr=(value,minimum,maximum,fallback)=>{
+   if(value==null) return fallback;
+   if(typeof value==='string'&&value.trim()==='') return null;
+   const number=Number(value);
+   if(!Number.isFinite(number)||number<minimum||number>maximum) return null;
+   return number;
+  };
+  const signalPeak=boundedOr(input.signal_peak_nits,0,10000,mode==='sdr'?100:1000);
+  const white=boundedOr(input.white_nits,0,1000000,0);
+  const black=boundedOr(input.black_nits,0,1000000,0);
+  if(signalPeak==null||white==null||black==null) return null;
   const patternRange=String(input.pattern_range||'full').toLowerCase();
   const transportRange=String(input.transport_range||patternRange).toLowerCase();
   if(!['full','limited'].includes(patternRange)||!['full','limited'].includes(transportRange)) return null;
@@ -608,15 +630,19 @@ function calibrationTargetContext(input){
   if(![8,10,12].includes(patternBits)||![8,10,12].includes(transportBits)) return null;
   const headroom=String(input.headroom_strategy||'none').toLowerCase();
   if(!['none','legal_superwhite','extended_sdr','lg_sdr26_ladder'].includes(headroom)) return null;
-  const headroomMax=finiteOr(input.headroom_max_percent,100);
-  if(headroomMax<100||(headroom==='none'&&headroomMax!==100)) return null;
+  const headroomMax=boundedOr(input.headroom_max_percent,100,1000,100);
+  if(headroomMax==null||(headroom==='none'&&headroomMax!==100)) return null;
+  // '0' is falsy in the Perl twin (lc($x||"") folds it to ''), so it takes
+  // the mode default here too; webui.pm genuinely writes dv_map_mode="0"
+  // and webui-body.html ships dv_interface value="0".
   let dvMap=String(input.dv_map_mode==null?'':input.dv_map_mode).toLowerCase();
+  if(dvMap==='0') dvMap='';
   if(dvMap==='1') dvMap='absolute';
   if(dvMap==='2') dvMap='relative';
   if(!dvMap) dvMap=mode==='dv'?'relative':'none';
   if(!['none','absolute','relative'].includes(dvMap)||(mode!=='dv'&&dvMap!=='none')) return null;
   let dvInterface=String(input.dv_interface==null?'':input.dv_interface).toLowerCase();
-  if(dvInterface==='0') dvInterface='standard';
+  if(dvInterface==='0') dvInterface='';
   if(dvInterface==='1'||dvInterface==='ll') dvInterface='low_latency';
   if(!dvInterface) dvInterface=mode==='dv'?'standard':'none';
   if(!['none','standard','low_latency'].includes(dvInterface)||(mode!=='dv'&&dvInterface!=='none')) return null;
@@ -658,7 +684,7 @@ function targetLinearForContext(context,signal){
 }
 
 function targetLuminanceForContext(context,stimulus,whiteY,blackY){
- if(!context||context.caller_policy!=='autocal_1d'||!Number.isFinite(Number(stimulus))||!(Number(whiteY)>0)) return null;
+ if(!context||context.schema!=='pgen-calibration-target-context-v1'||context.context_version!==1||context.caller_policy!=='autocal_1d'||!Number.isFinite(Number(stimulus))||!(Number(whiteY)>0)) return null;
  stimulus=Number(stimulus); whiteY=Number(whiteY);
  const signalPeak=context.signal_mode==='sdr'?context.sdr_signal_peak:100;
  let signal=stimulus/signalPeak;
@@ -673,7 +699,7 @@ function targetLuminanceForContext(context,stimulus,whiteY,blackY){
 }
 
 function targetRelativeLuminanceForContext(context,signal,whiteY,blackY){
- if(!context||context.caller_policy!=='autocal_3d') return null;
+ if(!context||context.schema!=='pgen-calibration-target-context-v1'||context.context_version!==1||context.caller_policy!=='autocal_3d') return null;
  if(context.transfer_policy==='bt1886_3d_root_blend_relative')
   return bt1886RelativeLuminance3dRootBlend(signal,whiteY,blackY);
  return targetLinearForContext(context,signal);

@@ -16271,6 +16271,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
  $low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
  $low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+ # Cap the fixed very-low tier at the operator's low threshold (HDR20 does
+ # the same): a low threshold configured inside its documented [1,10] clamp
+ # but below 2.5 must narrow the very-low tier, not abort the run when
+ # effective_de_limits_for_ire rejects very_low > low.
+ my $very_low_ire_threshold=2.5;
+ $very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
  # High-IRE band for mid-loop revert (HDR-style port). Mid IRE [low, high)
  # does NOT mid-loop revert-and-halve -- only track best + final restore.
  # Default high=85 so 80% stays mid-band: at high=80 the first pure-Y
@@ -16334,7 +16340,7 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $_effective_de_limits=effective_de_limits_for_ire({
   ire=>$_anchor_ire,target_delta_e=>$target_de,
   skip_fraction=>$skip_fraction,low_ire_threshold=>$low_ire_threshold,
-  very_low_ire_threshold=>2.5,low_multiplier=>$target_de_low_multiplier,
+  very_low_ire_threshold=>$very_low_ire_threshold,low_multiplier=>$target_de_low_multiplier,
   very_low_multiplier=>$target_de_very_low_multiplier,
   threshold_policy=>"exclusive",
  });

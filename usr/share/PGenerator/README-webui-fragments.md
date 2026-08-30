@@ -14,6 +14,12 @@ same hashed page, so it is exactly as byte-sensitive as the ten fragments;
 `icc_profile.css`, `icc_profile.js`, and `hcfr_chc.js` are served verbatim
 from `/assets/` and must not be reformatted either.
 
+`webui-colour-math.js` opens with `'use strict';` and is concatenated into
+the SAME inline `<script>` block as `webui-app.js` and `webui-workspace.js`,
+so the directive governs all three fragments. Any new code in those files
+must be strict-mode clean: no undeclared assignments, no `with`, no
+block-scoped function declarations relied on across blocks.
+
 The checked-in `t/slice_webui.pl` script was the one-shot extraction
 mechanism for the initial split. It asserts against the pre-split heredoc
 layout, so it can only run against a tree from before the refactor; on the

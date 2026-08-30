@@ -544,7 +544,7 @@ find_port() {
 
 count_results() {
  local line n=0
- while IFS= read -r line; do
+ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
  done < "$OUTFILE" 2>/dev/null
  echo "$n"
@@ -1177,8 +1177,8 @@ while read -t "$IDLE_TIMEOUT" -u 4 line; do
 		       ;;
 		     esac
 		     STATE_TIMEOUT_PER_SAMPLE=170
-		     if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( CMD_READ_TIMEOUT >= 10 )); then
-		      STATE_TIMEOUT_PER_SAMPLE="$CMD_READ_TIMEOUT"
+		     if [[ "$CMD_READ_TIMEOUT" =~ ^[0-9]+$ ]] && (( 10#$CMD_READ_TIMEOUT >= 10 )); then
+		      STATE_TIMEOUT_PER_SAMPLE="$((10#$CMD_READ_TIMEOUT))"
 		     fi
 		     STATE_TIMEOUT=$((STATE_TIMEOUT_PER_SAMPLE * REQUESTED_SAMPLE_COUNT))
 		     (( STATE_TIMEOUT > 1800 )) && STATE_TIMEOUT=1800

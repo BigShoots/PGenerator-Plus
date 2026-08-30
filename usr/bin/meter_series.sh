@@ -321,6 +321,8 @@ cleanup_stale_series_step_files() {
  local keep
  keep="$(basename "$STEPS_FILE")"
  find "$TMPDIR" -maxdepth 1 -type f -name 'meter_series_steps_*.json' ! -name "$keep" -delete >/dev/null 2>&1 || true
+ # Prepared NUL-framed streams leak on SIGKILL; sweep those too.
+ find "$TMPDIR" -maxdepth 1 -type f -name 'pgen_series_steps_*' -mmin +120 -delete >/dev/null 2>&1 || true
 }
 
 patch_request_body() {
@@ -1667,7 +1669,7 @@ INITIAL_READY_PENDING=0
 # Helper: count result lines
 count_results() {
  local line n=0
- while IFS= read -r line; do
+ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
  done < "$OUTFILE" 2>/dev/null
  echo "$n"
@@ -2451,7 +2453,10 @@ EOJSON
  AVERAGE_MODE=$(effective_low_light_mode_for_step "$i")
  AVERAGE_SAMPLE_COUNT="${PREPARED_STEP_REQUESTED_SAMPLE_COUNT[$i]:-1}"
  if [[ -n "$READING" && "$READING" != *'"error"'* && "$READING" != *'"measured_zero"'* && "$READING" != *'"null_read"'* ]] && (( AVERAGE_SAMPLE_COUNT > 1 )); then
-  AVERAGE_SAMPLES_JSON="$READING"
+  # Seed with the bare parsed sample, not the wrapped $READING: the averager
+  # copies keys from its first sample, and build_step_reading_json would then
+  # prepend the same step metadata again, emitting duplicate JSON keys.
+  AVERAGE_SAMPLES_JSON="$PARSED"
   for (( average_index=2; average_index<=AVERAGE_SAMPLE_COUNT; average_index++ )); do
    write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (sample $average_index/$AVERAGE_SAMPLE_COUNT)","readings":[$READINGS],"white_reading":$WHITE_READING}
@@ -2519,7 +2524,7 @@ EOJSON
  # fixed before the first scored series patch is drawn.
  if [[ "$SERIES_WHITE_REFERENCE" == "True" || "$SERIES_WHITE_REFERENCE" == "true" || "$SERIES_WHITE_REFERENCE" == "1"
        || "$STEP_FINAL_WHITE_REFRESH" == "True" || "$STEP_FINAL_WHITE_REFRESH" == "true" || "$STEP_FINAL_WHITE_REFRESH" == "1"
-       || ( "$SERIES_ID" == greyscale_* && "$STEP_TARGET_YN" == "1" )
+       || ( "$SERIES_ID" == greyscale_* && ( "$STEP_TARGET_YN" == "1" || "$STEP_TARGET_YN" == "1.0" ) )
        || "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
   WHITE_READING="$READING"
   WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)

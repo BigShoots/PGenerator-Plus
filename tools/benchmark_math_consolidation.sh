@@ -3,6 +3,12 @@
 # Paired fresh-process benchmarks for calibration-maths changes. Correctness
 # stays in TAP/conformance tests; this driver records timing, CPU, RSS, output
 # size and output hash without adding elapsed-time assertions to those tests.
+#
+# Baseline limitation: every workload imports the consolidated modules
+# (PGCalibrationMath, pgen_colour_math, pgen_meter_result), so --baseline
+# must point at a tree that already contains them. A pre-consolidation
+# export fails on the first sample (fail closed, no false win); comparing
+# against one requires backporting the workload's imports there first.
 
 set -euo pipefail
 
@@ -57,14 +63,20 @@ done
 [[ -n "$BASELINE_ROOT" ]] || die "--baseline is required"
 [[ -d "$BASELINE_ROOT" ]] || die "Baseline directory does not exist: $BASELINE_ROOT"
 [[ -d "$CANDIDATE_ROOT" ]] || die "Candidate directory does not exist: $CANDIDATE_ROOT"
-[[ "$RUNS" =~ ^[0-9]+$ ]] && [[ "$RUNS" -gt 0 ]] || die "--runs must be a positive integer"
+[[ "$RUNS" =~ ^[0-9]+$ ]] && [[ "$((10#$RUNS))" -gt 0 ]] || die "--runs must be a positive integer"
 [[ "$SEED" =~ ^[0-9]+$ ]] || die "--seed must be a non-negative integer"
+# Force base 10: ^[0-9]+$ accepts leading zeros, which $(( )) reads as octal.
+RUNS=$((10#$RUNS))
+SEED=$((10#$SEED))
 case "$WORKLOAD" in
  perl-startup|python-startup|scalar-colour|meter-average) ;;
  *) die "Unsupported workload: $WORKLOAD" ;;
 esac
 if [[ "$WORKLOAD" == *-startup ]] && [[ "$RUNS" -lt 30 ]]; then
  die "$WORKLOAD requires at least 30 paired samples"
+fi
+if [[ "$WORKLOAD" != *-startup ]] && [[ "$RUNS" -lt 20 ]]; then
+ die "$WORKLOAD requires at least 20 paired samples for a meaningful bootstrap CI"
 fi
 command -v "$BENCH_PYTHON" >/dev/null 2>&1 || die "Python is unavailable: $BENCH_PYTHON"
 command -v "$BENCH_PERL" >/dev/null 2>&1 || die "Perl is unavailable: $BENCH_PERL"
@@ -93,7 +105,8 @@ commit_for_root() {
 
 echo "# workload=$WORKLOAD runs=$RUNS seed=$SEED" >&2
 echo "# platform=$(uname -srm)" >&2
-echo "# python=$($BENCH_PYTHON --version 2>&1)" >&2
+echo "# python=$("$BENCH_PYTHON" --version 2>&1)" >&2
+echo "# perl=$("$BENCH_PERL" -e 'print $];' 2>&1)" >&2
 echo "# baseline=$BASELINE_ROOT commit=$(commit_for_root "$BASELINE_ROOT")" >&2
 echo "# candidate=$CANDIDATE_ROOT commit=$(commit_for_root "$CANDIDATE_ROOT")" >&2
 printf 'pair\torder\trole\twall_ms\tuser_ms\tsystem_ms\tmax_rss_bytes\toutput_bytes\tsha256\n' >"$OUTPUT"
@@ -104,7 +117,7 @@ run_sample() {
  local role="$3"
  local root="$4"
  local metrics
- metrics="$($BENCH_PYTHON - "$root" "$WORKLOAD" "$BENCH_PYTHON" <<'PY'
+ metrics="$("$BENCH_PYTHON" - "$root" "$WORKLOAD" "$BENCH_PYTHON" <<'PY'
 from __future__ import print_function
 
 import hashlib
@@ -186,7 +199,6 @@ PY
 # first, avoiding a fixed old/new alternation while retaining exact balance.
 state=$((SEED % 2147483648))
 for ((pair=1; pair<=RUNS; pair++)); do
- block_index=$(((pair-1)/2))
  if (( (pair-1)%2 == 0 )); then
   state=$(((1103515245*state+12345) % 2147483648))
   block_first=$((state % 2))
@@ -202,7 +214,7 @@ for ((pair=1; pair<=RUNS; pair++)); do
  fi
 done
 
-$BENCH_PYTHON - "$OUTPUT" <<'PY'
+"$BENCH_PYTHON" - "$OUTPUT" <<'PY'
 from __future__ import print_function
 
 import csv

@@ -48,7 +48,10 @@ fi
 out="$root/usr/bin/pgen_lut_solve"
 tmp="$out.new.$$"
 # The armhf binary is COMMITTED, so a failed link writing straight over it
-# would corrupt the working tree with something git happily records.
+# would corrupt the working tree with something git happily records. The trap
+# removes the temp file on any failure so a broken build cannot strand
+# pgen_lut_solve.new.<pid> in the tracked usr/bin/ directory.
+trap 'rm -f "$tmp"' EXIT
 "$zig" cc -target arm-linux-musleabihf -mcpu=cortex_a72 -O2 -static -s \
  $fpflags -o "$tmp" "$src"
 chmod 755 "$tmp"
@@ -61,10 +64,16 @@ mv "$tmp" "$out"
 # files and fails when they drift apart. The build is reproducible, so a
 # rebuild from unchanged source rewrites the same manifest.
 manifest="$here/pgen_lut_solve.manifest"
+# sha256_of's exit inside $() only kills the subshell, so capture and verify:
+# a missing hash tool must abort, never write a manifest with blank hashes.
+src_sha=$(sha256_of "$src") && [ -n "$src_sha" ] || {
+ echo "Unable to hash $src for the manifest" >&2; exit 1; }
+out_sha=$(sha256_of "$out") && [ -n "$out_sha" ] || {
+ echo "Unable to hash $out for the manifest" >&2; exit 1; }
 {
  echo "# Written by src/lut_solver/build.sh. Do not edit by hand: rebuild."
- echo "$(sha256_of "$src")  src/lut_solver/pgen_lut_solve.c"
- echo "$(sha256_of "$out")  usr/bin/pgen_lut_solve"
+ echo "$src_sha  src/lut_solver/pgen_lut_solve.c"
+ echo "$out_sha  usr/bin/pgen_lut_solve"
 } > "$manifest.new.$$"
 mv "$manifest.new.$$" "$manifest"
 

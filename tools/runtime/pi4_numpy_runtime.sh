@@ -113,8 +113,17 @@ _pi4_numpy_copy_selected_wheel_files() {
    return 1
   }
   destination="$destination_site/$rel"
-  mkdir -p "$(dirname "$destination")"
-  install -m 0644 "$source" "$destination"
+  # Explicit failure checks: the caller invokes this function in a ||
+  # condition, which suppresses errexit inside the body, and a failed
+  # install mid-list would otherwise stage a partial runtime silently.
+  mkdir -p "$(dirname "$destination")" || {
+   _pi4_numpy_runtime_die "Unable to create directory for runtime file: $rel"
+   return 1
+  }
+  install -m 0644 "$source" "$destination" || {
+   _pi4_numpy_runtime_die "Unable to stage NumPy runtime file: $rel"
+   return 1
+  }
  done < "$PI4_NUMPY_RUNTIME_FILE_LIST"
 }
 

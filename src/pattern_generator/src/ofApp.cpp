@@ -530,15 +530,19 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
  greenbg=normalizeSourceValue(greenbg,arr_source_range[i][to_draw]);
  bluebg=normalizeSourceValue(bluebg,arr_source_range[i][to_draw]);
  int lldv422=usesLowLatencyDoVi422Transport();
- const YCbCrPolicy ycbcr_policy=YCbCrPolicy::Create(
-  ofxRPI4Window::bit_depth,ofxRPI4Window::avi_info.colorimetry,
-  ofxRPI4Window::avi_info.rgb_quant_range);
+ // Two fixed policies mirror the legacy literals: the 10-bit branches passed
+ // 10 and every other depth (8 and 12 alike) passed 8. Deriving the policy
+ // from bit_depth changed the 12-bit background offset/scales.
+ const YCbCrPolicy ycbcr_policy_10=YCbCrPolicy::Create(
+  10,ofxRPI4Window::avi_info.colorimetry,ofxRPI4Window::avi_info.rgb_quant_range);
+ const YCbCrPolicy ycbcr_policy_8=YCbCrPolicy::Create(
+  8,ofxRPI4Window::avi_info.colorimetry,ofxRPI4Window::avi_info.rgb_quant_range);
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) {  
    if(arr_redbg[i][to_draw] != -1) {
 	if (ofxRPI4Window::avi_info.output_format != 0) {
      RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,ycbcr_policy);
+     YCbCr bg = RGB2YCbCr(data,ycbcr_policy_10);
      if (ofxRPI4Window::avi_info.output_format == 1) of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
      if (ofxRPI4Window::avi_info.output_format == 2) of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
     } else                                           of10bitBackground(redbg,greenbg,bluebg);
@@ -547,7 +551,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
    if(arr_redbg[i][to_draw] != -1) {
 	if (ofxRPI4Window::avi_info.output_format != 0) {
      RGB data = RGB(redbg,greenbg,bluebg);
-     YCbCr bg = RGB2YCbCr(data,ycbcr_policy);
+     YCbCr bg = RGB2YCbCr(data,ycbcr_policy_8);
      if (ofxRPI4Window::avi_info.output_format == 1) ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
      if (ofxRPI4Window::avi_info.output_format == 2) ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
     } else                                           ofBackground(redbg,greenbg,bluebg);
@@ -561,7 +565,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
 	  of10bitBackground(redbg,greenbg,bluebg);
 	 } else {
 	     RGB data = RGB(redbg,greenbg,bluebg);
-	     YCbCr bg = RGB2YCbCr(data,ycbcr_policy);
+	     YCbCr bg = RGB2YCbCr(data,ycbcr_policy_10);
 	     if (ofxRPI4Window::avi_info.output_format == 1) 					of10bitBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
 	     if (ofxRPI4Window::avi_info.output_format == 2) 					of10bitBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
 		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on)	ofApp::setDoViBackground(redbg,greenbg,bluebg); //set dovi background only if standard dovi mode and drawing patterns
@@ -575,7 +579,7 @@ void ofApp::setBackground(int redbg, int greenbg, int bluebg) {
 		  ofBackground(redbg,greenbg,bluebg);
 		 } else {
 	     RGB data = RGB(redbg,greenbg,bluebg);
-	     YCbCr bg = RGB2YCbCr(data,ycbcr_policy);
+	     YCbCr bg = RGB2YCbCr(data,ycbcr_policy_8);
 	     if (ofxRPI4Window::avi_info.output_format == 1)					ofBackground(bg.Cb,bg.Cr,bg.Y);  //in YCbCr444, luminance is last channel
 	     if (ofxRPI4Window::avi_info.output_format == 2) 					ofBackground(bg.Y,bg.Cb,bg.Cr);  //in YCbCr422
 		 if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on) 	ofApp::setDoViBackground(redbg,greenbg,bluebg);  //set dovi background only if standard dovi mode and drawing patterns

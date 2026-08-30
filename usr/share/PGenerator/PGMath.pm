@@ -35,7 +35,8 @@ my $BRADFORD_INVERSE=[
 ];
 
 # SMPTE ST 2084 constants. Keep these in one Perl module so the web server,
-# 1D worker, 3D worker and simulator cannot acquire different copies.
+# 1D worker, 3D worker, TV process and simulator cannot acquire different
+# copies.
 #
 # c2 and c3 are over 128, NOT over 32. A display specification in circulation
 # lists c2=2413/32 and c3=2392/32; both are typos. With them the EOTF ratio is

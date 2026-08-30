@@ -8,12 +8,12 @@ boundary. Callers may select a policy, but they must not copy its equation.
 | Contract | Owner | Consumers |
 | --- | --- | --- |
 | Finite scalar colour maths, XYZ derivation, CCT, transfer functions, Lab, CIEDE2000, matrices | `usr/bin/pgen_colour_math.py` | Meter-result and ICC tools |
-| Perl transfer, Delta E, matrix and interpolation primitives | `usr/share/PGenerator/PGMath.pm` | Web server and AutoCal workers |
-| Calibration targets, gamut records, tolerances and DPG smoothing | `usr/share/PGenerator/PGCalibrationMath.pm` | AutoCal workers and Web server |
+| Perl transfer, Delta E, matrix and interpolation primitives | `usr/share/PGenerator/PGMath.pm` | Web server, AutoCal workers, TV process and meter simulator |
+| Calibration targets, gamut records, tolerances and DPG smoothing | `usr/share/PGenerator/PGCalibrationMath.pm` | AutoCal workers, Web server and meter simulator |
 | Finite meter record to XYZ | `usr/share/PGenerator/PGMeterReading.pm` | Both AutoCal workers |
-| Signal percentage to emitted code | `usr/share/PGenerator/PGSignalCode.pm` | Server and AutoCal workers |
+| Signal percentage to emitted code | `usr/share/PGenerator/PGSignalCode.pm` | Server, AutoCal workers and DV profile worker |
 | Browser colour equations | `usr/share/PGenerator/webui-colour-math.js` | Charts and pattern previews |
-| Native hot-path primitives | `src/calibration_math/pgen_calibration_math.h` | Renderer, ICC companion and LUT solver |
+| Native hot-path primitives | `src/common/pgen_colour_math.h` | ICC companion and LUT solver |
 
 The calibration-target context is immutable after validation. Persisted runs
 carry its schema and version so a restored run cannot silently inherit the
@@ -25,7 +25,7 @@ current UI mode, transfer function or normalization policy.
 workflows pass a numeric requested sample count; UI labels such as `a`, `aa`
 and `aaa` are presentation and telemetry only.
 
-Each series generation is normalized once into a fixed record stream. The
+Each series generation is normalised once into a fixed record stream. The
 browser may build an immediate preview, capped at 4,096 lattice patches, but
 the ordered steps returned by `/api/meter/series` are the execution record.
 Progress, readings, recovery and retry use that server order. Browser reading
@@ -55,9 +55,9 @@ outside this repository adopted the executable name.
 
 ## Deliberate runtime differences
 
-- Perl target evaluation retains named `bt1886_piecewise` and
-  `bt1886_black_lifted_power` policies because their operation order and black
-  handling differ.
+- Perl target evaluation retains named `bt1886_1d_ab`, `bt1886_chart_ab` and
+  `bt1886_3d_root_blend_relative` policies because their operation order and
+  black handling differ.
 - Python finetuning retains a `ratio_floor_1e_minus_9` XYZ-to-Lab policy while
   the other runtimes use signed linear continuation.
 - The ICC NumPy matrix batches retain explicit three-term float64 reductions.
@@ -74,12 +74,13 @@ outside this repository adopted the executable name.
 ## Release inputs
 
 The tracked checkout does not contain `tools/image-targets` manifests and
-hardware overlays. Image and OTA builders validate these paths and fail with a
-named missing-manifest error. Release engineering must supply a reviewed
+hardware overlays. The OTA builder and the Pi 5 image target fail with a named
+missing-manifest error; the default Pi 4 image target warns and builds without
+the hardware overlay. Release engineering must supply a reviewed
 `tools/image-targets/<target>.env` and its declared `TARGET_OVERLAY_REL` from
 the private hardware-input bundle before building an image or OTA package.
 
-This is an external release input, not a generated calibration artifact. A
+This is an external release input, not a generated calibration artefact. A
 clean source checkout can run all maths, packaging-policy and Pi runtime tests,
 but cannot produce a hardware image until that bundle is supplied and its
 identity is recorded in the release evidence.
@@ -88,7 +89,7 @@ identity is recorded in the release evidence.
 
 The principal gates are `t/math_consolidation.t`, `t/math_conformance.js`,
 `t/calibration_target_context.t`, `t/signal_code_policy.t`,
-`t/meter_reading.t`, `t/meter_average.t`, `t/series_step_normalization.t`,
+`t/meter_reading.t`, `t/meter_average.t`, `t/series_steps.t`,
 `t/lg_3d_lut_native_parity.t`, `t/lg_3d_lut_preparation.t`,
 `t/icc_numpy_parity.t`, `t/icc_companion_streaming.t`,
 `t/webui_lattice_parity.t` and `t/webui_series_runtime.t`.

@@ -71,6 +71,10 @@ def average_record(readings, mode=None, requested_sample_count=None,
         if mode not in ("off", "a", "aa", "aaa"):
             raise ValueError("unsupported average mode")
         result["average_mode"] = mode
+    else:
+        # Without an explicit mode the record must not inherit a stale
+        # average_mode stamp from the first sample it was seeded with.
+        result.pop("average_mode", None)
     result["requested_sample_count"] = requested
     return result
 

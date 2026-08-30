@@ -101,6 +101,16 @@ sub signal_code_policy {
  return undef if($strategy eq "dv_series" && $mode ne "dv");
  return undef if($strategy ne "hdr20_codes" && defined($input->{active_table}));
 
+ # Validate color_format for every strategy (the JS twin already does): an
+ # absent or empty value is RGB, anything else must be an integer 0..2.
+ my $color_format=0;
+ if(defined($input->{color_format}) && $input->{color_format} ne "") {
+  my $numeric=_finite_number($input->{color_format});
+  return undef if(!defined($numeric) || int($numeric)!=$numeric
+   || $numeric < 0 || $numeric > 2);
+  $color_format=int($numeric);
+ }
+
  my $requested_bits;
  if(defined($input->{max_bpc}) && $input->{max_bpc} ne "") {
   my $numeric=_finite_number($input->{max_bpc});
@@ -135,14 +145,14 @@ sub signal_code_policy {
  my $active_table;
 
  if($strategy eq "two_point_ycbcr_headroom") {
-  return undef if(!$limited);
-  $allows_headroom=1;
-  $maximum_stimulus=109;
+  # Full range has no superwhite headroom: degrade to the nominal domain
+  # (autocal_26_codes precedent) instead of rejecting, which upstream turned
+  # into a died request for full-range 2-point YCbCr series.
+  $allows_headroom=$limited ? 1 : 0;
+  $maximum_stimulus=$allows_headroom ? 109 : 100;
   $percent_domain="nominal_ire_percent";
  } elsif($strategy eq "autocal_26_codes") {
-  my $format=defined($input->{color_format}) ? int($input->{color_format}) : 0;
-  return undef if($format<0 || $format>2);
-  my $ycbcr=($format==1 || $format==2) ? 1 : 0;
+  my $ycbcr=($color_format==1 || $color_format==2) ? 1 : 0;
   $allows_headroom=($limited && $ycbcr) ? 1 : 0;
   $maximum_stimulus=$allows_headroom ? 109 : 100;
   $percent_domain="nominal_ire_percent";
@@ -206,7 +216,7 @@ sub signal_code_policy {
   tunnel_mode=>$tunnel_mode,
   percent_domain=>$percent_domain,
   strategy=>$strategy,
-  color_format=>(defined($input->{color_format}) ? int($input->{color_format}) : 0),
+  color_format=>$color_format,
   hdr20_use_limited=>($input->{hdr20_use_limited} ? 1 : 0),
   hdr20_full=>($input->{hdr20_full} ? 1 : 0),
   signal_peak_nits=>(defined($input->{signal_peak_nits})

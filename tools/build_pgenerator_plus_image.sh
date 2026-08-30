@@ -67,6 +67,10 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/bin/modetest
  usr/bin/socat
  usr/bin/edid-decode
+ # command.pm invokes /usr/bin/pgsethdr on every target; the consolidated
+ # target-owned runtime list excludes it from the generic rsync, so the Pi 5
+ # overlay must supply it and the build must fail closed if it does not.
+ usr/bin/pgsethdr
  usr/share/perl5/URI/Escape.pm
  usr/share/perl5/XML/Simple.pm
  usr/lib/arm-linux-gnueabihf/libgbm.so.1
@@ -184,7 +188,7 @@ require_root() {
 require_commands() {
  local missing=()
  local cmd
- for cmd in ar awk cpio cp curl dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync tar umount unzip; do
+ for cmd in ar awk cpio cp curl dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync tar umount unzip xz; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -223,6 +227,8 @@ load_target_manifest() {
   log "Loaded target manifest: $manifest (${TARGET_DESCRIPTION:-$TARGET})"
  elif [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
   die "Missing target manifest: $manifest"
+ else
+  log "WARNING: missing target manifest: $manifest - building without the hardware overlay"
  fi
 
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
@@ -672,7 +678,7 @@ validate_colour_math_runtime() {
 # The vendored Pi 4 ATLAS/BLAS libraries and six of the NumPy extension
 # modules are DT_NEEDED against libgfortran.so.3, which the base appliance
 # image supplies and this repository deliberately does not ship (see
-# usr/lib/python3/dist-packages/PGENERATOR_NUMPY.md). Every other shipped
+# third_party/pi4-numpy-runtime/README.md). Every other shipped
 # library has its architecture checked; the one dependency that is assumed
 # rather than shipped had nothing checking it at all, and its absence surfaces
 # on the device as an ImportError the first time an ICC build runs.

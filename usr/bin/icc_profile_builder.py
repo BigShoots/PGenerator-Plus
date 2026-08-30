@@ -31,7 +31,6 @@ try:
     import numpy as np
 
     from pgen_colour_math import (
-        BRADFORD,
         D65_WHITE,
         ICC_D50_WHITE,
         PQ_C1,
@@ -1534,7 +1533,11 @@ def _np_smoothstep(value):
 
 def _np_u16_bytes(values):
     """Quantize to big-endian u16 exactly as int(round(x)) then clamp does."""
-    return np.clip(np.rint(values * 65535.0), 0.0, 65535.0).astype(">u2").tobytes()
+    scaled = values * 65535.0
+    if np.isnan(scaled).any():
+        # The scalar path raised on NaN; np.clip would silently write 0x0000.
+        raise ValueError("non-finite value reached u16 quantisation")
+    return np.clip(np.rint(scaled), 0.0, 65535.0).astype(">u2").tobytes()
 
 
 def _np_lattice_axes(grid, start, stop):

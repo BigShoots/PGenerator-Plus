@@ -4024,9 +4024,9 @@ function meterReadSeriesCacheV2(scope){
     const raw=localStorage.getItem(meterSeriesCacheEntryStorageKey(scope,key));
     const restored=raw?meterSeriesCacheRestoreEntry(JSON.parse(raw)):null;
     if(restored) out[key]=restored;
-   }catch(e){}
+   }catch(e){ console.warn('series cache: dropping unreadable entry',key,e); }
   });
- }catch(e){}
+ }catch(e){ console.warn('series cache: index unreadable',e); }
  return out;
 }
 
@@ -4153,7 +4153,11 @@ function meterPersistSeriesCache(){
    if(!prev || !meterSeriesSnapshotCanRestore(meterSeriesCache[prev])) localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
   }
   dirty.forEach(key=>meterSeriesCacheDirtyKeys.delete(key));
- }catch(e){}
+ }catch(e){
+  // Keys stay dirty and retry on the next flush; warn so a persistently
+  // failing persist (e.g. quota exceeded) is diagnosable.
+  console.warn('series cache: persist failed, will retry',e);
+ }
 }
 
 let meterSeriesCachePersistTimer=null;
@@ -5573,7 +5577,11 @@ function meterPatchRangeSpan(){
 
 function meterChromaPatchRange(){
  const range=signalCodeNominalRange(meterPreviewSignalCodePolicy());
- return range?{min:range.min,span:range.span}:{min:16,span:219};
+ if(range) return {min:range.min,span:range.span};
+ // Fall back to the live range helpers, not a hardcoded limited 8-bit
+ // constant that ignores the actual bit depth and quant range.
+ console.warn('chroma patch range: signal-code policy rejected, using live range');
+ return {min:meterPatchRangeMin(),span:meterPatchRangeSpan()};
 }
 
 function meterChromaPatchRangeMin(){
@@ -5804,7 +5812,11 @@ function meterPreviewSignalCodePolicy(options){
 function meterPreviewSignalCode(percent,options){
  const policy=meterPreviewSignalCodePolicy(options);
  const result=policy?signalPercentToCode(policy,percent):null;
- return result?result.code:0;
+ if(!result){
+  console.warn('preview signal code: policy rejected, emitting black',percent,options);
+  return 0;
+ }
+ return result.code;
 }
 
 // HDR10 (10-bit PQ) 100% white code depends on the panel's quant range.
@@ -5859,12 +5871,16 @@ function meterGreySignalFractionFromCode(code){
   options.colorFormat=1;
  }else if(headroom==='legal_superwhite') options.twoPointYcbcr=true;
  else if(headroom==='extended_sdr') options.lgExtendedSdr=true;
- else if(typeof meterGreyAllowsHeadroomTargets==='function'&&meterGreyAllowsHeadroomTargets()) options.lgAutocal26=true;
+ // Only consult the DOM helper when no context is stamped: a live context
+ // that says headroom 'none' is authoritative for how the series was run.
+ else if(!context&&typeof meterGreyAllowsHeadroomTargets==='function'&&meterGreyAllowsHeadroomTargets()) options.lgAutocal26=true;
  const policy=meterPreviewSignalCodePolicy(options);
  const fraction=policy?codeToSignalFraction(policy,numeric):null;
  if(!Number.isFinite(fraction)) return 0;
  // SDR26 chart targets normalize the named 109% legal peak to the run white.
- if(headroom==='lg_sdr26_ladder'||(!context&&options.lgAutocal26))
+ // The gate follows options.lgAutocal26 so the same ladder policy always
+ // gets the same normalisation, context or not.
+ if(headroom==='lg_sdr26_ladder'||options.lgAutocal26)
   return Math.max(0,Math.min(1,fraction/1.09));
  return Math.max(0,Math.min(policy&&policy.allows_above_nominal_white?1.09:1,fraction));
 }
@@ -11023,7 +11039,19 @@ function meterSetActiveSeriesChartContext(source){
  const metaStep=(Array.isArray(src.steps)?src.steps.find(st=>st&&(st.calibration_target_context||st.signal_mode||st.target_gamma||st.max_luma||st.dv_map_mode||st.dv_interface)):null)||{};
  const metaReading=(Array.isArray(src.readings)?src.readings.find(rd=>rd&&(rd.calibration_target_context||rd.signal_mode||rd.target_gamma||rd.max_luma||rd.dv_map_mode||rd.dv_interface)):null)||{};
  const context=meterCalibrationTargetContextFromSource(src,metaStep,metaReading);
- if(!context) return null;
+ if(!context){
+  // A rejected context must clear the previous series' context and mode
+  // globals: charting the new series under the stale mode/gamma/peak is
+  // exactly what this setter was added to prevent.
+  meterActiveCalibrationTargetContext=null;
+  meterActiveSeriesSignalMode=null;
+  meterActiveSeriesTargetGamma=null;
+  meterActiveSeriesMaxLuma=null;
+  meterActiveSeriesDvMapMode=null;
+  meterActiveSeriesDvInterface=null;
+  console.warn('chart target context rejected; charting without a context',src&&src.name);
+  return null;
+ }
  meterActiveCalibrationTargetContext=context;
  meterActiveSeriesSignalMode=context.signal_mode;
  meterActiveSeriesTargetGamma=context.target_gamma;
@@ -19718,8 +19746,10 @@ function meterCustomSeriesDisplayPatches(series,limit){
  if(series.kind==='lattice') return meterLatticeDisplayPatches(series.params,limit);
  if(series.kind==='hybrid') return meterHybridDisplayPatches(series.params,limit);
  const patches=meterCustomSeriesPatches(series);
- if(patches.length<=limit) return patches;
+ // Normalise before comparing: a missing limit must cap at the default,
+ // not compare against undefined and return every patch.
  const cap=Math.max(2,Math.round(Number(limit)||METER_SERIES_DISPLAY_LIMIT));
+ if(patches.length<=cap) return patches;
  const out=[];
  for(let i=0;i<cap;i++) out.push(patches[Math.floor(i*patches.length/cap)]);
  out[out.length-1]=patches[patches.length-1];
