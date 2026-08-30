@@ -11331,12 +11331,14 @@ async function meterStartLg3dAutoCal(options){
  const transportRange=(typeof config!=='undefined'&&config&&config.rgb_quant_range!=null&&String(config.rgb_quant_range)!=='')
   ? String(config.rgb_quant_range)
   : String(getVal('rgb_quant_range')||'2');
- // Pull the greyscale stage's measured peak luminance + DPG array out of
- // the cached firstStatus so the 3D worker can upload the HDR tone map
- // after its 3D LUT, all inside the same CAL_START session.
+ // Pull the greyscale stage's committed DPG out of cached firstStatus for
+ // final shadow smoothing. HDR also supplies its measured peak so the worker
+ // can finish the 3D LUT and tone map inside one CAL_START session.
  const firstStatusResult=(meterFullAutoCalResults&&meterFullAutoCalResults.first)||{};
  const firstStatusPeak=Number(firstStatusResult.hdr20_1d_tonemap_peak_luminance||firstStatusResult.hdr_tone_map_peak_luminance||0);
- const firstStatusDpg=firstStatusResult.hdr20_1d_dpg_data;
+ const firstStatusDpg=signalMode==='sdr'
+  ? firstStatusResult.sdr_1d_dpg_data
+  : firstStatusResult.hdr20_1d_dpg_data;
  const payload=meterAutoCalMeasurementSignalContext({
   method:method,
   type:'lg-3d-lut',

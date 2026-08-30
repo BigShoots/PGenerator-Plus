@@ -3797,6 +3797,12 @@ sub hdr20_postcal_best_status {
 # A measured/exported LUT is not a successful AutoCal when the operator asked
 # for it to be committed to the TV.  Keep this check side-effect free so
 # both the worker and regression tests can exercise every terminal contract.
+sub autocal3d_full_workflow_requires_hdr_tone_map {
+ my ($config)=@_;
+ return 0 unless(ref($config) eq "HASH" && $config->{"full_workflow"});
+ return lc($config->{"signal_mode"}||"") eq "hdr10" ? 1 : 0;
+}
+
 sub autocal3d_commit_error {
  my ($config,$state)=@_;
  return "" if(ref($config) ne "HASH" || ref($state) ne "HASH");
@@ -3809,7 +3815,7 @@ sub autocal3d_commit_error {
   my $attempt_text=$attempts ? " after $attempts attempt".($attempts==1?"":"s") : "";
   return "3D LUT upload was not verified$attempt_text: $detail";
  }
- my $full_hdr=$config->{"full_workflow"} && lc($config->{"signal_mode"}||"") eq "hdr10";
+ my $full_hdr=autocal3d_full_workflow_requires_hdr_tone_map($config);
  if($full_hdr && (($state->{"tone_map_upload_status"}||"") ne "ok" || !$state->{"tone_map_uploaded"})) {
   return "HDR tone-map finalisation failed because no measured peak luminance reached the 3D worker. The calibration session remains held; restart the TV before another calibration."
    if(($state->{"tone_map_upload_error_code"}||"") eq "lg-tone-map-peak-missing");
@@ -5497,6 +5503,7 @@ eval {
    $state->{"upload_status"}="requesting";
    $state->{"upload_started_at"}=int(time()*1000);
    my $full_workflow_upload=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
+   my $hold_for_hdr_tone_map=autocal3d_full_workflow_requires_hdr_tone_map($config);
    $state->{"upload_request"}={
     picture_mode => $config->{"picture_mode"}||"",
     signal_mode => $config->{"signal_mode"}||"",
@@ -5505,18 +5512,20 @@ eval {
     get_command => $probe->{"get_command"}||"",
     helper_timeout => 220,
     api_timeout => 240,
-    # Full autocal: the greyscale stage already opened CAL_START and uploaded
+    # HDR Full AutoCal: the greyscale stage already opened CAL_START and uploaded
     # an identity 3D LUT container. We must INHERIT that CAL_START (skip our
     # own CAL_START) and KEEP it active (skip our own CAL_END) so the
     # subsequent tone-map upload can land inside the same session. The reference's
     # HDR OLED DPG flow (relay capture) uses a single CAL_START across the
-    # DPG, the 3D LUT, and the tone map -- same pattern.
-    ($full_workflow_upload
+    # DPG, the 3D LUT, and the tone map -- same pattern. SDR has no tone-map
+    # stage, so its verified 3D upload must close normally before the optional
+    # final DPG smoothing upload starts its own bounded session.
+    ($hold_for_hdr_tone_map
      ? (keep_calibration_mode=>json_true(),calibration_mode_active=>json_bool(!$retry_upload_only))
      : ()),
    };
    $state->{"upload_supported"}=json_true();
-   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||"").", full_workflow=".($full_workflow_upload?1:0));
+   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||"").", full_workflow=".($full_workflow_upload?1:0).", hold_for_hdr_tone_map=".($hold_for_hdr_tone_map?1:0));
    write_state($state);
    my $upload=api_json("POST","/api/lg/3d-lut/upload",$state->{"upload_request"},240);
    $state->{"upload"}=$upload;
@@ -5549,7 +5558,7 @@ eval {
     # (the WebUI passes them through full_workflow_peak_luminance /
     # full_workflow_dpg_data so the 3D worker doesn't have to read the
     # greyscale state file directly).
-    if($full_workflow_upload && ($state->{"upload_status"}||"") eq "ok" && $state->{"upload_verified"}) {
+    if($hold_for_hdr_tone_map && ($state->{"upload_status"}||"") eq "ok" && $state->{"upload_verified"}) {
      my $tone_peak=0;
      my $tone_dpg=undef;
      if(ref($config) eq "HASH") {

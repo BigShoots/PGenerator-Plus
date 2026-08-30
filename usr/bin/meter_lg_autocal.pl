@@ -16067,13 +16067,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 # the SDR path's JSON state is distinguishable from the HDR path's
 # hdr20_1d_dpg_ keys when both are loaded into the WebUI.
 
-# Compute the target luminance for an SDR26 anchor. SDR uses plain gamma 2.2
-# (no PQ EOTF, no BT.1886 unless an explicit BT.1886 target_gamma is
-# configured -- the reference SDR workflow uses 2.2 across all 26 anchors).
-# This is a thin wrapper around target_luminance_for_step that pins the
-# signal_mode to "sdr" and the gamma to 2.2; the heavy lifting (BT.1886
-# black-floor handling, stimulus > 100% clamping, signal clipping) is already
-# in target_luminance_for_step.
+# Resolve the SDR26 target transfer once for both target math and persisted
+# status. Keeping this normalization in one place prevents the chart metadata
+# from drifting away from the curve that the solver actually used.
+sub lg_autocal_26_sdr26_target_gamma {
+ my ($target_gamma)=@_;
+ $target_gamma="bt1886" if(!defined($target_gamma) || $target_gamma eq "");
+ $target_gamma=lc($target_gamma);
+ $target_gamma="bt1886" if($target_gamma eq "2.4");
+ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ return $target_gamma;
+}
+
+# Compute the target luminance for an SDR26 anchor. This is a thin wrapper
+# around target_luminance_for_step that pins signal_mode to SDR; the heavy
+# lifting (BT.1886 black-floor handling, stimulus > 100% clamping, signal
+# clipping) remains consolidated there.
 sub lg_autocal_26_sdr26_dpg_compute_target {
  my ($white_y,$rs,$black_y,$target_gamma)=@_;
  return undef unless(defined($white_y) && $white_y+0 > 0);
@@ -16099,10 +16108,7 @@ sub lg_autocal_26_sdr26_dpg_compute_target {
  # override path ($_target_white_override / $_target_black_override set
  # by the calibration card) still wins inside target_luminance_for_step
  # so per-cal target entries take precedence.
- $target_gamma="bt1886" if(!defined($target_gamma) || $target_gamma eq "");
- $target_gamma=lc($target_gamma);
- $target_gamma="2.2" if($target_gamma eq "2.4"); # accept "2.4" as explicit BT.1886 alias
- $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ $target_gamma=lg_autocal_26_sdr26_target_gamma($target_gamma);
  return target_luminance_for_step($white_y,$rs,$target_gamma,"sdr",$black_y);
 }
 
@@ -17922,11 +17928,9 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  # now the headline-committed max; the trajectory-only diagnostic is
  # still available via $state->{sdr_1d_dpg_anchor_history} per anchor.
  $state->{"sdr_1d_dpg_final_de"}=$max_de_overall+0;
- # SDR26 always calibrates against gamma 2.2 (the LG 1D_2_2_EN reference
- # workflow uses the DPG hardware gamma 2.2 path). Persist on the state so
- # the WebUI chart can render the matching 2.2 target line via
- # meterGreyChartTargetGammaSelection rather than the BT.1886 dropdown default.
- $state->{"sdr_1d_dpg_target_gamma"}="2.2";
+ # Persist the exact transfer used by lg_autocal_26_sdr26_dpg_compute_target
+ # so the WebUI renders the same target curve the worker solved.
+ $state->{"sdr_1d_dpg_target_gamma"}=lg_autocal_26_sdr26_target_gamma($config->{"target_gamma"});
  # Only mark the curve as uploaded to the TV if the white reference actually
  # converged and the upload didn't fail. A non-converged 100% block leaves
  # the panel with the identity baseline -- uploading the 1.0/1.0/1.0 no-op
