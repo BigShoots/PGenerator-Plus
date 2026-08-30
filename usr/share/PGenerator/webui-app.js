@@ -5445,16 +5445,28 @@ function meterSdrRgbChromaUsesFullSourceRange(){
  return mode==='sdr' && meterOutputIsRgb() && !meterPatchUsesVideoRange();
 }
 
-function meterChromaPatchRangeMin(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+function meterChromaPatchRange(){
+ const min8=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+ const max8=min8+(meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan());
  const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ if(bits===12){
+  const min12=Math.round(min8*16);
+  return {min:min12,span:Math.round(max8*16)-min12};
+ }
+ if(bits===10){
+  const min10=Math.round(min8*4);
+  const max10=max8>=255?1023:Math.round(max8*4);
+  return {min:min10,span:max10-min10};
+ }
+ return {min:min8,span:max8-min8};
+}
+
+function meterChromaPatchRangeMin(){
+ return meterChromaPatchRange().min;
 }
 
 function meterChromaPatchRangeSpan(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
- const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ return meterChromaPatchRange().span;
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
