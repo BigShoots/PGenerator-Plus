@@ -828,6 +828,25 @@ sub webui_route_is_compute (@) {
  return 0;
 }
 
+# Calibration workers call /api/pattern over loopback before a physical read.
+# Keep those writes in the single serialized device lane, but put them ahead of
+# queued browser polling. Otherwise status requests accumulated during a slow
+# LG write can hold a pattern for more than the worker's 10-second deadline;
+# the timed-out request can then execute late and put the wrong patch on screen.
+sub webui_route_is_general_priority (@) {
+ my ($method,$path,$peer_host)=@_;
+ return 0 if(!defined($method) || $method ne "POST");
+ return 0 if(!defined($path) || $path ne "/api/pattern");
+ $peer_host="" if(!defined($peer_host));
+ return ($peer_host eq "127.0.0.1" || $peer_host eq "::1") ? 1 : 0;
+}
+
+sub webui_route_enqueue (@) {
+ my ($queue,$fd,$priority)=@_;
+ if($priority) { $queue->insert(0,$fd); }
+ else { $queue->enqueue($fd); }
+}
+
 sub webui_renderer_restart_status_path (@) {
  my $restart_id=shift;
  return "" if(!defined($restart_id) || $restart_id !~ /^[a-f0-9-]{8,80}$/);
@@ -1063,6 +1082,7 @@ sub webui_http (@) {
    my ($peek_method,$peek_path)=$peek=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
    $peek_path="" if(!defined($peek_path));
    $peek_path=~s/\?.*$//;
+   my $peer_host=eval { $h->peerhost() } || "";
    my ($queue,$lane,$queue_max);
    if(&webui_route_is_compute($peek_method,$peek_path)) {
     ($queue,$lane,$queue_max)=($_webui_compute_queue,"compute",$WEBUI_COMPUTE_QUEUE_MAX);
@@ -1093,7 +1113,9 @@ sub webui_http (@) {
     &log("WebUI: could not duplicate client fd: $!");
     next;
    }
-   $queue->enqueue($fd);
+   my $priority=($lane eq "general")
+    ? &webui_route_is_general_priority($peek_method,$peek_path,$peer_host) : 0;
+   &webui_route_enqueue($queue,$fd,$priority);
   }
   # Reclaim sockets that connected but never produced a usable request.
   if(scalar(keys %pending)) {
@@ -6508,6 +6530,48 @@ sub webui_meter_lg_3d_autocal_kill (@) {
  &webui_meter_lg_3d_autocal_mark_cancelled() if($mark);
 }
 
+# Full AutoCal is browser-orchestrated, so a page that stayed open across a
+# deployment can reach this endpoint with the old handoff shape. Recover the
+# committed 1D DPG at the server boundary when (and only when) the completed
+# greyscale status belongs to the exact same run and signal mode. This keeps a
+# stale client from silently skipping terminal DPG smoothing while preserving
+# an explicit, valid payload from a current client.
+sub webui_meter_lg_3d_autocal_complete_full_workflow_dpg (@) {
+ my ($body)=@_;
+ return $body if(!defined($body) || $body eq "");
+ my $request=eval { require JSON::PP; JSON::PP::decode_json($body); };
+ return $body if(ref($request) ne "HASH" || !$request->{"full_workflow"});
+ return $body if(ref($request->{"full_workflow_dpg_data"}) eq "ARRAY"
+  && scalar(@{$request->{"full_workflow_dpg_data"}}) == 3072);
+
+ my $run=$request->{"full_autocal_run_id"}||$request->{"run_id"}||"";
+ return $body if($run eq "" || !-f $_meter_lg_autocal_file);
+ my $state_raw="";
+ if(open(my $fh,"<",$_meter_lg_autocal_file)) {
+  local $/;
+  $state_raw=<$fh>;
+  close($fh);
+ }
+ my $state=eval { JSON::PP::decode_json($state_raw); };
+ return $body if(ref($state) ne "HASH" || lc($state->{"status"}||"") ne "complete"
+  || !$state->{"full_workflow"});
+ my $state_run=$state->{"full_autocal_run_id"}||$state->{"run_id"}||"";
+ return $body if($state_run eq "" || $state_run ne $run);
+
+ my $signal=lc($request->{"signal_mode"}||$state->{"signal_mode"}||"");
+ return $body if($signal ne "sdr" && $signal ne "hdr10");
+ my $state_signal=lc($state->{"signal_mode"}||"");
+ return $body if($state_signal ne "" && $state_signal ne $signal);
+ my $source_key=($signal eq "sdr") ? "sdr_1d_dpg_data" : "hdr20_1d_dpg_data";
+ my $dpg=$state->{$source_key};
+ return $body if(ref($dpg) ne "ARRAY" || scalar(@$dpg) != 3072);
+
+ $request->{"full_workflow_dpg_data"}=[@$dpg];
+ $request->{"full_workflow_dpg_handoff_source"}="server_same_run_status";
+ $request->{"full_workflow_dpg_handoff_signal_mode"}=$signal;
+ return JSON::PP->new->canonical(1)->encode($request);
+}
+
 sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
  lock($_meter_lg_3d_autocal_start_lock);
@@ -6530,6 +6594,7 @@ sub webui_meter_lg_3d_autocal_start (@) {
   # browser's adoption probe).
   return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}';
  }
+ $body=&webui_meter_lg_3d_autocal_complete_full_workflow_dpg($body);
  &webui_meter_stop();
  system("mkdir -p /var/lib/PGenerator/lg/luts 2>/dev/null");
  system("chmod 0777 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/luts 2>/dev/null");
