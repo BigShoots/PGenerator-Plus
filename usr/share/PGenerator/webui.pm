@@ -3669,7 +3669,7 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
 # steps. MUST stay algorithm-identical to the client's meterLatticeExpandPatches
 # (grid order r-slowest/b-fastest, golden-ratio spread stride, Rec.709-signal
 # threshold, grey ramp 100%-first, percent names, ire from 1). Locked by
-# tests/lattice-server-steps-regression.pl + tests/lattice-expansion-regression.js.
+# t/webui_lattice_parity.t.
 sub webui_lattice_series_steps_from_body (@) {
  my ($body,$chroma_min,$chroma_span,$input_max)=@_;
  return () unless($body=~/"custom_series"\s*:\s*true/i);
@@ -5534,6 +5534,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
 
 	 my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));
+	 my $selection_run=($body=~/"selection_run"\s*:\s*true/i)?1:0;
 	 my $total=scalar(@steps);
 	 my $series_type_json=&_webui_json_escape($type);
 	 my $series_signal_mode_json=&_webui_json_escape($signal_mode);
@@ -5582,8 +5583,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	  if(!$series_target_context);
 	 require JSON::PP;
 	 my $series_target_context_json=JSON::PP->new->canonical(1)->encode({%{$series_target_context}});
-	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\",\"calibration_target_context\":$series_target_context_json";
-	 my $series_step_meta=",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
+	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"selection_run\":".($selection_run?"true":"false").",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\",\"calibration_target_context\":$series_target_context_json";
+	 my $series_step_meta=",\"selection_run\":".($selection_run?"true":"false").",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
 	 @steps=map {
 	  my $step=$_;
 	  if($step!~/"signal_mode"\s*:/) {

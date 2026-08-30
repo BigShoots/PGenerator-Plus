@@ -3814,6 +3814,9 @@ let meterCcssCreateMethod='measure';
 let meterCcssCreateTargetPort='';
 let meterCcssCreateJsonLoaded=false;
 let meterReadings=[];
+let meterReadingsIndex=new Map();
+let meterReadingsIndexSource=meterReadings;
+let meterReadingsIndexLength=0;
 let meterWhiteReading=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterLastChartSignature='';
@@ -3932,6 +3935,100 @@ function meterSeriesCacheKey(name){
  return 'pgen.meter.'+scope+'.'+name;
 }
 
+const METER_SERIES_CACHE_SCHEMA=2;
+const METER_SERIES_CACHE_CHECKPOINT_MS=5000;
+const METER_SERIES_CACHE_READING_CHECKPOINT=25;
+let meterSeriesCacheDirtyKeys=new Set();
+
+function meterSeriesCacheScopeKey(scope,name){
+ return 'pgen.meter.'+(scope||'global')+'.'+name;
+}
+
+function meterSeriesCacheEntryStorageKey(scope,key){
+ return meterSeriesCacheScopeKey(scope,'seriesCache.v2.entry.'+encodeURIComponent(key));
+}
+
+function meterSeriesCacheNormalizeEntry(snapshot){
+ const variants=(snapshot&&snapshot.mode_snapshots&&typeof snapshot.mode_snapshots==='object')
+  ?snapshot.mode_snapshots:{};
+ const readingSets={};
+ const readingSetIds=new Map();
+ let nextReadingSet=1;
+ const ownReadings=readings=>{
+  const list=Array.isArray(readings)?readings:[];
+  const signature=JSON.stringify(list);
+  if(readingSetIds.has(signature)) return readingSetIds.get(signature);
+  const id='r'+nextReadingSet++;
+  readingSetIds.set(signature,id);
+  readingSets[id]=list;
+  return id;
+ };
+ const modes={};
+ Object.entries(variants).forEach(([mode,variant])=>{
+  if(!variant||typeof variant!=='object') return;
+  const encoded={...meterSeriesSnapshotWithoutModeVariants(variant)};
+  encoded.readings_ref=ownReadings(encoded.readings);
+  delete encoded.readings;
+  const observers={};
+  Object.entries(encoded.observer_readings||{}).forEach(([observer,entry])=>{
+   if(!entry||typeof entry!=='object') return;
+   observers[observer]={...entry,readings_ref:ownReadings(entry.readings)};
+   delete observers[observer].readings;
+  });
+  encoded.observer_readings=observers;
+  modes[mode]=encoded;
+ });
+ if(Object.keys(modes).length===0&&snapshot){
+  const mode=meterSeriesSnapshotSignalMode(snapshot,'sdr');
+  const bare=meterSeriesSnapshotWithoutModeVariants(snapshot);
+  const encoded={...bare,readings_ref:ownReadings(bare.readings)};
+  delete encoded.readings;
+  encoded.observer_readings={};
+  modes[mode]=encoded;
+ }
+ return {schema:METER_SERIES_CACHE_SCHEMA,modes:modes,reading_sets:readingSets};
+}
+
+function meterSeriesCacheRestoreEntry(stored){
+ if(!stored||Number(stored.schema)!==METER_SERIES_CACHE_SCHEMA||!stored.modes) return null;
+ const sets=(stored.reading_sets&&typeof stored.reading_sets==='object')?stored.reading_sets:{};
+ const variants={};
+ Object.entries(stored.modes).forEach(([mode,encoded])=>{
+  if(!encoded||typeof encoded!=='object') return;
+  const variant={...encoded};
+  variant.readings=Array.isArray(sets[variant.readings_ref])?sets[variant.readings_ref]:[];
+  delete variant.readings_ref;
+  const observers={};
+  Object.entries(variant.observer_readings||{}).forEach(([observer,entry])=>{
+   if(!entry||typeof entry!=='object') return;
+   observers[observer]={...entry,readings:Array.isArray(sets[entry.readings_ref])?sets[entry.readings_ref]:[]};
+   delete observers[observer].readings_ref;
+  });
+  variant.observer_readings=observers;
+  variants[mode]=variant;
+ });
+ const latest=Object.values(variants).sort((a,b)=>Number(b.updated_at||0)-Number(a.updated_at||0))[0];
+ return latest?{...latest,mode_snapshots:variants}:null;
+}
+
+function meterReadSeriesCacheV2(scope){
+ const out={};
+ try{
+  const rawIndex=localStorage.getItem(meterSeriesCacheScopeKey(scope,'seriesCache.v2.index'));
+  if(!rawIndex) return out;
+  const index=JSON.parse(rawIndex);
+  if(!index||Number(index.schema)!==METER_SERIES_CACHE_SCHEMA||!index.entries) return out;
+  Object.keys(index.entries).forEach(key=>{
+   try{
+    const raw=localStorage.getItem(meterSeriesCacheEntryStorageKey(scope,key));
+    const restored=raw?meterSeriesCacheRestoreEntry(JSON.parse(raw)):null;
+    if(restored) out[key]=restored;
+   }catch(e){}
+  });
+ }catch(e){}
+ return out;
+}
+
 function meterSeriesSnapshotIsCleared(snap){
  return !!(snap&&String(snap.status||'').toLowerCase()==='cleared');
 }
@@ -3991,14 +4088,22 @@ function meterSetSeriesCacheBootId(bootId){
     });
    });
   };
+  mergeCache(meterReadSeriesCacheV2(bootId));
   mergeCache(readCache(scopedKey(bootId,'seriesCache')));
-  if(prev&&prev!==bootId) mergeCache(readCache(scopedKey(prev,'seriesCache')));
-  if(priorBootId&&priorBootId!==bootId&&priorBootId!==prev) mergeCache(readCache(scopedKey(priorBootId,'seriesCache')));
+  if(prev&&prev!==bootId){
+   mergeCache(meterReadSeriesCacheV2(prev));
+   mergeCache(readCache(scopedKey(prev,'seriesCache')));
+  }
+  if(priorBootId&&priorBootId!==bootId&&priorBootId!==prev){
+   mergeCache(meterReadSeriesCacheV2(priorBootId));
+   mergeCache(readCache(scopedKey(priorBootId,'seriesCache')));
+  }
   mergeCache(readCache('pgen.meter.seriesCache'));
   mergeCache(memoryCache);
   localStorage.setItem(markerKey,bootId);
   if(Object.keys(meterSeriesCache).length>0){
-   localStorage.setItem(meterSeriesCacheKey('seriesCache'),JSON.stringify(meterSeriesCache));
+   Object.keys(meterSeriesCache).forEach(key=>meterSeriesCacheDirtyKeys.add(key));
+   meterPersistSeriesCache();
    const lastCandidates=[
     localStorage.getItem(scopedKey(bootId,'lastSeriesKey'))||'',
     prev?localStorage.getItem(scopedKey(prev,'lastSeriesKey'))||'':'',
@@ -4020,28 +4125,73 @@ function meterSetSeriesCacheBootId(bootId){
 
 function meterPersistSeriesCache(){
  if(!meterSeriesCacheBootId) return;
+ const dirty=Array.from(meterSeriesCacheDirtyKeys);
  try{
-  localStorage.setItem(meterSeriesCacheKey('seriesCache'),JSON.stringify(meterSeriesCache||{}));
+  const index={schema:METER_SERIES_CACHE_SCHEMA,entries:{}};
+  const priorRaw=localStorage.getItem(meterSeriesCacheKey('seriesCache.v2.index'));
+  if(priorRaw){
+   try{
+    const prior=JSON.parse(priorRaw);
+    if(prior&&Number(prior.schema)===METER_SERIES_CACHE_SCHEMA&&prior.entries) index.entries={...prior.entries};
+   }catch(e){}
+  }
+  dirty.forEach(key=>{
+   const snapshot=meterSeriesCache[key];
+   if(!snapshot) return;
+   localStorage.setItem(
+    meterSeriesCacheEntryStorageKey(meterSeriesCacheBootId,key),
+    JSON.stringify(meterSeriesCacheNormalizeEntry(snapshot))
+   );
+   index.entries[key]=Number(snapshot.updated_at)||Date.now();
+  });
+  localStorage.setItem(meterSeriesCacheKey('seriesCache.v2.index'),JSON.stringify(index));
   const keepKey=(meterActiveSeriesKey&&meterSeriesSnapshotCanRestore(meterSeriesCache[meterActiveSeriesKey]))?meterActiveSeriesKey:'';
   if(keepKey) localStorage.setItem(meterSeriesCacheKey('lastSeriesKey'),keepKey);
   else {
    const prev=localStorage.getItem(meterSeriesCacheKey('lastSeriesKey'))||'';
    if(!prev || !meterSeriesSnapshotCanRestore(meterSeriesCache[prev])) localStorage.removeItem(meterSeriesCacheKey('lastSeriesKey'));
   }
+  dirty.forEach(key=>meterSeriesCacheDirtyKeys.delete(key));
  }catch(e){}
 }
 
 let meterSeriesCachePersistTimer=null;
-function meterScheduleSeriesCachePersist(){
+let meterSeriesCachePersistIdle=null;
+let meterSeriesCacheDirtySince=0;
+let meterSeriesCacheDirtyReadings=0;
+function meterFlushScheduledSeriesCache(){
  if(meterSeriesCachePersistTimer) clearTimeout(meterSeriesCachePersistTimer);
- meterSeriesCachePersistTimer=setTimeout(()=>{
-  meterSeriesCachePersistTimer=null;
-  meterPersistSeriesCache();
- },0);
+ if(meterSeriesCachePersistIdle!=null&&typeof cancelIdleCallback==='function') cancelIdleCallback(meterSeriesCachePersistIdle);
+ meterSeriesCachePersistTimer=null;
+ meterSeriesCachePersistIdle=null;
+ meterSeriesCacheDirtySince=0;
+ meterSeriesCacheDirtyReadings=0;
+ if(meterSeriesCacheDirtyKeys.size) meterPersistSeriesCache();
+}
+function meterScheduleSeriesCachePersist(readingMutations){
+ meterSeriesCacheDirtyReadings+=Math.max(0,Math.round(Number(readingMutations)||0));
+ if(meterSeriesCacheDirtyReadings>=METER_SERIES_CACHE_READING_CHECKPOINT){
+  meterFlushScheduledSeriesCache();
+  return;
+ }
+ if(meterSeriesCacheDirtySince) return;
+ meterSeriesCacheDirtySince=Date.now();
+ meterSeriesCachePersistTimer=setTimeout(meterFlushScheduledSeriesCache,METER_SERIES_CACHE_CHECKPOINT_MS);
+ if(typeof requestIdleCallback==='function'){
+  meterSeriesCachePersistIdle=requestIdleCallback(meterFlushScheduledSeriesCache,{timeout:METER_SERIES_CACHE_CHECKPOINT_MS});
+ }
 }
 
 function meterLoadSeriesCache(){
  if(!meterSeriesCacheBootId) return;
+ const normalized=meterReadSeriesCacheV2(meterSeriesCacheBootId);
+ if(Object.keys(normalized).length){
+  Object.keys(normalized).forEach(key=>{
+   if(meterSeriesKeyIsIccWorkflow(key)||meterSeriesSnapshotContainsIccWorkflow(normalized[key])) delete normalized[key];
+  });
+  meterSeriesCache=normalized;
+  return;
+ }
  try{
   const raw=localStorage.getItem(meterSeriesCacheKey('seriesCache'));
   if(!raw) return;
@@ -4051,8 +4201,16 @@ function meterLoadSeriesCache(){
     if(meterSeriesKeyIsIccWorkflow(key)||meterSeriesSnapshotContainsIccWorkflow(parsed[key])) delete parsed[key];
    });
    meterSeriesCache=parsed;
+   Object.keys(parsed).forEach(key=>meterSeriesCacheDirtyKeys.add(key));
+   meterPersistSeriesCache();
   }
  }catch(e){}
+}
+
+if(typeof window!=='undefined'&&window.addEventListener){
+ ['pagehide','beforeunload'].forEach(eventName=>window.addEventListener(eventName,()=>{
+  if(meterSeriesCacheDirtyKeys.size) meterFlushScheduledSeriesCache();
+ }));
 }
 
 function meterParseSeriesKey(key){
@@ -4137,7 +4295,7 @@ function meterStoreSeriesSnapshot(key,snapshot){
  const mode=Array.from(bareModes)[0];
  const current=meterSeriesCache&&meterSeriesCache[key];
  const variants=(current&&current.mode_snapshots&&typeof current.mode_snapshots==='object')
-  ? JSON.parse(JSON.stringify(current.mode_snapshots))
+  ? {...current.mode_snapshots}
   : {};
  if(current){
   const prior=meterSeriesSnapshotWithoutModeVariants(current);
@@ -4149,6 +4307,7 @@ function meterStoreSeriesSnapshot(key,snapshot){
  }
  variants[mode]=bare;
  meterSeriesCache[key]={...bare,mode_snapshots:variants};
+ meterSeriesCacheDirtyKeys.add(key);
 }
 
 function meterGreyscaleReadingMatchesStep(reading,step){
@@ -4395,15 +4554,15 @@ function meterRecoveredStepsDifferInCodes(a,b){
 
 function meterCanonicalRecoveredSteps(type,points,steps,status){
 	 const existing=Array.isArray(steps)?steps:[];
-	 // Lattice series: server-shaped steps carry no chart targets (the server
-	 // expansion computes none). The client expansion is name-identical
-	 // (parity-locked) and stamps target_x/y/Yn — always prefer it so target
-	 // resolution never falls back to the raw absolute stimulus decode.
+	 // Preserve an ordered server/cache lattice record exactly. A local build
+	 // is only a recovery preview when no record exists.
 	 try{
 	  const latSeries=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(points):null;
 	  if(latSeries&&latSeries.kind==='lattice'){
-	   const freshLat=meterBuildStepsJS(type,points);
-	   if(Array.isArray(freshLat)&&freshLat.length&&(existing.length===0||freshLat.length===existing.length)) return freshLat;
+	   if(existing.length) return existing;
+	   const freshLat=(typeof meterBuildPreviewStepsJS==='function')
+	    ?meterBuildPreviewStepsJS(type,points):meterBuildStepsJS(type,points);
+	   if(Array.isArray(freshLat)&&freshLat.length) return freshLat;
 	  }
 	 }catch(e){}
 	 // Custom series: a snapshot can hold a PARTIAL patch list. Reading a
@@ -4434,7 +4593,16 @@ function meterCanonicalRecoveredSteps(type,points,steps,status){
 	    // Target math is derived, not measured state. Refresh it after an
 	    // importer/container fix while the cached readings remain attached to
 	    // their name-identical patch steps.
-	    if(targetChanged) return freshCustom;
+	    if(targetChanged){
+	     return existing.map((step,idx)=>{
+	      const fresh=freshCustom[idx]||{};
+	      const enriched={...step};
+	      ['target_x','target_y','target_Yn','custom_target_nits'].forEach(field=>{
+	       if(fresh[field]!=null) enriched[field]=fresh[field];
+	      });
+	      return enriched;
+	     });
+	    }
 	   }
 	   if(Array.isArray(freshCustom)&&freshCustom.length>existing.length){
 	    const freshKeys=new Set(freshCustom.map(s=>meterStepNameKey(s)||String((s&&s.name)||'')));
@@ -9028,7 +9196,7 @@ function meterRestoreActiveChromaticityReadings(observer){
   white=snap.white_reading||null;
   black=snap.black_reading||null;
  }
- meterReadings=readings?JSON.parse(JSON.stringify(readings)):[];
+ meterReplaceReadings(readings?JSON.parse(JSON.stringify(readings)):[]);
  meterWhiteReading=white?JSON.parse(JSON.stringify(white)):null;
  meterSeriesBaselineBlack=black?JSON.parse(JSON.stringify(black)):null;
  meterLastChartCount=0;
@@ -12943,10 +13111,21 @@ function meterRecoverSeries(s){
 	 else if(steps&&steps.length>0){
 	  points=normalizePoints(type,steps.length,steps);
 	 }
-	 steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
-	 steps=meterRecoveryDisplaySteps(type,points,steps);
-	 if(s.series_id) steps=meterApplyColorSeriesTargetWhiteReference(steps,type);
+	 const recoveredSelection=meterServerSeriesIsSelection(s);
+	 const installedRunSteps=s.series_id
+	  ?meterInstallServerSeriesSteps(s,type,points,recoveredSelection):null;
+	 if(installedRunSteps&&!recoveredSelection){
+	  steps=installedRunSteps;
+	 }else{
+	  steps=meterCanonicalRecoveredSteps(type,points,steps,s.status||'complete');
+	  steps=meterRecoveryDisplaySteps(type,points,steps);
+	  steps=meterApplyColorSeriesTargetWhiteReference(steps,type,points);
+	 }
  meterSeriesSteps=steps;
+ if(!s.series_id&&Array.isArray(s.executed_steps)&&s.executed_steps.length){
+  meterExecutedSeriesSteps=Object.freeze(s.executed_steps.map(step=>Object.freeze({...step})));
+  meterExecutedSeriesId=null;
+ }
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterSetActiveSeriesChartContext({...s,steps:steps});
@@ -12969,7 +13148,7 @@ function meterRecoverSeries(s){
  meterLastChartCount=0;
  // Restore readings — always clear the previous series first so a cached
  // empty Sat Sweep can never leave the old Colors CIE plot on screen.
- meterReadings=[];
+ meterReplaceReadings([]);
  meterWhiteReading=null;
  meterSeriesBaselineBlack=s.black_reading?JSON.parse(JSON.stringify(s.black_reading)):null;
 	 if(!meterSeriesBaselineBlack&&Array.isArray(s.readings)){
@@ -12988,7 +13167,7 @@ function meterRecoverSeries(s){
 	  try{ meterNormalizeMeasuredReading(meterSeriesBaselineBlack); }catch(e){}
 	 }
 	 if(s.readings&&s.readings.length>0){
-	  meterReadings=meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(s.readings,type));
+	  meterReplaceReadings(meterAttachSeriesMeta(meterFilterReadingsForCurrentSteps(s.readings,type)));
   // Invalidate any carried-over per-reading analysis caches (ΔE/gamma)
   // so charts recompute against the restored chart context rather than a
   // value cached under a prior white reference / target black / gamma.
@@ -13275,23 +13454,101 @@ function meterCanonicalSeriesStep(step){
  return (name&&meterCanonicalStepCache.byKey.get('name:'+name))||step;
 }
 
+// The backend owns the exact ordered record that the worker will execute.
+// Local builders are previews only; they must never replace this list after a
+// successful start/status response, even when the two expansions look equal.
+function meterInstallServerSeriesSteps(response,type,points,selectionRun){
+ if(!response||!Array.isArray(response.steps)||response.steps.length===0) return null;
+ let records=response.steps.map(step=>({...step}));
+ if(typeof meterApplyColorSeriesTargetWhiteReference==='function'){
+  records=meterApplyColorSeriesTargetWhiteReference(records,type,points);
+ }
+ const installed=Object.freeze(records.map(step=>Object.freeze(step)));
+ meterExecutedSeriesSteps=installed;
+ meterExecutedSeriesId=response.series_id==null?null:String(response.series_id);
+ if(!selectionRun){
+  meterSeriesSteps=installed;
+  meterCanonicalStepCacheSource=null;
+  meterCanonicalStepCache=null;
+  meterFreshStepCache=null;
+ }
+ return installed;
+}
+
+function meterServerSeriesIsSelection(response){
+ if(response&&response.selection_run===true) return true;
+ return !!(response&&Array.isArray(response.steps)
+  &&response.steps.some(step=>step&&step.selection_run===true));
+}
+
 function meterFreshSeriesStep(step){
  const canon=meterCanonicalSeriesStep(step)||step;
  if(!canon||!meterActiveSeriesType||!meterActiveSeriesPoints||meterSeriesRunning) return canon||null;
- const freshSteps=meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+ const contextKey=meterFreshSeriesContextKey();
+ if(!meterFreshStepCache||meterFreshStepCache.key!==contextKey){
+  const freshSteps=(typeof meterBuildPreviewStepsJS==='function')
+   ?meterBuildPreviewStepsJS(meterActiveSeriesType,meterActiveSeriesPoints)
+   :meterBuildStepsJS(meterActiveSeriesType,meterActiveSeriesPoints);
+  if(!Array.isArray(freshSteps)||freshSteps.length===0) return canon;
+  const byKey=new Map();
+  freshSteps.forEach(candidate=>{
+   const key=meterStepNameKey(candidate);
+   const name=String(candidate.name||'');
+   if(key&&!byKey.has('step:'+key)) byKey.set('step:'+key,candidate);
+   if(name&&!byKey.has('name:'+name)) byKey.set('name:'+name,candidate);
+   const ire=Number(candidate.ire);
+   if(Number.isFinite(ire)) byKey.set('ire:'+ire+'|'+String(candidate.series_color||''),candidate);
+  });
+  meterFreshStepCache={key:contextKey,steps:freshSteps,byKey:byKey};
+ }
+ const freshSteps=meterFreshStepCache.steps;
  if(!Array.isArray(freshSteps)||freshSteps.length===0) return canon;
  const key=meterStepNameKey(canon);
  const name=String(canon.name||'');
  const ire=Number(canon.ire);
- const fresh=freshSteps.find(s=>{
-  if(key&&meterStepNameKey(s)===key) return true;
-  if(name&&String(s.name||'')===name) return true;
-  const sIre=Number(s.ire);
-  return Number.isFinite(ire)&&Number.isFinite(sIre)&&Math.abs(sIre-ire)<0.001&&String(s.series_color||'')===String(canon.series_color||'');
- })||canon;
+ const fresh=(key&&meterFreshStepCache.byKey.get('step:'+key))
+  ||(name&&meterFreshStepCache.byKey.get('name:'+name))
+  ||(Number.isFinite(ire)&&meterFreshStepCache.byKey.get('ire:'+ire+'|'+String(canon.series_color||'')))
+  ||canon;
  meterSeriesSteps=freshSteps;
  if(meterCurrentPatchStep&&key&&meterStepNameKey(meterCurrentPatchStep)===key) meterCurrentPatchStep=fresh;
  return fresh;
+}
+
+function meterReadingIndexKeys(reading){
+ if(!reading) return [];
+ const keys=[];
+ const stepKey=meterStepNameKey(reading);
+ const name=String(reading.name||'');
+ if(stepKey) keys.push('step:'+stepKey);
+ if(name) keys.push('name:'+name);
+ return Array.from(new Set(keys));
+}
+
+function meterRebuildReadingsIndex(readings){
+ const list=Array.isArray(readings)?readings:[];
+ meterReadingsIndex=new Map();
+ list.forEach((reading,index)=>{
+  meterReadingIndexKeys(reading).forEach(key=>{
+   if(!meterReadingsIndex.has(key)) meterReadingsIndex.set(key,index);
+  });
+ });
+ meterReadingsIndexSource=list;
+ meterReadingsIndexLength=list.length;
+ return meterReadingsIndex;
+}
+
+function meterReplaceReadings(readings){
+ meterReadings=Array.isArray(readings)?readings:[];
+ meterRebuildReadingsIndex(meterReadings);
+ return meterReadings;
+}
+
+function meterEnsureReadingsIndex(){
+ if(meterReadingsIndexSource!==meterReadings||meterReadingsIndexLength!==meterReadings.length){
+  meterRebuildReadingsIndex(meterReadings);
+ }
+ return meterReadingsIndex;
 }
 
 function meterUpsertSeriesReading(reading,step){
@@ -13299,11 +13556,23 @@ function meterUpsertSeriesReading(reading,step){
  meterNormalizeMeasuredReading(reading);
  const canon=meterCanonicalSeriesStep(step||reading);
  if(canon) meterStampReadingStepMeta(reading,canon);
- if(!Array.isArray(meterReadings)) meterReadings=[];
- const key=meterStepNameKey(reading);
- const idx=meterReadings.findIndex(r=>meterStepNameKey(r)===key||((r&&r.name||'')===(reading.name||'')));
- if(idx>=0) meterReadings[idx]=reading;
- else meterReadings.push(reading);
+ if(!Array.isArray(meterReadings)) meterReplaceReadings([]);
+ const index=meterEnsureReadingsIndex();
+ const keys=meterReadingIndexKeys(reading);
+ let idx=-1;
+ for(const key of keys){ if(index.has(key)){ idx=index.get(key); break; } }
+ if(idx>=0){
+  meterReadingIndexKeys(meterReadings[idx]).forEach(key=>{
+   if(index.get(key)===idx) index.delete(key);
+  });
+  meterReadings[idx]=reading;
+  keys.forEach(key=>index.set(key,idx));
+ }else{
+  idx=meterReadings.length;
+  meterReadings.push(reading);
+  keys.forEach(key=>{ if(!index.has(key)) index.set(key,idx); });
+  meterReadingsIndexLength=meterReadings.length;
+ }
 }
 
 function meterReadingHasLuminance(rd){
@@ -13331,7 +13600,15 @@ function meterCacheSeriesState(status,options){
  const activeSignalMode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
  const prev=meterSeriesSnapshotForMode(meterSeriesCache[meterActiveSeriesKey],activeSignalMode);
  const readings=JSON.parse(JSON.stringify(meterReadings||[]));
- const observerReadings=JSON.parse(JSON.stringify((prev&&prev.observer_readings)||{}));
+ const observerReadings={...((prev&&prev.observer_readings)||{})};
+ const previousReadings=Array.isArray(prev&&prev.readings)?prev.readings:[];
+ let readingMutations=Math.max(0,readings.length-previousReadings.length);
+ if(readingMutations===0&&readings.length){
+  const latest=readings[readings.length-1]||{};
+  const previous=previousReadings[previousReadings.length-1]||{};
+  if(Number(latest.timestamp||0)!==Number(previous.timestamp||0)
+   ||Number(latest.luminance)!==Number(previous.luminance)) readingMutations=1;
+ }
  const readingObserver=(typeof meterObserverForReadings==='function')?meterObserverForReadings(readings):null;
  if((meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')&&readingObserver&&readings.length){
   observerReadings[readingObserver]={
@@ -13358,8 +13635,8 @@ function meterCacheSeriesState(status,options){
   return;
  }
  if(readings.length===0&&prev&&meterSeriesSnapshotIsCleared(prev)&&String(status||'').toLowerCase()!=='running'){
-  meterStoreSeriesSnapshot(meterActiveSeriesKey,{...prev,updated_at:Date.now()});
-  if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
+ meterStoreSeriesSnapshot(meterActiveSeriesKey,{...prev,updated_at:Date.now()});
+  if(options&&options.deferPersist) meterScheduleSeriesCachePersist(readingMutations);
   else meterPersistSeriesCache();
   return;
  }
@@ -13378,6 +13655,9 @@ function meterCacheSeriesState(status,options){
 	  dv_map_mode:meterActiveSeriesDvMapMode||null,
 	  dv_interface:meterActiveSeriesDvInterface||null,
 	  calibration_target_context:meterActiveCalibrationTargetContext?{...meterActiveCalibrationTargetContext}:null,
+	  selection_run:meterServerSeriesIsSelection({steps:meterExecutedSeriesSteps}),
+	  executed_steps:meterServerSeriesIsSelection({steps:meterExecutedSeriesSteps})
+	   ?JSON.parse(JSON.stringify(meterExecutedSeriesSteps)):null,
 	  observer_readings:observerReadings,
 	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
 	  black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
@@ -13388,7 +13668,9 @@ function meterCacheSeriesState(status,options){
   updated_at:Date.now()
  };
  meterStoreSeriesSnapshot(meterActiveSeriesKey,snapshot);
- if(options&&options.deferPersist) meterScheduleSeriesCachePersist();
+ const terminal=/^(?:complete|cancelled|error|cleared)$/.test(String(snapshot.status||'').toLowerCase());
+ if(terminal) meterFlushScheduledSeriesCache();
+ else if(options&&options.deferPersist) meterScheduleSeriesCachePersist(readingMutations);
  else meterPersistSeriesCache();
 }
 
@@ -13426,6 +13708,8 @@ function meterRestoreSeriesFromCache(key){
 	  dv_map_mode:cached.dv_map_mode,
 	  dv_interface:cached.dv_interface,
 	  calibration_target_context:cached.calibration_target_context?JSON.parse(JSON.stringify(cached.calibration_target_context)):null,
+	  selection_run:!!cached.selection_run,
+	  executed_steps:Array.isArray(cached.executed_steps)?JSON.parse(JSON.stringify(cached.executed_steps)):null,
 	  steps:JSON.parse(JSON.stringify(cached.steps)),
   readings:restoredReadings,
   white_reading:restoredWhite,
@@ -15953,7 +16237,9 @@ async function meterResetUSB(){
  }
 }
 
-let meterSeriesSteps=null; // steps for loaded series
+let meterSeriesSteps=null; // display/history steps for the loaded series
+let meterExecutedSeriesSteps=null; // immutable server-returned worker order
+let meterExecutedSeriesId=null;
 let meterActiveSeriesKey=null; // track which series button is active
 let meterActiveSeriesType=null; // series type (greyscale/colors/saturations)
 let meterActiveSeriesPoints=null; // series point count
@@ -16001,6 +16287,20 @@ let meterVisibleStepsIndexCacheSource=null;
 let meterVisibleStepsIndexCache=null;
 let meterCanonicalStepCacheSource=null;
 let meterCanonicalStepCache=null;
+let meterFreshStepCache=null;
+
+function meterFreshSeriesContextKey(){
+ let custom=null;
+ try{ custom=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null; }catch(e){}
+ const value=name=>{ try{ return typeof window!=='undefined'&&typeof window[name]==='function'?window[name]():null; }catch(e){ return null; } };
+ return JSON.stringify([
+  meterActiveSeriesType,meterActiveSeriesPoints,meterSeriesChartRevision,
+  meterActiveSeriesSignalMode,meterActiveSeriesTargetGamma,meterActiveSeriesMaxLuma,
+  meterActiveSeriesDvMapMode,meterActiveSeriesDvInterface,
+  value('meterPatchBitDepth'),value('meterPatchUsesVideoRange'),
+  custom?{id:custom.id,kind:custom.kind,category:custom.category,mode:custom.mode,range:custom.range,params:custom.params,patches:custom.patches}:null
+ ]);
+}
 
 // A Read Selection worker intentionally reports only the patches it was asked
 // to measure (plus optional white/black reference steps). Those worker steps
@@ -16016,7 +16316,8 @@ function meterRecoveryDisplaySteps(type,points,workerSteps){
   candidates.push(meterSeriesSteps);
  }
  try{
-  const rebuilt=meterBuildStepsJS(type,points);
+  const rebuilt=(typeof meterBuildPreviewStepsJS==='function')
+   ?meterBuildPreviewStepsJS(type,points):meterBuildStepsJS(type,points);
   if(Array.isArray(rebuilt)&&rebuilt.length+2>=run.length) candidates.push(rebuilt);
  }catch(e){}
  const runKeys=run.map(step=>meterStepNameKey(step)).filter(Boolean);
@@ -17092,7 +17393,7 @@ function meterLg3dPrepareChartContext(opts){
  meterClearMultiPatchSelection();
  meterSharedSeriesId=null;
  if(o.clearReadings!==false){
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterWhiteReading=null;
  }
  meterActiveSeriesType='colors';
@@ -17226,7 +17527,7 @@ function meterInstallMatrixProfileSeries(opts){
  meterSelectedThumbIre=null;
  meterSharedSeriesId=null;
  if(o.clearReadings!==false){
-  meterReadings=[];
+  meterReplaceReadings([]);
   meterWhiteReading=null;
  }
  meterActiveSeriesType='colors';
@@ -17480,7 +17781,7 @@ function meterDvProfileApplyChartStatus(status){
  meterActiveSeriesKey='lg-dv-profile';
  try{ meterSetActiveSeriesChartContext(status||{signal_mode:'dv'}); }catch(e){}
  meterSeriesSteps=meterDvProfileChartSteps();
- meterReadings=readings;
+ meterReplaceReadings(readings);
  const whiteRd=readings.find(rd=>String(rd.kind||'')==='white'&&meterReadingHasLuminance(rd));
  if(whiteRd) meterWhiteReading=whiteRd;
  if(!alreadyInstalled){
@@ -19079,7 +19380,7 @@ function meterActiveSeriesIsCustom(){
 // A kind:'lattice' series stores only generator params; patches are expanded
 // deterministically here AND in the server's webui_lattice_series_steps_from_body.
 // Any change to this algorithm must be mirrored there (locked by shared fixtures
-// in tests/lattice-expansion-regression.js + tests/lattice-server-steps-regression.pl).
+// in t/webui_lattice_parity.t).
 function meterLatticeGcd(a,b){ while(b){ const t=a%b; a=b; b=t; } return a; }
 
 function meterLatticeSpreadOrder(count){
@@ -19155,24 +19456,48 @@ function meterLatticeKeepNode(fr,fg,fb,thresholdPct){
  return (0.2126*fr+0.7152*fg+0.0722*fb)*100>=thresholdPct;
 }
 
-function meterLatticeExpandPatches(rawParams){
- const params=meterLatticeSanitizeParams(rawParams);
- const N=params.size;
- const div=N-1;
- const makePatch=(name,fr,fg,fb)=>({
+const METER_SERIES_DISPLAY_LIMIT=4096;
+const meterLatticeDisplayCache=new Map();
+const meterLatticeCountCache=new Map();
+const meterHybridDisplayCache=new Map();
+
+function meterLatticeParamsKey(params){
+ return JSON.stringify([
+  params.size,params.grey_points,params.threshold_pct,params.order,
+  params.reverse,params.spacing,params.peak_nits,params.pq
+ ]);
+}
+
+function meterLatticeMakePatch(name,fr,fg,fb){
+ return {
   name:name,frac_r:fr,frac_g:fg,frac_b:fb,
   r8:Math.round(fr*255),g8:Math.round(fg*255),b8:Math.round(fb*255),
   r10:Math.round(fr*1023),g10:Math.round(fg*1023),b10:Math.round(fb*1023),
   target_nits:null
- });
+ };
+}
+
+function meterLatticeCornerRank(p){
+ const one=v=>v>=1, zero=v=>v<=0;
+ if(one(p.frac_r)&&one(p.frac_g)&&one(p.frac_b)) return 0;
+ if(one(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 1;
+ if(zero(p.frac_r)&&one(p.frac_g)&&zero(p.frac_b)) return 2;
+ if(zero(p.frac_r)&&zero(p.frac_g)&&one(p.frac_b)) return 3;
+ if(zero(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 4;
+ return -1;
+}
+
+function meterLatticeExpandPatches(rawParams){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const N=params.size;
  const patches=[];
  if(params.grey_points>=2){
   const G=params.grey_points;
-  patches.push(makePatch('G 100%',1,1,1));
+  patches.push(meterLatticeMakePatch('G 100%',1,1,1));
   for(let i=0;i<G;i++){
    const f=i/(G-1);
    if(f>=1) continue;
-   patches.push(makePatch('G '+meterLatticePct(f)+'%',f,f,f));
+   patches.push(meterLatticeMakePatch('G '+meterLatticePct(f)+'%',f,f,f));
   }
  }
  const nodes=[];
@@ -19180,7 +19505,7 @@ function meterLatticeExpandPatches(rawParams){
  for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
   const fr=axisFracs[ri],fg=axisFracs[gi],fb=axisFracs[bi];
   if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
-  nodes.push(makePatch(meterLatticePct(fr)+'/'+meterLatticePct(fg)+'/'+meterLatticePct(fb),fr,fg,fb));
+  nodes.push(meterLatticeMakePatch(meterLatticePct(fr)+'/'+meterLatticePct(fg)+'/'+meterLatticePct(fb),fr,fg,fb));
  }
  let ordered=nodes;
  if(params.order==='spread') ordered=meterLatticeSpreadOrder(nodes.length).map(i=>nodes[i]);
@@ -19191,30 +19516,137 @@ function meterLatticeExpandPatches(rawParams){
  // handful of patches instead of engaging only when the spread order happens
  // to reach them. MUST stay algorithm-identical to the server expansion in
  // webui_lattice_series_steps_from_body (parity-locked by the lattice tests).
- const latticeCornerRank=(p)=>{
-  const one=v=>v>=1, zero=v=>v<=0;
-  if(one(p.frac_r)&&one(p.frac_g)&&one(p.frac_b)) return 0;
-  if(one(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 1;
-  if(zero(p.frac_r)&&one(p.frac_g)&&zero(p.frac_b)) return 2;
-  if(zero(p.frac_r)&&zero(p.frac_g)&&one(p.frac_b)) return 3;
-  if(zero(p.frac_r)&&zero(p.frac_g)&&zero(p.frac_b)) return 4;
-  return -1;
- };
- const cornerLead=ordered.filter(p=>latticeCornerRank(p)>=0).sort((a,b)=>latticeCornerRank(a)-latticeCornerRank(b));
- if(cornerLead.length) ordered=[...cornerLead,...ordered.filter(p=>latticeCornerRank(p)<0)];
+ const cornerLead=ordered.filter(p=>meterLatticeCornerRank(p)>=0).sort((a,b)=>meterLatticeCornerRank(a)-meterLatticeCornerRank(b));
+ if(cornerLead.length) ordered=[...cornerLead,...ordered.filter(p=>meterLatticeCornerRank(p)<0)];
  patches.push(...ordered);
+ return patches;
+}
+
+function meterLatticeNodeMeta(params,axisFracs){
+ const key=meterLatticeParamsKey(params);
+ const cached=meterLatticeCountCache.get(key);
+ if(cached) return cached;
+ const N=params.size;
+ const corners=new Map();
+ if(!(params.threshold_pct>0)){
+  const flat=(ri,gi,bi)=>(ri*N+gi)*N+bi;
+  corners.set(0,flat(N-1,N-1,N-1));
+  corners.set(1,flat(N-1,0,0));
+  corners.set(2,flat(0,N-1,0));
+  corners.set(3,flat(0,0,N-1));
+  corners.set(4,flat(0,0,0));
+  const result={count:N*N*N,corners:corners};
+  meterLatticeCountCache.set(key,result);
+  return result;
+ }
+ let count=0;
+ for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+  const fr=axisFracs[ri],fg=axisFracs[gi],fb=axisFracs[bi];
+  if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
+  const rank=meterLatticeCornerRank({frac_r:fr,frac_g:fg,frac_b:fb});
+  if(rank>=0) corners.set(rank,count);
+  count++;
+ }
+ const result={count:count,corners:corners};
+ meterLatticeCountCache.set(key,result);
+ return result;
+}
+
+function meterLatticeSpreadStride(count){
+ if(count<=1) return 1;
+ let stride=Math.max(1,Math.floor(count*0.618034));
+ while(meterLatticeGcd(stride,count)!==1) stride++;
+ return stride;
+}
+
+function meterLatticeModInverse(value,modulus){
+ let t=0,newT=1,r=modulus,newR=value;
+ while(newR!==0){
+  const q=Math.floor(r/newR);
+  [t,newT]=[newT,t-q*newT];
+  [r,newR]=[newR,r-q*newR];
+ }
+ return ((t%modulus)+modulus)%modulus;
+}
+
+// Build only representative display nodes. Measurement and export paths keep
+// using meterLatticeExpandPatches or, for a live run, the server-returned list.
+function meterLatticeDisplayPatches(rawParams,rawLimit){
+ const params=meterLatticeSanitizeParams(rawParams);
+ const limit=Math.max(2,Math.round(Number(rawLimit)||METER_SERIES_DISPLAY_LIMIT));
+ const cacheKey=meterLatticeParamsKey(params)+'|'+limit;
+ const cached=meterLatticeDisplayCache.get(cacheKey);
+ if(cached) return cached;
+ const axis=meterLatticeAxisFracs(params.size,params);
+ const meta=meterLatticeNodeMeta(params,axis);
+ const greyCount=params.grey_points>=2?params.grey_points:0;
+ const total=greyCount+meta.count;
+ let patches;
+ if(total<=limit){
+  patches=meterLatticeExpandPatches(params);
+ }else{
+  const desired=[];
+  for(let i=0;i<limit;i++) desired.push(Math.floor(i*total/limit));
+  desired[desired.length-1]=total-1;
+  const stride=params.order==='spread'?meterLatticeSpreadStride(meta.count):1;
+  const inverse=params.order==='spread'?meterLatticeModInverse(stride,meta.count):1;
+  const cornerEntries=Array.from(meta.corners.entries()).sort((a,b)=>a[0]-b[0]);
+  const orderedPosition=ordinal=>{
+   let pos=params.order==='spread'?(ordinal*inverse)%meta.count:ordinal;
+   if(params.reverse) pos=meta.count-1-pos;
+   return pos;
+  };
+  const cornerPositions=cornerEntries.map(entry=>orderedPosition(entry[1])).sort((a,b)=>a-b);
+  const requestedOrdinals=new Set();
+  const descriptors=desired.map(position=>{
+   if(position<greyCount) return {grey:position};
+   const latticePosition=position-greyCount;
+   if(latticePosition<cornerEntries.length) return {corner:cornerEntries[latticePosition][0]};
+   let ordered=latticePosition-cornerEntries.length;
+   cornerPositions.forEach(cornerPosition=>{ if(cornerPosition<=ordered) ordered++; });
+   const sourcePosition=params.reverse?meta.count-1-ordered:ordered;
+   const ordinal=params.order==='spread'?(sourcePosition*stride)%meta.count:sourcePosition;
+   requestedOrdinals.add(ordinal);
+   return {ordinal:ordinal};
+  });
+  const nodeByOrdinal=new Map();
+  if(requestedOrdinals.size){
+   let ordinal=0;
+   const N=params.size;
+   for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
+    const fr=axis[ri],fg=axis[gi],fb=axis[bi];
+    if(!meterLatticeKeepNode(fr,fg,fb,params.threshold_pct)) continue;
+    if(requestedOrdinals.has(ordinal)) nodeByOrdinal.set(ordinal,[fr,fg,fb]);
+    ordinal++;
+   }
+  }
+  const greyPatch=position=>{
+   if(position===0) return meterLatticeMakePatch('G 100%',1,1,1);
+   const f=(position-1)/(params.grey_points-1);
+   return meterLatticeMakePatch('G '+meterLatticePct(f)+'%',f,f,f);
+  };
+  const cornerPatch=rank=>{
+   const values=[[1,1,1],[1,0,0],[0,1,0],[0,0,1],[0,0,0]][rank];
+   return meterLatticeMakePatch(values.map(meterLatticePct).join('/'),values[0],values[1],values[2]);
+  };
+  patches=descriptors.map(descriptor=>{
+   if(descriptor.grey!=null) return greyPatch(descriptor.grey);
+   if(descriptor.corner!=null) return cornerPatch(descriptor.corner);
+   const values=nodeByOrdinal.get(descriptor.ordinal);
+   return meterLatticeMakePatch(values.map(meterLatticePct).join('/'),values[0],values[1],values[2]);
+  });
+ }
+ patches=Object.freeze(patches.map(patch=>Object.freeze(patch)));
+ if(meterLatticeDisplayCache.size>=32) meterLatticeDisplayCache.delete(meterLatticeDisplayCache.keys().next().value);
+ meterLatticeDisplayCache.set(cacheKey,patches);
  return patches;
 }
 
 function meterLatticeCountForParams(rawParams){
  const params=meterLatticeSanitizeParams(rawParams);
- const N=params.size;
- let count=(params.grey_points>=2)?params.grey_points:0;
- const axisFracs=meterLatticeAxisFracs(N,params);
- for(let ri=0;ri<N;ri++) for(let gi=0;gi<N;gi++) for(let bi=0;bi<N;bi++){
-  if(meterLatticeKeepNode(axisFracs[ri],axisFracs[gi],axisFracs[bi],params.threshold_pct)) count++;
- }
- return count;
+ const axisFracs=meterLatticeAxisFracs(params.size,params);
+ const meta=meterLatticeNodeMeta(params,axisFracs);
+ return ((params.grey_points>=2)?params.grey_points:0)+meta.count;
 }
 
 // Default multi-level WRGB skeleton levels (percent). Matches worker skeleton_levels.
@@ -19281,7 +19713,36 @@ function meterHybridExpandPatches(rawParams){
 }
 
 function meterHybridCountForParams(rawParams){
- return meterHybridExpandPatches(rawParams).length;
+ const src=(rawParams&&typeof rawParams==='object')?rawParams:{};
+ const latticeParams=meterLatticeSanitizeParams(src);
+ const axisNames=new Set(meterLatticeAxisFracs(latticeParams.size,latticeParams).map(meterLatticePct));
+ const overlap=meterSkeletonExpandPatches(src).filter(p=>
+  axisNames.has(meterLatticePct(p.frac_r))&&axisNames.has(meterLatticePct(p.frac_g))&&axisNames.has(meterLatticePct(p.frac_b))
+  &&meterLatticeKeepNode(p.frac_r,p.frac_g,p.frac_b,latticeParams.threshold_pct)
+ ).length;
+ return meterSkeletonCountForParams(src)+meterLatticeCountForParams(src)-overlap;
+}
+
+function meterHybridDisplayPatches(rawParams,limit){
+ const cap=Math.max(2,Math.round(Number(limit)||METER_SERIES_DISPLAY_LIMIT));
+ const latticeParams=meterLatticeSanitizeParams(rawParams);
+ const skeletonParams=meterSkeletonSanitizeParams(rawParams);
+ const cacheKey=meterLatticeParamsKey(latticeParams)+'|'+JSON.stringify(skeletonParams.levels)+'|'+cap;
+ const cached=meterHybridDisplayCache.get(cacheKey);
+ if(cached) return cached;
+ const skeleton=meterSkeletonExpandPatches(rawParams);
+ let result;
+ if(meterHybridCountForParams(rawParams)<=cap){
+  result=meterHybridExpandPatches(rawParams);
+ }else{
+  const lattice=meterLatticeDisplayPatches(rawParams,Math.max(2,cap-skeleton.length));
+  const seen=new Set(skeleton.map(p=>p.name));
+  result=skeleton.concat(lattice.filter(p=>p&&p.name&&!seen.has(p.name))).slice(0,cap);
+ }
+ result=Object.freeze(result.map(patch=>Object.isFrozen(patch)?patch:Object.freeze(patch)));
+ if(meterHybridDisplayCache.size>=32) meterHybridDisplayCache.delete(meterHybridDisplayCache.keys().next().value);
+ meterHybridDisplayCache.set(cacheKey,result);
+ return result;
 }
 
 function meterCustomSeriesPatches(series){
@@ -19290,6 +19751,19 @@ function meterCustomSeriesPatches(series){
  if(series.kind==='skeleton') return meterSkeletonExpandPatches(series.params);
  if(series.kind==='hybrid') return meterHybridExpandPatches(series.params);
  return Array.isArray(series.patches)?series.patches:[];
+}
+
+function meterCustomSeriesDisplayPatches(series,limit){
+ if(!series) return [];
+ if(series.kind==='lattice') return meterLatticeDisplayPatches(series.params,limit);
+ if(series.kind==='hybrid') return meterHybridDisplayPatches(series.params,limit);
+ const patches=meterCustomSeriesPatches(series);
+ if(patches.length<=limit) return patches;
+ const cap=Math.max(2,Math.round(Number(limit)||METER_SERIES_DISPLAY_LIMIT));
+ const out=[];
+ for(let i=0;i<cap;i++) out.push(patches[Math.floor(i*patches.length/cap)]);
+ out[out.length-1]=patches[patches.length-1];
+ return out;
 }
 
 function meterProfilingSeriesPatchCount(series){
