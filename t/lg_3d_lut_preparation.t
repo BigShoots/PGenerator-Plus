@@ -32,6 +32,16 @@ if(!$cc) {
 }
 
 my $dir=tempdir(CLEANUP=>1);
+my $probe_source="$dir/compiler_probe.c";
+my $probe_bin="$dir/compiler_probe";
+open(my $probe_fh,'>',$probe_source) or die "Unable to write $probe_source: $!";
+print {$probe_fh} "int main(void) { return 0; }\n";
+close($probe_fh) or die "Unable to close $probe_source: $!";
+system($cc,"-o",$probe_bin,$probe_source);
+if($? != 0 || !-x $probe_bin) {
+ plan skip_all => "no complete C compile/link toolchain for the instrumented solver build";
+}
+
 my $source="$Bin/../src/lut_solver/pgen_lut_solve.c";
 my $bin="$dir/pgen_lut_solve_counted";
 my @flags=("-O2","-std=c99","-ffp-contract=off","-fno-fast-math",

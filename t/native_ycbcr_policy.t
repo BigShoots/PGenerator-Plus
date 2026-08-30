@@ -34,10 +34,18 @@ int main() {
 CPP
 close($fh);
 
-my $compile=system($compiler,'-std=c++11','-Wall','-Wextra','-Werror',
- "-I$root/src/pattern_generator/src",$source,'-o',$binary);
-is($compile,0,"native YCbCr policy harness compiles warning-free");
+my $probe_source="$temp/compiler_probe.cpp";
+my $probe_binary="$temp/compiler_probe";
+open(my $probe_fh,">",$probe_source) or die "Unable to write $probe_source: $!";
+print {$probe_fh} "#include <iostream>\nint main() { return 0; }\n";
+close($probe_fh);
+my $probe=system($compiler,'-std=c++11',$probe_source,'-o',$probe_binary);
 SKIP: {
+ skip "no complete C++ compile/link toolchain for the native YCbCr policy harness",5
+  if($probe!=0 || !-x $probe_binary);
+ my $compile=system($compiler,'-std=c++11','-Wall','-Wextra','-Werror',
+  "-I$root/src/pattern_generator/src",$source,'-o',$binary);
+ is($compile,0,"native YCbCr policy harness compiles warning-free");
  skip "native YCbCr policy harness did not compile",4 if($compile!=0);
  my $output=`$binary`;
  is($?,0,"native YCbCr policy harness runs");

@@ -17,6 +17,10 @@ like($source,qr/meterColorDeltaTargetXYZ\(reading,!!includeLuminance\)/,
 like($source,qr/meterColorPatchRgbBalance\(reading,whiteRef,blackRef,includeLuminance\)/,
  'live RGB passes the color luminance toggle through');
 
+my ($node)=grep { -x $_ } map { "$_/node" } split(/:/,$ENV{PATH} || '');
+SKIP: {
+skip 'node is required for the numeric browser regression',1 if(!$node || !-x $node);
+
 my ($jsfh,$jsfile)=tempfile('pgen-color-rgb-XXXX',SUFFIX=>'.js',UNLINK=>1);
 print {$jsfh} <<'JS';
 'use strict';
@@ -60,7 +64,8 @@ assert(Math.abs(inclusive.R-80)<1e-10,'dominant channel reports the 20 percent l
 JS
 close($jsfh) or die "Unable to close $jsfile: $!";
 
-my $status=system('node',$jsfile,$webui);
+my $status=system($node,$jsfile,$webui);
 is($status,0,'numeric RGB regression passes with the production JavaScript function');
+}
 
 done_testing();
