@@ -15,6 +15,11 @@ VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
 
+# apply_release_exec_bits(): the executable-bit policy shared with the image
+# builder and enforced by the manifest checker.
+# shellcheck source=release_exec_bits.sh
+. "$SCRIPT_DIR/release_exec_bits.sh"
+
 FORCE_OUTPUT=0
 KEEP_STAGING=0
 ALLOW_REMOVALS=0
@@ -340,14 +345,7 @@ stage_overlay() {
 
  remove_external_icc_tools
 
- if [[ -d "$STAGING_DIR/usr/share/PGenerator/update-migrations.d" ]]; then
-  find "$STAGING_DIR/usr/share/PGenerator/update-migrations.d" -type f -name '*.sh' \
-   -exec chmod 0755 {} +
- fi
-for rel in etc/init.d/fake-hwclock etc/init.d/ntp etc/cron.hourly/fake-hwclock; do
- [[ -f "$STAGING_DIR/$rel" ]] && chmod 0755 "$STAGING_DIR/$rel"
-done
-if [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
+ if [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
  chmod 0440 "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator"
 fi
 
@@ -390,6 +388,19 @@ mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
  : > "$STAGING_DIR/var/lib/PGenerator/operations.txt"
  rm -f "$STAGING_DIR/usr/share/PGenerator/meter_settings.json"
  rm -f "$STAGING_DIR/usr/sbin/PGeneratord.hdr"
+
+ # Last, once the staged file set is final: the checkout's own mode bits
+ # are not trustworthy. core.filemode=false means git records 100644 for
+ # nearly every runtime file, so a build run from a fresh clone or worktree
+ # stages scripts 0664 — that is how 2.11.6 and 2.11.7 shipped a
+ # non-executable /etc/init.d/rcPGenerator and stopped the daemon from ever
+ # starting again. Derive the exec bits from the source trees instead, and
+ # record them in the payload so pgenerator-update can reapply them on the
+ # device after extraction.
+ local exec_count
+ exec_count="$(apply_release_exec_bits "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
+  || die "Could not apply the release executable-bit policy"
+ log "Applied executable bits to $exec_count staged program files"
 }
 
 validate_pi4_legacy_runtime() {

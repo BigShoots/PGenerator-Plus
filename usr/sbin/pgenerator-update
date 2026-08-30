@@ -25,6 +25,7 @@ GITHUB_REPO="${GITHUB_REPO:-BigShoots/PGenerator-Plus}"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 VERSION_FILE="${VERSION_FILE:-/usr/share/PGenerator/version.pm}"
 UPDATE_MIGRATIONS_DIR="${UPDATE_MIGRATIONS_DIR:-/usr/share/PGenerator/update-migrations.d}"
+EXEC_MANIFEST_FILE="${EXEC_MANIFEST_FILE:-/usr/share/PGenerator/release-exec-manifest.txt}"
 UPDATE_DIR="${UPDATE_DIR:-/var/lib/PGenerator/updates}"
 UPDATE_LOG="${UPDATE_LOG:-/var/log/PGenerator/update.log}"
 CURL_OPTS="-s -L --connect-timeout 10 --max-time 60"
@@ -267,6 +268,37 @@ merge_conf_defaults() {
  [ "$added" -gt 0 ] && sync || true
 }
 
+# ── Restore executable bits after extraction ──
+# tar restores whatever modes the archive carries, so a payload built from a
+# checkout with core.filemode=false arrives with its scripts non-executable —
+# 2.11.6 and 2.11.7 landed /etc/init.d/rcPGenerator as 0664, which stops the
+# daemon from starting at boot and makes this script's own restart fail.
+# Every release from 2.11.8 records the program files it ships in
+# release-exec-manifest.txt; reapply them before anything is run.
+restore_exec_bits() {
+ local manifest="$1"
+ local restored=0
+ local path rel
+
+ [[ -f "$manifest" ]] || return 0
+
+ while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  case "$rel" in
+   \#*|/*|*..*) continue ;;
+  esac
+  path="/$rel"
+  [[ -f "$path" ]] || continue
+  [[ -x "$path" ]] && continue
+  chmod 0755 "$path" 2>/dev/null || true
+  restored=$((restored + 1))
+ done < "$manifest"
+
+ if [[ "$restored" -gt 0 ]]; then
+  log_msg "Restored executable bits on $restored extracted program files"
+ fi
+}
+
 run_update_migrations() {
  local from_version target_version migration_count path script_version base
  from_version=$(normalize_version "${1:-0}")
@@ -455,8 +487,11 @@ case "$cmd" in
   cd /
   tar xzf "$tarball" 2>&1 | tee -a "$UPDATE_LOG"
 
+  restore_exec_bits "$EXEC_MANIFEST_FILE"
+
   chmod +x /usr/sbin/pgenerator-* 2>/dev/null || true
   chmod +x /usr/sbin/PGeneratord* 2>/dev/null || true
+  chmod +x /etc/init.d/PGenerator /etc/init.d/rcPGenerator /etc/init.d/dhcp 2>/dev/null || true
   chmod +x /usr/bin/PGenerator_*.pl 2>/dev/null || true
   chmod +x /usr/bin/pgenerator-* 2>/dev/null || true
   chmod +x /usr/bin/spotread /usr/bin/chartread /usr/bin/colprof /usr/bin/profcheck /usr/bin/targen /usr/bin/applycal /usr/bin/pgsethdr 2>/dev/null || true
