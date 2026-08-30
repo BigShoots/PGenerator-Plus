@@ -17370,7 +17370,10 @@ function meterLg3dPrepareChartContext(opts){
  // Profiling CIE defaults: Targets off (no meaningful verification targets).
  try{
   if(typeof meterLatticeDefault3dView==='function'){
-   meterLatticeDefault3dView((series&&series.id!=null)?series.id:(meterActiveSeriesKey==='lg-3d-matrix-profile'?'matrix':null));
+   meterLatticeDefault3dView(
+    (series&&series.id!=null)?series.id:(meterActiveSeriesKey==='lg-3d-matrix-profile'?'matrix':null),
+    {force:!!o.forceViewDefault}
+   );
   }
  }catch(e){}
  return true;
@@ -17487,7 +17490,7 @@ function meterInstallMatrixProfileSeries(opts){
  try{ meterResetLiveReadingDisplay(); }catch(e){}
  try{ meterUpdateDeltaEFormControl(); }catch(e){}
  try{ meterUpdateReadButtons(); }catch(e){}
- try{ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView('matrix'); }catch(e){}
+ try{ if(typeof meterLatticeDefault3dView==='function') meterLatticeDefault3dView('matrix',{force:true}); }catch(e){}
  return true;
 }
 // When false on the 3D LUT tab, drawAllCharts* must not re-open the chart shell.

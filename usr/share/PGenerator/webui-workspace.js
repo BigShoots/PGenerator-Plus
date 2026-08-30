@@ -2428,6 +2428,9 @@ function meterIs3dLutProfilingChartActive(){
 
 function meterLatticeViewPrefSave(field,value){
  if(!meterIs3dLutProfilingChartActive()) return;
+ // Matrix profiling always opens in the ordinary 2D CIE view. Do not let a
+ // temporary view change there overwrite the operator's volume-chart choice.
+ if(String(field)==='cie_3d'&&typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries()) return;
  try{
   const p=meterLatticeViewPrefs();
   p[String(field)]=value?'1':'0';
@@ -2436,21 +2439,23 @@ function meterLatticeViewPrefSave(field,value){
 }
 
 // Apply CIE defaults when a 3D LUT profiling series becomes active.
-// Last remembered choice wins; otherwise Targets OFF, 3D View ON.
+// Matrix profiling opens in 2D. Volume profiles use the remembered choice,
+// defaulting to 3D. Targets default off for both profiling modes.
 // Memoized per series key so live-read recovery re-fires do not thrash toggles.
 let meterLattice3dDefaultedKey=null;
-function meterLatticeDefault3dView(points){
+function meterLatticeDefault3dView(points,opts){
  try{
+  const o=opts||{};
   const cubeSeries=(points!=null&&points!=='matrix')?meterCustomSeriesById(points):null;
   const kind=cubeSeries?String(cubeSeries.kind||''):'';
   const isVolume=kind==='lattice'||kind==='hybrid'||kind==='skeleton';
   const isMatrix=points==='matrix'||(typeof meterActiveMatrixProfileSeries==='function'&&meterActiveMatrixProfileSeries());
   if(!isVolume&&!isMatrix) return;
   const key='colors-'+(isMatrix?'matrix':points);
-  if(meterLattice3dDefaultedKey===key) return;
+  if(!o.force&&meterLattice3dDefaultedKey===key) return;
   meterLattice3dDefaultedKey=key;
   const prefs=meterLatticeViewPrefs();
-  const want3d=(prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true;
+  const want3d=isMatrix?false:((prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true);
   // Profiling: targets off by default (no meaningful grading reference).
   const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
   const view3d=document.getElementById('meterCie3dView');
@@ -11216,7 +11221,7 @@ async function meterStartLg3dAutoCal(options){
  // starts — 3D LUT profile UI is a separate chart context with no Delta-E.
  try{
   if(meterLg3dIsVolumeMethod(method)&&latticeSeries) meterLg3dPrepareChartContext({series:latticeSeries,method:method,clearReadings:true});
-  else if(method==='matrix'||method==='ramp') meterLg3dPrepareChartContext({method:'matrix',clearReadings:true});
+  else if(method==='matrix'||method==='ramp') meterLg3dPrepareChartContext({method:'matrix',clearReadings:true,forceViewDefault:true});
  }catch(_e){}
  // Imported upload: validate the choice before confirming; the file is only
  // saved to the generator after the operator accepts.
