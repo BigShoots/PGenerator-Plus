@@ -8,6 +8,7 @@ use Symbol qw(gensym);
 
 my $helper="$Bin/../usr/bin/pgen_meter_average.py";
 my $math="$Bin/../usr/bin/pgen_colour_math.py";
+my $architecture="$Bin/../docs/calibration-math-architecture.md";
 ok(-x $helper,'meter averaging helper is packaged as an executable');
 
 sub run_average {
@@ -166,6 +167,13 @@ open(my $hfh,'<',$helper) or die "Unable to read $helper: $!";
 my $helper_source=<$hfh>;
 close($hfh);
 like($helper_source,qr/from pgen_meter_result import average_main/,
- 'the compatibility command delegates in-process to the shared result helper');
+ 'the supported command delegates in-process to the shared result helper');
+unlike($helper_source,qr/(?:subprocess|os\.system|exec[lvpe]*\s*\()/,
+ 'the supported command does not launch a second interpreter');
+open(my $afh,'<',$architecture) or die "Unable to read $architecture: $!";
+my $architecture_source=<$afh>;
+close($afh);
+like($architecture_source,qr/pgen_meter_average\.py` is a permanent supported CLI alias/,
+ 'the command compatibility decision is documented as permanent support');
 
 done_testing();

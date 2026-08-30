@@ -97,7 +97,6 @@ sub trace_109_enabled {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
- return 1;
  return 1 if(abs($ire-109) < 0.001);
  return 1 if(abs($ire-105) < 0.001);
  return 1 if(abs($ire-100) < 0.001);

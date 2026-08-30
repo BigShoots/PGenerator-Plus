@@ -81,4 +81,19 @@ for my $worker (qw(meter_lg_autocal.pl meter_lg_3d_autocal.pl)) {
            "$worker has no private reading_xyz body");
 }
 
+{
+    package MeterReadingOwner1D;
+    local @ARGV = ();
+    do "$main::Bin/../usr/bin/meter_lg_autocal.pl" or die($@ || $!);
+}
+{
+    package MeterReadingOwner3D;
+    local @ARGV = ();
+    do "$main::Bin/../usr/bin/meter_lg_3d_autocal.pl" or die($@ || $!);
+}
+is(\&MeterReadingOwner1D::reading_xyz, \&PGMeterReading::reading_xyz,
+   "1D AutoCal calls the shared meter-reading owner directly");
+is(\&MeterReadingOwner3D::reading_xyz, \&PGMeterReading::reading_xyz,
+   "3D AutoCal calls the shared meter-reading owner directly");
+
 done_testing();

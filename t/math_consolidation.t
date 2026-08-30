@@ -434,6 +434,9 @@ unlike($perl_callers,qr/my \@M=\(\[0\.8951,0\.2664,-0\.1614\]/,
 unlike(source_text("$root/usr/bin/meter_lg_3d_autocal.pl"),
  qr/^sub\s+(?:bt709_rgb_to_xyz|srgb_to_linear|_fm_vol_axis|hdr20_postcal_converge_step)\b/m,
  "confirmed unreferenced 3D maths is deleted instead of moved");
+unlike(source_text("$root/usr/bin/meter_lg_3d_autocal.pl"),
+ qr/^sub\s+(?:matrix_mul|matrix_mul_vec|matrix_inverse)\b/m,
+ "3D AutoCal calls zero-policy shared matrix primitives directly");
 
 my $lg_server=source_text("$root/usr/sbin/pgenerator-lg");
 like($lg_server,qr/use PGMath qw\(matrix3_inverse matrix3_multiply\)/,

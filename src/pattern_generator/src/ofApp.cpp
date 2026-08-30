@@ -683,44 +683,6 @@ void ofApp::normalizeImageSourcePixels(int source_range_mode) {
   img.update();
  }
 }
-#if 0
-/*
- ##########################################################
- #                       Shader Begin                     #
- ##########################################################
-*/
-void ofApp::shader_begin(int is_image) {
- if ((!ofxRPI4Window::shader_init && ofxRPI4Window::avi_info.output_format != 0) || (!ofxRPI4Window::shader_init && ofxRPI4Window::is_std_DoVi) || (!ofxRPI4Window::shader_init && ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi && ofxRPI4Window::avi_info.output_format == 0 && ofxRPI4Window::avi_info.rgb_quant_range == 2)) {
-  if (is_image) { 
-	if (ofxRPI4Window::avi_info.max_bpc == 10 && ofxRPI4Window::isHDR) float_img.getTexture().bind();
-	else 															         img.getTexture().bind();
-  }
-  if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::bit_depth == 10) fbo10.begin();
-  if (ofxRPI4Window::is_std_DoVi && ofxRPI4Window::bit_depth == 8) fbo8.begin();  
-  ofxRPI4Window::shader.begin();
-  if (ofxRPI4Window::is_std_DoVi) {
-	ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
-	if (ofxRPI4Window::dv_profile == 1) {
-      ofxRPI4Window::shader.setUniform3f("coeffs_num",0.2627, 0.6780, 0.0593); //BT2020
-	  ofxRPI4Window::shader.setUniform3f("coeffs_div",1.8556, 1.5748, 0.5); //BT2020
-	}
-	if (ofxRPI4Window::dv_profile == 2) {
-	  ofxRPI4Window::shader.setUniform3f("coeffs_num",0.2126, 0.7152, 0.0722); //BT709
-	  ofxRPI4Window::shader.setUniform3f("coeffs_div", 1.8814, 1.4746, 0.5); //BT709
-	}
-  }	else {
-    ofxRPI4Window::shader.setUniform1i("bits", ofxRPI4Window::bit_depth);
-    ofxRPI4Window::shader.setUniform1i("colorimetry", ofxRPI4Window::avi_info.colorimetry);
-		ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
-    ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
-    ofxRPI4Window::shader.setUniform1i("rgb_quant_range", ofxRPI4Window::avi_info.rgb_quant_range);  
-    ofxRPI4Window::shader.setUniform1i("is_image", is_image);
-
-  }
- }
-} 
-#endif
-#if 1
 /*
  ##########################################################
  #                       Shader Begin                     #
@@ -762,7 +724,6 @@ void ofApp::shader_begin(int is_image) {
   }
  }
 } 
-#endif
 /*
  ##########################################################
  #                        Shader End                      #

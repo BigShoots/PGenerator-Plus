@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Average repeated meter readings in linear CIE XYZ space.
+"""Supported CLI alias for averaging meter readings in linear CIE XYZ.
 
 Input is a JSON array of reading objects on stdin.  Output is one reading
 object.  XYZ is reduced with CPython's compensated math.fsum; chromaticity and
-CCT are derived once from the averaged XYZ, never averaged independently.
+CCT are derived once from the averaged XYZ, never averaged independently. The
+implementation dispatches in-process to pgen_meter_result.average_main.
 """
 
 import os

@@ -594,18 +594,6 @@ sub matrix_from_columns {
  ];
 }
 
-sub matrix_mul_vec {
- return matrix3_vector_multiply(@_);
-}
-
-sub matrix_mul {
- return matrix3_multiply(@_);
-}
-
-sub matrix_inverse {
- return matrix3_inverse(@_);
-}
-
 sub rgb_to_xyz_matrix_for_gamut {
  my ($target_gamut)=@_;
  $target_gamut=sanitize_target_gamut($target_gamut);
@@ -627,7 +615,7 @@ sub rgb_to_xyz_for_gamut {
 sub xyz_to_rgb_inverse_for_gamut {
  my ($target_gamut,$white_y)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
- my $inv=matrix_inverse(rgb_to_xyz_matrix_for_gamut($target_gamut));
+ my $inv=matrix3_inverse(rgb_to_xyz_matrix_for_gamut($target_gamut));
  return undef if(!$inv);
  foreach my $row (@{$inv}) {
   foreach my $v (@{$row}) {
@@ -821,7 +809,7 @@ sub _prepare_lut_solver_state {
   $state->{"counts"}{"level_matrices"}++;
   my $matrix=matrix_for_level($model,$level);
   $state->{"counts"}{"prepared_level_inversions"}++;
-  $state->{"level_inverse"}[$i]=matrix_inverse($matrix) || $model->{"peak_inverse"};
+  $state->{"level_inverse"}[$i]=matrix3_inverse($matrix) || $model->{"peak_inverse"};
  }
  return $state;
 }
@@ -945,9 +933,9 @@ sub solve_output_rgb {
  } else {
   my $node_peak=100*$max_index/($size-1);
   my $m=matrix_for_level($model,$node_peak);
-  $inv=matrix_inverse($m) || $model->{"peak_inverse"};
+  $inv=matrix3_inverse($m) || $model->{"peak_inverse"};
  }
- my $lin=matrix_mul_vec($inv,$delta);
+ my $lin=matrix3_vector_multiply($inv,$delta);
  my @pct;
  foreach my $idx (0..2) {
   my $kind=(qw(red green blue))[$idx];
@@ -986,10 +974,10 @@ sub apply_drift_correction {
  my $f=($read_time-$start_t)/($end_t-$start_t);
  my $current=drift_matrix_at($drift->{"start"},$drift->{"end"},$f);
  my $start=drift_matrix_at($drift->{"start"},$drift->{"start"},0);
- my $inv_current=matrix_inverse($current);
+ my $inv_current=matrix3_inverse($current);
  return $xyz if(!$inv_current);
  my $relative=vec_sub($xyz,$black);
- my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ my $corrected=matrix3_vector_multiply(matrix3_multiply($start,$inv_current),$relative);
  return vec_add($black,$corrected);
 }
 
@@ -1038,10 +1026,10 @@ sub apply_volume_drift_correction {
  return $xyz if(!$ref || !$a || !$b);
  my $current=drift_matrix_at(volume_drift_primary_hash($a),volume_drift_primary_hash($b),$f);
  my $start=drift_matrix_at($ref,$ref,0);
- my $inv_current=matrix_inverse($current);
+ my $inv_current=matrix3_inverse($current);
  return $xyz if(!$inv_current || !$start);
  my $relative=vec_sub($xyz,$black);
- my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ my $corrected=matrix3_vector_multiply(matrix3_multiply($start,$inv_current),$relative);
  return vec_add($black,$corrected);
 }
 
@@ -1213,7 +1201,7 @@ sub model_from_readings {
   black=>$black,
   white_y=>$white_y,
  },100);
- my $peak_inverse=matrix_inverse($peak_matrix);
+ my $peak_inverse=matrix3_inverse($peak_matrix);
  $peak_inverse ||= xyz_to_rgb_inverse_for_gamut($target_gamut,$white_y);
  $peak_inverse ||= [
   [ 3.2406/$white_y, -1.5372/$white_y, -0.4986/$white_y ],
@@ -1341,10 +1329,10 @@ sub native_rgb_to_xyz_matrix {
   push @cols,autocal_xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
  }
  my $m=matrix_from_columns($cols[0],$cols[1],$cols[2]);
- my $inv=matrix_inverse($m);
+ my $inv=matrix3_inverse($m);
  return undef if(!$inv);
  my $w=autocal_xy_to_xyz_unit(0.3127,0.3290);
- my $scale=matrix_mul_vec($inv,$w);
+ my $scale=matrix3_vector_multiply($inv,$w);
  return matrix_from_columns(vec_scale($cols[0],$scale->[0]),vec_scale($cols[1],$scale->[1]),vec_scale($cols[2],$scale->[2]));
 }
 
@@ -1372,10 +1360,10 @@ sub build_gamut_drive_matrix {
  }
  my $m_native=native_rgb_to_xyz_matrix($contrib);
  return undef if(!$m_native);
- my $inv_native=matrix_inverse($m_native);
+ my $inv_native=matrix3_inverse($m_native);
  return undef if(!$inv_native);
  my $m_target=rgb_to_xyz_matrix_for_gamut($target_gamut);
- return matrix_mul($inv_native,$m_target);
+ return matrix3_multiply($inv_native,$m_target);
 }
 
 sub gamut_matrix_output {
@@ -1394,7 +1382,7 @@ sub gamut_matrix_output {
    target_gamma_linear($gi/($size-1),$gamma,$model->{"target_context"}),
    target_gamma_linear($bi/($size-1),$gamma,$model->{"target_context"}),
   ];
- my $out=matrix_mul_vec($M,$lin);
+ my $out=matrix3_vector_multiply($M,$lin);
  # WRGB chromatic luminance compensation, MID-saturation weighted. The
  # panel's W sub-pixel over-brightens PARTIALLY saturated colors: the
  # neutral axis is DPG-calibrated (no error) and fully saturated colors
@@ -1584,9 +1572,9 @@ sub fm_invert {
   my $improved=0;
   for(my $try=0;$try<6;$try++) {
    my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
-   my $inv=matrix_inverse($M);
+   my $inv=matrix3_inverse($M);
    if($inv) {
-    my $step=matrix_mul_vec($inv,\@Jte);
+    my $step=matrix3_vector_multiply($inv,\@Jte);
     # Cap single-step size so a singular Jacobian cannot leap to a desat corner.
     my $sn=sqrt(($step->[0]||0)**2+($step->[1]||0)**2+($step->[2]||0)**2);
     if($sn > 0.25) { my $s=0.25/$sn; $step=[ map { $_*$s } @{$step} ]; }
@@ -2458,7 +2446,7 @@ sub baseline_drive_pct {
    target_gamma_linear($fg,$gamma,$model->{"target_context"}),
    target_gamma_linear($fb,$gamma,$model->{"target_context"}),
   ];
-  my $out=matrix_mul_vec($M,$lin);
+  my $out=matrix3_vector_multiply($M,$lin);
   return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
  }
  return [ $fr*100, $fg*100, $fb*100 ];
@@ -2575,7 +2563,7 @@ sub build_residual_grid {
    @ideal_pct=map { clamp($ideal->[$_],0,100) } (0..2);
    $fm_nodes++;
   } else {
-   my $dlin=matrix_mul_vec($peak_inverse,$delta);
+   my $dlin=matrix3_vector_multiply($peak_inverse,$delta);
    my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
    my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
    for(my $ch=0;$ch<3;$ch++) {

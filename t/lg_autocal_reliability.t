@@ -214,6 +214,8 @@ like($source,qr/low_light_session"\}=\{ mode => "off", enabled => JSON::PP::fals
  'the 1D worker keeps Argyll normal and requests thresholded application samples');
 like($source,qr/my \@layout_slots=ddc_slots_for_layout\([^\n]+\);/,
  'the Dark Detail log counts the slot list rather than its final value');
+unlike($source,qr/sub trace_109_enabled[\s\S]{0,180}?my \$ire=[^\n]+;\s*return 1;/,
+ 'focused 109 trace logging is not enabled for every calibration step');
 like($session_source,qr/CMD_REQUESTED_SAMPLE_COUNT[\s\S]{0,1200}?REQUESTED_SAMPLE_COUNT="\$CMD_REQUESTED_SAMPLE_COUNT"/,
  'the persistent session executes the numeric sample-count contract');
 like($session_source,qr/capture_additional_average_sample[\s\S]{0,5000}?ADDITIONAL_PARSED/,
