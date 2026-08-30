@@ -206,5 +206,15 @@ hydrate_pi4_numpy_runtime() {
  install -m 0644 "$PI4_NUMPY_RUNTIME_HELPER_DIR/../../third_party/pi4-numpy-runtime/ATLAS-LICENSE.txt" \
   "$destination_root/usr/lib/ATLAS-LICENSE.txt"
  rm -rf -- "$temp_root"
+ # The directories above come from bare mkdir -p and inherit the build
+ # host's umask; a 0002 umask stages them group-writable and extraction
+ # over / then applies that to the live tree (the same class of payload
+ # defect that left /var group-writable and stopped sshd). Files are
+ # installed 0644 explicitly, so only the directories need normalizing.
+ for rel in "${PI4_NUMPY_RUNTIME_PATHS[@]}"; do
+  [[ -d "$destination_root/$rel" ]] || continue
+  chmod 0755 "$destination_root/$rel"
+  find "$destination_root/$rel" -type d -exec chmod 0755 {} +
+ done
  echo "[pi4-numpy] Staged verified NumPy 1.18.5 and ATLAS 3.10.2-7 runtime" >&2
 }
