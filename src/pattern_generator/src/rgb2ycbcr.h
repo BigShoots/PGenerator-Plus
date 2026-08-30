@@ -113,21 +113,21 @@ struct YCbCrPolicy
 
 static YCbCr RGB2YCbCr(RGB rgb, const YCbCrPolicy &policy) {
 	int R, G, B;
-	
+
 	// Pattern values already arrive in the active draw depth selected by BITS.
 	R = rgb.R;
 	G = rgb.G;
-	B = rgb.B;	
+	B = rgb.B;
 //	if (bits == 8) {
 //		R = R * 0.85588235 + 16;
 //		G = G * 0.85588235 + 16;
 //		B = B * 0.85588235 + 16;
-//	} 
+//	}
 //	if (bits == 10) {
 //		R = R * 0.856305 + 64;
 //		G = G * 0.856305 + 64;
 //		B = B * 0.856305 + 64;
-//	}	
+//	}
 	int Y = std::round(policy.kr*R + policy.kg*G + policy.kb*B);
 	int Cb = std::round(((-policy.kr/policy.cb_divisor)*R
 		-(policy.kg/policy.cb_divisor)*G + 0.5f*B)
@@ -136,7 +136,7 @@ static YCbCr RGB2YCbCr(RGB rgb, const YCbCrPolicy &policy) {
 		-(policy.kb/policy.cr_divisor)*B)
 		*policy.chroma_scale/policy.luma_scale + policy.offset);
 
-	return YCbCr(Y, Cb, Cr); 
+	return YCbCr(Y, Cb, Cr);
 }
 
 static RGB YCbCrToRGB(YCbCr ycbcr, const YCbCrPolicy &policy) {
