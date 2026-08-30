@@ -3818,6 +3818,7 @@ let meterReadingsIndex=new Map();
 let meterReadingsIndexSource=meterReadings;
 let meterReadingsIndexLength=0;
 let meterWhiteReading=null;
+let meterColorLabWhiteLatch=null;
 let meterLastChartCount=0; // track reading count to skip redundant chart redraws
 let meterLastChartSignature='';
 let meterSeriesChartRevision=0;
@@ -5575,16 +5576,28 @@ function meterSdrRgbChromaUsesFullSourceRange(){
  return mode==='sdr' && meterOutputIsRgb() && !meterPatchUsesVideoRange();
 }
 
-function meterChromaPatchRangeMin(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+function meterChromaPatchRange(){
+ const min8=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
+ const max8=min8+(meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan());
  const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ if(bits===12){
+  const min12=Math.round(min8*16);
+  return {min:min12,span:Math.round(max8*16)-min12};
+ }
+ if(bits===10){
+  const min10=Math.round(min8*4);
+  const max10=max8>=255?1023:Math.round(max8*4);
+  return {min:min10,span:max10-min10};
+ }
+ return {min:min8,span:max8-min8};
+}
+
+function meterChromaPatchRangeMin(){
+ return meterChromaPatchRange().min;
 }
 
 function meterChromaPatchRangeSpan(){
- const base=meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan();
- const bits=meterPatchBitDepth();
- return bits===12?Math.round(base*16):(bits===10?Math.round(base*4):base);
+ return meterChromaPatchRange().span;
 }
 
 function meterDvRelativeSt2084UsesLegalRange(){
@@ -6962,7 +6975,23 @@ function meterChartBlackLevel(readings){
 
 function meterColorLabWhite(){
  const white=meterFindMeasuredWhiteReading();
- if(white&&white.X>0&&white.Y>0&&white.Z>0) return {X:white.X,Y:white.Y,Z:white.Z};
+ const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
+ const seriesId=String((typeof meterSharedSeriesId!=='undefined'&&meterSharedSeriesId)||'');
+ const seriesKey=String((typeof meterActiveSeriesKey!=='undefined'&&meterActiveSeriesKey)||'');
+ const latchKey=mode+'|'+(seriesId?('id:'+seriesId):('key:'+seriesKey));
+ if(white&&white.X>0&&white.Y>0&&white.Z>0){
+  const value={X:Number(white.X),Y:Number(white.Y),Z:Number(white.Z)};
+  // Series polling replaces the global reading array as each measurement
+  // arrives. A deferred redraw can run during that handoff and briefly see no
+  // white, even though this run measured it first. Keep the measured Lab white
+  // tied to this exact series so prior patch errors cannot jump to the generic
+  // mastering-white fallback and back while later patches are read.
+  meterColorLabWhiteLatch={key:latchKey,value:value};
+  return value;
+ }
+ if(meterColorLabWhiteLatch&&meterColorLabWhiteLatch.key===latchKey){
+  return {...meterColorLabWhiteLatch.value};
+ }
  const refY=Math.max(1,meterColorReferenceNits());
  const wp=meterTargetWhitePoint();
  return {X:wp.X*refY,Y:refY,Z:wp.Z*refY};
@@ -7329,10 +7358,17 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const x=wp.x+sat*(endpoint.x-wp.x);
  const y=wp.y+sat*(endpoint.y-wp.y);
  if(y<=0) return [0,0,0];
- const coeffs=xyzToLinRgb(x/y,1,(1-x-y)/y,solveGamut.xyzToRgb);
- const maxCoeff=Math.max(coeffs[0],coeffs[1],coeffs[2],1e-9);
+ // Set the luminance ceiling in the selected target gamut first. Converting
+ // the chromaticity to the transport gamut and normalizing there makes the
+ // authored luminance depend on the container. P3 red inside BT.2020 is the
+ // worst case because that extra normalization raises it by about one third.
+ const X=x/y,Z=(1-x-y)/y;
+ const axisCoeffs=xyzToLinRgb(X,1,Z,axisGamut.xyzToRgb);
+ const axisMax=Math.max(axisCoeffs[0],axisCoeffs[1],axisCoeffs[2],1e-9);
  const level=meterSaturationStimulusLinearLevel(colorName);
- return coeffs.map(v=>Math.max(0,v/maxCoeff)*level);
+ const targetY=level/axisMax;
+ const transportCoeffs=xyzToLinRgb(X*targetY,targetY,Z*targetY,solveGamut.xyzToRgb);
+ return transportCoeffs.map(v=>Math.max(0,v));
 }
 
 function meterBuildFullGamutTargetLinearRgb(colorName){

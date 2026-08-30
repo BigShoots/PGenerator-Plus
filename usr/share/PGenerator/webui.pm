@@ -5289,6 +5289,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
+  my @AXIS_M=@{$primaries{$target_key}{M}};
   # The native sweep runs at a sub-peak level so sub-100% saturations do not
   # clip to white. HCFR authors a different, constant-Y sequence: SDR and HLG
   # use a unit-linear reference, while HDR10 maps that reference to HCFR's
@@ -5413,7 +5414,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
 	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
 	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
-	     my $mx=$rl;$mx=$gl if $gl>$mx;$mx=$bl if $bl>$mx;
 	     if($hcfr_constant_luminance) {
 	      # HCFR saturation sweeps keep Y fixed at the endpoint luma K while
 	      # chromaticity moves from white to the primary/secondary. Each hue has
@@ -5423,12 +5423,23 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	       ? (($hcfr_pq_reference_nits/$sat_white_ref)*$mix_Y)
 	       : ($hcfr_level_linear*$mix_Y);
 	     } else {
-	      # Native PGenerator sweep keeps the maximum channel fixed.
-	      $target_Yn_for_step=($level_linear/$mx)*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1)) if($mx>0);
-	      if($mx>0){$rl/=$mx;$gl/=$mx;$bl/=$mx;}
+	      # Establish the luminance ceiling in the selected target gamut, then
+	      # carry that XYZ magnitude into the transport gamut without a second
+	      # normalization. Otherwise a P3 target inside BT.2020 gets a different
+	      # luminance solely because of the container conversion, with red
+	      # receiving by far the largest unintended increase.
+	      my $axis_r=$AXIS_M[0][0]*$X+$AXIS_M[0][1]*$Y+$AXIS_M[0][2]*$Z;
+	      my $axis_g=$AXIS_M[1][0]*$X+$AXIS_M[1][1]*$Y+$AXIS_M[1][2]*$Z;
+	      my $axis_b=$AXIS_M[2][0]*$X+$AXIS_M[2][1]*$Y+$AXIS_M[2][2]*$Z;
+	      my $axis_max=$axis_r;$axis_max=$axis_g if $axis_g>$axis_max;$axis_max=$axis_b if $axis_b>$axis_max;
+	      if($axis_max>0) {
+	       my $target_Y=$level_linear/$axis_max;
+	       $target_Yn_for_step=$target_Y*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1));
+	       $rl*=$target_Y;$gl*=$target_Y;$bl*=$target_Y;
+	      }
 	     }
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
-	     my $stimulus_level=$hcfr_constant_luminance?$hcfr_level_linear:$level_linear;
+	     my $stimulus_level=$hcfr_constant_luminance?$hcfr_level_linear:1;
 	     $rl*=$stimulus_level;$gl*=$stimulus_level;$bl*=$stimulus_level;
 	    $r=$hcfr_constant_luminance?$encode_hcfr_channel->($rl):$encode_channel->($rl,$name);
 	    $g=$hcfr_constant_luminance?$encode_hcfr_channel->($gl):$encode_channel->($gl,$name);
