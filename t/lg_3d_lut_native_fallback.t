@@ -110,6 +110,7 @@ foreach my $case (@cases) {
  local $ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"}=$bin;
  foreach my $workers (1,3) {
   my $arm="$label, ".(($workers > 1) ? "$workers workers" : "serial");
+  _lut_native_reset_run_cache();
   my ($log,$out)=with_captured_log(sub {
    no warnings qw(redefine once);
    local *main::_lut_gen_workers=sub { return $workers; };
@@ -160,6 +161,40 @@ foreach my $case (@cases) {
  codes_match($out,$reference_cube,"cube with the helper switched off");
  like($log,qr/lut native: disabled by PGEN_AUTOCAL_LUT_NATIVE, Perl cube/,
   "an operator switching the helper off is recorded");
+}
+
+# Equivalent request failures are scoped to the helper build, model and size.
+# An order-only change reuses the known timeout, while a different lattice
+# size receives its own attempt.
+{
+ my $calls="$fakes/wedged.calls";
+ my $wedged=fake_helper("wedged-counted","echo x >> '$calls'\nsleep 30");
+ local $ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"}=$wedged;
+ local $ENV{"PGEN_AUTOCAL_LUT_NATIVE_TIMEOUT"}=1;
+ _lut_native_reset_run_cache();
+ my ($first_log,$first)=with_captured_log(sub {
+  return _lut_native_u16($model,9,"r_slowest");
+ });
+ my ($second_log,$second)=with_captured_log(sub {
+  return _lut_native_u16($model,9,"r_fastest");
+ });
+ my ($different_log,$different)=with_captured_log(sub {
+  return _lut_native_u16($model,17,"r_slowest");
+ });
+ is($first,undef,"the first wedged helper request falls back");
+ is($second,undef,"the equivalent order-only request falls back from cache");
+ is($different,undef,"a different-size wedged request receives its own fallback");
+ like($first_log,qr/helper did not finish within 1s/,
+  "the first timeout is classified and logged");
+ like($second_log,qr/cached timeout failure for an equivalent request/,
+  "the equivalent timeout is reused without another process");
+ like($different_log,qr/helper did not finish within 1s/,
+  "a different-size timeout is classified independently");
+ open(my $fh,"<",$calls) or die "Unable to read $calls: $!";
+ my $attempts=()=<$fh>;
+ close($fh);
+ is($attempts,2,
+  "one equivalent timeout plus one different-size timeout start two helpers total");
 }
 
 done_testing();

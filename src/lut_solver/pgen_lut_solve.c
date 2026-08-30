@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #include "../common/pgen_colour_math.h"
 
@@ -74,6 +75,37 @@ static samp   g_contrib[3][MAXLVL]; static int g_ncontrib[3]={-1,-1,-1};
 static double g_peak_y[3]={1,1,1};
 static double g_peak_inverse[3][3];
 static double (*g_naf)[3]=NULL, (*g_nad)[3]=NULL; static int g_nna=-1;
+
+enum gamma_mode {
+ GAMMA_BT1886=0,
+ GAMMA_SRGB,
+ GAMMA_ST2084,
+ GAMMA_22,
+ GAMMA_24
+};
+static enum gamma_mode g_gamma_mode=GAMMA_BT1886;
+static double g_seed_gexp=2.4;
+static double g_target_grid[MAXNODE];
+static double g_seed_grid[MAXNODE];
+static double g_channel_curve[3][17];
+static double g_level_inverse[MAXNODE][3][3];
+
+#ifdef PGEN_LUT_INSTRUMENT
+typedef struct {
+ unsigned long long transfer_evals;
+ unsigned long long channel_curves;
+ unsigned long long curve_points;
+ unsigned long long level_matrices;
+ unsigned long long prepared_level_inversions;
+ unsigned long long jacobian_inversions;
+ unsigned long long idw_anchor_iterations;
+ unsigned long long solved_nodes;
+} solver_counts;
+static solver_counts g_counts;
+#define COUNT(field) (g_counts.field++)
+#else
+#define COUNT(field) ((void)0)
+#endif
 
 static const int RAMP_LEVELS[17]={0,2,5,8,12,16,20,30,40,50,60,70,80,88,94,98,100};
 
@@ -142,6 +174,7 @@ static void fm_forward(double dr,double dg,double db,double *o){
  acc[0]=acc[1]=acc[2]=0;
  for(i=0;i<g_nna;i++){
   double d2=0,df,w,m;
+  COUNT(idw_anchor_iterations);
   df=g_naf[i][0]-dr; d2+=df*df;
   df=g_naf[i][1]-dg; d2+=df*df;
   df=g_naf[i][2]-db; d2+=df*df;
@@ -185,11 +218,11 @@ static double st2084_to_linear(double s){
 }
 
 /* target_gamma_linear */
-static double gamma_linear(double s,const char *gm){
+static double gamma_linear(double s,enum gamma_mode mode){
  s=clampd(s,0,1);
- if(!strcmp(gm,"srgb")) return (s <= 0.04045) ? (s/12.92) : pow((s+0.055)/1.055,2.4);
- if(!strcmp(gm,"st2084")) return st2084_to_linear(s);
- return pow(s,(!strcmp(gm,"2.2")) ? 2.2 : 2.4);
+ if(mode==GAMMA_SRGB) return (s <= 0.04045) ? (s/12.92) : pow((s+0.055)/1.055,2.4);
+ if(mode==GAMMA_ST2084) return st2084_to_linear(s);
+ return pow(s,(mode==GAMMA_22) ? 2.2 : 2.4);
 }
 
 /* bt1886_luminance_y */
@@ -208,14 +241,14 @@ static double bt1886_rel(double s,double wy,double by){
  if(!(wy > 0)) wy=100;
  if(!(by >= 0)) by=0;
  range=wy-by;
- if(range <= 1e-9) return gamma_linear(s,"2.4");
+ if(range <= 1e-9) return gamma_linear(s,GAMMA_24);
  return clampd((bt1886_luminance_y(s,wy,by)-by)/range,0,1);
 }
 
 /* target_relative_luminance */
 static double target_rel(double s,double wy,double by){
- if(!strcmp(g_gamma,"bt1886")) return bt1886_rel(s,wy,by);
- return gamma_linear(s,g_gamma);
+ if(g_gamma_mode==GAMMA_BT1886) return bt1886_rel(s,wy,by);
+ return gamma_linear(s,g_gamma_mode);
 }
 
 /* rgb_to_xyz_for_gamut, with the gamut matrix precomputed by Perl */
@@ -226,50 +259,31 @@ static void gamut_xyz(double r,double g,double b,double wy,double *o){
  o[2]=(g_gm[2][0]*r + g_gm[2][1]*g + g_gm[2][2]*b) * wy;
 }
 
-/* target_rgb_to_xyz */
-static void target_rgb_to_xyz(double r,double g,double b,double wy,double *o){
+/* target_xyz_for_node / fm_target_for_node */
+static void target_for_node(int ri,int gi,int bi,int size,double *o){
+ double wy=g_node_white_y;
  int k;
+ if(ri==gi && gi==bi && g_have_wax){ interp_samples(g_wax,g_nwax,((double)ri/(size-1))*100,o); return; }
  if(!(wy > 0)) wy=100;
- if(!strcmp(g_gamma,"bt1886")){
-  double by=g_black[1],range=wy-by,lr,lg,lb;
+ if(g_gamma_mode==GAMMA_BT1886){
+  double range=wy-g_black[1];
   if(range <= 1e-9) range=wy;
-  lr=target_rel(r,wy,by); lg=target_rel(g,wy,by); lb=target_rel(b,wy,by);
-  gamut_xyz(lr,lg,lb,range,o);
+  gamut_xyz(g_target_grid[ri],g_target_grid[gi],g_target_grid[bi],range,o);
   for(k=0;k<3;k++) o[k]=g_black[k]+o[k];
   return;
  }
- gamut_xyz(gamma_linear(r,g_gamma),gamma_linear(g,g_gamma),gamma_linear(b,g_gamma),wy,o);
-}
-
-/* target_xyz_for_node / fm_target_for_node */
-static void target_for_node(int ri,int gi,int bi,int size,double *o){
- double r=(double)ri/(size-1),g=(double)gi/(size-1),b=(double)bi/(size-1);
- if(ri==gi && gi==bi && g_have_wax){ interp_samples(g_wax,g_nwax,r*100,o); return; }
- target_rgb_to_xyz(r,g,b,g_node_white_y,o);
+ gamut_xyz(g_target_grid[ri],g_target_grid[gi],g_target_grid[bi],wy,o);
 }
 
 /* channel_inverse_level */
 static double channel_inverse_level(int ch,double linear){
- double peak=g_peak_y[ch] ? g_peak_y[ch] : 1;
- double y[17];
- int i,j;
+ int i;
  linear=clampd(linear,0,1);
- for(i=0;i<17;i++){
-  double v=0;
-  if(RAMP_LEVELS[i] != 0){
-   const samp *s=NULL;
-   for(j=0;j<g_ncontrib[ch];j++) if(g_contrib[ch][j].lv == (double)RAMP_LEVELS[i]){ s=&g_contrib[ch][j]; break; }
-   v=(s && s->xyz[1]) ? s->xyz[1] : 0;
-   v=v/peak;
-  }
-  if(v < 0) v=0;
-  y[i]=v;
- }
  for(i=1;i<17;i++){
   double y0,y1;
   int l0,l1;
-  if(linear > y[i]) continue;
-  y0=y[i-1]; y1=y[i]; l0=RAMP_LEVELS[i-1]; l1=RAMP_LEVELS[i];
+  if(linear > g_channel_curve[ch][i]) continue;
+  y0=g_channel_curve[ch][i-1]; y1=g_channel_curve[ch][i]; l0=RAMP_LEVELS[i-1]; l1=RAMP_LEVELS[i];
   if(fabs(y1-y0) < 1e-9) return l1;
   return l0 + ((linear-y0)/(y1-y0))*(l1-l0);
  }
@@ -291,15 +305,13 @@ static void matrix_for_level(double level,double m[3][3]){
 
 /* solve_output_rgb */
 static void solve_output_rgb(const double *target,int ri,int gi,int bi,int size,double *o){
- double delta[3],m[3][3],inv[3][3],lin[3],pct[3],node_peak,mx;
+ double delta[3],lin[3],pct[3],mx;
  int mxi=ri,k;
+ (void)size;
  for(k=0;k<3;k++) delta[k]=target[k]-g_black[k];
  if(gi > mxi) mxi=gi;
  if(bi > mxi) mxi=bi;
- node_peak=100.0*mxi/(size-1);
- matrix_for_level(node_peak,m);
- if(!mat_inv(m,inv)) memcpy(inv,g_peak_inverse,sizeof inv);
- mat_vec(inv,delta,lin);
+ mat_vec(g_level_inverse[mxi],delta,lin);
  for(k=0;k<3;k++) pct[k]=channel_inverse_level(k,clampd(lin[k],0,1));
  mx=pct[0];
  if(pct[1] > mx) mx=pct[1];
@@ -310,12 +322,12 @@ static void solve_output_rgb(const double *target,int ri,int gi,int bi,int size,
 
 /* gamut_matrix_output */
 static void gamut_matrix_output(int ri,int gi,int bi,int size,double *o){
- double gexp=(!strcmp(g_gamma_raw,"2.4") || !strcmp(g_gamma,"bt1886")) ? 2.4 : 2.2;
  double lin[3];
  int k;
- lin[0]=gamma_linear((double)ri/(size-1),g_gamma);
- lin[1]=gamma_linear((double)gi/(size-1),g_gamma);
- lin[2]=gamma_linear((double)bi/(size-1),g_gamma);
+ (void)size;
+ lin[0]=g_seed_grid[ri];
+ lin[1]=g_seed_grid[gi];
+ lin[2]=g_seed_grid[bi];
  mat_vec(g_drive,lin,o);
  if(g_clc){
   double wy=g_white_y,cw=g_chroma_white_y;
@@ -337,7 +349,7 @@ static void gamut_matrix_output(int ri,int gi,int bi,int size,double *o){
    }
   }
  }
- for(k=0;k<3;k++) o[k]=pow(clampd(o[k],0,1),1.0/gexp)*100;
+ for(k=0;k<3;k++) o[k]=pow(clampd(o[k],0,1),1.0/g_seed_gexp)*100;
 }
 
 /* _fm_err */
@@ -385,6 +397,7 @@ static void fm_invert(const double *target,const double *seed_pct,double *out){
    /* Perl truthiness, not a magnitude test: 0 and -0.0 both substitute 1e-9. */
    for(a=0;a<3;a++) for(bc=0;bc<3;bc++)
     M[a][bc]=JtJ[a][bc] + ((a==bc) ? lambda*(JtJ[a][a] ? JtJ[a][a] : 1e-9) : 0);
+   COUNT(jacobian_inversions);
    if(mat_inv(M,inv)){
     double step[3],sn,trial[3],te[3],tn,gap;
     mat_vec(inv,Jte,step);
@@ -439,6 +452,7 @@ static int node_output_pct(int r,int g,int b,int size,double *o){
  double target[3],seed[3],inv[3],f[3],mx,mn,sat;
  int den,k;
  if(neutral_identity(r,g,b,size,o)) return 1;
+ COUNT(solved_nodes);
  target_for_node(r,g,b,size,target);
  if(g_seed_matrix) gamut_matrix_output(r,g,b,size,seed);
  else solve_output_rgb(target,r,g,b,size,seed);
@@ -675,6 +689,64 @@ static void validate_request(void){
  if(!g_seed_matrix) for(ch=0;ch<3;ch++) if(g_ncontrib[ch] < 0) fail("missing-contrib");
 }
 
+/* Resolve all request-wide policy and materialise the bounded lookup state
+   before entering the node loop. Matrix-seed requests intentionally skip the
+   contribution curves and level matrices: those protocol fields are absent
+   and the direct gamut seed cannot use them. */
+static void prepare_request(void){
+ int i,ch,j;
+ double den=(double)(g_size-1);
+ if(!strcmp(g_gamma,"bt1886")) g_gamma_mode=GAMMA_BT1886;
+ else if(!strcmp(g_gamma,"srgb")) g_gamma_mode=GAMMA_SRGB;
+ else if(!strcmp(g_gamma,"st2084")) g_gamma_mode=GAMMA_ST2084;
+ else if(!strcmp(g_gamma,"2.2")) g_gamma_mode=GAMMA_22;
+ else g_gamma_mode=GAMMA_24;
+ g_seed_gexp=(!strcmp(g_gamma_raw,"2.4") || g_gamma_mode==GAMMA_BT1886) ? 2.4 : 2.2;
+
+ for(i=0;i<g_size;i++){
+  double s=(double)i/den;
+  COUNT(transfer_evals);
+  g_target_grid[i]=target_rel(s,g_node_white_y,g_black[1] ? g_black[1] : 0);
+ }
+ if(g_seed_matrix){
+  enum gamma_mode seed_mode=(g_gamma_mode==GAMMA_BT1886) ? GAMMA_24 : g_gamma_mode;
+  for(i=0;i<g_size;i++){
+   COUNT(transfer_evals);
+   g_seed_grid[i]=gamma_linear((double)i/den,seed_mode);
+  }
+  return;
+ }
+
+ for(ch=0;ch<3;ch++){
+  double peak=g_peak_y[ch] ? g_peak_y[ch] : 1;
+  COUNT(channel_curves);
+  for(i=0;i<17;i++){
+   double v=0;
+   COUNT(curve_points);
+   if(RAMP_LEVELS[i] != 0){
+    const samp *s=NULL;
+    for(j=0;j<g_ncontrib[ch];j++){
+     if(g_contrib[ch][j].lv == (double)RAMP_LEVELS[i]){ s=&g_contrib[ch][j]; break; }
+    }
+    v=(s && s->xyz[1]) ? s->xyz[1] : 0;
+    v=v/peak;
+   }
+   if(v < 0) v=0;
+   g_channel_curve[ch][i]=v;
+  }
+ }
+ for(i=0;i<g_size;i++){
+  double level=100.0*i/den;
+  double m[3][3];
+  COUNT(transfer_evals);
+  COUNT(level_matrices);
+  matrix_for_level(level,m);
+  COUNT(prepared_level_inversions);
+  if(!mat_inv(m,g_level_inverse[i]))
+   memcpy(g_level_inverse[i],g_peak_inverse,sizeof g_peak_inverse);
+ }
+}
+
 static void check_gates(void){
  if(g_min_conv < GATE_CONV) fail("gate-convergence-margin");
  if(g_min_idw < GATE_IDW) fail("gate-idw-margin");
@@ -682,7 +754,8 @@ static void check_gates(void){
 }
 
 int main(int argc,char **argv){
- int i,ax0,ax1,ax2,total,idx=0,margins=0,nogate=0;
+ int i,ax0,ax1,ax2,total,idx=0,margins=0,nogate=0,timings=0;
+ clock_t kernel_start,kernel_end;
  unsigned short *out;
  /* --no-gate is for the parity harness only: it reports the branch-cliff
     margins without refusing the cube, so a divergence can be characterised
@@ -690,10 +763,13 @@ int main(int argc,char **argv){
  for(i=1;i<argc;i++){
   if(!strcmp(argv[i],"--margins")) margins=1;
   else if(!strcmp(argv[i],"--no-gate")) nogate=1;
+  else if(!strcmp(argv[i],"--timings")) timings=1;
   else fail("bad-argument");
  }
  read_request();
  validate_request();
+ kernel_start=clock();
+ prepare_request();
  total=3*g_size*g_size*g_size;
  out=malloc(sizeof(unsigned short)*total);
  if(!out) fail("out-alloc");
@@ -717,9 +793,19 @@ int main(int argc,char **argv){
    }
   }
  }
+ kernel_end=clock();
  /* Reported before the gates so a refusal still leaves its reason in the log. */
  fprintf(stderr,"pgen_lut_solve: %d^3 nodes=%ld iters=%ld trials=%ld accept=%.3e conv=%.3e idw=%.3e det=%.3e quant=%.3e\n",
   g_size,g_quant_n,g_iters,g_trials,g_min_accept,g_min_conv,g_min_idw,g_min_det,g_min_quant);
+#ifdef PGEN_LUT_INSTRUMENT
+ fprintf(stderr,"pgen_lut_solve counts transfer_evals=%llu channel_curves=%llu curve_points=%llu level_matrices=%llu prepared_level_inversions=%llu jacobian_inversions=%llu idw_anchor_iterations=%llu solved_nodes=%llu\n",
+  g_counts.transfer_evals,g_counts.channel_curves,g_counts.curve_points,
+  g_counts.level_matrices,g_counts.prepared_level_inversions,
+  g_counts.jacobian_inversions,g_counts.idw_anchor_iterations,
+  g_counts.solved_nodes);
+#endif
+ if(timings) fprintf(stderr,"pgen_lut_solve timing kernel_cpu_ms=%.3f\n",
+  1000.0*(double)(kernel_end-kernel_start)/CLOCKS_PER_SEC);
  if(!nogate) check_gates();
  if(margins){
   fprintf(stderr,"pgen_lut_solve: worst quantise margin %.3e at node %d,%d,%d over %ld solved values\n",

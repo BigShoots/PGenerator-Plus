@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+use Digest::SHA qw(sha256_hex);
 use Errno qw(EINTR);
 use File::Path qw(make_path);
 use IO::Select ();
@@ -754,6 +755,113 @@ sub matrix_for_level {
  return matrix_from_columns($cols[0],$cols[1],$cols[2]);
 }
 
+# Bounded, request-wide solver state. Cube generation can visit 274,625 nodes,
+# but each coordinate has only one transfer value and each solve-seed request
+# has only three response curves plus one level matrix per possible maximum
+# index. Preparing those once keeps policy/setup work outside the hot loop and
+# mirrors src/lut_solver/pgen_lut_solve.c exactly.
+sub _prepare_lut_solver_state {
+ my ($model,$size)=@_;
+ $size=17 if(!defined($size) || $size < 2);
+ my $gamma=lc($model->{"target_gamma"}||"bt1886");
+ my $black=$model->{"black"} || [0,0,0];
+ my $node_white=$model->{"chromatic_white_y"} || $model->{"white_y"};
+ $node_white=100 if(!defined($node_white) || $node_white <= 0);
+ $model->{"target_context"}=autocal3d_target_context_for(
+  $model->{"target_gamma"},$model->{"signal_mode"})
+  if(ref($model->{"target_context"}) ne "HASH");
+ my $state={
+  size=>$size,
+  target_grid=>[],
+  seed_grid=>[],
+  channel_curves=>{},
+  level_inverse=>[],
+  counts=>{
+   transfer_evals=>0,channel_curves=>0,curve_points=>0,
+   level_matrices=>0,prepared_level_inversions=>0,
+  },
+ };
+ for my $i (0..$size-1) {
+  my $signal=$i/($size-1);
+  $state->{"counts"}{"transfer_evals"}++;
+  $state->{"target_grid"}[$i]=($gamma eq "bt1886")
+   ? target_relative_luminance_for_context(
+      $model->{"target_context"},$signal,$node_white,$black->[1]||0)
+   : target_linear_for_context($model->{"target_context"},$signal);
+ }
+ if($model->{"gamut_drive_matrix"}) {
+  for my $i (0..$size-1) {
+   $state->{"counts"}{"transfer_evals"}++;
+   $state->{"seed_grid"}[$i]=target_gamma_linear(
+    $i/($size-1),$model->{"target_gamma"},$model->{"target_context"});
+  }
+  return $state;
+ }
+
+ my @levels=ramp_levels();
+ foreach my $kind (qw(red green blue)) {
+  my $peak=$model->{"peak_y"}{$kind} || 1;
+  my @curve;
+  $state->{"counts"}{"channel_curves"}++;
+  foreach my $level (@levels) {
+   my $y=0;
+   $state->{"counts"}{"curve_points"}++;
+   if($level != 0) {
+    my $v=$model->{"contrib"}{$kind}{$level} || [0,0,0];
+    $y=($v->[1] || 0)/$peak;
+   }
+   $y=0 if($y < 0);
+   push @curve,$y;
+  }
+  $state->{"channel_curves"}{$kind}=\@curve;
+ }
+ for my $i (0..$size-1) {
+  my $level=100*$i/($size-1);
+  $state->{"counts"}{"transfer_evals"}++;
+  $state->{"counts"}{"level_matrices"}++;
+  my $matrix=matrix_for_level($model,$level);
+  $state->{"counts"}{"prepared_level_inversions"}++;
+  $state->{"level_inverse"}[$i]=matrix_inverse($matrix) || $model->{"peak_inverse"};
+ }
+ return $state;
+}
+
+sub _prepared_channel_inverse_level {
+ my ($state,$kind,$linear)=@_;
+ $linear=clamp($linear,0,1);
+ my @levels=ramp_levels();
+ my $curve=$state->{"channel_curves"}{$kind};
+ for(my $i=1;$i<@levels;$i++) {
+  next if($linear > $curve->[$i]);
+  my $y0=$curve->[$i-1]; my $y1=$curve->[$i];
+  my $l0=$levels[$i-1]; my $l1=$levels[$i];
+  return $l1 if(abs($y1-$y0) < 1e-9);
+  return $l0 + (($linear-$y0)/($y1-$y0))*($l1-$l0);
+ }
+ return 100;
+}
+
+sub _prepared_target_xyz_for_node {
+ my ($model,$state,$ri,$gi,$bi)=@_;
+ my $size=$state->{"size"};
+ if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
+  return interpolate_vec_by_level($model->{"white_axis"},($ri/($size-1))*100);
+ }
+ my $white_y=$model->{"chromatic_white_y"} || $model->{"white_y"};
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ my $gamma=lc($model->{"target_gamma"}||"bt1886");
+ my $grid=$state->{"target_grid"};
+ if($gamma eq "bt1886") {
+  my $black=$model->{"black"} || [0,0,0];
+  my $range=$white_y-($black->[1]||0);
+  $range=$white_y if($range <= 1e-9);
+  return vec_add($black,rgb_to_xyz_for_gamut($model->{"target_gamut"},
+   $grid->[$ri],$grid->[$gi],$grid->[$bi],$range));
+ }
+ return rgb_to_xyz_for_gamut($model->{"target_gamut"},
+  $grid->[$ri],$grid->[$gi],$grid->[$bi],$white_y);
+}
+
 sub target_xyz_for_node {
  my ($model,$ri,$gi,$bi,$size)=@_;
  my $r=$ri/($size-1);
@@ -827,17 +935,25 @@ sub summarize_post_check {
 }
 
 sub solve_output_rgb {
- my ($model,$target,$ri,$gi,$bi,$size)=@_;
+ my ($model,$target,$ri,$gi,$bi,$size,$prepared)=@_;
  my $black=$model->{"black"} || [0,0,0];
  my $delta=vec_sub($target,$black);
- my $node_peak=100*(($ri>$gi?$ri:$gi)>$bi ? ($ri>$gi?$ri:$gi) : $bi)/($size-1);
- my $m=matrix_for_level($model,$node_peak);
- my $inv=matrix_inverse($m) || $model->{"peak_inverse"};
+ my $max_index=(($ri>$gi?$ri:$gi)>$bi ? ($ri>$gi?$ri:$gi) : $bi);
+ my $inv;
+ if(ref($prepared) eq "HASH") {
+  $inv=$prepared->{"level_inverse"}[$max_index];
+ } else {
+  my $node_peak=100*$max_index/($size-1);
+  my $m=matrix_for_level($model,$node_peak);
+  $inv=matrix_inverse($m) || $model->{"peak_inverse"};
+ }
  my $lin=matrix_mul_vec($inv,$delta);
  my @pct;
  foreach my $idx (0..2) {
   my $kind=(qw(red green blue))[$idx];
-  push @pct,channel_inverse_level($model,$kind,clamp($lin->[$idx],0,1));
+  push @pct,(ref($prepared) eq "HASH")
+   ? _prepared_channel_inverse_level($prepared,$kind,clamp($lin->[$idx],0,1))
+   : channel_inverse_level($model,$kind,clamp($lin->[$idx],0,1));
  }
  my $max=$pct[0];
  $max=$pct[1] if($pct[1] > $max);
@@ -1265,17 +1381,19 @@ sub build_gamut_drive_matrix {
 sub gamut_matrix_output {
  # Node output via the white-preserving gamut matrix in the calibration gamma
  # domain. Returns per-channel drive PERCENT (0-100), matching solve_output_rgb.
- my ($model,$ri,$gi,$bi,$size)=@_;
+ my ($model,$ri,$gi,$bi,$size,$prepared)=@_;
  my $M=$model->{"gamut_drive_matrix"};
  my $gamma=$model->{"target_gamma"};
  # bt1886 maps to a pure 2.4 power in target_gamma_linear (black=0), so the
  # inverse must be 2.4 as well or the matrix domain would be asymmetric.
  my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
- my $lin=[
-  target_gamma_linear($ri/($size-1),$gamma,$model->{"target_context"}),
-  target_gamma_linear($gi/($size-1),$gamma,$model->{"target_context"}),
-  target_gamma_linear($bi/($size-1),$gamma,$model->{"target_context"}),
- ];
+ my $lin=(ref($prepared) eq "HASH")
+  ? [ map { $prepared->{"seed_grid"}[$_] } ($ri,$gi,$bi) ]
+  : [
+   target_gamma_linear($ri/($size-1),$gamma,$model->{"target_context"}),
+   target_gamma_linear($gi/($size-1),$gamma,$model->{"target_context"}),
+   target_gamma_linear($bi/($size-1),$gamma,$model->{"target_context"}),
+  ];
  my $out=matrix_mul_vec($M,$lin);
  # WRGB chromatic luminance compensation, MID-saturation weighted. The
  # panel's W sub-pixel over-brightens PARTIALLY saturated colors: the
@@ -1492,19 +1610,21 @@ sub fm_invert {
 # different white than verification is how hybrid "won" offline on the wrong
 # target and lost on-panel sat sweeps.
 sub fm_target_for_node {
- my ($model,$ri,$gi,$bi,$size)=@_;
+ my ($model,$ri,$gi,$bi,$size,$prepared)=@_;
+ return _prepared_target_xyz_for_node($model,$prepared,$ri,$gi,$bi)
+  if(ref($prepared) eq "HASH");
  return target_xyz_for_node($model,$ri,$gi,$bi,$size);
 }
 sub node_output_pct {
- my ($model,$r,$g,$b,$size)=@_;
+ my ($model,$r,$g,$b,$size,$prepared)=@_;
  my $neutral=neutral_identity_output($model,$r,$g,$b,$size);
  return $neutral if($neutral);
  my $fm=$model->{"forward_model"};
  if(ref($fm) eq "HASH") {
-  my $target=fm_target_for_node($model,$r,$g,$b,$size);
+  my $target=fm_target_for_node($model,$r,$g,$b,$size,$prepared);
   my $seed=$model->{"gamut_drive_matrix"}
-   ? gamut_matrix_output($model,$r,$g,$b,$size)
-   : solve_output_rgb($model,$target,$r,$g,$b,$size);
+   ? gamut_matrix_output($model,$r,$g,$b,$size,$prepared)
+   : solve_output_rgb($model,$target,$r,$g,$b,$size,$prepared);
   my $inv=fm_invert($fm,$model,$target,$seed);
   my $den=$size-1; $den=1 if($den < 1);
   my @f=($r/$den,$g/$den,$b/$den);
@@ -1535,10 +1655,12 @@ sub node_output_pct {
  }
  my $out;
  if($model->{"gamut_drive_matrix"}) {
-  $out=gamut_matrix_output($model,$r,$g,$b,$size);
+  $out=gamut_matrix_output($model,$r,$g,$b,$size,$prepared);
  } else {
-  my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-  $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
+  my $target=(ref($prepared) eq "HASH")
+   ? _prepared_target_xyz_for_node($model,$prepared,$r,$g,$b)
+   : target_xyz_for_node($model,$r,$g,$b,$size);
+  $out=solve_output_rgb($model,$target,$r,$g,$b,$size,$prepared);
  }
  $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if($model->{"residual_grid"});
  return $out;
@@ -1547,12 +1669,13 @@ sub node_output_pct {
 sub _generate_lut_cube_serial {
  my ($model,$size)=@_;
  $size ||= 17;
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my @nodes;
  my @u16;
  for(my $r=0;$r<$size;$r++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
+    my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
@@ -1591,11 +1714,12 @@ sub neutral_identity_output {
 sub _generate_lut_lg_payload_serial {
  my ($model,$size)=@_;
  $size ||= 33;
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my @u16;
  for(my $b=0;$b<$size;$b++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
+    my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
    }
@@ -1623,8 +1747,8 @@ sub _lut_gen_workers {
  return $n;
 }
 sub _lut_node_u16 {
- my ($model,$r,$g,$b,$size)=@_;
- my $out=node_output_pct($model,$r,$g,$b,$size);
+ my ($model,$r,$g,$b,$size,$prepared)=@_;
+ my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
  return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
 }
 
@@ -1655,6 +1779,93 @@ sub _lut_native_refuse {
  return undef;
 }
 our $_lut_native_seq=0;
+our %_lut_native_helper_identity;
+our %_lut_native_failures;
+our @_lut_native_failure_order;
+our $_lut_native_success_key="";
+our $_lut_native_success_packed="";
+our $_lut_native_success_size=0;
+
+sub _lut_native_reset_run_cache {
+ %_lut_native_failures=();
+ @_lut_native_failure_order=();
+ $_lut_native_success_key="";
+ $_lut_native_success_packed="";
+ $_lut_native_success_size=0;
+}
+
+sub _lut_native_helper_build_id {
+ my ($path)=@_;
+ my @st=stat($path);
+ return "missing:$path" if(!@st);
+ my $stat_key=join(":",$path,$st[0],$st[1],$st[7],$st[9]);
+ return $_lut_native_helper_identity{$stat_key}
+  if(exists($_lut_native_helper_identity{$stat_key}));
+ my $digest="unreadable";
+ if(open(my $fh,"<",$path)) {
+  binmode($fh);
+  my $sha=Digest::SHA->new(256);
+  $sha->addfile($fh);
+  close($fh);
+  $digest=$sha->hexdigest;
+ }
+ %_lut_native_helper_identity=($stat_key=>join(":","sha256",$digest));
+ return $_lut_native_helper_identity{$stat_key};
+}
+
+sub _lut_native_request_key {
+ my ($bin,$request)=@_;
+ my $canonical=$request;
+ $canonical=~s/^order\s+\S+/order canonical/m;
+ return sha256_hex(join("\0","PGLUT3D-1",
+  _lut_native_helper_build_id($bin),$canonical));
+}
+
+sub _lut_native_remember_failure {
+ my ($key,$class,$message)=@_;
+ if(!exists($_lut_native_failures{$key})) {
+  push @_lut_native_failure_order,$key;
+  if(@_lut_native_failure_order > 32) {
+   my $old=shift @_lut_native_failure_order;
+   delete $_lut_native_failures{$old};
+  }
+ }
+ $_lut_native_failures{$key}={ class=>$class,message=>$message };
+ log_line($message);
+ return undef;
+}
+
+sub _lut_native_canonical_pack {
+ my ($codes,$size,$order)=@_;
+ return pack('S*',@{$codes}) if($order eq "r_slowest");
+ my $n2=$size*$size;
+ my $packed="";
+ for my $r (0..$size-1) {
+  for my $g (0..$size-1) {
+   for my $b (0..$size-1) {
+    my $off=($b*$n2+$g*$size+$r)*3;
+    $packed.=pack('S3',@{$codes}[$off..$off+2]);
+   }
+  }
+ }
+ return $packed;
+}
+
+sub _lut_native_codes_from_canonical {
+ my ($packed,$size,$order)=@_;
+ return [unpack('S*',$packed)] if($order eq "r_slowest");
+ my $n2=$size*$size;
+ my @codes;
+ for my $b (0..$size-1) {
+  for my $g (0..$size-1) {
+   for my $r (0..$size-1) {
+    my $off=($r*$n2+$g*$size+$b)*6;
+    push @codes,unpack('S3',substr($packed,$off,6));
+   }
+  }
+ }
+ return \@codes;
+}
 
 sub _lut_native_helper {
  my $override=$ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"};
@@ -1866,11 +2077,12 @@ sub _lut_native_check_nodes {
 
 sub _lut_native_verify {
  my ($model,$size,$order,$u16)=@_;
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my $n2=$size*$size;
  foreach my $pt (@{_lut_native_check_nodes($size)}) {
   my ($r,$g,$b)=@{$pt};
   my $off=(($order eq "r_slowest") ? ($r*$n2+$g*$size+$b) : ($b*$n2+$g*$size+$r))*3;
-  my @want=_lut_node_u16($model,$r,$g,$b,$size);
+  my @want=_lut_node_u16($model,$r,$g,$b,$size,$prepared);
   for my $k (0..2) {
    next if($u16->[$off+$k] == $want[$k]);
    log_line(sprintf("lut native: self-check mismatch at node %d,%d,%d helper %d,%d,%d perl %d,%d,%d",
@@ -1925,6 +2137,19 @@ sub _lut_native_u16 {
   log_line("lut native: model not expressible in the helper protocol ($why), Perl cube");
   return undef;
  }
+ my $request_key=_lut_native_request_key($bin,$req);
+ if($_lut_native_success_key eq $request_key
+  && $_lut_native_success_size == $size
+  && $_lut_native_success_packed ne "") {
+  log_line("lut native: reused the verified packed solve for equivalent $order output");
+  return _lut_native_codes_from_canonical(
+   $_lut_native_success_packed,$size,$order);
+ }
+ if(exists($_lut_native_failures{$request_key})) {
+  my $failure=$_lut_native_failures{$request_key};
+  log_line("lut native: cached $failure->{class} failure for an equivalent request, Perl cube");
+  return undef;
+ }
  # A run generates the export cube and the LG payload back to back, so pid and
  # second are not enough to keep the two staging directories apart.
  my $tmpdir=sprintf("/tmp/lutnat_%d_%d_%d",$$,time(),++$_lut_native_seq);
@@ -1976,8 +2201,8 @@ sub _lut_native_u16 {
   close($rd);
   waitpid($pid,0);
   unlink($reqpath); rmdir($tmpdir);
-  log_line("lut native: helper did not finish within "._lut_native_timeout($size)."s, killed it, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"timeout",
+   "lut native: helper did not finish within "._lut_native_timeout($size)."s, killed it, Perl cube");
  }
  close($rd);
  my $status=$?;
@@ -1990,40 +2215,41 @@ sub _lut_native_u16 {
   # in the high byte, which read as a clean run.
   my $how=($status & 127) ? sprintf("killed by signal %d",$status & 127)
    : sprintf("exit %d",$status >> 8);
-  log_line(sprintf("lut native: helper %s%s, Perl cube",$how,($why ne "") ? " ($why)" : ""));
-  return undef;
+  my $class=($why =~ /^PGLUT3D \d+ error /) ? "request_rejection" : "helper_process";
+  return _lut_native_remember_failure($request_key,$class,
+   sprintf("lut native: helper %s%s, Perl cube",$how,($why ne "") ? " ($why)" : ""));
  }
  my $want=3*$size*$size*$size;
  my $hdr="PGLUT3D 1 ok\n";
  if(!defined($blob) || index($blob,$hdr) != 0) {
-  log_line("lut native: bad response header, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: bad response header, Perl cube");
  }
  my $nl=index($blob,"\n",length($hdr));
  my $count=($nl > 0) ? substr($blob,length($hdr),$nl-length($hdr)) : "";
  if($count !~ /\Acodes (\d+)\z/ || $1+0 != $want) {
-  log_line("lut native: response declared '$count', wanted $want codes, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response declared '$count', wanted $want codes, Perl cube");
  }
  my $tail=substr($blob,$nl+1);
  if(substr($tail,-4) ne "end\n") {
-  log_line("lut native: response was truncated, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response was truncated, Perl cube");
  }
  substr($tail,-4)="";
  if($tail =~ /[^0-9 \n]/) {
-  log_line("lut native: response carried a non-numeric token, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response carried a non-numeric token, Perl cube");
  }
  my @u16=map { $_+0 } split(' ',$tail);
  if(scalar(@u16) != $want) {
-  log_line("lut native: response had ".scalar(@u16)." codes, wanted $want, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response had ".scalar(@u16)." codes, wanted $want, Perl cube");
  }
  foreach my $v (@u16) {
   next if($v <= 4095);
-  log_line("lut native: response carried an out-of-range code $v, Perl cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"parity_range",
+   "lut native: response carried an out-of-range code $v, Perl cube");
  }
  # Bounded, logged, self-healing: re-solve a fixed 64-node sample in Perl and
  # discard the whole helper cube on any disagreement. This will not catch a
@@ -2031,9 +2257,12 @@ sub _lut_native_u16 {
  # libm, wrong build flags, a skewed deploy, a protocol field lost in a
  # refactor -- which is the failure mode that actually ships.
  if(!_lut_native_verify($model,$size,$order,\@u16)) {
-  log_line("lut native: self-check failed, discarding the helper cube");
-  return undef;
+  return _lut_native_remember_failure($request_key,"parity_range",
+   "lut native: self-check failed, discarding the helper cube");
  }
+ $_lut_native_success_key=$request_key;
+ $_lut_native_success_size=$size;
+ $_lut_native_success_packed=_lut_native_canonical_pack(\@u16,$size,$order);
  return \@u16;
 }
 
@@ -2043,10 +2272,11 @@ sub generate_lut_cube {
  my $native=_lut_native_u16($model,$size,"r_slowest");
  if($native) {
   log_line("lut generate: cube ${size}^3 via native helper");
+  my $prepared=_prepare_lut_solver_state($model,$size);
   my @nodes;
   for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
    my ($r,$g,$b)=@{$pt};
-   my $out=node_output_pct($model,$r,$g,$b,$size);
+   my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
    my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
    push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
   }
@@ -2054,6 +2284,7 @@ sub generate_lut_cube {
  }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_cube_serial($model,$size) if($workers <= 1);
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial cube");
@@ -2071,7 +2302,7 @@ sub generate_lut_cube {
    for(my $r=$r0;$r<$r1;$r++) {
     for(my $g=0;$g<$size;$g++) {
      for(my $b=0;$b<$size;$b++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size,$prepared);
      }
     }
    }
@@ -2107,7 +2338,7 @@ sub generate_lut_cube {
  my @nodes;
  for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
   my ($r,$g,$b)=@{$pt};
-  my $out=node_output_pct($model,$r,$g,$b,$size);
+  my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
   my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
   push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
  }
@@ -2124,6 +2355,7 @@ sub generate_lut_lg_payload {
  }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_lg_payload_serial($model,$size) if($workers <= 1);
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial payload");
@@ -2141,7 +2373,7 @@ sub generate_lut_lg_payload {
    for(my $b=$b0;$b<$b1;$b++) {
     for(my $g=0;$g<$size;$g++) {
      for(my $r=0;$r<$size;$r++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size,$prepared);
      }
     }
    }
