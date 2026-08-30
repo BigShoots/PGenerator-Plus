@@ -16442,23 +16442,6 @@ function meterCie3dVectorFromXYZ(xyz,referenceY){
  // or XF/YF/ZF according to the stamped observer.
  return {a:X,b:Z,c:Y,source:xyz};
 }
-function meterCie3dVectorFromChroma(coord,level,referenceY){
- if(!coord) return null;
- const mode=meterChromaticityChartMode();
- const k=Math.max(1e-9,Number(level)||1);
- if(mode.indexOf('cie1976_')===0){
-  const L=65,d65=meterCieD65Coord();
-  return {a:13*L*(coord.x-d65.x),b:13*L*(coord.y-d65.y),c:L,reference:true};
- }
- if(meterCieIsOpponentMode(mode)){
-  return {a:coord.x,b:coord.y,c:0,reference:true};
- }
- if(mode.indexOf('ciemb_')===0){
-  return {a:coord.x*k,b:(1-coord.x)*k,c:coord.y*k,reference:true};
- }
- const z=Math.max(0,1-coord.x-coord.y);
- return {a:coord.x*k,b:z*k,c:coord.y*k,reference:true};
-}
 function meterCie3dD65Vector(referenceY){
  const mode=meterChromaticityChartMode();
  const d65=meterCieD65Coord(),k=Math.max(1,Number(referenceY)||1);
@@ -16467,10 +16450,6 @@ function meterCie3dD65Vector(referenceY){
  if(mode.indexOf('ciemb_')===0) return {a:d65.x*k,b:(1-d65.x)*k,c:d65.y*k,reference:true};
  const y=Math.max(1e-9,d65.y),z=Math.max(0,1-d65.x-d65.y);
  return {a:d65.x*k/y,b:z*k/y,c:k,reference:true};
-}
-function meterCie3dLocusVectors(referenceY){
- const level=Math.max(1,Number(referenceY)||1)*.38;
- return meterCieChartLocus().map(p=>meterCie3dVectorFromChroma({x:p[0],y:p[1]},level,referenceY)).filter(Boolean);
 }
 function meterCie3dBoundsForVectors(vectors){
  const vals=(vectors||[]).filter(v=>v&&[v.a,v.b,v.c].every(Number.isFinite));
@@ -16488,32 +16467,6 @@ function meterCie3dBoundsForVectors(vectors){
  };
  const a=range('a'),b=range('b'),c=range('c');
  return {aMin:a[0],aMax:a[1],bMin:b[0],bMax:b[1],cMin:c[0],cMax:c[1]};
-}
-function meterCie3dOpponentSpherePrimitives(ctx,prims,layout,bounds){
- if(!meterCieIsOpponentMode()) return;
- const r=Math.min(Math.abs(bounds.aMin),Math.abs(bounds.aMax),Math.abs(bounds.bMin),Math.abs(bounds.bMax))*.94;
- const cMid=(bounds.cMin+bounds.cMax)/2,cRad=(bounds.cMax-bounds.cMin)/2*.94;
- const latN=8,lonN=24;
- for(let il=0;il<latN;il++){
-  const lat0=-Math.PI/2+Math.PI*il/latN,lat1=-Math.PI/2+Math.PI*(il+1)/latN;
-  for(let io=0;io<lonN;io++){
-   const lon0=Math.PI*2*io/lonN,lon1=Math.PI*2*(io+1)/lonN;
-   const point=(lat,lon)=>cie3dProject(
-    r*Math.cos(lat)*Math.cos(lon),
-    r*Math.cos(lat)*Math.sin(lon),
-    cMid+cRad*Math.sin(lat),layout);
-   const pts=[point(lat0,lon0),point(lat0,lon1),point(lat1,lon1),point(lat1,lon0)];
-   const hue=(360-(io+.5)*360/lonN+15)%360;
-   const light=54+10*Math.sin((lat0+lat1)/2);
-   prims.push({z:cie3dAvgZ(pts)+.2,draw:()=>{
-    ctx.fillStyle='hsla('+hue+',78%,'+light+'%,0.13)';
-    ctx.strokeStyle='rgba(112,126,154,.18)';ctx.lineWidth=.45;
-    ctx.beginPath();ctx.moveTo(pts[0].sx,pts[0].sy);
-    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].sx,pts[i].sy);
-    ctx.closePath();ctx.fill();ctx.stroke();
-   }});
-  }
- }
 }
 // pitch: 0 = edge-on side view, ~π/2 = top-down looking down at the floor.
 // Positive pitch elevates the camera ABOVE the chromaticity plane (not under it).
@@ -16544,16 +16497,17 @@ function meterUpdateCie3dLabel(){
  }
  const gamutLabel=document.getElementById('meterCieOptGamutLabel');
  const locusLabel=document.getElementById('meterCieOptLocusLabel');
- if(meterCieIsOpponentMode()&&meterCie3dViewEnabled()){
-  if(gamutLabel) gamutLabel.title='Show the hue-circle target envelope in the opponent chromaticity plane';
-  if(locusLabel) locusLabel.title='Show the cone-opponent reference sphere and coordinate grid';
- }else{
-  if(gamutLabel) gamutLabel.title=meterCie3dViewEnabled()
-   ?'Show a normalized target-colourspace reference slice. In true 3D XYZ it will not pass through targets at other luminance levels.'
-   :'Show the target colourspace triangle';
-  if(locusLabel) locusLabel.title=meterCie3dViewEnabled()
-   ?'Show a normalized spectral-locus reference slice. The spectral locus has no inherent luminance, so its 3D slice is contextual rather than a target boundary.'
-   :'Show the spectral locus outline and its chromaticity gradient';
+ // Gamut and spectral-locus outlines are chromaticity references. They have
+ // no inherent luminance, so any placement in a true tristimulus 3D view is
+ // arbitrary and visually implies a comparison that is not defined.
+ const showChromaticityOverlays=!meterCie3dViewEnabled();
+ if(gamutLabel){
+  gamutLabel.style.display=showChromaticityOverlays?'inline-flex':'none';
+  gamutLabel.title='Show the target colourspace triangle';
+ }
+ if(locusLabel){
+  locusLabel.style.display=showChromaticityOverlays?'inline-flex':'none';
+  locusLabel.title='Show the spectral locus outline and its chromaticity gradient';
  }
  const xyy=document.getElementById('meterXYYColorLabel');
  if(xyy){
@@ -16737,8 +16691,8 @@ function meterUpdateColorChartMode(isLattice){
  set('chartCIELabel',true,'');
  set('meterCie3dViewLabel',true,'inline-flex');
  set('meterCieOptDropLinesLabel',true,'inline-flex');
- set('meterCieOptGamutLabel',true,'inline-flex');
- set('meterCieOptLocusLabel',true,'inline-flex');
+ set('meterCieOptGamutLabel',!meterCie3dViewEnabled(),'inline-flex');
+ set('meterCieOptLocusLabel',!meterCie3dViewEnabled(),'inline-flex');
  set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
 }
 
@@ -17271,62 +17225,16 @@ function drawCIEChart3D(readings,opts){
   records.push({rd,itemPreset,targetVector,measuredVector,lum});
  });
  const opponentMode=meterCieIsOpponentMode();
- const locusVectors=(meterCieViewOpts.locus&&!opponentMode)?meterCie3dLocusVectors(referenceY):[];
  const d65Vector=meterCie3dD65Vector(referenceY);
  const gamut=meterAnalysisGamut();
- const measuredGamutPoints=(!opponentMode&&!isPreset&&meterCieViewOpts.gamut)
-  ?meterMeasuredGamutOutlinePoints(readings):null;
- let measuredGamutVectors=null;
- if(measuredGamutPoints&&measuredGamutPoints.length>=3){
-  measuredGamutVectors=measuredGamutPoints
-   .map(pt=>meterCie3dVectorFromXYZ(pt.xyz,referenceY))
-   .filter(Boolean);
-  if(measuredGamutVectors.length<3) measuredGamutVectors=null;
- }
- let gamutVectors=null;
- if(!opponentMode&&meterCieViewOpts.gamut&&meterCieTargetsAvailable()){
-  const p=gamut.primaries;
-  const gamutCoords=meterCieGamutCoords(p);
-  const cR=gamutCoords.R,cG=gamutCoords.G,cB=gamutCoords.B;
-  if(cR&&cG&&cB){
-   const level=referenceY*.55;
-   gamutVectors=[
-    meterCie3dVectorFromChroma(cR,level,referenceY),
-    meterCie3dVectorFromChroma(cG,level,referenceY),
-    meterCie3dVectorFromChroma(cB,level,referenceY)
-   ];
-  }
- }
- if(opponentMode&&meterCieViewOpts.gamut){
-  gamutVectors=records
-   .filter(rec=>rec&&rec.targetVector&&/^MB Hue \d+/i.test(String(rec.rd&&rec.rd.name||'')))
-   .sort((left,right)=>{
-    const a=Number((String(left.rd.name||'').match(/(\d+(?:\.\d+)?)/)||[])[1])||0;
-    const b=Number((String(right.rd.name||'').match(/(\d+(?:\.\d+)?)/)||[])[1])||0;
-    return a-b;
-   })
-   .map(rec=>rec.targetVector);
-  if(gamutVectors.length<3) gamutVectors=null;
- }
- const allVectors=[d65Vector].concat(locusVectors);
+ // Locus and gamut are 2D chromaticity boundaries, not XYZ objects. The 3D
+ // magnitude view frames only physically placed targets and measurements.
+ const allVectors=[d65Vector];
  records.forEach(r=>{
   if(r.targetVector) allVectors.push(r.targetVector);
   if(r.measuredVector) allVectors.push(r.measuredVector);
  });
- if(gamutVectors) allVectors.push(...gamutVectors);
- if(measuredGamutVectors) allVectors.push(...measuredGamutVectors);
- // The spectral locus reaches very large threshold-scaled opponent values.
- // It remains a useful reference overlay, but must not collapse ordinary
- // display targets into the centre by controlling the 3D camera frame.
- let framingVectors=allVectors;
- if(meterCieIsOpponentMode()){
-  framingVectors=[d65Vector];
-  records.forEach(r=>{
-   if(r.targetVector) framingVectors.push(r.targetVector);
-   if(r.measuredVector) framingVectors.push(r.measuredVector);
-  });
- }
- const bounds=meterCie3dBoundsForVectors(framingVectors);
+ const bounds=meterCie3dBoundsForVectors(allVectors);
  const layout=cie3dMakeLayout(ctx,bounds);
  // Keep annotations screen-space sized. Wheel zoom already changes projected
  // positions; multiplying marker size and stroke width by zoom made dense
@@ -17335,10 +17243,6 @@ function drawCIEChart3D(readings,opts){
  const markerPerspectiveScale=point=>Math.max(.72,Math.min(1.32,Math.sqrt(Math.max(.1,Number(point&&point.persp)||1))));
  const prims=[];
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
- if(!opponentMode||meterCieViewOpts.locus){
-  meterCie3dOpponentSpherePrimitives(ctx,prims,layout,bounds);
- }
-
  // Base-plane grid in the selected observer-native coordinate space.
  const gridN=5;
  for(let i=0;i<=gridN;i++){
@@ -17357,34 +17261,6 @@ function drawCIEChart3D(readings,opts){
   prims.push({z:(a.z+b.z)/2,draw:()=>{
    ctx.strokeStyle='rgba(56,72,102,.45)';ctx.lineWidth=1;
    ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
-  }});
- }
- if(locusVectors.length){
-  const pts=locusVectors.map(v=>cie3dProjectVector(v,layout));
-  prims.push({z:cie3dAvgZ(pts),draw:()=>{
-   ctx.strokeStyle='rgba(176,190,220,.88)';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';
-   cie3dStrokeSmoothLocus(ctx,pts);
-  }});
- }
- if(gamutVectors){
-  const pts=gamutVectors.map(v=>cie3dProjectVector(v,layout));
-  prims.push({z:cie3dAvgZ(pts),draw:()=>{
-   ctx.strokeStyle=pgThemeColor('--chart-gamut-line','rgba(220,228,245,.9)');
-   ctx.lineWidth=1.05;ctx.setLineDash([4,4]);cie3dStrokePoly(ctx,pts,true);ctx.setLineDash([]);
-   if(!opponentMode){
-    ctx.fillStyle=pgThemeColor('--text-primary','#e0e8f6');ctx.font='9px sans-serif';
-    ctx.textAlign='left';ctx.fillText('R',pts[0].sx+4,pts[0].sy-4);
-    ctx.fillText('G',pts[1].sx-12,pts[1].sy-6);
-    ctx.textAlign='right';ctx.fillText('B',pts[2].sx-4,pts[2].sy+12);
-   }
-  }});
- }
- if(measuredGamutVectors){
-  const pts=measuredGamutVectors.map(v=>cie3dProjectVector(v,layout));
-  prims.push({z:cie3dAvgZ(pts),draw:()=>{
-   ctx.strokeStyle=pgThemeColor('--chart-measured-gamut','rgba(120,220,170,.92)');
-   ctx.lineWidth=1.15;ctx.lineJoin='round';ctx.lineCap='round';ctx.setLineDash([]);
-   cie3dStrokePoly(ctx,pts,true);
   }});
  }
  const d65=cie3dProjectVector(d65Vector,layout);
