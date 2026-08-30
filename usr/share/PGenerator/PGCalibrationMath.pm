@@ -19,6 +19,7 @@ our @EXPORT_OK = qw(
  finite_number
  gamut_xy_definition
  named_gamut_matrix
+ saturation_stimulus_for_gamuts
  smooth_dpg_low_end
  standard_gamut_record
  standard_gamut_records
@@ -448,6 +449,55 @@ sub named_gamut_matrix {
    gamut_xy_definition($name),caller_contract=>$contract);
  }
  return $NAMED_DERIVED_MATRIX_CACHE{$key};
+}
+
+sub _finite_matrix3 {
+ my ($matrix)=@_;
+ return undef if(ref($matrix) ne "ARRAY" || @{$matrix} != 3);
+ my @copy;
+ for my $row (@{$matrix}) {
+  return undef if(ref($row) ne "ARRAY" || @{$row} != 3);
+  my @values;
+  for my $value (@{$row}) {
+   my $number=finite_number($value);
+   return undef if(!defined($number));
+   push @values,$number;
+  }
+  push @copy,\@values;
+ }
+ return \@copy;
+}
+
+# Fix a saturation stimulus's luminance ceiling in the selected target gamut,
+# then carry that XYZ magnitude into the transport gamut. The caller owns hue
+# interpolation, transfer encoding, and signal-mode reference scaling.
+sub saturation_stimulus_for_gamuts {
+ my ($input)=@_;
+ return undef if(ref($input) ne "HASH"
+  || ref($input->{chromaticity}) ne "ARRAY"
+  || @{$input->{chromaticity}} != 2);
+ my $x=bounded_number($input->{chromaticity}[0],0,1);
+ my $y=bounded_number($input->{chromaticity}[1],0,1);
+ my $level=bounded_number($input->{level},0,1);
+ return undef if(!defined($x) || !defined($y) || $y<=0
+  || $x+$y>1+1e-12 || !defined($level));
+ my $target_matrix=_finite_matrix3($input->{target_xyz_to_rgb});
+ my $transport_matrix=_finite_matrix3($input->{transport_xyz_to_rgb});
+ return undef if(!$target_matrix || !$transport_matrix);
+ my @unit=($x/$y,1,(1-$x-$y)/$y);
+ return undef if(grep { !defined(finite_number($_)) } @unit);
+ my $axis=matrix3_vector_multiply($target_matrix,\@unit);
+ my $axis_max=$axis->[0];
+ $axis_max=$axis->[1] if($axis->[1]>$axis_max);
+ $axis_max=$axis->[2] if($axis->[2]>$axis_max);
+ $axis_max=1e-9 if($axis_max<1e-9);
+ my $target_y=$level/$axis_max;
+ my $transport=matrix3_vector_multiply($transport_matrix,\@unit);
+ my @rgb=map {
+  my $value=$_*$target_y;
+  $value<0 ? 0 : $value;
+ } @{$transport};
+ return {rgb=>\@rgb,target_y=>$target_y};
 }
 
 # Perl 5.20 on the Pi does not export POSIX::isfinite. Keep the runtime-local

@@ -290,6 +290,17 @@ function codeToSignalFraction(policy,code){
   ((policy.maximum_stimulus_percent-100)/100);
 }
 
+function signalCodeNominalRange(policy){
+ if(!policy||policy.schema!=='pgen-signal-code-policy-v1') return null;
+ const minimum=Number(policy.legal_min);
+ const maximum=Number(policy.nominal_white_code);
+ const inputMax=Number(policy.input_max);
+ if(!Number.isFinite(minimum)||!Number.isFinite(maximum)||!Number.isFinite(inputMax)
+  ||minimum<0||maximum<minimum||maximum>inputMax) return null;
+ return {min:Math.trunc(minimum),span:Math.trunc(maximum-minimum),
+  max:Math.trunc(maximum),input_max:Math.trunc(inputMax)};
+}
+
 function matrix3VectorMultiply(matrix,vector){
  return [
   matrix[0][0]*vector[0]+matrix[0][1]*vector[1]+matrix[0][2]*vector[2],
@@ -303,6 +314,26 @@ function matrix3Multiply(left,right){
   left[rowIndex][0]*right[0][column]+
   left[rowIndex][1]*right[1][column]+
   left[rowIndex][2]*right[2][column]));
+}
+
+function saturationStimulusForGamuts(input){
+ if(!input||typeof input!=='object'||!Array.isArray(input.chromaticity)
+  ||input.chromaticity.length!==2) return null;
+ const x=Number(input.chromaticity[0]),y=Number(input.chromaticity[1]);
+ const level=Number(input.level);
+ const validMatrix=matrix=>Array.isArray(matrix)&&matrix.length===3&&matrix.every(
+  row=>Array.isArray(row)&&row.length===3&&row.every(value=>Number.isFinite(Number(value))));
+ if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(level)
+  ||x<0||x>1||y<=0||y>1||x+y>1+1e-12||level<0||level>1
+  ||!validMatrix(input.target_xyz_to_rgb)||!validMatrix(input.transport_xyz_to_rgb)) return null;
+ const unit=[x/y,1,(1-x-y)/y];
+ if(!unit.every(Number.isFinite)) return null;
+ const axis=matrix3VectorMultiply(input.target_xyz_to_rgb,unit);
+ const axisMax=Math.max(axis[0],axis[1],axis[2],1e-9);
+ const targetY=level/axisMax;
+ const targetXyz=[unit[0]*targetY,targetY,unit[2]*targetY];
+ const transport=matrix3VectorMultiply(input.transport_xyz_to_rgb,targetXyz);
+ return {rgb:transport.map(value=>Math.max(0,value)),target_y:targetY};
 }
 
 const D65=Object.freeze({x:0.3127,y:0.3290,X:0.9505,Y:1.0,Z:1.0890});
@@ -654,8 +685,9 @@ if(typeof module!=='undefined'&&module.exports){
   meterChartPqDecodeNormalized,srgbDecodeUnbounded,srgbDecodeBounded,
   srgbEncodeUnbounded,srgbEncodeBounded,gammaEotf,srgbEotf,bt1886Eotf,
   meterPowerTargetLuminance,meterSrgbTargetLuminance,browserTargetLuminanceForContext,
-  signalCodePolicy,signalPercentToCode,codeToSignalFraction,
+  signalCodePolicy,signalPercentToCode,codeToSignalFraction,signalCodeNominalRange,
   matrix3VectorMultiply,matrix3Multiply,
+  saturationStimulusForGamuts,
   xyToUnitXyz,meterBradfordAdaptXyz,meterCctFromXy,xyzToICtCp,deltaEITP,
   deltaEITPChromaOnly,xyzToLabWithWhite,deltaE2000,bartenJND,
   deltaE2000JND,bt1886Luminance1dAb,

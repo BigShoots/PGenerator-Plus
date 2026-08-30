@@ -5571,25 +5571,9 @@ function meterPatchRangeSpan(){
  return meterPatchUsesVideoRange()?219:255;
 }
 
-function meterSdrRgbChromaUsesFullSourceRange(){
- const mode=String((meterActiveSeriesSignalMode||meterChartSignalMode()||'sdr')).toLowerCase();
- return mode==='sdr' && meterOutputIsRgb() && !meterPatchUsesVideoRange();
-}
-
 function meterChromaPatchRange(){
- const min8=meterSdrRgbChromaUsesFullSourceRange()?0:meterPatchRangeMin();
- const max8=min8+(meterSdrRgbChromaUsesFullSourceRange()?255:meterPatchRangeSpan());
- const bits=meterPatchBitDepth();
- if(bits===12){
-  const min12=Math.round(min8*16);
-  return {min:min12,span:Math.round(max8*16)-min12};
- }
- if(bits===10){
-  const min10=Math.round(min8*4);
-  const max10=max8>=255?1023:Math.round(max8*4);
-  return {min:min10,span:max10-min10};
- }
- return {min:min8,span:max8-min8};
+ const range=signalCodeNominalRange(meterPreviewSignalCodePolicy());
+ return range?{min:range.min,span:range.span}:{min:16,span:219};
 }
 
 function meterChromaPatchRangeMin(){
@@ -7358,17 +7342,13 @@ function meterBuildSaturationStimulusLinearRgb(colorName,satPercent){
  const x=wp.x+sat*(endpoint.x-wp.x);
  const y=wp.y+sat*(endpoint.y-wp.y);
  if(y<=0) return [0,0,0];
- // Set the luminance ceiling in the selected target gamut first. Converting
- // the chromaticity to the transport gamut and normalizing there makes the
- // authored luminance depend on the container. P3 red inside BT.2020 is the
- // worst case because that extra normalization raises it by about one third.
- const X=x/y,Z=(1-x-y)/y;
- const axisCoeffs=xyzToLinRgb(X,1,Z,axisGamut.xyzToRgb);
- const axisMax=Math.max(axisCoeffs[0],axisCoeffs[1],axisCoeffs[2],1e-9);
  const level=meterSaturationStimulusLinearLevel(colorName);
- const targetY=level/axisMax;
- const transportCoeffs=xyzToLinRgb(X*targetY,targetY,Z*targetY,solveGamut.xyzToRgb);
- return transportCoeffs.map(v=>Math.max(0,v));
+ const stimulus=saturationStimulusForGamuts({
+  chromaticity:[x,y],level:level,
+  target_xyz_to_rgb:axisGamut.xyzToRgb,
+  transport_xyz_to_rgb:solveGamut.xyzToRgb
+ });
+ return stimulus?stimulus.rgb:[0,0,0];
 }
 
 function meterBuildFullGamutTargetLinearRgb(colorName){

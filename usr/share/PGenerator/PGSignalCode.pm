@@ -7,7 +7,8 @@ use Scalar::Util qw(looks_like_number);
 use PGMath qw(pq_encode_normalized);
 
 our @EXPORT_OK=qw(
- code_to_signal_fraction signal_code_policy signal_percent_to_code
+ code_to_signal_fraction signal_code_nominal_range signal_code_policy
+ signal_percent_to_code
 );
 
 my %HDR20_8_LIMITED=(
@@ -213,6 +214,24 @@ sub signal_code_policy {
   active_table=>$active_table,
  };
  return _readonly_hash($record);
+}
+
+sub signal_code_nominal_range {
+ my ($policy)=@_;
+ return undef if(ref($policy) ne "HASH"
+  || ($policy->{schema}||"") ne "pgen-signal-code-policy-v1");
+ my $minimum=_finite_number($policy->{legal_min});
+ my $maximum=_finite_number($policy->{nominal_white_code});
+ my $input_max=_finite_number($policy->{input_max});
+ return undef if(!defined($minimum) || !defined($maximum)
+  || !defined($input_max) || $minimum<0 || $maximum<$minimum
+  || $maximum>$input_max);
+ return {
+  min=>int($minimum),
+  span=>int($maximum-$minimum),
+  max=>int($maximum),
+  input_max=>int($input_max),
+ };
 }
 
 sub _clamp {

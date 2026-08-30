@@ -18,8 +18,12 @@ BEGIN {
  unshift @INC,$module_dir if($module_dir ne "" && !grep { $_ eq $module_dir } @INC);
 }
 use PGMath ();
-use PGCalibrationMath qw(calibration_target_context standard_gamut_records);
-use PGSignalCode qw(signal_code_policy signal_percent_to_code);
+use PGCalibrationMath qw(
+ calibration_target_context saturation_stimulus_for_gamuts standard_gamut_records
+);
+use PGSignalCode qw(
+ signal_code_nominal_range signal_code_policy signal_percent_to_code
+);
 use Fcntl qw(O_NONBLOCK O_WRONLY);
 use Time::HiRes ();
 # Required for the ":shared" attributes and lock() below: webui_http dispatches
@@ -4303,23 +4307,25 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # Doing so made otherwise identical HDR series alternate between 8-bit and
  # 10-bit codes whenever the Pi output configuration changed.
  $_chroma_max_bpc=10 if($pattern_provider eq "companion" && $signal_mode eq "hdr10");
- my $chroma_min_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 64 : 16) : 0;
- my $chroma_span_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 876 : 219) : ($_chroma_max_bpc==10 ? 1023 : 255);
- my $chroma_max_code=$chroma_min_code + $chroma_span_code;
- my $chroma_input_max=($_chroma_max_bpc==10) ? 1023 : 255;
+ my $dv_series=($signal_mode eq "dv") ? 1 : 0;
+ my $chroma_signal_code_policy=&webui_signal_code_policy(
+  $signal_mode,$chroma_patch_limited,{
+   max_bpc=>$_chroma_max_bpc,
+   dv_series=>$dv_series,
+   dv_series_code_bits=>12,
+   dv_series_full_range=>0,
+   dv_interface=>$dv_interface,
+  });
+ my $chroma_range=signal_code_nominal_range($chroma_signal_code_policy);
+ die "Unable to resolve chroma signal-code range\n" if(!$chroma_range);
+ my $chroma_min_code=$chroma_range->{min};
+ my $chroma_span_code=$chroma_range->{span};
+ my $chroma_max_code=$chroma_range->{max};
+ my $chroma_input_max=$chroma_range->{input_max};
 
  # Build step list as JSON array for the helper script
  # Measurement order: WHITE first (reference), then 0%→95% ascending
  my @steps;
- my $dv_series=($signal_mode eq "dv") ? 1 : 0;
- if($dv_series) {
-  # Standard DV carries legal-range 12-bit source RGB inside an RGB 8-bit
-  # Full tunnel. Use that source domain for every generated/custom colour.
-  $chroma_min_code=256;
-  $chroma_span_code=3504;
-  $chroma_max_code=3760;
-  $chroma_input_max=4095;
- }
  my $dv_greyscale_tunnel_codes=($dv_series && $type eq "greyscale") ? 1 : 0;
  my $dv_series_code_bits=$dv_series ? 12 : 8;
  my $dv_series_code_max=$dv_series ? 4095 : 255;
@@ -5289,7 +5295,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
-  my @AXIS_M=@{$primaries{$target_key}{M}};
   # The native sweep runs at a sub-peak level so sub-100% saturations do not
   # clip to white. HCFR authors a different, constant-Y sequence: SDR and HLG
   # use a unit-linear reference, while HDR10 maps that reference to HCFR's
@@ -5411,32 +5416,28 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    my $target_Yn_for_step=0;
 	    if($ty>0){
 	     my $X=$tx/$ty; my $Y=1; my $Z=(1-$tx-$ty)/$ty;
-	     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
-	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
-	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
-	     if($hcfr_constant_luminance) {
+		     my ($rl,$gl,$bl)=(0,0,0);
+		     if($hcfr_constant_luminance) {
 	      # HCFR saturation sweeps keep Y fixed at the endpoint luma K while
 	      # chromaticity moves from white to the primary/secondary. Each hue has
 	      # its own 0% neutral (RGB=K), so all five HCFR CHC slots are measured.
-	      $rl*=$mix_Y;$gl*=$mix_Y;$bl*=$mix_Y;
+		      $rl=($MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z)*$mix_Y;
+		      $gl=($MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z)*$mix_Y;
+		      $bl=($MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z)*$mix_Y;
 	      $target_Yn_for_step=($signal_mode eq "hdr10" && $sat_white_ref>0)
 	       ? (($hcfr_pq_reference_nits/$sat_white_ref)*$mix_Y)
 	       : ($hcfr_level_linear*$mix_Y);
 	     } else {
-	      # Establish the luminance ceiling in the selected target gamut, then
-	      # carry that XYZ magnitude into the transport gamut without a second
-	      # normalization. Otherwise a P3 target inside BT.2020 gets a different
-	      # luminance solely because of the container conversion, with red
-	      # receiving by far the largest unintended increase.
-	      my $axis_r=$AXIS_M[0][0]*$X+$AXIS_M[0][1]*$Y+$AXIS_M[0][2]*$Z;
-	      my $axis_g=$AXIS_M[1][0]*$X+$AXIS_M[1][1]*$Y+$AXIS_M[1][2]*$Z;
-	      my $axis_b=$AXIS_M[2][0]*$X+$AXIS_M[2][1]*$Y+$AXIS_M[2][2]*$Z;
-	      my $axis_max=$axis_r;$axis_max=$axis_g if $axis_g>$axis_max;$axis_max=$axis_b if $axis_b>$axis_max;
-	      if($axis_max>0) {
-	       my $target_Y=$level_linear/$axis_max;
-	       $target_Yn_for_step=$target_Y*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1));
-	       $rl*=$target_Y;$gl*=$target_Y;$bl*=$target_Y;
-	      }
+		      my $stimulus=saturation_stimulus_for_gamuts({
+		       chromaticity=>[$tx,$ty],level=>$level_linear,
+		       target_xyz_to_rgb=>$primaries{$target_key}{M},
+		       transport_xyz_to_rgb=>\@MI,
+		      });
+		      if($stimulus) {
+		       ($rl,$gl,$bl)=@{$stimulus->{rgb}};
+		       my $target_Y=$stimulus->{target_y};
+		       $target_Yn_for_step=$target_Y*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1));
+		      }
 	     }
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
 	     my $stimulus_level=$hcfr_constant_luminance?$hcfr_level_linear:1;
