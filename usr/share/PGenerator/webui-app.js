@@ -14262,9 +14262,14 @@ function meterUpdateLiveReadingDetails(src,isMeasured){
   const gamma=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||'').toLowerCase():'';
   rgbLabel.textContent=(gamma==='st2084')?'RGB PQe':'RGB';
  }
- setRgb('meterLiveRgbMeasured',measured?meterLiveMeasuredRgbCodes(src):null);
- setRgb('meterLiveRgbTarget',src?meterLiveTargetRgbCodes(src):null);
- { const el=document.getElementById('meterLiveWireRgb'); if(el) el.innerHTML=src?meterLiveWireRgbMarkup(src):'--'; }
+ // Measured RGB in the display output bit depth: scale the display-normalized
+ // codes with the exact integer transport mapping (10-bit x4, 12-bit x16) so
+ // the measured triplet is directly comparable with the Wire codes beside it.
+ const wireInfo=src?meterLiveWireRgbCodes(src):null;
+ const wireFactor=wireInfo?(wireInfo.bits==='10-bit'?4:(wireInfo.bits==='12-bit'?16:1)):1;
+ const measuredCodes=measured?meterLiveMeasuredRgbCodes(src):null;
+ setRgb('meterLiveRgbMeasured',measuredCodes?measuredCodes.map(code=>code*wireFactor):null);
+ { const el=document.getElementById('meterLiveRgbWire'); if(el) el.innerHTML=src?meterLiveWireRgbMarkup(src):'--'; }
  const xyzText=xyz=>xyz?[xyz.X,xyz.Y,xyz.Z].map(value=>Number(value).toFixed(3)).join(', '):'--';
  set('meterLiveXyzMeasured',xyzText(measured));
  set('meterLiveXyzTarget',xyzText(target));
