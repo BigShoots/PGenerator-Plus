@@ -3,6 +3,11 @@ package PGMeterReading;
 use strict;
 use warnings;
 use Exporter qw(import);
+# Resolve sibling modules relative to this file so the module compiles from
+# any checkout (perl -c, deploy tooling), not only when /usr/share/PGenerator
+# is already on @INC.
+use File::Basename ();
+use lib File::Basename::dirname(__FILE__);
 use PGCalibrationMath qw(bounded_number);
 
 our @EXPORT_OK = qw(reading_xyz);

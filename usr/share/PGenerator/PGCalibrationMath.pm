@@ -4,6 +4,11 @@ use strict;
 use warnings;
 use Exporter qw(import);
 use Scalar::Util qw(looks_like_number);
+# Resolve sibling modules relative to this file so the module compiles from
+# any checkout (perl -c, deploy tooling), not only when /usr/share/PGenerator
+# is already on @INC.
+use File::Basename ();
+use lib File::Basename::dirname(__FILE__);
 use PGMath qw(
  bt1886_luminance_1d_ab bt1886_relative_luminance_3d_root_blend
  matrix3_inverse matrix3_vector_multiply pq_decode_nits pq_decode_normalized
