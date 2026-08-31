@@ -16541,21 +16541,49 @@ function meterCie3dViewEnabled(){
  const el=document.getElementById('meterCie3dView');
  return !!(el&&el.checked);
 }
+// The 3D view plots observer-native tristimulus axes by default. "xyY axes"
+// restores the original projection: the chromaticity chart as the floor with
+// luminance as the vertical axis. The cone-opponent chart has no chromaticity
+// floor to stand on, so it always uses the native axes.
+function meterCie3dXyYSupported(){
+ return !meterCieIsOpponentMode(meterChromaticityChartMode());
+}
+function meterCie3dXyYEnabled(){
+ if(!meterCie3dViewEnabled()||!meterCie3dXyYSupported()) return false;
+ const el=document.getElementById('meterCie3dXyY');
+ return !!(el&&el.checked);
+}
+function meterOnCie3dXyYChange(){
+ try{ meterSaveColorPrefs(); }catch(e){}
+ meterUpdateCie3dLabel();
+ cie3dResetCamera();
+ if(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations'){
+  if(meterReadings&&meterReadings.length) drawAllCharts(meterReadings);
+  else if(meterSeriesSteps&&meterSeriesSteps.length) drawAllChartsPreset(meterSeriesSteps);
+ }
+}
 function meterUpdateCie3dLabel(){
  const lab=document.getElementById('chartCIELabel');
  if(!lab) return;
  const axis=meterCieChartAxis();
- lab.textContent=meterCie3dViewEnabled()?axis.threeD:axis.title;
+ const xyy3d=meterCie3dXyYEnabled();
+ const title3d=(xyy3d&&axis.threeDXyY)?axis.threeDXyY:axis.threeD;
+ lab.textContent=meterCie3dViewEnabled()?title3d:axis.title;
  const help=document.querySelector('#meterCie3dViewLabel .meter-help-tip');
  if(help){
-  help.title=axis.threeD+': left-drag = rotate, right-drag = pan, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
+  help.title=title3d+': left-drag = rotate, right-drag = pan, mouse wheel = zoom, double-click = reset camera, left-click a point = select.';
+ }
+ const xyyLabel=document.getElementById('meterCie3dXyYLabel');
+ if(xyyLabel){
+  xyyLabel.style.display=(meterCie3dViewEnabled()&&meterCie3dXyYSupported())?'inline-flex':'none';
  }
  const gamutLabel=document.getElementById('meterCieOptGamutLabel');
  const locusLabel=document.getElementById('meterCieOptLocusLabel');
  // Gamut and spectral-locus outlines are chromaticity references. They have
  // no inherent luminance, so any placement in a true tristimulus 3D view is
- // arbitrary and visually implies a comparison that is not defined.
- const showChromaticityOverlays=!meterCie3dViewEnabled();
+ // arbitrary and visually implies a comparison that is not defined. The xyY
+ // view has a real chromaticity floor, so they are meaningful there.
+ const showChromaticityOverlays=!meterCie3dViewEnabled()||meterCie3dXyYEnabled();
  if(gamutLabel){
   gamutLabel.style.display=showChromaticityOverlays?'inline-flex':'none';
   gamutLabel.title='Show the target colourspace triangle';
@@ -16747,8 +16775,10 @@ function meterUpdateColorChartMode(isLattice){
  set('chartCIELabel',true,'');
  set('meterCie3dViewLabel',true,'inline-flex');
  set('meterCieOptDropLinesLabel',true,'inline-flex');
- set('meterCieOptGamutLabel',!meterCie3dViewEnabled(),'inline-flex');
- set('meterCieOptLocusLabel',!meterCie3dViewEnabled(),'inline-flex');
+ const chromaticityOverlays=!meterCie3dViewEnabled()||meterCie3dXyYEnabled();
+ set('meterCie3dXyYLabel',meterCie3dViewEnabled()&&meterCie3dXyYSupported(),'inline-flex');
+ set('meterCieOptGamutLabel',chromaticityOverlays,'inline-flex');
+ set('meterCieOptLocusLabel',chromaticityOverlays,'inline-flex');
  // The rings render on lattice charts too (3D LUT profiling), so the
  // checkbox must stay reachable there; profiling contexts default it OFF
  // via meterLatticeDefault3dView.
@@ -16977,12 +17007,18 @@ function drawCIEChart3DLegacy(readings,opts){
  }
  const yMax=Math.max(cie3dComputeYMax(readings||[],isPreset), injected.length?cie3dComputeYMax(injected,true):1);
  _cie3d.yMax=yMax;
- const layout=cie3dMakeLayout(ctx,yMax);
+ const bounds=meterCie3dLegacyChromaBounds();
+ // cie3dProject is shared with the tristimulus view: floor a = chromaticity x,
+ // floor b = chromaticity y, vertical c = luminance from 0 to yMax.
+ const layout=cie3dMakeLayout(ctx,{
+  aMin:bounds.xMin,aMax:bounds.xMax,
+  bMin:bounds.yMin,bMax:bounds.yMax,
+  cMin:0,cMax:Math.max(1e-9,yMax)
+ });
  // Markers are screen-space annotations. Their positions zoom with the data,
  // but their boxes and stroke widths must not grow into opaque blocks.
  const markerScale=1;
  const prims=[]; // {z, draw:fn}
- const bounds=meterCie3dBounds();
  // Background
  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fillRect(0,0,ctx.w,ctx.h);
  // Floor grid
@@ -17228,7 +17264,8 @@ function drawCIEChart3DLegacy(readings,opts){
  ctx.fillStyle=pgThemeColor('--chart-label','#d7e1f3');ctx.font='10px sans-serif';ctx.textAlign='right';
  ctx.fillText(gamut.label,ctx.w-12,14);
  ctx.fillStyle=pgThemeColor('--chart-label','#9fb3d9');ctx.font='9px sans-serif';
- ctx.fillText(meterCieChartAxis().threeD+'  ·  drag rotate · wheel zoom',ctx.w-12,28);
+ const axisTitle=meterCieChartAxis();
+ ctx.fillText((axisTitle.threeDXyY||axisTitle.threeD)+'  ·  drag rotate · wheel zoom',ctx.w-12,28);
  if(colorInclLum){
   ctx.fillStyle='#7ec8ff';ctx.font='9px sans-serif';
   ctx.fillText('\u0394Y on: cyan/orange rings + stems (bright / dim)',ctx.w-12,42);
@@ -17244,6 +17281,7 @@ function drawCIEChart3DLegacy(readings,opts){
  if(canvas) cie3dBindHandlers(canvas);
 }
 function drawCIEChart3D(readings,opts){
+ if(meterCie3dXyYEnabled()) return drawCIEChart3DLegacy(readings,opts);
  const ctx=getChartCtx('chartCIE');
  if(!ctx) return;
  const isPreset=!!(opts&&opts.preset);

@@ -9528,12 +9528,12 @@ function cie3dStrokeSmoothLocus(ctx,points){
 function meterCieChartAxis(){
  const mode=meterChromaticityChartMode();
  const ten=/_10$/.test(mode),degree=ten?'10\u00B0':'2\u00B0';
- if(mode.indexOf('cie1976_')===0) return {x:'u\u2032',y:'v\u2032',title:'CIE 1976 UCS Chromaticity ('+degree+')',threeD:'CIE 1976 L*u*v* ('+degree+', 3D)'};
- if(mode.indexOf('cie2015_')===0) return {x:'xF',y:'yF',title:'CIE 170-2:2015 Chromaticity ('+degree+')',threeD:'CIE 170-2 XF YF ZF ('+degree+', 3D)'};
- if(mode.indexOf('ciemb_')===0) return {x:'L/(L+M)',y:'S/(L+M)',title:'MacLeod-Boynton Relative Cone-Troland Chromaticity ('+degree+')',threeD:'MacLeod-Boynton Relative Cone Trolands ('+degree+', 3D)'};
+ if(mode.indexOf('cie1976_')===0) return {x:'u\u2032',y:'v\u2032',title:'CIE 1976 UCS Chromaticity ('+degree+')',threeD:'CIE 1976 L*u*v* ('+degree+', 3D)',threeDXyY:'CIE 1976 u\u2032v\u2032Y ('+degree+', 3D)'};
+ if(mode.indexOf('cie2015_')===0) return {x:'xF',y:'yF',title:'CIE 170-2:2015 Chromaticity ('+degree+')',threeD:'CIE 170-2 XF YF ZF ('+degree+', 3D)',threeDXyY:'CIE 170-2 xF yF YF ('+degree+', 3D)'};
+ if(mode.indexOf('ciemb_')===0) return {x:'L/(L+M)',y:'S/(L+M)',title:'MacLeod-Boynton Relative Cone-Troland Chromaticity ('+degree+')',threeD:'MacLeod-Boynton Relative Cone Trolands ('+degree+', 3D)',threeDXyY:'MacLeod-Boynton lMB sMB (L+M) ('+degree+', 3D)'};
  if(meterCieIsOpponentMode(mode)) return {x:'L-M opponent response',y:'S-(L+M) opponent response',title:'Cone-Opponent Polar Chromaticity ('+degree+')',threeD:'Cone-Opponent Space with Achromatic Axis ('+degree+', 3D)'};
- if(mode==='cie1964_10') return {x:'x',y:'y',title:'CIE 1964 Chromaticity (10\u00B0)',threeD:'CIE 1964 X10 Y10 Z10 (3D)'};
- return {x:'x',y:'y',title:'CIE 1931 Chromaticity (2\u00B0)',threeD:'CIE 1931 XYZ (2\u00B0, 3D)'};
+ if(mode==='cie1964_10') return {x:'x',y:'y',title:'CIE 1964 Chromaticity (10\u00B0)',threeD:'CIE 1964 X10 Y10 Z10 (3D)',threeDXyY:'CIE 1964 x10 y10 Y10 (3D)'};
+ return {x:'x',y:'y',title:'CIE 1931 Chromaticity (2\u00B0)',threeD:'CIE 1931 XYZ (2\u00B0, 3D)',threeDXyY:'CIE 1931 xyY (2\u00B0, 3D)'};
 }
 function meterOnChromaticityChartChange(){
  const el=document.getElementById('meterChromaticityChart');
@@ -11513,6 +11513,7 @@ function meterSaveColorPrefs(){
     eotf_log: cb('meterEotfLogScale'),
     luminance_log: cb('meterLuminanceLogScale'),
     cie_3d: cb('meterCie3dView'),
+    cie_3d_xyy: cb('meterCie3dXyY'),
     chromaticity_chart: v('meterChromaticityChart'),
     hdr_diffuse_white: v('meterHdrDiffuseWhite'),
     hdr_diffuse_white_auto: cb('meterHdrDiffuseWhiteAuto')
@@ -11567,6 +11568,7 @@ function meterLoadColorPrefs(){
   setChk('meterEotfLogScale', p.eotf_log);
   setChk('meterLuminanceLogScale', p.luminance_log);
   setChk('meterCie3dView', p.cie_3d);
+  setChk('meterCie3dXyY', p.cie_3d_xyy);
   setVal('meterChromaticityChart', p.chromaticity_chart);
   setVal('meterHdrDiffuseWhite', p.hdr_diffuse_white);
   setChk('meterHdrDiffuseWhiteAuto', p.hdr_diffuse_white_auto==null?'1':p.hdr_diffuse_white_auto);

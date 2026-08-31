@@ -1402,7 +1402,11 @@ __PG_LOGO_DARK__
       <div id="chartCIELabel" style="font-size:.65rem;color:var(--text2);text-transform:uppercase">CIE 1931 Chromaticity</div>
       <label id="meterCie3dViewLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">
        <input type="checkbox" id="meterCie3dView" onchange="meterOnCie3dViewChange()" style="vertical-align:middle"> 3D View
-       <span class="meter-help-tip" title="xyY view: floor is chromaticity (x,y), vertical is luminance Y (cd/m²). Drag = rotate · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
+       <span class="meter-help-tip" title="3D view of the chromaticity chart. Drag = rotate · Mouse wheel = zoom · Double-click = reset camera. Left-click a point to select it." aria-label="3D View camera controls help">?</span>
+      </label>
+      <label id="meterCie3dXyYLabel" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none;align-items:center;gap:4px">
+       <input type="checkbox" id="meterCie3dXyY" onchange="meterOnCie3dXyYChange()" style="vertical-align:middle"> xyY axes
+       <span class="meter-help-tip" title="Plot the 3D view in xyY: the floor is the chromaticity chart (x,y) and the vertical axis is luminance Y in cd/m². Unchecked plots the observer-native tristimulus axes (X, Z on the floor, Y up)." aria-label="xyY axes help">?</span>
       </label>
       <span id="meterCieViewOptRow" style="display:inline-flex;gap:10px;flex-wrap:wrap;margin-left:6px;padding-left:10px;border-left:1px solid var(--border)">
        <label style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px" title="Show target boxes on the chart">
