@@ -8644,6 +8644,10 @@ sub webui_ccss_create_start (@) {
  $target_port=$1 if($body=~/"target_meter_port"\s*:\s*"?(\d+)"?/);
  my $high_resolution=0;
  $high_resolution=1 if($body=~/"high_resolution"\s*:\s*(?:true|1|"true"|"1"|"yes")/i);
+ # ccxxmake's -H is one switch for the whole interactive session rather than a
+ # per-instrument one, so a CCMX run would carry it into the target
+ # colorimeter's pass as well. Only the single-instrument CCSS run can use it.
+ $high_resolution=0 if($format ne "ccss");
 
  return '{"status":"error","message":"Enter a profile name"}' if($name eq "");
  return '{"status":"error","message":"Profile name must be 80 characters or fewer"}' if(length($name)>80);

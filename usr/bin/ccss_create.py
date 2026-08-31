@@ -493,9 +493,15 @@ class Runner:
         comport = re.sub(r"[^0-9]", "", str(self.args.comport or ""))
         if comport:
             cmd.extend(["-c", comport])
-        if self.args.high_resolution:
+        if self.args.high_resolution and self.args.format == "ccss":
             # ArgyllCMS enables reconstructed high-resolution spectral sampling
             # on supported reference spectrophotometers with uppercase -H.
+            # -H is a single switch for the whole interactive ccxxmake session,
+            # not a per-instrument one: a CCMX run opens the target colorimeter
+            # for its second pass with the same flag still set, and Argyll then
+            # reports "high resolution ignored - instrument doesn't support high
+            # res. mode" for a meter that can never honour it. Only the
+            # single-instrument CCSS run can use it.
             cmd.append("-H")
         # NOTE: do NOT pass "-Y R:<rate>" here. On the i1 Pro 2 the refresh-rate
         # override puts ccxxmake into a mode where it rejects the instrument with
