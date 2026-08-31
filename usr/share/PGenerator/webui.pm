@@ -1354,7 +1354,11 @@ sub webui_handle_request (@) {
    elsif($path eq "/" || $path eq "/index.html") {
     my $html=&webui_html();
     my $len=length($html);
-    print $client "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: $len\r\n$cors\r\n$html";
+    # The UI is one server-assembled page with every fragment inlined; with no
+    # cache validators the browser heuristically caches it and operators keep
+    # running a stale UI after an update until a hard refresh. no-cache forces
+    # revalidation on every load while conditional requests stay cheap.
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: $len\r\n$cors\r\n$html";
    }
    elsif($path eq "/favicon.ico") {
     my $ico_path="/usr/share/PGenerator/favicon.ico";
