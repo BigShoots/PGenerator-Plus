@@ -16427,6 +16427,16 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $dpg_r_prev=undef;
  my $dpg_g_prev=undef;
  my $dpg_b_prev=undef;
+ # Oscillation tracking for the rescue guard below: the sign of
+ # (target - measured) per iteration. Two consecutive alternations mean the
+ # anchor is BOUNCING across its target (local loop gain too high), the
+ # opposite failure mode from a stuck anchor; boosting moves or raising the
+ # per-iter ceiling then only pumps the swing (observed at SDR 10%: moves
+ # grew 84->316 DPG counts while the rescue kept the ceiling at 1.5).
+ # $_osc_damp persists for the anchor's remaining iterations once halved.
+ my $_y_err_sign_prev=0;
+ my $_y_err_flips=0;
+ my $_osc_damp=1.0;
  my $acceptance_pending=0;
  my $accepted_best_de=undef;
  my $accepted_best_dpg=undef;
@@ -17005,6 +17015,20 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      $_exp_body=$damp_exp if($_exp_body+0 < $damp_exp+0);
     }
    }
+   # Oscillation detector: two consecutive sign alternations of the Y error
+   # mark a bouncing anchor. Computed before the stuck-anchor paths so both
+   # rescues can refuse to amplify a swing they would otherwise feed.
+   {
+    my $_y_now=luminance($reading);
+    my $_y_err=(defined($tl) && $tl+0 > 0 && defined($_y_now)) ? (($tl+0)-($_y_now+0)) : 0;
+    my $_y_err_sign=($_y_err > 0) ? 1 : (($_y_err < 0) ? -1 : 0);
+    if($_y_err_sign != 0 && $_y_err_sign_prev != 0) {
+     if($_y_err_sign != $_y_err_sign_prev) { $_y_err_flips++; }
+     else { $_y_err_flips=0; }
+    }
+    $_y_err_sign_prev=$_y_err_sign if($_y_err_sign != 0);
+   }
+   my $_oscillating=($_y_err_flips >= 2) ? 1 : 0;
    # Stuck-anchor move boost: when several iters in, still above target dE,
    # and the response model confirms a weak panel response (gamma_effective
    # well above the 2.2 seed), multiply the dampened move so each iter
@@ -17017,7 +17041,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
       && $i+0 >= 3
       && defined($de) && $de+0 > $_effective_target_de+0
       && $_g_rescue > 2.6 && $gamma_effective+0 <= 3.5
-      && !$is_white_body) {
+      && !$is_white_body
+      && !$_oscillating && $_osc_damp+0 >= 1.0) {
     $_stuck_move_mult=1.0 + 0.5*(($_g_rescue - 2.6)/0.4);
     $_stuck_move_mult=1.5 if($_stuck_move_mult+0 > 1.5);
    }
@@ -17047,7 +17072,8 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
       && $i+0 >= 3
       && defined($de) && $de+0 > $_effective_target_de+0
       && $_g_rescue > 2.6 && $gamma_effective+0 <= 3.5
-      && !$is_white_body) {
+      && !$is_white_body
+      && !$_oscillating && $_osc_damp+0 >= 1.0) {
     # Scale the ceiling up with how unresponsive the panel has proven to be.
     # gamma_effective 2.6 (mild weakness) -> ~1.33; 3.0 (very flat) -> ~1.5.
     # Hard cap at 1.5 so a stuck anchor can push harder but cannot run away.
@@ -17059,6 +17085,26 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
      log_line(sprintf("SDR26 1D DPG greyscale: %s stuck-anchor rescue i%d (gamma_eff=%.2f > 2.6, dE=%.3f > target): raising per-iter ceiling %.2f -> %.2f",
       $label,$i,$gamma_effective+0,$de+0,1.25,$_node_ceiling+0));
     }
+   }
+   # Oscillation guard: halve the per-iter move headroom (ceiling AND floor
+   # side) while the anchor keeps bouncing, and keep the reduced headroom for
+   # the anchor's remaining iterations. Halving only the ceiling would leave
+   # the pull-down swings at full amplitude and the bounce alive.
+   if(($_oscillating || $_osc_damp+0 < 1.0) && !$is_white_body) {
+    if($_oscillating) {
+     $_osc_damp*=0.5;
+     $_osc_damp=0.125 if($_osc_damp+0 < 0.125);
+     log_line(sprintf("SDR26 1D DPG greyscale: %s oscillation guard i%d (Y error sign alternated, flips=%d): halving per-iter move headroom to %.3f of ceiling %.2f / floor %.2f",
+      $label,$i,$_y_err_flips,$_osc_damp+0,$_node_ceiling+0,$floor+0));
+    }
+    my $_osc_ceiling=1.0+(($_node_ceiling+0)-1.0)*$_osc_damp;
+    $_osc_ceiling=1.02 if($_osc_ceiling+0 < 1.02);
+    $_node_ceiling=$_osc_ceiling if($_osc_ceiling+0 < $_node_ceiling+0);
+    my $_osc_floor=1.0-((1.0-($floor+0))*$_osc_damp);
+    $_osc_floor=$floor+0 if($_osc_floor+0 < $floor+0);
+    $sr=$_osc_floor if($sr+0 < $_osc_floor+0);
+    $sg=$_osc_floor if($sg+0 < $_osc_floor+0);
+    $sb=$_osc_floor if($sb+0 < $_osc_floor+0);
    }
    $sr=$_node_ceiling if($sr+0 > $_node_ceiling);
    $sg=$_node_ceiling if($sg+0 > $_node_ceiling);
