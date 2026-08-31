@@ -7960,11 +7960,15 @@ function meterColorRefMode(){
 // chart values). ColorChecker-family verification series only, SDR only;
 // PQ modes carry a fixed EOTF so the derivation would round-trip to the
 // absolute value anyway.
-const METER_COLORCHECKER_RELATIVE_Y_PRESETS=new Set(['classic-24','sg-96','sg-skin-19']);
+const METER_COLORCHECKER_RELATIVE_Y_PRESETS=new Set(['classic-24','sg-96','sg-skin-19','mb-hue-circle-37','mb-focal-8','mb-osa-ucs-64']);
+// Every colour series whose luminance targets are chart-absolute: Classic +
+// Primaries (30, server-built), Classic (24), SG, SG Skin Tones, and the
+// three MacLeod-Boynton series. HCFR GCD and the saturation sweeps already
+// derive their targets from the signal and are excluded.
+const METER_COLORCHECKER_RELATIVE_Y_POINTS=new Set([30,800024,800096,800019,800137,800008,800064]);
 function meterColorCheckerFamilySeries(points){
- const p=(points!=null)?points:(typeof meterActiveSeriesPoints!=='undefined'?meterActiveSeriesPoints:null);
- const s=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(p):null;
- return !!(s&&s.builtin_verification&&METER_COLORCHECKER_RELATIVE_Y_PRESETS.has(String(s.preset||'')));
+ const p=Math.round(Number((points!=null)?points:(typeof meterActiveSeriesPoints!=='undefined'?meterActiveSeriesPoints:NaN)));
+ return Number.isFinite(p)&&METER_COLORCHECKER_RELATIVE_Y_POINTS.has(p);
 }
 function meterColorCheckerRelativeYChecked(){
  const el=document.getElementById('meterColorCheckerRelativeY');
@@ -7989,6 +7993,27 @@ function meterColorCheckerEotfTargetYnFromCodes(r,g,b){
  const Y=gamut.rgbToXyz[1][0]*lin[0]+gamut.rgbToXyz[1][1]*lin[1]+gamut.rgbToXyz[1][2]*lin[2];
  return (Number.isFinite(Y)&&Y>=0)?Y:null;
 }
+// Derive or restore the luminance target on the series STEPS themselves so
+// thumbnails, the selected-patch detail panel, and readings stamped from the
+// canonical steps all print the same target. The built value is stashed per
+// step so unchecking restores the targets the series was built with.
+function meterApplyColorCheckerRelativeYToSteps(steps,points){
+ if(!Array.isArray(steps)||!steps.length) return steps;
+ if(!meterColorCheckerFamilySeries(points)) return steps;
+ const relative=meterColorCheckerRelativeYEnabled();
+ steps.forEach(st=>{
+  if(!st||st.r==null||st.g==null||st.b==null) return;
+  if(st.colorchecker_built_target_Yn==null&&st.target_Yn!=null) st.colorchecker_built_target_Yn=st.target_Yn;
+  if(relative){
+   const derived=meterColorCheckerEotfTargetYnFromCodes(st.r,st.g,st.b);
+   if(derived!=null) st.target_Yn=derived;
+  } else if(st.colorchecker_built_target_Yn!=null){
+   st.target_Yn=st.colorchecker_built_target_Yn;
+  }
+ });
+ return steps;
+}
+
 function meterSyncColorCheckerRelativeYVisibility(type,points){
  const wrap=document.getElementById('meterColorCheckerRelativeYWrap');
  if(!wrap) return;
@@ -8001,6 +8026,7 @@ function meterSyncColorCheckerRelativeYVisibility(type,points){
 function meterRegradeColorCheckerRelativeYTargets(){
  if(!meterColorCheckerRelativeYEnabled()) return;
  if(!meterColorCheckerFamilySeries()) return;
+ if(Array.isArray(meterSeriesSteps)) meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
  if(!Array.isArray(meterReadings)) return;
  meterReadings.forEach(rd=>{
   if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
@@ -8024,6 +8050,9 @@ function meterOnColorCheckerRelativeYChange(){
  // present before the first derivation is stashed so unchecking restores the
  // targets the series was built with.
  const relative=meterColorCheckerRelativeYEnabled();
+ if(meterColorCheckerFamilySeries()&&Array.isArray(meterSeriesSteps)){
+  meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
+ }
  if(meterColorCheckerFamilySeries()&&Array.isArray(meterReadings)){
   meterReadings.forEach(rd=>{
    if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
@@ -13209,6 +13238,7 @@ function meterRecoverSeries(s){
 	  steps=meterRecoveryDisplaySteps(type,points,steps);
 	  steps=meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 	 }
+ try{ if(type==='colors') meterApplyColorCheckerRelativeYToSteps(steps,points); }catch(e){}
  meterSeriesSteps=steps;
  if(!s.series_id&&Array.isArray(s.executed_steps)&&s.executed_steps.length){
   meterExecutedSeriesSteps=Object.freeze(s.executed_steps.map(step=>Object.freeze({...step})));
@@ -13555,6 +13585,7 @@ function meterInstallServerSeriesSteps(response,type,points,selectionRun){
  meterExecutedSeriesSteps=installed;
  meterExecutedSeriesId=response.series_id==null?null:String(response.series_id);
  if(!selectionRun){
+  try{ meterApplyColorCheckerRelativeYToSteps(installed); }catch(e){}
   meterSeriesSteps=installed;
   meterCanonicalStepCacheSource=null;
   meterCanonicalStepCache=null;
@@ -19405,13 +19436,16 @@ function meterBuildMbHueCircleSteps(){
 
 function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
- if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
+ const relativeYWrap=(steps)=>METER_COLORCHECKER_RELATIVE_Y_PRESETS.has(preset)
+  ?meterApplyColorCheckerRelativeYToSteps(steps,series&&series.id)
+  :steps;
+ if(preset==='classic-24') return relativeYWrap(meterBuildColorCheckerStepsJS(false));
  if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
- if(preset==='sg-96') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_NAMES,'colorchecker-sg-2014');
- if(preset==='sg-skin-19') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_SKIN_NAMES,'colorchecker-sg-skin-2014');
- if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
- if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
- if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
+ if(preset==='sg-96') return relativeYWrap(meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_NAMES,'colorchecker-sg-2014'));
+ if(preset==='sg-skin-19') return relativeYWrap(meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_SKIN_NAMES,'colorchecker-sg-skin-2014'));
+ if(preset==='mb-hue-circle-37') return relativeYWrap(meterBuildMbHueCircleSteps());
+ if(preset==='mb-focal-8') return relativeYWrap(meterBuildMbFocalColourSteps());
+ if(preset==='mb-osa-ucs-64') return relativeYWrap(meterBuildMbOsaUcsMapSteps());
  return [];
 }
 
