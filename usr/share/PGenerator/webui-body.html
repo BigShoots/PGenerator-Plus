@@ -1460,10 +1460,6 @@ __PG_LOGO_DARK__
       <label id="meterColorSeparateLumErrorWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="Split each color Delta E bar into its chroma-only portion and the added luminance-error portion.">
        <input type="checkbox" id="meterColorSeparateLumError" onchange="meterOnGreyRefChange()" style="vertical-align:middle"> Separate Luminance Error
       </label>
-      <label id="meterColorCheckerRelativeYWrap" style="font-size:.7rem;color:var(--text2);cursor:pointer;user-select:none;display:none" title="ColorChecker luminance targets follow the selected Target Gamma instead of the chart's fixed reflectance fractions.">
-       <input type="checkbox" id="meterColorCheckerRelativeY" onchange="meterOnColorCheckerRelativeYChange()" style="vertical-align:middle"> Relative Y
-       <span class="meter-help-tip" title="Off = the chart's absolute luminance targets: patch codes re-solve through the selected Target Gamma and each patch targets its fixed fraction of white. On = the patch codes are authored at the SDR gamma 2.2 convention and the luminance target is what those codes produce on a display following the selected Target Gamma, so the target Y updates the moment the Target Gamma changes. Chromaticity targets (x, y) stay on the chart values either way. SDR only; PQ modes carry a fixed EOTF. Measured series keep their emitted codes and re-grade against the new curve." aria-label="ColorChecker Relative Y help">?</span>
-      </label>
       <label id="meterColorDeltaEFormWrap" style="font-size:.7rem;color:var(--text2);user-select:none;display:flex;align-items:center;gap:4px;margin-left:auto" title="Changes the color and saturation-sweep ΔE calculation.">
        Color ΔE
        <select id="meterColorDeltaEForm" class="inline-select" onchange="meterOnGreyRefChange()">

@@ -7955,226 +7955,6 @@ function meterColorRefMode(){
  return meterColorIncludeLum() ? 'eotf' : 'absolute';
 }
 
-// ColorChecker "Relative Y": derive the luminance target from the emitted
-// patch codes through the selected Target Gamma (x,y targets stay on the
-// chart values). ColorChecker-family verification series only, SDR only;
-// PQ modes carry a fixed EOTF so the derivation would round-trip to the
-// absolute value anyway.
-const METER_COLORCHECKER_RELATIVE_Y_PRESETS=new Set(['classic-24','sg-96','sg-skin-19','mb-hue-circle-37','mb-focal-8','mb-osa-ucs-64']);
-// Every colour series whose luminance targets are chart-absolute: Classic +
-// Primaries (30, server-built), Classic (24), SG, SG Skin Tones, and the
-// three MacLeod-Boynton series. HCFR GCD and the saturation sweeps already
-// derive their targets from the signal and are excluded.
-const METER_COLORCHECKER_RELATIVE_Y_POINTS=new Set([30,800024,800096,800019,800137,800008,800064]);
-function meterColorCheckerFamilySeries(points){
- const p=Math.round(Number((points!=null)?points:(typeof meterActiveSeriesPoints!=='undefined'?meterActiveSeriesPoints:NaN)));
- return Number.isFinite(p)&&METER_COLORCHECKER_RELATIVE_Y_POINTS.has(p);
-}
-function meterColorCheckerRelativeYChecked(){
- const el=document.getElementById('meterColorCheckerRelativeY');
- return !!(el&&el.checked);
-}
-function meterColorCheckerRelativeYEnabled(){
- if(!meterColorCheckerRelativeYChecked()) return false;
- const fn=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode:((typeof meterChartSignalMode==='function')?meterChartSignalMode:null);
- return String((fn?fn():'sdr')||'sdr').toLowerCase()==='sdr';
-}
-// The display's black fraction (black/white) for the black-aware BT.1886
-// derivation. Manual Target Black/White win; otherwise the measured Black and
-// White readings of the loaded series; otherwise 0 (pure curve).
-function meterColorCheckerRelativeYBlackFraction(){
- try{
-  const w=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
-  const b=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
-  let whiteY=(w&&!w.useMeasured&&Number(w.value)>0)?Number(w.value):null;
-  let blackY=(b&&!b.useMeasured&&Number(b.value)>=0)?Number(b.value):null;
-  if((whiteY==null||blackY==null)&&Array.isArray(meterReadings)){
-   const byName=name=>meterReadings.find(rd=>rd&&String(rd.name||'').toLowerCase()===name&&Number(rd.Y!=null?rd.Y:rd.luminance)>=0);
-   if(whiteY==null){
-    const rw=byName('white');
-    const y=rw?Number(rw.Y!=null?rw.Y:rw.luminance):NaN;
-    if(Number.isFinite(y)&&y>0) whiteY=y;
-   }
-   if(blackY==null){
-    const rb=byName('black');
-    const y=rb?Number(rb.Y!=null?rb.Y:rb.luminance):NaN;
-    if(Number.isFinite(y)&&y>=0) blackY=y;
-   }
-  }
-  if(!(whiteY>0)||!(blackY>0)) return 0;
-  const frac=blackY/whiteY;
-  return (Number.isFinite(frac)&&frac>0)?Math.min(frac,0.1):0;
- }catch(e){ return 0; }
-}
-// With Relative Y on, freshly built family patches are AUTHORED at the SDR
-// 2.2 convention (the HCFR/Calman pattern-level convention) instead of
-// re-solving through the Target Gamma dropdown. The dropdown then only moves
-// the derived luminance target, never the emitted codes, so target and
-// stimulus always describe the same patch: a display following the selected
-// transfer measures exactly the target.
-function meterColorCheckerFrozenSdrEncode(linear){
- const min=meterChromaPatchRangeMin();
- const span=meterChromaPatchRangeSpan();
- const c=Math.max(0,Math.min(1,linear||0));
- return Math.round(min+Math.pow(c,1/2.2)*span);
-}
-function meterColorCheckerEotfTargetYnFromCodes(r,g,b,inputMax){
- const min=meterChromaPatchRangeMin();
- const span=meterChromaPatchRangeSpan();
- if(!(span>0)) return null;
- // Readings can carry codes in a different bit domain than the current patch
- // range (an 8-bit measured series on a 10-bit transport); rescale into the
- // current domain before normalizing.
- const currentMax=(typeof meterPatchInputMax==='function')?Number(meterPatchInputMax()):255;
- const sourceMax=Number(inputMax);
- const codeScale=(Number.isFinite(sourceMax)&&sourceMax>0&&Number.isFinite(currentMax)&&currentMax>0&&sourceMax!==currentMax)
-  ?(currentMax/sourceMax):1;
- const gamut=(typeof meterAnalysisGamut==='function')?meterAnalysisGamut():GAMUT_PRESETS.bt709;
- // Relative Y is defined by the OPERATOR'S Target Gamma dropdown, never by a
- // pinned series chart context: the whole point is that the dropdown moves
- // the target. bt1886 uses the greyscale 1d_ab curve with the display's
- // black; sRGB uses the IEC EOTF; numeric selections are plain powers.
- const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'bt1886').toLowerCase();
- const blackFrac=(sel==='bt1886'&&typeof bt1886Luminance1dAb==='function')?meterColorCheckerRelativeYBlackFraction():0;
- const decode=signal=>{
-  if(sel==='srgb') return signal<=0.04045?signal/12.92:Math.pow((signal+0.055)/1.055,2.4);
-  if(sel==='bt1886'){
-   if(blackFrac>0&&typeof bt1886Luminance1dAb==='function'){
-    const lifted=bt1886Luminance1dAb(signal,1,blackFrac);
-    if(lifted!=null&&Number.isFinite(lifted)) return Math.max(0,lifted);
-   }
-   return Math.pow(signal,2.4);
-  }
-  const g=parseFloat(sel);
-  return Math.pow(signal,(Number.isFinite(g)&&g>0)?g:2.2);
- };
- const lin=[r,g,b].map(code=>{
-  let signal=((Number(code)*codeScale)-min)/span;
-  if(!Number.isFinite(signal)) signal=0;
-  signal=Math.max(0,Math.min(1,signal));
-  return Math.max(0,decode(signal));
- });
- const Y=gamut.rgbToXyz[1][0]*lin[0]+gamut.rgbToXyz[1][1]*lin[1]+gamut.rgbToXyz[1][2]*lin[2];
- return (Number.isFinite(Y)&&Y>=0)?Y:null;
-}
-// Readings stamp their emitted codes as r_code/g_code/b_code (the bare r/g/b
-// on a reading are step percentages, not codes).
-function meterColorCheckerReadingCodes(rd){
- if(!rd) return null;
- const r=(rd.r_code!=null)?rd.r_code:rd.r;
- const g=(rd.g_code!=null)?rd.g_code:rd.g;
- const b=(rd.b_code!=null)?rd.b_code:rd.b;
- if(r==null||g==null||b==null) return null;
- return {r:Number(r),g:Number(g),b:Number(b),input_max:rd.input_max};
-}
-// Derive or restore the luminance target on the series STEPS themselves so
-// thumbnails, the selected-patch detail panel, and readings stamped from the
-// canonical steps all print the same target. The built value is stashed per
-// step so unchecking restores the targets the series was built with.
-function meterApplyColorCheckerRelativeYToSteps(steps,points){
- if(!Array.isArray(steps)||!steps.length) return steps;
- if(!meterColorCheckerFamilySeries(points)) return steps;
- const relative=meterColorCheckerRelativeYEnabled();
- steps.forEach(st=>{
-  if(!st||st.r==null||st.g==null||st.b==null) return;
-  if(st.colorchecker_built_target_Yn==null&&st.target_Yn!=null) st.colorchecker_built_target_Yn=st.target_Yn;
-  if(relative){
-   const derived=meterColorCheckerEotfTargetYnFromCodes(st.r,st.g,st.b);
-   if(derived!=null) st.target_Yn=derived;
-  } else if(st.colorchecker_built_target_Yn!=null){
-   st.target_Yn=st.colorchecker_built_target_Yn;
-  }
- });
- return steps;
-}
-
-function meterSyncColorCheckerRelativeYVisibility(type,points){
- const wrap=document.getElementById('meterColorCheckerRelativeYWrap');
- if(!wrap) return;
- const t=String(type!=null?type:(typeof meterActiveSeriesType!=='undefined'?meterActiveSeriesType:''));
- wrap.style.display=(t==='colors'&&meterColorCheckerFamilySeries(points))?'':'none';
-}
-// Re-derive relative-Y ColorChecker targets from each reading's emitted
-// codes through the currently selected Target Gamma. No-op unless the
-// checkbox is on and a ColorChecker-family series is active.
-function meterRegradeColorCheckerRelativeYTargets(){
- if(!meterColorCheckerRelativeYEnabled()) return;
- if(!meterColorCheckerFamilySeries()) return;
- if(Array.isArray(meterSeriesSteps)) meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
- if(!Array.isArray(meterReadings)) return;
- meterReadings.forEach(rd=>{
-  const codes=meterColorCheckerReadingCodes(rd);
-  if(!codes) return;
-  if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
-  const derived=meterColorCheckerEotfTargetYnFromCodes(codes.r,codes.g,codes.b,codes.input_max);
-  if(derived==null) return;
-  rd.target_Yn=derived;
-  delete rd._dE_cache_key;
-  delete rd._dE_raw;
-  delete rd._dE_lc;
-  if('target_X' in rd) rd.target_X=undefined;
-  if('target_Y' in rd) rd.target_Y=undefined;
-  if('target_Z' in rd) rd.target_Z=undefined;
- });
-}
-
-function meterOnColorCheckerRelativeYChange(){
- try{ meterSaveColorPrefs(); }catch(e){}
- // Re-stamp targets on the loaded readings so an already-measured series
- // re-scores immediately, mirroring the include-luminance toggle. The value
- // present before the first derivation is stashed so unchecking restores the
- // targets the series was built with.
- const relative=meterColorCheckerRelativeYEnabled();
- if(meterColorCheckerFamilySeries()&&Array.isArray(meterSeriesSteps)){
-  // Client-built presets change code conventions with the toggle (frozen 2.2
-  // authoring vs dropdown re-solve), so rebuild and merge by patch name.
-  // Server-built and measured series keep their emitted codes as history.
-  try{
-   const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
-   if(series&&series.builtin_verification){
-    const fresh=meterBuildBuiltinColorCheckerSteps(series);
-    if(Array.isArray(fresh)&&fresh.length){
-     const byName=new Map(fresh.map(st=>[String(st&&st.name||''),st]));
-     meterSeriesSteps.forEach(st=>{
-      const src=st?byName.get(String(st.name||'')):null;
-      if(!src) return;
-      st.r=src.r; st.g=src.g; st.b=src.b;
-      st.target_x=src.target_x; st.target_y=src.target_y;
-      st.target_Yn=src.target_Yn;
-      if(src.colorchecker_built_target_Yn!=null) st.colorchecker_built_target_Yn=src.colorchecker_built_target_Yn;
-      else delete st.colorchecker_built_target_Yn;
-     });
-    }
-   }
-  }catch(e){}
-  meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
- }
- if(meterColorCheckerFamilySeries()&&Array.isArray(meterReadings)){
-  meterReadings.forEach(rd=>{
-   const codes=meterColorCheckerReadingCodes(rd);
-   if(!codes) return;
-   if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
-   if(relative){
-    const derived=meterColorCheckerEotfTargetYnFromCodes(codes.r,codes.g,codes.b,codes.input_max);
-    if(derived!=null) rd.target_Yn=derived;
-   } else if(rd.colorchecker_built_target_Yn!=null){
-    rd.target_Yn=rd.colorchecker_built_target_Yn;
-   }
-   delete rd._dE_cache_key;
-   delete rd._dE_raw;
-   delete rd._dE_lc;
-   if('target_X' in rd) rd.target_X=undefined;
-   if('target_Y' in rd) rd.target_Y=undefined;
-   if('target_Z' in rd) rd.target_Z=undefined;
-  });
- }
- try{
-  const c=document.getElementById('chartCIE');
-  if(c){ const w=c.width,h=c.height; c.width=w; c.height=h; }
- }catch(e){}
- meterOnGreyRefChange();
-}
-
 function meterReadingLuminanceNits(reading){
  if(!reading) return null;
  meterNormalizeMeasuredReading(reading);
@@ -8810,18 +8590,12 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
-	   const code=meterColorCheckerRelativeYEnabled()
-	    ?meterColorCheckerFrozenSdrEncode(src.gray)
-	    :meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
+	   const code=meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
 	   let targetYn=src.gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
-	   }
-	   if(meterColorCheckerRelativeYEnabled()){
-	    const derived=meterColorCheckerEotfTargetYnFromCodes(code,code,code);
-	    if(derived!=null) targetYn=derived;
 	   }
 	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
 	    ...neutralRebaseMeta(src.gray)});
@@ -8850,10 +8624,9 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
   gl=Math.max(0,gl);
   bl=Math.max(0,bl);
 	  const colorRef=absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined;
-	  const freezeCodes=meterColorCheckerRelativeYEnabled();
-	  const rCode=freezeCodes?meterColorCheckerFrozenSdrEncode(rl):meterEncodeColorCheckerLinear(rl,colorRef);
-	  const gCode=freezeCodes?meterColorCheckerFrozenSdrEncode(gl):meterEncodeColorCheckerLinear(gl,colorRef);
-	  const bCode=freezeCodes?meterColorCheckerFrozenSdrEncode(bl):meterEncodeColorCheckerLinear(bl,colorRef);
+	  const rCode=meterEncodeColorCheckerLinear(rl,colorRef);
+	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
+	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
 	  const scaledYn=adaptedYn*stimulusScale;
 	  let targetYn=absoluteHdrColorChecker?(scaledYn*hdrColorCheckerRefNits/seriesWhite):scaledYn;
 	  if(meterChartIsDv()&&!dvAbsolute){
@@ -8871,10 +8644,6 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
      targetGamut.rgbToXyz[1][1]*gLin+
      targetGamut.rgbToXyz[1][2]*bLin;
     if(!(targetYn>=0)) targetYn=0;
-  }
-  if(meterColorCheckerRelativeYEnabled()){
-   const derived=meterColorCheckerEotfTargetYnFromCodes(rCode,gCode,bCode);
-   if(derived!=null) targetYn=derived;
   }
   steps.push({
    ire:Math.round(adaptedYn*100),
@@ -11735,7 +11504,6 @@ function meterSaveColorPrefs(){
    color_de_form: v('meterColorDeltaEForm'),
   color_incl_lum:cb('meterColorIncludeLumError'),
   color_sep_lum: cb('meterColorSeparateLumError'),
-  cc_relative_y: cb('meterColorCheckerRelativeY'),
    sep_lum:       cb('meterSeparateLumError'),
    target_gamma:  v('meterTargetGamma'),
     hdr_bt2390:    cb('meterHdrApplyBT2390'),
@@ -11788,7 +11556,6 @@ function meterLoadColorPrefs(){
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
   setChk('meterColorSeparateLumError', p.color_sep_lum);
-  setChk('meterColorCheckerRelativeY', p.cc_relative_y);
   meterUpdateColorSeparateLumVisibility();
     setChk('meterSeparateLumError', greyMode==='eotf' ? p.sep_lum : '0');
     meterUpdateSeparateLumVisibility();
@@ -13343,7 +13110,6 @@ function meterRecoverSeries(s){
 	  steps=meterRecoveryDisplaySteps(type,points,steps);
 	  steps=meterApplyColorSeriesTargetWhiteReference(steps,type,points);
 	 }
- try{ if(type==='colors') meterApplyColorCheckerRelativeYToSteps(steps,points); }catch(e){}
  meterSeriesSteps=steps;
  if(!s.series_id&&Array.isArray(s.executed_steps)&&s.executed_steps.length){
   meterExecutedSeriesSteps=Object.freeze(s.executed_steps.map(step=>Object.freeze({...step})));
@@ -13690,7 +13456,6 @@ function meterInstallServerSeriesSteps(response,type,points,selectionRun){
  meterExecutedSeriesSteps=installed;
  meterExecutedSeriesId=response.series_id==null?null:String(response.series_id);
  if(!selectionRun){
-  try{ meterApplyColorCheckerRelativeYToSteps(installed); }catch(e){}
   meterSeriesSteps=installed;
   meterCanonicalStepCacheSource=null;
   meterCanonicalStepCache=null;
@@ -19278,14 +19043,8 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   const xyz=meterColorCheckerLabD50ToD65Xyz(lab);
   if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
-  const codes=solved.rgb.map(v=>meterColorCheckerRelativeYEnabled()
-   ?meterColorCheckerFrozenSdrEncode(v)
-   :meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
-  let targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
-  if(meterColorCheckerRelativeYEnabled()){
-   const derived=meterColorCheckerEotfTargetYnFromCodes(codes[0],codes[1],codes[2]);
-   if(derived!=null) targetYn=derived;
-  }
+  const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
+  const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
   return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
    target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
    series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};
@@ -19407,9 +19166,7 @@ function meterBuildMbFocalColourSteps(){
   const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
   const sum=xyz.X+xyz.Y+xyz.Z;
   return {ire:Math.round(xyz.Y*100),
-   r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[0]):meterEncodeColorCheckerLinear(fit.rgb[0]),
-   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[1]):meterEncodeColorCheckerLinear(fit.rgb[1]),
-   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[2]):meterEncodeColorCheckerLinear(fit.rgb[2]),
+   r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
    name:'MB Focal '+entry.name+(fit.outOfGamut?' (out of gamut)':''),
    target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
    input_max:inputMax,series_mode:'mb-focal-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
@@ -19515,9 +19272,7 @@ function meterBuildMbOsaUcsMapSteps(){
    const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
    const sum=xyz.X+xyz.Y+xyz.Z;
    steps.push({ire:Math.round(xyz.Y*100),
-    r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[0]):meterEncodeColorCheckerLinear(fit.rgb[0]),
-   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[1]):meterEncodeColorCheckerLinear(fit.rgb[1]),
-   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[2]):meterEncodeColorCheckerLinear(fit.rgb[2]),
+    r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
     name:'1a '+name+' '+(n+1)+(fit.outOfGamut?' (out of gamut)':''),
     target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
     input_max:inputMax,series_mode:'mb-osa-ucs-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_region:name,
@@ -19568,10 +19323,7 @@ function meterBuildMbHueCircleSteps(){
  }));
  const makeStep=(name,rgb,angle)=>{
   const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z,mb=displayFor(rgb);
-  return {ire:Math.round(xyz.Y*100),
-   r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[0]):meterEncodeColorCheckerLinear(rgb[0]),
-   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[1]):meterEncodeColorCheckerLinear(rgb[1]),
-   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[2]):meterEncodeColorCheckerLinear(rgb[2]),
+  return {ire:Math.round(xyz.Y*100),r:meterEncodeColorCheckerLinear(rgb[0]),g:meterEncodeColorCheckerLinear(rgb[1]),b:meterEncodeColorCheckerLinear(rgb[2]),
    name:name,target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,input_max:inputMax,
    series_mode:'mb-hue-circle-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
    mb_hue_angle:angle,mb_target_l:mb.x,mb_target_s:mb.y,mb_target_lm:mb.lm};
@@ -19583,16 +19335,13 @@ function meterBuildMbHueCircleSteps(){
 
 function meterBuildBuiltinColorCheckerSteps(series){
  const preset=String((series&&series.preset)||'');
- const relativeYWrap=(steps)=>METER_COLORCHECKER_RELATIVE_Y_PRESETS.has(preset)
-  ?meterApplyColorCheckerRelativeYToSteps(steps,series&&series.id)
-  :steps;
- if(preset==='classic-24') return relativeYWrap(meterBuildColorCheckerStepsJS(false));
+ if(preset==='classic-24') return meterBuildColorCheckerStepsJS(false);
  if(preset==='hcfr-gcd-24') return meterBuildHcfrColorCheckerStepsJS(false);
- if(preset==='sg-96') return relativeYWrap(meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_NAMES,'colorchecker-sg-2014'));
- if(preset==='sg-skin-19') return relativeYWrap(meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_SKIN_NAMES,'colorchecker-sg-skin-2014'));
- if(preset==='mb-hue-circle-37') return relativeYWrap(meterBuildMbHueCircleSteps());
- if(preset==='mb-focal-8') return relativeYWrap(meterBuildMbFocalColourSteps());
- if(preset==='mb-osa-ucs-64') return relativeYWrap(meterBuildMbOsaUcsMapSteps());
+ if(preset==='sg-96') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_NAMES,'colorchecker-sg-2014');
+ if(preset==='sg-skin-19') return meterBuildXriteSgColorSteps(METER_COLORCHECKER_SG_SKIN_NAMES,'colorchecker-sg-skin-2014');
+ if(preset==='mb-hue-circle-37') return meterBuildMbHueCircleSteps();
+ if(preset==='mb-focal-8') return meterBuildMbFocalColourSteps();
+ if(preset==='mb-osa-ucs-64') return meterBuildMbOsaUcsMapSteps();
  return [];
 }
 

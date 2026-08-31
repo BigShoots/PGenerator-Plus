@@ -2852,7 +2852,6 @@ async function meterSelectSeries(type,points,opts){
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterSyncOpponentChartAvailability(type,points);
- try{ if(typeof meterSyncColorCheckerRelativeYVisibility==='function') meterSyncColorCheckerRelativeYVisibility(type,points); }catch(e){}
  meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
@@ -21525,13 +21524,6 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
   meterLastChartCount=0;
   meterRegradeActiveSeriesTargets();
  }
- // ColorChecker Relative Y: the series carries its emitted codes as physical
- // history, so a Target Gamma change re-derives the luminance targets from
- // those codes through the new transfer. This applies to the STEPS as well as
- // any readings, so it must run even before the first measurement exists.
- try{
-  if(typeof meterRegradeColorCheckerRelativeYTargets==='function') meterRegradeColorCheckerRelativeYTargets();
- }catch(e){}
  // Trigger the chart redraw. If the refresh function would early-return
  // (autocal running, series in progress, no active series), fall through
  // to a manual drawAllCharts on the regraded readings so the change is
