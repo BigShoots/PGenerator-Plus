@@ -7979,15 +7979,53 @@ function meterColorCheckerRelativeYEnabled(){
  const fn=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode:((typeof meterChartSignalMode==='function')?meterChartSignalMode:null);
  return String((fn?fn():'sdr')||'sdr').toLowerCase()==='sdr';
 }
+// The display's black fraction (black/white) for the black-aware BT.1886
+// derivation. Manual Target Black/White win; otherwise the measured Black and
+// White readings of the loaded series; otherwise 0 (pure curve).
+function meterColorCheckerRelativeYBlackFraction(){
+ try{
+  const w=(typeof meterTargetWhiteLevel==='function')?meterTargetWhiteLevel():null;
+  const b=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
+  let whiteY=(w&&!w.useMeasured&&Number(w.value)>0)?Number(w.value):null;
+  let blackY=(b&&!b.useMeasured&&Number(b.value)>=0)?Number(b.value):null;
+  if((whiteY==null||blackY==null)&&Array.isArray(meterReadings)){
+   const byName=name=>meterReadings.find(rd=>rd&&String(rd.name||'').toLowerCase()===name&&Number(rd.Y!=null?rd.Y:rd.luminance)>=0);
+   if(whiteY==null){
+    const rw=byName('white');
+    const y=rw?Number(rw.Y!=null?rw.Y:rw.luminance):NaN;
+    if(Number.isFinite(y)&&y>0) whiteY=y;
+   }
+   if(blackY==null){
+    const rb=byName('black');
+    const y=rb?Number(rb.Y!=null?rb.Y:rb.luminance):NaN;
+    if(Number.isFinite(y)&&y>=0) blackY=y;
+   }
+  }
+  if(!(whiteY>0)||!(blackY>0)) return 0;
+  const frac=blackY/whiteY;
+  return (Number.isFinite(frac)&&frac>0)?Math.min(frac,0.1):0;
+ }catch(e){ return 0; }
+}
 function meterColorCheckerEotfTargetYnFromCodes(r,g,b){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  if(!(span>0)) return null;
  const gamut=(typeof meterAnalysisGamut==='function')?meterAnalysisGamut():GAMUT_PRESETS.bt709;
+ // The greyscale series grades BT.1886 with the display's black (the 1d_ab
+ // policy). Deriving the colour targets through the same black-aware curve is
+ // the point of Relative Y: with a real black the dark-patch targets lift the
+ // same way the greyscale targets do. Pure power/sRGB selections round-trip
+ // the encode, matching the absolute targets by construction.
+ const sel=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||''):'';
+ const blackFrac=(sel==='bt1886'&&typeof bt1886Luminance1dAb==='function')?meterColorCheckerRelativeYBlackFraction():0;
  const lin=[r,g,b].map(code=>{
   let signal=(Number(code)-min)/span;
   if(!Number.isFinite(signal)) signal=0;
   signal=Math.max(0,Math.min(1,signal));
+  if(blackFrac>0){
+   const lifted=bt1886Luminance1dAb(signal,1,blackFrac);
+   if(lifted!=null&&Number.isFinite(lifted)) return Math.max(0,lifted);
+  }
   return Math.max(0,meterDecodeColorCheckerSignal(signal));
  });
  const Y=gamut.rgbToXyz[1][0]*lin[0]+gamut.rgbToXyz[1][1]*lin[1]+gamut.rgbToXyz[1][2]*lin[2];
