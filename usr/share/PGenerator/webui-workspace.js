@@ -21526,6 +21526,12 @@ document.getElementById('meterTargetGamma').addEventListener('change',()=>{
   meterLastChartSignature='';
   meterLastChartCount=0;
   meterRegradeActiveSeriesTargets();
+  // ColorChecker Relative Y: a measured series carries its emitted codes as
+  // physical history, so a later Target Gamma change re-derives the
+  // luminance targets from those codes through the new transfer.
+  try{
+   if(typeof meterRegradeColorCheckerRelativeYTargets==='function') meterRegradeColorCheckerRelativeYTargets();
+  }catch(e){}
  }
  // Trigger the chart redraw. If the refresh function would early-return
  // (autocal running, series in progress, no active series), fall through

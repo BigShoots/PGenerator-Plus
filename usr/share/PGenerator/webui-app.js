@@ -7995,6 +7995,28 @@ function meterSyncColorCheckerRelativeYVisibility(type,points){
  const t=String(type!=null?type:(typeof meterActiveSeriesType!=='undefined'?meterActiveSeriesType:''));
  wrap.style.display=(t==='colors'&&meterColorCheckerFamilySeries(points))?'':'none';
 }
+// Re-derive relative-Y ColorChecker targets from each reading's emitted
+// codes through the currently selected Target Gamma. No-op unless the
+// checkbox is on and a ColorChecker-family series is active.
+function meterRegradeColorCheckerRelativeYTargets(){
+ if(!meterColorCheckerRelativeYEnabled()) return;
+ if(!meterColorCheckerFamilySeries()) return;
+ if(!Array.isArray(meterReadings)) return;
+ meterReadings.forEach(rd=>{
+  if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
+  if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
+  const derived=meterColorCheckerEotfTargetYnFromCodes(rd.r,rd.g,rd.b);
+  if(derived==null) return;
+  rd.target_Yn=derived;
+  delete rd._dE_cache_key;
+  delete rd._dE_raw;
+  delete rd._dE_lc;
+  if('target_X' in rd) rd.target_X=undefined;
+  if('target_Y' in rd) rd.target_Y=undefined;
+  if('target_Z' in rd) rd.target_Z=undefined;
+ });
+}
+
 function meterOnColorCheckerRelativeYChange(){
  try{ meterSaveColorPrefs(); }catch(e){}
  // Re-stamp targets on the loaded readings so an already-measured series
