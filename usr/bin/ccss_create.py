@@ -19,6 +19,11 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MENU_RE = re.compile(r"Press\s+1\s*\.\.\s*\d+", re.I)
 CONTINUE_RE = re.compile(r"(press|hit).*(any )?key|press return|key to continue", re.I)
 ERROR_RE = re.compile(r"(no instrument|no device|instrument.*not connected|communications failure|initialisation failed|can't open|failed)", re.I)
+# ccxxmake could not open the instrument and dropped straight back to its menu
+# ("Try selecting it again ?"). Nothing else in the menu handler re-issues the
+# measure key for a pass that already sent it, so this has to be recognised or
+# the run sits at the menu forever with no error.
+OPEN_FAIL_RE = re.compile(r"opening the instrument failed", re.I)
 # Prompts that require the user to physically position the instrument. These
 # must NOT be auto-dismissed: the i1 Pro is calibrated on its white tile and
 # then aimed at the screen, and the user's button press satisfies the prompt.
@@ -223,6 +228,12 @@ class Runner:
         return self.child.poll()
 
     def handle_line(self, line):
+        # Once a terminal state has been published the run is over. Later output
+        # still sitting in the read buffer must not overwrite it with a stale
+        # "running" message, or the operator sees the run apparently continue
+        # after it has already been given up on.
+        if self.cancel_requested:
+            return
         text = line.strip()
         if not text:
             return
@@ -241,6 +252,35 @@ class Runner:
         # the CURRENT line (not the rolling buffer) so a stale failure isn't
         # re-counted, and the counter is reset on any real prompt (progress).
         tl = text.lower()
+        # A failed open leaves ccxxmake parked at the menu. Re-arm the current
+        # pass so the menu handler issues its measure key again, and give up
+        # with an actionable message once the retries are spent. Checked before
+        # the access-fail counter below because ccxxmake embeds the driver error
+        # ("Instrument Access Failed") in this same line.
+        if OPEN_FAIL_RE.search(tl):
+            role_name = "target colorimeter" if self.current_role == "target" else "reference meter"
+            self.open_fail_count = getattr(self, "open_fail_count", 0) + 1
+            if self.open_fail_count > 2:
+                self.write_state(
+                    "error",
+                    "Could not open the %s. Make sure it is still connected and no other measurement is running, then try again." % role_name,
+                )
+                self.cancel_requested = True
+                try:
+                    if self.child and self.child.poll() is None:
+                        self.child.terminate()
+                except Exception:
+                    pass
+                return
+            if self.current_role == "target":
+                self.target_measure_sent = False
+                self.target_measure_accepted = False
+            else:
+                self.measure_sent = False
+            self.positioned = False
+            self.recent = ""
+            self.write_state("running", "Retrying the %s. Keep it connected and in position." % role_name)
+            return
         if "instrument access failed" in tl or "claiming usb port" in tl:
             self.access_fail_count = getattr(self, "access_fail_count", 0) + 1
             if self.access_fail_count >= 4:
@@ -333,6 +373,8 @@ class Runner:
             self.write_state("running", "Computing and saving the %s profile" % self.profile_type(), detail=text)
 
     def maybe_advance_menu(self, window):
+        if self.cancel_requested:
+            return
         if self.args.format == "ccmx" and self.switch_sent and not self.target_choice_sent:
             if re.search(r"Select device\s+1\s*-\s*\d+", window, re.I):
                 target = re.sub(r"[^0-9]", "", str(self.args.target_comport or ""))
