@@ -7955,6 +7955,78 @@ function meterColorRefMode(){
  return meterColorIncludeLum() ? 'eotf' : 'absolute';
 }
 
+// ColorChecker "Relative Y": derive the luminance target from the emitted
+// patch codes through the selected Target Gamma (x,y targets stay on the
+// chart values). ColorChecker-family verification series only, SDR only;
+// PQ modes carry a fixed EOTF so the derivation would round-trip to the
+// absolute value anyway.
+const METER_COLORCHECKER_RELATIVE_Y_PRESETS=new Set(['classic-24','sg-96','sg-skin-19']);
+function meterColorCheckerFamilySeries(points){
+ const p=(points!=null)?points:(typeof meterActiveSeriesPoints!=='undefined'?meterActiveSeriesPoints:null);
+ const s=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(p):null;
+ return !!(s&&s.builtin_verification&&METER_COLORCHECKER_RELATIVE_Y_PRESETS.has(String(s.preset||'')));
+}
+function meterColorCheckerRelativeYChecked(){
+ const el=document.getElementById('meterColorCheckerRelativeY');
+ return !!(el&&el.checked);
+}
+function meterColorCheckerRelativeYEnabled(){
+ if(!meterColorCheckerRelativeYChecked()) return false;
+ const fn=(typeof meterActiveChartSignalMode==='function')?meterActiveChartSignalMode:((typeof meterChartSignalMode==='function')?meterChartSignalMode:null);
+ return String((fn?fn():'sdr')||'sdr').toLowerCase()==='sdr';
+}
+function meterColorCheckerEotfTargetYnFromCodes(r,g,b){
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
+ if(!(span>0)) return null;
+ const gamut=(typeof meterAnalysisGamut==='function')?meterAnalysisGamut():GAMUT_PRESETS.bt709;
+ const lin=[r,g,b].map(code=>{
+  let signal=(Number(code)-min)/span;
+  if(!Number.isFinite(signal)) signal=0;
+  signal=Math.max(0,Math.min(1,signal));
+  return Math.max(0,meterDecodeColorCheckerSignal(signal));
+ });
+ const Y=gamut.rgbToXyz[1][0]*lin[0]+gamut.rgbToXyz[1][1]*lin[1]+gamut.rgbToXyz[1][2]*lin[2];
+ return (Number.isFinite(Y)&&Y>=0)?Y:null;
+}
+function meterSyncColorCheckerRelativeYVisibility(type,points){
+ const wrap=document.getElementById('meterColorCheckerRelativeYWrap');
+ if(!wrap) return;
+ const t=String(type!=null?type:(typeof meterActiveSeriesType!=='undefined'?meterActiveSeriesType:''));
+ wrap.style.display=(t==='colors'&&meterColorCheckerFamilySeries(points))?'':'none';
+}
+function meterOnColorCheckerRelativeYChange(){
+ try{ meterSaveColorPrefs(); }catch(e){}
+ // Re-stamp targets on the loaded readings so an already-measured series
+ // re-scores immediately, mirroring the include-luminance toggle. The value
+ // present before the first derivation is stashed so unchecking restores the
+ // targets the series was built with.
+ const relative=meterColorCheckerRelativeYEnabled();
+ if(meterColorCheckerFamilySeries()&&Array.isArray(meterReadings)){
+  meterReadings.forEach(rd=>{
+   if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
+   if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
+   if(relative){
+    const derived=meterColorCheckerEotfTargetYnFromCodes(rd.r,rd.g,rd.b);
+    if(derived!=null) rd.target_Yn=derived;
+   } else if(rd.colorchecker_built_target_Yn!=null){
+    rd.target_Yn=rd.colorchecker_built_target_Yn;
+   }
+   delete rd._dE_cache_key;
+   delete rd._dE_raw;
+   delete rd._dE_lc;
+   if('target_X' in rd) rd.target_X=undefined;
+   if('target_Y' in rd) rd.target_Y=undefined;
+   if('target_Z' in rd) rd.target_Z=undefined;
+  });
+ }
+ try{
+  const c=document.getElementById('chartCIE');
+  if(c){ const w=c.width,h=c.height; c.width=w; c.height=h; }
+ }catch(e){}
+ meterOnGreyRefChange();
+}
+
 function meterReadingLuminanceNits(reading){
  if(!reading) return null;
  meterNormalizeMeasuredReading(reading);
@@ -8597,6 +8669,10 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	    const signal=span>0?(code-meterChromaPatchRangeMin())/span:0;
 	    targetYn=Math.max(0,meterDecodeColorCheckerSignal(signal));
 	   }
+	   if(meterColorCheckerRelativeYEnabled()){
+	    const derived=meterColorCheckerEotfTargetYnFromCodes(code,code,code);
+	    if(derived!=null) targetYn=derived;
+	   }
 	   steps.push({ire:ire,r:code,g:code,b:code,name:src.name,target_x:wp.x,target_y:wp.y,target_Yn:targetYn,input_max:inputMax,
 	    ...neutralRebaseMeta(src.gray)});
 	   return;
@@ -8644,6 +8720,10 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
      targetGamut.rgbToXyz[1][1]*gLin+
      targetGamut.rgbToXyz[1][2]*bLin;
     if(!(targetYn>=0)) targetYn=0;
+  }
+  if(meterColorCheckerRelativeYEnabled()){
+   const derived=meterColorCheckerEotfTargetYnFromCodes(rCode,gCode,bCode);
+   if(derived!=null) targetYn=derived;
   }
   steps.push({
    ire:Math.round(adaptedYn*100),
@@ -11504,6 +11584,7 @@ function meterSaveColorPrefs(){
    color_de_form: v('meterColorDeltaEForm'),
   color_incl_lum:cb('meterColorIncludeLumError'),
   color_sep_lum: cb('meterColorSeparateLumError'),
+  cc_relative_y: cb('meterColorCheckerRelativeY'),
    sep_lum:       cb('meterSeparateLumError'),
    target_gamma:  v('meterTargetGamma'),
     hdr_bt2390:    cb('meterHdrApplyBT2390'),
@@ -11556,6 +11637,7 @@ function meterLoadColorPrefs(){
   setVal('meterColorDeltaEForm', p.color_de_form);
   setChk('meterColorIncludeLumError', p.color_incl_lum);
   setChk('meterColorSeparateLumError', p.color_sep_lum);
+  setChk('meterColorCheckerRelativeY', p.cc_relative_y);
   meterUpdateColorSeparateLumVisibility();
     setChk('meterSeparateLumError', greyMode==='eotf' ? p.sep_lum : '0');
     meterUpdateSeparateLumVisibility();
@@ -19006,7 +19088,11 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
   const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
-  const targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
+  let targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
+  if(meterColorCheckerRelativeYEnabled()){
+   const derived=meterColorCheckerEotfTargetYnFromCodes(codes[0],codes[1],codes[2]);
+   if(derived!=null) targetYn=derived;
+  }
   return {ire:Math.round(Math.max(0,xyz.Y)*100),r:codes[0],g:codes[1],b:codes[2],name:name,
    target_x:solved.target_x,target_y:solved.target_y,target_Yn:targetYn,input_max:inputMax,
    series_mode:(seriesMode||'colorchecker-sg')+'-'+signalMode};

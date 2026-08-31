@@ -2852,6 +2852,7 @@ async function meterSelectSeries(type,points,opts){
  meterActiveSeriesType=type;
  meterActiveSeriesPoints=points;
  meterSyncOpponentChartAvailability(type,points);
+ try{ if(typeof meterSyncColorCheckerRelativeYVisibility==='function') meterSyncColorCheckerRelativeYVisibility(type,points); }catch(e){}
  meterSetActiveSeriesChartContext();
  meterLastChartCount=0;
  if(!opts.preserveTab) meterSetSeriesTab(meterSeriesTabForSeries(type,points),true);
