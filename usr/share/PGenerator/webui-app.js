@@ -8018,30 +8018,54 @@ function meterColorCheckerFrozenSdrEncode(linear){
  const c=Math.max(0,Math.min(1,linear||0));
  return Math.round(min+Math.pow(c,1/2.2)*span);
 }
-function meterColorCheckerEotfTargetYnFromCodes(r,g,b){
+function meterColorCheckerEotfTargetYnFromCodes(r,g,b,inputMax){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
  if(!(span>0)) return null;
+ // Readings can carry codes in a different bit domain than the current patch
+ // range (an 8-bit measured series on a 10-bit transport); rescale into the
+ // current domain before normalizing.
+ const currentMax=(typeof meterPatchInputMax==='function')?Number(meterPatchInputMax()):255;
+ const sourceMax=Number(inputMax);
+ const codeScale=(Number.isFinite(sourceMax)&&sourceMax>0&&Number.isFinite(currentMax)&&currentMax>0&&sourceMax!==currentMax)
+  ?(currentMax/sourceMax):1;
  const gamut=(typeof meterAnalysisGamut==='function')?meterAnalysisGamut():GAMUT_PRESETS.bt709;
- // The greyscale series grades BT.1886 with the display's black (the 1d_ab
- // policy). Deriving the colour targets through the same black-aware curve is
- // the point of Relative Y: with a real black the dark-patch targets lift the
- // same way the greyscale targets do. Pure power/sRGB selections round-trip
- // the encode, matching the absolute targets by construction.
- const sel=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||''):'';
+ // Relative Y is defined by the OPERATOR'S Target Gamma dropdown, never by a
+ // pinned series chart context: the whole point is that the dropdown moves
+ // the target. bt1886 uses the greyscale 1d_ab curve with the display's
+ // black; sRGB uses the IEC EOTF; numeric selections are plain powers.
+ const sel=String(((document.getElementById('meterTargetGamma')||{}).value)||'bt1886').toLowerCase();
  const blackFrac=(sel==='bt1886'&&typeof bt1886Luminance1dAb==='function')?meterColorCheckerRelativeYBlackFraction():0;
+ const decode=signal=>{
+  if(sel==='srgb') return signal<=0.04045?signal/12.92:Math.pow((signal+0.055)/1.055,2.4);
+  if(sel==='bt1886'){
+   if(blackFrac>0&&typeof bt1886Luminance1dAb==='function'){
+    const lifted=bt1886Luminance1dAb(signal,1,blackFrac);
+    if(lifted!=null&&Number.isFinite(lifted)) return Math.max(0,lifted);
+   }
+   return Math.pow(signal,2.4);
+  }
+  const g=parseFloat(sel);
+  return Math.pow(signal,(Number.isFinite(g)&&g>0)?g:2.2);
+ };
  const lin=[r,g,b].map(code=>{
-  let signal=(Number(code)-min)/span;
+  let signal=((Number(code)*codeScale)-min)/span;
   if(!Number.isFinite(signal)) signal=0;
   signal=Math.max(0,Math.min(1,signal));
-  if(blackFrac>0){
-   const lifted=bt1886Luminance1dAb(signal,1,blackFrac);
-   if(lifted!=null&&Number.isFinite(lifted)) return Math.max(0,lifted);
-  }
-  return Math.max(0,meterDecodeColorCheckerSignal(signal));
+  return Math.max(0,decode(signal));
  });
  const Y=gamut.rgbToXyz[1][0]*lin[0]+gamut.rgbToXyz[1][1]*lin[1]+gamut.rgbToXyz[1][2]*lin[2];
  return (Number.isFinite(Y)&&Y>=0)?Y:null;
+}
+// Readings stamp their emitted codes as r_code/g_code/b_code (the bare r/g/b
+// on a reading are step percentages, not codes).
+function meterColorCheckerReadingCodes(rd){
+ if(!rd) return null;
+ const r=(rd.r_code!=null)?rd.r_code:rd.r;
+ const g=(rd.g_code!=null)?rd.g_code:rd.g;
+ const b=(rd.b_code!=null)?rd.b_code:rd.b;
+ if(r==null||g==null||b==null) return null;
+ return {r:Number(r),g:Number(g),b:Number(b),input_max:rd.input_max};
 }
 // Derive or restore the luminance target on the series STEPS themselves so
 // thumbnails, the selected-patch detail panel, and readings stamped from the
@@ -8079,9 +8103,10 @@ function meterRegradeColorCheckerRelativeYTargets(){
  if(Array.isArray(meterSeriesSteps)) meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
  if(!Array.isArray(meterReadings)) return;
  meterReadings.forEach(rd=>{
-  if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
+  const codes=meterColorCheckerReadingCodes(rd);
+  if(!codes) return;
   if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
-  const derived=meterColorCheckerEotfTargetYnFromCodes(rd.r,rd.g,rd.b);
+  const derived=meterColorCheckerEotfTargetYnFromCodes(codes.r,codes.g,codes.b,codes.input_max);
   if(derived==null) return;
   rd.target_Yn=derived;
   delete rd._dE_cache_key;
@@ -8126,10 +8151,11 @@ function meterOnColorCheckerRelativeYChange(){
  }
  if(meterColorCheckerFamilySeries()&&Array.isArray(meterReadings)){
   meterReadings.forEach(rd=>{
-   if(!rd||rd.r==null||rd.g==null||rd.b==null) return;
+   const codes=meterColorCheckerReadingCodes(rd);
+   if(!codes) return;
    if(rd.colorchecker_built_target_Yn==null&&rd.target_Yn!=null) rd.colorchecker_built_target_Yn=rd.target_Yn;
    if(relative){
-    const derived=meterColorCheckerEotfTargetYnFromCodes(rd.r,rd.g,rd.b);
+    const derived=meterColorCheckerEotfTargetYnFromCodes(codes.r,codes.g,codes.b,codes.input_max);
     if(derived!=null) rd.target_Yn=derived;
    } else if(rd.colorchecker_built_target_Yn!=null){
     rd.target_Yn=rd.colorchecker_built_target_Yn;
