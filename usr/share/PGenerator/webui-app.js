@@ -8006,6 +8006,18 @@ function meterColorCheckerRelativeYBlackFraction(){
   return (Number.isFinite(frac)&&frac>0)?Math.min(frac,0.1):0;
  }catch(e){ return 0; }
 }
+// With Relative Y on, freshly built family patches are AUTHORED at the SDR
+// 2.2 convention (the HCFR/Calman pattern-level convention) instead of
+// re-solving through the Target Gamma dropdown. The dropdown then only moves
+// the derived luminance target, never the emitted codes, so target and
+// stimulus always describe the same patch: a display following the selected
+// transfer measures exactly the target.
+function meterColorCheckerFrozenSdrEncode(linear){
+ const min=meterChromaPatchRangeMin();
+ const span=meterChromaPatchRangeSpan();
+ const c=Math.max(0,Math.min(1,linear||0));
+ return Math.round(min+Math.pow(c,1/2.2)*span);
+}
 function meterColorCheckerEotfTargetYnFromCodes(r,g,b){
  const min=meterChromaPatchRangeMin();
  const span=meterChromaPatchRangeSpan();
@@ -8089,6 +8101,27 @@ function meterOnColorCheckerRelativeYChange(){
  // targets the series was built with.
  const relative=meterColorCheckerRelativeYEnabled();
  if(meterColorCheckerFamilySeries()&&Array.isArray(meterSeriesSteps)){
+  // Client-built presets change code conventions with the toggle (frozen 2.2
+  // authoring vs dropdown re-solve), so rebuild and merge by patch name.
+  // Server-built and measured series keep their emitted codes as history.
+  try{
+   const series=(typeof meterCustomSeriesById==='function')?meterCustomSeriesById(meterActiveSeriesPoints):null;
+   if(series&&series.builtin_verification){
+    const fresh=meterBuildBuiltinColorCheckerSteps(series);
+    if(Array.isArray(fresh)&&fresh.length){
+     const byName=new Map(fresh.map(st=>[String(st&&st.name||''),st]));
+     meterSeriesSteps.forEach(st=>{
+      const src=st?byName.get(String(st.name||'')):null;
+      if(!src) return;
+      st.r=src.r; st.g=src.g; st.b=src.b;
+      st.target_x=src.target_x; st.target_y=src.target_y;
+      st.target_Yn=src.target_Yn;
+      if(src.colorchecker_built_target_Yn!=null) st.colorchecker_built_target_Yn=src.colorchecker_built_target_Yn;
+      else delete st.colorchecker_built_target_Yn;
+     });
+    }
+   }
+  }catch(e){}
   meterApplyColorCheckerRelativeYToSteps(meterSeriesSteps);
  }
  if(meterColorCheckerFamilySeries()&&Array.isArray(meterReadings)){
@@ -8751,7 +8784,9 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
 	 meterColorCheckerClassicSource().forEach(src=>{
 	  if(src.gray!=null){
 	   const ire=Math.round(src.gray*100);
-	   const code=meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
+	   const code=meterColorCheckerRelativeYEnabled()
+	    ?meterColorCheckerFrozenSdrEncode(src.gray)
+	    :meterEncodeColorCheckerLinear(src.gray,dvAbsolute?seriesWhite:undefined);
 	   let targetYn=src.gray;
 	   if(meterChartIsDv()&&!dvAbsolute){
 	    const span=meterChromaPatchRangeSpan();
@@ -8789,9 +8824,10 @@ function meterBuildColorCheckerStepsJS(includePrimaries){
   gl=Math.max(0,gl);
   bl=Math.max(0,bl);
 	  const colorRef=absoluteHdrColorChecker?hdrColorCheckerRefNits:undefined;
-	  const rCode=meterEncodeColorCheckerLinear(rl,colorRef);
-	  const gCode=meterEncodeColorCheckerLinear(gl,colorRef);
-	  const bCode=meterEncodeColorCheckerLinear(bl,colorRef);
+	  const freezeCodes=meterColorCheckerRelativeYEnabled();
+	  const rCode=freezeCodes?meterColorCheckerFrozenSdrEncode(rl):meterEncodeColorCheckerLinear(rl,colorRef);
+	  const gCode=freezeCodes?meterColorCheckerFrozenSdrEncode(gl):meterEncodeColorCheckerLinear(gl,colorRef);
+	  const bCode=freezeCodes?meterColorCheckerFrozenSdrEncode(bl):meterEncodeColorCheckerLinear(bl,colorRef);
 	  const scaledYn=adaptedYn*stimulusScale;
 	  let targetYn=absoluteHdrColorChecker?(scaledYn*hdrColorCheckerRefNits/seriesWhite):scaledYn;
 	  if(meterChartIsDv()&&!dvAbsolute){
@@ -19178,7 +19214,9 @@ function meterBuildXriteSgColorSteps(names,seriesMode){
   const xyz=meterColorCheckerLabD50ToD65Xyz(lab);
   if(!meterColorCheckerReferenceFitsTargetGamut(xyz.X,xyz.Y,xyz.Z)) return null;
   const solved=meterSolveD65ReferenceLinear(xyz.X,xyz.Y,xyz.Z,solveGamut);
-  const codes=solved.rgb.map(v=>meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
+  const codes=solved.rgb.map(v=>meterColorCheckerRelativeYEnabled()
+   ?meterColorCheckerFrozenSdrEncode(v)
+   :meterEncodeColorCheckerLinear(v,absoluteHdr?hdrReferenceNits:undefined));
   let targetYn=absoluteHdr?solved.target_Yn*hdrReferenceNits/seriesWhite:solved.target_Yn;
   if(meterColorCheckerRelativeYEnabled()){
    const derived=meterColorCheckerEotfTargetYnFromCodes(codes[0],codes[1],codes[2]);
@@ -19305,7 +19343,9 @@ function meterBuildMbFocalColourSteps(){
   const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
   const sum=xyz.X+xyz.Y+xyz.Z;
   return {ire:Math.round(xyz.Y*100),
-   r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
+   r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[0]):meterEncodeColorCheckerLinear(fit.rgb[0]),
+   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[1]):meterEncodeColorCheckerLinear(fit.rgb[1]),
+   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[2]):meterEncodeColorCheckerLinear(fit.rgb[2]),
    name:'MB Focal '+entry.name+(fit.outOfGamut?' (out of gamut)':''),
    target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
    input_max:inputMax,series_mode:'mb-focal-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
@@ -19411,7 +19451,9 @@ function meterBuildMbOsaUcsMapSteps(){
    const xyz=linRgbToXyz(fit.rgb[0],fit.rgb[1],fit.rgb[2],matrix);
    const sum=xyz.X+xyz.Y+xyz.Z;
    steps.push({ire:Math.round(xyz.Y*100),
-    r:meterEncodeColorCheckerLinear(fit.rgb[0]),g:meterEncodeColorCheckerLinear(fit.rgb[1]),b:meterEncodeColorCheckerLinear(fit.rgb[2]),
+    r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[0]):meterEncodeColorCheckerLinear(fit.rgb[0]),
+   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[1]):meterEncodeColorCheckerLinear(fit.rgb[1]),
+   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(fit.rgb[2]):meterEncodeColorCheckerLinear(fit.rgb[2]),
     name:'1a '+name+' '+(n+1)+(fit.outOfGamut?' (out of gamut)':''),
     target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,
     input_max:inputMax,series_mode:'mb-osa-ucs-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),mb_region:name,
@@ -19462,7 +19504,10 @@ function meterBuildMbHueCircleSteps(){
  }));
  const makeStep=(name,rgb,angle)=>{
   const xyz=xyzFor(rgb),sum=xyz.X+xyz.Y+xyz.Z,mb=displayFor(rgb);
-  return {ire:Math.round(xyz.Y*100),r:meterEncodeColorCheckerLinear(rgb[0]),g:meterEncodeColorCheckerLinear(rgb[1]),b:meterEncodeColorCheckerLinear(rgb[2]),
+  return {ire:Math.round(xyz.Y*100),
+   r:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[0]):meterEncodeColorCheckerLinear(rgb[0]),
+   g:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[1]):meterEncodeColorCheckerLinear(rgb[1]),
+   b:meterColorCheckerRelativeYEnabled()?meterColorCheckerFrozenSdrEncode(rgb[2]):meterEncodeColorCheckerLinear(rgb[2]),
    name:name,target_x:sum>0?xyz.X/sum:.3127,target_y:sum>0?xyz.Y/sum:.329,target_Yn:xyz.Y,input_max:inputMax,
    series_mode:'mb-hue-circle-'+String(((typeof meterChartSignalMode==='function')?meterChartSignalMode():'sdr')||'sdr').toLowerCase(),
    mb_hue_angle:angle,mb_target_l:mb.x,mb_target_s:mb.y,mb_target_lm:mb.lm};
