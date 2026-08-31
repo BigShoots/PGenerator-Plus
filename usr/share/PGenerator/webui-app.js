@@ -14225,6 +14225,33 @@ function meterLiveRgbMarkup(values){
  return '<span class="r">'+values[0]+'</span>, <span class="g">'+values[1]+'</span>, <span class="b">'+values[2]+'</span>';
 }
 
+// The raw wire codes for the selected patch: the exact per-channel values the
+// renderer is told to emit, in their native bit domain, before any of the
+// display-normalized reductions the Target RGB row applies. A measured
+// sample's own stamped codes win (they are what was on the wire during the
+// read); an unread patch falls back to its step definition.
+function meterLiveWireRgbCodes(src){
+ if(!src) return null;
+ const step=(typeof meterCanonicalSeriesStep==='function')?(meterCanonicalSeriesStep(src)||src):src;
+ const numeric=value=>{ const n=Number(value); return Number.isFinite(n)?n:null; };
+ let r=numeric(src.r_code),g=numeric(src.g_code),b=numeric(src.b_code);
+ let domain=numeric(src.input_max);
+ if(r==null||g==null||b==null){
+  const stepCode=ch=>{ const v=(step[ch+'_code']!=null)?step[ch+'_code']:step[ch]; return numeric(v); };
+  r=stepCode('r'); g=stepCode('g'); b=stepCode('b');
+  domain=numeric(step.input_max)!=null?numeric(step.input_max):domain;
+ }
+ if(r==null||g==null||b==null) return null;
+ if(domain==null||domain<=0) domain=Math.max(r,g,b)>255?1023:255;
+ const bits=domain===1023?'10-bit':(domain===4095?'12-bit':(domain===255?'8-bit':('0-'+domain)));
+ return {codes:[Math.round(r),Math.round(g),Math.round(b)],bits:bits};
+}
+function meterLiveWireRgbMarkup(src){
+ const wire=meterLiveWireRgbCodes(src);
+ if(!wire) return '--';
+ return '<span class="meter-live-rgb-triplet">'+meterLiveRgbMarkup(wire.codes)+'</span> <span style="color:#777;font-size:.85em">('+wire.bits+')</span>';
+}
+
 function meterUpdateLiveReadingDetails(src,isMeasured){
  const set=(id,value)=>{ const el=document.getElementById(id); if(el) el.textContent=value; };
  const setRgb=(id,value)=>{ const el=document.getElementById(id); if(el) el.innerHTML=meterLiveRgbMarkup(value); };
@@ -14237,6 +14264,7 @@ function meterUpdateLiveReadingDetails(src,isMeasured){
  }
  setRgb('meterLiveRgbMeasured',measured?meterLiveMeasuredRgbCodes(src):null);
  setRgb('meterLiveRgbTarget',src?meterLiveTargetRgbCodes(src):null);
+ { const el=document.getElementById('meterLiveWireRgb'); if(el) el.innerHTML=src?meterLiveWireRgbMarkup(src):'--'; }
  const xyzText=xyz=>xyz?[xyz.X,xyz.Y,xyz.Z].map(value=>Number(value).toFixed(3)).join(', '):'--';
  set('meterLiveXyzMeasured',xyzText(measured));
  set('meterLiveXyzTarget',xyzText(target));

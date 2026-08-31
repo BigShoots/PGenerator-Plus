@@ -15797,6 +15797,7 @@ function showColorReadingDetail(rd,opts){
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  const chartAxis=meterCieChartAxis();
  h+='<tr><td style="padding:3px 0;color:#777">'+targetRgbLabel+'</td><td style="text-align:right;padding:3px 0;color:#bbb"><span class="meter-live-rgb-triplet">'+meterLiveRgbMarkup(targetRgbCodes)+'</span></td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777" title="The exact per-channel codes the renderer emits for this patch, in the transport bit depth">Wire RGB</td><td style="text-align:right;padding:3px 0;color:#bbb">'+((typeof meterLiveWireRgbMarkup==='function')?meterLiveWireRgbMarkup(view):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Target '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
