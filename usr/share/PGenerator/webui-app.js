@@ -12215,13 +12215,18 @@ function meterCcssCreateSyncHighResolution(){
  const checkbox=document.getElementById('meterCcssCreateHighResolution');
  const help=document.getElementById('meterCcssCreateHighResolutionHelp');
  if(!checkbox) return false;
- const needsReference=meterCcssCreateFormatValue()==='ccss'||meterCcssCreateMethodValue()==='measure';
+ const isCcss=meterCcssCreateFormatValue()==='ccss';
+ const needsReference=isCcss||meterCcssCreateMethodValue()==='measure';
  const meter=needsReference&&meterCcssCreateInventoryReady?meterCcssCreateSelectedMeter():null;
- const supported=!!(meter&&meterSupportsHighResolutionSpectrum(meter));
+ // ArgyllCMS applies -H to every instrument the ccxxmake session opens, so a
+ // CCMX run would also hand it to the target colorimeter, which has no
+ // high-resolution mode. Offer it for the single-instrument CCSS run only.
+ const supported=!!(isCcss&&meter&&meterSupportsHighResolutionSpectrum(meter));
  checkbox.disabled=!supported||meterCcssCreateJobActive;
  if(!supported) checkbox.checked=false;
  if(help){
   if(!needsReference) help.textContent='High-resolution sampling is not used when creating a CCMX from a supplied matrix.';
+  else if(!isCcss) help.textContent='CCMX creation drives the reference meter and the target colorimeter in one ArgyllCMS session, which has a single high-resolution switch, so it cannot be limited to the spectrophotometer. High-resolution sampling is available for CCSS creation only.';
   else if(!meterCcssCreateInventoryReady) help.textContent='Checking whether the selected reference meter supports high-resolution spectral sampling.';
   else if(!meter) help.textContent='Select a compatible reference spectrophotometer to enable approximately 3.3 nm reconstructed spectral sampling.';
   else if(supported) help.textContent='Supported by '+meterOptionLabel(meter)+'. Uses approximately 3.3 nm reconstructed sampling and may not improve absolute colorimetric accuracy.';
@@ -12858,7 +12863,7 @@ async function meterStartCcssCreate(){
  meterCcssCreateSetStartingFeedback(true,format);
  try{
   const highResolutionInput=document.getElementById('meterCcssCreateHighResolution');
-  const highResolution=!!(highResolutionInput&&highResolutionInput.checked&&meterSupportsHighResolutionSpectrum(meter));
+  const highResolution=!!(format==='ccss'&&highResolutionInput&&highResolutionInput.checked&&meterSupportsHighResolutionSpectrum(meter));
   const r=await fetchJSON('/api/ccss/create/start',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(meterMeasurementSignalContext({name:name,format:format,display_type:displayType,profiling_meter_port:meterNormalizePortValue(meter.port_num),target_meter_port:target?meterNormalizePortValue(target.port_num):'',high_resolution:highResolution,patch_size:getMeterPatchSize(),refresh_rate:getMeterRefreshRate()||undefined})),_timeoutMs:10000});
   if(!r||r.status==='error'){
