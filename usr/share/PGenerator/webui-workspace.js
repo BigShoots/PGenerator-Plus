@@ -15785,9 +15785,7 @@ function showColorReadingDetail(rd,opts){
  const deCol=!hasDe?'#888':de<1?'#4caf50':de<3?'#ff9800':'#f44';
  const dxCol=dx==null?'#888':(Math.abs(dx)<0.005?'#4caf50':Math.abs(dx)<0.01?'#ff9800':'#f44');
  const dyCol=dy==null?'#888':(Math.abs(dy)<0.005?'#4caf50':Math.abs(dy)<0.01?'#ff9800':'#f44');
- const targetRgbCodes=meterLiveTargetRgbCodes(view);
- const targetGamma=(typeof meterGreyTargetGammaSelection==='function')?String(meterGreyTargetGammaSelection()||'').toLowerCase():'';
- const targetRgbLabel=targetGamma==='st2084'?'Target RGB PQe':'Target RGB';
+
  let h='<div style="margin-bottom:10px;text-align:center">';
  h+='<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:'+targetColor+';vertical-align:middle;margin-right:6px"></span>';
  h+='<span style="color:#eee;font-weight:700;font-size:14px">'+(view.name||'')+'</span></div>';
@@ -15796,8 +15794,7 @@ function showColorReadingDetail(rd,opts){
  h+='<div style="text-align:center"><div style="width:52px;height:32px;border-radius:4px;border:1px solid #333;background:'+measuredColor+';'+(hasMeasuredXYZ?'':'opacity:.35')+'"></div><div style="font-size:10px;color:#777;margin-top:2px">Measured'+(isUnread?' (none)':'')+'</div></div></div>';
  h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
  const chartAxis=meterCieChartAxis();
- h+='<tr><td style="padding:3px 0;color:#777">'+targetRgbLabel+'</td><td style="text-align:right;padding:3px 0;color:#bbb"><span class="meter-live-rgb-triplet">'+meterLiveRgbMarkup(targetRgbCodes)+'</span></td></tr>';
- h+='<tr><td style="padding:3px 0;color:#777" title="The exact per-channel codes the renderer emits for this patch, in the transport bit depth">Wire RGB</td><td style="text-align:right;padding:3px 0;color:#bbb">'+((typeof meterLiveWireRgbMarkup==='function')?meterLiveWireRgbMarkup(view):'--')+'</td></tr>';
+ h+='<tr><td style="padding:3px 0;color:#777;white-space:nowrap" title="The exact per-channel codes the renderer emits for this patch, in the transport bit depth">Wire RGB</td><td style="text-align:right;padding:3px 0;color:#bbb;white-space:nowrap">'+((typeof meterLiveWireRgbMarkup==='function')?meterLiveWireRgbMarkup(view):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Target '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.x.toFixed(4):'--')+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">Measured '+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:#ddd">'+(mx!=null?mx.toFixed(4):'--')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">Target '+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:#bbb">'+(tgt?tgt.y.toFixed(4):'--')+'</td></tr>';
@@ -15808,7 +15805,7 @@ function showColorReadingDetail(rd,opts){
  h+='<tr><td style="padding:3px 0;color:#777">\u0394Y %</td><td style="text-align:right;padding:3px 0;color:'+dYCol+'">'+(lumInfo.deltaPct==null?'--':(lumInfo.deltaPct>=0?'+':'')+Number(lumInfo.deltaPct).toFixed(1)+'%')+'</td></tr>';
  h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#777">\u0394'+chartAxis.x+'</td><td style="text-align:right;padding:3px 0;color:'+dxCol+'">'+(dx==null?'--':(dx>=0?'+':'')+dx.toFixed(4))+'</td></tr>';
  h+='<tr><td style="padding:3px 0;color:#777">\u0394'+chartAxis.y+'</td><td style="text-align:right;padding:3px 0;color:'+dyCol+'">'+(dy==null?'--':(dy>=0?'+':'')+dy.toFixed(4))+'</td></tr>';
- h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
+ h+='<tr style="border-top:1px solid #1a1a28"><td style="padding:3px 0;color:#888;font-weight:600;white-space:nowrap">'+deLabel+(colorInclLum?' + Y':'')+'</td><td style="text-align:right;padding:3px 0;color:'+deCol+';font-weight:700;font-size:16px">'+(hasDe?de.toFixed(2):'--')+'</td></tr>';
  h+='</table>';
  el.innerHTML=h;
  // Showing the latest measurement is informational. Do not paint it as a
