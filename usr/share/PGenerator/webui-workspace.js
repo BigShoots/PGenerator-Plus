@@ -2407,7 +2407,9 @@ function meterBuildLgAutoCalSteps(steps,includeWhiteReference){
 // Remembered CIE chart prefs for 3D LUT *profiling* (matrix / hybrid /
 // skeleton / lattice). Target boxes are meaningless for profiling (they are
 // not ColorChecker-style verification targets), so the built-in default is
-// Targets OFF. 3D View defaults ON.
+// Targets OFF. The chart opens in 2D like every other series; 3D remains a
+// remembered per-operator choice. Luminance-error rings default OFF here
+// (they clutter a dense profiling cloud) and stay remembered too.
 function meterLatticeViewPrefs(){
  try{
   const raw=localStorage.getItem('pgen.meter.latticeViewPrefs');
@@ -2439,8 +2441,8 @@ function meterLatticeViewPrefSave(field,value){
 }
 
 // Apply CIE defaults when a 3D LUT profiling series becomes active.
-// Matrix profiling opens in 2D. Volume profiles use the remembered choice,
-// defaulting to 3D. Targets default off for both profiling modes.
+// Every profiling chart opens in 2D unless the operator's remembered choice
+// says otherwise. Targets and luminance rings default off for profiling.
 // Memoized per series key so live-read recovery re-fires do not thrash toggles.
 let meterLattice3dDefaultedKey=null;
 function meterLatticeDefault3dView(points,opts){
@@ -2455,7 +2457,7 @@ function meterLatticeDefault3dView(points,opts){
   if(!o.force&&meterLattice3dDefaultedKey===key) return;
   meterLattice3dDefaultedKey=key;
   const prefs=meterLatticeViewPrefs();
-  const want3d=isMatrix?false:((prefs.cie_3d!=null)?(prefs.cie_3d==='1'):true);
+  const want3d=isMatrix?false:((prefs.cie_3d!=null)?(prefs.cie_3d==='1'):false);
   // Profiling: targets off by default (no meaningful grading reference).
   const wantTargets=(prefs.targets!=null)?(prefs.targets==='1'):false;
   const view3d=document.getElementById('meterCie3dView');
@@ -2466,12 +2468,21 @@ function meterLatticeDefault3dView(points,opts){
    // with the lattice default of 3D.
    meterOnCie3dViewChange({transient:true});
   }
+  // Luminance-error rings: profiling default OFF, remembered per operator.
+  const wantLumRings=(prefs.lum_rings!=null)?(prefs.lum_rings==='1'):false;
   const targets=document.getElementById('meterCieOptTargets');
-  if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; if(typeof meterCieViewOptChange==='function') meterCieViewOptChange(); }
+  const lumRings=document.getElementById('meterCieOptLumRings');
+  let optsChanged=false;
+  if(targets&&targets.checked!==wantTargets){ targets.checked=wantTargets; optsChanged=true; }
   else if(targets&&!wantTargets&&meterCieViewOpts){
    // Ensure option state matches even if checkbox already unchecked.
    meterCieViewOpts.targets=false;
   }
+  if(lumRings&&lumRings.checked!==wantLumRings){ lumRings.checked=wantLumRings; optsChanged=true; }
+  else if(lumRings&&!wantLumRings&&meterCieViewOpts){
+   meterCieViewOpts.lumRings=false;
+  }
+  if(optsChanged&&typeof meterCieViewOptChange==='function') meterCieViewOptChange();
  }catch(e){}
 }
 
@@ -2488,8 +2499,14 @@ function meterDefaultTargetsForColorSeries(type,points){
  if(kind==='lattice'||kind==='hybrid'||kind==='skeleton') return;
  const targets=document.getElementById('meterCieOptTargets');
  if(targets) targets.checked=true;
+ // Luminance rings likewise default ON for verification series so a prior
+ // profiling session (rings off) cannot leak its state into ColorChecker
+ // and saturation sweeps.
+ const lumRings=document.getElementById('meterCieOptLumRings');
+ if(lumRings) lumRings.checked=true;
  if(typeof meterCieViewOpts!=='undefined'&&meterCieViewOpts){
   meterCieViewOpts.targets=true;
+  meterCieViewOpts.lumRings=true;
   try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
  }
 }
@@ -16602,6 +16619,7 @@ function meterCieViewOptChange(){
  });
  try{ localStorage.setItem(METER_CIE_VIEW_OPTS_KEY,JSON.stringify(meterCieViewOpts)); }catch(e){}
  try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('targets',!!meterCieViewOpts.targets); }catch(e){}
+ try{ if(typeof meterLatticeViewPrefSave==='function') meterLatticeViewPrefSave('lum_rings',!!meterCieViewOpts.lumRings); }catch(e){}
  const isColorSeries=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations');
  if(Array.isArray(meterReadings)&&meterReadings.length){
   drawAllCharts(isColorSeries?[...meterReadings]:[...meterReadings].sort((a,b)=>(a.ire||0)-(b.ire||0)));
@@ -16693,7 +16711,10 @@ function meterUpdateColorChartMode(isLattice){
  set('meterCieOptDropLinesLabel',true,'inline-flex');
  set('meterCieOptGamutLabel',!meterCie3dViewEnabled(),'inline-flex');
  set('meterCieOptLocusLabel',!meterCie3dViewEnabled(),'inline-flex');
- set('meterCieOptLumRingsLabel',!isLattice,'inline-flex');
+ // The rings render on lattice charts too (3D LUT profiling), so the
+ // checkbox must stay reachable there; profiling contexts default it OFF
+ // via meterLatticeDefault3dView.
+ set('meterCieOptLumRingsLabel',true,'inline-flex');
 }
 
 function meterRedrawCubeView(){
