@@ -1674,54 +1674,23 @@ fix_permissions() {
  chmod 755 "$ROOT_MOUNT/etc/sudoers.d" 2>/dev/null || true
  chmod 440 "$ROOT_MOUNT/etc/sudoers.d/PGenerator" 2>/dev/null || true
 
- local root_execs=(
-  "etc/init.d/PGenerator"
-  "etc/init.d/rcPGenerator"
-  "etc/init.d/fake-hwclock"
-  "etc/cron.hourly/fake-hwclock"
-  "usr/bin/PGeneratorDisplayMirror"
-  "usr/bin/PGenerator_bash.pl"
-  "usr/bin/PGenerator_bluez.sh"
-  "usr/bin/PGenerator_cmd.pl"
-  "usr/bin/PGenerator_serial.pl"
-  "usr/bin/ccss_create.py"
-  "usr/bin/ccss_create_patch.sh"
-  "usr/bin/ccxxmake"
-  "usr/bin/ccxxmake_interactive"
-  "usr/bin/chartread"
-  "usr/bin/colprof"
-  "usr/bin/profcheck"
-  "usr/bin/targen"
-  "usr/bin/fix_ccss_keywords.pl"
+ # Executable bits come from the shared release policy, not from the
+ # checkout: core.filemode=false means git records 100644 for nearly every
+ # runtime file, so a build run from a fresh clone or worktree overlays
+ # scripts 0664. The policy also records what it marked in
+ # usr/share/PGenerator/release-exec-manifest.txt inside the image.
+ local exec_count
+ exec_count="$(apply_release_modes "$ROOT_MOUNT" "$REPO_ROOT" "${TARGET_OVERLAY_REL:+$REPO_ROOT/$TARGET_OVERLAY_REL}")" \
+  || die "Could not apply the release executable-bit policy"
+ log "Applied executable bits to $exec_count program files in the image root"
+
+ # Image-only programs: the multicall link Argyll selects on argv[0], and
+ # the slim helper, neither of which is carried in the repository trees.
+ local image_only_execs=(
   "usr/bin/i1d3ccss"
-  "usr/bin/meter_lg_3d_autocal.pl"
-  "usr/bin/meter_lg_autocal.pl"
-  "usr/bin/meter_series.sh"
-  "usr/bin/meter_session.sh"
-  "usr/bin/meter_usb_reset.sh"
-  "usr/bin/oeminst"
-  "usr/bin/pgen_lut_solve"
-  "usr/bin/pgsethdr"
-  "usr/bin/pgenerator-bnep-hook.sh"
-  "usr/bin/pgenerator-bt-agent"
-  "usr/bin/resize_PGenerator_disk"
-  "usr/bin/spotread"
-  "usr/bin/spotread_measure.py"
-  "usr/bin/spotread_wrapper.sh"
-  "usr/sbin/PGeneratord"
-  "usr/sbin/PGeneratord.dv"
-  "usr/sbin/PGeneratord.pl"
-  "usr/sbin/disable_csc"
-  "usr/sbin/drm_player"
-  "usr/sbin/fake-hwclock"
-  "usr/sbin/fb_player"
-  "usr/sbin/pg_diag_video_player"
-  "usr/sbin/pgenerator-cec"
-  "usr/sbin/pgenerator-lg"
   "usr/sbin/pgenerator-slim.sh"
-  "usr/sbin/pgenerator-update"
  )
- for rel in "${root_execs[@]}"; do
+ for rel in "${image_only_execs[@]}"; do
   set_root_mode "$rel" 0755
  done
 

@@ -62,6 +62,90 @@ PGEN_RELEASE_REQUIRED_MATH_EXECUTABLES=(
  "usr/bin/pgen_lut_solve"
 )
 
+# These are the only group-writable directories shipped by the last known
+# good pre-2.11.6 OTA. The daemon owns their contents at runtime; every other
+# directory contributed by a release source tree is normalized to 0755.
+PGEN_RELEASE_WRITABLE_DIRS=(
+ "var/lib/PGenerator/updates"
+ "var/lib/PGenerator/lg"
+ "var/lib/PGenerator/lg/pin-sessions"
+ "var/lib/PGenerator/lg/luts"
+ "var/lib/PGenerator/lg/ddc"
+ "var/lib/PGenerator/ccss"
+ "var/lib/PGenerator/ccss/custom"
+ "var/lib/PGenerator/frames"
+ "var/lib/PGenerator/video"
+ "var/lib/PGenerator/video/.diagseq"
+ "var/lib/PGenerator/images"
+)
+
+# Apply release modes without trusting checkout mode bits. Program files are
+# identified by their contents in each source tree, then applied only when the
+# corresponding path exists in the staged payload or image root.
+apply_release_modes() {
+ local root="$1"
+ shift
+ local source_root source_path source_type rel top
+ local exec_candidates dir_candidates exec_manifest
+ local exec_count=0
+
+ [[ -d "$root" ]] || return 1
+ exec_candidates="$(mktemp "${TMPDIR:-/tmp}/pgen-release-exec.XXXXXX")" || return 1
+ dir_candidates="$(mktemp "${TMPDIR:-/tmp}/pgen-release-dirs.XXXXXX")" || {
+  rm -f -- "$exec_candidates"
+  return 1
+ }
+
+ for source_root in "$@"; do
+  [[ -n "$source_root" && -d "$source_root" ]] || continue
+  for top in etc lib usr var; do
+   [[ -d "$source_root/$top" ]] || continue
+   while IFS= read -r -d '' source_path; do
+    rel="${source_path#"$source_root"/}"
+    [[ -d "$root/$rel" ]] && printf '%s\n' "$rel" >> "$dir_candidates"
+   done < <(find "$source_root/$top" -type d -print0)
+   while IFS= read -r -d '' source_path; do
+    rel="${source_path#"$source_root"/}"
+    [[ -f "$root/$rel" ]] || continue
+    source_type="$(file -b -- "$source_path" 2>/dev/null || true)"
+    case "$source_type" in
+     ELF*|*script*) printf '%s\n' "$rel" >> "$exec_candidates" ;;
+    esac
+   done < <(find "$source_root/$top" -type f -print0)
+  done
+ done
+
+ sort -u "$dir_candidates" | while IFS= read -r rel; do
+  [[ -n "$rel" && -d "$root/$rel" ]] && chmod 0755 "$root/$rel"
+ done
+ for rel in "${PGEN_RELEASE_WRITABLE_DIRS[@]}"; do
+  [[ -d "$root/$rel" ]] && chmod 0775 "$root/$rel"
+ done
+
+ mkdir -p "$root/usr/share/PGenerator" || {
+  rm -f -- "$exec_candidates" "$dir_candidates"
+  return 1
+ }
+ chmod 0755 "$root/usr" "$root/usr/share" "$root/usr/share/PGenerator" 2>/dev/null || true
+ exec_manifest="$root/usr/share/PGenerator/release-exec-manifest.txt"
+ sort -u "$exec_candidates" > "$exec_manifest" || {
+  rm -f -- "$exec_candidates" "$dir_candidates"
+  return 1
+ }
+ chmod 0644 "$exec_manifest"
+ while IFS= read -r rel; do
+  [[ -n "$rel" && -f "$root/$rel" ]] || continue
+  chmod 0755 "$root/$rel" || {
+   rm -f -- "$exec_candidates" "$dir_candidates"
+   return 1
+  }
+  exec_count=$((exec_count + 1))
+ done < "$exec_manifest"
+
+ rm -f -- "$exec_candidates" "$dir_candidates"
+ printf '%s\n' "$exec_count"
+}
+
 pgen_release_rsync_excludes_for_rel() {
  local rel="$1"
  local owned
