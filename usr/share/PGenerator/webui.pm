@@ -772,12 +772,34 @@ $WEBUI_FAST_WORKER_COUNT=2;
 # the Pi at the same time.
 $_webui_compute_queue=undef;
 $WEBUI_COMPUTE_WORKER_COUNT=1;
+# Per-device lanes. A TV-facing route legitimately holds a request for 10s+
+# (a full picture-settings read is 11-12s against a live TV), and on the
+# shared serialized lane that starved time-critical hardware commands for
+# OTHER devices: autocal clients post /api/pattern with a 10s budget and
+# meter_series.sh with 8s, so one browser panel refresh could expire a
+# calibration pattern change (observed as "pattern insertion failed" during
+# live runs). Each hardware device gets its own single worker: requests for
+# the SAME device stay exactly as serialized as they always were, but a slow
+# TV conversation can no longer block a renderer pattern write or a meter
+# command. Routes not claimed by a device lane keep the old fully-serialized
+# general lane. Cross-lane safety rests on state that is already file-backed
+# or :shared (stop guard, meter caches, conf) plus the lg_helper_run gate in
+# lg.pm that keeps TV helper conversations single-flight process-wide.
+$_webui_tv_queue=undef;
+$WEBUI_TV_WORKER_COUNT=1;
+$_webui_meter_queue=undef;
+$WEBUI_METER_WORKER_COUNT=1;
+$_webui_renderer_queue=undef;
+$WEBUI_RENDERER_WORKER_COUNT=1;
 # Bound completed-request queues. This is separate from the accepted-but-unread
 # socket cap below. When a client retries aggressively during a slow operation,
 # shed excess work instead of retaining an unbounded list of stale requests.
 $WEBUI_GENERAL_QUEUE_MAX=128;
 $WEBUI_FAST_QUEUE_MAX=256;
 $WEBUI_COMPUTE_QUEUE_MAX=1;
+$WEBUI_TV_QUEUE_MAX=64;
+$WEBUI_METER_QUEUE_MAX=64;
+$WEBUI_RENDERER_QUEUE_MAX=64;
 # Calibration workers give pattern requests a 10-second transport deadline.
 # Refuse a queued pattern before that deadline is exhausted so a client that
 # has already given up cannot change the displayed patch later.
@@ -835,11 +857,11 @@ sub webui_route_is_compute (@) {
 }
 
 # Calibration workers call /api/pattern over loopback before a physical read.
-# Keep those writes in the single serialized device lane, but put them ahead of
-# queued browser polling. Otherwise status requests accumulated during a slow
-# LG write can hold a pattern for more than the worker's 10-second deadline;
-# the timed-out request can then execute late and put the wrong patch on screen.
-sub webui_route_is_general_priority (@) {
+# Those posts ride the dedicated renderer lane, but they still carry a
+# sequence/age tag: a pattern that has outlived its client's transport
+# deadline, or been superseded by a newer one, must not execute late and put
+# the wrong patch on screen while the meter is reading.
+sub webui_route_is_loopback_pattern (@) {
  my ($method,$path,$peer_host)=@_;
  return 0 if(!defined($method) || $method ne "POST");
  return 0 if(!defined($path) || $path ne "/api/pattern");
@@ -895,6 +917,29 @@ sub webui_priority_request_expired (@) {
   }
  }
  return $stale;
+}
+
+sub webui_route_device_lane (@) {
+ # Claims a route for one of the per-device lanes. A route qualifies only
+ # when its handler talks to exactly one hardware device (plus conf/files):
+ # anything that spans devices stays on the fully-serialized general lane.
+ # - renderer: /api/pattern writes go to PGeneratord only; they never touch
+ #   the TV or the meter, so serializing them behind an SSAP call was purely
+ #   incidental. They stay serialized against each other on one worker.
+ # - tv: every /api/lg/* and /api/cec/* handler ends in the LG SSAP helper,
+ #   pgenerator-cec, or LG state files. One worker keeps today's ordering
+ #   between TV commands; lg_helper_run additionally holds a process-wide
+ #   gate so direct lg_* calls from other lanes cannot overlap a helper run.
+ # - meter: every /api/meter/* handler ends in the spotread session, the
+ #   series/autocal worker files, or meter state files. One worker preserves
+ #   the read-vs-series interlocks exactly as the single general worker did.
+ my ($method,$path)=@_;
+ $method="" if(!defined($method));
+ $path="" if(!defined($path));
+ return "renderer" if($path eq "/api/pattern" && $method eq "POST");
+ return "tv" if($path=~m{^/api/lg(?:/|$)} || $path=~m{^/api/cec(?:/|$)});
+ return "meter" if($path=~m{^/api/meter(?:/|$)});
+ return "";
 }
 
 sub webui_renderer_restart_status_path (@) {
@@ -1053,6 +1098,9 @@ sub webui_http (@) {
  $_webui_worker_queue=Thread::Queue->new();
  $_webui_fast_queue=Thread::Queue->new();
  $_webui_compute_queue=Thread::Queue->new();
+ $_webui_tv_queue=Thread::Queue->new();
+ $_webui_meter_queue=Thread::Queue->new();
+ $_webui_renderer_queue=Thread::Queue->new();
  for my $i (1..$WEBUI_WORKER_POOL_SIZE) {
   threads->create(\&webui_http_worker,$i,"general")->detach();
  }
@@ -1062,7 +1110,16 @@ sub webui_http (@) {
  for my $i (1..$WEBUI_COMPUTE_WORKER_COUNT) {
   threads->create(\&webui_http_worker,"C$i","compute")->detach();
  }
- &log("WebUI: request lanes started ($WEBUI_WORKER_POOL_SIZE serialized + $WEBUI_FAST_WORKER_COUNT fast + $WEBUI_COMPUTE_WORKER_COUNT compute)");
+ for my $i (1..$WEBUI_TV_WORKER_COUNT) {
+  threads->create(\&webui_http_worker,"T$i","tv")->detach();
+ }
+ for my $i (1..$WEBUI_METER_WORKER_COUNT) {
+  threads->create(\&webui_http_worker,"M$i","meter")->detach();
+ }
+ for my $i (1..$WEBUI_RENDERER_WORKER_COUNT) {
+  threads->create(\&webui_http_worker,"R$i","renderer")->detach();
+ }
+ &log("WebUI: request lanes started ($WEBUI_WORKER_POOL_SIZE serialized + $WEBUI_FAST_WORKER_COUNT fast + $WEBUI_COMPUTE_WORKER_COUNT compute + $WEBUI_TV_WORKER_COUNT tv + $WEBUI_METER_WORKER_COUNT meter + $WEBUI_RENDERER_WORKER_COUNT renderer)");
 
  # A worker is committed only once a COMPLETE request header has arrived.
  #
@@ -1134,10 +1191,19 @@ sub webui_http (@) {
    $peek_path=~s/\?.*$//;
    my $peer_host=eval { $h->peerhost() } || "";
    my ($queue,$lane,$queue_max);
+   my $device_lane=&webui_route_device_lane($peek_method,$peek_path);
    if(&webui_route_is_compute($peek_method,$peek_path)) {
     ($queue,$lane,$queue_max)=($_webui_compute_queue,"compute",$WEBUI_COMPUTE_QUEUE_MAX);
    } elsif(&webui_route_is_concurrent_safe($peek_method,$peek_path)) {
+    # Checked before the device lanes so OPTIONS preflights stay on the
+    # fast lane whatever path they name.
     ($queue,$lane,$queue_max)=($_webui_fast_queue,"fast",$WEBUI_FAST_QUEUE_MAX);
+   } elsif($device_lane eq "tv") {
+    ($queue,$lane,$queue_max)=($_webui_tv_queue,"tv",$WEBUI_TV_QUEUE_MAX);
+   } elsif($device_lane eq "meter") {
+    ($queue,$lane,$queue_max)=($_webui_meter_queue,"meter",$WEBUI_METER_QUEUE_MAX);
+   } elsif($device_lane eq "renderer") {
+    ($queue,$lane,$queue_max)=($_webui_renderer_queue,"renderer",$WEBUI_RENDERER_QUEUE_MAX);
    } else {
     ($queue,$lane,$queue_max)=($_webui_worker_queue,"general",$WEBUI_GENERAL_QUEUE_MAX);
    }
@@ -1164,8 +1230,8 @@ sub webui_http (@) {
     &log("WebUI: could not duplicate client fd: $!");
     next;
    }
-   my $priority=($lane eq "general")
-    ? &webui_route_is_general_priority($peek_method,$peek_path,$peer_host) : 0;
+   my $priority=($lane eq "renderer")
+    ? &webui_route_is_loopback_pattern($peek_method,$peek_path,$peer_host) : 0;
    &webui_route_enqueue($queue,$fd,$priority,$accepted_at);
   }
   # Reclaim sockets that connected but never produced a usable request.
@@ -1197,7 +1263,12 @@ sub webui_http_worker (@) {
  my $worker_id=shift;
  my $lane=shift;
  $SIG{PIPE}='IGNORE';
- my $queue=($lane eq "fast") ? $_webui_fast_queue : (($lane eq "compute") ? $_webui_compute_queue : $_webui_worker_queue);
+ my $queue=($lane eq "fast") ? $_webui_fast_queue
+  : ($lane eq "compute") ? $_webui_compute_queue
+  : ($lane eq "tv") ? $_webui_tv_queue
+  : ($lane eq "meter") ? $_webui_meter_queue
+  : ($lane eq "renderer") ? $_webui_renderer_queue
+  : $_webui_worker_queue;
  while(defined(my $entry=$queue->dequeue())) {
   my $record=&webui_route_queue_entry($entry);
   if(ref($record) ne "HASH") {
