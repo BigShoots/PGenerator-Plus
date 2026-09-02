@@ -9,6 +9,13 @@ use IO::Select ();
 use IO::Socket::INET ();
 use MIME::Base64 ();
 use Socket qw(inet_aton sockaddr_in);
+# threads::shared degrades to no-ops when the loading process never loaded
+# threads, so this is safe for any single-threaded consumer of this file.
+use threads::shared;
+
+# Serializes synchronous LG helper conversations across the WebUI's worker
+# threads (see lg_helper_run). One TV, one conversation at a time.
+my $_lg_helper_gate :shared = 0;
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -1034,6 +1041,14 @@ sub lg_target_ip (@) {
 }
 
 sub lg_helper_run (@) {
+ # Single-flight gate for synchronous TV helper conversations. With the
+ # per-device WebUI lanes, lg_* subs can be reached from more than one worker
+ # thread (the tv lane, plus direct calls such as the autocal-start CEC
+ # check), and two concurrent SSAP conversations against the one TV were
+ # never possible before the lanes split. The lock restores the old ordering
+ # without affecting anything that does not talk to the TV. It is a no-op in
+ # single-threaded loaders of this file.
+ lock($_lg_helper_gate);
  my $request=shift;
  $request={} if(ref($request) ne "HASH");
  my $helper=&lg_helper_path();
