@@ -8,6 +8,22 @@ use IO::Select ();
 use IO::Socket::INET ();
 use MIME::Base64 ();
 use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(
+ akima_interpolate delta_e_itp_xyz pq_constants
+ pq_decode_nits pq_encode_normalized xyz_to_ictcp
+);
+use PGCalibrationMath qw(
+ bounded_number calibration_target_context dpg_smooth_blend_index
+ effective_de_limits_for_ire smooth_dpg_low_end target_linear_for_context
+ target_luminance_for_context
+);
+use PGMeterReading qw(reading_xyz);
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -31,6 +47,7 @@ our $LG_AUTOCAL_DDC_LAYOUT = "sdr26";
 our $LG_AUTOCAL_DARK_DETAIL = 0;
 our $LG_AUTOCAL_CONFIG;
 our $LG_AUTOCAL_STATE;
+our $LG_AUTOCAL_TARGET_CONTEXT;
 our $LG_AUTOCAL_LAST_FULL_DDC_SPINE_SEED_DETAILS = [];
 # Active-range lowest-body DPG seed index(es) for the SDR26 1D spline.
 # Limited 2.3% → 21; Full 2.3% → 24. Set at the start of each SDR26 DPG run.
@@ -80,7 +97,6 @@ sub trace_109_enabled {
  my ($step)=@_;
  return 0 if(ref($step) ne "HASH" || !defined($step->{"ire"}));
  my $ire=$step->{"ire"}+0;
- return 1;
  return 1 if(abs($ire-109) < 0.001);
  return 1 if(abs($ire-105) < 0.001);
  return 1 if(abs($ire-100) < 0.001);
@@ -422,79 +438,6 @@ sub ddc_dark_detail_fillers_for_layout {
 
 sub ddc_dark_detail_enabled {
  return $LG_AUTOCAL_DARK_DETAIL ? 1 : 0;
-}
-
-# Post-calibration smoothing of the crowded low end of a 1D DPG.
-#
-# Every anchor converges independently to dE <= target, but at low IRE that
-# still leaves tens of DPG counts of slack, and where anchors sit only a few
-# indexes apart that slack becomes a large SLOPE error. Measured on a real run:
-# anchor-to-anchor slope swung between 5.6 and 64 counts/index below 10% while
-# staying a stable ~30 above it. Interpolating EXACTLY through anchors that
-# disagree with each other leaves a kinked curve, and the levels BETWEEN the
-# anchors sit on those kinks -- which is what a fine-step verification series
-# actually measures.
-#
-# Hardware result (LG C2, SDR YCbCr Limited 10-bit, 216 cd/m2 peak; same panel,
-# same 41-point 2.5%-step series, panel settled between reads):
-#
-#   raw autocal curve   on-anchor 0.49   between-anchor 2.41   max 3.71
-#   after smoothing     on-anchor 0.36   between-anchor 1.86   max 2.46
-#
-# A more aggressive slope-domain refit was also tried and was WORSE on both
-# aggregates (0.70 / 2.04), so this deliberately stays a gentle low-pass rather
-# than trying to relocate the anchors.
-#
-# Five-point moving average, two passes, index 0 pinned to black, full weight up
-# to $SMOOTH_FULL_IDX and faded to zero by $SMOOTH_BLEND_IDX so there is no
-# seam, then forced monotonic. Everything above $SMOOTH_BLEND_IDX is returned
-# byte-identical. The index bounds are absolute rather than IRE-derived because
-# both layouts use a 1024-entry table whose anchors crowd in the bottom quarter.
-#
-# Returns ($smoothed_arrayref, $entries_changed); ($dpg, 0) if it cannot run.
-our $LG_AUTOCAL_DPG_SMOOTH_FULL_IDX  = 240;
-our $LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX = 280;
-
-sub lg_autocal_26_smooth_dpg_low_end {
- my ($dpg)=@_;
- return ($dpg,0) if(ref($dpg) ne "ARRAY" || @{$dpg} != 3072);
- my $full=$LG_AUTOCAL_DPG_SMOOTH_FULL_IDX;
- my $blend=$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX;
- my $half=2;                       # 5-point window
- my @out;
- my $changed=0;
- foreach my $c (0,1,2) {
-  my @ch=@{$dpg}[($c*1024)..($c*1024+1023)];
-  my @sm=@ch;
-  foreach my $pass (1,2) {
-   my @prev=@sm;
-   for(my $i=1;$i<=$blend+$half;$i++) {
-    last if($i > 1023);
-    my $lo=$i-$half; $lo=0 if($lo < 0);
-    my $hi=$i+$half; $hi=1023 if($hi > 1023);
-    my $sum=0;
-    for(my $j=$lo;$j<=$hi;$j++) { $sum+=$prev[$j]; }
-    $sm[$i]=$sum/($hi-$lo+1);
-   }
-  }
-  my @res=@ch;
-  for(my $i=1;$i<=1023;$i++) {
-   my $w=0;
-   if($i <= $full) { $w=1; }
-   elsif($i <= $blend) { $w=($blend-$i)/($blend-$full); }
-   next if($w <= 0);
-   $res[$i]=sprintf("%.0f",$ch[$i]+($sm[$i]-$ch[$i])*$w)+0;
-  }
-  $res[0]=$ch[0];
-  for(my $i=1;$i<=1023;$i++) {
-   $res[$i]=$res[$i-1] if($res[$i] < $res[$i-1]);
-   $res[$i]=0 if($res[$i] < 0);
-   $res[$i]=65535 if($res[$i] > 65535);
-   $changed++ if($res[$i] != $ch[$i]);
-  }
-  push @out,@res;
- }
- return (\@out,$changed);
 }
 
 # Linear interpolation of a ladder table paired BY POSITION with a label list.
@@ -1138,8 +1081,10 @@ sub sync_state_picture {
 sub luminance {
  my ($reading)=@_;
  return undef if(ref($reading) ne "HASH");
- return $reading->{"luminance"}+0 if(defined($reading->{"luminance"}));
- return $reading->{"Y"}+0 if(defined($reading->{"Y"}));
+ return bounded_number($reading->{"luminance"},-10_000_000,10_000_000)
+  if(defined($reading->{"luminance"}));
+ return bounded_number($reading->{"Y"},-10_000_000,10_000_000)
+  if(defined($reading->{"Y"}));
  return undef;
 }
 
@@ -1225,66 +1170,36 @@ sub clamp_unit {
  return $value;
 }
 
-sub pq_decode_normalized {
- my ($signal)=@_;
- $signal=clamp_unit($signal);
- return 0 if($signal <= 0);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $n=$signal ** (1/$m2);
- my $den=$c2 - $c3*$n;
- return 0 if($den <= 0);
- my $l=($n - $c1)/$den;
- $l=0 if($l < 0);
- return clamp_unit($l ** (1/$m1));
-}
-
-sub pq_decode_nits {
- my ($signal)=@_;
- return pq_decode_normalized($signal) * 10000;
+my %_autocal_target_context_cache;
+sub autocal_target_context_for {
+ my ($target_gamma,$signal_mode,$config)=@_;
+ $target_gamma=lc($target_gamma||"bt1886");
+ $target_gamma="2.4" if($target_gamma ne "bt1886" && $target_gamma ne "2.2"
+  && $target_gamma ne "2.4" && $target_gamma ne "srgb"
+  && $target_gamma ne "st2084" && $target_gamma ne "hlg");
+ $signal_mode=lc($signal_mode||"sdr");
+ $signal_mode="hlg" if($signal_mode ne "sdr" && $signal_mode ne "hdr10"
+  && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $peak=($signal_mode eq "sdr") ? autocal_sdr_signal_peak($config) : 100;
+ if(ref($LG_AUTOCAL_TARGET_CONTEXT) eq "HASH"
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"caller_policy"}||"") eq "autocal_1d"
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"target_gamma"}||"") eq $target_gamma
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"signal_mode"}||"") eq $signal_mode
+  && ($LG_AUTOCAL_TARGET_CONTEXT->{"sdr_signal_peak"}||0) == $peak) {
+  return $LG_AUTOCAL_TARGET_CONTEXT;
+ }
+ my $key=join("|",$target_gamma,$signal_mode,$peak);
+ $_autocal_target_context_cache{$key}=calibration_target_context({
+  caller_policy=>"autocal_1d",target_gamma=>$target_gamma,
+  signal_mode=>$signal_mode,sdr_signal_peak=>$peak,
+ }) if(!exists($_autocal_target_context_cache{$key}));
+ return $_autocal_target_context_cache{$key};
 }
 
 sub target_gamma_linear {
  my ($signal,$target_gamma,$signal_mode)=@_;
- $signal=0 if(!defined($signal));
- $signal+=0;
- $signal=0 if($signal < 0);
- $signal_mode=lc($signal_mode||"sdr");
- $signal=1 if($signal > 1 && $signal_mode ne "sdr");
- return 0 if($signal <= 0);
- $target_gamma=lc($target_gamma||"bt1886");
- if($target_gamma eq "srgb") {
-  return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055) ** 2.4);
- }
- if($signal_mode eq "dv" && $target_gamma eq "st2084") {
-  return $signal ** 2.2;
- }
- if($target_gamma eq "st2084") {
-  return pq_decode_normalized($signal);
- }
- my $gamma=($target_gamma eq "2.2") ? 2.2 : 2.4;
- return $signal ** $gamma;
-}
-
-sub bt1886_eotf_luminance {
- my ($signal,$white_y,$black_y)=@_;
- return undef if(!defined($signal) || !defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- return $white_y * (($signal+0) ** 2.4) if($black_y <= 0);
- return $white_y if($black_y >= $white_y);
- my $gamma=2.4;
- my $white_root=$white_y ** (1/$gamma);
- my $black_root=$black_y ** (1/$gamma);
- my $den=$white_root-$black_root;
- return $white_y * (($signal+0) ** $gamma) if($den <= 0);
- my $a=$den ** $gamma;
- my $b=$black_root/$den;
- my $v=$signal+$b;
- $v=0 if($v < 0);
- return $a * ($v ** $gamma);
+ my $context=autocal_target_context_for($target_gamma,$signal_mode);
+ return target_linear_for_context($context,$signal);
 }
 
 sub autocal_sdr_signal_peak {
@@ -1503,14 +1418,6 @@ sub target_luminance_for_step {
 	 #
 	 # HDR10 keeps signal = stimulus / 100 because the PQ EOTF saturates
 	 # at 100% by spec -- HDR has no headroom codes above 100 IRE.
-	 my $signal_peak=($mode eq "sdr") ? autocal_sdr_signal_peak() : 100.0;
-	 my $signal=$stimulus/$signal_peak;
-	 # Clamp >1.0 for HDR (PQ saturates at 100% by spec) AND for SDR
-	 # transports with NO super-white (signal_peak==100: Full / RGB-Limited),
-	 # where 100/105/109% all clamp to the same peak wire code -- their target
-	 # is the peak, not an unreachable >peak value. Only YCbCr-Limited
-	 # (signal_peak==109) keeps genuine super-white above 1.0.
-	 $signal=1 if($signal+0 > 1 && ($mode ne "sdr" || (defined($signal_peak) && $signal_peak == 100)));
 	 if(defined($ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
 	  my $trace_fh;
 	  if(open($trace_fh,">>",$ENV{"PGEN_TRACE_TARGET_LUMINANCE"})) {
@@ -1518,26 +1425,9 @@ sub target_luminance_for_step {
 	   close($trace_fh);
 	  }
 	 }
-	 if($mode eq "sdr" && $target_gamma eq "bt1886" && defined($black_y) && ($black_y+0) > 0) {
-	  $signal=0 if($signal < 0);
-	  # SDR BT.1886 normalises against the same legal peak the gamma-2.2
-	  # path uses (109 for Limited YCbCr, 100 otherwise -- see
-	  # autocal_sdr_signal_peak). The $signal divisor was set above.
-	  return bt1886_eotf_luminance($signal,$white_y,$black_y+0);
-	 }
-	 return 0 if($stimulus <= 0);
-	 # Old HDR legacy clamp: HDR clamps signals > 1.0 to 1.0 (the PQ
-	 # EOTF saturates there by spec). SDR has already passed through the
-	 # $mode ne "sdr" gate above, so this only affects HDR. The 1.1 cap
-	 # was the pre-ce1a637f SDR fallback for stimulus > 110% (the old
-	 # SDR limit); SDR is no longer capped here because the SDR26
-	 # 26-anchor table tops out at 109.
-	 $signal=1 if($signal > 1 && $mode ne "sdr");
-	 if($mode eq "hdr10" && $target_gamma eq "st2084") {
-	  my $pq_y=pq_decode_nits($signal);
-	  return ($pq_y > $white_y) ? $white_y : $pq_y;
-	 }
-	 return $white_y * target_gamma_linear($signal,$target_gamma,$signal_mode);
+	 my $context=autocal_target_context_for($target_gamma,$mode);
+	 return target_luminance_for_context(
+	  $context,$stimulus,$white_y,$black_y);
 }
 
 sub autocal_step_is_white {
@@ -1963,24 +1853,15 @@ sub target_luminance_for_autocal_step {
 			 return target_luminance_for_step($white_y,$step,$target_gamma,$signal_mode,$black_y);
 		}
 
-sub autocal_low_light_number {
- my ($value)=@_;
- return undef if(!defined($value) || ref($value));
- return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
- my $number=$value+0;
- return undef if($number != $number);
- return $number;
-}
-
-# Resolve expected Y for the step about to be read. This deliberately uses the
-# current step metadata and the same target-luminance helper as the solver. It
-# never derives the next mode from the previous measured Y.
+# Resolve expected Y for the step about to be read through the same target
+# luminance helper used by the solver. The previous measured Y is deliberately
+# not used to decide how many samples the next patch receives.
 sub autocal_expected_target_y_for_low_light {
  my ($config,$step)=@_;
  return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
  foreach my $key (qw(target_Y target_luminance)) {
   next if(!exists($step->{$key}));
-  my $direct=autocal_low_light_number($step->{$key});
+  my $direct=bounded_number($step->{$key},-10_000_000,10_000_000);
   return (defined($direct) && $direct >= 0) ? $direct : undef;
  }
  my $state=(ref($LG_AUTOCAL_STATE) eq "HASH") ? $LG_AUTOCAL_STATE : {};
@@ -1993,7 +1874,7 @@ sub autocal_expected_target_y_for_low_light {
   $state->{"setup_luminance_reference"},
   $config->{"setup_luminance_reference"}
  ) {
-  my $number=autocal_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number > 0) { $white_y=$number; last; }
  }
  return undef if(!defined($white_y));
@@ -2001,7 +1882,7 @@ sub autocal_expected_target_y_for_low_light {
  my $target=target_luminance_for_autocal_step(
   $white_y,$step,$config->{"target_gamma"}||"bt1886",$config->{"signal_mode"}||"sdr",$black_y
  );
- $target=autocal_low_light_number($target);
+ $target=bounded_number($target,-10_000_000,10_000_000);
  return (defined($target) && $target >= 0) ? $target : undef;
 }
 
@@ -2010,11 +1891,20 @@ sub autocal_low_light_mode_for_step {
  return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- my $trigger=autocal_low_light_number($config->{"low_light"}{"trigger"});
+ my $trigger=bounded_number($config->{"low_light"}{"trigger"},0,10_000_000);
  return "off" if(!defined($trigger) || $trigger <= 0);
  my $expected_y=autocal_expected_target_y_for_low_light($config,$step);
  return "off" if(!defined($expected_y) || $expected_y < 0);
  return ($expected_y < $trigger) ? $mode : "off";
+}
+
+sub autocal_requested_sample_count {
+ my ($config,$active_mode)=@_;
+ return 1 if(($active_mode||"off") eq "off");
+ return 1 if(ref($config) ne "HASH");
+ my $count=$config->{"low_light_requested_sample_count"};
+ return 1 if(!defined($count) || $count!~/^(?:1|2|3|5)$/);
+ return int($count);
 }
 
 sub body_luma_bias_display_allowed {
@@ -2447,65 +2337,57 @@ sub lg_extended_sdr_16_255_enabled {
  return 0;
 }
 
+my %PATCH_SIGNAL_CODE_POLICIES;
+sub patch_signal_code_policy_for_config {
+ my ($config)=@_;
+ die "Patch config is required\n" if(ref($config) ne "HASH");
+ my $mode=lc($config->{signal_mode}||"sdr");
+ $mode="hdr10" if($mode eq "hdr");
+ my $pattern_range=$config->{pattern_signal_range}
+  || $config->{signal_range} || $config->{transport_signal_range} || "";
+ my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
+ my $transport=$config->{transport_signal_range};
+ my $transport_limited=(defined($transport) && $transport ne "")
+  ? (int($transport)==1 ? 1 : 0) : $limited;
+ my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
+ my %input=(
+  signal_mode=>$mode,
+  pattern_range=>($limited ? "limited" : "full"),
+  transport_range=>($transport_limited ? "limited" : "full"),
+ );
+ if($mode eq "hdr10") {
+  $input{max_bpc}=10;
+ } elsif($sdr_headroom) {
+  $input{max_bpc}=10;
+  $input{autocal_26_codes}=1;
+  # This worker historically exposes its 10-bit Limited 105/109 slots.
+  # Keep that workflow policy named even if the transport is RGB; the Web UI
+  # server has a separate color-format-aware chart policy.
+  $input{color_format}=$limited ? 1 : 0;
+ } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
+  $input{max_bpc}=8;
+  $input{extended_sdr_codes}=1;
+ } else {
+  $input{max_bpc}=8;
+ }
+ my $key=join(":",map { defined($input{$_}) ? $input{$_} : "" }
+  qw(signal_mode pattern_range transport_range max_bpc autocal_26_codes
+     color_format extended_sdr_codes));
+ return $PATCH_SIGNAL_CODE_POLICIES{$key}
+  if($PATCH_SIGNAL_CODE_POLICIES{$key});
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 1D patch signal-code policy\n" if(!$policy);
+ $PATCH_SIGNAL_CODE_POLICIES{$key}=$policy;
+ return $policy;
+}
+
 sub patch_code_for_stimulus {
-	 my ($config,$stimulus)=@_;
-	 $stimulus=0 if(!defined($stimulus));
-	 $stimulus=0 if($stimulus < 0);
-	 my $sdr_headroom=lg_autocal_26_sdr_headroom_enabled($config);
-	 my $pattern_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||$config->{"transport_signal_range"}||"";
-	 my $limited=($pattern_range ne "" && int($pattern_range)==1) ? 1 : 0;
-	 # Super-white headroom (>100%) exists only in LIMITED range (codes
-	 # 236..255 in 8-bit, 941..1023 in 10-bit) regardless of bit depth -- the
-	 # 105/109 ladder anchors live there. Full range has no codes above white,
-	 # so cap stimulus at 100% (peak) only when full.
-	 my $headroom=($sdr_headroom || $limited) ? 109.5 : 100;
-	 $stimulus=$headroom if($stimulus > $headroom);
-	 # HDR10 is always 10-bit. Legal range depends on panel quant range.
-	 # Limited 10-bit -> 64-940. Full 10-bit -> 0-1023. Returns early so the
-	 # SDR-only clamp below (which would clamp 10-bit codes to 255) is
-	 # bypassed.
-	 my $hdr10=lc($config->{"signal_mode"}||"sdr") eq "hdr10";
-	 my $code;
-	 if($hdr10) {
-	  if($limited) {
-	   $code=int(64 + ($stimulus/100)*876 + .5);
-	  } else {
-	   # Full HDR10 stays linear 0..1023 (PQ domain; not the SDR 8bit<<2 map).
-	   $code=int(($stimulus/100)*1023 + .5);
-	  }
-	  $code=64   if($code < 64   && $limited);
-	  $code=0    if($code < 0    && !$limited);
-	  $code=940  if($code > 940  && $limited);
-	  $code=1023 if($code > 1023 && !$limited);
-	  return $code;
-	 }
-	 if($limited && $sdr_headroom) {
-	  # Canonical 10-bit LIMITED stimulus->code. For S<=100 use the linear
-	  # legal-range formula round(64 + S/100*876) (50%->502, 100%->940).
-	  # For S>100 (legal-expanded super-white), remap from the legal
-	  # white (940) to the legal peak (1023) over the 9-step 100%..109%
-	  # ladder: round(940 + (S-100)/9*(1023-940)). This makes 105%->986
-	  # and 109%->1023 instead of the prior linear extension (984, 1019)
-	  # which left a 4-code gap between 109% and the panel peak. Below
-	  # 100%, the linear formula and the S<=100 split are unchanged.
-	  if($stimulus <= 100) {
-	   $code=int(64 + ($stimulus/100)*876 + .5);
-	  } else {
-	   $code=int(940 + ($stimulus-100)/9*(1023-940) + .5);
-	  }
-	 } elsif($sdr_headroom) {
-	  # Full-range SDR 10-bit: same 8bit<<2 map as the DPG index so the
-	  # patch samples the LUT entry the solver adjusts (see
-	  # lg_autocal_sdr26_dpg_full_index_for_ire). Not linear *1023.
-	  $code=lg_autocal_sdr26_dpg_full_index_for_ire($stimulus,1023);
-	 } elsif($limited && lg_extended_sdr_16_255_enabled($config)) {
-	  $code=($stimulus <= 0) ? 0 : int(16 + ($stimulus/100)*239 + .5);
-	 } else {
-	  $code=$limited ? int(16 + ($stimulus/100)*219 + .5) : int(($stimulus/100)*255 + .5);
-	 }
-	 $code=($limited && $sdr_headroom) ? 64 : 0 if($code < 0);
-	 $code=$sdr_headroom ? 1023 : 255 if($code > ($sdr_headroom ? 1023 : 255));
-	 return $code;
+ my ($config,$stimulus)=@_;
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy_for_config($config),
+  defined($stimulus) ? $stimulus : 0);
+ die "Unable to convert 1D patch signal percent\n" if(!$result);
+ return $result->{code};
 }
 
 sub shifted_stimulus_step {
@@ -2702,68 +2584,11 @@ sub xyz_from_xy_y {
  return (($x*$Y)/$y,$Y,((1-$x-$y)*$Y)/$y);
 }
 
-sub reading_xyz {
- my ($reading)=@_;
- return (undef,undef,undef) if(ref($reading) ne "HASH");
- if(defined($reading->{"X"}) && defined($reading->{"Y"}) && defined($reading->{"Z"})) {
-  return ($reading->{"X"}+0,$reading->{"Y"}+0,$reading->{"Z"}+0);
- }
- my $Y=luminance($reading);
- return (undef,undef,undef) if(!defined($Y) || !defined($reading->{"x"}) || !defined($reading->{"y"}));
- return xyz_from_xy_y($reading->{"x"},$reading->{"y"},$Y);
-}
-
-sub pq_encode_normalized {
- my ($nits)=@_;
- $nits=0 if(!defined($nits));
- $nits+=0;
- return 0 if($nits <= 0);
- $nits=10000 if($nits > 10000);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l ** $m1;
- return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
-}
-
-sub xyz_to_ictcp {
- my ($X,$Y,$Z)=@_;
- $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
- my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
- my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
- my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
- $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
- my $L=(1688*$R+2146*$G+262*$B)/4096;
- my $M=(683*$R+2951*$G+462*$B)/4096;
- my $S=(99*$R+309*$G+3688*$B)/4096;
- my $Lp=pq_encode_normalized($L);
- my $Mp=pq_encode_normalized($M);
- my $Sp=pq_encode_normalized($S);
- return {
-  I=>0.5*$Lp+0.5*$Mp,
-  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
-  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096
- };
-}
-
-sub delta_e_itp_xyz {
- my ($X1,$Y1,$Z1,$X2,$Y2,$Z2)=@_;
- return undef if(!defined($X1) || !defined($Y1) || !defined($Z1) || !defined($X2) || !defined($Y2) || !defined($Z2));
- my $a=xyz_to_ictcp($X1,$Y1,$Z1);
- my $b=xyz_to_ictcp($X2,$Y2,$Z2);
- my $dI=$a->{"I"}-$b->{"I"};
- my $dT=$a->{"T"}-$b->{"T"};
- my $dP=$a->{"P"}-$b->{"P"};
- return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
-}
-
 sub delta_e_itp_gamma {
  my ($reading,$white_y,$target_x,$target_y,$target_luminance)=@_;
- my ($X,$Y,$Z)=reading_xyz($reading);
- return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ my $xyz=reading_xyz($reading);
+ return undef if(!defined($xyz));
+ my ($X,$Y,$Z)=@{$xyz};
  my $targetY=(defined($target_luminance) && $target_luminance > 0) ? ($target_luminance+0) : $Y;
  my ($Xr,$Yr,$Zr)=xyz_from_xy_y($target_x,$target_y,$targetY);
  return undef if(!defined($Xr) || !defined($Yr) || !defined($Zr));
@@ -2793,23 +2618,23 @@ sub autocal_delta_e_formula {
 # values are logged once per key/value so a typo'd config is visible in the
 # run log rather than silently calibrating to a different target.
 my %_autocal_target_de_warned;
-my $_autocal_target_de_numeric=qr/^\+?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 sub autocal_solver_target_delta_e {
  my ($config,$override_key,$fallback)=@_;
- my $numeric=$_autocal_target_de_numeric;
- $fallback=0.5 if(!defined($fallback) || $fallback !~ $numeric || ($fallback+0) <= 0);
- my $target=$fallback+0;
+ my $fallback_number=bounded_number($fallback,0,1_000_000);
+ $fallback_number=0.5 if(!defined($fallback_number) || $fallback_number <= 0);
+ my $target=$fallback_number+0;
  my $source=undef;
  if(ref($config) eq "HASH") {
   foreach my $key (grep { defined($_) && $_ ne "" } ($override_key,"target_delta_e")) {
    next if(!defined($config->{$key}));
    my $value=$config->{$key};
    $value =~ s/^\s+|\s+$//g;
-   if($value !~ $numeric || ($value+0) <= 0) {
+   my $number=bounded_number($value,0,1_000_000);
+   if(!defined($number) || $number <= 0) {
     log_line("AutoCal target: ignoring unusable ".$key."=\"".$config->{$key}."\", treating as unset") if(!$_autocal_target_de_warned{$key."\0".$config->{$key}}++);
     next;
    }
-   $target=$value+0;
+   $target=$number+0;
    $source=$key;
    last;
   }
@@ -2877,8 +2702,9 @@ sub autocal_delta_e {
 # the dE would be a tautology (target = measured).
 sub delta_e_itp_chroma_only {
  my ($reading,$target_x,$target_y,$target_luminance)=@_;
- my ($X,$Y,$Z)=reading_xyz($reading);
- return undef if(!defined($X) || !defined($Y) || !defined($Z));
+ my $xyz=reading_xyz($reading);
+ return undef if(!defined($xyz));
+ my ($X,$Y,$Z)=@{$xyz};
  my $targetY=(defined($target_luminance) && $target_luminance > 0) ? ($target_luminance+0) : $Y;
  my ($Xr,$Yr,$Zr)=xyz_from_xy_y($target_x,$target_y,$targetY);
  return undef if(!defined($Xr) || !defined($Yr) || !defined($Zr));
@@ -5053,17 +4879,14 @@ sub low_shadow_sample_read_timeout {
 sub transient_read_error {
  my ($error)=@_;
  return 0 if(!defined($error) || $error eq "");
- return ($error =~ /tim(?:e|ed)\s*out|timeout|communication|fifo|session|spotread|unavailable|invalid web ui api|unable to start meter read/i) ? 1 : 0;
+ return ($error =~ /tim(?:e|ed)\s*out|timeout|communication|fifo|session|spotread|respawn|unavailable|invalid web ui api|unable to start meter read/i) ? 1 : 0;
 }
 
-# Consecutive-transient-failure counter for the meter session. A single read
-# timeout is usually a poll hiccup that clears by re-reading on the EXISTING
-# spotread session. Tearing the session down (/api/meter/session/stop) forces a
-# fresh spotread to reopen + reclaim the i1Display3 USB interface, and that
-# reopen races the kernel/usbhid state -> "did not claim interface 0 before use"
-# -> kernel device reset -> meter offline. So only tear down after repeated
-# consecutive transient failures, not the first one. Reset to 0 on any
-# successful read (see reset_meter_session_success below).
+# Consecutive-transient-failure counter for errors that do not prove a logical
+# read is still in flight. Poll transport failures are handled inside
+# read_step_once, while an incomplete/ambiguous logical read is retired
+# immediately below. Keeping the threshold for other one-off errors avoids an
+# unnecessary USB reopen and its kernel interface-claim race.
 my $_meter_session_consecutive_transient_failures=0;
 my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
 
@@ -5075,6 +4898,22 @@ sub reset_meter_session_after_read_error {
  my ($error)=@_;
  $error="" if(!defined($error));
  $error=~s/[\r\n]+/ /g;
+ # read_step_once now absorbs individual GET polling failures. Any timeout
+ # that reaches this function therefore means the logical read itself is
+ # incomplete (or a POST may have been accepted without a response). Never
+ # submit another patch to that potentially in-flight child.
+ if($error=~/meter session closed for clean retry|meter read timed out|Web UI API (?:timed out|read failed|is unavailable)/i) {
+  log_line("Retiring meter session after an incomplete or ambiguous read: $error");
+  my $stop=api_json("POST","/api/meter/session/stop",undef,25);
+  # This branch fires when the API transport is already failing, so the stop
+  # itself can fail; record it, because the ambiguous child then survives and
+  # only the request_id checks in read_step_once stand between its late
+  # result and the next patch.
+  log_line("Meter session stop was not confirmed: ".((ref($stop) eq "HASH" && $stop->{"message"}) ? $stop->{"message"} : "no response"))
+   if(ref($stop) ne "HASH" || ($stop->{"status"}||"") eq "error");
+  $_meter_session_consecutive_transient_failures=0;
+  return;
+ }
  $_meter_session_consecutive_transient_failures++;
  if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {
   # First transient failure: let the caller retry on the existing session
@@ -5148,29 +4987,6 @@ sub sanitize_count {
  return $raw;
 }
 
-sub _patch_insert_code_for_level {
- # Legacy fallback only. Modern webui binaries inject a precomputed
- # "<patch_insert_*_code>:<patch_insert_*_input_max>" pair into the
- # config so the insertion patch matches the same code the greyscale
- # ladder would emit for that stimulus in the active output mode. This
- # remains for older webui binaries that do not inject the fields.
- my ($level_pct,$signal_mode,$max_luma)=@_;
- $level_pct=0 if($level_pct+0 < 0);
- $level_pct=100 if($level_pct+0 > 100);
- $max_luma//=1000;
- # For HDR10 the code must be PQ-encoded so the configured level
- # percentage maps to the correct visible luminance. Without PQ
- # encoding, code 26 (10%) through PQ EOTF is only ~0.4 nits --
- # essentially black on an OLED. PQ-encoding 10% of 1000 nits (100
- # nits) gives code ~143, which is a clearly visible grey flash.
- if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
-  my $target_nits=($level_pct/100.0)*$max_luma;
-  my $pq_signal=pq_encode_normalized($target_nits);
-  return int($pq_signal*255.0 + 0.5);
- }
- return int(($level_pct/100.0)*255.0 + 0.5);
-}
-
 sub _patch_insert_resolve {
  # Returns ($code,$input_max) for a single insertion type. Prefers the
  # webui-precomputed pair (mode-correct, matches the greyscale ladder);
@@ -5184,13 +5000,25 @@ sub _patch_insert_resolve {
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
  }
- if(defined($config->{"signal_mode"}) && lc($config->{"signal_mode"}) eq "dv") {
-  my $pct=$level+0;
-  $pct=0 if($pct < 0);
-  $pct=100 if($pct > 100);
-  return (int(256.0+($pct/100.0)*3504.0+0.5),4095);
+ my $mode=lc($config->{"signal_mode"}||"sdr");
+ my %input=(signal_mode=>$mode,pattern_range=>"full",
+  transport_range=>"full",max_bpc=>8);
+ if($mode eq "hdr10") {
+  $input{pq_luminance_percent}=1;
+  $input{signal_peak_nits}=($config->{"max_luma"}||1000)+0;
+ } elsif($mode eq "dv") {
+  $input{pattern_range}="limited";
+  $input{transport_range}="limited";
+  $input{dv_series}=1;
+  $input{dv_series_code_bits}=12;
+  $input{dv_series_full_range}=0;
+  $input{dv_interface}=$config->{"dv_interface"}||"standard";
  }
- return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 1D insertion signal-code policy\n" if(!$policy);
+ my $result=signal_percent_to_code($policy,$level);
+ die "Unable to convert 1D insertion signal percent\n" if(!$result);
+ return ($result->{code},$result->{input_max});
 }
 
 sub apply_pattern_insert_before_read {
@@ -13349,110 +13177,7 @@ sub lg_autocal_26_compute_hdr20_1d_dpg_data {
 #                                      defined, just less smooth at the
 #                                      very ends)
 sub lg_autocal_26_akima_interpolate {
- my ($xs_ref,$ys_ref,$min_idx,$max_idx)=@_;
- $min_idx=$xs_ref->[0] if(!defined($min_idx));
- $max_idx=$xs_ref->[-1] if(!defined($max_idx));
- return [] if(!defined($xs_ref) || ref($xs_ref) ne "ARRAY");
- return [] if(!defined($ys_ref) || ref($ys_ref) ne "ARRAY");
- return [] if(scalar(@$xs_ref) != scalar(@$ys_ref));
- return [] if(scalar(@$xs_ref) < 4);
- # Coerce to floats
- my @xs=map { 0+$_ } @$xs_ref;
- my @ys=map { 0+$_ } @$ys_ref;
- my $n=scalar(@xs);
- # Edge case: only 2 real slopes (n=4 anchors gives n-1=3 slopes,
- # so the n<4 check above already filters n<4; for n=4 we have
- # exactly 3 slopes, scipy handles it via the refined formula
- # below).
- # 1) Segment slopes
- my @m;
- for my $i (0..$n-2) {
-  my $dx=$xs[$i+1]-$xs[$i];
-  push @m, ($dx != 0) ? ($ys[$i+1]-$ys[$i])/$dx : 0;
- }
- # 2) Pad the slope array with 2 extrapolated slopes on each side.
- # scipy's Akima1DInterpolator uses this padding so the interior
- # formula at i=0 and i=n-1 doesn't need a special case.
- my @mpad;
- $mpad[0]=2*$m[0] - $m[1];
- $mpad[1]=2*$mpad[0] - $m[0];
- for my $i (0..$n-2) { push @mpad, $m[$i]; }
- $mpad[$n+1]=2*$m[$n-2] - $m[$n-3];
- $mpad[$n+2]=2*$mpad[$n+1] - $m[$n-2];
- # 3) Initial derivative estimate: t[i] = 0.5 * (mpad[i+3] + mpad[i]).
- # For linear data this gives the exact slope; for non-linear data
- # it's a midpoint average that the refinement step below will
- # correct via the magnitude-weighted Akima formula.
- my @t;
- for my $i (0..$n-1) {
-  $t[$i]=0.5*($mpad[$i+3] + $mpad[$i]);
- }
- # 4) Refine with the magnitude-weighted Akima formula. scipy uses
- # w1 = |m[i] - m[i-1]| and w2 = |m[i-1] - m[i-2]| (not the textbook
- # Akima 1970 w1' = |m[i+1] - m[i]|). For linear data both w1 and w2
- # are 0, so t stays at the initial value (which IS the correct
- # slope), giving exact linear results -- this is the key property
- # scipy preserves and we need to preserve too.
- my $break_mult=1e-9;
- my @diff=map { abs($mpad[$_+1] - $mpad[$_]) } (0..$#mpad-1);
- # Find the max of (f1+f2) for the relative threshold
- my $f12_max=0;
- for my $i (0..$n-1) {
-  my $f1=$diff[$i+2];  # |mpad[i+2] - mpad[i+1]|
-  my $f2=$diff[$i];    # |mpad[i+1] - mpad[i]|
-  my $f12=$f1+$f2;
-  $f12_max=$f12 if($f12 > $f12_max);
- }
- $f12_max=-1 if($f12_max == 0);
- for my $i (0..$n-1) {
-  my $f1=$diff[$i+2];
-  my $f2=$diff[$i];
-  my $f12=$f1+$f2;
-  # Skip the refinement if f12 is too small (numerically unstable)
-  # or if all f12 are 0 (the linear case where t stays at the
-  # initial midpoint estimate, which IS the exact slope -- this
-  # is the property that gives exact linear results on linear data).
-  next if($f12 <= 0);
-  next if($f12_max > 0 && $f12 <= $break_mult * $f12_max);
-  # In padded indices: m_padded[i+1] and m_padded[i+2] correspond to
-  # the real slopes. For i=0, mpad[1] is the left padding (not a
-  # real slope), so the formula's anchors are mpad[1] (fake) and
-  # mpad[2] (real_m[0]). For i=1, mpad[2]=real_m[0], mpad[3]=real_m[1].
-  # scipy's formula: t[i] = mpad[i+1] + (f2/f12) * (mpad[i+2] - mpad[i+1])
-  $t[$i]=$mpad[$i+1] + ($f2/$f12)*($mpad[$i+2] - $mpad[$i+1]);
- }
- # 3) Hermite cubic per integer index in [$min_idx, $max_idx]
- my @out;
- for my $qx ($min_idx..$max_idx) {
-  if($qx <= $xs[0]) {
-   push @out, $ys[0];
-   next;
-  }
-  if($qx >= $xs[-1]) {
-   push @out, $ys[-1];
-   next;
-  }
-  # Find segment (linear scan; for the DPG use case n is small enough)
-  my $i=0;
-  for my $k (0..$n-2) {
-   if($xs[$k+1] >= $qx) { $i=$k; last; }
-  }
-  my $h=$xs[$i+1]-$xs[$i];
-  if($h == 0) {
-   push @out, $ys[$i];
-   next;
-  }
-  my $s=($qx-$xs[$i])/$h;
-  my $s2=$s*$s;
-  my $s3=$s2*$s;
-  my $h00=2*$s3 - 3*$s2 + 1;
-  my $h10=$s3 - 2*$s2 + $s;
-  my $h01=-2*$s3 + 3*$s2;
-  my $h11=$s3 - $s2;
-  my $val=$h00*$ys[$i] + $h10*$h*$t[$i] + $h01*$ys[$i+1] + $h11*$h*$t[$i+1];
-  push @out, $val;
- }
- return \@out;
+ return akima_interpolate(@_);
 }
 
 # Build the LG HDR20 1D DPG LUT (3072 values = 3 channels x 1024 points,
@@ -14681,11 +14406,7 @@ sub lg_autocal_26_queue_hdr20_1d_tonemap_upload {
 our %LG_AUTOCAL_PQ_GAMMA_TABLE;
 sub lg_autocal_pq_gamma_table_init {
  return 1 if(scalar(keys %LG_AUTOCAL_PQ_GAMMA_TABLE) >= 256);
- my $m1=2610.0/16384.0;       # 0.1593017578125
- my $m2=2523.0/32.0;          # 78.84375
- my $c1=3424.0/4096.0;        # 0.8359375
- my $c2=2413.0/128.0;         # 18.8515625  (NOT 2413/32=75.40625)
- my $c3=2392.0/128.0;         # 18.6875     (NOT 2392/32=74.75)
+ my ($m1,$m2,$c1,$c2,$c3)=pq_constants();
  my $m1_inv=1.0/$m1;          # 6.277
  my $m2_inv=1.0/$m2;          # 0.01268
  for(my $i=0;$i<256;$i++) {
@@ -14907,7 +14628,6 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	my $acceptance_skip_fraction=defined($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_hdr20_dpg_acceptance_skip_fraction"}+0) : 0.6;
 	$acceptance_skip_fraction=0.0 if($acceptance_skip_fraction < 0.0);
 	$acceptance_skip_fraction=1.0 if($acceptance_skip_fraction > 1.0);
-	my $acceptance_skip_de=$acceptance_skip_fraction*$target_de;
 	# Meter luminance floor: below this the colorimeter reads ~0 and the gain
 	# loop has no gradient. (1.4% IRE was starting at ~0.002 nits, under the
 	# i1Display Pro Plus ~0.003-nits floor, so it quit at dE 30.) Sub-floor
@@ -15262,15 +14982,20 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 		# scale with the same effective target so the "instant-skip when
 		# already below 60% of target" path stays consistent with the
 		# convergence check.
-		my $_effective_target_de=$target_de;
-		my $_effective_skip_de=$acceptance_skip_de;
-		if($_anchor_ire <= $very_low_ire_threshold) {
-		 $_effective_target_de=$target_de*$target_de_very_low_multiplier;
-		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
-		} elsif($_anchor_ire <= $low_ire_threshold) {
-		 $_effective_target_de=$target_de*$target_de_low_multiplier;
-		 $_effective_skip_de=$_effective_target_de*$acceptance_skip_fraction;
-		}
+		my $_effective_de_limits=effective_de_limits_for_ire({
+		 ire=>$_anchor_ire,target_delta_e=>$target_de,
+		 skip_fraction=>$acceptance_skip_fraction,
+		 low_ire_threshold=>$low_ire_threshold,
+		 very_low_ire_threshold=>$very_low_ire_threshold,
+		 low_multiplier=>$target_de_low_multiplier,
+		 very_low_multiplier=>$target_de_very_low_multiplier,
+		 threshold_policy=>"inclusive",
+		});
+		die "Unable to resolve HDR20 effective dE limits\n"
+		 if(ref($_effective_de_limits) ne "HASH");
+		my $_effective_target_de=$_effective_de_limits->{"target_delta_e"};
+		my $_effective_skip_de=$_effective_de_limits->{"skip_delta_e"};
+		$state->{"current_effective_de_limits"}={%{$_effective_de_limits}};
 		my $y_prev=undef;
 		my $dpg_r_prev=undef;
 		my $dpg_g_prev=undef;
@@ -15746,6 +15471,9 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 			  dpg_idx_R=>$current_dpg->[$idx],
 			  dpg_idx_G=>$current_dpg->[$idx+1024],
 			  dpg_idx_B=>$current_dpg->[$idx+2048],
+			  effective_target_delta_e=>$_effective_target_de+0,
+			  effective_skip_delta_e=>$_effective_skip_de+0,
+			  effective_delta_e_tier=>$_effective_de_limits->{"tier"},
 			  converged=>$conv_now?JSON::PP::true:JSON::PP::false,
 			 };
 			 $hist->{$label}=$row;
@@ -15775,10 +15503,10 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 					if(@$_r) {
 						$_r->[-1]{"de"}=sprintf("%.4f",$de+0);
 						$_r->[-1]{"acceptance_skip"}=JSON::PP::true;
-						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$acceptance_skip_de+0);
+						$_r->[-1]{"acceptance_skip_de"}=sprintf("%.4f",$_effective_skip_de+0);
 					}
 				}
-				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$acceptance_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of target ".sprintf("%.2f",$target_de)."), moving on without one-more move");
+				log_line("HDR20 1D DPG greyscale: ".$label." below skip-acceptance (dE=".sprintf("%.4f",$de+0)." < ".sprintf("%.4f",$_effective_skip_de)." = ".sprintf("%.0f%%",$acceptance_skip_fraction*100)." of effective target ".sprintf("%.2f",$_effective_target_de)."), moving on without one-more move");
 				write_state($state);
 				last;
 			}
@@ -16249,7 +15977,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 	if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
 		my $committed=(ref($state) eq "HASH" && ref($state->{"hdr20_1d_dpg_data"}) eq "ARRAY"
 			&& @{$state->{"hdr20_1d_dpg_data"}} == 3072) ? $state->{"hdr20_1d_dpg_data"} : $current_dpg;
-		my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
+		my ($smoothed,$changed)=smooth_dpg_low_end($committed);
 		if($changed) {
 			$state->{"current_name"}="HDR20 1D DPG (shadow smoothing)";
 			$state->{"phase"}="writing";
@@ -16267,7 +15995,7 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 				$current_dpg=$smoothed;
 				$state->{"hdr20_1d_dpg_data"}=$smoothed;
 				$state->{"hdr20_1d_dpg_low_end_smoothed"}=JSON::PP::true;
-				log_line("HDR20 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+				log_line("HDR20 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
 			} else {
 				$state->{"hdr20_1d_dpg_low_end_smoothed"}=JSON::PP::false;
 				log_line("HDR20 1D DPG greyscale: low-end smoothing upload FAILED, keeping the unsmoothed curve: ".$smsg);
@@ -16339,13 +16067,22 @@ sub lg_autocal_26_run_hdr20_dpg_greyscale {
 # the SDR path's JSON state is distinguishable from the HDR path's
 # hdr20_1d_dpg_ keys when both are loaded into the WebUI.
 
-# Compute the target luminance for an SDR26 anchor. SDR uses plain gamma 2.2
-# (no PQ EOTF, no BT.1886 unless an explicit BT.1886 target_gamma is
-# configured -- the reference SDR workflow uses 2.2 across all 26 anchors).
-# This is a thin wrapper around target_luminance_for_step that pins the
-# signal_mode to "sdr" and the gamma to 2.2; the heavy lifting (BT.1886
-# black-floor handling, stimulus > 100% clamping, signal clipping) is already
-# in target_luminance_for_step.
+# Resolve the SDR26 target transfer once for both target math and persisted
+# status. Keeping this normalization in one place prevents the chart metadata
+# from drifting away from the curve that the solver actually used.
+sub lg_autocal_26_sdr26_target_gamma {
+ my ($target_gamma)=@_;
+ $target_gamma="bt1886" if(!defined($target_gamma) || $target_gamma eq "");
+ $target_gamma=lc($target_gamma);
+ $target_gamma="bt1886" if($target_gamma eq "2.4");
+ $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ return $target_gamma;
+}
+
+# Compute the target luminance for an SDR26 anchor. This is a thin wrapper
+# around target_luminance_for_step that pins signal_mode to SDR; the heavy
+# lifting (BT.1886 black-floor handling, stimulus > 100% clamping, signal
+# clipping) remains consolidated there.
 sub lg_autocal_26_sdr26_dpg_compute_target {
  my ($white_y,$rs,$black_y,$target_gamma)=@_;
  return undef unless(defined($white_y) && $white_y+0 > 0);
@@ -16371,10 +16108,7 @@ sub lg_autocal_26_sdr26_dpg_compute_target {
  # override path ($_target_white_override / $_target_black_override set
  # by the calibration card) still wins inside target_luminance_for_step
  # so per-cal target entries take precedence.
- $target_gamma="bt1886" if(!defined($target_gamma) || $target_gamma eq "");
- $target_gamma=lc($target_gamma);
- $target_gamma="2.2" if($target_gamma eq "2.4"); # accept "2.4" as explicit BT.1886 alias
- $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
+ $target_gamma=lg_autocal_26_sdr26_target_gamma($target_gamma);
  return target_luminance_for_step($white_y,$rs,$target_gamma,"sdr",$black_y);
 }
 
@@ -16543,6 +16277,12 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $low_ire_threshold=defined($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}) ? ($config->{"lg_autocal_sdr26_dpg_low_ire_threshold"}+0) : 5.0;
  $low_ire_threshold=1.0 if($low_ire_threshold < 1.0);
  $low_ire_threshold=10.0 if($low_ire_threshold > 10.0);
+ # Cap the fixed very-low tier at the operator's low threshold (HDR20 does
+ # the same): a low threshold configured inside its documented [1,10] clamp
+ # but below 2.5 must narrow the very-low tier, not abort the run when
+ # effective_de_limits_for_ire rejects very_low > low.
+ my $very_low_ire_threshold=2.5;
+ $very_low_ire_threshold=$low_ire_threshold if($very_low_ire_threshold > $low_ire_threshold);
  # High-IRE band for mid-loop revert (HDR-style port). Mid IRE [low, high)
  # does NOT mid-loop revert-and-halve -- only track best + final restore.
  # Default high=85 so 80% stays mid-band: at high=80 the first pure-Y
@@ -16592,15 +16332,6 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
   $target_de_very_low_multiplier=1.0 if($target_de_very_low_multiplier < 1.0);
   $target_de_very_low_multiplier=5.0 if($target_de_very_low_multiplier > 5.0);
   $target_de_very_low_multiplier=$target_de_low_multiplier if($target_de_very_low_multiplier < $target_de_low_multiplier);
-  my $_effective_target_de=$target_de;
-  # The very-low boundary is 2.5 (not 2.0) so the 2.3% anchor lands in the
-  # very-low band. With the default 1.0 multipliers this branch changes
-  # nothing; it only takes effect when an expert override relaxes a tier.
-  if($_anchor_ire+0 < 2.5) {
-   $_effective_target_de=$target_de*$target_de_very_low_multiplier;
-  } elsif($_anchor_ire+0 < $low_ire_threshold) {
-   $_effective_target_de=$target_de*$target_de_low_multiplier;
-  }
  my $acceptance_de=lg_autocal_26_sdr26_dpg_accept_skip_threshold($config);
  # Acceptance must not exceed target (otherwise we accept patches that
  # haven't actually converged to the operator's set target).
@@ -16612,7 +16343,18 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
  my $skip_fraction=defined($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}) ? ($config->{"lg_autocal_sdr26_dpg_acceptance_skip_fraction"}+0) : 0.3;
  $skip_fraction=0.1 if($skip_fraction+0 < 0.1);
  $skip_fraction=1.0 if($skip_fraction > 1.0);
- my $skip_de=$skip_fraction*$_effective_target_de;
+ my $_effective_de_limits=effective_de_limits_for_ire({
+  ire=>$_anchor_ire,target_delta_e=>$target_de,
+  skip_fraction=>$skip_fraction,low_ire_threshold=>$low_ire_threshold,
+  very_low_ire_threshold=>$very_low_ire_threshold,low_multiplier=>$target_de_low_multiplier,
+  very_low_multiplier=>$target_de_very_low_multiplier,
+  threshold_policy=>"exclusive",
+ });
+ die "Unable to resolve SDR26 effective dE limits\n"
+  if(ref($_effective_de_limits) ne "HASH");
+ my $_effective_target_de=$_effective_de_limits->{"target_delta_e"};
+ my $skip_de=$_effective_de_limits->{"skip_delta_e"};
+ $state->{"current_effective_de_limits"}={%{$_effective_de_limits}};
  my $black_y=$config->{"black_y"};
  $black_y=0 unless(defined($black_y) && $black_y+0 >= 0);
   # Legal-peak (109%) persistent state. The "original target" reference
@@ -16990,6 +16732,9 @@ sub lg_autocal_26_run_sdr_1d_dpg_greyscale_inner {
     best_de=>defined($best_de)?sprintf("%.4f",$best_de+0):undef,
     consecutive_reverts=>$consecutive_reverts+0,
     move_scaling=>sprintf("%.4f",$move_scaling+0),
+    effective_target_delta_e=>$_effective_target_de+0,
+    effective_skip_delta_e=>$skip_de+0,
+    effective_delta_e_tier=>$_effective_de_limits->{"tier"},
     converged=>$conv_now?JSON::PP::true:JSON::PP::false,
    };
    $hist->{$label}=$row;
@@ -18194,7 +17939,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  if(!cancelled() && !$upload_failed && !$config->{"full_workflow"}) {
   my $committed=(ref($state) eq "HASH" && ref($state->{"sdr_1d_dpg_data"}) eq "ARRAY"
    && @{$state->{"sdr_1d_dpg_data"}} == 3072) ? $state->{"sdr_1d_dpg_data"} : $current_dpg;
-  my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($committed);
+  my ($smoothed,$changed)=smooth_dpg_low_end($committed);
   if($changed) {
    $state->{"current_name"}="SDR26 1D DPG (shadow smoothing)";
    $state->{"phase"}="writing";
@@ -18211,7 +17956,7 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
     $current_dpg=$smoothed;
     $state->{"sdr_1d_dpg_data"}=$smoothed;
     $state->{"sdr_1d_dpg_low_end_smoothed"}=JSON::PP::true;
-    log_line("SDR26 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+    log_line("SDR26 1D DPG greyscale: low-end smoothing applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
    } else {
     $state->{"sdr_1d_dpg_low_end_smoothed"}=JSON::PP::false;
     log_line("SDR26 1D DPG greyscale: low-end smoothing upload FAILED, keeping the unsmoothed curve: ".$smsg);
@@ -18229,11 +17974,9 @@ if(ref($state) eq "HASH" && !defined($state->{"sdr_1d_dpg_body_target_logged"}) 
  # now the headline-committed max; the trajectory-only diagnostic is
  # still available via $state->{sdr_1d_dpg_anchor_history} per anchor.
  $state->{"sdr_1d_dpg_final_de"}=$max_de_overall+0;
- # SDR26 always calibrates against gamma 2.2 (the LG 1D_2_2_EN reference
- # workflow uses the DPG hardware gamma 2.2 path). Persist on the state so
- # the WebUI chart can render the matching 2.2 target line via
- # meterGreyChartTargetGammaSelection rather than the BT.1886 dropdown default.
- $state->{"sdr_1d_dpg_target_gamma"}="2.2";
+ # Persist the exact transfer used by lg_autocal_26_sdr26_dpg_compute_target
+ # so the WebUI renders the same target curve the worker solved.
+ $state->{"sdr_1d_dpg_target_gamma"}=lg_autocal_26_sdr26_target_gamma($config->{"target_gamma"});
  # Only mark the curve as uploaded to the TV if the white reference actually
  # converged and the upload didn't fail. A non-converged 100% block leaves
  # the panel with the identity baseline -- uploading the 1.0/1.0/1.0 no-op
@@ -21583,11 +21326,20 @@ sub invalid_low_shadow_reading {
 
 sub read_step {
 		 my ($config,$step,$state_ref)=@_;
-		 my $attempts=defined($config->{"read_attempts"}) ? int($config->{"read_attempts"}) : 5;
+	 my $attempts=defined($config->{"read_attempts"}) ? int($config->{"read_attempts"}) : 5;
  $attempts=1 if($attempts < 1);
  $attempts=5 if($attempts > 5);
  my $last_error="";
-	 if(autocal_step_is_low_shadow($step) && !(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"})) {
+	 # When the operator's low-light handler already repeats this patch
+	 # (2/3/5 samples reduced in linear XYZ), the low-shadow median ladder is
+	 # deliberately stood down: stacking both would read the patch up to 15
+	 # times, and the mean of a full averaging set is the operator's chosen
+	 # estimator. The median ladder remains the default outlier guard whenever
+	 # the handler leaves the patch at one sample.
+	 my $application_average_mode=autocal_low_light_mode_for_step($config,$step);
+	 if(autocal_step_is_low_shadow($step)
+	    && autocal_requested_sample_count($config,$application_average_mode) == 1
+	    && !(ref($config) eq "HASH" && $config->{"disable_low_shadow_median"})) {
 	  my @samples;
 	  my $sample_count=low_shadow_sample_count_for_step($config,$step);
 	  my $sample_timeout=low_shadow_sample_read_timeout($config,$step);
@@ -22024,13 +21776,16 @@ sub read_step_once {
 		 if(ref($opts) eq "HASH" && defined($opts->{"read_timeout"}) && $opts->{"read_timeout"} > 0) {
 		  $payload->{"read_timeout"}=int($opts->{"read_timeout"});
 		 }
-		 # Keep the persistent wrapper/session at off. Only its spotread child
-		 # changes when the current step crosses the target-Y trigger.
+		 # Argyll ignores -Y averaging on i1Display3. Ask the persistent meter
+		 # session for 2/3/5 physical samples instead, only below the target-Y
+		 # trigger. The spotread process remains open throughout.
 		 $payload->{"low_light_session"}={ mode => "off", enabled => JSON::PP::false };
 		 my $active_low_light=autocal_low_light_mode_for_step($config,$step);
+		 my $read_sample_count=autocal_requested_sample_count($config,$active_low_light);
 		 $payload->{"low_light"}={
 		  mode => $active_low_light,
 		  enabled => ($active_low_light ne "off") ? JSON::PP::true : JSON::PP::false,
+		  requested_sample_count => $read_sample_count,
 		 };
 		 my $read_started=time();
 			 my $step_key=autocal_read_step_key($step);
@@ -22042,11 +21797,30 @@ sub read_step_once {
 			 $start_timeout=70 if($ire <= 5 && !(ref($step) eq "HASH" && $step->{"autocal_probe_stimulus"}));
 			 my $start=api_json("POST","/api/meter/read",$payload,$start_timeout);
 		 return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
-		 my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"});
+		 # The session extends its per-sample budget by 30s after one communication
+		 # retry and reuses the extended value for every later sample, so a
+		 # multi-sample set legitimately outlives a bare per-sample multiple. The
+		 # grace stops this worker retiring a session ~50s before an aaa set that
+		 # took one comm retry would have returned.
+		 my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
+		 my $poll_transport_failures=0;
 		 while(time() < $deadline) {
 		  return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
 	  my $status=$result->{"status"}||"";
+	  my $poll_message=$result->{"message"}||"";
+	  # A polling socket can time out while the already-submitted physical read
+	  # is still running. Re-poll the SAME request once; returning immediately
+	  # would let the caller submit a second logical patch while the first result
+	  # is still in flight.
+	  if($status eq "error" && $poll_message=~/^Web UI API (?:timed out|read failed|is unavailable)/i) {
+	   $poll_transport_failures++;
+	   log_line("Meter result poll transport error; keeping request_id=$request_id in flight: $poll_message");
+	   return (undef,$poll_message) if($poll_transport_failures > 1);
+	   sleep(0.25);
+	   next;
+	  }
+	  $poll_transport_failures=0;
 	  if($status eq "ok" && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
 	   my $result_request_id=$result->{"request_id"}||"";
 	   if($result_request_id ne $request_id) {
@@ -22124,6 +21898,11 @@ $LG_AUTOCAL_HEADROOM_TARGET_LUMINANCE=$headroom_target_luminance;
 my $target_gamma=lc($config->{"target_gamma"}||"bt1886");
 $target_gamma="bt1886" unless($target_gamma eq "bt1886" || $target_gamma eq "2.2" || $target_gamma eq "2.4" || $target_gamma eq "srgb" || $target_gamma eq "st2084");
 my $signal_mode=lc($config->{"signal_mode"}||"sdr");
+$signal_mode="hdr10" if($signal_mode eq "hdr");
+my $run_target_context=autocal_target_context_for($target_gamma,$signal_mode,$config);
+die "Unable to resolve calibration target context\n" if(ref($run_target_context) ne "HASH");
+$LG_AUTOCAL_TARGET_CONTEXT=$run_target_context;
+$config->{"calibration_target_context"}={%{$run_target_context}};
 $LG_AUTOCAL_DDC_LAYOUT=ddc_layout_for_signal_mode($signal_mode);
 # Dark Detail is set here, before anything reads the slot list, so every
 # consumer of ddc_slots_for_layout sees a consistent ladder for the whole run.
@@ -22185,6 +21964,7 @@ my $state={
 		 headroom_target_luminance=>$headroom_target_luminance||undef,
 			 target_gamma=>$target_gamma,
 			 signal_mode=>$signal_mode,
+			 calibration_target_context=>{%{$run_target_context}},
 			 requested_signal_mode=>$signal_mode,
 			 ddc_layout=>$LG_AUTOCAL_DDC_LAYOUT,
 			 display_type=>$config->{"display_type"}||"lcd",

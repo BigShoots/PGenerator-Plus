@@ -14,6 +14,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
 FRAGMENT_CHECKER="$REPO_ROOT/tools/check_webui_package.pl"
+# shellcheck source=tools/runtime/pi4_numpy_runtime.sh
+. "$REPO_ROOT/tools/runtime/pi4_numpy_runtime.sh"
+# shellcheck source=tools/runtime/pgen_release_runtime.sh
+. "$REPO_ROOT/tools/runtime/pgen_release_runtime.sh"
 
 # apply_release_modes(): the file-mode policy shared with the image
 # builder and enforced by the manifest checker.
@@ -44,46 +48,7 @@ GITHUB_REPO="${GITHUB_REPO:-BigShoots/PGenerator-Plus}"
 # PGenerator.conf ships as PGenerator.conf.dist instead; pgenerator-update
 # (>= 2.8.5) and the 2.8.5-merge-conf-defaults.sh migration merge new
 # default keys into the live conf without touching operator values.
-DEVICE_STATE_DROPS=(
- "etc/PGenerator/hdr20_postcal_shadow_matrix.json"
- "etc/PGenerator/lut.txt"
- "etc/BiasiLinux/BiasiLinux.FirstBoot"
-)
-TARGET_OWNED_RUNTIME_PATHS=(
- "usr/share/PGenerator/command.pm"
- "usr/share/PGenerator/conf.pm"
- "usr/bin/PGeneratorDisplayMirror"
- "usr/bin/pgcec"
- "usr/bin/cec-ctl"
- "usr/bin/cec-compliance"
- "usr/bin/cec-follower"
- "usr/bin/python3"
- "usr/bin/python3.5"
- "usr/bin/python3.5m"
- "usr/lib/python3.5"
- "usr/bin/pgsethdr"
- "usr/lib/drm_override.c"
- "usr/lib/drm_override.so"
- "usr/lib/scdc_tool"
- "usr/lib/scdc_tool.c"
- "usr/sbin/PGeneratord"
- "usr/sbin/PGeneratord.dv"
- "usr/sbin/disable_csc"
- "usr/sbin/disable_csc.c"
- "usr/sbin/drm_player"
- "usr/sbin/drm_player.c"
- "usr/sbin/fb_player"
- "usr/sbin/fb_player.c"
- "usr/sbin/pg_diag_video_player"
- "usr/sbin/pgenerator-cec"
- "usr/sbin/write_csc.c"
-)
-EXTERNAL_ICC_TOOL_PATHS=(
- "usr/bin/icc_companion_package.py"
- "usr/share/PGenerator/icc-companion"
- "usr/share/PGenerator/icc-companion-src"
-)
-
+DEVICE_STATE_DROPS=("${PGEN_RELEASE_DEVICE_STATE_DROPS[@]}")
 log() {
  echo "[build-ota] $*"
 }
@@ -156,7 +121,7 @@ trap cleanup EXIT
 require_commands() {
  local missing=()
  local cmd
- for cmd in file install mktemp perl rsync sed strings tar; do
+ for cmd in ar awk cp curl file install mktemp perl rsync sed strings tar unzip xz; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -259,24 +224,11 @@ prepare_paths() {
 }
 
 shared_rsync_excludes_for_rel() {
- local rel="$1"
- local owned
- for owned in "${TARGET_OWNED_RUNTIME_PATHS[@]}" "${EXTERNAL_ICC_TOOL_PATHS[@]}"; do
-  case "$owned" in
-   "$rel"/*)
-    printf '%s\n' "--exclude=/${owned#$rel/}"
-    ;;
-  esac
- done
+ pgen_release_rsync_excludes_for_rel "$1"
 }
 
 remove_external_icc_tools() {
- local rel
-
- log "Excluding standalone ICC Tools supplied through GitHub releases"
- for rel in "${EXTERNAL_ICC_TOOL_PATHS[@]}"; do
-  rm -rf -- "$STAGING_DIR/$rel"
- done
+ pgen_release_remove_external_icc_tools "$STAGING_DIR"
 }
 
 stage_destination_for_rel() {
@@ -393,18 +345,6 @@ mkdir -p "$STAGING_DIR/var/lib/PGenerator/tmp"
  rm -f "$STAGING_DIR/usr/share/PGenerator/meter_settings.json"
  rm -f "$STAGING_DIR/usr/sbin/PGeneratord.hdr"
 
- # Last, once the staged file set is final: the checkout's own mode bits
- # are not trustworthy. core.filemode=false means git records 100644 for
- # nearly every runtime file, so a build run from a fresh clone or worktree
- # stages scripts 0664 — that is how 2.11.6 and 2.11.7 shipped a
- # non-executable /etc/init.d/rcPGenerator and stopped the daemon from ever
- # starting again. Derive the exec bits from the source trees instead, and
- # record them in the payload so pgenerator-update can reapply them on the
- # device after extraction.
- local exec_count
- exec_count="$(apply_release_modes "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
-  || die "Could not apply the release executable-bit policy"
- log "Applied executable bits to $exec_count staged program files"
 }
 
 validate_pi4_legacy_runtime() {
@@ -426,6 +366,10 @@ validate_pi4_legacy_runtime() {
  [[ "$(printf '%s\n%s\n' "$max_glibc" '2.21' | sort -V | tail -1)" == '2.21' ]] || \
   die "Pi 4 chartread requires glibc $max_glibc, newer than the image's glibc 2.21"
  log "Validated Pi 4 chartread compatibility: glibc <= $max_glibc"
+}
+
+validate_colour_math_runtime() {
+ pgen_release_validate_colour_math_runtime "$STAGING_DIR" "OTA"
 }
 
 validate_pi5_staging_tree() {
@@ -563,12 +507,30 @@ validate_tarball() {
 }
 
 main() {
+ local exec_count
  parse_args "$@"
  load_target_manifest
  require_commands
  prepare_paths
  stage_overlay
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
+  log "Staging the pinned external Pi 4 NumPy runtime"
+  hydrate_pi4_numpy_runtime "$STAGING_DIR"
+ fi
+ # Last, once the staged file set is final (the NumPy runtime hydrates after
+ # the overlay): the checkout's own mode bits are not trustworthy.
+ # core.filemode=false means git records 100644 for nearly every runtime
+ # file, so a build run from a fresh clone or worktree stages scripts 0664 —
+ # that is how 2.11.6 and 2.11.7 shipped a non-executable
+ # /etc/init.d/rcPGenerator and stopped the daemon from ever starting again.
+ # Derive the exec bits from the source trees instead, normalize packaged
+ # directory modes, and record the result in the payload so
+ # pgenerator-update can reapply the same bits on the device.
+ exec_count="$(apply_release_modes "$STAGING_DIR" "$REPO_ROOT" "$REPO_ROOT/$TARGET_OVERLAY_REL")" \
+  || die "Could not apply the release executable-bit policy"
+ log "Applied executable bits to $exec_count staged program files"
  validate_pi4_legacy_runtime
+ validate_colour_math_runtime
  validate_pi5_staging_tree
  build_tarball
  check_removed_files
@@ -579,4 +541,6 @@ main() {
  fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+ main "$@"
+fi

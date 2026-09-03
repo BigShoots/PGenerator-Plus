@@ -11,6 +11,12 @@ use IO::Select ();
 use IO::Socket::INET ();
 use JSON::PP;
 use Time::HiRes ();
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 
 my ($config_file,$state_file,$stop_file)=@ARGV;
 die "Usage: $0 <config.json> <state.json> <stop-file>\n" if(!defined($config_file) || !defined($state_file) || !defined($stop_file));
@@ -154,10 +160,17 @@ sub patch_insert_resolve {
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
  }
- my $pct=$level+0;
- $pct=0 if($pct < 0);
- $pct=100 if($pct > 100);
- return (int(256.0+($pct/100.0)*3504.0+0.5),4095);
+ my $policy=signal_code_policy({
+  signal_mode=>"dv",pattern_range=>"limited",transport_range=>"limited",
+  dv_series=>1,dv_series_code_bits=>12,dv_series_full_range=>0,
+  dv_interface=>$config->{"dv_interface"}||"standard",
+ });
+ die "Unable to resolve Dolby Vision insertion signal-code policy\n"
+  if(!$policy);
+ my $result=signal_percent_to_code($policy,$level);
+ die "Unable to convert Dolby Vision insertion signal percent\n"
+  if(!$result);
+ return ($result->{code},$result->{input_max});
 }
 
 # Grey flash -> black -> settle, before the caller measures. Unlike the

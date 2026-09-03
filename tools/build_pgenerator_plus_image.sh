@@ -9,6 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/usr/share/PGenerator/version.pm"
 MANIFEST_CHECKER="$REPO_ROOT/tools/check_release_manifest.sh"
+# shellcheck source=tools/runtime/pi4_numpy_runtime.sh
+. "$REPO_ROOT/tools/runtime/pi4_numpy_runtime.sh"
+# shellcheck source=tools/runtime/pgen_release_runtime.sh
+. "$REPO_ROOT/tools/runtime/pgen_release_runtime.sh"
 
 # apply_release_modes(): the file-mode policy shared with the OTA
 # builder and enforced by the manifest checker.
@@ -18,7 +22,6 @@ if [[ ! -f "$SCRIPT_DIR/release_modes.sh" ]]; then
 fi
 # shellcheck source=release_modes.sh
 . "$SCRIPT_DIR/release_modes.sh"
-
 ARGYLL_RUNTIME_REQUIRED_BINS=(ccxxmake)
 ARGYLL_RUNTIME_OPTIONAL_BINS=(spotread chartread colprof profcheck targen i1d3ccss oeminst dispread dispcal)
 ARGYLL_RUNTIME_DIR=""
@@ -64,6 +67,7 @@ PI5_RUNTIME_PACKAGES=(
  bluez-tools
  python3-dbus
  python3-gi
+ python3-numpy
  rfkill
  iw
  net-tools
@@ -72,6 +76,10 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/bin/modetest
  usr/bin/socat
  usr/bin/edid-decode
+ # command.pm invokes /usr/bin/pgsethdr on every target; the consolidated
+ # target-owned runtime list excludes it from the generic rsync, so the Pi 5
+ # overlay must supply it and the build must fail closed if it does not.
+ usr/bin/pgsethdr
  usr/share/perl5/URI/Escape.pm
  usr/share/perl5/XML/Simple.pm
  usr/lib/arm-linux-gnueabihf/libgbm.so.1
@@ -95,6 +103,7 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/bin/bt-network
  usr/lib/python3/dist-packages/dbus
  usr/lib/python3/dist-packages/gi
+ usr/lib/python3/dist-packages/numpy
  usr/sbin/rfkill
  usr/sbin/iw
  usr/sbin/ifconfig
@@ -109,40 +118,9 @@ PI5_RUNTIME_REQUIRED_PATHS=(
 TARGET_OVERLAY_REL=""
 TARGET_DESCRIPTION=""
 TARGET_OWNED_RUNTIME_PATHS=(
- "usr/share/PGenerator/command.pm"
- "usr/share/PGenerator/conf.pm"
- "usr/bin/PGeneratorDisplayMirror"
- "usr/bin/pgcec"
- "usr/bin/cec-ctl"
- "usr/bin/cec-compliance"
- "usr/bin/cec-follower"
- "usr/bin/python3"
- "usr/bin/python3.5"
- "usr/bin/python3.5m"
- "usr/lib/python3.5"
+ "${PGEN_RELEASE_TARGET_OWNED_RUNTIME_PATHS[@]}"
  "usr/bin/resize_PGenerator_disk"
- "usr/lib/drm_override.c"
- "usr/lib/drm_override.so"
- "usr/lib/scdc_tool"
- "usr/lib/scdc_tool.c"
- "usr/sbin/PGeneratord"
- "usr/sbin/PGeneratord.dv"
- "usr/sbin/disable_csc"
- "usr/sbin/disable_csc.c"
- "usr/sbin/drm_player"
- "usr/sbin/drm_player.c"
- "usr/sbin/fb_player"
- "usr/sbin/fb_player.c"
- "usr/sbin/pg_diag_video_player"
- "usr/sbin/pgenerator-cec"
- "usr/sbin/write_csc.c"
 )
-EXTERNAL_ICC_TOOL_PATHS=(
- "usr/bin/icc_companion_package.py"
- "usr/share/PGenerator/icc-companion"
- "usr/share/PGenerator/icc-companion-src"
-)
-
 KEEP_WORKDIR=0
 FORCE_OUTPUT=0
 SKIP_BASE_CHECK=0
@@ -219,7 +197,7 @@ require_root() {
 require_commands() {
  local missing=()
  local cmd
- for cmd in awk cpio cp dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync umount; do
+ for cmd in ar awk cpio cp curl dd file gzip grep install losetup lsblk mktemp mount mountpoint rsync sed strings sync tar umount unzip xz; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
    missing+=("$cmd")
   fi
@@ -258,6 +236,8 @@ load_target_manifest() {
   log "Loaded target manifest: $manifest (${TARGET_DESCRIPTION:-$TARGET})"
  elif [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
   die "Missing target manifest: $manifest"
+ else
+  log "WARNING: missing target manifest: $manifest - building without the hardware overlay"
  fi
 
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
@@ -590,7 +570,11 @@ pi5_required_boot_kernel_present() {
 shared_rsync_excludes_for_rel() {
  local rel="$1"
  local owned
- for owned in "${TARGET_OWNED_RUNTIME_PATHS[@]}" "${EXTERNAL_ICC_TOOL_PATHS[@]}"; do
+ local target_owned=("${TARGET_OWNED_RUNTIME_PATHS[@]}" "${PGEN_RELEASE_EXTERNAL_ICC_TOOL_PATHS[@]}")
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}")
+ fi
+ for owned in "${target_owned[@]}"; do
   case "$owned" in
    "$rel"/*)
     printf '%s\n' "--exclude=/${owned#$rel/}"
@@ -600,12 +584,7 @@ shared_rsync_excludes_for_rel() {
 }
 
 remove_external_icc_tools() {
- local rel
-
- log "Removing standalone ICC Tools supplied through GitHub releases"
- for rel in "${EXTERNAL_ICC_TOOL_PATHS[@]}"; do
-  rm -rf -- "$ROOT_MOUNT/$rel"
- done
+ pgen_release_remove_external_icc_tools "$ROOT_MOUNT"
 }
 
 overlay_destination_for_rel() {
@@ -699,6 +678,84 @@ validate_pi4_legacy_runtime() {
  [[ "$(printf '%s\n%s\n' "$max_glibc" '2.21' | sort -V | tail -1)" == '2.21' ]] || \
   die "Pi 4 chartread requires glibc $max_glibc, newer than the image's glibc 2.21"
  log "Validated Pi 4 chartread compatibility: glibc <= $max_glibc"
+}
+
+validate_colour_math_runtime() {
+ pgen_release_validate_colour_math_runtime "$ROOT_MOUNT" "image"
+}
+
+# The vendored Pi 4 ATLAS/BLAS libraries and six of the NumPy extension
+# modules are DT_NEEDED against libgfortran.so.3, which the base appliance
+# image supplies and this repository deliberately does not ship (see
+# third_party/pi4-numpy-runtime/README.md). Every other shipped
+# library has its architecture checked; the one dependency that is assumed
+# rather than shipped had nothing checking it at all, and its absence surfaces
+# on the device as an ImportError the first time an ICC build runs.
+#
+# Only the image builder can check this: an OTA overlay stages PGenerator's
+# own files, not a root filesystem, so there is nothing there to look in.
+validate_pi4_base_numerical_runtime() {
+ local candidate found=""
+
+ [[ "$TARGET" == "pi4-biasi" ]] || return 0
+ for candidate in usr/lib/arm-linux-gnueabihf/libgfortran.so.3 \
+                  usr/lib/libgfortran.so.3 \
+                  lib/arm-linux-gnueabihf/libgfortran.so.3 \
+                  lib/libgfortran.so.3; do
+  if [[ -e "$ROOT_MOUNT/$candidate" ]]; then
+   found="$candidate"
+   break
+  fi
+ done
+ if [[ -z "$found" ]]; then
+  found="$(find "$ROOT_MOUNT/usr/lib" "$ROOT_MOUNT/lib" -maxdepth 4 \
+   -name 'libgfortran.so.3*' -print -quit 2>/dev/null || true)"
+ fi
+ [[ -n "$found" ]] || \
+  die "Pi 4 base image has no libgfortran.so.3; the vendored ATLAS/BLAS libraries and NumPy extensions need it"
+ log "Validated the Pi 4 base numerical dependency: libgfortran.so.3"
+}
+
+# Pi 5 stages python3-numpy with "dpkg-deb -x", which unpacks file contents
+# and runs no maintainer scripts. libblas3 and liblapack3 create their
+# /usr/lib/<multiarch>/lib{blas,lapack}.so.3 entries from postinst through
+# update-alternatives, so on this root those links never exist and NumPy fails
+# to import on the device. Recreate what the postinst would have made.
+pi5_blas_multiarch_dir() {
+ printf '%s\n' "usr/lib/arm-linux-gnueabihf"
+}
+
+stage_pi5_blas_alternatives() {
+ local dir soname implementation
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ dir="$(pi5_blas_multiarch_dir)"
+ [[ -d "$ROOT_MOUNT/$dir" ]] || return 0
+ for soname in libblas.so.3 liblapack.so.3; do
+  [[ -e "$ROOT_MOUNT/$dir/$soname" ]] && continue
+  implementation="$(cd "$ROOT_MOUNT/$dir" 2>/dev/null && \
+   find . -mindepth 2 -maxdepth 3 -name "$soname" -print -quit 2>/dev/null || true)"
+  implementation="${implementation#./}"
+  if [[ -z "$implementation" ]]; then
+   log "No $soname implementation staged under /$dir; leaving the link to the validator"
+   continue
+  fi
+  ln -sfn "$implementation" "$ROOT_MOUNT/$dir/$soname"
+  log "Recreated the update-alternatives link /$dir/$soname -> $implementation"
+ done
+}
+
+validate_pi5_numerical_runtime() {
+ local dir soname
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ dir="$(pi5_blas_multiarch_dir)"
+ for soname in libblas.so.3 liblapack.so.3; do
+  # -e follows the link, so a dangling alternatives entry fails here too.
+  [[ -e "$ROOT_MOUNT/$dir/$soname" ]] || \
+   die "Pi 5 root has no resolvable /$dir/$soname; python3-numpy was staged with dpkg-deb -x, which never runs the update-alternatives postinst"
+ done
+ log "Validated the Pi 5 BLAS/LAPACK alternatives NumPy links against"
 }
 
 stage_argyll_runtime() {
@@ -1734,14 +1791,22 @@ main() {
  mount_boot_partition
  check_base_image
  overlay_tree
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
+  log "Staging the pinned external Pi 4 NumPy runtime"
+  hydrate_pi4_numpy_runtime "$ROOT_MOUNT"
+ fi
  validate_pi5_usrmerge_root
  stage_argyll_runtime
  validate_pi4_legacy_runtime
+ validate_colour_math_runtime
+ validate_pi4_base_numerical_runtime
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults
  install_pi5_runtime_packages
+ stage_pi5_blas_alternatives
  validate_pi5_runtime_dependencies
+ validate_pi5_numerical_runtime
  validate_pi5_argyll_runtime
  configure_pi5_bookworm_boot
  configure_pi5_headless_first_boot
@@ -1758,4 +1823,6 @@ main() {
  finalize_image
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+ main "$@"
+fi

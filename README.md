@@ -517,7 +517,15 @@ The top-level `usr/share/PGenerator/webui.pm`, meter helpers, LG calibration
 workers, and CCSS profiles are the shared UI/calibration source for both images.
 Target overlays own the renderer binaries and hardware/display backend files,
 including `command.pm`, `conf.pm`, `variables.pm`, CEC helpers, DRM override
-libraries, and renderer executables.
+libraries, and renderer executables. Those `tools/image-targets` manifests and
+overlays are supplied as a reviewed external release input; they are not in a
+clean public checkout. When the bundle has not been provisioned, the OTA
+builder and the Pi 5 image target fail with the missing manifest path, and the
+default Pi 4 image target warns and builds without the hardware overlay.
+
+The ownership, compatibility and deliberate runtime policies for calibration
+maths are documented in
+[Calibration maths architecture](docs/calibration-math-architecture.md).
 
 ### Key Modules
 

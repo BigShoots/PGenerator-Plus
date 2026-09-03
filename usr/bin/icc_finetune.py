@@ -43,11 +43,24 @@ import subprocess
 import sys
 import tempfile
 
-M1 = 2610.0 / 16384.0
-M2 = 2523.0 / 32.0
-C1 = 3424.0 / 4096.0
-C2 = 2413.0 / 128.0
-C3 = 2392.0 / 128.0
+from pgen_colour_math import (
+    ICTCP_XYZ_TO_RGB2020 as XYZ_TO_RGB2020,
+    D65_WHITE,
+    ICC_D50_WHITE,
+    bradford_adaptation,
+    delta_e_2000_lab,
+    delta_e_itp_xyz,
+    matrix3_inverse as mat_inv,
+    matrix3_multiply as mat_mul,
+    matrix3_vector_multiply as mat_vec,
+    linear_to_srgb_unbounded as srgb_inverse,
+    pq_decode_nits,
+    pq_encode_nits,
+    sample_uniform_table as sample_values,
+    smoothstep,
+    srgb_to_linear_unbounded as srgb_eotf,
+    xyz_to_lab,
+)
 
 D65_X = 0.3127
 D65_Y = 0.3290
@@ -194,87 +207,33 @@ def finalize_session(payload, output_dir):
 
 
 def pq_to_nits(value):
-    value = max(0.0, value)
-    power = value ** (1.0 / M2)
-    numerator = max(power - C1, 0.0)
-    denominator = C2 - C3 * power
-    if denominator <= 0:
-        return 10000.0
-    return 10000.0 * (numerator / denominator) ** (1.0 / M1)
+    return pq_decode_nits(
+        value, clamp_signal=False, nonpositive_result=10000.0)
 
 
 def nits_to_pq(nits):
-    y = max(0.0, min(1.0, nits / 10000.0)) ** M1
-    return ((C1 + C2 * y) / (1.0 + C3 * y)) ** M2
-
-
-XYZ_TO_RGB2020 = [[1.7166512, -0.3556708, -0.2533663],
-                  [-0.6666844, 1.6164812, 0.0157685],
-                  [0.0176399, -0.0427706, 0.9421031]]
-RGB_TO_LMS = [[1688.0 / 4096, 2146.0 / 4096, 262.0 / 4096],
-              [683.0 / 4096, 2951.0 / 4096, 462.0 / 4096],
-              [99.0 / 4096, 309.0 / 4096, 3688.0 / 4096]]
+    return pq_encode_nits(nits, clamp_peak=True)
 
 
 def de_itp(xyz_a, xyz_b):
     """BT.2124 colour difference between two absolute XYZ stimuli."""
-    def itp(xyz):
-        rgb = [sum(XYZ_TO_RGB2020[r][k] * xyz[k] for k in range(3)) for r in range(3)]
-        lms = [sum(RGB_TO_LMS[r][k] * max(0.0, rgb[k]) for k in range(3)) for r in range(3)]
-        lp = [nits_to_pq(c) for c in lms]
-        return (0.5 * lp[0] + 0.5 * lp[1],
-                0.5 * (6610 * lp[0] - 13613 * lp[1] + 7003 * lp[2]) / 4096.0,
-                (17933 * lp[0] - 17390 * lp[1] - 543 * lp[2]) / 4096.0)
-    pa, pb = itp(xyz_a), itp(xyz_b)
-    return 720.0 * math.sqrt(sum((x - y) ** 2 for x, y in zip(pa, pb)))
+    return delta_e_itp_xyz(
+        xyz_a, xyz_b, pq_encoder=nits_to_pq,
+        legacy_fold_delta_t_weight=True)
 
 
 REF_NITS = 203.0
 LAB_WHITE = [0.95047 * REF_NITS, 1.0 * REF_NITS, 1.08883 * REF_NITS]
 
 
-def _lab(xyz):
-    def f(t):
-        return t ** (1.0 / 3.0) if t > (6.0 / 29.0) ** 3 else t / (3 * (6.0 / 29.0) ** 2) + 4.0 / 29.0
-    fx, fy, fz = (f(max(1e-9, xyz[i] / LAB_WHITE[i])) for i in range(3))
-    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
-
-
-def de2000(xyz_a, xyz_b):
+def finetune_de2000(xyz_a, xyz_b):
     """CIEDE2000 against a 203 cd/m2 diffuse white - the metric colour
     acceptance is judged in, so convergence is measured the same way."""
-    l1, a1, b1 = _lab(xyz_a)
-    l2, a2, b2 = _lab(xyz_b)
-    c1 = math.hypot(a1, b1)
-    c2 = math.hypot(a2, b2)
-    cm = (c1 + c2) / 2.0
-    g = 0.5 * (1 - math.sqrt(cm ** 7 / (cm ** 7 + 25.0 ** 7))) if cm > 0 else 0.0
-    a1p, a2p = a1 * (1 + g), a2 * (1 + g)
-    c1p, c2p = math.hypot(a1p, b1), math.hypot(a2p, b2)
-    h1 = math.degrees(math.atan2(b1, a1p)) % 360 if (b1 or a1p) else 0.0
-    h2 = math.degrees(math.atan2(b2, a2p)) % 360 if (b2 or a2p) else 0.0
-    dl = l2 - l1
-    dc = c2p - c1p
-    dh = 0.0 if c1p * c2p == 0 else (h2 - h1 - 360 if h2 - h1 > 180 else
-                                     h2 - h1 + 360 if h2 - h1 < -180 else h2 - h1)
-    dhp = 2 * math.sqrt(c1p * c2p) * math.sin(math.radians(dh) / 2.0)
-    lm = (l1 + l2) / 2.0
-    cmp_ = (c1p + c2p) / 2.0
-    if c1p * c2p == 0:
-        hm = h1 + h2
-    elif abs(h1 - h2) <= 180:
-        hm = (h1 + h2) / 2.0
-    else:
-        hm = (h1 + h2 + 360) / 2.0 if h1 + h2 < 360 else (h1 + h2 - 360) / 2.0
-    tt = (1 - 0.17 * math.cos(math.radians(hm - 30)) + 0.24 * math.cos(math.radians(2 * hm))
-          + 0.32 * math.cos(math.radians(3 * hm + 6)) - 0.20 * math.cos(math.radians(4 * hm - 63)))
-    sl = 1 + (0.015 * (lm - 50) ** 2) / math.sqrt(20 + (lm - 50) ** 2)
-    sc = 1 + 0.045 * cmp_
-    sh = 1 + 0.015 * cmp_ * tt
-    rt = (-2 * math.sqrt(cmp_ ** 7 / (cmp_ ** 7 + 25.0 ** 7))
-          * math.sin(math.radians(60 * math.exp(-(((hm - 275) / 25.0) ** 2)))) if cmp_ > 0 else 0.0)
-    return math.sqrt((dl / sl) ** 2 + (dc / sc) ** 2 + (dhp / sh) ** 2
-                     + rt * (dc / sc) * (dhp / sh))
+    return delta_e_2000_lab(
+        xyz_to_lab(xyz_a, LAB_WHITE,
+                   ratio_policy="ratio_floor_1e_minus_9"),
+        xyz_to_lab(xyz_b, LAB_WHITE,
+                   ratio_policy="ratio_floor_1e_minus_9"))
 
 
 def read_profile(path):
@@ -390,11 +349,6 @@ def median(values):
     return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
-def smoothstep(value):
-    value = max(0.0, min(1.0, float(value)))
-    return value * value * (3.0 - 2.0 * value)
-
-
 def isotonic_values(values):
     """Pool adjacent violations without turning a local dip into a tail.
 
@@ -464,13 +418,6 @@ def invert_pairs(samples, target):
                 return x0
             return x0 + (target - y0) / (y1 - y0) * (x1 - x0)
     return samples[-1][0]
-
-
-def sample_values(values, position):
-    spot = max(0.0, min(1.0, position)) * (len(values) - 1)
-    low = min(int(spot), len(values) - 2)
-    fraction = spot - low
-    return values[low] * (1.0 - fraction) + values[low + 1] * fraction
 
 
 def invert_values(values, target):
@@ -594,27 +541,6 @@ def parse_targ(data, tags):
     return fmt, rows, text
 
 
-def mat_inv(m):
-    a, b, c = m[0]
-    d, e, f = m[1]
-    g, h, i = m[2]
-    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-    if abs(det) < 1e-12:
-        return None
-    return [[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
-            [(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
-            [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det]]
-
-
-def mat_vec(m, v):
-    return [sum(m[r][k] * v[k] for k in range(3)) for r in range(3)]
-
-
-def mat_mul(a, b):
-    return [[sum(a[row][k] * b[k][column] for k in range(3))
-             for column in range(3)] for row in range(3)]
-
-
 def mhc2_residual_matrix(samples, damping):
     """Fit a small measured-XYZ to target-XYZ correction for MHC2.
 
@@ -674,9 +600,9 @@ def mhc2_residual_matrix(samples, damping):
                    for column in range(3)] for row in range(3)]
     if mat_inv(correction) is None:
         return None
-    before_mean = sum(de2000(measured, target)
+    before_mean = sum(finetune_de2000(measured, target)
                       for measured, target in samples) / len(samples)
-    after_mean = sum(de2000(mat_vec(correction, measured), target)
+    after_mean = sum(finetune_de2000(mat_vec(correction, measured), target)
                      for measured, target in samples) / len(samples)
     # A least-squares XYZ improvement is not automatically a perceptual one.
     # Ignore fits whose dE00 gain is too small to distinguish from chart noise.
@@ -780,18 +706,6 @@ def regularize_mhc2_neutral_samples(samples, damping):
     for sample in samples:
         sample["effective"] = [1.0 + damping * (gain - 1.0)
                                for gain in sample["gains"]]
-
-
-def srgb_eotf(v):
-    if v <= 0.04045:
-        return v / 12.92
-    return ((v + 0.055) / 1.055) ** 2.4
-
-
-def srgb_inverse(v):
-    if v <= 0.0031308:
-        return v * 12.92
-    return 1.055 * v ** (1.0 / 2.4) - 0.055
 
 
 def finetune(payload, output_dir):
@@ -1056,7 +970,7 @@ def finetune(payload, output_dir):
             "name": str(row.get("name", "")),
             "target_nits": round(target[1], 3),
             "measured_nits": round(measured[1], 3),
-            "de2000": round(de2000(measured, target), 3),
+            "de2000": round(finetune_de2000(measured, target), 3),
             "gains": [round(gain, 4) for gain in gains],
         }
         color_levels.append(level)
@@ -1352,7 +1266,7 @@ def finetune(payload, output_dir):
                 for sample in color_samples:
                     predicted = mat_vec(matrix_correction, sample["measured"])
                     sample["level"]["predicted_de2000"] = round(
-                        de2000(predicted, sample["target"]), 3)
+                        finetune_de2000(predicted, sample["target"]), 3)
             else:
                 matrix_correction = None
         lut_offsets = struct.unpack(">III", bytes(data[off + 24:off + 36]))
@@ -1500,7 +1414,7 @@ def finetune(payload, output_dir):
                         data[pos + 1] = value & 0xFF
     else:
         encode = 32768.0 / 65535.0
-        d50 = (0.9642, 1.0, 0.8249)
+        d50 = ICC_D50_WHITE
         for tag in ("B2A0", "B2A1"):
             if tag not in tags:
                 continue
@@ -1586,18 +1500,7 @@ def finetune(payload, output_dir):
     # residual rather than subtracting a matrix stage absent from that path.
     # Matrix-family MHC2 profiles have no B2A table and stop above.
     if color_samples and "B2A0" in tags:
-        bradford = ((0.8951, 0.2664, -0.1614),
-                    (-0.7502, 1.7135, 0.0367),
-                    (0.0389, -0.0685, 1.0296))
-        d65w = (0.9504559, 1.0, 1.0890578)
-        d50w = (0.9642, 1.0, 0.8249)
-        cone_src = mat_vec([list(r) for r in bradford], list(d65w))
-        cone_dst = mat_vec([list(r) for r in bradford], list(d50w))
-        scaled = [[cone_dst[r] / cone_src[r] * bradford[r][k] for k in range(3)]
-                  for r in range(3)]
-        brad_inv = mat_inv([list(r) for r in bradford])
-        adapt = [[sum(brad_inv[r][k] * scaled[k][c] for k in range(3))
-                  for c in range(3)] for r in range(3)]
+        adapt = bradford_adaptation(D65_WHITE, ICC_D50_WHITE)
         encode = 32768.0 / 65535.0
 
         def local_slope(wire):
@@ -1622,7 +1525,7 @@ def finetune(payload, output_dir):
                              for channel, gain in enumerate(gains)]
             if has_mhc2 and matrix_correction is not None:
                 sample["level"]["post_matrix_de2000"] = round(
-                    de2000(mat_vec(matrix_correction, measured), target), 3)
+                    finetune_de2000(mat_vec(matrix_correction, measured), target), 3)
             effective = [1.0 + damping * (g - 1.0) for g in gains]
             # Fine-tune moves, not gross corrections: a colour cell should
             # never shift by more than a few percent in one pass.

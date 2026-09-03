@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../../../src/common/pgen_colour_math.h"
+
 /* Use the same embedded proportional UI faces as the Linux Profile Loader.
  * This keeps the pairing screen self-contained while giving both tools the
  * same application typography instead of SDL's terminal-style debug font. */
@@ -1921,20 +1923,7 @@ static bool icc_inverse_curve(IccTag tag, double value, double *result)
 
 static bool inverse_matrix3(const double m[3][3], double out[3][3])
 {
-    double determinant = m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-
-                         m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+
-                         m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
-    if (fabs(determinant) < 1e-12) return false;
-    out[0][0]=(m[1][1]*m[2][2]-m[1][2]*m[2][1])/determinant;
-    out[0][1]=(m[0][2]*m[2][1]-m[0][1]*m[2][2])/determinant;
-    out[0][2]=(m[0][1]*m[1][2]-m[0][2]*m[1][1])/determinant;
-    out[1][0]=(m[1][2]*m[2][0]-m[1][0]*m[2][2])/determinant;
-    out[1][1]=(m[0][0]*m[2][2]-m[0][2]*m[2][0])/determinant;
-    out[1][2]=(m[0][2]*m[1][0]-m[0][0]*m[1][2])/determinant;
-    out[2][0]=(m[1][0]*m[2][1]-m[1][1]*m[2][0])/determinant;
-    out[2][1]=(m[0][1]*m[2][0]-m[0][0]*m[2][1])/determinant;
-    out[2][2]=(m[0][0]*m[1][1]-m[0][1]*m[1][0])/determinant;
-    return true;
+    return pgen_matrix3_inverse_divide(m,out,1e-12)!=0;
 }
 
 /* Construct a Bradford adaptation from a source-space white onto D50 PCS.
@@ -1943,7 +1932,7 @@ static bool inverse_matrix3(const double m[3][3], double out[3][3])
  * absolute-colorimetric conversion. */
 static bool companion_adaptation(const double media_white[3], double out[3][3])
 {
-    static const double bradford[3][3]={{0.8951,0.2664,-0.1614},{-0.7502,1.7135,0.0367},{0.0389,-0.0685,1.0296}};
+    static const double bradford[3][3]=PGEN_BRADFORD_MATRIX_INITIALIZER;
     static const double pcs_white[3]={0.9642,1.0,0.8249};
     double inverse[3][3], source[3], destination[3], scaled[3][3];
     if(!inverse_matrix3(bradford,inverse)) return false;
@@ -2034,10 +2023,7 @@ static bool apply_local_clut(const double xyz[3], double output[3])
 
 static double linear_to_pq(double value)
 {
-    const double m1=2610.0/16384.0,m2=2523.0/32.0;
-    const double c1=3424.0/4096.0,c2=2413.0/128.0,c3=2392.0/128.0;
-    double power=pow(fmax(0.0,value),m1);
-    return pow((c1+c2*power)/(1.0+c3*power),m2);
+    return pgen_pq_encode_linear(value);
 }
 
 static double mhc2_curve_sample(const unsigned char *curve, uint32_t count,
@@ -2706,13 +2692,7 @@ static bool windows_render_hdr(double r, double g, double b, double background,
 
 static PGEN_UNUSED double pq_to_nits(double value)
 {
-    const double m1 = 2610.0 / 16384.0;
-    const double m2 = 2523.0 / 32.0;
-    const double c1 = 3424.0 / 4096.0;
-    const double c2 = 2413.0 / 128.0;
-    const double c3 = 2392.0 / 128.0;
-    double p = pow(fmax(0.0, fmin(1.0, value)), 1.0 / m2);
-    return 10000.0 * pow(fmax(p - c1, 0.0) / fmax(c2 - c3 * p, 1e-12), 1.0 / m1);
+    return pgen_pq_decode_nits(value);
 }
 
 static void patch_to_sdr_linear(double r, double g, double b, float output[4])

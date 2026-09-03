@@ -2,9 +2,18 @@
 # meter_series.sh - Background measurement series helper
 # Called by PGenerator webui.pm to run a series of pattern+measurement steps
 # Uses a SINGLE persistent spotread session across all patches for speed
-# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level] [low_light_mode] [insert_patch_code] [insert_time_code] [color_format] [meter_usb_id] [observer] [pattern_provider] [min_luma] [max_cll] [max_fall] [low_light_trigger]
+# Usage: meter_series.sh <series_id> <display_type> <delay_ms> <patch_size> <steps_file> <state_file> [ccss_file] [patch_insert] [refresh_rate] [disable_aio] [signal_mode] [max_luma] [dv_map_mode] [meter_port] [ready_file] [require_device_ready] [pattern_signal_range] [transport_signal_range] [pattern_delay_ms] [patch_insert_patch_enabled] [patch_insert_patch_every] [patch_insert_patch_duration_ms] [patch_insert_patch_level] [patch_insert_time_enabled] [patch_insert_time_frequency_ms] [patch_insert_time_duration_ms] [patch_insert_time_level] [low_light_mode] [insert_patch_code] [insert_time_code] [color_format] [meter_usb_id] [observer] [pattern_provider] [min_luma] [max_cll] [max_fall] [low_light_trigger] [requested_sample_count]
 
 set -o pipefail
+
+# Directory this script was started from, so the shared Python maths module is
+# importable from a checkout as well as from /usr/bin on the appliance. A bare
+# name (started through PATH) leaves no directory to strip.
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+PGEN_PYTHON3="${PGEN_PYTHON3:-/usr/bin/python3}"
+PGEN_METER_RESULT_HELPER="${PGEN_METER_RESULT_HELPER:-$SCRIPT_DIR/pgen_meter_result.py}"
+PGEN_SERIES_STEPS_HELPER="${PGEN_SERIES_STEPS_HELPER:-$SCRIPT_DIR/pgen_series_steps.py}"
 
 # Add the legacy SpectraCal C6 unlock key as an ArgyllCMS i1Display3 fallback.
 # Built-in i1D3 keys remain first in Argyll's key list; other meter drivers
@@ -41,14 +50,14 @@ PATCH_INSERT_TIME_ENABLED="${24:-0}"
 PATCH_INSERT_TIME_FREQUENCY_MS="${25:-5000}"
 PATCH_INSERT_TIME_DURATION_MS="${26:-5000}"
 PATCH_INSERT_TIME_LEVEL="${27:-25}"
-# Operator-selected low-light averaging mode. It is not the initial spotread
-# mode: the child always starts at off and changes only for a step below the
-# trigger.
+# Operator-selected application sample count for patches below the trigger.
 LOW_LIGHT_MODE="${28:-${LOW_LIGHT_MODE:-off}}"
 case "$LOW_LIGHT_MODE" in
  a|aa|aaa) ;;
  *) LOW_LIGHT_MODE="off" ;;
 esac
+# Preserve the established single-read spectrophotometer workflow.
+[[ "$REQUIRE_DEVICE_READY" == "1" ]] && LOW_LIGHT_MODE="off"
 # Precomputed pattern-insertion codes (mode-correct). The webui derives them
 # from the same closure the greyscale ladder uses, so an insertion patch at
 # the user-configured level lands on the same code a step at that stimulus
@@ -82,6 +91,12 @@ LOW_LIGHT_TRIGGER="${38:-}"
 if ! [[ "$LOW_LIGHT_TRIGGER" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
  LOW_LIGHT_TRIGGER=""
 fi
+REQUESTED_SAMPLE_COUNT="${39:-1}"
+case "$REQUESTED_SAMPLE_COUNT" in
+ 1|2|3|5) ;;
+ *) echo "Invalid requested_sample_count" >&2; exit 1 ;;
+esac
+[[ "$LOW_LIGHT_MODE" == "off" ]] && REQUESTED_SAMPLE_COUNT=1
 COMPANION_COMMAND_FILE="/var/lib/PGenerator/icc-companion/command.json"
 COMPANION_ACK_FILE="/tmp/pgen_icc_companion.ack.json"
 COMPANION_SEQUENCE=0
@@ -260,9 +275,10 @@ series_quit_spotread() {
   # Dark reads can leave spotread blocked inside libusb so an explicit Stop
   # must interrupt it. The kernel may emit a short -32/-71 enumeration burst
   # while that cancelled transaction is torn down. Record the monotonic time
-  # before TERM so the WebUI can ignore only this expected cancellation burst;
-  # spontaneous errors before it or errors that continue afterward still warn.
-  [[ "$quit_reason" == "cancel" ]] && record_series_cancel_usb_suppression
+  # before EVERY deliberate TERM -- cancel or terminal-error retirement alike
+  # -- so the WebUI ignores only this expected burst; spontaneous errors
+  # before it or errors that continue afterward still warn.
+  record_series_cancel_usb_suppression
   pkill -TERM -x spotread 2>/dev/null || true
  pkill -TERM -x spotread_sim 2>/dev/null || true
   local term_waited=0
@@ -305,6 +321,8 @@ cleanup_stale_series_step_files() {
  local keep
  keep="$(basename "$STEPS_FILE")"
  find "$TMPDIR" -maxdepth 1 -type f -name 'meter_series_steps_*.json' ! -name "$keep" -delete >/dev/null 2>&1 || true
+ # Prepared NUL-framed streams leak on SIGKILL; sweep those too.
+ find "$TMPDIR" -maxdepth 1 -type f -name 'pgen_series_steps_*' -mmin +120 -delete >/dev/null 2>&1 || true
 }
 
 patch_request_body() {
@@ -347,6 +365,21 @@ companion_pattern_failure() {
 EOJSON
  series_quit_spotread "companion_error" 2>/dev/null || true
  companion_show_alignment
+ exit 1
+}
+
+# A trigger that did not produce exactly one parsed result leaves the
+# interactive spotread child in an unknown state. End the series and retire
+# the child before a delayed result can be assigned to a later patch.
+series_meter_read_failure_exit() {
+ local message="$1" error_code="${2:-meter_read_incomplete}" escaped
+ escaped=$(json_escape "$message")
+ write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":${STEP_NUM:-0},"total_steps":${TOTAL:-0},"current_name":"$escaped","error":"$error_code","readings":[${READINGS:-}],"white_reading":${WHITE_READING:-null}}
+EOJSON
+ series_quit_spotread "$error_code"
+ companion_show_alignment
+ rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
  exit 1
 }
 
@@ -677,32 +710,97 @@ write_state_on_exit() {
 trap 'write_state_on_exit' EXIT
 trap 'series_cancel_exit' TERM INT
 
-get_step_count() {
- python -c "
-import json,sys
-steps=json.load(open('$STEPS_FILE'))
-print(len(steps))
-" 2>/dev/null
+STEP_GENERATION=0
+declare -a PREPARED_STEP_R PREPARED_STEP_G PREPARED_STEP_B
+declare -a PREPARED_STEP_INPUT_MAX PREPARED_STEP_PATCH_SIZE
+declare -a PREPARED_STEP_READ_DELAY_MS PREPARED_STEP_IRE PREPARED_STEP_NAME
+declare -a PREPARED_STEP_SERIES_WHITE_REFERENCE PREPARED_STEP_FINAL_WHITE_REFRESH
+declare -a PREPARED_STEP_TARGET_YN PREPARED_STEP_LOW_LIGHT_MODE
+declare -a PREPARED_STEP_REQUESTED_SAMPLE_COUNT
+declare -a PREPARED_STEP_AUTOCAL_WHITE_REFERENCE PREPARED_STEP_FULL_JSON
+declare -a PREPARED_STEP_READING_METADATA
+
+read_step_stream_field() {
+ local variable="$1"
+ IFS= read -r -d '' "$variable" <&8
 }
 
-get_step_field() {
- local idx="$1" field="$2"
- python -c "
-import json
-steps=json.load(open('$STEPS_FILE'))
-print(steps[$idx].get('$field',''))
-" 2>/dev/null
+prepare_series_steps() {
+ local stream schema version generation count index
+ stream=$(mktemp "${TMPDIR:-/tmp}/pgen_series_steps_${SERIES_ID}_XXXXXX") || return 1
+ STEP_GENERATION=$((STEP_GENERATION + 1))
+ if ! "$PGEN_PYTHON3" "$PGEN_SERIES_STEPS_HELPER" normalize "$STEPS_FILE" \
+   "$STEP_GENERATION" "$LOW_LIGHT_MODE" "$REQUESTED_SAMPLE_COUNT" \
+   "${LOW_LIGHT_TRIGGER:-}" "$OBSERVER" \
+   > "$stream"; then
+  rm -f "$stream"
+  return 1
+ fi
+ PREPARED_STEP_R=(); PREPARED_STEP_G=(); PREPARED_STEP_B=()
+ PREPARED_STEP_INPUT_MAX=(); PREPARED_STEP_PATCH_SIZE=()
+ PREPARED_STEP_READ_DELAY_MS=(); PREPARED_STEP_IRE=(); PREPARED_STEP_NAME=()
+ PREPARED_STEP_SERIES_WHITE_REFERENCE=(); PREPARED_STEP_FINAL_WHITE_REFRESH=()
+ PREPARED_STEP_TARGET_YN=(); PREPARED_STEP_LOW_LIGHT_MODE=()
+ PREPARED_STEP_REQUESTED_SAMPLE_COUNT=()
+ PREPARED_STEP_AUTOCAL_WHITE_REFERENCE=(); PREPARED_STEP_FULL_JSON=()
+ PREPARED_STEP_READING_METADATA=()
+ exec 8< "$stream"
+ read_step_stream_field schema && read_step_stream_field version \
+  && read_step_stream_field generation && read_step_stream_field count || {
+   exec 8<&-; rm -f "$stream"; return 1;
+  }
+ if [[ "$schema" != "pgen-series-steps" || "$version" != "2" \
+       || "$generation" != "$STEP_GENERATION" || ! "$count" =~ ^[0-9]+$ ]]; then
+  exec 8<&-
+  rm -f "$stream"
+  return 1
+ fi
+ for (( index=0; index<count; index++ )); do
+  local stream_index r g b input_max patch_size read_delay_ms ire name
+  local white_reference final_white_refresh target_yn low_light_mode requested_sample_count
+  local autocal_white_reference full_json reading_metadata
+  read_step_stream_field stream_index && read_step_stream_field r \
+   && read_step_stream_field g && read_step_stream_field b \
+   && read_step_stream_field input_max && read_step_stream_field patch_size \
+   && read_step_stream_field read_delay_ms && read_step_stream_field ire \
+   && read_step_stream_field name && read_step_stream_field white_reference \
+   && read_step_stream_field final_white_refresh && read_step_stream_field target_yn \
+   && read_step_stream_field low_light_mode && read_step_stream_field requested_sample_count \
+   && read_step_stream_field autocal_white_reference \
+   && read_step_stream_field full_json && read_step_stream_field reading_metadata || {
+    exec 8<&-; rm -f "$stream"; return 1;
+   }
+  [[ "$stream_index" == "$index" ]] || { exec 8<&-; rm -f "$stream"; return 1; }
+  PREPARED_STEP_R[index]="$r"; PREPARED_STEP_G[index]="$g"; PREPARED_STEP_B[index]="$b"
+  PREPARED_STEP_INPUT_MAX[index]="$input_max"; PREPARED_STEP_PATCH_SIZE[index]="$patch_size"
+  PREPARED_STEP_READ_DELAY_MS[index]="$read_delay_ms"; PREPARED_STEP_IRE[index]="$ire"
+  PREPARED_STEP_NAME[index]="$name"; PREPARED_STEP_SERIES_WHITE_REFERENCE[index]="$white_reference"
+  PREPARED_STEP_FINAL_WHITE_REFRESH[index]="$final_white_refresh"
+  PREPARED_STEP_TARGET_YN[index]="$target_yn"; PREPARED_STEP_LOW_LIGHT_MODE[index]="$low_light_mode"
+  PREPARED_STEP_REQUESTED_SAMPLE_COUNT[index]="$requested_sample_count"
+  PREPARED_STEP_AUTOCAL_WHITE_REFERENCE[index]="$autocal_white_reference"
+  PREPARED_STEP_FULL_JSON[index]="$full_json"
+  PREPARED_STEP_READING_METADATA[index]="$reading_metadata"
+ done
+ exec 8<&-
+ rm -f "$stream"
+ TOTAL="$count"
+ return 0
 }
 
-# Persist a measured white reference into step metadata once it is available.
-# The per-step selector below consumes only serialized target metadata; it does
-# not use the previous patch's measured luminance as the next patch's decision.
+# Persist a measured white reference into step metadata once it is available
+# so chart targets and the saved series share the same live luminance anchor.
 apply_series_white_reference_to_steps() {
  local white_y="$1"
  [[ -f "$STEPS_FILE" ]] || return 1
  [[ "$white_y" =~ ^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$ ]] || return 1
- STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" SIGNAL_MODE="$SIGNAL_MODE" DV_MAP_MODE="$DV_MAP_MODE" python - <<'PY' 2>/dev/null
-import json, math, os, tempfile
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" SIGNAL_MODE="$SIGNAL_MODE" DV_MAP_MODE="$DV_MAP_MODE" PGEN_BIN_DIR="$SCRIPT_DIR" python - <<'PY' 2>/dev/null
+import json, math, os, sys, tempfile
+
+for candidate in (os.environ.get("PGEN_BIN_DIR", ""), "/usr/bin"):
+    if candidate and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+from pgen_colour_math import pq_encode_nits
 
 def finite(value):
     return value == value and value not in (float("inf"), float("-inf"))
@@ -738,14 +836,7 @@ def pq_encode_normalized(nits):
     nits = max(0.0, min(10000.0, float(nits)))
     if nits <= 0:
         return 0.0
-    m1 = 2610.0 / 16384.0
-    m2 = 2523.0 / 32.0
-    c1 = 3424.0 / 4096.0
-    c2 = 2413.0 / 128.0
-    c3 = 2392.0 / 128.0
-    linear = nits / 10000.0
-    p = linear ** m1
-    return ((c1 + c2 * p) / (1 + c3 * p)) ** m2
+    return pq_encode_nits(nits, clamp_peak=True)
 
 for step in steps:
     if not isinstance(step, dict):
@@ -784,92 +875,21 @@ finally:
 PY
 }
 
-# Return off or the operator-selected a/aa/aaa mode for one serialized step.
-# Direct absolute targets win; otherwise target_Yn is resolved against the
-# serialized white reference and floored at the serialized black reference.
+# Return the operator mode only for a step whose expected target luminance is
+# strictly below the trigger. Absolute targets win; otherwise target_Yn is
+# resolved against the serialized white/black references used by the charts.
 effective_low_light_mode_for_step() {
  local idx="$1"
- STEPS_FILE="$STEPS_FILE" STEP_INDEX="$idx" SELECTED_MODE="$LOW_LIGHT_MODE" LOW_LIGHT_TRIGGER_VALUE="$LOW_LIGHT_TRIGGER" python - <<'PY' 2>/dev/null
-import json, os
-
-def finite(value):
-    return value == value and value not in (float("inf"), float("-inf"))
-
-def number(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        value = float(value)
-    except Exception:
-        return None
-    return value if finite(value) else None
-
-mode = os.environ.get("SELECTED_MODE", "off")
-if mode not in ("a", "aa", "aaa"):
-    print("off")
-    raise SystemExit(0)
-trigger = number(os.environ.get("LOW_LIGHT_TRIGGER_VALUE"))
-if trigger is None or trigger <= 0:
-    print("off")
-    raise SystemExit(0)
-try:
-    with open(os.environ.get("STEPS_FILE", "")) as fh:
-        steps = json.load(fh)
-    step = steps[int(os.environ.get("STEP_INDEX", "-1"))]
-except Exception:
-    print("off")
-    raise SystemExit(0)
-if not isinstance(step, dict):
-    print("off")
-    raise SystemExit(0)
-
-expected = None
-absolute_present = False
-for key in ("target_Y", "dv_absolute_target_y"):
-    if key in step:
-        absolute_present = True
-        expected = number(step.get(key))
-        if expected is None or expected < 0:
-            print("off")
-            raise SystemExit(0)
-        break
-if not absolute_present and "custom_target_nits" in step:
-    absolute_present = True
-    expected = number(step.get("custom_target_nits"))
-    if expected is None or expected <= 0:
-        print("off")
-        raise SystemExit(0)
-if not absolute_present:
-    target_yn = number(step.get("target_Yn"))
-    black_y = number(step.get("series_target_black_y"))
-    if black_y is None or black_y < 0:
-        black_y = 0.0
-    if target_yn is not None and target_yn >= 0:
-        if target_yn == 0:
-            expected = black_y
-        else:
-            white_y = None
-            for key in ("dv_absolute_white_y", "series_target_white_y", "lg_target_white_y"):
-                candidate = number(step.get(key))
-                if candidate is not None and candidate > 0:
-                    white_y = candidate
-                    break
-            if white_y is not None:
-                expected = max(black_y, target_yn * white_y)
-if expected is None or expected < 0 or not finite(expected):
-    print("off")
-else:
-    print(mode if expected < trigger else "off")
-PY
+ printf '%s\n' "${PREPARED_STEP_LOW_LIGHT_MODE[$idx]:-off}"
 }
 
 ensure_spotread_low_light_for_step() {
  local idx="$1" desired
- # Averaging changes only affect physical instruments. Restarting the virtual
- # meter for them adds latency without changing its synthetic result.
+ # Integration-mode changes only affect physical instruments. Restarting the
+ # virtual meter for them adds latency without changing its synthetic result.
  (( METER_SIMULATED )) && return 0
  # Spectrophotometers can require a physical white-tile prompt after a child
- # restart. Do not abort an otherwise valid series to change averaging mode
+ # restart. Do not abort an otherwise valid series to change integration mode
  # when the operator must remain in control of that setup sequence.
  [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 0
  desired=$(effective_low_light_mode_for_step "$idx")
@@ -881,85 +901,19 @@ ensure_spotread_low_light_for_step() {
 build_step_reading_json() {
  local idx="$1" parsed_json="${2:-}"
  [[ -n "$parsed_json" ]] || parsed_json="{}"
- python - "$idx" "$STEPS_FILE" "$parsed_json" <<'PY'
-import json, math, os, sys
-
-try:
-    index = int(sys.argv[1])
-except Exception:
-    index = 0
-
-try:
-    steps_file = sys.argv[2]
-except Exception:
-    steps_file = ""
-
-try:
-    reading = json.loads(sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "{}")
-except Exception:
-    sys.exit(1)
-
-if not isinstance(reading, dict):
-    sys.exit(1)
-reading["observer"] = os.environ.get("OBSERVER", "1931_2")
-
-def finite_number(value):
-    try:
-        value = float(value)
-    except Exception:
-        return False
-    return math.isfinite(value) if hasattr(math, "isfinite") else value == value and value not in (float("inf"), float("-inf"))
-
-has_measurement = (
-    finite_number(reading.get("X")) and
-    finite_number(reading.get("Y")) and
-    finite_number(reading.get("Z")) and
-    finite_number(reading.get("luminance"))
-)
-
-if not has_measurement and "error" not in reading:
-    sys.exit(1)
-
-try:
-    with open(steps_file) as fh:
-        steps = json.load(fh)
-    step = steps[index] if 0 <= index < len(steps) else {}
-except Exception:
-    step = {}
-
-def copy_field(name):
-    if name in step:
-        reading[name] = step[name]
-
-if "ire" in step:
-    reading["ire"] = step["ire"]
-if "name" in step:
-    reading["name"] = step["name"]
-for dst, src in (("r_code", "r"), ("g_code", "g"), ("b_code", "b")):
-    if src in step:
-        reading[dst] = step[src]
-
-for field in (
-	"input_max", "patch_size", "stimulus", "signal_r_pct", "signal_g_pct", "signal_b_pct",
-	"signal_mode", "target_gamma", "max_luma", "dv_map_mode",
-	"analysis_ire", "target_ire", "transport_stimulus",
-	"final_white_refresh",
-	"target_x", "target_y", "target_Yn", "target_X", "target_Y", "target_Z",
-	"dv_absolute_white_y", "dv_absolute_target_y", "dv_absolute_rolloff_pct",
-	"dv_absolute_tunnel_gamma", "dv_absolute_st2084_precomp",
-    "series_target_white_y", "lg_target_white_y", "series_target_black_y",
-	"series_type", "series_color", "sat_pct", "point_role", "series_mode",
-	"series_white_reference",
-	"icc_reuse_signature",
-    "autocal_code", "autocal_white_reference", "autocal_reference_only",
-    "autocal_read_only", "autocal_slot_locked", "ddc_slot_locked",
-    "autocal_legal_white_anchor", "ddc_target_ire", "autocal_order_ire",
-    "autocal_target_label", "preview_r", "preview_g", "preview_b"
-):
-    copy_field(field)
-
-print(json.dumps(reading, separators=(",", ":")))
-PY
+ local metadata="${PREPARED_STEP_READING_METADATA[$idx]:-}"
+ local payload="${parsed_json#\{}"
+ payload="${payload%\}}"
+ if [[ "$payload" == *'"error":'* && "$payload" != *'"sample_count":'* ]]; then
+  metadata="$metadata,\"sample_count\":1,\"requested_sample_count\":1,\"average_mode\":\"off\""
+ fi
+ if [[ -n "$metadata" && -n "$payload" ]]; then
+  printf '{%s,%s}\n' "$metadata" "$payload"
+ elif [[ -n "$metadata" ]]; then
+  printf '{%s}\n' "$metadata"
+ else
+  printf '{%s}\n' "$payload"
+ fi
 }
 
 dv_absolute_greyscale_series_active() {
@@ -992,12 +946,47 @@ raise SystemExit(1)
 PY
 }
 
+# There is no recovery from a failed DV-absolute target application and no
+# sign of it in the series output: the whole greyscale sweep simply measures
+# against the wrong targets. Say so where an operator actually looks.
+dv_absolute_targets_failed() {
+ local line
+ line="[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets NOT applied: $1"
+ echo "$line" >&2
+ echo "$line" >> /tmp/meter_series_debug.log
+}
+
 apply_dv_absolute_greyscale_targets() {
  local white_y="$1"
- [[ -f "$STEPS_FILE" ]] || return 1
- is_number "$white_y" || return 1
- STEPS_FILE="$STEPS_FILE" WHITE_Y="$white_y" python - <<'PY' 2>/dev/null
-import json, math, os, tempfile
+ local output status
+ if [[ ! -f "$STEPS_FILE" ]]; then
+  dv_absolute_targets_failed "steps file '$STEPS_FILE' is missing"
+  return 1
+ fi
+ if ! is_number "$white_y"; then
+  dv_absolute_targets_failed "white reference '$white_y' is not a number"
+  return 1
+ fi
+ # The worker's diagnostics are captured rather than discarded: a partial
+ # deploy that leaves pgen_colour_math.py behind shows up here as an
+ # ImportError instead of as an unexplained non-zero exit.
+ output="$(dv_absolute_targets_worker "$white_y" 2>&1)"
+ status=$?
+ if [[ $status -ne 0 ]]; then
+  dv_absolute_targets_failed "worker exited $status: $(printf '%s' "$output" | tr '\n' ' ' | cut -c1-400)"
+  return 1
+ fi
+ return 0
+}
+
+dv_absolute_targets_worker() {
+ STEPS_FILE="$STEPS_FILE" WHITE_Y="$1" PGEN_BIN_DIR="$SCRIPT_DIR" python - <<'PY'
+import json, math, os, sys, tempfile
+
+for candidate in (os.environ.get("PGEN_BIN_DIR", ""), "/usr/bin"):
+    if candidate and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+from pgen_colour_math import pq_decode_nits, pq_encode_nits
 
 def finite(value):
     return value == value and value not in (float("inf"), float("-inf"))
@@ -1018,29 +1007,14 @@ except Exception:
 if not isinstance(steps, list):
     raise SystemExit(1)
 
-m1 = 2610.0 / 16384.0
-m2 = 2523.0 / 32.0
-c1 = 3424.0 / 4096.0
-c2 = 2413.0 / 128.0
-c3 = 2392.0 / 128.0
 def pq_decode_normalized(code):
-    code = max(0.0, min(1.0, float(code)))
-    if code <= 0:
-        return 0.0
-    p = code ** (1 / m2)
-    num = max(p - c1, 0.0)
-    den = c2 - c3 * p
-    if den <= 0:
-        return 10000.0
-    return 10000.0 * ((num / den) ** (1 / m1))
+    return pq_decode_nits(float(code))
 
 def pq_encode_normalized(nits):
     nits = max(0.0, min(10000.0, float(nits)))
     if nits <= 0:
         return 0.0
-    linear = nits / 10000.0
-    p = linear ** m1
-    return ((c1 + c2 * p) / (1 + c3 * p)) ** m2
+    return pq_encode_nits(nits, clamp_peak=True)
 
 def percent_from_step(step, channel):
     for key in ("signal_%s_pct" % channel, "stimulus", "analysis_ire", "target_ire", "ire"):
@@ -1345,7 +1319,11 @@ find_port() {
 
 cleanup_stale_series_step_files
 
-TOTAL=$(get_step_count)
+TOTAL=0
+if ! prepare_series_steps; then
+ echo "[$(date '+%H:%M:%S.%3N')] series-step normalization failed before meter startup" >> /tmp/meter_series_debug.log
+ exit 1
+fi
 DELAY_SEC=$(python -c "print($DELAY_MS/1000.0)" 2>/dev/null)
 PATTERN_DELAY_MS=$(sanitize_ms "$PATTERN_DELAY_MS" 0 120000)
 PATTERN_DELAY_SEC=$(milliseconds_to_seconds "$PATTERN_DELAY_MS")
@@ -1417,10 +1395,9 @@ series_uses_initial_white_reference() {
 series_requires_final_white_refresh() {
  [[ "$SERIES_ID" == greyscale_* ]] || return 1
  (( TOTAL > 2 )) || return 1
- local first_white_reference final_white_refresh
- first_white_reference=$(get_step_field 0 autocal_white_reference)
+ local first_white_reference="${PREPARED_STEP_AUTOCAL_WHITE_REFERENCE[0]:-}"
  [[ "$first_white_reference" == "True" || "$first_white_reference" == "true" || "$first_white_reference" == "1" ]] && return 1
- final_white_refresh=$(get_step_field 0 final_white_refresh)
+ local final_white_refresh="${PREPARED_STEP_FINAL_WHITE_REFRESH[0]:-}"
  [[ "$final_white_refresh" == "True" || "$final_white_refresh" == "true" || "$final_white_refresh" == "1" ]]
 }
 
@@ -1436,19 +1413,16 @@ write_state_json << EOJSON
 {"status":"running","series_id":"$SERIES_ID","current_step":0,"total_steps":$TOTAL,"current_name":"Connecting to meter...","readings":[]}
 EOJSON
 
-# Full cleanup of any previous meter state. Called before starting a session
-# and again before any init retry. Kills every known meter process and
-# removes all stale temp files that could interfere with spotread startup
-# (held USB handles, stale FIFOs, cached port numbers that no longer exist).
 # After a read timeout the persistent spotread session is often WEDGED, not
 # just slow: i1D3-class meters intermittently reset on the USB bus (dmesg
 # shows "reset full-speed USB device"; 261 timeouts logged on one rig) and the
 # in-flight read never returns. Retrying on the dead session burns the retry
 # timeout, and every LATER step then fails the same way to the end of the run.
 # Bounce the session instead: kill the wedged reader, respawn the spotread
-# child from its stable base command, wait for the reading prompt. Colorimeters
-# only: a spectro restart would re-prompt for its white
-# tile, which cannot be answered mid-run headlessly.
+# child from its stable base command with the -Y integration flags for the
+# requested low-light mode, wait for the reading prompt. Colorimeters only: a
+# spectro restart would re-prompt for its white tile, which cannot be answered
+# mid-run headlessly.
 restart_spotread_session() {
  [[ "$REQUIRE_DEVICE_READY" == "1" ]] && return 1
  [[ -z "$SR_CMD_BASE" ]] && return 1
@@ -1505,6 +1479,9 @@ restart_spotread_session() {
  return 1
 }
 
+# Full cleanup of any previous meter state. Called before starting a session
+# and again before any init retry. Kills every known meter process and removes
+# stale temp files that could interfere with a clean spotread startup.
 meter_full_cleanup() {
  # Kill all meter-related processes (wrappers, pipelines, spotread itself)
  pkill -9 -f 'meter_session.sh'          2>/dev/null
@@ -1618,8 +1595,9 @@ EOJSON
  if [[ -n "$REFRESH_RATE" ]]; then
   SR_CMD="$SR_CMD -Y R:$REFRESH_RATE"
  fi
- # The wrapper and initial child start at explicit off. Per-step selection
- # below rebuilds only this spotread command from the stable base.
+ # Keep the flagless command as the stable base: restart_spotread_session
+ # rebuilds SR_CMD from it with the -Y integration flags each per-step
+ # low-light mode change requires. The initial child runs without -Y.
  SR_CMD_BASE="$SR_CMD"
  SR_CMD="$SR_CMD_BASE"
  CURRENT_LOW_LIGHT_MODE="off"
@@ -1775,71 +1753,80 @@ INITIAL_READY_PENDING=0
 
 # Helper: count result lines
 count_results() {
- local n
- n=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r' | grep -c "Result is XYZ:" 2>/dev/null) || true
- echo "${n:-0}" | tr -d '[:space:]'
+ local line n=0
+ while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ "$line" == *"Result is XYZ:"* ]] && n=$((n + 1))
+ done < "$OUTFILE" 2>/dev/null
+ echo "$n"
 }
 
 # Helper: parse latest result
 parse_latest_result() {
- local clean_out result_line
- clean_out=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$OUTFILE" 2>/dev/null | tr -d '\r')
- result_line=$(echo "$clean_out" | grep "Result is XYZ:" | tail -1)
- if [[ -n "$result_line" ]]; then
-  local xyz_part yxy_part X Y Z lum x_chr y_chr cct ts
-  xyz_part=$(echo "$result_line" | sed 's/.*XYZ:[[:space:]]*//' | sed 's/,.*//')
-  X=$(echo "$xyz_part" | awk '{print $1}')
-  Y=$(echo "$xyz_part" | awk '{print $2}')
-  Z=$(echo "$xyz_part" | awk '{print $3}')
-  X=$(number_token "$X")
-  Y=$(number_token "$Y")
-  Z=$(number_token "$Z")
-  if [[ "$result_line" == *"Yxy:"* ]]; then
-   yxy_part=$(echo "$result_line" | sed 's/.*Yxy:[[:space:]]*//')
-   lum=$(echo "$yxy_part" | awk '{print $1}')
-   x_chr=$(echo "$yxy_part" | awk '{print $2}')
-   y_chr=$(echo "$yxy_part" | awk '{print $3}')
-   lum=$(number_token "$lum")
-   x_chr=$(number_token "$x_chr")
-   y_chr=$(number_token "$y_chr")
-  fi
-  if ! is_number "$X" || ! is_number "$Y" || ! is_number "$Z"; then
-   echo "[$(date '+%H:%M:%S.%3N')] parse failed: missing XYZ result=$(printf '%s' "$result_line" | cut -c1-240)" >> /tmp/meter_series_debug.log
-   return 1
-  fi
-  if ! is_number "$lum" || ! is_number "$x_chr" || ! is_number "$y_chr"; then
-   # Some spotread builds omit Yxy in continuous mode. Derive it from XYZ so
-   # valid meter reads still plot instead of becoming metadata-only entries.
-   local derived
-   derived=$(awk -v X="$X" -v Y="$Y" -v Z="$Z" 'BEGIN {
-    sum = X + Y + Z
-    if (sum > 0) printf "%.10g %.10g %.10g", Y, X / sum, Y / sum
-    else printf "%.10g 0 0", Y
-   }')
-   lum=$(echo "$derived" | awk '{print $1}')
-   x_chr=$(echo "$derived" | awk '{print $2}')
-   y_chr=$(echo "$derived" | awk '{print $3}')
-  fi
-  if ! is_number "$lum" || ! is_number "$x_chr" || ! is_number "$y_chr"; then
-   echo "[$(date '+%H:%M:%S.%3N')] parse failed: missing Yxy result=$(printf '%s' "$result_line" | cut -c1-240)" >> /tmp/meter_series_debug.log
-   return 1
-  fi
+ "$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" parse < "$OUTFILE" \
+  2>>/tmp/meter_series_debug.log
+}
 
-  cct=0
-  if [[ -n "$x_chr" && -n "$y_chr" && "$y_chr" != "0.000000" ]]; then
-   cct=$(python -c "
-x=$x_chr; y=$y_chr
-if y > 0:
- n = (x - 0.3320) / (0.1858 - y)
- print(int(round(449*n**3 + 3525*n**2 + 6823.3*n + 5520.33)))
-else:
- print(0)
-" 2>/dev/null || echo 0)
+# Take one more sample on the already-open spotread process. The caller has
+# displayed and settled the patch once; this helper only sends a new trigger.
+capture_series_average_sample() {
+ local read_timeout="$1"
+ local prev_count scan_offset read_start cur_count new_output cur_size
+ local retried_comm=0 zero_discards=0 prompt_reason="" parsed=""
+ SERIES_AVERAGE_PARSED=""
+ prev_count=$(count_results)
+ scan_offset=$(output_size)
+ printf " " >&3
+ read_start=$SECONDS
+ while (( SECONDS - read_start < read_timeout )); do
+  series_stop_requested && series_cancel_exit
+  cur_count=$(count_results)
+  if (( cur_count > prev_count )); then
+   parsed=$(parse_latest_result)
+   if [[ -n "$parsed" ]]; then
+    if nonblack_zero_reading "$parsed" "$IRE" "$R" "$G" "$B"; then
+     if (( zero_discards < ZERO_READ_RETRIES )); then
+      zero_discards=$((zero_discards + 1))
+      echo "[$(date '+%H:%M:%S.%3N')] null averaging sample; re-reading $zero_discards/$ZERO_READ_RETRIES step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      prev_count="$cur_count"
+      scan_offset=$(output_size)
+      read_start=$SECONDS
+      printf " " >&3
+      continue
+     fi
+     return 2
+    fi
+    SERIES_AVERAGE_PARSED="$parsed"
+    return 0
+   fi
   fi
-  ts=$(date +%s)
-  echo "{\"X\":$X,\"Y\":$Y,\"Z\":$Z,\"x\":$x_chr,\"y\":$y_chr,\"luminance\":$lum,\"cct\":$cct,\"timestamp\":$ts}"
-  return 0
- fi
+  new_output=$(clean_output_since "$scan_offset")
+  if [[ -n "$new_output" ]]; then
+   cur_size=$(output_size)
+   if [[ $retried_comm -eq 0 && "$new_output" == *"Spot read failed due to communication problem"* ]]; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication problem during averaging sample; retrying once step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+    retried_comm=1
+    read_timeout=$((read_timeout + 15))
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
+   fi
+   if (( retried_comm == 1 )) && { [[ "$new_output" == *"Spot read failed due to communication problem"* ]] \
+      || [[ "$new_output" == *"to take a reading:"* ]]; }; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no averaging result; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+    return 1
+   fi
+   if prompt_reason=$(manual_ready_prompt_reason "$new_output"); then
+    handle_series_manual_prompt "$STEP_NUM" "$NAME" "$prompt_reason" || return 1
+    read_start=$SECONDS
+    read_timeout=$((read_timeout + 30))
+    scan_offset=$(output_size)
+    printf " " >&3
+    continue
+   fi
+   scan_offset="$cur_size"
+  fi
+  sleep 0.3
+ done
  return 1
 }
 
@@ -2065,7 +2052,7 @@ echo "[$(date '+%H:%M:%S.%3N')] meter_series.sh started: SERIES_ID=$SERIES_ID" >
 if series_uses_initial_white_reference; then
  echo "[$(date '+%H:%M:%S')] WHITE PRE-READ GATE ENTERED for SERIES_ID=$SERIES_ID" >> /tmp/meter_series_debug.log
  if [[ -f "$STEPS_FILE" ]]; then
-  FIRST_R=$(get_step_field 0 r)
+  FIRST_R="${PREPARED_STEP_R[0]:-}"
   if [[ "$FIRST_R" =~ ^[0-9]+$ ]]; then
    WHITE_CODE="$FIRST_R"
   fi
@@ -2120,9 +2107,9 @@ EOJSON
     if ! handle_series_manual_prompt "0" "Reading 100% white for target Y" "$PROMPT_REASON"; then
      break
     fi
-    printf " " >&3
     SCAN_OFFSET=$(output_size)
     READ_START=$SECONDS
+    printf " " >&3
     continue
    fi
    SCAN_OFFSET="$CUR_SIZE"
@@ -2154,6 +2141,11 @@ print(json.dumps(r))
  else
   echo "[$(date '+%H:%M:%S')] GOT_RESULT was false, WHITE_READING stays null" >> "$DEBUG_LOG"
  fi
+
+ if [[ "$WHITE_READING" == "null" ]]; then
+  cat "$DEBUG_LOG" >> /tmp/white_read_series.log 2>/dev/null
+  series_meter_read_failure_exit "Initial white-reference read did not complete; series stopped before a late result could contaminate the first patch"
+ fi
  
  echo "[$(date '+%H:%M:%S')] Final WHITE_READING=$WHITE_READING" >> "$DEBUG_LOG"
  cat "$DEBUG_LOG" >> /tmp/white_read_series.log 2>/dev/null
@@ -2166,7 +2158,10 @@ fi
 if [[ "$WHITE_READING" != "null" ]]; then
  WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
  if [[ -n "$WHITE_REFERENCE_Y" ]]; then
-  apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+  if apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y"; then
+   prepare_series_steps || series_meter_read_failure_exit \
+    "Series steps could not be regenerated after the white-reference update"
+  fi
  fi
 fi
 
@@ -2179,8 +2174,8 @@ DV_ABSOLUTE_TARGETS_APPLIED=0
 # first series reading so DV Colors/Sat Sweep do not immediately measure the
 # same white step a second time.
 if series_uses_initial_white_reference && [[ "$WHITE_READING" != "null" ]] && (( TOTAL > 0 )); then
- FIRST_IRE=$(get_step_field 0 ire)
- FIRST_NAME=$(get_step_field 0 name)
+ FIRST_IRE="${PREPARED_STEP_IRE[0]:-}"
+ FIRST_NAME="${PREPARED_STEP_NAME[0]:-}"
  FIRST_READING=$(build_step_reading_json 0 "$WHITE_READING" 2>/dev/null || echo "")
  if [[ -n "$FIRST_READING" ]]; then
   READINGS="$FIRST_READING"
@@ -2194,19 +2189,21 @@ fi
 
 for (( i=START_INDEX; i<TOTAL; i++ )); do
 	 series_stop_requested && series_cancel_exit
-	 R=$(get_step_field $i r)
-	 G=$(get_step_field $i g)
-	 B=$(get_step_field $i b)
-	 INPUT_MAX=$(get_step_field $i input_max)
+	 R="${PREPARED_STEP_R[$i]:-}"
+	 G="${PREPARED_STEP_G[$i]:-}"
+	 B="${PREPARED_STEP_B[$i]:-}"
+	 INPUT_MAX="${PREPARED_STEP_INPUT_MAX[$i]:-}"
 	 [[ -z "$INPUT_MAX" ]] && INPUT_MAX=255
-	 STEP_PATCH_SIZE=$(get_step_field $i patch_size)
+	 STEP_PATCH_SIZE="${PREPARED_STEP_PATCH_SIZE[$i]:-}"
 	 if ! is_number "$STEP_PATCH_SIZE" || ! awk "BEGIN { exit !($STEP_PATCH_SIZE >= 1 && $STEP_PATCH_SIZE <= 100) }" 2>/dev/null; then
 	  STEP_PATCH_SIZE="$PATCH_SIZE"
 	 fi
-	 READ_DELAY_MS=$(get_step_field $i read_delay_ms)
-	 IRE=$(get_step_field $i ire)
-	 NAME=$(get_step_field $i name)
-	 SERIES_WHITE_REFERENCE=$(get_step_field $i series_white_reference)
+	 READ_DELAY_MS="${PREPARED_STEP_READ_DELAY_MS[$i]:-}"
+	 IRE="${PREPARED_STEP_IRE[$i]:-}"
+	 NAME="${PREPARED_STEP_NAME[$i]:-}"
+	 SERIES_WHITE_REFERENCE="${PREPARED_STEP_SERIES_WHITE_REFERENCE[$i]:-}"
+	 STEP_FINAL_WHITE_REFRESH="${PREPARED_STEP_FINAL_WHITE_REFRESH[$i]:-}"
+	 STEP_TARGET_YN="${PREPARED_STEP_TARGET_YN[$i]:-}"
 	 STEP_NUM=$((i + 1))
  if ! [[ "$R" =~ ^[0-9]+$ && "$G" =~ ^[0-9]+$ && "$B" =~ ^[0-9]+$ && "$INPUT_MAX" =~ ^[0-9]+$ ]] || ! is_number "$IRE" || [[ -z "$NAME" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] invalid series step: index=$i r=$R g=$G b=$B ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2220,7 +2217,7 @@ EOJSON
  fi
 
  if ! ensure_spotread_low_light_for_step "$i"; then
-  LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed at step $STEP_NUM")
+  LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed at step $STEP_NUM")
   write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
@@ -2303,6 +2300,7 @@ EOJSON
  GOT_RESULT=false
  RETRIED_COMM=0
  COMM_RETRY_SEEN=0
+ READ_INCOMPLETE=0
  while (( SECONDS - READ_START < READ_TIMEOUT )); do
   series_stop_requested && series_cancel_exit
   CUR_COUNT=$(count_results)
@@ -2315,28 +2313,36 @@ EOJSON
    CUR_SIZE=$(output_size)
    if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during read - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-    printf " " >&3
     RETRIED_COMM=1
     COMM_RETRY_SEEN=1
     READ_TIMEOUT=$((READ_TIMEOUT + 15))
     SCAN_OFFSET=$(output_size)
+    printf " " >&3
     continue
+   fi
+   if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+      || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+    echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result; retiring child step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
+    READ_INCOMPLETE=1
+    break
    fi
    if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
     if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
+     READ_INCOMPLETE=1
      break
     fi
-    printf " " >&3
     READ_START=$SECONDS
     READ_TIMEOUT=$((READ_TIMEOUT + 30))
     SCAN_OFFSET=$(output_size)
+    printf " " >&3
     continue
    fi
    SCAN_OFFSET="$CUR_SIZE"
   fi
   sleep "$READ_POLL_SEC"
  done
+ $GOT_RESULT || READ_INCOMPLETE=1
 
  READING=""
  if $GOT_RESULT; then
@@ -2356,12 +2362,18 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
+  if (( READ_INCOMPLETE == 1 )); then
+   series_meter_read_failure_exit "Meter read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+  fi
   echo "[$(date '+%H:%M:%S.%3N')] read timeout: step=$STEP_NUM ire=$IRE timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   PATCH_NO_READING_RETRIES=$NO_READING_RETRIES
-  # A communication error means spotread rejected the trigger rather than
-  # measuring the patch. Give that patch one clean redisplay/read cycle. Keep
-  # ordinary timeouts at zero retries so an unresponsive meter cannot add a
-  # minute to every patch in a finite series.
+  # Only completed-but-unusable reads reach this retry: an implausibly dim
+  # HDR profile reading (cleared above with COMM_RETRY_SEEN set) or a result
+  # that would not parse. An incomplete trigger never gets here -- it took
+  # the terminal exit above, because a second trigger after an unaccounted
+  # one lets the late first result be adopted by a later patch. Give the
+  # dim-reading case one clean redisplay/read cycle; keep ordinary retries
+  # at the configured count.
   if (( COMM_RETRY_SEEN == 1 && PATCH_NO_READING_RETRIES < 1 )); then
    PATCH_NO_READING_RETRIES=1
   fi
@@ -2392,32 +2404,43 @@ EOJSON
      CUR_SIZE=$(output_size)
      if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during no-reading retry - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-      printf " " >&3
       RETRIED_COMM=1
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
+     fi
+     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during no-reading recovery; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      break
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during no reading retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
       if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
        break
       fi
-      printf " " >&3
       READ_START=$SECONDS
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
     sleep "$READ_POLL_SEC"
    done
+   if ! $GOT_RETRY; then
+    series_meter_read_failure_exit "Meter retry did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   fi
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
     if [[ -n "$PARSED" ]]; then
      READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
     fi
+   fi
+   if [[ -z "$READING" ]]; then
+    series_meter_read_failure_exit "Meter retry returned an unparseable result for $NAME; series stopped"
    fi
    if [[ -n "$READING" ]]; then
     echo "[$(date '+%H:%M:%S.%3N')] no reading retry recovered: step=$STEP_NUM ire=$IRE retry=$no_reading_retry name=$NAME" >> /tmp/meter_series_debug.log
@@ -2460,32 +2483,43 @@ EOJSON
      CUR_SIZE=$(output_size)
      if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
       echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during zero retry - retrying once (+15s) step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
-      printf " " >&3
       RETRIED_COMM=1
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 15))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
+     fi
+     if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+        || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+      echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no result during zero confirmation; retiring child step=$STEP_NUM name=$NAME" >> /tmp/meter_series_debug.log
+      break
      fi
      if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
       echo "[$(date '+%H:%M:%S.%3N')] manual prompt during zero retry: step=$STEP_NUM ire=$IRE reason=$PROMPT_REASON name=$NAME" >> /tmp/meter_series_debug.log
       if ! handle_series_manual_prompt "$STEP_NUM" "$NAME" "$PROMPT_REASON"; then
        break
       fi
-      printf " " >&3
       READ_START=$SECONDS
       RETRY_TIMEOUT=$((RETRY_TIMEOUT + 30))
       SCAN_OFFSET=$(output_size)
+      printf " " >&3
       continue
      fi
      SCAN_OFFSET="$CUR_SIZE"
     fi
     sleep "$READ_POLL_SEC"
    done
+   if ! $GOT_RETRY; then
+    series_meter_read_failure_exit "Meter zero-confirmation read did not complete for $NAME; series stopped before a late result could contaminate another patch"
+   fi
    if $GOT_RETRY; then
     PARSED=$(parse_latest_result)
     if [[ -n "$PARSED" ]]; then
      ZERO_RETRY_READING=$(build_step_reading_json "$i" "$PARSED" 2>/dev/null)
     fi
+   fi
+   if [[ -z "$ZERO_RETRY_READING" ]]; then
+    series_meter_read_failure_exit "Meter zero-confirmation read returned an unparseable result for $NAME; series stopped"
    fi
    if [[ -n "$ZERO_RETRY_READING" ]] && ! nonblack_zero_reading "$ZERO_RETRY_READING" "$IRE" "$R" "$G" "$B"; then
     echo "[$(date '+%H:%M:%S.%3N')] zero read guard recovered: step=$STEP_NUM ire=$IRE retry=$zero_retry name=$NAME" >> /tmp/meter_series_debug.log
@@ -2507,6 +2541,66 @@ EOJSON
   fi
  fi
 
+ # Application-level low-light averaging: collect distinct physical samples
+ # from the same child, then reduce linear XYZ through the shared math module.
+ AVERAGING_FAILED=0
+ AVERAGING_FAILURE_DETAIL=""
+ AVERAGE_MODE=$(effective_low_light_mode_for_step "$i")
+ AVERAGE_SAMPLE_COUNT="${PREPARED_STEP_REQUESTED_SAMPLE_COUNT[$i]:-1}"
+ if [[ -n "$READING" && "$READING" != *'"error"'* && "$READING" != *'"measured_zero"'* && "$READING" != *'"null_read"'* ]] && (( AVERAGE_SAMPLE_COUNT > 1 )); then
+  # Seed with the bare parsed sample, not the wrapped $READING: the averager
+  # copies keys from its first sample, and build_step_reading_json would then
+  # prepend the same step metadata again, emitting duplicate JSON keys.
+  AVERAGE_SAMPLES_JSON="$PARSED"
+  for (( average_index=2; average_index<=AVERAGE_SAMPLE_COUNT; average_index++ )); do
+   write_state_json << EOJSON
+{"status":"running","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$NAME (sample $average_index/$AVERAGE_SAMPLE_COUNT)","readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   capture_series_average_sample "$(read_timeout_seconds "$IRE")"
+   SAMPLE_RC=$?
+   if (( SAMPLE_RC != 0 )); then
+    echo "[$(date '+%H:%M:%S.%3N')] averaging sample failed: step=$STEP_NUM sample=$average_index/$AVERAGE_SAMPLE_COUNT rc=$SAMPLE_RC name=$NAME" >> /tmp/meter_series_debug.log
+    AVERAGING_FAILED=1
+    if (( SAMPLE_RC == 2 )); then
+     AVERAGING_FAILURE_DETAIL="Meter averaging sample $average_index of $AVERAGE_SAMPLE_COUNT read persistent zeros at a light-driving patch for $NAME; series stopped rather than average contradictory samples"
+    else
+     AVERAGING_FAILURE_DETAIL="Meter averaging sample $average_index of $AVERAGE_SAMPLE_COUNT timed out or failed for $NAME; series stopped before a late result could contaminate another patch"
+    fi
+    break
+   fi
+   AVERAGE_SAMPLES_JSON="$AVERAGE_SAMPLES_JSON,$SERIES_AVERAGE_PARSED"
+  done
+  if (( AVERAGING_FAILED == 0 )); then
+   AVERAGED_READING=$(printf '[%s]' "$AVERAGE_SAMPLES_JSON" | PGEN_AVERAGE_MODE="$AVERAGE_MODE" PGEN_REQUESTED_SAMPLE_COUNT="$AVERAGE_SAMPLE_COUNT" "$PGEN_PYTHON3" "$PGEN_METER_RESULT_HELPER" average 2>>/tmp/meter_series_debug.log) || AVERAGED_READING=""
+   if [[ -n "$AVERAGED_READING" ]]; then
+    READING=$(build_step_reading_json "$i" "$AVERAGED_READING" 2>/dev/null || true)
+    if [[ -z "$READING" ]]; then
+     # The samples were all good; losing them to a wrapper failure must not
+     # quietly become a missing patch in the saved series.
+     AVERAGING_FAILED=1
+     AVERAGING_FAILURE_DETAIL="Averaged reading for $NAME could not be wrapped as a step record; series stopped rather than record the patch as missing"
+    fi
+   else
+    AVERAGING_FAILED=1
+    AVERAGING_FAILURE_DETAIL="Meter averaging calculation failed for $NAME; series stopped before an unaveraged result could be recorded"
+   fi
+  fi
+  if (( AVERAGING_FAILED == 1 )); then
+   # An additional trigger may still complete after our timeout. Continuing
+   # would let that late result shift every following patch by one. An exact
+   # averaging set is therefore all-or-nothing: publish a terminal error and
+   # retire this child before any later patch can be measured.
+   AVERAGING_ERROR=$(json_escape "$AVERAGING_FAILURE_DETAIL")
+   write_state_json << EOJSON
+{"status":"error","series_id":"$SERIES_ID","current_step":$STEP_NUM,"total_steps":$TOTAL,"current_name":"$AVERAGING_ERROR","error":"averaging_incomplete","requested_sample_count":$AVERAGE_SAMPLE_COUNT,"readings":[$READINGS],"white_reading":$WHITE_READING}
+EOJSON
+   series_quit_spotread "averaging_incomplete"
+   companion_show_alignment
+   rm -f "$READY_FILE" "$STOP_FILE" 2>/dev/null || true
+   exit 1
+  fi
+ fi
+
  NORMALIZED_READING=$(normalize_oled_zero_black_reading "$READING" 2>/dev/null || true)
  if [[ -n "$NORMALIZED_READING" ]]; then
   echo "[$(date '+%H:%M:%S.%3N')] oled zero black normalized: step=$STEP_NUM ire=$IRE name=$NAME" >> /tmp/meter_series_debug.log
@@ -2514,6 +2608,8 @@ EOJSON
  fi
 
  if [[ -z "$READING" ]]; then
+  # Every averaging failure has already taken the terminal exit above, so an
+  # empty reading here is a completed-but-unparseable single read.
   echo "[$(date '+%H:%M:%S.%3N')] read timeout final: step=$STEP_NUM ire=$IRE retries=$PATCH_NO_READING_RETRIES timeout=${READ_TIMEOUT}s name=$NAME" >> /tmp/meter_series_debug.log
   READING=$(build_step_reading_json "$i" "{\"error\":\"no_reading\"}" 2>/dev/null || echo "{\"ire\":$IRE,\"name\":\"$NAME\",\"r_code\":$R,\"g_code\":$G,\"b_code\":$B,\"error\":\"no_reading\"}")
  fi
@@ -2522,11 +2618,16 @@ EOJSON
  # patch. Publish it through white_reading immediately so target luminance is
  # fixed before the first scored series patch is drawn.
  if [[ "$SERIES_WHITE_REFERENCE" == "True" || "$SERIES_WHITE_REFERENCE" == "true" || "$SERIES_WHITE_REFERENCE" == "1"
+       || "$STEP_FINAL_WHITE_REFRESH" == "True" || "$STEP_FINAL_WHITE_REFRESH" == "true" || "$STEP_FINAL_WHITE_REFRESH" == "1"
+       || ( "$SERIES_ID" == greyscale_* && ( "$STEP_TARGET_YN" == "1" || "$STEP_TARGET_YN" == "1.0" ) )
        || "${NAME,,}" == "white ref" || "${NAME,,}" == "white" || "${NAME,,}" == "100% white" ]]; then
   WHITE_READING="$READING"
   WHITE_REFERENCE_Y=$(reading_luminance_json "$WHITE_READING" 2>/dev/null || true)
   if [[ -n "$WHITE_REFERENCE_Y" ]]; then
-   apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y" || true
+   if apply_series_white_reference_to_steps "$WHITE_REFERENCE_Y"; then
+    prepare_series_steps || series_meter_read_failure_exit \
+     "Series steps could not be regenerated after the white-reference update"
+   fi
   fi
  fi
 
@@ -2540,7 +2641,11 @@ EOJSON
 
  if [[ "$DV_ABSOLUTE_TARGETS_APPLIED" == "0" ]] && dv_absolute_greyscale_series_active && is_number "$IRE" && float_le 99.999 "$IRE"; then
   WHITE_Y=$(reading_luminance_json "$READING" 2>/dev/null || true)
-  if [[ -n "$WHITE_Y" ]] && apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
+  if [[ -z "$WHITE_Y" ]]; then
+   dv_absolute_targets_failed "the 100% reading carried no usable luminance"
+  elif apply_dv_absolute_greyscale_targets "$WHITE_Y"; then
+   prepare_series_steps || series_meter_read_failure_exit \
+    "Series steps could not be regenerated after the Dolby Vision target update"
    DV_ABSOLUTE_TARGETS_APPLIED=1
    WHITE_READING="$READING"
    echo "[$(date '+%H:%M:%S.%3N')] DV absolute greyscale targets applied from white_y=$WHITE_Y" >> /tmp/meter_series_debug.log
@@ -2557,17 +2662,17 @@ done
 # sweep is running, then refreshes white once more at the end when marked so
 # the saved 100% result reflects the warmed-up display.
 if series_requires_final_white_refresh && (( TOTAL > 0 )); then
-	FIRST_R=$(get_step_field 0 r)
-	FIRST_G=$(get_step_field 0 g)
-	FIRST_B=$(get_step_field 0 b)
-	FIRST_INPUT_MAX=$(get_step_field 0 input_max)
+	FIRST_R="${PREPARED_STEP_R[0]:-}"
+	FIRST_G="${PREPARED_STEP_G[0]:-}"
+	FIRST_B="${PREPARED_STEP_B[0]:-}"
+	FIRST_INPUT_MAX="${PREPARED_STEP_INPUT_MAX[0]:-}"
 	[[ -z "$FIRST_INPUT_MAX" ]] && FIRST_INPUT_MAX=255
- FIRST_IRE=$(get_step_field 0 ire)
- FIRST_NAME=$(get_step_field 0 name)
+ FIRST_IRE="${PREPARED_STEP_IRE[0]:-}"
+ FIRST_NAME="${PREPARED_STEP_NAME[0]:-}"
 
  if [[ "$FIRST_R" =~ ^[0-9]+$ && "$FIRST_G" =~ ^[0-9]+$ && "$FIRST_B" =~ ^[0-9]+$ && "$FIRST_IRE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   if ! ensure_spotread_low_light_for_step 0; then
-   LOW_LIGHT_ERROR=$(json_escape "Meter averaging mode change failed for final white refresh")
+   LOW_LIGHT_ERROR=$(json_escape "Meter integration mode change failed for final white refresh")
    write_state_json << EOJSON
 {"status":"error","series_id":"$SERIES_ID","current_step":1,"total_steps":$TOTAL,"current_name":"$LOW_LIGHT_ERROR","readings":[$READINGS],"white_reading":$WHITE_READING}
 EOJSON
@@ -2609,21 +2714,26 @@ EOJSON
     CUR_SIZE=$(output_size)
     if [[ $RETRIED_COMM -eq 0 && "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]]; then
      echo "[$(date '+%H:%M:%S.%3N')] spotread communication problem during refresh reading - retrying once (+15s) step=1 ire=$FIRST_IRE name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
-     printf " " >&3
      RETRIED_COMM=1
      READ_TIMEOUT=$((READ_TIMEOUT + 15))
      SCAN_OFFSET=$(output_size)
+     printf " " >&3
      continue
+    fi
+    if (( RETRIED_COMM == 1 )) && { [[ "$NEW_OUTPUT" == *"Spot read failed due to communication problem"* ]] \
+       || [[ "$NEW_OUTPUT" == *"to take a reading:"* ]]; }; then
+     echo "[$(date '+%H:%M:%S.%3N')] communication retry produced no final-white result; retiring child name=$FIRST_NAME" >> /tmp/meter_series_debug.log
+     break
     fi
     if PROMPT_REASON=$(manual_ready_prompt_reason "$NEW_OUTPUT"); then
     echo "[$(date '+%H:%M:%S.%3N')] manual prompt: step=1 ire=$FIRST_IRE reason=$PROMPT_REASON name=$FIRST_NAME (refresh)" >> /tmp/meter_series_debug.log
 	     if ! handle_series_manual_prompt "1" "$FIRST_NAME (refresh)" "$PROMPT_REASON"; then
 	      break
 	     fi
-     printf " " >&3
      READ_START=$SECONDS
      READ_TIMEOUT=$((READ_TIMEOUT + 30))
      SCAN_OFFSET=$(output_size)
+     printf " " >&3
      continue
     fi
     SCAN_OFFSET="$CUR_SIZE"
@@ -2637,6 +2747,10 @@ EOJSON
    if [[ -n "$PARSED" ]]; then
     REFRESH_READING=$(build_step_reading_json 0 "$PARSED" 2>/dev/null)
    fi
+  fi
+
+  if [[ -z "$REFRESH_READING" ]]; then
+   series_meter_read_failure_exit "Final white-reference read did not complete for $FIRST_NAME; series stopped without publishing stale white data"
   fi
 
   if [[ -n "$REFRESH_READING" ]]; then

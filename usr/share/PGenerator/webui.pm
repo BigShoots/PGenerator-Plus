@@ -11,7 +11,19 @@
 #   webui_mdns()  — mDNS responder (port 5353, multicast 224.0.0.251)
 #
 
-BEGIN { require bytes; }
+BEGIN {
+ require bytes;
+ my $module_dir=__FILE__;
+ $module_dir=~s{/[^/]+\z}{};
+ unshift @INC,$module_dir if($module_dir ne "" && !grep { $_ eq $module_dir } @INC);
+}
+use PGMath ();
+use PGCalibrationMath qw(
+ calibration_target_context saturation_stimulus_for_gamuts standard_gamut_records
+);
+use PGSignalCode qw(
+ signal_code_nominal_range signal_code_policy signal_percent_to_code
+);
 use Fcntl qw(O_NONBLOCK O_WRONLY);
 use Time::HiRes ();
 # Required for the ":shared" attributes and lock() below: webui_http dispatches
@@ -788,6 +800,12 @@ $WEBUI_COMPUTE_QUEUE_MAX=1;
 $WEBUI_TV_QUEUE_MAX=64;
 $WEBUI_METER_QUEUE_MAX=64;
 $WEBUI_RENDERER_QUEUE_MAX=64;
+# Calibration workers give pattern requests a 10-second transport deadline.
+# Refuse a queued pattern before that deadline is exhausted so a client that
+# has already given up cannot change the displayed patch later.
+$WEBUI_PRIORITY_REQUEST_MAX_AGE=8;
+my $_webui_priority_sequence :shared = 0;
+my $_webui_priority_latest_dispatched :shared = 0;
 
 sub webui_route_is_concurrent_safe (@) {
  # Allowlist, deliberately conservative: a route qualifies only if its handler
@@ -811,6 +829,14 @@ sub webui_route_is_concurrent_safe (@) {
  # /api/stats reads /proc/sysfs plus a 2s response cache; its cross-call CPU
  # delta baseline is :shared, so the pool does not corrupt the percentage.
  return 1 if($path eq "/api/stats" || $path eq "/api/info");
+ # A meter read is performed by the external session daemon, which publishes
+ # its state in an atomic JSON file. Polling that file does not compete for
+ # the meter, so it must not queue behind slow display commands on the single
+ # serialized lane. A queued poll can otherwise exceed the worker's transport
+ # deadline even though the physical read is healthy. The route's one side
+ # effect -- stopping a session whose state file has sat stale past its
+ # timeout -- is idempotent and fires only for a read that is already lost.
+ return 1 if($method eq "GET" && $path eq "/api/meter/read/result");
  # Companion traffic is authenticated and touches only its own atomic files.
  # It must not take the global WebUI mutex four times per second while a
  # measurement series and its status polling are active. The three pairing
@@ -828,6 +854,69 @@ sub webui_route_is_compute (@) {
  $path="" if(!defined($path));
  return 1 if($path eq "/api/icc/build" || $path eq "/api/icc/patches" || $path eq "/api/icc/precondition-patches" || $path eq "/api/icc/finetune" || $path eq "/api/icc/to-cube");
  return 0;
+}
+
+# Calibration workers call /api/pattern over loopback before a physical read.
+# Those posts ride the dedicated renderer lane, but they still carry a
+# sequence/age tag: a pattern that has outlived its client's transport
+# deadline, or been superseded by a newer one, must not execute late and put
+# the wrong patch on screen while the meter is reading.
+sub webui_route_is_loopback_pattern (@) {
+ my ($method,$path,$peer_host)=@_;
+ return 0 if(!defined($method) || $method ne "POST");
+ return 0 if(!defined($path) || $path ne "/api/pattern");
+ $peer_host="" if(!defined($peer_host));
+ return ($peer_host eq "127.0.0.1" || $peer_host eq "::1") ? 1 : 0;
+}
+
+sub webui_route_enqueue (@) {
+ my ($queue,$fd,$priority,$accepted_at)=@_;
+ if($priority) {
+  $accepted_at=Time::HiRes::time() if(!defined($accepted_at));
+  my $sequence;
+  {
+   lock($_webui_priority_sequence);
+   $sequence=++$_webui_priority_sequence;
+  }
+  my $entry=join(":","pgen-priority-v1",$sequence,
+   sprintf("%.6f",$accepted_at),$fd);
+  $queue->insert(0,$entry);
+ }
+ else { $queue->enqueue($fd); }
+}
+
+sub webui_route_queue_entry (@) {
+ my $entry=shift;
+ return undef if(!defined($entry));
+ if(!ref($entry)
+  && $entry=~/^pgen-priority-v1:(\d+):(\d+(?:\.\d+)?):(\d+)$/) {
+  return {
+   fd=>$3+0,
+   priority=>1,
+   sequence=>$1+0,
+   accepted_at=>$2+0,
+  };
+ }
+ return undef if(ref($entry) || $entry!~/^\d+$/);
+ return {fd=>$entry+0,priority=>0,sequence=>0,accepted_at=>0};
+}
+
+sub webui_priority_request_expired (@) {
+ my ($record,$now)=@_;
+ return 0 if(ref($record) ne "HASH" || !$record->{"priority"});
+ $now=Time::HiRes::time() if(!defined($now));
+ return 1 if(!$record->{"accepted_at"}
+  || ($now-$record->{"accepted_at"})>$WEBUI_PRIORITY_REQUEST_MAX_AGE);
+ my $stale=0;
+ {
+  lock($_webui_priority_latest_dispatched);
+  if($record->{"sequence"}<=$_webui_priority_latest_dispatched) {
+   $stale=1;
+  } else {
+   $_webui_priority_latest_dispatched=$record->{"sequence"};
+  }
+ }
+ return $stale;
 }
 
 sub webui_route_device_lane (@) {
@@ -1108,6 +1197,7 @@ sub webui_http (@) {
    my ($peek_method,$peek_path)=$peek=~/^(GET|POST|PUT|OPTIONS)\s+(\S+)/;
    $peek_path="" if(!defined($peek_path));
    $peek_path=~s/\?.*$//;
+   my $peer_host=eval { $h->peerhost() } || "";
    my ($queue,$lane,$queue_max);
    my $device_lane=&webui_route_device_lane($peek_method,$peek_path);
    if(&webui_route_is_compute($peek_method,$peek_path)) {
@@ -1139,6 +1229,7 @@ sub webui_http (@) {
     next;
    }
    # Complete (or oversized) header: now it is worth a worker.
+   my $accepted_at=$pending{$fno}->[1];
    $sel->remove($h);
    delete($pending{$fno});
    my $fd=eval { POSIX::dup($fno) };
@@ -1147,7 +1238,9 @@ sub webui_http (@) {
     &log("WebUI: could not duplicate client fd: $!");
     next;
    }
-   $queue->enqueue($fd);
+   my $priority=($lane eq "renderer")
+    ? &webui_route_is_loopback_pattern($peek_method,$peek_path,$peer_host) : 0;
+   &webui_route_enqueue($queue,$fd,$priority,$accepted_at);
   }
   # Reclaim sockets that connected but never produced a usable request.
   if(scalar(keys %pending)) {
@@ -1184,7 +1277,13 @@ sub webui_http_worker (@) {
   : ($lane eq "meter") ? $_webui_meter_queue
   : ($lane eq "renderer") ? $_webui_renderer_queue
   : $_webui_worker_queue;
- while(defined(my $fd=$queue->dequeue())) {
+ while(defined(my $entry=$queue->dequeue())) {
+  my $record=&webui_route_queue_entry($entry);
+  if(ref($record) ne "HASH") {
+   &log("WebUI: worker $worker_id discarded malformed queue entry");
+   next;
+  }
+  my $fd=$record->{"fd"};
   my $client;
   eval {
    $client=IO::Socket::INET->new_from_fd($fd,"+<");
@@ -1197,6 +1296,14 @@ sub webui_http_worker (@) {
   if(!$client) {
    &log("WebUI: worker $worker_id could not adopt fd $fd: $@");
    eval { POSIX::close($fd); };
+   next;
+  }
+  if(&webui_priority_request_expired($record)) {
+   my $msg='{"status":"error","retryable":false,"message":"Calibration pattern request expired before execution"}';
+   print $client "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: ".length($msg)."\r\nConnection: close\r\n\r\n$msg";
+   &log("WebUI: discarded stale loopback pattern request sequence ".$record->{"sequence"});
+   eval { shutdown($client, 2); };
+   eval { close($client); };
    next;
   }
   eval { &webui_handle_request($client); };
@@ -1326,7 +1433,11 @@ sub webui_handle_request (@) {
    elsif($path eq "/" || $path eq "/index.html") {
     my $html=&webui_html();
     my $len=length($html);
-    print $client "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: $len\r\n$cors\r\n$html";
+    # The UI is one server-assembled page with every fragment inlined; with no
+    # cache validators the browser heuristically caches it and operators keep
+    # running a stale UI after an update until a hard refresh. no-cache forces
+    # revalidation on every load while conditional requests stay cheap.
+    print $client "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: $len\r\n$cors\r\n$html";
    }
    elsif($path eq "/favicon.ico") {
     my $ico_path="/usr/share/PGenerator/favicon.ico";
@@ -2203,6 +2314,14 @@ my $_meter_boot_recovery_attempted :shared = 0;
 my $_meter_last_reset_time :shared = 0;
 my $_meter_last_seen_time :shared = 0;
 my $_meter_last_good_status :shared = '{"detected":false,"name":null,"usb_id":null,"port":null,"port_num":null,"meters":[],"spotread_available":false}';
+# :shared - the read/result poll runs on the concurrent lane while
+# POST /api/meter/read runs serialized. $_meter_read_command_started is a
+# self-expiring claim: while a serialized read command is (recently) active,
+# the poll's stale-state reaper must not tear down the session that command
+# may be mid-way through starting. $_meter_stale_reap_last debounces the
+# reaper itself so concurrent pollers cannot stack teardowns.
+my $_meter_read_command_started :shared = 0;
+my $_meter_stale_reap_last :shared = 0;
 
 sub webui_meter_usb_present (@) {
  my ($usb_id)=@_;
@@ -2506,7 +2625,44 @@ sub webui_meter_status_prune_disconnected (@) {
 sub webui_meter_status (@) {
  my $spotread_running=`pgrep -x spotread 2>/dev/null; pgrep -x spotread_sim 2>/dev/null`;
  my $session_alive=&webui_meter_session_alive();
- my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive) ? 1 : 0;
+ # AutoCal intentionally has short gaps between workers and clean meter
+ # sessions. Treat the workflow as busy throughout those hand-offs: a live
+ # `spotread -?` inventory probe can claim/reset the i1Display3 while the old
+ # session is releasing USB or the replacement is starting. The recently
+ # completed 1D state carries full_workflow until the browser launches 3D, so
+ # keep a bounded transition grace rather than probing inside that gap.
+ my $autocal_busy=0;
+ foreach my $state_file ($_meter_lg_autocal_file,$_meter_lg_3d_autocal_file) {
+  next if(!-f $state_file);
+  my $state="";
+  if(open(my $sf,"<",$state_file)) { local $/; $state=<$sf>; close($sf); }
+  if($state=~/"status"\s*:\s*"(?:running|starting|setup)"/i) {
+   # A worker killed without a terminal state write leaves "running" behind
+   # forever, which would pin the meter Busy with no tab open to clear it.
+   # Latch only for a live worker, with a short grace for the launch window
+   # between the state write and the setsid'd worker appearing in pgrep.
+   my $state_age=time()-((stat($state_file))[9] || 0);
+   my $worker_pattern=($state_file eq $_meter_lg_autocal_file)
+    ? '[m]eter_lg_autocal\.pl' : '[m]eter_lg_3d_autocal\.pl';
+   my $worker_alive=`pgrep -f '$worker_pattern' 2>/dev/null`;
+   if($state_age < 15 || $worker_alive=~/\d/) {
+    $autocal_busy=1;
+    last;
+   }
+   next;
+  }
+  if($state_file eq $_meter_lg_autocal_file
+     && $state=~/"full_workflow"\s*:\s*true/i
+     && $state=~/"full_autocal_phase"\s*:\s*"first-greyscale"/i
+     && $state=~/"status"\s*:\s*"complete"/i) {
+   my $mtime=(stat($state_file))[9] || 0;
+   if($mtime > 0 && time()-$mtime < 90) {
+    $autocal_busy=1;
+    last;
+   }
+  }
+ }
+ my $busy=(&webui_meter_series_alive() || $spotread_running=~/\d/ || $session_alive || $autocal_busy) ? 1 : 0;
  if($busy && $_meter_last_good_status =~ /"detected"\s*:\s*true/) {
   my $pruned=&webui_meter_status_prune_disconnected($_meter_last_good_status);
   if($pruned ne $_meter_last_good_status) {
@@ -2678,10 +2834,19 @@ sub webui_meter_session_start_ready () {
 sub webui_meter_read_state_write (@) {
  my ($json)=@_;
  $json='{"status":"idle"}' if(!defined($json) || $json eq "");
- if(open(my $fh,">",$_meter_read_file)) {
+ # tmp+rename: the result poll now reads this file from the concurrent lane,
+ # so a truncate-then-write here would hand it a torn or empty state.
+ my $tmp=$_meter_read_file.".tmp.".$$.".".threads->tid();
+ if(open(my $fh,">",$tmp)) {
   print $fh $json;
   close($fh);
-  chmod(0666,$_meter_read_file);
+  chmod(0666,$tmp);
+  if(!rename($tmp,$_meter_read_file)) {
+   &log("meter read state write lost: rename failed: $!");
+   unlink($tmp);
+  }
+ } else {
+  &log("meter read state write lost: open failed: $!");
  }
 }
 
@@ -3091,8 +3256,78 @@ sub webui_meter_session_start (@) {
  return 0;
 }
 
+sub webui_low_light_sample_count {
+ my ($mode)=@_;
+ # Low-light a/aa/aaa select Argyll's -Y integration modes inside the meter
+ # helpers; they are NOT application-level repeat counts. Live comparison on
+ # an i1Display Pro Plus against an OLED near-black patch showed repeated
+ # short reads averaging in software produce multi-x outliers where a single
+ # -Y aa read is stable, so every mode maps to exactly one physical read.
+ # The averaging plumbing stays for callers that request extra samples
+ # explicitly through pgen_meter_average.py.
+ my %counts=(off=>1,a=>1,aa=>1,aaa=>1);
+ $mode=lc($mode||"off");
+ return exists($counts{$mode}) ? $counts{$mode} : 1;
+}
+
+# Resolve the transitional presentation mode and numeric execution contract at
+# the common server ingress. Mode-only payloads remain compatible for one
+# release; every downstream worker receives only the resolved integer.
+sub webui_low_light_request_contract {
+ my ($body,$force_off)=@_;
+ $body="" if(!defined($body));
+ my $mode="off";
+ my $enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"enabled"\s*:\s*true/i) ? 1 : 0;
+ if($enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"mode"\s*:\s*"(a|aa|aaa)"/i) {
+  $mode=lc($1);
+ }
+ $mode="off" if(!$enabled || $force_off);
+ my $expected=&webui_low_light_sample_count($mode);
+ my $has_count=($body=~/"(?:low_light_requested_sample_count|requested_sample_count)"\s*:/i) ? 1 : 0;
+ my $provided;
+ if($body=~/"(?:low_light_requested_sample_count|requested_sample_count)"\s*:\s*"?([0-9]+)"?\s*(?=[,}])/i) {
+  $provided=int($1);
+ }
+ my $error="";
+ if($has_count && !defined($provided)) {
+  $error="requested_sample_count must be an integer";
+ } elsif(!$force_off && defined($provided) && $provided != $expected) {
+  $error="requested_sample_count does not match low-light mode";
+ }
+ return {
+  mode=>$mode,
+  requested_sample_count=>$expected,
+  legacy_mode_only=>$has_count ? 0 : 1,
+  error=>$error,
+ };
+}
+
+sub webui_low_light_stamp_request {
+ my ($body,$force_off)=@_;
+ my $contract=&webui_low_light_request_contract($body,$force_off);
+ return ($body,$contract->{"error"}) if(($contract->{"error"}||"") ne "");
+ my $mode=$contract->{"mode"};
+ my $count=$contract->{"requested_sample_count"};
+ if($body=~/"low_light_requested_sample_count"\s*:/) {
+  $body=~s/"low_light_requested_sample_count"\s*:\s*"?[^,}\s]+"?/"low_light_requested_sample_count":$count/;
+ } else {
+  $body=~s/\}\s*\z/,"low_light_requested_sample_count":$count}/;
+ }
+ if($body=~/"low_light_effective_mode"\s*:/) {
+  $body=~s/"low_light_effective_mode"\s*:\s*"[^"]*"/"low_light_effective_mode":"$mode"/;
+ } else {
+  $body=~s/\}\s*\z/,"low_light_effective_mode":"$mode"}/;
+ }
+ return ($body,"");
+}
+
 sub webui_meter_read (@) {
  my ($body)=@_;
+
+ # Claim the meter for this serialized command so the concurrent result-poll
+ # lane holds its stale-state reaper while this handler may be mid-way
+ # through a long session bring-up. Self-expiring; nothing to release.
+ $_meter_read_command_started=time();
 
  # The meter is exclusively owned by ccxxmake during profile creation. Refuse to
  # (re)start the spotread session so a stray continuous-read loop (e.g. a stale
@@ -3253,25 +3488,14 @@ sub webui_meter_read (@) {
 		 $transport_signal_range=$1 if($body=~/"transport_signal_range"\s*:\s*"?(\d+)"?/);
 		 my $request_id="";
 		 $request_id=$1 if($body=~/"request_id"\s*:\s*"([A-Za-z0-9_.:-]{1,96})"/);
-			 # Low Light Handler averaging mode for this read (off/a/aa/aaa).
-			 # Passed to the meter session so dim autocal/single reads use
-			 # multi-read averaging instead of a noisy single read. The
-			 # per-read mode flows via the READ command so the SESSION-LEVEL
-			 # METER_AVERAGING (and the want_config 7th field) can stay
-			 # stable across reads even when this value flips every read.
-			 my $avg_mode="off";
-			 my $avg_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"enabled"\s*:\s*true/i) ? 1 : 0;
-			 $avg_mode=lc($1) if($avg_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,400}?"mode"\s*:\s*"(a|aa|aaa)"/);
-			 $avg_mode="off" unless($avg_enabled && ($avg_mode eq "a" || $avg_mode eq "aa" || $avg_mode eq "aaa"));
-			 # An EXPLICIT per-read "off" must reach the READ command as "off",
-			 # not be coerced to ""/"-" (inherit): "-" inherits whatever mode the
-			 # running spotread was last respawned with, so a worker that only
-			 # ever sends the averaging transitions IN would latch averaging on
-			 # for reads that must not average (the 3D profile's peak reads).
-			 # Keep the wrapper/session identity stable at explicit off. Averaging is
-			 # a property of the spotread child for this read, carried by READ below.
-			 # Copying the per-read mode into METER_AVERAGING makes the whole wrapper
-			 # session effectively averaged and defeats the luminance trigger.
+			 # Resolve presentation mode to the numeric execution contract once.
+			 # The value is never passed to Argyll as a process option.
+			 my $low_light_contract=&webui_low_light_request_contract($body,$require_device_ready);
+			 if(($low_light_contract->{"error"}||"") ne "") {
+			  return '{"status":"error","message":"'.$low_light_contract->{"error"}.'"}';
+			 }
+			 my $avg_mode=$low_light_contract->{"mode"};
+			 my $average_sample_count=$low_light_contract->{"requested_sample_count"};
 			 my $session_avg_mode="off";
 		 if(-f $_meter_diagnostic_read_lock) {
 		  my $diag_token="";
@@ -3329,8 +3553,7 @@ sub webui_meter_read (@) {
  # Restart only when the meter config (display type, ccss, refresh, AIO) changes
  # or the daemon isn't running.
  my $aio_flag=$disable_aio ? "1" : "0";
- # The 7th field stays at off for the wrapper's whole life. Only the spotread
- # child changes mode through the per-read READ field below.
+ # The legacy 7th session field stays off: sample count is per READ command.
  my $want_config="$display_type|$ccss_file|$refresh_rate|$aio_flag|$measurement_meter_port|$require_device_ready|$session_avg_mode|$measurement_meter_usb_id|$observer|$pattern_provider";
  my $alive=&webui_meter_session_alive();
  my $needs_restart= !$alive || !&webui_meter_session_config_matches($want_config);
@@ -3372,8 +3595,8 @@ sub webui_meter_read (@) {
    select(undef,undef,undef,0.5);
   }
   &log("WebUI: starting meter session (display_type=$display_type, ccss=$ccss_file, refresh=$refresh_rate, aio_off=$disable_aio, port=$measurement_meter_port, ready_gate=$require_device_ready)");
-  # Session-level averaging is always off. Per-read averaging is applied by
-  # respawning only the spotread child after the explicit READ mode is parsed.
+  # Start spotread once in its normal adaptive mode ($session_avg_mode is
+  # pinned to off); application sampling never respawns it.
   if(!&webui_meter_session_start($display_type,$ccss_file,$refresh_rate,$disable_aio,$want_config,$signal_mode,$max_luma,$measurement_meter_port,$require_device_ready,$session_avg_mode,$measurement_meter_usb_id,$observer,$pattern_provider)) {
     return &webui_meter_session_start_error_json($want_config);
   }
@@ -3383,17 +3606,17 @@ sub webui_meter_read (@) {
  # can't return the previous reading by mistake.
  my $state_before_send=&webui_meter_read_state_read();
  if($state_before_send!~/"awaiting_ready"\s*:\s*true/i && $state_before_send!~/"status"\s*:\s*"setup"/i) {
+	  my $operation_timeout=($read_timeout >= 10 ? $read_timeout : 170)*$average_sample_count;
+	  $operation_timeout=1800 if($operation_timeout > 1800);
 	  my $pending_state=$calibrate_only
 	   ? '{"status":"measuring","setup_busy":true,"message":"Preparing meter calibration...","timeout_sec":210}'
-	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$read_timeout.'}';
-	  if(open(my $fh,">",$_meter_read_file)) { print $fh $pending_state; close($fh); }
+	   : '{"status":"measuring","request_id":"'.$request_id.'","timeout_sec":'.$operation_timeout.',"low_light_mode":"'.$avg_mode.'","requested_sample_count":'.$average_sample_count.'}';
+	  &webui_meter_read_state_write($pending_state);
  }
 
  # Send the READ command to the daemon. The session helper applies this
  # settle delay before each reading, even when the current patch is reused.
- # The trailing 15th field is the PER-READ low_light mode: meter_session.sh
- # uses it to decide whether to respawn spotread with -Y averaging flags for this
- # specific read (the session-level METER_AVERAGING stays put).
+ # The trailing numeric field selects the physical samples on the same child.
 			 my $read_command=$calibrate_only ? "CALIBRATE" : "READ $patch_r $patch_g $patch_b $patch_size $patch_ire $patch_name $delay_ms $signal_mode $max_luma";
 			 my $cmd_signal_range=($signal_range ne "") ? $signal_range : "-";
 			 my $cmd_transport_signal_range=($transport_signal_range ne "") ? $transport_signal_range : "-";
@@ -3401,7 +3624,7 @@ sub webui_meter_read (@) {
 			 my $cmd_read_timeout=($read_timeout > 0) ? $read_timeout : "-";
 			 my $cmd_low_light_mode=$avg_mode;
 			 my $cmd_continuous=$is_continuous ? "1" : "0";
-			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous" if(!$calibrate_only);
+			 $read_command.=" $cmd_signal_range $cmd_transport_signal_range $cmd_request_id $patch_input_max $cmd_read_timeout $cmd_low_light_mode $cmd_continuous $average_sample_count" if(!$calibrate_only);
 		 $read_command.="\n";
  if(!&webui_meter_session_send_command($read_command)) {
   &log("WebUI: meter session command send failed, restarting daemon");
@@ -3442,9 +3665,24 @@ sub webui_meter_read_result (@) {
      my $requested=$1+0;
      $timeout_sec=$requested+30 if($requested >= 10);
      $timeout_sec=40 if($timeout_sec < 40);
-     $timeout_sec=330 if($timeout_sec > 330);
+     $timeout_sec=1830 if($timeout_sec > 1830);
     }
     if($age > $timeout_sec) {
+     # This poll runs on the concurrent lane. A serialized read command may
+     # be mid-way through a long session bring-up with the previous state
+     # file still on disk -- it owns recovery, so hold the reaper while one
+     # is recent. Debounce the teardown so simultaneous pollers seeing the
+     # same stale file cannot stack session stops.
+     if(time() - $_meter_read_command_started < 150) {
+      return '{"status":"measuring"}';
+     }
+     {
+      lock($_meter_stale_reap_last);
+      if(time() - $_meter_stale_reap_last < 30) {
+       return '{"status":"error","message":"Read timed out"}';
+      }
+      $_meter_stale_reap_last=time();
+     }
      &log("WebUI: meter read state stale for ${age}s; stopping meter session");
      &webui_meter_session_stop();
      &webui_meter_read_state_write('{"status":"error","message":"Read timed out"}');
@@ -3469,38 +3707,7 @@ our $WEBUI_METER_GAMUT_DEFS;
 
 sub webui_meter_gamut_definitions (@) {
  if(!$WEBUI_METER_GAMUT_DEFS) {
-  $WEBUI_METER_GAMUT_DEFS={
-   bt709=>{
-    label=>'BT.709 / D65',
-    WHITE=>['0.3127','0.3290'],
-    PRIMARIES=>{R=>['0.64','0.33'],G=>['0.30','0.60'],B=>['0.15','0.06']},
-    # Exact inverse of RGB_TO_XYZ. The former four-decimal sRGB inverse
-    # introduced small non-zero channels in BT.709 RGB -> XYZ -> RGB paths.
-    M=>[['3.2404548360','-1.5371388501','-0.4985315469'],['-0.9692663899','1.8760109288','0.0415560823'],['0.0556434196','-0.2040258543','1.0572251625']],
-    RGB_TO_XYZ=>[['0.4124564','0.3575761','0.1804375'],['0.2126729','0.7151522','0.0721750'],['0.0193339','0.1191920','0.9503041']]
-   },
-   bt2020=>{
-    label=>'BT.2020 / D65',
-    WHITE=>['0.3127','0.3290'],
-    PRIMARIES=>{R=>['0.708','0.292'],G=>['0.170','0.797'],B=>['0.131','0.046']},
-    M=>[['1.7166511880','-0.3556707838','-0.2533662814'],['-0.6666843518','1.6164812366','0.0157685458'],['0.0176398574','-0.0427706133','0.9421031212']],
-    RGB_TO_XYZ=>[['0.6369580483','0.1446169036','0.1688809752'],['0.2627002120','0.6779980715','0.0593017165'],['0.0000000000','0.0280726930','1.0609850577']]
-   },
-   p3d65=>{
-    label=>'P3 / D65',
-    WHITE=>['0.3127','0.3290'],
-    PRIMARIES=>{R=>['0.680','0.320'],G=>['0.265','0.690'],B=>['0.150','0.060']},
-    M=>[['2.4934969119','-0.9313836179','-0.4027107845'],['-0.8294889696','1.7626640603','0.0236246858'],['0.0358458302','-0.0761723893','0.9568845240']],
-    RGB_TO_XYZ=>[['0.4865709486','0.2656676932','0.1982172852'],['0.2289745641','0.6917385218','0.0792869141'],['0.0000000000','0.0451133819','1.0439443689']]
-   },
-   p3dci=>{
-    label=>'P3 / DCI',
-    WHITE=>['0.3140','0.3510'],
-    PRIMARIES=>{R=>['0.680','0.320'],G=>['0.265','0.690'],B=>['0.150','0.060']},
-    M=>[['2.7253940305','-1.0180030062','-0.4401631952'],['-0.7951680258','1.6897320548','0.0226471906'],['0.0412418914','-0.0876390192','1.1009293786']],
-    RGB_TO_XYZ=>[['0.4451698156','0.2771344092','0.1722826698'],['0.2094916779','0.7215952542','0.0689130679'],['0.0000000000','0.0470605601','0.9073553944']]
-   }
-  };
+  $WEBUI_METER_GAMUT_DEFS=standard_gamut_records();
  }
  return $WEBUI_METER_GAMUT_DEFS;
 }
@@ -3533,19 +3740,7 @@ sub webui_meter_gamut_js_literal (@) {
 # Bradford-adapt a D65 ColorChecker reference to the selected target white.
 # This is intentionally scoped to the meter reference-color builders.
 sub webui_meter_bradford_adapt_xyz (@) {
- my ($X,$Y,$Z,$fx,$fy,$tx,$ty)=@_;
- return ($X,$Y,$Z) unless($fx>0 && $fy>0 && $tx>0 && $ty>0);
- return ($X,$Y,$Z) if(abs($fx-$tx)<1e-7 && abs($fy-$ty)<1e-7);
- my @M=([0.8951,0.2664,-0.1614],[-0.7502,1.7135,0.0367],[0.0389,-0.0685,1.0296]);
- my @MI=([0.9869929,-0.1470543,0.1599627],[0.4323053,0.5183603,0.0492912],[-0.0085287,0.0400428,0.9684867]);
- my $mul=sub { my ($m,$v)=@_; return map { my $r=$_; $$m[$r][0]*$$v[0]+$$m[$r][1]*$$v[1]+$$m[$r][2]*$$v[2] } (0,1,2); };
- my @ws=($fx/$fy,1,(1-$fx-$fy)/$fy);
- my @wd=($tx/$ty,1,(1-$tx-$ty)/$ty);
- my @cs=$mul->(\@M,\@ws);
- my @cd=$mul->(\@M,\@wd);
- my @c=$mul->(\@M,[$X,$Y,$Z]);
- my @scaled=map { $c[$_]*($cs[$_]!=0 ? $cd[$_]/$cs[$_] : 1) } (0,1,2);
- return $mul->(\@MI,\@scaled);
+ return PGMath::bradford_adapt_xyz(@_);
 }
 
 sub _webui_meter_lg_autocal_norm_text (@) {
@@ -3663,7 +3858,7 @@ sub webui_meter_lg_autocal_series_target_reference (@) {
 # steps. MUST stay algorithm-identical to the client's meterLatticeExpandPatches
 # (grid order r-slowest/b-fastest, golden-ratio spread stride, Rec.709-signal
 # threshold, grey ramp 100%-first, percent names, ire from 1). Locked by
-# tests/lattice-server-steps-regression.pl + tests/lattice-expansion-regression.js.
+# t/webui_lattice_parity.t.
 sub webui_lattice_series_steps_from_body (@) {
  my ($body,$chroma_min,$chroma_span,$input_max)=@_;
  return () unless($body=~/"custom_series"\s*:\s*true/i);
@@ -3693,20 +3888,19 @@ sub webui_lattice_series_steps_from_body (@) {
  $peak_nits=$1+0 if($obj=~/"peak_nits"\s*:\s*(-?\d+(?:\.\d+)?)/);
  $peak_nits=100 if($peak_nits<100);
  $peak_nits=10000 if($peak_nits>10000);
- my $pq_encode=sub {
-  my ($L)=@_;
-  my $m1=2610/16384; my $m2=2523/32; my $c1=3424/4096; my $c2=2413/128; my $c3=2392/128;
-  my $y=($L<0?0:$L)/10000;
-  my $pp=$y**$m1;
-  return (($c1+$c2*$pp)/(1+$c3*$pp))**$m2;
- };
+ my $pq_encode=sub { return PGMath::pq_encode_normalized($_[0]); };
  my $axis_frac=sub {
   my ($i,$div)=@_;
   my $t=$i/$div;
   return $t if($spacing ne "light");
-  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): pqe(0) is
-  # ~7e-7, not 0, and a non-zero black frac breaks frac-exact corner
-  # detection in the client ordering parity.
+  # Endpoints pinned EXACTLY (mirror of meterLatticeAxisFracs): the corner
+  # ordering must not depend on the encoder's boundary convention, and the
+  # runtimes do not share one. PGMath::pq_encode_normalized and the browser's
+  # pqEncodeNormalized short-circuit non-positive input to 0, while
+  # pgen_colour_math.py and the C header return the transfer function's true
+  # value at zero, ~7.3e-7. This used to carry a private inline encoder with
+  # no short-circuit, so a non-zero black frac was the live hazard; pinning
+  # both ends keeps the frac-exact corner detection correct either way.
   return 0 if($i==0);
   return 1 if($i==$div);
   if($lat_pq) {
@@ -3950,15 +4144,15 @@ $patch_insert_time_level=100 if($patch_insert_time_level > 100);
  $measurement_meter_port=$1 if($body=~/"measurement_meter_port"\s*:\s*"?(\d+)"?/);
  my $disable_aio=0;
  $disable_aio=1 if($body=~/"disable_aio"\s*:\s*true/i);
- # Low-light handler configuration for the series worker. The selected mode
- # and trigger remain separate so meter_series.sh can choose the effective
- # child mode from each serialized step's expected target luminance.
- my $low_light_mode="off";
- my $low_light_enabled=($body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"enabled"\s*:\s*true/i) ? 1 : 0;
- if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,500}?"mode"\s*:\s*"([a-z_]+)"/){
-  $low_light_mode=lc($1);
-  $low_light_mode="off" unless($low_light_mode eq "a" || $low_light_mode eq "aa" || $low_light_mode eq "aaa");
+ # Resolve the series' application sample count once at API ingress. The
+ # presentation mode remains in metadata while the worker executes the integer.
+ my $low_light_contract=&webui_low_light_request_contract($body,$require_device_ready);
+ if(($low_light_contract->{"error"}||"") ne "") {
+  return '{"status":"error","message":"'.$low_light_contract->{"error"}.'"}';
  }
+ my $low_light_mode=$low_light_contract->{"mode"};
+ my $low_light_requested_sample_count=$low_light_contract->{"requested_sample_count"};
+ my $low_light_enabled=($low_light_mode ne "off") ? 1 : 0;
  my $low_light_trigger="";
  $low_light_trigger=$1+0 if($low_light_enabled && $body=~/"low_light"\s*:\s*\{[\s\S]{0,700}?"trigger"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/i);
  $low_light_trigger="" if($low_light_trigger ne "" && $low_light_trigger<=0);
@@ -4295,23 +4489,25 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # Doing so made otherwise identical HDR series alternate between 8-bit and
  # 10-bit codes whenever the Pi output configuration changed.
  $_chroma_max_bpc=10 if($pattern_provider eq "companion" && $signal_mode eq "hdr10");
- my $chroma_min_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 64 : 16) : 0;
- my $chroma_span_code=$chroma_patch_limited ? ($_chroma_max_bpc==10 ? 876 : 219) : ($_chroma_max_bpc==10 ? 1023 : 255);
- my $chroma_max_code=$chroma_min_code + $chroma_span_code;
- my $chroma_input_max=($_chroma_max_bpc==10) ? 1023 : 255;
+ my $dv_series=($signal_mode eq "dv") ? 1 : 0;
+ my $chroma_signal_code_policy=&webui_signal_code_policy(
+  $signal_mode,$chroma_patch_limited,{
+   max_bpc=>$_chroma_max_bpc,
+   dv_series=>$dv_series,
+   dv_series_code_bits=>12,
+   dv_series_full_range=>0,
+   dv_interface=>$dv_interface,
+  });
+ my $chroma_range=signal_code_nominal_range($chroma_signal_code_policy);
+ die "Unable to resolve chroma signal-code range\n" if(!$chroma_range);
+ my $chroma_min_code=$chroma_range->{min};
+ my $chroma_span_code=$chroma_range->{span};
+ my $chroma_max_code=$chroma_range->{max};
+ my $chroma_input_max=$chroma_range->{input_max};
 
  # Build step list as JSON array for the helper script
  # Measurement order: WHITE first (reference), then 0%→95% ascending
  my @steps;
- my $dv_series=($signal_mode eq "dv") ? 1 : 0;
- if($dv_series) {
-  # Standard DV carries legal-range 12-bit source RGB inside an RGB 8-bit
-  # Full tunnel. Use that source domain for every generated/custom colour.
-  $chroma_min_code=256;
-  $chroma_span_code=3504;
-  $chroma_max_code=3760;
-  $chroma_input_max=4095;
- }
  my $dv_greyscale_tunnel_codes=($dv_series && $type eq "greyscale") ? 1 : 0;
  my $dv_series_code_bits=$dv_series ? 12 : 8;
  my $dv_series_code_max=$dv_series ? 4095 : 255;
@@ -4619,10 +4815,13 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
      dv_series_full_range => ($dv_series_full_range ? 1 : 0),
     );
     $_opts_for_grey{"active_table"}=$lg_hdr20_active_table if($lg_hdr20_codes && ref($lg_hdr20_active_table) eq "HASH");
+    my $grey_signal_code_policy=&webui_signal_code_policy(
+     $signal_mode,$lim,\%_opts_for_grey);
     my $grey_code_for_stim=sub {
      my ($stimulus_pct)=@_;
-     my ($c,$im)=&webui_grey_code_for_stimulus($stimulus_pct,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
-     return $c;
+     my $result=signal_percent_to_code($grey_signal_code_policy,$stimulus_pct);
+     die "Unable to convert greyscale signal percent\n" if(!$result);
+     return $result->{code};
     };
    # Sample the helper once to discover the series-level input_max. The
    # standard SDR/HDR10/HLG/extended/legal-SDR-DDC branches now honor the
@@ -4634,7 +4833,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
    # else. Sample at 50% IRE — mid-range, inside the bit-depth math —
    # and stash the returned input_max for the $extra stamp below.
    my $series_input_max=255;
-   my ($_sample_c,$_sample_im)=&webui_grey_code_for_stimulus(50,$signal_mode,$target_gamma,$lim,\%_opts_for_grey);
+   my $_sample_result=signal_percent_to_code($grey_signal_code_policy,50);
+   my ($_sample_c,$_sample_im)=($_sample_result->{code},$_sample_result->{input_max});
    $series_input_max=$_sample_im if(defined $_sample_im && $_sample_im >= 0 && ($_sample_im == 255 || $_sample_im == 1023));
    # Reference first, then black for contrast, then the remaining LG 26pt
    # steps ascend from near black through headroom. The delayed legal-white
@@ -5277,7 +5477,6 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
   my ($solve_wx,$solve_wy)=@solve_white;
   my @MI=@{$primaries{$solve_key}{M}};
   my @AXIS_RGB_TO_XYZ=@{$primaries{$target_key}{RGB_TO_XYZ}};
-  my @AXIS_M=@{$primaries{$target_key}{M}};
   # The native sweep runs at a sub-peak level so sub-100% saturations do not
   # clip to white. HCFR authors a different, constant-Y sequence: SDR and HLG
   # use a unit-linear reference, while HDR10 maps that reference to HCFR's
@@ -5399,32 +5598,28 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	    my $target_Yn_for_step=0;
 	    if($ty>0){
 	     my $X=$tx/$ty; my $Y=1; my $Z=(1-$tx-$ty)/$ty;
-	     my $rl=$MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z;
-	     my $gl=$MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z;
-	     my $bl=$MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z;
-	     if($hcfr_constant_luminance) {
+		     my ($rl,$gl,$bl)=(0,0,0);
+		     if($hcfr_constant_luminance) {
 	      # HCFR saturation sweeps keep Y fixed at the endpoint luma K while
 	      # chromaticity moves from white to the primary/secondary. Each hue has
 	      # its own 0% neutral (RGB=K), so all five HCFR CHC slots are measured.
-	      $rl*=$mix_Y;$gl*=$mix_Y;$bl*=$mix_Y;
+		      $rl=($MI[0][0]*$X+$MI[0][1]*$Y+$MI[0][2]*$Z)*$mix_Y;
+		      $gl=($MI[1][0]*$X+$MI[1][1]*$Y+$MI[1][2]*$Z)*$mix_Y;
+		      $bl=($MI[2][0]*$X+$MI[2][1]*$Y+$MI[2][2]*$Z)*$mix_Y;
 	      $target_Yn_for_step=($signal_mode eq "hdr10" && $sat_white_ref>0)
 	       ? (($hcfr_pq_reference_nits/$sat_white_ref)*$mix_Y)
 	       : ($hcfr_level_linear*$mix_Y);
 	     } else {
-	      # Establish the luminance ceiling in the selected target gamut, then
-	      # carry that XYZ magnitude into the transport gamut without a second
-	      # normalization. Otherwise a P3 target inside BT.2020 gets a different
-	      # luminance solely because of the container conversion, with red
-	      # receiving by far the largest unintended increase.
-	      my $axis_r=$AXIS_M[0][0]*$X+$AXIS_M[0][1]*$Y+$AXIS_M[0][2]*$Z;
-	      my $axis_g=$AXIS_M[1][0]*$X+$AXIS_M[1][1]*$Y+$AXIS_M[1][2]*$Z;
-	      my $axis_b=$AXIS_M[2][0]*$X+$AXIS_M[2][1]*$Y+$AXIS_M[2][2]*$Z;
-	      my $axis_max=$axis_r;$axis_max=$axis_g if $axis_g>$axis_max;$axis_max=$axis_b if $axis_b>$axis_max;
-	      if($axis_max>0) {
-	       my $target_Y=$level_linear/$axis_max;
-	       $target_Yn_for_step=$target_Y*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1));
-	       $rl*=$target_Y;$gl*=$target_Y;$bl*=$target_Y;
-	      }
+		      my $stimulus=saturation_stimulus_for_gamuts({
+		       chromaticity=>[$tx,$ty],level=>$level_linear,
+		       target_xyz_to_rgb=>$primaries{$target_key}{M},
+		       transport_xyz_to_rgb=>\@MI,
+		      });
+		      if($stimulus) {
+		       ($rl,$gl,$bl)=@{$stimulus->{rgb}};
+		       my $target_Y=$stimulus->{target_y};
+		       $target_Yn_for_step=$target_Y*(($signal_mode eq "sdr") ? 1 : (($sat_white_ref>0)?(10000/$sat_white_ref):1));
+		      }
 	     }
 	     $rl=0 if $rl<0;$gl=0 if $gl<0;$bl=0 if $bl<0;
 	     my $stimulus_level=$hcfr_constant_luminance?$hcfr_level_linear:1;
@@ -5542,6 +5737,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
 
 	 my $series_id="${type}_".int(Time::HiRes::time()*1000)."_".int(rand(1000000));
+	 my $selection_run=($body=~/"selection_run"\s*:\s*true/i)?1:0;
 	 my $total=scalar(@steps);
 	 my $series_type_json=&_webui_json_escape($type);
 	 my $series_signal_mode_json=&_webui_json_escape($signal_mode);
@@ -5549,8 +5745,49 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	 my $series_dv_map_mode_json=&_webui_json_escape($dv_map_mode);
 	 my $series_dv_interface_json=&_webui_json_escape(($signal_mode eq "dv") ? "$dv_interface" : "");
 	 my $series_max_luma_num=($max_luma+0);
-	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
-	 my $series_step_meta=",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
+	 my $series_pattern_bits=($signal_mode eq "dv") ? 12
+	  : ((int($pgenerator_conf{"max_bpc"}||8)>=10) ? 10 : 8);
+	 my $series_transport_bits=int($pgenerator_conf{"max_bpc"}||$series_pattern_bits);
+	 $series_transport_bits=8 if($series_transport_bits!=8
+	  && $series_transport_bits!=10 && $series_transport_bits!=12);
+	 my $series_headroom_strategy="none";
+	 my $series_headroom_max=100;
+	 if($type eq "greyscale" && $signal_mode eq "sdr"
+	  && $points==26 && $lg_autocal_26 && $greyscale_patch_limited
+	  && int($series_color_format||0)!=0) {
+	  $series_headroom_strategy="lg_sdr26_ladder";
+	  $series_headroom_max=109;
+	 } elsif($type eq "greyscale" && $points==2
+	  && int($series_color_format||0)!=0 && $signal_mode ne "dv") {
+	  $series_headroom_strategy="legal_superwhite";
+	  $series_headroom_max=109;
+	 } elsif($type eq "greyscale" && $signal_mode eq "sdr"
+	  && (($points==26 && $lg_autocal_26) || ($points==21 && $lg_greyscale_21))) {
+	  $series_headroom_strategy="extended_sdr";
+	 }
+	 my $series_target_context=calibration_target_context({
+	  caller_policy=>"browser_chart",
+	  signal_mode=>$signal_mode,
+	  target_gamma=>$target_gamma,
+	  signal_peak_nits=>$series_max_luma_num,
+	  white_nits=>($series_target_white_y_num>0 ? $series_target_white_y_num : 0),
+	  black_nits=>($series_target_black_y_num ne "" ? $series_target_black_y_num+0 : 0),
+	  pattern_range=>(int($pattern_signal_range||0)==1 ? "limited" : "full"),
+	  transport_range=>(int($transport_signal_range||0)==1 ? "limited" : "full"),
+	  pattern_bits=>$series_pattern_bits,
+	  transport_bits=>$series_transport_bits,
+	  headroom_strategy=>$series_headroom_strategy,
+	  headroom_max_percent=>$series_headroom_max,
+	  dv_map_mode=>(($signal_mode eq "dv") ? $dv_map_mode : "none"),
+	  dv_interface=>(($signal_mode eq "dv") ? "$dv_interface" : "none"),
+	  target_gamut=>($target_gamut||"auto"),
+	 });
+	 return '{"status":"error","message":"Invalid calibration target context"}'
+	  if(!$series_target_context);
+	 require JSON::PP;
+	 my $series_target_context_json=JSON::PP->new->canonical(1)->encode({%{$series_target_context}});
+	 my $series_meta_json="\"type\":\"$series_type_json\",\"points\":".($points+0).",\"selection_run\":".($selection_run?"true":"false").",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\",\"calibration_target_context\":$series_target_context_json";
+	 my $series_step_meta=",\"selection_run\":".($selection_run?"true":"false").",\"signal_mode\":\"$series_signal_mode_json\",\"target_gamma\":\"$series_target_gamma_json\",\"max_luma\":$series_max_luma_num,\"dv_map_mode\":\"$series_dv_map_mode_json\",\"dv_interface\":\"$series_dv_interface_json\"";
 	 @steps=map {
 	  my $step=$_;
 	  if($step!~/"signal_mode"\s*:/) {
@@ -5571,7 +5808,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 	 }
 
 	 # Write initial state
-	 my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[],$series_meta_json}";
+	 my $init_json="{\"status\":\"running\",\"series_id\":\"$series_id\",\"current_step\":0,\"total_steps\":$total,\"current_name\":\"\",\"readings\":[],\"low_light_mode\":\"$low_light_mode\",\"requested_sample_count\":$low_light_requested_sample_count,$series_meta_json}";
  if(open(my $fh,">",$_meter_series_file)) { print $fh $init_json; close($fh); }
  my $ready_file=&webui_meter_series_ready_file($series_id);
  &webui_meter_series_ready_cleanup();
@@ -5580,9 +5817,8 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
 
  # Launch series helper script in background (setsid to detach from daemon threads)
  # sudo required: daemon runs as pgenerator user, spotread needs root for USB access
- # Low-light mode and trigger are positional arguments, not environment
- # prefixes. The mode remains the operator-selected a/aa/aaa value; the
- # series worker starts spotread at off and applies the trigger per step.
+ # Low-light mode, trigger, and resolved numeric count are positional arguments.
+ # The worker keeps one spotread process and repeats only below the trigger.
  # Precompute the mode-correct insertion codes via the shared helper so the
  # worker just SENDS them rather than recomputing. Without this, the
  # insertion flash used a hard-coded linear 0..255 formula and was wrong on
@@ -5614,7 +5850,7 @@ my $dv_interface=($signal_mode eq "dv") ? &pg_dv_transport_interface($request_dv
  # command) makes the sudo invocation match no rule, so sudo demands a
  # password and the launch silently fails ("Process died unexpectedly").
  # Trailing args keep the authorized command intact.
- my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' </dev/null >/dev/null 2>&1 &";
+ my $cmd="setsid sudo /bin/bash /usr/bin/meter_series.sh '$series_id' '$display_type' '$delay_ms' '$patch_size' '$steps_file' '$_meter_series_file' '$ccss_file' '$patch_insert' '$refresh_rate' '$disable_aio' '$signal_mode' '$max_luma' '$dv_map_mode' '$measurement_meter_port' '$ready_file' '$require_device_ready' '$pattern_signal_range' '$transport_signal_range' '$pattern_delay_ms' '$patch_insert_patch_enabled' '$patch_insert_patch_every' '$patch_insert_patch_duration_ms' '$patch_insert_patch_level' '$patch_insert_time_enabled' '$patch_insert_time_frequency_ms' '$patch_insert_time_duration_ms' '$patch_insert_time_level' '$low_light_mode' '${insert_patch_code}:${insert_patch_input_max}' '${insert_time_code}:${insert_time_input_max}' '$series_color_format' '$measurement_meter_usb_id' '$observer' '$pattern_provider' '$min_luma' '$max_cll' '$max_fall' '$low_light_trigger' '$low_light_requested_sample_count' </dev/null >/dev/null 2>&1 &";
 	 open(my $debug_log,">>/tmp/webui_series_debug.log");
 	 print $debug_log "[".scalar(localtime())."] Launching series: type=$type series_id=$series_id\n";
 	 if($type eq "greyscale" && $points==26 && $lg_autocal_26) {
@@ -6052,6 +6288,10 @@ sub webui_meter_lg_autocal_start (@) {
  $body=&webui_meter_lg_autocal_body_with_defaults($body);
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ my ($contract_body,$contract_error)=&webui_low_light_stamp_request(
+  $body,($body=~/"require_device_ready"\s*:\s*true/i ? 1 : 0));
+ return '{"status":"error","message":"'.$contract_error.'"}' if($contract_error ne "");
+ $body=$contract_body;
  if(&webui_meter_lg_autocal_running()) {
   return '{"status":"started","message":"LG Auto Cal already running"}' if(&webui_meter_lg_autocal_same_run_running($body));
   return '{"status":"error","message":"LG Auto Cal is already running"}';
@@ -6445,6 +6685,48 @@ sub webui_meter_lg_3d_autocal_kill (@) {
  &webui_meter_lg_3d_autocal_mark_cancelled() if($mark);
 }
 
+# Full AutoCal is browser-orchestrated, so a page that stayed open across a
+# deployment can reach this endpoint with the old handoff shape. Recover the
+# committed 1D DPG at the server boundary when (and only when) the completed
+# greyscale status belongs to the exact same run and signal mode. This keeps a
+# stale client from silently skipping terminal DPG smoothing while preserving
+# an explicit, valid payload from a current client.
+sub webui_meter_lg_3d_autocal_complete_full_workflow_dpg (@) {
+ my ($body)=@_;
+ return $body if(!defined($body) || $body eq "");
+ my $request=eval { require JSON::PP; JSON::PP::decode_json($body); };
+ return $body if(ref($request) ne "HASH" || !$request->{"full_workflow"});
+ return $body if(ref($request->{"full_workflow_dpg_data"}) eq "ARRAY"
+  && scalar(@{$request->{"full_workflow_dpg_data"}}) == 3072);
+
+ my $run=$request->{"full_autocal_run_id"}||$request->{"run_id"}||"";
+ return $body if($run eq "" || !-f $_meter_lg_autocal_file);
+ my $state_raw="";
+ if(open(my $fh,"<",$_meter_lg_autocal_file)) {
+  local $/;
+  $state_raw=<$fh>;
+  close($fh);
+ }
+ my $state=eval { JSON::PP::decode_json($state_raw); };
+ return $body if(ref($state) ne "HASH" || lc($state->{"status"}||"") ne "complete"
+  || !$state->{"full_workflow"});
+ my $state_run=$state->{"full_autocal_run_id"}||$state->{"run_id"}||"";
+ return $body if($state_run eq "" || $state_run ne $run);
+
+ my $signal=lc($request->{"signal_mode"}||$state->{"signal_mode"}||"");
+ return $body if($signal ne "sdr" && $signal ne "hdr10");
+ my $state_signal=lc($state->{"signal_mode"}||"");
+ return $body if($state_signal ne "" && $state_signal ne $signal);
+ my $source_key=($signal eq "sdr") ? "sdr_1d_dpg_data" : "hdr20_1d_dpg_data";
+ my $dpg=$state->{$source_key};
+ return $body if(ref($dpg) ne "ARRAY" || scalar(@$dpg) != 3072);
+
+ $request->{"full_workflow_dpg_data"}=[@$dpg];
+ $request->{"full_workflow_dpg_handoff_source"}="server_same_run_status";
+ $request->{"full_workflow_dpg_handoff_signal_mode"}=$signal;
+ return JSON::PP->new->canonical(1)->encode($request);
+}
+
 sub webui_meter_lg_3d_autocal_start (@) {
  my ($body)=@_;
  lock($_meter_lg_3d_autocal_start_lock);
@@ -6454,6 +6736,10 @@ sub webui_meter_lg_3d_autocal_start (@) {
  }
  $body=&webui_meter_autocal_force_standard_observer($body);
  $body=&webui_meter_lg_body_with_display_model($body);
+ my ($contract_body,$contract_error)=&webui_low_light_stamp_request(
+  $body,($body=~/"require_device_ready"\s*:\s*true/i ? 1 : 0));
+ return '{"status":"error","message":"'.$contract_error.'"}' if($contract_error ne "");
+ $body=$contract_body;
  my $_autocal_handoff_guard=&webui_meter_lg_autocal_handoff_guard();
  return $_autocal_handoff_guard if(defined($_autocal_handoff_guard));
  if(&webui_meter_lg_3d_autocal_running()) {
@@ -6463,6 +6749,7 @@ sub webui_meter_lg_3d_autocal_start (@) {
   # browser's adoption probe).
   return '{"status":"error","retryable":false,"message":"LG 3D LUT AutoCal is already running"}';
  }
+ $body=&webui_meter_lg_3d_autocal_complete_full_workflow_dpg($body);
  &webui_meter_stop();
  system("mkdir -p /var/lib/PGenerator/lg/luts 2>/dev/null");
  system("chmod 0777 /var/lib/PGenerator/lg /var/lib/PGenerator/lg/luts 2>/dev/null");
@@ -11329,18 +11616,7 @@ sub webui_pattern_is_pq_mode (@) {
 }
 
 sub webui_pattern_pq_encode_normalized (@) {
- my $nits=shift;
- $nits=0 if($nits < 0);
- $nits=10000 if($nits > 10000);
- return 0 if($nits <= 0);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l**$m1;
- return (($c1 + $c2*$p)/(1 + $c3*$p))**$m2;
+ return PGMath::pq_encode_normalized(shift);
 }
 
 # Single source of truth for stimulus-percent -> wire code for the greyscale
@@ -11371,265 +11647,41 @@ sub webui_pattern_pq_encode_normalized (@) {
 #   dv_series       0/1        use DV tunnel branch
 #   dv_series_code_bits 8/10/12  source-code precision inside the tunnel
 #   dv_series_full_range 0/1  use full tunnel range
+sub webui_signal_code_policy (@) {
+ my ($signal_mode,$signal_range,$opts_hr)=@_;
+ $opts_hr={} if(ref($opts_hr) ne "HASH");
+ my %resolved=(%{$opts_hr},signal_mode=>$signal_mode,signal_range=>$signal_range);
+
+ # Resolve legacy flag precedence at this ingress boundary. SignalCodePolicy
+ # itself rejects contradictory strategies so no hot conversion needs to
+ # repeat these product-policy decisions.
+ my @precedence=qw(two_point_ycbcr_headroom autocal_26_codes hdr20_codes
+  dv_series extended_sdr_codes legal_sdr_ddc_codes);
+ my $selected="";
+ foreach my $candidate (@precedence) {
+  if(!$selected && $resolved{$candidate}) { $selected=$candidate; next; }
+  $resolved{$candidate}=0 if($selected);
+ }
+ if(defined($resolved{max_bpc}) && $resolved{max_bpc} ne "") {
+  $resolved{max_bpc}=(int($resolved{max_bpc})>=10) ? 10 : 8;
+ }
+ if($selected eq "autocal_26_codes"
+  && (!defined($resolved{color_format}) || $resolved{color_format} eq "")) {
+  $resolved{color_format}=(defined($pgenerator_conf{"color_format"})
+   && $pgenerator_conf{"color_format"} ne "")
+   ? int($pgenerator_conf{"color_format"}) : 0;
+ }
+ my $policy=signal_code_policy(\%resolved);
+ die "Unable to resolve signal-code policy\n" if(!defined($policy));
+ return $policy;
+}
+
 sub webui_grey_code_for_stimulus (@) {
  my ($stimulus_pct,$signal_mode,$target_gamma,$signal_range,$opts_hr)=@_;
- # Preserve the unclamped stimulus for the 10-bit LIMITED lg_autocal_26_codes
- # sub-branch so the legal-expanded super-white ladder (105% / 109%) can
- # reach the canonical super-white formula instead of being flattened to
- # 100% by the function-level clamp below. All other branches observe the
- # clamp.
- my $raw_stim_for_ac26_ltd=defined($stimulus_pct) ? ($stimulus_pct+0) : 0;
- $stimulus_pct+=0;
- $stimulus_pct=0 if($stimulus_pct < 0);
- $stimulus_pct=100 if($stimulus_pct > 100);
- $signal_mode=lc($signal_mode||"sdr");
- $signal_range+=0 if(defined($signal_range) && $signal_range ne "");
- $opts_hr={} if(ref($opts_hr) ne "HASH");
- my $code=0;
- my $input_max=255;
- my $lg_hdr20_codes=$opts_hr->{"hdr20_codes"} ? 1 : 0;
- my $lg_autocal_26=$opts_hr->{"autocal_26"} ? 1 : 0;
- my $lg_autocal_26_codes=$opts_hr->{"autocal_26_codes"} ? 1 : 0;
- my $lg_extended_sdr_codes=$opts_hr->{"extended_sdr_codes"} ? 1 : 0;
- my $lg_legal_sdr_ddc_codes=$opts_hr->{"legal_sdr_ddc_codes"} ? 1 : 0;
- my $two_point_ycbcr_headroom=$opts_hr->{"two_point_ycbcr_headroom"} ? 1 : 0;
- my $dv_series=$opts_hr->{"dv_series"} ? 1 : 0;
- my $dv_series_code_bits=$opts_hr->{"dv_series_code_bits"};
- $dv_series_code_bits=8 if(!defined($dv_series_code_bits) || ($dv_series_code_bits!=8 && $dv_series_code_bits!=10 && $dv_series_code_bits!=12));
- my $dv_series_full_range=$opts_hr->{"dv_series_full_range"} ? 1 : 0;
- my $dv_series_code_max=($dv_series_code_bits==12) ? 4095 : (($dv_series_code_bits==10) ? 1023 : 255);
- my $dv_series_code_min=$dv_series ? ($dv_series_full_range ? 0 : ($dv_series_code_bits==12?256:($dv_series_code_bits==10?64:16))) : 0;
- my $dv_series_code_span=$dv_series ? ($dv_series_full_range ? $dv_series_code_max : ($dv_series_code_bits==12?3504:($dv_series_code_bits==10?876:219))) : 255;
- my $dv_series_code_limit=$dv_series_code_min + $dv_series_code_span;
- $input_max=$dv_series_code_max if($dv_series);
- if($two_point_ycbcr_headroom) {
-  # YCbCr Limited keeps the nominal legal ramp through 100%, then exposes
-  # super-white through 109%. RGB Limited deliberately does not enter this
-  # branch and remains capped at 235/940.
-  my $_tp_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
-  my $_tp_min=$_tp_bits==10 ? 64 : 16;
-  my $_tp_legal=$_tp_bits==10 ? 940 : 235;
-  my $_tp_max=$_tp_bits==10 ? 1023 : 255;
-  my $_tp_stim=$raw_stim_for_ac26_ltd+0;
-  $_tp_stim=0 if($_tp_stim < 0);
-  $_tp_stim=109 if($_tp_stim > 109);
-  if($_tp_stim <= 100) {
-   $code=int($_tp_min + $_tp_stim/100*($_tp_legal-$_tp_min) + .5);
-  } else {
-   $code=int($_tp_legal + ($_tp_stim-100)/9*($_tp_max-$_tp_legal) + .5);
-  }
-  $code=$_tp_min if($code < $_tp_min);
-  $code=$_tp_max if($code > $_tp_max);
-  $input_max=$_tp_max;
-  return ($code,$input_max);
- }
- if($lg_autocal_26_codes) {
-  # 8-bit link: no headroom and no 10-bit legal-expanded ladder. Drive plain
-  # 8-bit codes that match the worker's patch_code_for_stimulus 8-bit path
-  # (full 0..255, limited 16..235) so the displayed/inserted codes agree with
-  # what is actually sent. >100% has no 8-bit headroom, so it clamps to peak.
-  # The DPG slot indexing is unaffected (it is keyed by IRE via @sdr26_indexes
-  # in the worker, not by this drive code).
-  my $_ac26_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
-  # Limited transport has TWO sub-modes that must NOT be conflated
-  # (per user direction):
-  #   RGB Limited    -> codes 16..235 ONLY (109% clamps to 235).
-  #   YCbCr Limited  -> codes 16..255, 100%=235, 109%=255 via super-white.
-  # 10-bit follows the same axis rules scaled ×4.
-  my $_ac26_cf=(defined $opts_hr->{"color_format"} && $opts_hr->{"color_format"} ne "")
-   ? int($opts_hr->{"color_format"})
-   : (defined $pgenerator_conf{"color_format"} && $pgenerator_conf{"color_format"} ne ""
-      ? int($pgenerator_conf{"color_format"}) : 0);
-  my $_ac26_is_ycbcr=(($_ac26_cf == 1) || ($_ac26_cf == 2)) ? 1 : 0;
-  if($_ac26_bits == 8) {
-   if($signal_range) {
-    if($_ac26_is_ycbcr) {
-     # YCbCr Limited 8-bit: legal ramp <=100% (16..235 via 16+S/100*219),
-     # super-white ramp >100% (235+(S-100)/9*20 -> 109%=255).
-     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-     $_ac26_s=0 if($_ac26_s < 0);
-     $_ac26_s=109 if($_ac26_s > 109);
-     if($_ac26_s <= 100) {
-      $code=int(16 + ($_ac26_s/100)*219 + .5);
-     } else {
-      $code=int(235 + ($_ac26_s-100)/9*(255-235) + .5);
-     }
-     $code=16 if($code < 16); $code=255 if($code > 255);
-    } else {
-     # RGB Limited 8-bit: codes 16..235 only. 105/109% clamp to 235 (no
-     # super-white headroom).
-     my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-     $_ac26_s=0 if($_ac26_s < 0);
-     $_ac26_s=100 if($_ac26_s > 100);
-     $code=int(16 + ($_ac26_s/100)*219 + .5);
-     $code=16 if($code < 16); $code=235 if($code > 235);
-    }
-   } else {
-    # Full: no codes above white -- 100% is the peak (255), so >100% clamps to 255.
-    # Full range has no super-white headroom, so the clamped $stimulus_pct is
-    # the right input here (the legal-expanded raw ladder is limited-only).
-    my $s=$stimulus_pct; $s=100 if($s > 100);
-    $code=int(($s/100)*255 + .5); $code=0 if($code < 0); $code=255 if($code > 255);
-   }
-   $input_max=255;
-   return ($code,$input_max);
-  }
-  if(!$signal_range) {
-   # 10-bit Full SDR: 8bit<<2 (same map as worker DPG index). Peak=1023.
-   my $s=$stimulus_pct+0; $s=0 if($s < 0); $s=100 if($s > 100);
-   if($s >= 99.95) {
-    $code=1023;
-   } else {
-    my $b8=int($s/100*255 + .5);
-    $b8=0 if($b8 < 0); $b8=255 if($b8 > 255);
-    $code=$b8 << 2;
-   }
-   $input_max=1023;
-   return ($code,$input_max);
-  }
-  my %lg_autocal_26_code=(
-   "2.3"=>84,"3"=>92,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,"30"=>328,"35"=>372,"40"=>416,"45"=>460,
-   "50"=>504,"55"=>544,"60"=>588,"65"=>632,"70"=>676,"75"=>720,"80"=>764,"85"=>808,"90"=>852,"95"=>896,"99"=>932,"105"=>984,"109"=>1023
-  );
-  # 10-bit LIMITED canonical compute. RGB Limited clamps super-white at 940;
-  # YCbCr Limited uses the full 64..1023 ladder with the super-white ramp
-  # 940+(S-100)/9*83. $raw_stim_for_ac26_ltd bypasses the function-level
-  # 100% clamp so the super-white formula can fire on 105/109 stimuli.
-  my $_ac26_s=$raw_stim_for_ac26_ltd+0;
-  $_ac26_s=0 if($_ac26_s < 0);
-  if($_ac26_is_ycbcr) {
-   $_ac26_s=109 if($_ac26_s > 109);
-   if($_ac26_s <= 100) {
-    $code=int(64 + $_ac26_s/100*876 + .5);
-   } else {
-    $code=int(940 + ($_ac26_s-100)/9*(1023-940) + .5);
-   }
-   $code=64 if($code < 64);
-   $code=1023 if($code > 1023);
-  } else {
-   # RGB Limited 10-bit: legal ladder <=100%, super-white clamps at 940.
-   $_ac26_s=100 if($_ac26_s > 100);
-   $code=int(64 + $_ac26_s/100*876 + .5);
-   $code=64 if($code < 64);
-   $code=940 if($code > 940);
-  }
-  $input_max=1023;
-  return ($code,$input_max);
- }
- if($lg_hdr20_codes) {
-  my %lg_hdr20_code=(
-   "1.4"=>19,"2"=>20,"2.7"=>22,"4"=>25,"5"=>27,"7"=>31,"10"=>38,"15"=>49,"20"=>60,"25"=>71,
-   "30"=>82,"35"=>93,"40"=>104,"45"=>115,"50"=>126,"60"=>147,"70"=>169,"80"=>191,"90"=>213,"100"=>235
-  );
-  my %lg_hdr20_code_10bit_limited=(
-   "1.4"=>76,"2"=>80,"2.7"=>88,"4"=>100,"5"=>108,"7"=>124,"10"=>152,"15"=>196,"20"=>240,"25"=>284,
-   "30"=>328,"35"=>372,"40"=>416,"45"=>460,"50"=>504,"60"=>588,"70"=>676,"80"=>764,"90"=>852,"100"=>940
-  );
-  my %lg_hdr20_code_10bit_full=(
-   "1.4"=>14,"2"=>20,"2.7"=>28,"4"=>41,"5"=>51,"7"=>72,"10"=>102,"15"=>153,"20"=>205,"25"=>256,
-   "30"=>307,"35"=>358,"40"=>409,"45"=>460,"50"=>512,"60"=>614,"70"=>716,"80"=>818,"90"=>921,"100"=>1023
-  );
-  # HDR10 8-bit full table (0..255). The 8-bit limited case reuses
-  # %lg_hdr20_code (the 16..235 numeric values are identical).
-  my %lg_hdr20_code_8bit_full=(
-   "1.4"=>4,"2"=>5,"2.7"=>7,"4"=>10,"5"=>13,"7"=>18,"10"=>26,"15"=>38,"20"=>51,"25"=>64,
-   "30"=>77,"35"=>89,"40"=>102,"45"=>115,"50"=>128,"60"=>153,"70"=>179,"80"=>204,"90"=>230,"100"=>255
-  );
-  my %lg_hdr20_stimulus=();
-  foreach my $key (keys %lg_hdr20_code) { $lg_hdr20_stimulus{$key}=$key+0; }
-  my $lg_hdr20_active_table=\%lg_hdr20_code;
-  # HDR10 26pt table selection follows max_bpc: 8 -> 8-bit codes (limited
-  # 16..235 by reusing %lg_hdr20_code, or full 0..255 via
-  # %lg_hdr20_code_8bit_full) and input_max=255; 10 -> 10-bit codes (limited
-  # 64..940 or full 0..1023) and input_max=1023. Caller supplies the active
-  # max_bpc via $opts_hr->{"max_bpc"}; default 10 keeps the original
-  # behavior when the option is absent.
-  my $_wb_hdr20_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) == 8) ? 8 : 10;
-  if($opts_hr->{"active_table"} && ref($opts_hr->{"active_table"}) eq "HASH") {
-   $lg_hdr20_active_table=$opts_hr->{"active_table"};
-  } elsif($_wb_hdr20_bits == 8) {
-   $lg_hdr20_active_table=\%lg_hdr20_code if($opts_hr->{"hdr20_use_limited"});
-   $lg_hdr20_active_table=\%lg_hdr20_code_8bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
-  } else {
-   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_limited if($opts_hr->{"hdr20_use_limited"});
-   $lg_hdr20_active_table=\%lg_hdr20_code_10bit_full if($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"});
-  }
-  my $lg_hdr20_min_code=($_wb_hdr20_bits == 10 && $opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 0 : ($_wb_hdr20_bits == 8 ? 0 : 64);
-  my $lg_hdr20_span_code=($_wb_hdr20_bits == 10)
-   ? (($opts_hr->{"hdr20_use_limited"} && $opts_hr->{"hdr20_full"}) ? 1023 : 876)
-   : 255;
-  my $slot_key="";
-  foreach my $slot (keys %lg_hdr20_stimulus) {
-   if(abs($lg_hdr20_stimulus{$slot}-$stimulus_pct) < 0.01) { $slot_key=$slot; last; }
-  }
-  $code=exists($lg_hdr20_active_table->{$slot_key}) ? $lg_hdr20_active_table->{$slot_key} : int($lg_hdr20_min_code + $stimulus_pct/100*$lg_hdr20_span_code + .5);
-  $code=$lg_hdr20_min_code if($code < $lg_hdr20_min_code);
-  $code=$lg_hdr20_min_code + $lg_hdr20_span_code if($code > $lg_hdr20_min_code + $lg_hdr20_span_code);
-  $input_max=($_wb_hdr20_bits == 8) ? 255 : 1023;
-  return ($code,$input_max);
- }
- if($dv_series) {
-  my $stim=$stimulus_pct/100;
-  $stim=0 if($stim < 0);
-  $stim=1 if($stim > 1);
-  $code=int($dv_series_code_min + $stim*$dv_series_code_span + .5);
-  $code=$dv_series_code_min if($code < $dv_series_code_min);
-  $code=$dv_series_code_limit if($code > $dv_series_code_limit);
-  return ($code,$input_max);
- }
- my $lim=(defined($signal_range) && int($signal_range)==1) ? 1 : 0;
- # Greyscale bit-depth plumbing: when max_bpc>=10 (10-bit link), the 8-bit
- # codes below would land on a 10-bit wire as ~23% signal (e.g. 8-bit 235
- # = 10-bit 235 / 1023 = 23%), crushing the entire stimulus range. Before
- # this fix the standard SDR/HDR10/HLG/extended/legal-DDC branches always
- # returned 8-bit codes with $input_max=255, and webui_meter_series_start
- # never stamped `input_max` for those branches, so meter_series.sh /
- # pattern_request_body saw no input_max + codes <=255 and dispatched an
- # 8-bit pattern over the 10-bit wire. Mirror the JS bit-depth scaling in
- # meterGreyCodeRange(): 10-bit limited min=64 span=876 (matches the
- # HDR10 10-bit Limited table: 100% -> 940 = 64 + 876), 10-bit full
- # min=0 span=1023 (matches the HDR10 10-bit Full table: 100% -> 1023),
- # 10-bit extended-sdr min=64 span=956 (matches the JS extended branch).
- # 12-bit links are coerced to 10-bit here, matching meterPatchBitDepth().
- my $_wb_bits=(defined $opts_hr->{"max_bpc"} && $opts_hr->{"max_bpc"} ne "" && int($opts_hr->{"max_bpc"}) >= 10) ? 10 : 8;
- if($lg_extended_sdr_codes) {
-  # Extended SDR is the LG "16..255" ladder: legal black, FULL white. Its top
-  # is 100% at full scale, so at 10 bits that is 64..1023 (span 959), derived
-  # natively from the stimulus rather than by upshifting the 8-bit ladder.
-  # It was 64 + pct*956, i.e. the 8-bit span 239 multiplied by 4, which carried
-  # 8-bit quantisation into every point of a 10-bit ladder and left the top at
-  # 1020. (Do not confuse this with the SDR-26 super-white ladder, where 1023
-  # is 109% and 100% is 940 -- that is a different curve and is built by the
-  # autocal_26_codes branch above, which returns before reaching here.)
-  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*239 + .5);
-  if($_wb_bits == 10) {
-   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*959 + .5);
-  }
- } elsif($lg_legal_sdr_ddc_codes) {
-  $code=($stimulus_pct <= 0) ? 0 : int(16 + $stimulus_pct/100*219 + .5);
-  if($_wb_bits == 10) {
-   $code=($stimulus_pct <= 0) ? 0 : int(64 + $stimulus_pct/100*876 + .5);
-  }
- } elsif($signal_mode eq "hdr10") {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- } elsif($signal_mode eq "hlg") {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- } else {
-  $code=$lim ? int(16 + $stimulus_pct/100*219 + .5) : int($stimulus_pct/100*255 + .5);
-  if($_wb_bits == 10) {
-   $code=$lim ? int(64 + $stimulus_pct/100*876 + .5) : int($stimulus_pct/100*1023 + .5);
-  }
- }
- $input_max=($_wb_bits == 10) ? 1023 : 255;
- $code=0 if($code < 0);
- $code=$input_max if($code > $input_max);
- return ($code,$input_max);
+ my $policy=&webui_signal_code_policy($signal_mode,$signal_range,$opts_hr);
+ my $result=signal_percent_to_code($policy,$stimulus_pct);
+ die "Unable to convert signal percent to code\n" if(!defined($result));
+ return ($result->{code},$result->{input_max});
 }
 
 # The stabilization pattern is an idle-state policy rather than a new
@@ -11695,21 +11747,7 @@ sub webui_pattern_idle_refresh_allowed (@) {
 }
 
 sub webui_pattern_pq_decode_normalized (@) {
- my $code=shift;
- $code=0 if($code < 0);
- $code=1 if($code > 1);
- return 0 if($code <= 0);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$code**(1/$m2);
- my $num=$p-$c1;
- $num=0 if($num < 0);
- my $den=$c2-$c3*$p;
- return 10000 if($den <= 0);
- return 10000*(($num/$den)**(1/$m1));
+ return PGMath::pq_decode_nits(shift);
 }
 
 sub webui_pattern_peak_code (@) {
@@ -12643,6 +12681,7 @@ my %_webui_asset_allowed = map { $_ => 1 } qw(
  webui-layout.css
  webui-body.html
  webui-logo-dark.html
+ webui-colour-math.js
  webui-app.js
  webui-workspace.js
  webui-lg-card.html
@@ -12807,6 +12846,7 @@ sub webui_html (@) {
                     ["__PG_CSS_LAYOUT__","webui-layout.css"],
                     ["__PG_BODY__","webui-body.html"],
                     ["__PG_LOGO_DARK__","webui-logo-dark.html"],
+                    ["__PG_JS_COLOUR_MATH__","webui-colour-math.js"],
                     ["__PG_JS_APP__","webui-app.js"],
                     ["__PG_JS_WORKSPACE__","webui-workspace.js"]) {
   my ($marker,$name)=@{$asset};

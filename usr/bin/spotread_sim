@@ -19,7 +19,14 @@
 
 use strict;
 use warnings;
-use Time::HiRes qw(time);
+use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(pq_decode_nits);
+use PGCalibrationMath qw(calibration_rgb_to_xyz_matrix);
 
 my @STATE_FILES = (
  "/var/lib/PGenerator/pgen_sim_pattern.json",
@@ -51,42 +58,15 @@ if (-t STDIN) {
 # Deterministic per-session imperfections plus per-read noise.
 srand(time() ^ $$);
 
-sub _mat3_inverse {
- my ($m) = @_;
- my ($a,$b,$c,$d,$e,$f,$g,$h,$i) = map { @$_ } @$m;
- my $det = $a*($e*$i - $f*$h) - $b*($d*$i - $f*$g) + $c*($d*$h - $e*$g);
- return undef if (abs($det) < 1e-12);
- my $s = 1.0/$det;
- return [
-  [ ($e*$i - $f*$h)*$s, ($c*$h - $b*$i)*$s, ($b*$f - $c*$e)*$s ],
-  [ ($f*$g - $d*$i)*$s, ($a*$i - $c*$g)*$s, ($c*$d - $a*$f)*$s ],
-  [ ($d*$h - $e*$g)*$s, ($b*$g - $a*$h)*$s, ($a*$e - $b*$d)*$s ],
- ];
-}
-
-# Build an RGB->XYZ matrix (Y of white = 1) from primary and white xy coords.
-sub rgb_to_xyz_matrix {
- my ($xr,$yr,$xg,$yg,$xb,$yb,$xw,$yw) = @_;
- my @X = ($xr/$yr, $xg/$yg, $xb/$yb);
- my @Y = (1.0, 1.0, 1.0);
- my @Z = ((1-$xr-$yr)/$yr, (1-$xg-$yg)/$yg, (1-$xb-$yb)/$yb);
- my $M = [ [@X], [@Y], [@Z] ];
- my $Mi = _mat3_inverse($M) or return undef;
- my @W = ($xw/$yw, 1.0, (1-$xw-$yw)/$yw);
- my @S = map {
-  $Mi->[$_][0]*$W[0] + $Mi->[$_][1]*$W[1] + $Mi->[$_][2]*$W[2]
- } (0..2);
- return [
-  [ $X[0]*$S[0], $X[1]*$S[1], $X[2]*$S[2] ],
-  [ $Y[0]*$S[0], $Y[1]*$S[1], $Y[2]*$S[2] ],
-  [ $Z[0]*$S[0], $Z[1]*$S[1], $Z[2]*$S[2] ],
- ];
-}
-
 # "Native" panel primaries: SDR mode slightly off Rec.709; HDR modes P3-ish
 # inside the BT.2020 container (realistic undersaturation vs 2020 targets).
-my $MTX_SDR = rgb_to_xyz_matrix(0.646,0.332, 0.292,0.612, 0.155,0.061, 0.3160,0.3295);
-my $MTX_HDR = rgb_to_xyz_matrix(0.674,0.316, 0.272,0.677, 0.150,0.055, 0.3155,0.3300);
+my %SIM_MATRIX_CACHE;
+my $MTX_SDR = calibration_rgb_to_xyz_matrix({
+ red=>[0.646,0.332],green=>[0.292,0.612],blue=>[0.155,0.061],white=>[0.3160,0.3295],
+},caller_contract=>"spotread_sim",context_cache=>\%SIM_MATRIX_CACHE);
+my $MTX_HDR = calibration_rgb_to_xyz_matrix({
+ red=>[0.674,0.316],green=>[0.272,0.677],blue=>[0.150,0.055],white=>[0.3155,0.3300],
+},caller_contract=>"spotread_sim",context_cache=>\%SIM_MATRIX_CACHE);
 
 my %PANEL = (
  sdr_peak   => 224.0,   # cd/m^2 at 100% white
@@ -103,17 +83,6 @@ sub gauss {
  my ($sigma) = @_;
  my ($u1,$u2) = (rand() || 1e-9, rand());
  return $sigma * sqrt(-2*log($u1)) * cos(2*3.14159265358979*$u2);
-}
-
-sub pq_eotf {
- my ($v) = @_;                     # 0..1 signal -> absolute cd/m^2
- $v = 0 if ($v < 0); $v = 1 if ($v > 1);
- my ($m1,$m2,$c1,$c2,$c3) = (2610/16384, 2523/4096*128, 3424/4096, 2413/4096*32, 2392/4096*32);
- my $p = $v ** (1/$m2);
- my $num = $p - $c1; $num = 0 if ($num < 0);
- my $den = $c2 - $c3*$p;
- return 0 if ($den <= 0);
- return 10000 * (($num/$den) ** (1/$m1));
 }
 
 sub hlg_inv_oetf {
@@ -189,7 +158,7 @@ sub measure_xyz {
  my ($mtx, $black, @lin);
  if ($mode eq "hdr10" || $mode eq "dv") {
   $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
-  @lin = map { panel_tonemap(pq_eotf($_), $PANEL{hdr_peak}) } ($r,$g,$b);
+  @lin = map { panel_tonemap(pq_decode_nits($_), $PANEL{hdr_peak}) } ($r,$g,$b);
  } elsif ($mode eq "hlg") {
   $mtx = $MTX_HDR; $black = $PANEL{hdr_black};
   my @scene = map { hlg_inv_oetf($_) } ($r,$g,$b);

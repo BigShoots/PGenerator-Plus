@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+use Digest::SHA qw(sha256_hex);
 use Errno qw(EINTR);
 use File::Path qw(make_path);
 use IO::Select ();
@@ -10,6 +11,22 @@ use JSON::PP ();
 use MIME::Base64 ();
 use POSIX qw(strftime);
 use Time::HiRes qw(sleep time);
+BEGIN {
+ my $script_dir=__FILE__;
+ $script_dir=~s{/[^/]+\z}{};
+ unshift @INC,"$script_dir/../share/PGenerator";
+}
+use PGMath qw(
+ delta_e_2000_xyz delta_e_itp_xyz matrix3_inverse matrix3_multiply
+ matrix3_vector_multiply pq_decode_normalized pq_encode_normalized xyz_to_ictcp
+);
+use PGCalibrationMath qw(
+ autocal_xy_to_xyz_unit bounded_number calibration_target_context
+ dpg_smooth_blend_index named_gamut_matrix smooth_dpg_low_end
+ target_linear_for_context target_relative_luminance_for_context
+);
+use PGMeterReading qw(reading_xyz);
+use PGSignalCode qw(signal_code_policy signal_percent_to_code);
 
 our $PGAC_LOADED = 0;
 eval { require '/usr/share/PGenerator/PGAutoCalRun.pm'; $PGAC_LOADED = 1; 1 };
@@ -155,75 +172,6 @@ sub cancelled {
  return 1 if($cancelled);
  return 1 if(-f $stop_file);
  return 0;
-}
-
-# Post-calibration smoothing of the crowded low end of a 1D DPG.
-#
-# MUST STAY BYTE-EQUIVALENT to lg_autocal_26_smooth_dpg_low_end() in
-# usr/bin/meter_lg_autocal.pl. The two workers are standalone scripts with no
-# shared library, so this helper is duplicated exactly as the DPG tables are.
-#
-# Why it lives here as well: in a FULL workflow this worker is the last stage to
-# touch the 1D DPG, so this is the only place the smoothed curve survives. The
-# greyscale worker still applies it for a standalone run, where its own pass IS
-# the end.
-#
-# Rationale for the smoothing itself: each anchor converges independently to
-# dE <= target, but at low IRE that leaves tens of DPG counts of slack, and where
-# anchors sit only a few indexes apart that slack becomes a large SLOPE error
-# (measured: 5.6..64 counts/index below 10% against a stable ~30 above).
-# Interpolating exactly through mutually-inconsistent anchors leaves a kinked
-# curve and the levels BETWEEN anchors sit on the kinks.
-#
-# Hardware result (LG C2, SDR YCbCr Limited 10-bit, 216 cd/m2 peak, same series,
-# panel settled): on-anchor 0.49 -> 0.36, between-anchor 2.41 -> 1.86, max
-# 3.71 -> 2.46. A slope-domain refit that relocated anchors measured WORSE
-# (0.70 / 2.04), so this stays a gentle low-pass.
-#
-# Returns ($smoothed_arrayref, $entries_changed); ($dpg, 0) if it cannot run.
-our $LG_AUTOCAL_DPG_SMOOTH_FULL_IDX  = 240;
-our $LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX = 280;
-
-sub lg_autocal_26_smooth_dpg_low_end {
- my ($dpg)=@_;
- return ($dpg,0) if(ref($dpg) ne "ARRAY" || @{$dpg} != 3072);
- my $full=$LG_AUTOCAL_DPG_SMOOTH_FULL_IDX;
- my $blend=$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX;
- my $half=2;                       # 5-point window
- my @out;
- my $changed=0;
- foreach my $c (0,1,2) {
-  my @ch=@{$dpg}[($c*1024)..($c*1024+1023)];
-  my @sm=@ch;
-  foreach my $pass (1,2) {
-   my @prev=@sm;
-   for(my $i=1;$i<=$blend+$half;$i++) {
-    last if($i > 1023);
-    my $lo=$i-$half; $lo=0 if($lo < 0);
-    my $hi=$i+$half; $hi=1023 if($hi > 1023);
-    my $sum=0;
-    for(my $j=$lo;$j<=$hi;$j++) { $sum+=$prev[$j]; }
-    $sm[$i]=$sum/($hi-$lo+1);
-   }
-  }
-  my @res=@ch;
-  for(my $i=1;$i<=1023;$i++) {
-   my $w=0;
-   if($i <= $full) { $w=1; }
-   elsif($i <= $blend) { $w=($blend-$i)/($blend-$full); }
-   next if($w <= 0);
-   $res[$i]=sprintf("%.0f",$ch[$i]+($sm[$i]-$ch[$i])*$w)+0;
-  }
-  $res[0]=$ch[0];
-  for(my $i=1;$i<=1023;$i++) {
-   $res[$i]=$res[$i-1] if($res[$i] < $res[$i-1]);
-   $res[$i]=0 if($res[$i] < 0);
-   $res[$i]=65535 if($res[$i] > 65535);
-   $changed++ if($res[$i] != $ch[$i]);
-  }
-  push @out,@res;
- }
- return (\@out,$changed);
 }
 
 sub api_json {
@@ -407,26 +355,42 @@ sub target_gamma_label {
 # span 1023 (matches the HDR10 10-bit Full table: 100% -> 1023). Default
 # to 8-bit when max_bpc is missing or empty so legacy callers keep their
 # existing wire format.
+my %PATCH_SIGNAL_CODE_POLICIES;
+sub patch_signal_code_policy {
+ my ($signal_range,$max_bpc)=@_;
+ my $limited=(!defined($signal_range) || $signal_range eq ""
+  || int($signal_range)==1) ? 1 : 0;
+ my $bits=(!defined($max_bpc) || $max_bpc eq ""
+  || int($max_bpc)>=10) ? 10 : 8;
+ my $key="$limited:$bits";
+ return $PATCH_SIGNAL_CODE_POLICIES{$key}
+  if($PATCH_SIGNAL_CODE_POLICIES{$key});
+ my $policy=signal_code_policy({
+  signal_mode=>"sdr",
+  pattern_range=>($limited ? "limited" : "full"),
+  transport_range=>($limited ? "limited" : "full"),
+  max_bpc=>$bits,
+ });
+ die "Unable to resolve 3D patch signal-code policy\n" if(!$policy);
+ $PATCH_SIGNAL_CODE_POLICIES{$key}=$policy;
+ return $policy;
+}
+
 sub patch_code_for_percent {
  my ($pct,$signal_range,$max_bpc)=@_;
- $pct=clamp($pct,0,100);
- my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
- my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
- if($bits == 10) {
-  return $limited ? int(64 + ($pct/100)*876 + 0.5) : int(($pct/100)*1023 + 0.5);
- }
- return $limited ? int(16 + ($pct/100)*219 + 0.5) : int(($pct/100)*255 + 0.5);
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy($signal_range,$max_bpc),$pct);
+ die "Unable to convert 3D patch signal percent\n" if(!$result);
+ return $result->{code};
 }
 
 sub patch_code_for_8bit_value {
  my ($value,$signal_range,$max_bpc)=@_;
  $value=clamp($value,0,255);
- my $limited=(!defined($signal_range) || $signal_range eq "" || int($signal_range)==1) ? 1 : 0;
- my $bits=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 10 : 8;
- if($bits == 10) {
-  return $limited ? int(64 + ($value/255)*876 + 0.5) : int(($value/255)*1023 + 0.5);
- }
- return $limited ? int(16 + ($value/255)*219 + 0.5) : int($value + 0.5);
+ my $result=signal_percent_to_code(
+  patch_signal_code_policy($signal_range,$max_bpc),$value/255*100);
+ die "Unable to convert 3D patch byte\n" if(!$result);
+ return $result->{code};
 }
 
 sub patch_step {
@@ -617,19 +581,6 @@ sub build_hybrid_steps {
  return build_skeleton_steps($config);
 }
 
-sub reading_xyz {
- my ($reading)=@_;
- return undef if(ref($reading) ne "HASH");
- if(defined($reading->{"X"}) && defined($reading->{"Y"}) && defined($reading->{"Z"})) {
-  return [ $reading->{"X"}+0, $reading->{"Y"}+0, $reading->{"Z"}+0 ];
- }
- my $Y=defined($reading->{"luminance"}) ? ($reading->{"luminance"}+0) : (defined($reading->{"Y"}) ? ($reading->{"Y"}+0) : undef);
- my $x=defined($reading->{"x"}) ? ($reading->{"x"}+0) : undef;
- my $y=defined($reading->{"y"}) ? ($reading->{"y"}+0) : undef;
- return undef if(!defined($Y) || !defined($x) || !defined($y) || $y <= 0);
- return [ ($x/$y)*$Y, $Y, ((1-$x-$y)/$y)*$Y ];
-}
-
 sub vec_add { return [ $_[0][0]+$_[1][0], $_[0][1]+$_[1][1], $_[0][2]+$_[1][2] ]; }
 sub vec_sub { return [ $_[0][0]-$_[1][0], $_[0][1]-$_[1][1], $_[0][2]-$_[1][2] ]; }
 sub vec_scale { return [ $_[0][0]*$_[1], $_[0][1]*$_[1], $_[0][2]*$_[1] ]; }
@@ -643,81 +594,11 @@ sub matrix_from_columns {
  ];
 }
 
-sub matrix_mul_vec {
- my ($m,$v)=@_;
- return [
-  $m->[0][0]*$v->[0]+$m->[0][1]*$v->[1]+$m->[0][2]*$v->[2],
-  $m->[1][0]*$v->[0]+$m->[1][1]*$v->[1]+$m->[1][2]*$v->[2],
-  $m->[2][0]*$v->[0]+$m->[2][1]*$v->[1]+$m->[2][2]*$v->[2],
- ];
-}
-
-sub matrix_mul {
- my ($a,$b)=@_;
- my @m;
- for(my $r=0;$r<3;$r++) {
-  for(my $c=0;$c<3;$c++) {
-   $m[$r][$c]=$a->[$r][0]*$b->[0][$c]+$a->[$r][1]*$b->[1][$c]+$a->[$r][2]*$b->[2][$c];
-  }
- }
- return \@m;
-}
-
-sub matrix_inverse {
- my ($m)=@_;
- my $a=$m->[0][0]; my $b=$m->[0][1]; my $c=$m->[0][2];
- my $d=$m->[1][0]; my $e=$m->[1][1]; my $f=$m->[1][2];
- my $g=$m->[2][0]; my $h=$m->[2][1]; my $i=$m->[2][2];
- my $det=$a*($e*$i-$f*$h)-$b*($d*$i-$f*$g)+$c*($d*$h-$e*$g);
- return undef if(abs($det) < 1e-12);
- my $id=1/$det;
- return [
-  [ ($e*$i-$f*$h)*$id, ($c*$h-$b*$i)*$id, ($b*$f-$c*$e)*$id ],
-  [ ($f*$g-$d*$i)*$id, ($a*$i-$c*$g)*$id, ($c*$d-$a*$f)*$id ],
-  [ ($d*$h-$e*$g)*$id, ($b*$g-$a*$h)*$id, ($a*$e-$b*$d)*$id ],
- ];
-}
-
-my %rgb_to_xyz_matrix_cache;
-
-sub xy_to_xyz_unit {
- my ($x,$y)=@_;
- $y=1 if(!defined($y) || $y <= 0);
- return [ $x/$y, 1, (1-$x-$y)/$y ];
-}
-
-sub gamut_xy_definition {
- my ($target_gamut)=@_;
- $target_gamut=sanitize_target_gamut($target_gamut);
- return {
-  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.3127,0.3290],
- } if($target_gamut eq "p3d65");
- return {
-  red => [0.680,0.320], green => [0.265,0.690], blue => [0.150,0.060], white => [0.314,0.351],
- } if($target_gamut eq "p3dci");
- return {
-  red => [0.708,0.292], green => [0.170,0.797], blue => [0.131,0.046], white => [0.3127,0.3290],
- } if($target_gamut eq "bt2020");
- return {
-  red => [0.640,0.330], green => [0.300,0.600], blue => [0.150,0.060], white => [0.3127,0.3290],
- };
-}
-
 sub rgb_to_xyz_matrix_for_gamut {
  my ($target_gamut)=@_;
  $target_gamut=sanitize_target_gamut($target_gamut);
- return $rgb_to_xyz_matrix_cache{$target_gamut} if($rgb_to_xyz_matrix_cache{$target_gamut});
- my $def=gamut_xy_definition($target_gamut);
- my $r=xy_to_xyz_unit(@{$def->{"red"}});
- my $g=xy_to_xyz_unit(@{$def->{"green"}});
- my $b=xy_to_xyz_unit(@{$def->{"blue"}});
- my $w=xy_to_xyz_unit(@{$def->{"white"}});
- my $m=matrix_from_columns($r,$g,$b);
- my $inv=matrix_inverse($m);
- my $scale=$inv ? matrix_mul_vec($inv,$w) : [1,1,1];
- my $matrix=matrix_from_columns(vec_scale($r,$scale->[0]),vec_scale($g,$scale->[1]),vec_scale($b,$scale->[2]));
- $rgb_to_xyz_matrix_cache{$target_gamut}=$matrix;
- return $matrix;
+ return named_gamut_matrix($target_gamut,matrix_source=>"derived",
+  caller_contract=>"autocal3d");
 }
 
 sub rgb_to_xyz_for_gamut {
@@ -734,7 +615,7 @@ sub rgb_to_xyz_for_gamut {
 sub xyz_to_rgb_inverse_for_gamut {
  my ($target_gamut,$white_y)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
- my $inv=matrix_inverse(rgb_to_xyz_matrix_for_gamut($target_gamut));
+ my $inv=matrix3_inverse(rgb_to_xyz_matrix_for_gamut($target_gamut));
  return undef if(!$inv);
  foreach my $row (@{$inv}) {
   foreach my $v (@{$row}) {
@@ -746,60 +627,43 @@ sub xyz_to_rgb_inverse_for_gamut {
 
 sub st2084_pq_to_linear {
  my ($signal)=@_;
- $signal=clamp($signal,0,1);
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $n=$signal ** (1/$m2);
- my $den=$c2 - $c3*$n;
- return 0 if($den <= 0);
- my $l=($n - $c1)/$den;
- $l=0 if($l < 0);
- return clamp($l ** (1/$m1),0,1);
+ return pq_decode_normalized($signal);
+}
+
+my %_autocal3d_target_context_cache;
+sub autocal3d_target_context_for {
+ my ($gamma,$signal_mode)=@_;
+ $gamma=lc($gamma||"bt1886");
+ $gamma="2.4" if($gamma ne "bt1886" && $gamma ne "2.2"
+  && $gamma ne "2.4" && $gamma ne "srgb" && $gamma ne "st2084"
+  && $gamma ne "hlg");
+ $signal_mode=lc($signal_mode||(($gamma eq "st2084") ? "hdr10" : "sdr"));
+ $signal_mode="hlg" if($signal_mode ne "sdr" && $signal_mode ne "hdr10"
+  && $signal_mode ne "hlg" && $signal_mode ne "dv");
+ my $key=join("|",$gamma,$signal_mode);
+ $_autocal3d_target_context_cache{$key}=calibration_target_context({
+  caller_policy=>"autocal_3d",target_gamma=>$gamma,
+  signal_mode=>$signal_mode,sdr_signal_peak=>100,
+ }) if(!exists($_autocal3d_target_context_cache{$key}));
+ return $_autocal3d_target_context_cache{$key};
 }
 
 sub target_gamma_linear {
- my ($signal,$gamma)=@_;
- $signal=clamp($signal,0,1);
- $gamma=lc($gamma||"bt1886");
- return ($signal <= 0.04045) ? ($signal/12.92) : ((($signal+0.055)/1.055) ** 2.4) if($gamma eq "srgb");
- return st2084_pq_to_linear($signal) if($gamma eq "st2084");
- my $g=($gamma eq "2.2") ? 2.2 : 2.4;
- return $signal ** $g;
-}
-
-sub bt1886_luminance_y {
- my ($signal,$white_y,$black_y)=@_;
- $signal=clamp($signal,0,1);
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- $black_y=0 if($black_y >= $white_y);
- my $g=2.4;
- return (($white_y ** (1/$g) - $black_y ** (1/$g))*$signal + $black_y ** (1/$g)) ** $g;
-}
-
-sub bt1886_relative_luminance {
- my ($signal,$white_y,$black_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- $black_y=0 if(!defined($black_y) || $black_y < 0);
- my $range=$white_y-$black_y;
- return target_gamma_linear($signal,"2.4") if($range <= 1e-9);
- return clamp((bt1886_luminance_y($signal,$white_y,$black_y)-$black_y)/$range,0,1);
+ my ($signal,$gamma,$context)=@_;
+ $context=autocal3d_target_context_for($gamma) if(ref($context) ne "HASH");
+ return target_linear_for_context(
+  $context,$signal);
 }
 
 sub target_relative_luminance {
- my ($signal,$gamma,$white_y,$black_y)=@_;
- $gamma=lc($gamma||"bt1886");
- return bt1886_relative_luminance($signal,$white_y,$black_y) if($gamma eq "bt1886");
- return target_gamma_linear($signal,$gamma);
+ my ($signal,$gamma,$white_y,$black_y,$context)=@_;
+ $context=autocal3d_target_context_for($gamma) if(ref($context) ne "HASH");
+ return target_relative_luminance_for_context(
+  $context,$signal,$white_y,$black_y);
 }
 
-sub bt709_rgb_to_xyz { return rgb_to_xyz_for_gamut("bt709",@_); }
-
 sub target_rgb_to_xyz {
- my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut)=@_;
+ my ($r,$g,$b,$gamma,$white_y,$black,$target_gamut,$target_context)=@_;
  $white_y=100 if(!defined($white_y) || $white_y <= 0);
  $gamma=lc($gamma||"bt1886");
  $target_gamut=sanitize_target_gamut($target_gamut);
@@ -808,14 +672,14 @@ sub target_rgb_to_xyz {
   my $black_y=$black->[1] || 0;
   my $range=$white_y-$black_y;
   $range=$white_y if($range <= 1e-9);
-  my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y);
-  my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y);
-  my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y);
+  my $lr=target_relative_luminance($r,$gamma,$white_y,$black_y,$target_context);
+  my $lg=target_relative_luminance($g,$gamma,$white_y,$black_y,$target_context);
+  my $lb=target_relative_luminance($b,$gamma,$white_y,$black_y,$target_context);
   return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$range));
  }
- my $lr=target_gamma_linear($r,$gamma);
- my $lg=target_gamma_linear($g,$gamma);
- my $lb=target_gamma_linear($b,$gamma);
+ my $lr=target_gamma_linear($r,$gamma,$target_context);
+ my $lg=target_gamma_linear($g,$gamma,$target_context);
+ my $lb=target_gamma_linear($b,$gamma,$target_context);
  return rgb_to_xyz_for_gamut($target_gamut,$lr,$lg,$lb,$white_y);
 }
 
@@ -865,7 +729,11 @@ sub channel_inverse_level {
 sub matrix_for_level {
  my ($model,$level)=@_;
  my $black=$model->{"black"} || [0,0,0];
- my $lin=target_relative_luminance($level/100,$model->{"target_gamma"},$model->{"white_y"},$black->[1]||0);
+ $model->{"target_context"}=autocal3d_target_context_for(
+  $model->{"target_gamma"},$model->{"signal_mode"})
+  if(ref($model->{"target_context"}) ne "HASH");
+ my $lin=target_relative_luminance_for_context(
+  $model->{"target_context"},$level/100,$model->{"white_y"},$black->[1]||0);
  $lin=1 if($lin <= 1e-9);
  my @cols;
  foreach my $kind (qw(red green blue)) {
@@ -873,6 +741,113 @@ sub matrix_for_level {
   push @cols,vec_scale($v,1/$lin);
  }
  return matrix_from_columns($cols[0],$cols[1],$cols[2]);
+}
+
+# Bounded, request-wide solver state. Cube generation can visit 274,625 nodes,
+# but each coordinate has only one transfer value and each solve-seed request
+# has only three response curves plus one level matrix per possible maximum
+# index. Preparing those once keeps policy/setup work outside the hot loop and
+# mirrors src/lut_solver/pgen_lut_solve.c exactly.
+sub _prepare_lut_solver_state {
+ my ($model,$size)=@_;
+ $size=17 if(!defined($size) || $size < 2);
+ my $gamma=lc($model->{"target_gamma"}||"bt1886");
+ my $black=$model->{"black"} || [0,0,0];
+ my $node_white=$model->{"chromatic_white_y"} || $model->{"white_y"};
+ $node_white=100 if(!defined($node_white) || $node_white <= 0);
+ $model->{"target_context"}=autocal3d_target_context_for(
+  $model->{"target_gamma"},$model->{"signal_mode"})
+  if(ref($model->{"target_context"}) ne "HASH");
+ my $state={
+  size=>$size,
+  target_grid=>[],
+  seed_grid=>[],
+  channel_curves=>{},
+  level_inverse=>[],
+  counts=>{
+   transfer_evals=>0,channel_curves=>0,curve_points=>0,
+   level_matrices=>0,prepared_level_inversions=>0,
+  },
+ };
+ for my $i (0..$size-1) {
+  my $signal=$i/($size-1);
+  $state->{"counts"}{"transfer_evals"}++;
+  $state->{"target_grid"}[$i]=($gamma eq "bt1886")
+   ? target_relative_luminance_for_context(
+      $model->{"target_context"},$signal,$node_white,$black->[1]||0)
+   : target_linear_for_context($model->{"target_context"},$signal);
+ }
+ if($model->{"gamut_drive_matrix"}) {
+  for my $i (0..$size-1) {
+   $state->{"counts"}{"transfer_evals"}++;
+   $state->{"seed_grid"}[$i]=target_gamma_linear(
+    $i/($size-1),$model->{"target_gamma"},$model->{"target_context"});
+  }
+  return $state;
+ }
+
+ my @levels=ramp_levels();
+ foreach my $kind (qw(red green blue)) {
+  my $peak=$model->{"peak_y"}{$kind} || 1;
+  my @curve;
+  $state->{"counts"}{"channel_curves"}++;
+  foreach my $level (@levels) {
+   my $y=0;
+   $state->{"counts"}{"curve_points"}++;
+   if($level != 0) {
+    my $v=$model->{"contrib"}{$kind}{$level} || [0,0,0];
+    $y=($v->[1] || 0)/$peak;
+   }
+   $y=0 if($y < 0);
+   push @curve,$y;
+  }
+  $state->{"channel_curves"}{$kind}=\@curve;
+ }
+ for my $i (0..$size-1) {
+  my $level=100*$i/($size-1);
+  $state->{"counts"}{"transfer_evals"}++;
+  $state->{"counts"}{"level_matrices"}++;
+  my $matrix=matrix_for_level($model,$level);
+  $state->{"counts"}{"prepared_level_inversions"}++;
+  $state->{"level_inverse"}[$i]=matrix3_inverse($matrix) || $model->{"peak_inverse"};
+ }
+ return $state;
+}
+
+sub _prepared_channel_inverse_level {
+ my ($state,$kind,$linear)=@_;
+ $linear=clamp($linear,0,1);
+ my @levels=ramp_levels();
+ my $curve=$state->{"channel_curves"}{$kind};
+ for(my $i=1;$i<@levels;$i++) {
+  next if($linear > $curve->[$i]);
+  my $y0=$curve->[$i-1]; my $y1=$curve->[$i];
+  my $l0=$levels[$i-1]; my $l1=$levels[$i];
+  return $l1 if(abs($y1-$y0) < 1e-9);
+  return $l0 + (($linear-$y0)/($y1-$y0))*($l1-$l0);
+ }
+ return 100;
+}
+
+sub _prepared_target_xyz_for_node {
+ my ($model,$state,$ri,$gi,$bi)=@_;
+ my $size=$state->{"size"};
+ if($ri==$gi && $gi==$bi && ref($model->{"white_axis"}) eq "HASH") {
+  return interpolate_vec_by_level($model->{"white_axis"},($ri/($size-1))*100);
+ }
+ my $white_y=$model->{"chromatic_white_y"} || $model->{"white_y"};
+ $white_y=100 if(!defined($white_y) || $white_y <= 0);
+ my $gamma=lc($model->{"target_gamma"}||"bt1886");
+ my $grid=$state->{"target_grid"};
+ if($gamma eq "bt1886") {
+  my $black=$model->{"black"} || [0,0,0];
+  my $range=$white_y-($black->[1]||0);
+  $range=$white_y if($range <= 1e-9);
+  return vec_add($black,rgb_to_xyz_for_gamut($model->{"target_gamut"},
+   $grid->[$ri],$grid->[$gi],$grid->[$bi],$range));
+ }
+ return rgb_to_xyz_for_gamut($model->{"target_gamut"},
+  $grid->[$ri],$grid->[$gi],$grid->[$bi],$white_y);
 }
 
 sub target_xyz_for_node {
@@ -886,17 +861,12 @@ sub target_xyz_for_node {
  # Chromatic nodes reference the additive primary white (WRGB self-detection);
  # see model_from_readings. Falls back to white_y on additive displays.
  my $cw=$model->{"chromatic_white_y"} || $model->{"white_y"};
- return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,$model->{"black"},$model->{"target_gamut"});
-}
-
-sub srgb_to_linear {
- my $v=shift;
- $v=clamp($v,0,1);
- return ($v <= 0.04045) ? ($v/12.92) : ((($v+0.055)/1.055)**2.4);
+ return target_rgb_to_xyz($r,$g,$b,$model->{"target_gamma"},$cw,
+  $model->{"black"},$model->{"target_gamut"},$model->{"target_context"});
 }
 
 sub post_check_target_xyz {
-	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y)=@_;
+	 my ($step,$white_y,$target_gamma,$black,$target_gamut,$chromatic_white_y,$target_context)=@_;
 	 $white_y=100 if(!defined($white_y) || $white_y <= 0);
 	 # Chromatic patches score against the additive primary white (WRGB
 	 # self-detection); neutral patches keep white_y. Mirrors target_xyz_for_node
@@ -904,12 +874,15 @@ sub post_check_target_xyz {
 	 $chromatic_white_y=$white_y if(!defined($chromatic_white_y) || $chromatic_white_y <= 0);
 	 my $pick=sub { my ($r,$g,$b)=@_; return ($r==$g && $g==$b) ? $white_y : $chromatic_white_y; };
 	 $target_gamma||="bt1886";
+	 $target_context=autocal3d_target_context_for($target_gamma)
+	  if(ref($target_context) ne "HASH");
 	 $target_gamut=sanitize_target_gamut($target_gamut);
 	 my $gamma=lc($target_gamma);
 	 my ($r,$g,$b)=(0,0,0);
 	 if($gamma eq "bt1886" && (defined($step->{"signal_r_pct"}) || defined($step->{"signal_g_pct"}) || defined($step->{"signal_b_pct"}))) {
 	  my ($rr,$gg,$bb)=(($step->{"signal_r_pct"}||0)/100,($step->{"signal_g_pct"}||0)/100,($step->{"signal_b_pct"}||0)/100);
-	  return target_rgb_to_xyz($rr,$gg,$bb,$target_gamma,$pick->($rr,$gg,$bb),$black,$target_gamut);
+	  return target_rgb_to_xyz($rr,$gg,$bb,$target_gamma,
+	   $pick->($rr,$gg,$bb),$black,$target_gamut,$target_context);
 	 } elsif(defined($step->{"target_linear_r"}) && defined($step->{"target_linear_g"}) && defined($step->{"target_linear_b"})) {
 	  $r=clamp($step->{"target_linear_r"}+0,0,1);
 	  $g=clamp($step->{"target_linear_g"}+0,0,1);
@@ -926,91 +899,16 @@ sub post_check_target_xyz {
 	  $g=($step->{"signal_g_pct"}||0)/100;
 	  $b=($step->{"signal_b_pct"}||0)/100;
 	 }
- return target_rgb_to_xyz($r,$g,$b,$target_gamma,$pick->($r,$g,$b),$black,$target_gamut);
-}
-
-sub lab_f {
- my $t=shift;
- my $e=216/24389;
- my $k=24389/27;
- return ($t > $e) ? ($t ** (1/3)) : (($k*$t+16)/116);
-}
-
-sub xyz_to_lab {
- my ($xyz,$white_y)=@_;
- $white_y=100 if(!defined($white_y) || $white_y <= 0);
- my $xr=($xyz->[0]||0)/(0.95047*$white_y);
- my $yr=($xyz->[1]||0)/$white_y;
- my $zr=($xyz->[2]||0)/(1.08883*$white_y);
- my $fx=lab_f($xr);
- my $fy=lab_f($yr);
- my $fz=lab_f($zr);
- return [116*$fy-16,500*($fx-$fy),200*($fy-$fz)];
-}
-
-sub deg2rad { return $_[0]*4*atan2(1,1)/180; }
-sub rad2deg { return $_[0]*180/(4*atan2(1,1)); }
-
-sub delta_e_2000 {
- my ($xyz1,$xyz2,$white_y)=@_;
- my $lab1=xyz_to_lab($xyz1,$white_y);
- my $lab2=xyz_to_lab($xyz2,$white_y);
- my ($l1,$a1,$b1)=@{$lab1};
- my ($l2,$a2,$b2)=@{$lab2};
- my $c1=sqrt($a1*$a1+$b1*$b1);
- my $c2=sqrt($a2*$a2+$b2*$b2);
- my $avg_c=($c1+$c2)/2;
- my $avg_c7=$avg_c**7;
- my $g=0.5*(1-sqrt($avg_c7/($avg_c7+25**7)));
- my $a1p=(1+$g)*$a1;
- my $a2p=(1+$g)*$a2;
- my $c1p=sqrt($a1p*$a1p+$b1*$b1);
- my $c2p=sqrt($a2p*$a2p+$b2*$b2);
- my $h1p=($c1p==0) ? 0 : rad2deg(atan2($b1,$a1p));
- my $h2p=($c2p==0) ? 0 : rad2deg(atan2($b2,$a2p));
- $h1p+=360 if($h1p < 0);
- $h2p+=360 if($h2p < 0);
- my $dlp=$l2-$l1;
- my $dcp=$c2p-$c1p;
- my $dhp=0;
- if($c1p*$c2p != 0) {
-  my $dh=$h2p-$h1p;
-  if(abs($dh) <= 180) { $dhp=$dh; }
-  elsif($h2p <= $h1p) { $dhp=$dh+360; }
-  else { $dhp=$dh-360; }
- }
- my $dhp_term=2*sqrt($c1p*$c2p)*sin(deg2rad($dhp/2));
- my $avg_lp=($l1+$l2)/2;
- my $avg_cp=($c1p+$c2p)/2;
- my $avg_hp=0;
- if($c1p*$c2p == 0) {
-  $avg_hp=$h1p+$h2p;
- } elsif(abs($h1p-$h2p) <= 180) {
-  $avg_hp=($h1p+$h2p)/2;
- } elsif($h1p+$h2p < 360) {
-  $avg_hp=($h1p+$h2p+360)/2;
- } else {
-  $avg_hp=($h1p+$h2p-360)/2;
- }
- my $t=1 - 0.17*cos(deg2rad($avg_hp-30)) + 0.24*cos(deg2rad(2*$avg_hp)) + 0.32*cos(deg2rad(3*$avg_hp+6)) - 0.20*cos(deg2rad(4*$avg_hp-63));
- my $delta_theta=30*exp(-((($avg_hp-275)/25)**2));
- my $avg_cp7=$avg_cp**7;
- my $rc=2*sqrt($avg_cp7/($avg_cp7+25**7));
- my $sl=1+(0.015*(($avg_lp-50)**2))/sqrt(20+(($avg_lp-50)**2));
- my $sc=1+0.045*$avg_cp;
- my $sh=1+0.015*$avg_cp*$t;
- my $rt=-sin(deg2rad(2*$delta_theta))*$rc;
- my $v1=$dlp/$sl;
- my $v2=$dcp/$sc;
- my $v3=$dhp_term/$sh;
- return sqrt($v1*$v1+$v2*$v2+$v3*$v3+$rt*$v2*$v3);
+ return target_rgb_to_xyz($r,$g,$b,$target_gamma,
+  $pick->($r,$g,$b),$black,$target_gamut,$target_context);
 }
 
 sub summarize_post_check {
  my $readings=shift;
  $readings=[] if(ref($readings) ne "ARRAY");
  my @rows=grep { ref($_) eq "HASH" && defined($_->{"delta_e_2000"}) } @{$readings};
- return { count => 0 } if(!@rows);
+ my @unscored=grep { ref($_) eq "HASH" && !defined($_->{"delta_e_2000"}) } @{$readings};
+ return { count => 0, unscored_count => scalar(@unscored) } if(!@rows);
  my $sum=0;
  my $max=$rows[0];
  foreach my $row (@rows) {
@@ -1019,6 +917,7 @@ sub summarize_post_check {
  }
  return {
   count => scalar(@rows),
+  unscored_count => scalar(@unscored),
   mean_delta_e_2000 => $sum/@rows,
   max_delta_e_2000 => $max->{"delta_e_2000"},
   max_name => $max->{"name"}||"",
@@ -1026,17 +925,25 @@ sub summarize_post_check {
 }
 
 sub solve_output_rgb {
- my ($model,$target,$ri,$gi,$bi,$size)=@_;
+ my ($model,$target,$ri,$gi,$bi,$size,$prepared)=@_;
  my $black=$model->{"black"} || [0,0,0];
  my $delta=vec_sub($target,$black);
- my $node_peak=100*(($ri>$gi?$ri:$gi)>$bi ? ($ri>$gi?$ri:$gi) : $bi)/($size-1);
- my $m=matrix_for_level($model,$node_peak);
- my $inv=matrix_inverse($m) || $model->{"peak_inverse"};
- my $lin=matrix_mul_vec($inv,$delta);
+ my $max_index=(($ri>$gi?$ri:$gi)>$bi ? ($ri>$gi?$ri:$gi) : $bi);
+ my $inv;
+ if(ref($prepared) eq "HASH") {
+  $inv=$prepared->{"level_inverse"}[$max_index];
+ } else {
+  my $node_peak=100*$max_index/($size-1);
+  my $m=matrix_for_level($model,$node_peak);
+  $inv=matrix3_inverse($m) || $model->{"peak_inverse"};
+ }
+ my $lin=matrix3_vector_multiply($inv,$delta);
  my @pct;
  foreach my $idx (0..2) {
   my $kind=(qw(red green blue))[$idx];
-  push @pct,channel_inverse_level($model,$kind,clamp($lin->[$idx],0,1));
+  push @pct,(ref($prepared) eq "HASH")
+   ? _prepared_channel_inverse_level($prepared,$kind,clamp($lin->[$idx],0,1))
+   : channel_inverse_level($model,$kind,clamp($lin->[$idx],0,1));
  }
  my $max=$pct[0];
  $max=$pct[1] if($pct[1] > $max);
@@ -1069,10 +976,10 @@ sub apply_drift_correction {
  my $f=($read_time-$start_t)/($end_t-$start_t);
  my $current=drift_matrix_at($drift->{"start"},$drift->{"end"},$f);
  my $start=drift_matrix_at($drift->{"start"},$drift->{"start"},0);
- my $inv_current=matrix_inverse($current);
+ my $inv_current=matrix3_inverse($current);
  return $xyz if(!$inv_current);
  my $relative=vec_sub($xyz,$black);
- my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ my $corrected=matrix3_vector_multiply(matrix3_multiply($start,$inv_current),$relative);
  return vec_add($black,$corrected);
 }
 
@@ -1121,10 +1028,10 @@ sub apply_volume_drift_correction {
  return $xyz if(!$ref || !$a || !$b);
  my $current=drift_matrix_at(volume_drift_primary_hash($a),volume_drift_primary_hash($b),$f);
  my $start=drift_matrix_at($ref,$ref,0);
- my $inv_current=matrix_inverse($current);
+ my $inv_current=matrix3_inverse($current);
  return $xyz if(!$inv_current || !$start);
  my $relative=vec_sub($xyz,$black);
- my $corrected=matrix_mul_vec(matrix_mul($start,$inv_current),$relative);
+ my $corrected=matrix3_vector_multiply(matrix3_multiply($start,$inv_current),$relative);
  return vec_add($black,$corrected);
 }
 
@@ -1172,17 +1079,20 @@ sub apply_volume_drift_to_profile_readings {
  return { corrected=>0, anchors=>scalar(@{$anchors||[]}) } if(ref($anchors) ne "ARRAY" || @{$anchors} < 2);
  $black=[0,0,0] if(ref($black) ne "ARRAY");
  my $n=0;
+ my $skipped=0;
  foreach my $entry (@{$profile_readings}) {
   next if(ref($entry) ne "HASH");
   my $xyz=reading_xyz($entry->{"reading"});
-  next if(!$xyz);
+  if(!$xyz) { $skipped++; next; }
   my $t=$entry->{"read_time"}||time();
   my $c=apply_volume_drift_correction($xyz,$black,$t,$anchors);
   reading_set_xyz($entry->{"reading"},$c);
   $entry->{"drift_corrected"}=1;
   $n++;
  }
- return { corrected=>$n, anchors=>scalar(@{$anchors}) };
+ log_line("volume drift correction skipped $skipped unrepresentable readings")
+  if($skipped);
+ return { corrected=>$n, skipped=>$skipped, anchors=>scalar(@{$anchors}) };
 }
 
 sub model_from_readings {
@@ -1206,7 +1116,10 @@ sub model_from_readings {
  # (undersaturated, per the reference relay capture). P3 is the panel's achievable gamut and the
  # series SCORING target -- NOT the cube's solve domain.
  $target_gamut="bt2020" if(lc($signal_mode) eq "hdr10" && !$solve_only);
+ my $target_context=autocal3d_target_context_for($target_gamma,$signal_mode);
  my %by;
+ my %invalid;
+ my $invalid_count=0;
  foreach my $entry (@{$readings}) {
   next if(ref($entry) ne "HASH");
   my $step=$entry->{"step"} || {};
@@ -1215,10 +1128,23 @@ sub model_from_readings {
   my $level=defined($step->{"level"}) ? ($step->{"level"}+0) : undef;
   next if($kind eq "" || !defined($level));
   my $xyz=reading_xyz($reading);
-  next if(!$xyz);
+  if(!$xyz) {
+   $invalid{$step->{"phase"}||"profile"}{$kind}{$level}=1;
+   $invalid_count++;
+   next;
+  }
   my $phase=$step->{"phase"}||"profile";
   $by{$phase}{$kind}{$level}={ xyz=>$xyz, time=>($entry->{"read_time"}||$reading->{"timestamp"}||time()) };
  }
+ # Fail closed on the model anchors: a white/black profile reading that was
+ # measured but is not representable must abort the solve, not silently give
+ # way to the ideal fallback endpoints below.
+ die "Measured profile white reading is not representable - re-measure before solving\n"
+  if($invalid{"profile"}{"white"}{100});
+ die "Measured profile black reading is not representable - re-measure before solving\n"
+  if($invalid{"profile"}{"black"}{0});
+ log_line("model_from_readings: dropped $invalid_count unrepresentable readings")
+  if($invalid_count);
  my $black=$by{"profile"}{"black"}{0}{xyz} || [0,0,0];
  my $black_y=$black->[1] || 0;
  my $fallback_white=rgb_to_xyz_for_gamut($target_gamut,1,1,1,100);
@@ -1263,7 +1189,8 @@ sub model_from_readings {
    my $src=$by{"profile"}{$kind}{$level} || $by{"drift_start"}{$kind}{$level};
    if(!$src && $method eq "matrix") {
     my $peak=$by{"profile"}{$kind}{100};
-    my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
+    my $lin=target_relative_luminance_for_context(
+     $target_context,$level/100,$profile_white_y,$black_y);
     $contrib{$kind}{$level}=vec_scale(vec_sub($peak->{xyz},$black),$lin) if($peak);
     next;
    }
@@ -1276,7 +1203,8 @@ sub model_from_readings {
    $white_axis{$level}=apply_drift_correction($wsrc->{xyz},$black,$wsrc->{time},$drift);
   } elsif($method eq "matrix") {
    my $peak=$by{"profile"}{"white"}{100};
-   my $lin=target_relative_luminance($level/100,$target_gamma,$profile_white_y,$black_y);
+   my $lin=target_relative_luminance_for_context(
+    $target_context,$level/100,$profile_white_y,$black_y);
    $white_axis{$level}=vec_add($black,vec_scale(vec_sub($peak->{xyz},$black),$lin)) if($peak);
   } else {
    $white_axis{$level}=vec_add($black,vec_add($contrib{"red"}{$level}||[0,0,0],vec_add($contrib{"green"}{$level}||[0,0,0],$contrib{"blue"}{$level}||[0,0,0])));
@@ -1288,10 +1216,12 @@ sub model_from_readings {
   method=>$method,
   contrib=>\%contrib,
   target_gamma=>$target_gamma,
+  signal_mode=>$signal_mode,
+  target_context=>$target_context,
   black=>$black,
   white_y=>$white_y,
  },100);
- my $peak_inverse=matrix_inverse($peak_matrix);
+ my $peak_inverse=matrix3_inverse($peak_matrix);
  $peak_inverse ||= xyz_to_rgb_inverse_for_gamut($target_gamut,$white_y);
  $peak_inverse ||= [
   [ 3.2406/$white_y, -1.5372/$white_y, -0.4986/$white_y ],
@@ -1359,6 +1289,7 @@ sub model_from_readings {
   method => $method,
   signal_mode => $signal_mode,
   target_gamma => $target_gamma,
+  target_context => $target_context,
   signal_gamma => $signal_gamma,
   target_gamut => $target_gamut,
   black => $black,
@@ -1415,13 +1346,13 @@ sub native_rgb_to_xyz_matrix {
   return undef if(ref($xyz) ne "ARRAY");
   my $sum=($xyz->[0]||0)+($xyz->[1]||0)+($xyz->[2]||0);
   return undef if($sum <= 0);
-  push @cols,xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
+  push @cols,autocal_xy_to_xyz_unit($xyz->[0]/$sum,$xyz->[1]/$sum);
  }
  my $m=matrix_from_columns($cols[0],$cols[1],$cols[2]);
- my $inv=matrix_inverse($m);
+ my $inv=matrix3_inverse($m);
  return undef if(!$inv);
- my $w=xy_to_xyz_unit(0.3127,0.3290);
- my $scale=matrix_mul_vec($inv,$w);
+ my $w=autocal_xy_to_xyz_unit(0.3127,0.3290);
+ my $scale=matrix3_vector_multiply($inv,$w);
  return matrix_from_columns(vec_scale($cols[0],$scale->[0]),vec_scale($cols[1],$scale->[1]),vec_scale($cols[2],$scale->[2]));
 }
 
@@ -1449,27 +1380,29 @@ sub build_gamut_drive_matrix {
  }
  my $m_native=native_rgb_to_xyz_matrix($contrib);
  return undef if(!$m_native);
- my $inv_native=matrix_inverse($m_native);
+ my $inv_native=matrix3_inverse($m_native);
  return undef if(!$inv_native);
  my $m_target=rgb_to_xyz_matrix_for_gamut($target_gamut);
- return matrix_mul($inv_native,$m_target);
+ return matrix3_multiply($inv_native,$m_target);
 }
 
 sub gamut_matrix_output {
  # Node output via the white-preserving gamut matrix in the calibration gamma
  # domain. Returns per-channel drive PERCENT (0-100), matching solve_output_rgb.
- my ($model,$ri,$gi,$bi,$size)=@_;
+ my ($model,$ri,$gi,$bi,$size,$prepared)=@_;
  my $M=$model->{"gamut_drive_matrix"};
  my $gamma=$model->{"target_gamma"};
  # bt1886 maps to a pure 2.4 power in target_gamma_linear (black=0), so the
  # inverse must be 2.4 as well or the matrix domain would be asymmetric.
  my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
- my $lin=[
-  target_gamma_linear($ri/($size-1),$gamma),
-  target_gamma_linear($gi/($size-1),$gamma),
-  target_gamma_linear($bi/($size-1),$gamma),
- ];
- my $out=matrix_mul_vec($M,$lin);
+ my $lin=(ref($prepared) eq "HASH")
+  ? [ map { $prepared->{"seed_grid"}[$_] } ($ri,$gi,$bi) ]
+  : [
+   target_gamma_linear($ri/($size-1),$gamma,$model->{"target_context"}),
+   target_gamma_linear($gi/($size-1),$gamma,$model->{"target_context"}),
+   target_gamma_linear($bi/($size-1),$gamma,$model->{"target_context"}),
+  ];
+ my $out=matrix3_vector_multiply($M,$lin);
  # WRGB chromatic luminance compensation, MID-saturation weighted. The
  # panel's W sub-pixel over-brightens PARTIALLY saturated colors: the
  # neutral axis is DPG-calibrated (no error) and fully saturated colors
@@ -1540,19 +1473,6 @@ sub fm_additive {
  my $B=_fm_ramp_interp($fm->{"ramp"}[2],$db);
  my $bl=$fm->{"black"};
  return [ map { $R->[$_]+$G->[$_]+$B->[$_]-2*($bl->[$_]||0) } (0..2) ];
-}
-sub _fm_vol_axis {
- my ($vlv,$v)=@_;                 # -> (i0,t) over sorted vol levels
- my $n=scalar(@{$vlv});
- $v=0 if($v < 0); $v=1 if($v > 1);
- return (0,0) if($n < 2 || $v <= $vlv->[0]);
- for(my $i=0;$i<$n-1;$i++) {
-  if($v <= $vlv->[$i+1]) {
-   my $sp=$vlv->[$i+1]-$vlv->[$i];
-   return ($i, ($sp > 0) ? ($v-$vlv->[$i])/$sp : 0);
-  }
- }
- return ($n-2,1);
 }
 # Non-additivity correction at an arbitrary drive. Sparse grid trilinear used
 # to DROP missing cell corners without renormalising, which under-reported
@@ -1672,9 +1592,9 @@ sub fm_invert {
   my $improved=0;
   for(my $try=0;$try<6;$try++) {
    my $M=[ map { my $a=$_; [ map { my $bcol=$_; $JtJ[$a][$bcol] + ($a==$bcol ? $lambda*($JtJ[$a][$a]||1e-9) : 0) } (0..2) ] } (0..2) ];
-   my $inv=matrix_inverse($M);
+   my $inv=matrix3_inverse($M);
    if($inv) {
-    my $step=matrix_mul_vec($inv,\@Jte);
+    my $step=matrix3_vector_multiply($inv,\@Jte);
     # Cap single-step size so a singular Jacobian cannot leap to a desat corner.
     my $sn=sqrt(($step->[0]||0)**2+($step->[1]||0)**2+($step->[2]||0)**2);
     if($sn > 0.25) { my $s=0.25/$sn; $step=[ map { $_*$s } @{$step} ]; }
@@ -1698,19 +1618,21 @@ sub fm_invert {
 # different white than verification is how hybrid "won" offline on the wrong
 # target and lost on-panel sat sweeps.
 sub fm_target_for_node {
- my ($model,$ri,$gi,$bi,$size)=@_;
+ my ($model,$ri,$gi,$bi,$size,$prepared)=@_;
+ return _prepared_target_xyz_for_node($model,$prepared,$ri,$gi,$bi)
+  if(ref($prepared) eq "HASH");
  return target_xyz_for_node($model,$ri,$gi,$bi,$size);
 }
 sub node_output_pct {
- my ($model,$r,$g,$b,$size)=@_;
+ my ($model,$r,$g,$b,$size,$prepared)=@_;
  my $neutral=neutral_identity_output($model,$r,$g,$b,$size);
  return $neutral if($neutral);
  my $fm=$model->{"forward_model"};
  if(ref($fm) eq "HASH") {
-  my $target=fm_target_for_node($model,$r,$g,$b,$size);
+  my $target=fm_target_for_node($model,$r,$g,$b,$size,$prepared);
   my $seed=$model->{"gamut_drive_matrix"}
-   ? gamut_matrix_output($model,$r,$g,$b,$size)
-   : solve_output_rgb($model,$target,$r,$g,$b,$size);
+   ? gamut_matrix_output($model,$r,$g,$b,$size,$prepared)
+   : solve_output_rgb($model,$target,$r,$g,$b,$size,$prepared);
   my $inv=fm_invert($fm,$model,$target,$seed);
   my $den=$size-1; $den=1 if($den < 1);
   my @f=($r/$den,$g/$den,$b/$den);
@@ -1741,10 +1663,12 @@ sub node_output_pct {
  }
  my $out;
  if($model->{"gamut_drive_matrix"}) {
-  $out=gamut_matrix_output($model,$r,$g,$b,$size);
+  $out=gamut_matrix_output($model,$r,$g,$b,$size,$prepared);
  } else {
-  my $target=target_xyz_for_node($model,$r,$g,$b,$size);
-  $out=solve_output_rgb($model,$target,$r,$g,$b,$size);
+  my $target=(ref($prepared) eq "HASH")
+   ? _prepared_target_xyz_for_node($model,$prepared,$r,$g,$b)
+   : target_xyz_for_node($model,$r,$g,$b,$size);
+  $out=solve_output_rgb($model,$target,$r,$g,$b,$size,$prepared);
  }
  $out=apply_residual_correction($model,$out,$r,$g,$b,$size) if($model->{"residual_grid"});
  return $out;
@@ -1753,12 +1677,13 @@ sub node_output_pct {
 sub _generate_lut_cube_serial {
  my ($model,$size)=@_;
  $size ||= 17;
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my @nodes;
  my @u16;
  for(my $r=0;$r<$size;$r++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $b=0;$b<$size;$b++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
+    my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
     push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v } if(@nodes < 16 || ($r==$size-1 && $g==$size-1 && $b==$size-1));
@@ -1797,11 +1722,12 @@ sub neutral_identity_output {
 sub _generate_lut_lg_payload_serial {
  my ($model,$size)=@_;
  $size ||= 33;
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my @u16;
  for(my $b=0;$b<$size;$b++) {
   for(my $g=0;$g<$size;$g++) {
    for(my $r=0;$r<$size;$r++) {
-    my $out=node_output_pct($model,$r,$g,$b,$size);
+    my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
     my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
     push @u16,@v;
    }
@@ -1829,16 +1755,544 @@ sub _lut_gen_workers {
  return $n;
 }
 sub _lut_node_u16 {
- my ($model,$r,$g,$b,$size)=@_;
- my $out=node_output_pct($model,$r,$g,$b,$size);
+ my ($model,$r,$g,$b,$size,$prepared)=@_;
+ my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
  return map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+}
+
+# ---- Native batched node solve (src/lut_solver/pgen_lut_solve.c) ----
+# The measured-response inverse dominates cube generation, so the helper takes
+# the WHOLE per-node solve -- target, seed, LM inverse, blends and quantise --
+# for one cube per invocation and hands back the complete u16 vector. Splitting
+# out only fm_invert would mean shipping 215k doubles each way as text, which
+# costs more in sprintf than the whole-cube helper costs end to end.
+# The complete code-for-code parity sweep lives in
+# t/lg_3d_lut_native_parity.t. Keep measurements out of this source comment so
+# a faster model or a larger fixture cannot make it stale.
+#
+# It is an OPTIMISATION, never a source of truth. Every failure path logs and
+# returns undef so the caller runs the existing Perl cube: a slow cube is
+# always correct, a wrong cube never is. Set PGEN_AUTOCAL_LUT_NATIVE=0 to force
+# the Perl path (A/B comparison, parity verification).
+
+our $_lut_native_bad=0;
+# Why the last request build refused. The block comment above promises that
+# every failure path logs; a bare "return undef" deep in the request builder
+# cannot, so it records a reason here and _lut_native_u16 logs it. A silent
+# refusal costs tens of minutes of Perl solve with nothing to explain it.
+our $_lut_native_reason="";
+
+sub _lut_native_refuse {
+ $_lut_native_reason=$_[0];
+ return undef;
+}
+our $_lut_native_seq=0;
+our %_lut_native_helper_identity;
+our %_lut_native_failures;
+our @_lut_native_failure_order;
+our $_lut_native_success_key="";
+our $_lut_native_success_packed="";
+our $_lut_native_success_size=0;
+
+sub _lut_native_reset_run_cache {
+ %_lut_native_failures=();
+ @_lut_native_failure_order=();
+ $_lut_native_success_key="";
+ $_lut_native_success_packed="";
+ $_lut_native_success_size=0;
+}
+
+sub _lut_native_helper_build_id {
+ my ($path)=@_;
+ my @st=stat($path);
+ return "missing:$path" if(!@st);
+ my $stat_key=join(":",$path,$st[0],$st[1],$st[7],$st[9]);
+ return $_lut_native_helper_identity{$stat_key}
+  if(exists($_lut_native_helper_identity{$stat_key}));
+ my $digest="unreadable";
+ if(open(my $fh,"<",$path)) {
+  binmode($fh);
+  my $sha=Digest::SHA->new(256);
+  $sha->addfile($fh);
+  close($fh);
+  $digest=$sha->hexdigest;
+ }
+ %_lut_native_helper_identity=($stat_key=>join(":","sha256",$digest));
+ return $_lut_native_helper_identity{$stat_key};
+}
+
+sub _lut_native_request_key {
+ my ($bin,$request)=@_;
+ my $canonical=$request;
+ $canonical=~s/^order\s+\S+/order canonical/m;
+ return sha256_hex(join("\0","PGLUT3D-1",
+  _lut_native_helper_build_id($bin),$canonical));
+}
+
+sub _lut_native_remember_failure {
+ my ($key,$class,$message)=@_;
+ if(!exists($_lut_native_failures{$key})) {
+  push @_lut_native_failure_order,$key;
+  if(@_lut_native_failure_order > 32) {
+   my $old=shift @_lut_native_failure_order;
+   delete $_lut_native_failures{$old};
+  }
+ }
+ $_lut_native_failures{$key}={ class=>$class,message=>$message };
+ log_line($message);
+ return undef;
+}
+
+sub _lut_native_canonical_pack {
+ my ($codes,$size,$order)=@_;
+ return pack('S*',@{$codes}) if($order eq "r_slowest");
+ my $n2=$size*$size;
+ my $packed="";
+ for my $r (0..$size-1) {
+  for my $g (0..$size-1) {
+   for my $b (0..$size-1) {
+    my $off=($b*$n2+$g*$size+$r)*3;
+    $packed.=pack('S3',@{$codes}[$off..$off+2]);
+   }
+  }
+ }
+ return $packed;
+}
+
+sub _lut_native_codes_from_canonical {
+ my ($packed,$size,$order)=@_;
+ return [unpack('S*',$packed)] if($order eq "r_slowest");
+ my $n2=$size*$size;
+ my @codes;
+ for my $b (0..$size-1) {
+  for my $g (0..$size-1) {
+   for my $r (0..$size-1) {
+    my $off=($r*$n2+$g*$size+$b)*6;
+    push @codes,unpack('S3',substr($packed,$off,6));
+   }
+  }
+ }
+ return \@codes;
+}
+
+sub _lut_native_helper {
+ my $override=$ENV{"PGEN_AUTOCAL_LUT_NATIVE_BIN"};
+ return $override if(defined($override) && $override ne "");
+ my $dir=__FILE__;
+ $dir =~ s{/[^/]*$}{};
+ $dir="." if($dir eq "");
+ return "$dir/pgen_lut_solve" if(-x "$dir/pgen_lut_solve");
+ return "/usr/bin/pgen_lut_solve";
+}
+
+# Wall-clock ceiling for one helper invocation. Measured worst case on the
+# appliance is seconds even on the largest supported lattice. These ceilings
+# exist to bound a wedged child, not to police a slow one.
+sub _lut_native_timeout {
+ my ($size)=@_;
+ my $override=$ENV{"PGEN_AUTOCAL_LUT_NATIVE_TIMEOUT"};
+ return $override+0 if(defined($override) && $override =~ /^\d+$/ && $override+0 > 0);
+ $size=17 if(!defined($size) || $size < 2);
+ return 60 if($size <= 33);
+ return 600;
+}
+
+sub _lut_native_enabled {
+ my $v=$ENV{"PGEN_AUTOCAL_LUT_NATIVE"};
+ return 1 if(!defined($v) || $v eq "");
+ return 0 if($v =~ /^\s*(0|no|off|false)\s*$/i);
+ return 1;
+}
+
+# %.17g is round-trip exact for IEEE-754 binary64; Perl's default
+# stringification is %.15g and is not. Never interpolate a model double
+# into the request without going through here.
+sub _lut_native_num {
+ my ($v)=@_;
+ $v=0 if(!defined($v));
+ $v=$v+0;
+ if($v != $v || ($v != 0 && $v*0 != 0)) { $_lut_native_bad=1; return "0"; }
+ return sprintf("%.17g",$v);
+}
+
+sub _lut_native_vec {
+ my ($v)=@_;
+ return join(" ",map { _lut_native_num($v->[$_]) } (0..2));
+}
+
+sub _lut_native_matrix {
+ my ($m)=@_;
+ return undef if(ref($m) ne "ARRAY" || scalar(@{$m}) != 3);
+ my @out;
+ foreach my $row (@{$m}) {
+  return undef if(ref($row) ne "ARRAY" || scalar(@{$row}) != 3);
+  push @out,map { _lut_native_num($_) } @{$row};
+ }
+ return join(" ",@out);
+}
+
+sub _lut_native_request {
+ my ($model,$size,$order)=@_;
+ local $_lut_native_bad=0;
+ $_lut_native_reason="";
+ my $fm=$model->{"forward_model"};
+ return _lut_native_refuse("the model carries no forward model") if(ref($fm) ne "HASH");
+ my $ramp=$fm->{"ramp"};
+ return _lut_native_refuse("the forward-model ramp is not three channels")
+  if(ref($ramp) ne "ARRAY" || scalar(@{$ramp}) != 3);
+ my $gamma=$model->{"target_gamma"};
+ return _lut_native_refuse("the target gamma is not a helper-safe token")
+  if(!defined($gamma) || $gamma eq "" || $gamma =~ /\s/ || length($gamma) > 31);
+ my $black=(ref($model->{"black"}) eq "ARRAY") ? $model->{"black"} : [0,0,0];
+ my $fmb=(ref($fm->{"black"}) eq "ARRAY") ? $fm->{"black"} : [0,0,0];
+ # fm_additive and the target chain both read a black; the helper carries one.
+ for my $k (0..2) {
+  return _lut_native_refuse("the model black and the forward-model black differ")
+   if(($fmb->[$k]||0) != ($black->[$k]||0));
+ }
+ my $gm=_lut_native_matrix(rgb_to_xyz_matrix_for_gamut($model->{"target_gamut"}));
+ return _lut_native_refuse("the target gamut has no usable RGB-to-XYZ matrix")
+  if(!defined($gm));
+ my @req;
+ push @req,"PGLUT3D 1";
+ push @req,"size ".int($size);
+ push @req,"order ".$order;
+ push @req,"neutral_axis_identity ".($model->{"neutral_axis_identity"} ? 1 : 0);
+ push @req,"neutral_neighborhood ".($model->{"neutral_neighborhood_identity_enabled"} ? 1 : 0);
+ push @req,"target_gamma ".$gamma;
+ push @req,"target_gamut ".sanitize_target_gamut($model->{"target_gamut"});
+ push @req,"white_y "._lut_native_num($model->{"white_y"} || 0);
+ push @req,"chromatic_white_y "._lut_native_num($model->{"chromatic_white_y"} || 0);
+ # target_xyz_for_node picks the node white by Perl truthiness; resolve it here
+ # rather than making the helper reproduce the semantics of ||.
+ push @req,"node_white_y "._lut_native_num($model->{"chromatic_white_y"} || $model->{"white_y"} || 0);
+ push @req,"black "._lut_native_vec($black);
+ push @req,"gamut_rgb2xyz ".$gm;
+ if($model->{"gamut_drive_matrix"}) {
+  my $drive=_lut_native_matrix($model->{"gamut_drive_matrix"});
+  return _lut_native_refuse("the gamut drive matrix is not a finite 3x3")
+   if(!defined($drive));
+  push @req,"seed matrix";
+  push @req,"gamut_drive_matrix ".$drive;
+ } else {
+  my $peak=_lut_native_matrix($model->{"peak_inverse"});
+  return _lut_native_refuse("the peak-inverse matrix is not a finite 3x3")
+   if(!defined($peak));
+  return _lut_native_refuse("the solve seed has no peak_y or contrib tables")
+   if(ref($model->{"peak_y"}) ne "HASH" || ref($model->{"contrib"}) ne "HASH");
+  push @req,"seed solve";
+  push @req,"peak_inverse ".$peak;
+  push @req,"peak_y ".join(" ",map { _lut_native_num($model->{"peak_y"}{$_} || 1) } qw(red green blue));
+  my %ramp_level=map { ($_ => 1) } ramp_levels();
+  my @kinds=qw(red green blue);
+  for my $ch (0..2) {
+   my $h=$model->{"contrib"}{$kinds[$ch]};
+   return _lut_native_refuse("$kinds[$ch] has no contribution table")
+    if(ref($h) ne "HASH");
+   my @lv=sort { $a <=> $b } map { $_+0 } keys %{$h};
+   # channel_inverse_level looks contrib up by the exact ramp_levels() key, so
+   # a stray key would resolve differently in the helper's numeric match.
+   foreach my $l (@lv) {
+    return _lut_native_refuse("$kinds[$ch] carries contribution level $l, which is not a ramp level")
+     if(!$ramp_level{$l});
+   }
+   push @req,"contrib $ch ".scalar(@lv);
+   foreach my $l (@lv) {
+    my $v=$h->{$l};
+    return _lut_native_refuse("$kinds[$ch] contribution level $l is not a triple")
+     if(ref($v) ne "ARRAY");
+    push @req,_lut_native_num($l)." "._lut_native_vec($v);
+   }
+  }
+ }
+ push @req,sprintf("chroma_luma_comp %d %s",
+  ($model->{"wrgb_chroma_luma_comp"} ? 1 : 0),_lut_native_num($model->{"wrgb_chroma_luma_comp_strength"} || 0));
+ push @req,sprintf("mid_sat_blend %d %s",
+  ($model->{"wrgb_mid_sat_matrix_blend"} ? 1 : 0),_lut_native_num($model->{"wrgb_mid_sat_matrix_blend_strength"} || 0));
+ if(ref($model->{"white_axis"}) eq "HASH") {
+  my @lv=sort { $a <=> $b } map { $_+0 } keys %{$model->{"white_axis"}};
+  push @req,"white_axis ".scalar(@lv);
+  foreach my $l (@lv) {
+   my $v=$model->{"white_axis"}{$l};
+   return _lut_native_refuse("white-axis level $l is not a triple")
+    if(ref($v) ne "ARRAY");
+   push @req,_lut_native_num($l)." "._lut_native_vec($v);
+  }
+ }
+ for my $ch (0..2) {
+  my $arr=$ramp->[$ch];
+  return _lut_native_refuse("channel $ch has an empty measured ramp")
+   if(ref($arr) ne "ARRAY" || !@{$arr});
+  push @req,"ramp $ch ".scalar(@{$arr});
+  foreach my $s (@{$arr}) {
+   return _lut_native_refuse("a channel $ch ramp sample is malformed")
+    if(ref($s) ne "ARRAY" || ref($s->[1]) ne "ARRAY");
+   push @req,_lut_native_num($s->[0])." "._lut_native_vec($s->[1]);
+  }
+ }
+ # fm_nonadd_corr accumulates inverse-distance weights sequentially, so the
+ # sample ORDER is part of the result. Ship it as-is, skipping exactly the
+ # entries fm_nonadd_corr itself skips.
+ my $pts=(ref($fm->{"nonadd_samples"}) eq "ARRAY") ? $fm->{"nonadd_samples"} : [];
+ my @na;
+ foreach my $p (@{$pts}) {
+  next if(ref($p) ne "HASH");
+  my $f=$p->{"f"}; my $d=$p->{"d"};
+  next if(ref($f) ne "ARRAY" || ref($d) ne "ARRAY");
+  push @na,_lut_native_vec($f)." "._lut_native_vec($d);
+ }
+ push @req,"nonadd ".scalar(@na);
+ push @req,@na;
+ push @req,"end";
+ return _lut_native_refuse("a model value was NaN or infinite")
+  if($_lut_native_bad);
+ return join("\n",@req)."\n";
+}
+
+# Fixed 64-node sample the runtime self-check re-solves in Perl: the 8 cube
+# corners, the neutral diagonal and its 1-step neighbourhood, then further
+# nodes drawn from a constant-seed LCG so the set is the same on every run and
+# is not aligned to the profile lattice. Those draws are over the whole 0..n-1
+# range per axis, so they can and do land on faces, edges and corners as well
+# as inside the cube.
+#
+# The diagonal is not decoration. When greys are solved it carries the
+# smallest distance to an int() cut point anywhere in the cube: the exact
+# centre node lands on 50.0 percent -- 2048.0 code units, a cut point exactly
+# -- on at least one channel, with the other two within about 1e-12 of it
+# (measured 6.8e-13 and 9.1e-13 on the t/lut_model_fixture.pl display at both
+# 17^3 and 33^3; the exact figures are model-dependent). That makes it the
+# first place a libm or build-flag divergence would show, and it is why
+# pgen_lut_solve.c reports the quantise margin rather than refusing on it.
+sub _lut_native_check_nodes {
+ my ($size)=@_;
+ my $hi=$size-1;
+ my $mid=int($hi/2);
+ my $q1=int($hi/4);
+ my $q3=int(3*$hi/4);
+ my @pts=([0,0,0],[$hi,0,0],[0,$hi,0],[0,0,$hi],[$hi,$hi,0],[$hi,0,$hi],[0,$hi,$hi],[$hi,$hi,$hi],
+  [$mid,$mid,$mid],[$q1,$q1,$q1],[$q3,$q3,$q3],[1,1,1],[$hi-1,$hi-1,$hi-1],
+  [$mid,$mid,$mid+1],[$mid+1,$mid,$mid],[$q3,$q3-1,$q3]);
+ my $s=1;
+ while(scalar(@pts) < 64) {
+  my @n;
+  for my $k (0..2) { $s=($s*75+74) % 65537; push @n,$s % $size; }
+  push @pts,\@n;
+ }
+ foreach my $pt (@{\@pts}) { foreach my $v (@{$pt}) { $v=0 if($v < 0); $v=$hi if($v > $hi); } }
+ return \@pts;
+}
+
+sub _lut_native_verify {
+ my ($model,$size,$order,$u16)=@_;
+ my $prepared=_prepare_lut_solver_state($model,$size);
+ my $n2=$size*$size;
+ foreach my $pt (@{_lut_native_check_nodes($size)}) {
+  my ($r,$g,$b)=@{$pt};
+  my $off=(($order eq "r_slowest") ? ($r*$n2+$g*$size+$b) : ($b*$n2+$g*$size+$r))*3;
+  my @want=_lut_node_u16($model,$r,$g,$b,$size,$prepared);
+  for my $k (0..2) {
+   next if($u16->[$off+$k] == $want[$k]);
+   log_line(sprintf("lut native: self-check mismatch at node %d,%d,%d helper %d,%d,%d perl %d,%d,%d",
+    $r,$g,$b,$u16->[$off],$u16->[$off+1],$u16->[$off+2],$want[0],$want[1],$want[2]));
+   return 0;
+  }
+ }
+ return 1;
+}
+
+sub _lut_native_u16 {
+ my ($model,$size,$order)=@_;
+ if(!_lut_native_enabled()) {
+  log_line("lut native: disabled by PGEN_AUTOCAL_LUT_NATIVE, Perl cube");
+  return undef;
+ }
+ if(ref($model) ne "HASH" || ref($model->{"forward_model"}) ne "HASH") {
+  log_line("lut native: model is not expressible in the helper protocol (no forward model), Perl cube");
+  return undef;
+ }
+ # The helper implements only node_output_pct's forward-model branch. A
+ # residual grid would be silently ignored, so refuse the model outright.
+ if($model->{"residual_grid"}) {
+  log_line("lut native: residual-grid model, Perl cube");
+  return undef;
+ }
+ my $bin=_lut_native_helper();
+ if(!-x $bin) {
+  # An appliance deploy that rsyncs without permissions leaves the vendored
+  # binary readable but not executable, which would otherwise cost 90 s per
+  # cube in Perl on every run with nothing in the log to explain it.
+  if(!-f $bin) {
+   log_line("lut native: helper $bin is not installed, Perl cube");
+   return undef;
+  }
+  chmod(0755,$bin);
+  if(!-x $bin) {
+   log_line("lut native: $bin exists but is not executable ($!), Perl cube");
+   return undef;
+  }
+  log_line("lut native: restored the executable bit on $bin");
+ }
+ my $req;
+ my $built=eval { $req=_lut_native_request($model,$size,$order); 1 };
+ if(!$built) {
+  my $err=$@||"unknown"; $err =~ s/\s+$//;
+  log_line("lut native: request build died ($err), Perl cube");
+  return undef;
+ }
+ if(!defined($req)) {
+  my $why=($_lut_native_reason ne "") ? $_lut_native_reason : "unknown";
+  log_line("lut native: model not expressible in the helper protocol ($why), Perl cube");
+  return undef;
+ }
+ my $request_key=_lut_native_request_key($bin,$req);
+ if($_lut_native_success_key eq $request_key
+  && $_lut_native_success_size == $size
+  && $_lut_native_success_packed ne "") {
+  log_line("lut native: reused the verified packed solve for equivalent $order output");
+  return _lut_native_codes_from_canonical(
+   $_lut_native_success_packed,$size,$order);
+ }
+ if(exists($_lut_native_failures{$request_key})) {
+  my $failure=$_lut_native_failures{$request_key};
+  log_line("lut native: cached $failure->{class} failure for an equivalent request, Perl cube");
+  return undef;
+ }
+ # A run generates the export cube and the LG payload back to back, so pid and
+ # second are not enough to keep the two staging directories apart.
+ my $tmpdir=sprintf("/tmp/lutnat_%d_%d_%d",$$,time(),++$_lut_native_seq);
+ if(!mkdir($tmpdir,0700)) {
+  log_line("lut native: mkdir $tmpdir failed ($!), Perl cube");
+  return undef;
+ }
+ my $reqpath="$tmpdir/req.txt";
+ my $staged=0;
+ if(open(my $rq,'>',$reqpath)) {
+  print $rq $req;
+  $staged=1 if(close($rq));
+ }
+ if(!$staged) {
+  log_line("lut native: could not stage the request ($!), Perl cube");
+  unlink($reqpath); rmdir($tmpdir);
+  return undef;
+ }
+ # The request outgrows a 64K pipe buffer on a dense lattice, so it is handed
+ # in on fd 0 rather than written into the same child we are reading back.
+ my $pid=open(my $rd,"-|");
+ if(!defined($pid)) {
+  log_line("lut native: fork failed ($!), Perl cube");
+  unlink($reqpath); rmdir($tmpdir);
+  return undef;
+ }
+ if($pid == 0) {
+  open(STDIN,'<',$reqpath) or exit 127;
+  # Explicit indirect-object form: exec LIST would hand a helper path
+  # containing shell metacharacters to /bin/sh.
+  exec {$bin} $bin;
+  exit 127;
+ }
+ binmode($rd);
+ my $blob;
+ # The solve is bounded (18 LM iterations per node, a fixed node count), so a
+ # helper that has not finished in this long is wedged, not merely slow.
+ my $timed_out=0;
+ eval {
+  local $SIG{"ALRM"}=sub { $timed_out=1; die "timeout\n"; };
+  alarm(_lut_native_timeout($size));
+  local $/;
+  $blob=<$rd>;
+  alarm(0);
+  1;
+ } or do { alarm(0); };
+ if($timed_out) {
+  kill('KILL',$pid);
+  close($rd);
+  waitpid($pid,0);
+  unlink($reqpath); rmdir($tmpdir);
+  return _lut_native_remember_failure($request_key,"timeout",
+   "lut native: helper did not finish within "._lut_native_timeout($size)."s, killed it, Perl cube");
+ }
+ close($rd);
+ my $status=$?;
+ unlink($reqpath);
+ rmdir($tmpdir);
+ if($status != 0) {
+  my $why=defined($blob) ? (split(/\n/,$blob))[0] : "";
+  $why="" if(!defined($why));
+  # $status is the raw wait status: a child killed by a signal reports exit 0
+  # in the high byte, which read as a clean run.
+  my $how=($status & 127) ? sprintf("killed by signal %d",$status & 127)
+   : sprintf("exit %d",$status >> 8);
+  my $class=($why =~ /^PGLUT3D \d+ error /) ? "request_rejection" : "helper_process";
+  return _lut_native_remember_failure($request_key,$class,
+   sprintf("lut native: helper %s%s, Perl cube",$how,($why ne "") ? " ($why)" : ""));
+ }
+ my $want=3*$size*$size*$size;
+ my $hdr="PGLUT3D 1 ok\n";
+ if(!defined($blob) || index($blob,$hdr) != 0) {
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: bad response header, Perl cube");
+ }
+ my $nl=index($blob,"\n",length($hdr));
+ my $count=($nl > 0) ? substr($blob,length($hdr),$nl-length($hdr)) : "";
+ if($count !~ /\Acodes (\d+)\z/ || $1+0 != $want) {
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response declared '$count', wanted $want codes, Perl cube");
+ }
+ my $tail=substr($blob,$nl+1);
+ if(substr($tail,-4) ne "end\n") {
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response was truncated, Perl cube");
+ }
+ substr($tail,-4)="";
+ if($tail =~ /[^0-9 \n]/) {
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response carried a non-numeric token, Perl cube");
+ }
+ my @u16=map { $_+0 } split(' ',$tail);
+ if(scalar(@u16) != $want) {
+  return _lut_native_remember_failure($request_key,"malformed_response",
+   "lut native: response had ".scalar(@u16)." codes, wanted $want, Perl cube");
+ }
+ foreach my $v (@u16) {
+  next if($v <= 4095);
+  return _lut_native_remember_failure($request_key,"parity_range",
+   "lut native: response carried an out-of-range code $v, Perl cube");
+ }
+ # Bounded, logged, self-healing: re-solve a fixed 64-node sample in Perl and
+ # discard the whole helper cube on any disagreement. This will not catch a
+ # single isolated flip, but it catches every systematic divergence -- wrong
+ # libm, wrong build flags, a skewed deploy, a protocol field lost in a
+ # refactor -- which is the failure mode that actually ships.
+ if(!_lut_native_verify($model,$size,$order,\@u16)) {
+  return _lut_native_remember_failure($request_key,"parity_range",
+   "lut native: self-check failed, discarding the helper cube");
+ }
+ $_lut_native_success_key=$request_key;
+ $_lut_native_success_size=$size;
+ $_lut_native_success_packed=_lut_native_canonical_pack(\@u16,$size,$order);
+ return \@u16;
 }
 
 sub generate_lut_cube {
  my ($model,$size)=@_;
  $size ||= 17;
+ my $native=_lut_native_u16($model,$size,"r_slowest");
+ if($native) {
+  log_line("lut generate: cube ${size}^3 via native helper");
+  my $prepared=_prepare_lut_solver_state($model,$size);
+  my @nodes;
+  for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
+   my ($r,$g,$b)=@{$pt};
+   my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
+   my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
+   push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
+  }
+  return ($native,\@nodes);
+ }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_cube_serial($model,$size) if($workers <= 1);
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my $tmpdir=sprintf("/tmp/lutcube_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial cube");
@@ -1856,7 +2310,7 @@ sub generate_lut_cube {
    for(my $r=$r0;$r<$r1;$r++) {
     for(my $g=0;$g<$size;$g++) {
      for(my $b=0;$b<$size;$b++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size,$prepared);
      }
     }
    }
@@ -1892,7 +2346,7 @@ sub generate_lut_cube {
  my @nodes;
  for my $pt ([0,0,0],[$size-1,0,0],[0,$size-1,0],[0,0,$size-1],[$size-1,$size-1,$size-1]) {
   my ($r,$g,$b)=@{$pt};
-  my $out=node_output_pct($model,$r,$g,$b,$size);
+  my $out=node_output_pct($model,$r,$g,$b,$size,$prepared);
   my @v=map { int(clamp($_,0,100)*4095/100+0.5) } @{$out};
   push @nodes,{ in=>[$r,$g,$b], out_pct=>$out, out_12bit=>\@v };
  }
@@ -1902,8 +2356,14 @@ sub generate_lut_cube {
 sub generate_lut_lg_payload {
  my ($model,$size)=@_;
  $size ||= 33;
+ my $native=_lut_native_u16($model,$size,"r_fastest");
+ if($native) {
+  log_line("lut generate: payload ${size}^3 via native helper");
+  return $native;
+ }
  my $workers=_lut_gen_workers($size);
  return _generate_lut_lg_payload_serial($model,$size) if($workers <= 1);
+ my $prepared=_prepare_lut_solver_state($model,$size);
  my $tmpdir=sprintf("/tmp/lutpay_%d_%d", $$, time());
  if(!mkdir($tmpdir,0700)) {
   log_line("lut generate: mkdir $tmpdir failed ($!), serial payload");
@@ -1921,7 +2381,7 @@ sub generate_lut_lg_payload {
    for(my $b=$b0;$b<$b1;$b++) {
     for(my $g=0;$g<$size;$g++) {
      for(my $r=0;$r<$size;$r++) {
-      push @u16,_lut_node_u16($model,$r,$g,$b,$size);
+      push @u16,_lut_node_u16($model,$r,$g,$b,$size,$prepared);
      }
     }
    }
@@ -1971,14 +2431,18 @@ sub _trl_slope {
  # Numerical d(relative luminance)/d(signal) of the target curve at a signal
  # fraction; floored so near-black residuals cannot explode into huge
  # signal-domain moves (they are noise-dominated anyway).
- my ($f,$gamma,$white_y,$black_y)=@_;
+ my ($f,$gamma,$white_y,$black_y,$target_context)=@_;
  my $h=0.01;
  my $lo=$f-$h; $lo=0 if($lo < 0);
  my $hi=$f+$h; $hi=1 if($hi > 1);
  my $span=$hi-$lo;
  return 0.05 if($span <= 0);
- my $slope=(target_relative_luminance($hi,$gamma,$white_y,$black_y)
-           -target_relative_luminance($lo,$gamma,$white_y,$black_y))/$span;
+ $target_context=autocal3d_target_context_for($gamma)
+  if(ref($target_context) ne "HASH");
+ my $slope=(target_relative_luminance_for_context(
+             $target_context,$hi,$white_y,$black_y)
+           -target_relative_luminance_for_context(
+             $target_context,$lo,$white_y,$black_y))/$span;
  return ($slope > 0.05) ? $slope : 0.05;
 }
 
@@ -1998,11 +2462,11 @@ sub baseline_drive_pct {
   my $gexp=($gamma eq "2.4" || lc($gamma||"") eq "bt1886") ? 2.4 : 2.2;
   # Match gamut_matrix_output linearisation (power / srgb / pq via target_gamma_linear).
   my $lin=[
-   target_gamma_linear($fr,$gamma),
-   target_gamma_linear($fg,$gamma),
-   target_gamma_linear($fb,$gamma),
+   target_gamma_linear($fr,$gamma,$model->{"target_context"}),
+   target_gamma_linear($fg,$gamma,$model->{"target_context"}),
+   target_gamma_linear($fb,$gamma,$model->{"target_context"}),
   ];
-  my $out=matrix_mul_vec($M,$lin);
+  my $out=matrix3_vector_multiply($M,$lin);
   return [ map { (clamp($_,0,1) ** (1.0/$gexp)) * 100 } @{$out} ];
  }
  return [ $fr*100, $fg*100, $fb*100 ];
@@ -2101,7 +2565,8 @@ sub build_residual_grid {
   if(abs($fr-$fg) < 0.001 && abs($fg-$fb) < 0.001 && ref($model->{"white_axis"}) eq "HASH") {
    $xyz_t=interpolate_vec_by_level($model->{"white_axis"},$fr*100);
   } else {
-   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,$model->{"target_gamut"});
+   $xyz_t=target_rgb_to_xyz($fr,$fg,$fb,$gamma,$cw,$black,
+    $model->{"target_gamut"},$model->{"target_context"});
   }
   if(ref($xyz_t) ne "ARRAY") { $skipped++; next; }
   my $delta=vec_sub($xyz_t,$xyz_m);
@@ -2118,14 +2583,15 @@ sub build_residual_grid {
    @ideal_pct=map { clamp($ideal->[$_],0,100) } (0..2);
    $fm_nodes++;
   } else {
-   my $dlin=matrix_mul_vec($peak_inverse,$delta);
+   my $dlin=matrix3_vector_multiply($peak_inverse,$delta);
    my $node_y=($xyz_m->[1]||0); $node_y=1 if($node_y < 1);
    my $floor=($noise_floor > 0) ? $noise_floor*sqrt($white_y/$node_y) : 0;
    for(my $ch=0;$ch<3;$ch++) {
     my $dsig=0;
     if(!$is_mono || $ch == $dom_ch) {
      my $sf=($is_mono && $dom_ch >= 0) ? $f[$dom_ch] : $f[$ch];
-     my $slope=_trl_slope($sf,$gamma,$white_y,$black_y);
+     my $slope=_trl_slope(
+      $sf,$gamma,$white_y,$black_y,$model->{"target_context"});
      $dsig=$dlin->[$ch]/$slope;
      if($is_mono && $dom_ch == $ch) {
       my $peak_y=0;
@@ -2287,18 +2753,31 @@ sub run_solve_only {
  my $lattice=$config->{"lattice_readings"};
  $lattice=[] if(ref($lattice) ne "ARRAY");
  my %corner_kind=( "1,1,1"=>"white", "1,0,0"=>"red", "0,1,0"=>"green", "0,0,1"=>"blue", "0,0,0"=>"black" );
- my %corners; my @nodes;
+ my %corners; my @nodes; my @unusable;
  foreach my $rd (@{$lattice}) {
   next if(ref($rd) ne "HASH");
   my $name=$rd->{"name"}||"";
   next unless($name =~ m{^([0-9.]+)/([0-9.]+)/([0-9.]+)$});
   my ($fr,$fg,$fb)=($1/100,$2/100,$3/100);
   my $xyz=reading_xyz($rd);
-  next if(!$xyz && $fr+$fg+$fb > 0.001);
-  $xyz ||= [0,0,0];
+  if(!$xyz) {
+   # A named node whose reading is missing or not representable (for
+   # example a no_reading timeout placeholder) must refuse the solve, not
+   # silently thin the lattice or fabricate an exact-zero black.
+   push @unusable,$name;
+   next;
+  }
   my $ck=join(",",map { $_ >= 0.999 ? 1 : ($_ <= 0.001 ? 0 : "x") } ($fr,$fg,$fb));
   $corners{$corner_kind{$ck}}=$xyz if(exists $corner_kind{$ck});
   push @nodes,{ fr=>$fr, fg=>$fg, fb=>$fb, xyz=>$xyz };
+ }
+ if(@unusable) {
+  my $shown=join(", ",@unusable[0..($#unusable > 4 ? 4 : $#unusable)]);
+  $shown.=" and ".(scalar(@unusable)-5)." more" if(scalar(@unusable) > 5);
+  $state->{"status"}="error";
+  $state->{"message"}=scalar(@unusable)." lattice readings are not usable ($shown) - re-measure the lattice";
+  write_state($state);
+  exit 1;
  }
  foreach my $need (qw(white red green blue)) {
   if(!$corners{$need}) {
@@ -2462,11 +2941,14 @@ sub build_imported_lut {
  $state->{"message"}="Parsing ".$path;
  write_state($state);
  my $cube=parse_cube_file($path);
+ my $target_context=autocal3d_target_context_for(
+  $config->{"target_gamma"},$config->{"signal_mode"});
  my $model={
   method => "imported",
   signal_mode => $config->{"signal_mode"}||"sdr",
   target_gamut => $config->{"target_gamut"}||"bt709",
   target_gamma => $config->{"target_gamma"}||"",
+  target_context => $target_context,
   signal_gamma => $config->{"target_gamma"}||"",
   neutral_axis_source => "imported",
   imported_cube_path => $path,
@@ -2626,15 +3108,6 @@ sub read_timeout_for_step {
  return 120;
 }
 
-sub autocal3d_low_light_number {
- my ($value)=@_;
- return undef if(!defined($value) || ref($value));
- return undef if("$value" !~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i);
- my $number=$value+0;
- return undef if($number != $number);
- return $number;
-}
-
 # Shared profile target math. Fixture reads and Low Light Handler selection use
 # this same path so there is no second transfer-function implementation.
 sub profile_target_xyz_for_step {
@@ -2644,12 +3117,17 @@ sub profile_target_xyz_for_step {
  $black_y=0 if(!defined($black_y) || $black_y < 0 || $black_y >= $white_y);
  my $range_y=$white_y-$black_y;
  my $target_gamut=$config->{"target_gamut"}||"bt709";
+ my $target_gamma=$config->{"target_gamma"}||"bt1886";
+ my $target_context=autocal3d_target_context_for(
+  $target_gamma,$config->{"signal_mode"});
  my $black=rgb_to_xyz_for_gamut($target_gamut,1,1,1,$black_y);
  my $level=($step->{"level"}||0)/100;
- my $gamma=target_relative_luminance($level,$config->{"target_gamma"}||"bt1886",$white_y,$black_y);
+ my $gamma=target_relative_luminance_for_context(
+  $target_context,$level,$white_y,$black_y);
  my $kind=$step->{"kind"}||"black";
  if($kind eq "node") {
-  my $chan=sub { target_relative_luminance(clamp(($_[0]||0)/100,0,1),$config->{"target_gamma"}||"bt1886",$white_y,$black_y) };
+  my $chan=sub { target_relative_luminance_for_context(
+   $target_context,clamp(($_[0]||0)/100,0,1),$white_y,$black_y) };
   return vec_add($black,rgb_to_xyz_for_gamut($target_gamut,
    $chan->($step->{"signal_r_pct"}),$chan->($step->{"signal_g_pct"}),$chan->($step->{"signal_b_pct"}),$range_y));
  }
@@ -2665,7 +3143,7 @@ sub autocal3d_expected_target_y_for_low_light {
  return undef if(ref($config) ne "HASH" || ref($step) ne "HASH");
  foreach my $key (qw(target_Y dv_absolute_target_y custom_target_nits)) {
   next if(!exists($step->{$key}));
-  my $direct=autocal3d_low_light_number($step->{$key});
+  my $direct=bounded_number($step->{$key},-10_000_000,10_000_000);
   return (defined($direct) && $direct >= 0) ? $direct : undef;
  }
  my $black_y=0;
@@ -2674,7 +3152,7 @@ sub autocal3d_expected_target_y_for_low_light {
   (!$config->{"target_black_use_measured"} ? $config->{"target_black_luminance"} : undef),
   $config->{"fixture_black_y"}
  ) {
-  my $number=autocal3d_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number >= 0) { $black_y=$number; last; }
  }
  return $black_y if(($step->{"kind"}||"") eq "black");
@@ -2684,12 +3162,13 @@ sub autocal3d_expected_target_y_for_low_light {
   (!$config->{"target_white_use_measured"} ? $config->{"target_white_luminance"} : undef),
   $config->{"fixture_white_y"}
  ) {
-  my $number=autocal3d_low_light_number($candidate);
+  my $number=bounded_number($candidate,-10_000_000,10_000_000);
   if(defined($number) && $number > 0) { $white_y=$number; last; }
  }
  return undef if(!defined($white_y));
  my $target=profile_target_xyz_for_step($step,$config,$white_y,$black_y);
- my $target_y=(ref($target) eq "ARRAY") ? autocal3d_low_light_number($target->[1]) : undef;
+ my $target_y=(ref($target) eq "ARRAY")
+  ? bounded_number($target->[1],-10_000_000,10_000_000) : undef;
  return (defined($target_y) && $target_y >= 0) ? $target_y : undef;
 }
 
@@ -2698,11 +3177,20 @@ sub autocal3d_low_light_mode_for_step {
  return "off" if(ref($config) ne "HASH" || ref($config->{"low_light"}) ne "HASH" || !$config->{"low_light"}{"enabled"});
  my $mode=lc($config->{"low_light"}{"mode"}||"off");
  return "off" if($mode ne "a" && $mode ne "aa" && $mode ne "aaa");
- my $trigger=autocal3d_low_light_number($config->{"low_light"}{"trigger"});
+ my $trigger=bounded_number($config->{"low_light"}{"trigger"},0,10_000_000);
  return "off" if(!defined($trigger) || $trigger <= 0);
  my $expected_y=autocal3d_expected_target_y_for_low_light($config,$step);
  return "off" if(!defined($expected_y) || $expected_y < 0);
  return ($expected_y < $trigger) ? $mode : "off";
+}
+
+sub autocal3d_requested_sample_count {
+ my ($config,$active_mode)=@_;
+ return 1 if(($active_mode||"off") eq "off");
+ return 1 if(ref($config) ne "HASH");
+ my $count=$config->{"low_light_requested_sample_count"};
+ return 1 if(!defined($count) || $count!~/^(?:1|2|3|5)$/);
+ return int($count);
 }
 
 sub read_request_id {
@@ -2744,22 +3232,6 @@ sub _pi_sanitize_count {
  return $raw;
 }
 
-sub _patch_insert_code_for_level {
- # Fallback when the webui did not inject precomputed code/input_max
- # pairs (the 3D worker config does not carry them). HDR10 codes must
- # be PQ-encoded so the configured level maps to a visible luminance.
- my ($level_pct,$signal_mode,$max_luma)=@_;
- $level_pct=0 if($level_pct+0 < 0);
- $level_pct=100 if($level_pct+0 > 100);
- $max_luma//=1000;
- if(defined($signal_mode) && lc($signal_mode) eq "hdr10") {
-  my $target_nits=($level_pct/100.0)*$max_luma;
-  my $pq_signal=pq_encode_normalized($target_nits);
-  return int($pq_signal*255.0 + 0.5);
- }
- return int(($level_pct/100.0)*255.0 + 0.5);
-}
-
 sub _patch_insert_resolve {
  my ($config,$kind,$level)=@_;
  my $code_key="patch_insert_".$kind."_code";
@@ -2769,7 +3241,25 @@ sub _patch_insert_resolve {
   $im=255 if($im <= 0);
   return (int($config->{$code_key}+0),$im);
  }
- return (_patch_insert_code_for_level($level,$config->{"signal_mode"},$config->{"max_luma"}),255);
+ my $mode=lc($config->{"signal_mode"}||"sdr");
+ my %input=(signal_mode=>$mode,pattern_range=>"full",
+  transport_range=>"full",max_bpc=>8);
+ if($mode eq "hdr10") {
+  $input{pq_luminance_percent}=1;
+  $input{signal_peak_nits}=($config->{"max_luma"}||1000)+0;
+ } elsif($mode eq "dv") {
+  $input{pattern_range}="limited";
+  $input{transport_range}="limited";
+  $input{dv_series}=1;
+  $input{dv_series_code_bits}=12;
+  $input{dv_series_full_range}=0;
+  $input{dv_interface}=$config->{"dv_interface"}||"standard";
+ }
+ my $policy=signal_code_policy(\%input);
+ die "Unable to resolve 3D insertion signal-code policy\n" if(!$policy);
+ my $result=signal_percent_to_code($policy,$level);
+ die "Unable to convert 3D insertion signal percent\n" if(!$result);
+ return ($result->{code},$result->{input_max});
 }
 
 # Blank the panel after profiling finishes and before the (often multi-minute)
@@ -2925,19 +3415,42 @@ sub read_step_once {
  $read_timeout=10 if($read_timeout < 10);
  $read_timeout=300 if($read_timeout > 300);
  $payload->{"read_timeout"}=int($read_timeout);
- # Keep the wrapper/session at off and always send the effective child mode,
- # including off, for the target Y of this exact step.
+ # Average repeated physical readings below the target-Y trigger without
+ # changing or reopening the Argyll process.
  $payload->{"low_light_session"}={ mode => "off", enabled => json_false() };
- my $active_mode=autocal3d_low_light_mode_for_step($config,$step);
- $payload->{"low_light"}={ mode => $active_mode, enabled => ($active_mode ne "off") ? json_true() : json_false() };
+ my $active_low_light=autocal3d_low_light_mode_for_step($config,$step);
+ my $read_sample_count=autocal3d_requested_sample_count($config,$active_low_light);
+ $payload->{"low_light"}={
+  mode => $active_low_light,
+  enabled => ($active_low_light ne "off") ? json_true() : json_false(),
+  requested_sample_count => $read_sample_count,
+ };
  my $started=time();
  my $start=api_json("POST","/api/meter/read",$payload,55);
  return (undef,$start->{"message"}||"Unable to start meter read") if(($start->{"status"}||"") eq "error");
- my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"});
+ # The session extends its per-sample budget by 30s after one communication
+ # retry and reuses the extended value for every later sample, so a
+ # multi-sample set legitimately outlives a bare per-sample multiple. The
+ # grace stops this worker retiring a session ~50s before an aaa set that
+ # took one comm retry would have returned.
+ my $deadline=time()+read_timeout_for_step($step,$payload->{"read_timeout"})*$read_sample_count+($read_sample_count > 1 ? 45 : 0);
+ my $poll_transport_failures=0;
  while(time() < $deadline) {
   return (undef,"cancelled") if(cancelled());
   my $result=api_json("GET","/api/meter/read/result",undef,10);
   my $status=$result->{"status"}||"";
+  my $poll_message=$result->{"message"}||"";
+  # One status-poll transport failure does not cancel the already-submitted
+  # physical read. Re-poll the same request once; a second consecutive failure
+  # is returned so the caller can retire the ambiguous session.
+  if($status eq "error" && $poll_message=~/^Web UI API (?:timed out|read failed|is unavailable)/i) {
+   $poll_transport_failures++;
+   log_line("Meter result poll transport error; keeping request_id=$request_id in flight: $poll_message");
+   return (undef,$poll_message) if($poll_transport_failures > 1);
+   sleep(0.25);
+   next;
+  }
+  $poll_transport_failures=0;
   if($status eq "ok" && ref($result->{"readings"}) eq "ARRAY" && @{$result->{"readings"}}) {
    next if(($result->{"request_id"}||"") ne "" && ($result->{"request_id"}||"") ne $request_id);
    my $reading=$result->{"readings"}[0];
@@ -2969,14 +3482,11 @@ sub fixture_reading_for_step {
  return { X=>$xyz->[0], Y=>$xyz->[1], Z=>$xyz->[2], x=>0, y=>0, luminance=>$xyz->[1], timestamp=>time() };
 }
 
-# Consecutive-transient-failure counter for the meter session (mirrors the
-# greyscale worker's logic). A single read timeout is usually a poll hiccup
-# that clears by re-reading on the EXISTING spotread session. Tearing the
-# session down (/api/meter/session/stop) forces a fresh spotread to reopen +
-# reclaim the i1Display3 USB interface, and that reopen races the kernel/usbhid
-# state ("did not claim interface 0 before use") -> kernel device reset -> meter
-# offline -> WebUI drops. So only tear down after repeated consecutive transient
-# failures, not the first one. Reset to 0 on any successful read.
+# Consecutive-transient-failure counter for errors that do not prove a logical
+# read is still in flight (mirrors the greyscale worker). Poll transport errors
+# are handled inside read_step_once, while incomplete/ambiguous reads are
+# retired immediately below. Other one-off errors keep the child to avoid an
+# unnecessary USB reopen and its kernel interface-claim race.
 my $_meter_session_consecutive_transient_failures=0;
 my $_METER_SESSION_TEARDOWN_THRESHOLD=2;
 
@@ -2988,6 +3498,21 @@ sub maybe_reset_meter_session_after_read_error {
  my ($error)=@_;
  $error="" if(!defined($error));
  $error=~s/[\r\n]+/ /g;
+ # Individual GET poll transport failures are absorbed inside read_step_once.
+ # A timeout that reaches here is an incomplete logical read (or an ambiguous
+ # POST), so another patch must not reuse this child.
+ if($error=~/meter session closed for clean retry|meter read timed out|Web UI API (?:timed out|read failed|is unavailable)/i) {
+  log_line("Retiring meter session after an incomplete or ambiguous read: $error");
+  my $stop=api_json("POST","/api/meter/session/stop",undef,25);
+  # This branch fires when the API transport is already failing, so the stop
+  # itself can fail; record it, because the ambiguous child then survives and
+  # only the request_id checks in read_step_once stand between its late
+  # result and the next patch.
+  log_line("Meter session stop was not confirmed: ".((ref($stop) eq "HASH" && $stop->{"message"}) ? $stop->{"message"} : "no response"))
+   if(ref($stop) ne "HASH" || ($stop->{"status"}||"") eq "error");
+  $_meter_session_consecutive_transient_failures=0;
+  return;
+ }
  return unless($error =~ /timeout|session|spotread|unavailable/i);
  $_meter_session_consecutive_transient_failures++;
  if($_meter_session_consecutive_transient_failures < $_METER_SESSION_TEARDOWN_THRESHOLD) {
@@ -3206,6 +3731,8 @@ sub post_check_steps {
 	 my @steps;
 	 my $signal_range=$config->{"pattern_signal_range"}||$config->{"signal_range"}||"1";
 	 my $target_gamma=$config->{"target_gamma"}||"bt1886";
+	 my $target_context=autocal3d_target_context_for(
+	  $target_gamma,$config->{"signal_mode"});
 	 my $max_bpc=$config->{"max_bpc"}||"";
 	 my $input_max=(!defined($max_bpc) || $max_bpc eq "" || int($max_bpc) >= 10) ? 1023 : 255;
 	 my @cc=(
@@ -3224,16 +3751,16 @@ sub post_check_steps {
 	   r=>patch_code_for_8bit_value($r,$signal_range,$max_bpc),
 	   g=>patch_code_for_8bit_value($g,$signal_range,$max_bpc),
 	   b=>patch_code_for_8bit_value($b,$signal_range,$max_bpc),
-	   target_linear_r=>target_gamma_linear($r/255,$target_gamma),
-	   target_linear_g=>target_gamma_linear($g/255,$target_gamma),
-	   target_linear_b=>target_gamma_linear($b/255,$target_gamma),
+	   target_linear_r=>target_gamma_linear($r/255,$target_gamma,$target_context),
+	   target_linear_g=>target_gamma_linear($g/255,$target_gamma,$target_context),
+	   target_linear_b=>target_gamma_linear($b/255,$target_gamma,$target_context),
 	   input_max=>$input_max
 	  };
 	 }
 	 foreach my $sat (25,50,75,100) {
 	  my $c=patch_code_for_percent($sat,$signal_range,$max_bpc);
 	  my $k=patch_code_for_percent(0,$signal_range,$max_bpc);
-	  my $linear=target_gamma_linear($sat/100,$target_gamma);
+	  my $linear=target_gamma_linear($sat/100,$target_gamma,$target_context);
 	  my @defs=(
 	   ["Red",$c,$k,$k,$linear,0,0],["Green",$k,$c,$k,0,$linear,0],["Blue",$k,$k,$c,0,0,$linear],
 	   ["Cyan",$k,$c,$c,0,$linear,$linear],["Magenta",$c,$k,$c,$linear,0,$linear],["Yellow",$c,$c,$k,$linear,$linear,0],
@@ -3270,6 +3797,12 @@ sub hdr20_postcal_best_status {
 # A measured/exported LUT is not a successful AutoCal when the operator asked
 # for it to be committed to the TV.  Keep this check side-effect free so
 # both the worker and regression tests can exercise every terminal contract.
+sub autocal3d_full_workflow_requires_hdr_tone_map {
+ my ($config)=@_;
+ return 0 unless(ref($config) eq "HASH" && $config->{"full_workflow"});
+ return lc($config->{"signal_mode"}||"") eq "hdr10" ? 1 : 0;
+}
+
 sub autocal3d_commit_error {
  my ($config,$state)=@_;
  return "" if(ref($config) ne "HASH" || ref($state) ne "HASH");
@@ -3282,7 +3815,7 @@ sub autocal3d_commit_error {
   my $attempt_text=$attempts ? " after $attempts attempt".($attempts==1?"":"s") : "";
   return "3D LUT upload was not verified$attempt_text: $detail";
  }
- my $full_hdr=$config->{"full_workflow"} && lc($config->{"signal_mode"}||"") eq "hdr10";
+ my $full_hdr=autocal3d_full_workflow_requires_hdr_tone_map($config);
  if($full_hdr && (($state->{"tone_map_upload_status"}||"") ne "ok" || !$state->{"tone_map_uploaded"})) {
   return "HDR tone-map finalisation failed because no measured peak luminance reached the 3D worker. The calibration session remains held; restart the TV before another calibration."
    if(($state->{"tone_map_upload_error_code"}||"") eq "lg-tone-map-peak-missing");
@@ -3453,56 +3986,8 @@ sub reset_3d_lut_to_unity_before_profile {
 }
 
 # --- HDR20 post-cal shadow correction (PQ EOTF + ICtCp delta-E) ---
-# Ported from usr/bin/meter_lg_autocal.pl (pq_encode_normalized +
-# xyz_to_ictcp + delta_e_itp_xyz). Used to compute a ΔE(ITP) for the 5%
-# grey probe so revert-if-worse has a perceptually uniform comparator
-# instead of a luminance-only one.
-sub pq_encode_normalized {
- my ($nits)=@_;
- $nits=0 if(!defined($nits));
- $nits+=0;
- return 0 if($nits <= 0);
- $nits=10000 if($nits > 10000);
- my $l=$nits/10000;
- my $m1=2610/16384;
- my $m2=2523/32;
- my $c1=3424/4096;
- my $c2=2413/128;
- my $c3=2392/128;
- my $p=$l ** $m1;
- return (($c1+$c2*$p)/(1+$c3*$p)) ** $m2;
-}
-
-sub xyz_to_ictcp {
- my ($X,$Y,$Z)=@_;
- $X=0 if(!defined($X)); $Y=0 if(!defined($Y)); $Z=0 if(!defined($Z));
- my $R= 1.7166511880*$X -0.3556707838*$Y -0.2533662814*$Z;
- my $G=-0.6666843518*$X +1.6164812366*$Y +0.0157685458*$Z;
- my $B= 0.0176398574*$X -0.0427706133*$Y +0.9421031212*$Z;
- $R=0 if($R < 0); $G=0 if($G < 0); $B=0 if($B < 0);
- my $L=(1688*$R+2146*$G+262*$B)/4096;
- my $M=(683*$R+2951*$G+462*$B)/4096;
- my $S=(99*$R+309*$G+3688*$B)/4096;
- my $Lp=pq_encode_normalized($L);
- my $Mp=pq_encode_normalized($M);
- my $Sp=pq_encode_normalized($S);
- return {
-  I=>0.5*$Lp+0.5*$Mp,
-  T=>(6610*$Lp-13613*$Mp+7003*$Sp)/4096,
-  P=>(17933*$Lp-17390*$Mp-543*$Sp)/4096
- };
-}
-
-sub delta_e_itp_xyz {
- my ($X1,$Y1,$Z1,$X2,$Y2,$Z2)=@_;
- return undef if(!defined($X1) || !defined($Y1) || !defined($Z1) || !defined($X2) || !defined($Y2) || !defined($Z2));
- my $a=xyz_to_ictcp($X1,$Y1,$Z1);
- my $b=xyz_to_ictcp($X2,$Y2,$Z2);
- my $dI=$a->{"I"}-$b->{"I"};
- my $dT=$a->{"T"}-$b->{"T"};
- my $dP=$a->{"P"}-$b->{"P"};
- return 720*sqrt($dI*$dI+0.25*$dT*$dT+$dP*$dP);
-}
+# PGMath owns the shared ST 2084, ICtCp and delta-E implementations used by
+# both AutoCal workers. The code below owns only the 3D correction policy.
 
 # Taper for the HDR20 post-cal shadow correction. 0 at index 0 (true
 # black pinned); linear 0->1 for 0 < i < 14 (ramp up from black;
@@ -3752,29 +4237,6 @@ sub hdr20_postcal_prefix_shelf {
  }
  $out[0]=0; $out[1024]=0; $out[2048]=0;
  return \@out;
-}
-
-# One converge-step: given the current magnitude M, the measured lift
-# (measY / targetY), the damper, gain, and tolerance, return the next M.
-# Pushes DOWN while lift > 1 (panel lifted); clamp M >= 0. Returns undef
-# if abs(lift-1) <= tol (caller treats as "converged, exit loop").
-sub hdr20_postcal_converge_step {
- my ($M,$lift,$damp,$gain,$tol)=@_;
- $M=0 if(!defined($M));
- $M=$M+0;
- $lift=1 if(!defined($lift) || $lift+0 == 0);
- $lift=$lift+0;
- $damp=0.5 if(!defined($damp) || $damp+0 == 0);
- $damp=$damp+0;
- $gain=150 if(!defined($gain));
- $gain=$gain+0;
- $tol=0.15 if(!defined($tol));
- $tol=$tol+0;
- return undef if(abs($lift-1) <= $tol);
- my $delta=$damp*($lift-1)*$gain;
- my $next=$M+$delta;
- $next=0 if($next < 0);
- return $next+0;
 }
 
 # Load the per-TV seed matrix from disk. Returns the seed magnitude in
@@ -4641,6 +5103,14 @@ if($signal_mode eq "hdr10" && $method ne "matrix" && $method ne "imported") {
 $config->{"method"}=$method;
 $config->{"target_gamut"}=sanitize_target_gamut($config->{"target_gamut"},$signal_mode);
 $config->{"target_gamma"}=sanitize_target_gamma($config->{"target_gamma"},$signal_mode);
+my $run_model_target_gamma=$config->{"solve_only"}
+ ? $config->{"target_gamma"}
+ : dpg_calibration_gamma($config,$signal_mode,$config->{"target_gamma"});
+my $run_target_context=autocal3d_target_context_for(
+ $run_model_target_gamma,$signal_mode);
+die "Unable to resolve 3D calibration target context\n"
+ if(ref($run_target_context) ne "HASH");
+$config->{"calibration_target_context"}={%{$run_target_context}};
 # Quant range: 1=Limited, 2=Full. Prefer explicit body fields; never silently
 # invent limited when the start path already aligned to conf. Empty still
 # defaults to limited only as a last-resort legacy fallback (pre-fix callers).
@@ -4708,6 +5178,7 @@ my $state={
  signal_mode => $config->{"signal_mode"},
  target_gamut => $config->{"target_gamut"},
  target_gamma => $config->{"target_gamma"},
+ calibration_target_context => {%{$run_target_context}},
  observer => (($config->{"observer"}||"") =~ /^(?:1931_2|1964_10|2015_2|2015_10)$/ ? $config->{"observer"} : "1931_2"),
 };
 if($retry_upload_only) {
@@ -5032,6 +5503,7 @@ eval {
    $state->{"upload_status"}="requesting";
    $state->{"upload_started_at"}=int(time()*1000);
    my $full_workflow_upload=(ref($config) eq "HASH" && $config->{"full_workflow"}) ? 1 : 0;
+   my $hold_for_hdr_tone_map=autocal3d_full_workflow_requires_hdr_tone_map($config);
    $state->{"upload_request"}={
     picture_mode => $config->{"picture_mode"}||"",
     signal_mode => $config->{"signal_mode"}||"",
@@ -5040,18 +5512,20 @@ eval {
     get_command => $probe->{"get_command"}||"",
     helper_timeout => 220,
     api_timeout => 240,
-    # Full autocal: the greyscale stage already opened CAL_START and uploaded
+    # HDR Full AutoCal: the greyscale stage already opened CAL_START and uploaded
     # an identity 3D LUT container. We must INHERIT that CAL_START (skip our
     # own CAL_START) and KEEP it active (skip our own CAL_END) so the
     # subsequent tone-map upload can land inside the same session. The reference's
     # HDR OLED DPG flow (relay capture) uses a single CAL_START across the
-    # DPG, the 3D LUT, and the tone map -- same pattern.
-    ($full_workflow_upload
+    # DPG, the 3D LUT, and the tone map -- same pattern. SDR has no tone-map
+    # stage, so its verified 3D upload must close normally before the optional
+    # final DPG smoothing upload starts its own bounded session.
+    ($hold_for_hdr_tone_map
      ? (keep_calibration_mode=>json_true(),calibration_mode_active=>json_bool(!$retry_upload_only))
      : ()),
    };
    $state->{"upload_supported"}=json_true();
-   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||"").", full_workflow=".($full_workflow_upload?1:0));
+   log_line("3D LUT upload request start: payload=".($export->{"payload_path"}||"").", upload=".($probe->{"upload_command"}||"").", get=".($probe->{"get_command"}||"").", full_workflow=".($full_workflow_upload?1:0).", hold_for_hdr_tone_map=".($hold_for_hdr_tone_map?1:0));
    write_state($state);
    my $upload=api_json("POST","/api/lg/3d-lut/upload",$state->{"upload_request"},240);
    $state->{"upload"}=$upload;
@@ -5084,7 +5558,7 @@ eval {
     # (the WebUI passes them through full_workflow_peak_luminance /
     # full_workflow_dpg_data so the 3D worker doesn't have to read the
     # greyscale state file directly).
-    if($full_workflow_upload && ($state->{"upload_status"}||"") eq "ok" && $state->{"upload_verified"}) {
+    if($hold_for_hdr_tone_map && ($state->{"upload_status"}||"") eq "ok" && $state->{"upload_verified"}) {
      my $tone_peak=0;
      my $tone_dpg=undef;
      if(ref($config) eq "HASH") {
@@ -5304,7 +5778,11 @@ eval {
   $state->{"current_name"}=$step->{"name"};
   $state->{"message"}="Post-check ".($i+1)."/".scalar(@post);
   write_state($state);
-   my $expected_post_target=post_check_target_xyz($step,$model->{"white_y"}||100,$model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",$model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",$model->{"chromatic_white_y"});
+    my $expected_post_target=post_check_target_xyz(
+     $step,$model->{"white_y"}||100,
+     $model->{"target_gamma"}||$config->{"target_gamma"}||"bt1886",
+     $model->{"black"},$model->{"target_gamut"}||$config->{"target_gamut"}||"bt709",
+     $model->{"chromatic_white_y"},$model->{"target_context"});
    $step->{"target_Y"}=$expected_post_target->[1]
     if(ref($expected_post_target) eq "ARRAY" && defined($expected_post_target->[1]));
    my ($reading,$error)=read_step($config,$step,$state);
@@ -5312,6 +5790,7 @@ eval {
    my $post_entry={ %{$reading}, name=>$step->{"name"} };
    eval {
    my $measured=reading_xyz($reading);
+   die "post-check reading is not representable\n" if(!$measured);
    my $target=$expected_post_target;
    $post_entry->{"target_X"}=$target->[0];
    $post_entry->{"target_Y"}=$target->[1];
@@ -5322,9 +5801,21 @@ eval {
     $post_entry->{"target_y"}=$target->[1]/$sum;
     $post_entry->{"target_Yn"}=$target->[1]/($model->{"white_y"}||100);
    }
-   $post_entry->{"delta_e_2000"}=delta_e_2000($measured,$target,$model->{"white_y"}||100);
+   my $de_white_y=$model->{"white_y"}||100;
+   $post_entry->{"delta_e_2000"}=delta_e_2000_xyz(
+    $measured,$target,
+    [0.95047*$de_white_y,$de_white_y,1.08883*$de_white_y],
+    "signed_linear");
    1;
   };
+  if($@) {
+   # A verification patch whose scoring failed must stay visible: record the
+   # failure so summarize_post_check counts it instead of silently improving
+   # the post-check mean/max by omission.
+   my $score_error=$@; $score_error =~ s/\s+$//;
+   $post_entry->{"score_error"}=$score_error;
+   log_line("post-check scoring failed for ".($step->{"name"}||"?").": $score_error");
+  }
   if(($step->{"name"}||"") =~ /^Sat\s+([A-Za-z]+)\s+([0-9.]+)%/) {
    $post_entry->{"series_color"}=$1;
    $post_entry->{"sat_pct"}=$2+0;
@@ -5361,7 +5852,7 @@ eval {
    $final_dpg=$config->{"hdr20_1d_dpg_data"};
   }
   if(ref($final_dpg) eq "ARRAY") {
-   my ($smoothed,$changed)=lg_autocal_26_smooth_dpg_low_end($final_dpg);
+   my ($smoothed,$changed)=smooth_dpg_low_end($final_dpg);
    if($changed) {
     $state->{"phase"}="dpg_shadow_smoothing";
     $state->{"current_name"}="1D DPG shadow smoothing";
@@ -5393,7 +5884,7 @@ eval {
     if($sm_ok) {
      $config->{"full_workflow_dpg_data"}=$smoothed;
      $config->{"hdr20_1d_dpg_data"}=$smoothed;
-     log_line("Final 1D DPG shadow smoothing: applied and uploaded (".$changed." entries changed, idx<=".$LG_AUTOCAL_DPG_SMOOTH_BLEND_IDX.")");
+     log_line("Final 1D DPG shadow smoothing: applied and uploaded (".$changed." entries changed, idx<=".dpg_smooth_blend_index().")");
     } else {
      log_line("Final 1D DPG shadow smoothing: upload FAILED, keeping the committed curve: ".$sm_msg);
      die (($state->{"calibration_recovery_message"}||$sm_msg)."\n") if(lg_calibration_end_retry_forbidden($state));
