@@ -21,6 +21,29 @@
 # Version: 1.0
 #
 #########################################
+#           Allocator settings          #
+#########################################
+# glibc 2.21 (the Pi4 BiasiLinux image) can deadlock when one thread calls
+# fork() while another thread is creating a new malloc arena: fork's atfork
+# handler takes malloc's list lock and then every arena lock, while
+# _int_new_arena takes the new arena's lock and then the list lock (upstream
+# glibc bug 19182, fixed in 2.23). The WebUI worker threads fork for every
+# backtick and system() call, so under concurrent polling the daemon can
+# wedge with every worker parked on the main-arena mutex while the listening
+# socket's backlog fills -- alive, but answering nothing, not even /api/ping.
+# Confining malloc to the main arena means no arena is ever created, so the
+# lock-order inversion cannot form. glibc reads this variable once at process
+# start, before any Perl code runs, so it must already be in the environment:
+# re-exec this interpreter exactly once with it set. Harmless on newer glibc.
+# Skipped under `perl -c` ($^C): a syntax check must never start the daemon.
+BEGIN {
+ if(!$^C && !defined($ENV{"MALLOC_ARENA_MAX"})) {
+  $ENV{"MALLOC_ARENA_MAX"}="1";
+  exec($^X,$0,@ARGV) or warn "PGeneratord: could not re-exec with MALLOC_ARENA_MAX=1: $!";
+ }
+}
+
+#########################################
 #                Modules                #
 #########################################
 use Cwd;
