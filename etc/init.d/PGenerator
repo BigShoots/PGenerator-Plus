@@ -82,7 +82,14 @@ case "$1" in
          /usr/bin/pgsethdr 2>/dev/null || echo "pgsethdr pre-set failed"
         fi
         setcap cap_net_bind_service=+ep $PERL
-        setsid sudo -u $PGENERATOR_USER_GROUP $PROGRAM_DAEMON_SOCKET
+        # MALLOC_ARENA_MAX=1: glibc 2.21 on this image can deadlock when one
+        # thread forks (every backtick/system() in a WebUI worker) while
+        # another creates a malloc arena -- fork's atfork handler takes the
+        # arena list lock then each arena, _int_new_arena takes the new arena
+        # then the list (glibc bug 19182, fixed in 2.23). With one arena none
+        # is ever created, so the inversion cannot form. The daemon also
+        # re-execs itself with this set when launched by any other path.
+        setsid sudo -u $PGENERATOR_USER_GROUP env MALLOC_ARENA_MAX=1 $PROGRAM_DAEMON_SOCKET
         setcap cap_net_bind_service=-ep $PERL
         if [ -e "$FB0_BLANK_FILE" ]; then
          echo 1 > $FB0_BLANK_FILE

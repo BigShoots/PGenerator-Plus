@@ -1119,7 +1119,15 @@ sub webui_http (@) {
  for my $i (1..$WEBUI_RENDERER_WORKER_COUNT) {
   threads->create(\&webui_http_worker,"R$i","renderer")->detach();
  }
- &log("WebUI: request lanes started ($WEBUI_WORKER_POOL_SIZE serialized + $WEBUI_FAST_WORKER_COUNT fast + $WEBUI_COMPUTE_WORKER_COUNT compute + $WEBUI_TV_WORKER_COUNT tv + $WEBUI_METER_WORKER_COUNT meter + $WEBUI_RENDERER_WORKER_COUNT renderer)");
+ # Report the allocator setting alongside the lane count. Every worker forks
+ # for backticks and system(), and on glibc 2.21 that can deadlock against
+ # malloc arena creation (see the MALLOC_ARENA_MAX notes in PGeneratord.pl and
+ # etc/init.d/PGenerator). $0 assignment in daemon.pm rewrites the process
+ # title over /proc/PID/environ, so the environment cannot be read back from
+ # outside afterwards -- this line is the only field-visible proof that the
+ # mitigation is active in a running daemon.
+ my $arena=defined($ENV{"MALLOC_ARENA_MAX"}) ? $ENV{"MALLOC_ARENA_MAX"} : "unset";
+ &log("WebUI: request lanes started ($WEBUI_WORKER_POOL_SIZE serialized + $WEBUI_FAST_WORKER_COUNT fast + $WEBUI_COMPUTE_WORKER_COUNT compute + $WEBUI_TV_WORKER_COUNT tv + $WEBUI_METER_WORKER_COUNT meter + $WEBUI_RENDERER_WORKER_COUNT renderer, malloc_arena_max=$arena)");
 
  # A worker is committed only once a COMPLETE request header has arrived.
  #
