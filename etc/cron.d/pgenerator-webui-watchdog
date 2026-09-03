@@ -1,0 +1,4 @@
+# Restart the PGenerator WebUI daemon when /api/ping stops answering. A
+# deadlocked daemon stays alive with its process table entry intact, so a
+# PID-based check would never notice; the watchdog probes HTTP instead.
+* * * * * root /usr/sbin/pgenerator-webui-watchdog.sh >/dev/null 2>&1
