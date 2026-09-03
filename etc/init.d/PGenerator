@@ -1,4 +1,12 @@
 #!/bin/sh
+# A login shell and the boot rc script both provide /sbin and /usr/sbin, but
+# cron does not: it runs jobs with a minimal PATH. This script calls setcap
+# (/sbin) to grant perl cap_net_bind_service, and without it the daemon starts
+# but CANNOT bind port 80 -- it silently falls back to 8080 and the WebUI is
+# unreachable, which also makes the watchdog restart it every minute forever.
+# Pin the PATH so the script behaves identically however it is invoked.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 INIT_NAME="PGenerator"
 PROGRAM_NAME="PGenerator"
 PROGRAM_DAEMON_SOCKET="/usr/sbin/PGeneratord.pl"
