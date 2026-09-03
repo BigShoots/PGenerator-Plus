@@ -40,6 +40,23 @@ log() {
   fi
 }
 
+# Bound the log by SIZE, not just by line count. The init script's own output
+# is appended verbatim on every restart (the daemon's whole startup spew, which
+# includes long single lines), and the line-count trim above only runs when
+# this script itself logs. During the restart loop caused by the missing setcap
+# this file reached 23 MB -- on a device whose disk is already nearly full that
+# is an outage of its own.
+MAX_LOG_BYTES=262144
+trim_log() {
+  [ -f "$LOG" ] || return 0
+  log_bytes=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+  case "$log_bytes" in (''|*[!0-9]*) log_bytes=0;; esac
+  if [ "$log_bytes" -gt "$MAX_LOG_BYTES" ]; then
+    tail -n 200 "$LOG" >"$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG" 2>/dev/null
+  fi
+}
+trim_log
+
 # /api/ping can remain healthy while a missing UI fragment breaks only `/`.
 # This probe is deliberately observational: its result never enters the
 # restart decision below. The recovery page is a valid HTTP response, but the
@@ -178,6 +195,7 @@ touch "$LOCK_FILE"
 
 log "WebUI down — restarting PGenerator"
 "$INIT_SCRIPT" restart >>"$LOG" 2>&1
+trim_log
 # Poll rather than check once: a fresh daemon needs a few seconds to compile
 # and bind, and a single probe 4s in reported "still down" for a restart that
 # actually succeeded one second later -- a false failure that counted toward
