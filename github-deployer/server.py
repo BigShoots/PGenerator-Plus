@@ -664,8 +664,14 @@ def upload_files(connection: dict[str, str], snapshot: dict[str, Any], paths: li
     with tempfile.TemporaryDirectory(prefix="pgen-github-upload-") as upload_dir:
         archive_path = Path(upload_dir) / "payload.tar"
         with tarfile.open(archive_path, mode="w") as archive:
-            for index, rel in enumerate(paths):
-                archive.add(root / rel, arcname=f"payload/{index:04d}", recursive=False)
+            for rel in paths:
+                # Stage under the real relative path, not an index. Perl modules
+                # in usr/share/PGenerator resolve siblings by their own file
+                # name (webui.pm and the workers `use PGMath`), so a staged copy
+                # named 0008 next to a PGMath.pm named 0003 cannot compile even
+                # though the installed tree is fine. Real names keep `perl -c`
+                # honest and make its messages readable.
+                archive.add(root / rel, arcname=f"tree/{rel}", recursive=False)
         try:
             upload_remote_file(connection, archive_path, remote_archive, timeout=300)
         except AppError:
@@ -696,10 +702,17 @@ while IFS="$(printf '\\t')" read -r idx mode check rel; do
     exit 4
   fi
 done < "$manifest"
+modules="$stage/tree/usr/share/PGenerator"
 while IFS="$(printf '\\t')" read -r idx mode check rel; do
   if [ "$check" = "perl" ]; then
-    if ! perl -c "$stage/payload/$idx"; then
-      echo "Syntax check of $rel failed on the target device $(hostname 2>/dev/null) running Perl $(perl -e 'print $^V' 2>/dev/null). Every PGenerator+ image ships the modules the runtime needs, so a missing-module failure usually means the Host field points at a machine that is not a PGenerator+ device." >&2
+    # Siblings being uploaded in this same batch take precedence over the
+    # installed copies, then the installed module directory covers anything
+    # not part of this upload -- the same view the file has once installed.
+    # perl -c reports success on stderr ("syntax OK"), so keep its output
+    # unless it actually failed.
+    if ! result=$(perl -c -I "$modules" -I /usr/share/PGenerator "$stage/tree/$rel" 2>&1); then
+      echo "Syntax check of $rel failed on the target device $(hostname 2>/dev/null) running Perl $(perl -e 'print $^V' 2>/dev/null); dependencies were searched in this upload and in /usr/share/PGenerator:" >&2
+      printf '%s\\n' "$result" >&2
       exit 5
     fi
   fi
@@ -720,7 +733,7 @@ while IFS="$(printf '\\t')" read -r idx mode check rel; do
     target_gid=$(stat -c %g "$target" 2>/dev/null || echo 0)
   fi
   replacement="$target.pgen-new"
-  cp "$stage/payload/$idx" "$replacement"
+  cp "$stage/tree/$rel" "$replacement"
   chmod "$target_mode" "$replacement"
   chown "$target_uid:$target_gid" "$replacement"
   mv "$replacement" "$target"
