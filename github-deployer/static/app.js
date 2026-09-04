@@ -35,6 +35,8 @@ const els = {
   snapshotTitle: $("#snapshotTitle"),
   snapshotMessage: $("#snapshotMessage"),
   snapshotCommit: $("#snapshotCommit"),
+  deployerNotice: $("#deployerNotice"),
+  deployerBuild: $("#deployerBuild"),
   dialog: $("#confirmDialog"),
   dialogTitle: $("#dialogTitle"),
   dialogText: $("#dialogText"),
@@ -43,6 +45,12 @@ const els = {
 };
 
 els.host.value = localStorage.getItem(STORAGE_KEY) || "";
+fetch("/api/health")
+  .then((response) => response.json())
+  .then((health) => {
+    if (health && health.build) els.deployerBuild.textContent = `· build ${health.build}`;
+  })
+  .catch(() => {});
 
 function credentials() {
   return {
@@ -208,6 +216,11 @@ function showSnapshot(snapshot) {
   els.snapshotMessage.textContent = snapshot.commitMessage || "Pinned commit";
   els.snapshotCommit.textContent = snapshot.commit.slice(0, 12);
   els.snapshotCommit.title = snapshot.commit;
+  // The snapshot carries the repository's copy of this console. When it differs
+  // from the files actually running, the person is on a stale build -- older
+  // ones syntax-checked Perl on the desktop and failed with missing-module
+  // errors that looked like a problem with the fetched sources.
+  els.deployerNotice.hidden = !snapshot.deployerOutdated;
 }
 
 function updateConnection(busy) {

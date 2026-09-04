@@ -181,6 +181,10 @@ input:focus { border-color: #66782c; box-shadow: 0 0 0 3px rgba(183, 243, 56, .0
   background: #111923;
 }
 .snapshot-bar[hidden] { display: none; }
+.deployer-notice { margin: -4px 0 16px; padding: 11px 14px; color: #c7a267; border: 1px solid #503d22; border-radius: 8px; background: #21190f; font-size: 11px; line-height: 1.5; }
+.deployer-notice strong { display: block; margin-bottom: 3px; color: var(--amber); }
+.deployer-notice code { color: #e6d3a3; }
+.deployer-notice[hidden] { display: none; }
 .snapshot-icon {
   display: grid;
   place-items: center;

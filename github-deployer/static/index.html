@@ -13,7 +13,7 @@
       <div class="brand">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <div>
-          <p class="eyebrow">GitHub utility</p>
+          <p class="eyebrow">GitHub utility <span id="deployerBuild"></span></p>
           <h1>PGenerator <span>GitHub Deploy Console</span></h1>
         </div>
       </div>
@@ -84,6 +84,14 @@
         <small id="snapshotMessage"></small>
       </div>
       <code id="snapshotCommit"></code>
+    </section>
+
+    <section id="deployerNotice" class="deployer-notice" hidden>
+      <strong>This deploy console is out of date.</strong>
+      The pinned snapshot carries a different version of the console itself. Update it from the
+      <code>github-deployer/</code> folder of that snapshot (or the latest package) before deploying;
+      older consoles checked Perl syntax on this computer instead of on the Pi and failed with
+      misleading missing-module errors.
     </section>
 
     <section class="workspace">

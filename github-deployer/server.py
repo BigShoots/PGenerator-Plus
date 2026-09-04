@@ -35,6 +35,19 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
+# Shown in the dashboard and reported by /api/health so a support thread can
+# establish which console someone is running. Bump when behaviour changes.
+DEPLOYER_BUILD = "1.1"
+# The console's own files as they appear in the repository snapshot. They are
+# not deployable, but they are extracted alongside the snapshot so the running
+# console can notice that the repository carries a different version of itself:
+# builds before 2026-08-09 syntax-checked Perl on the desktop instead of on the
+# Pi, and a stale copy kept producing misleading missing-module errors.
+DEPLOYER_SELF_FILES = (
+    "github-deployer/server.py",
+    "github-deployer/static/app.js",
+    "github-deployer/static/index.html",
+)
 PID_FILE = APP_DIR / ".server.pid"
 DEPLOY_ROOTS = ("etc", "lib", "usr", "var")
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$")
@@ -407,12 +420,19 @@ def create_snapshot(source: dict[str, str]) -> dict[str, Any]:
                     if len(parts) < 3:
                         continue
                     relative = PurePosixPath(*parts[1:])
-                    if (
-                        relative.is_absolute()
-                        or ".." in relative.parts
-                        or relative.parts[0] not in DEPLOY_ROOTS
-                        or len(relative.parts) < 2
-                    ):
+                    if relative.is_absolute() or ".." in relative.parts:
+                        continue
+                    if relative.as_posix() in DEPLOYER_SELF_FILES:
+                        # Kept beside the deployable tree, never in `files`, purely
+                        # so the running console can compare itself against it.
+                        source_file = archive.extractfile(member)
+                        if source_file is not None:
+                            target = root / "_deployer" / relative.as_posix()
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with source_file, target.open("wb") as output:
+                                shutil.copyfileobj(source_file, output, length=1024 * 1024)
+                        continue
+                    if relative.parts[0] not in DEPLOY_ROOTS or len(relative.parts) < 2:
                         continue
                     rel = relative.as_posix()
                     if any(character in rel for character in ("\n", "\r", "\t", "\0")):
@@ -438,6 +458,13 @@ def create_snapshot(source: dict[str, str]) -> dict[str, Any]:
                     }
         if not files:
             raise AppError("No deployable files were found in the GitHub snapshot.")
+        deployer_outdated = False
+        for rel in DEPLOYER_SELF_FILES:
+            in_snapshot = root / "_deployer" / rel
+            running = APP_DIR / PurePosixPath(rel).relative_to("github-deployer")
+            if in_snapshot.is_file() and running.is_file() and digest(in_snapshot) != digest(running):
+                deployer_outdated = True
+                break
         snapshot = {
             "id": snapshot_id,
             "root": root,
@@ -448,6 +475,7 @@ def create_snapshot(source: dict[str, str]) -> dict[str, Any]:
             "commit": commit["sha"],
             "commitDate": commit["date"],
             "commitMessage": commit["message"],
+            "deployerOutdated": deployer_outdated,
         }
         with SNAPSHOT_LOCK:
             SNAPSHOTS[snapshot_id] = snapshot
@@ -768,7 +796,7 @@ exit 1
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PGeneratorGitHubDeployer/1.0"
+    server_version = f"PGeneratorGitHubDeployer/{DEPLOYER_BUILD}"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {fmt % args}")
@@ -801,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self.send_json({"ok": True})
+            self.send_json({"ok": True, "build": DEPLOYER_BUILD})
             return
         path = "index.html" if self.path in {"/", ""} else self.path.lstrip("/")
         file_path = (STATIC_DIR / path).resolve()
@@ -829,9 +857,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = scan_snapshot(connection, snapshot)
                 public_snapshot = {
                     key: snapshot[key]
-                    for key in ("id", "repository", "ref", "commit", "commitDate", "commitMessage")
+                    for key in ("id", "repository", "ref", "commit", "commitDate", "commitMessage", "deployerOutdated")
                 }
                 result["snapshot"] = public_snapshot
+                result["deployerBuild"] = DEPLOYER_BUILD
             elif self.path == "/api/upload":
                 snapshot = get_snapshot(payload.get("snapshotId"))
                 selected = validate_selected(snapshot, payload.get("paths"))
