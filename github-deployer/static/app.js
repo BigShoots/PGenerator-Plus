@@ -326,10 +326,18 @@ els.selectAll.addEventListener("change", () => {
 
 els.upload.addEventListener("click", async () => {
   const selected = state.files.filter((file) => state.selected.has(file.path));
+  // A PGenerator+ device always has most of the runtime files already. A scan
+  // that found none of them means the Host field points somewhere else (a
+  // desktop, a typo); uploading there fails in the on-device syntax check with
+  // a confusing missing-module error, so say what is really wrong first.
+  const noRuntimeOnTarget = state.files.length > 0 && state.files.every((file) => file.status === "missing");
+  const hostNote = noRuntimeOnTarget
+    ? ` Warning: ${els.host.value.trim()} has none of the PGenerator+ runtime files — check that the Host field points at your PGenerator+ device.`
+    : "";
   const confirmed = await confirmAction({
     title: `Deploy ${selected.length} file${selected.length === 1 ? "" : "s"}?`,
-    text: `Files will come from pinned commit ${state.snapshot.commit.slice(0, 12)}. Existing Pi files will be backed up first. Services will not restart automatically.`,
-    warning: selected.some((file) => file.sensitive),
+    text: `Files will come from pinned commit ${state.snapshot.commit.slice(0, 12)}. Existing Pi files will be backed up first. Services will not restart automatically.${hostNote}`,
+    warning: noRuntimeOnTarget || selected.some((file) => file.sensitive),
     confirmLabel: "Upload files",
   });
   if (!confirmed) return;

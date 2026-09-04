@@ -670,7 +670,10 @@ while IFS="$(printf '\\t')" read -r idx mode check rel; do
 done < "$manifest"
 while IFS="$(printf '\\t')" read -r idx mode check rel; do
   if [ "$check" = "perl" ]; then
-    perl -c "$stage/payload/$idx"
+    if ! perl -c "$stage/payload/$idx"; then
+      echo "Syntax check of $rel failed on the target device $(hostname 2>/dev/null) running Perl $(perl -e 'print $^V' 2>/dev/null). Every PGenerator+ image ships the modules the runtime needs, so a missing-module failure usually means the Host field points at a machine that is not a PGenerator+ device." >&2
+      exit 5
+    fi
   fi
 done < "$manifest"
 while IFS="$(printf '\\t')" read -r idx mode check rel; do
