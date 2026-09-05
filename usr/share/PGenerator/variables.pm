@@ -388,6 +388,18 @@ share($calman_last_pattern_cmd);
 share($calman_replaying_last_pattern);
 share($calibration_client_ip);
 share($calibration_client_software);
+# Signal-range ownership (command.pm apply_source_rgb_quant_range). The WebUI
+# serves requests from a pool of worker threads; without share() each worker
+# keeps its own copy of the "preferred" range, so a pattern request that omits
+# transport_signal_range and lands on a worker that handled an OLDER config
+# POST re-applies that stale range to the conf and restarts the renderer
+# mid-series (observed 2026-09-05: Full<->Limited flip on every mode switch).
+share($webui_rgb_quant_range_preferred);
+share($rgb_quant_range_source);
+share($external_rgb_quant_range_active);
+$webui_rgb_quant_range_preferred="";
+$rgb_quant_range_source="";
+$external_rgb_quant_range_active=0;
 share(%rpc_client);
 share(%hcfr_client);
 
