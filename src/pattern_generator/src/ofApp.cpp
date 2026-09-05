@@ -97,6 +97,7 @@ void ofApp::update(){
  if(open_file) {
   frame=frame_to_draw=entered=0;
   p_name=m_name="";
+  source_max=255;
   n_draw[frame]=0;
   ofApp::log("\n\n");   
   ofApp::log("***********************************");
@@ -143,6 +144,11 @@ void ofApp::update(){
     if (!usesDolbyVisionTransport())
      ofxRPI4Window::avi_info.max_bpc = bits;
  //   ofxRPI4Window::colorspace_on=1;
+   }
+   if(el[0] == "SOURCE_MAX") {
+    source_max=boost::lexical_cast<int>(el[1]);
+    if(source_max != 255 && source_max != 1023 && source_max != 4095)
+     source_max=255;
    }
    /* End Patch RPI P4 */
    if(el[0] == "POSITION") {
@@ -390,6 +396,7 @@ void ofApp::set_values () {
  arr_rotate[frame][n_draw[frame]]=img_rotate;
  /* Start Patch RPI P4 */
  arr_bits[frame][n_draw[frame]]=bits;
+ arr_source_max[frame][n_draw[frame]]=source_max;
  arr_source_range[frame][n_draw[frame]]=source_range;
  ofxRPI4Window::bit_depth=bits;
  if (!usesDolbyVisionTransport())
@@ -592,6 +599,18 @@ void ofApp::setColor(int red, int green, int blue) {
  red=normalizeSourceValue(red,arr_source_range[i][to_draw]);
  green=normalizeSourceValue(green,arr_source_range[i][to_draw]);
  blue=normalizeSourceValue(blue,arr_source_range[i][to_draw]);
+ if(ofxRPI4Window::is_std_DoVi && ofxRPI4Window::colorspace_on) {
+  dv_source_max=arr_source_max[i][to_draw];
+  if(dv_source_max != 255 && dv_source_max != 1023 && dv_source_max != 4095)
+   dv_source_max=255;
+  dv_source_red=ofClamp(red,0,dv_source_max);
+  dv_source_green=ofClamp(green,0,dv_source_max);
+  dv_source_blue=ofClamp(blue,0,dv_source_max);
+  // Geometry still uses the 8-bit framebuffer. The standard-DV shader
+  // consumes the unquantized source integers above and emits packed bytes.
+  ofSetColor(255,255,255,255);
+  return;
+ }
  if (ofxRPI4Window::isHDR && !ofxRPI4Window::isDoVi && !ofxRPI4Window::is_std_DoVi) { 
   if (ofxRPI4Window::bit_depth == 10) ofSet10bitColor(red,green,blue);
   else                                ofSetColor(red,green,blue);
@@ -734,6 +753,11 @@ void ofApp::shader_begin(int is_image) {
   ofxRPI4Window::shader.begin();
   if (ofxRPI4Window::is_std_DoVi) {
 	ofxRPI4Window::shader.setUniform2f("resolution", ofGetWindowWidth(), ofGetWindowHeight());
+	ofxRPI4Window::shader.setUniform3f("source_rgb",
+		static_cast<float>(dv_source_red),
+		static_cast<float>(dv_source_green),
+		static_cast<float>(dv_source_blue));
+	ofxRPI4Window::shader.setUniform1i("source_max",dv_source_max);
  	if (ofxRPI4Window::dv_profile == 2) {
 	  ofxRPI4Window::shader.setUniform3f("coeffs_num",0.2126, 0.7152, 0.0722); //BT709
 	  ofxRPI4Window::shader.setUniform3f("coeffs_div",1.8556, 1.5748, 0.5); //BT709
@@ -769,7 +793,7 @@ void ofApp::shader_begin(int is_image) {
 	int offset = 128 << shift;
 	int normalizer = (256 << shift) - 1;
 	int scale = normalizer;
-	
+
 	ofxRPI4Window::shader.setUniform1i("scalar1", scalar1);
     ofxRPI4Window::shader.setUniform1i("scalar2", scalar2);
     ofxRPI4Window::shader.setUniform1i("offset", offset);
@@ -777,6 +801,8 @@ void ofApp::shader_begin(int is_image) {
     ofxRPI4Window::shader.setUniform1i("normalizer", normalizer);
     ofxRPI4Window::shader.setUniform1i("color_format", ofxRPI4Window::avi_info.output_format);
     ofxRPI4Window::shader.setUniform1i("passthrough_422", usesLowLatencyDoVi422Transport() ? 1 : 0);
+    ofxRPI4Window::shader.setUniform1i("rgb_quant_range", ofxRPI4Window::avi_info.rgb_quant_range);
+    ofxRPI4Window::shader.setUniform1i("bits", ofxRPI4Window::bit_depth);
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
 
   }
@@ -1109,10 +1135,6 @@ void ofApp::dovi_metadata_mux() {
  ##########################################################
 */
 void ofApp::setDoViBackground(int redbg, int greenbg, int bluebg) {
-	int bits = ofxRPI4Window::bit_depth;
-	redbg   *= ((pow(2,(8+(bits-8))) - 1) / (pow(2,8) - 1));
-	greenbg *= ((pow(2,(8+(bits-8))) - 1) / (pow(2,8) - 1));
-	bluebg  *= ((pow(2,(8+(bits-8))) - 1) / (pow(2,8) - 1));
 	ofApp::setColor(redbg,greenbg,bluebg);
 	ofApp::shader_begin(0);
 

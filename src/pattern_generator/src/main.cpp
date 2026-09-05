@@ -56,6 +56,14 @@ std::string dv_color_space="0";
 #include "ofxRPI4Window.h"
 // End Patch RPI p4
 
+static bool usesPGeneratorKmsWindow(const std::string &model) {
+ return model.find("Raspberry Pi 4") != string::npos ||
+        model.find("Raspberry Pi Compute Module 4") != string::npos ||
+        model.find("Raspberry Pi 5") != string::npos ||
+        model.find("Raspberry Pi Compute Module 5") != string::npos ||
+        model.find("BCM2712") != string::npos;
+}
+
 int main(int argc, char **argv){
  int w=1920;
  int h=1080;
@@ -84,18 +92,22 @@ int main(int argc, char **argv){
   printf("\nOnly on Raspberry Device can be executed this program!\n\n");
   exit(1);
  } 
- /* Continue */
- ofSetLogLevel(OF_LOG_VERBOSE);
+  /* Continue. The renderer logs at VERBOSE by default, which emits a DRM
+     notice on every page flip (~180 KB/s) and fills the disk if its output
+     is captured to a file. Default to OF_LOG_ERROR so only failures are
+     logged; set PGEN_RENDERER_LOG_VERBOSE=1 to restore full verbosity for
+     debugging. */
+  ofSetLogLevel(getenv("PGEN_RENDERER_LOG_VERBOSE") ? OF_LOG_VERBOSE : OF_LOG_ERROR);
  if(argc == 3) {
   w=atoi(argv[1]);
   h=atoi(argv[2]);
  }
  //ofLog() << "PGenerator version " << pgenCodeVersion;
- if (str.find("Raspberry Pi 4") == string::npos) {
+ if (!usesPGeneratorKmsWindow(str)) {
   ofSetupOpenGL(w,h, OF_FULLSCREEN);
   ofRunApp( new ofApp());
  } else {
-// Start Patch RPI p4
+// Start Patch RPI KMS
   /* Get var from PGenerator Conf */
   std::ifstream file(PGenerator_conf);
   while (std::getline(file, str)) {
@@ -156,7 +168,7 @@ int main(int argc, char **argv){
   ofApp::dv_diagonal=atoi(dv_diagonal.c_str());
   ofApp::dv_color_space=atoi(dv_color_space.c_str());
 
-  /* RPI4 Run App */
+  /* Raspberry Pi KMS Run App */
   ofGLESWindowSettings settings;
   settings.glesVersion = 3;
   ofApp *cs_data;
@@ -168,6 +180,6 @@ int main(int argc, char **argv){
 
   ofRunApp(window, app);
   ofRunMainLoop();
-// End Patch RPI p4
+// End Patch RPI KMS
  }
 }

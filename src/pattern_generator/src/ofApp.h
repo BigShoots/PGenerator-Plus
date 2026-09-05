@@ -50,9 +50,15 @@ class ofApp : public ofBaseApp{
   ofFbo fbo10;
   ofFbo fbo_dovi;
   int arr_bits[2048][2048];
+  int arr_source_max[2048][2048];
   int arr_source_range[2048][2048];
   int bits;
+  int source_max=255;
   int source_range=0;
+  int dv_source_red=0;
+  int dv_source_green=0;
+  int dv_source_blue=0;
+  int dv_source_max=255;
   std::string previous_draw_type;
   std::string previous_image; 
   /* End Patch For RPI 4 */
