@@ -300,6 +300,8 @@ stage_overlay() {
  fi
 
  remove_external_icc_tools
+ pgen_release_repair_flattened_symlinks "$STAGING_DIR"
+ pgen_release_validate_required_symlinks "$STAGING_DIR"
 
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
   pgen_release_install_pi5_sudoers "$STAGING_DIR"

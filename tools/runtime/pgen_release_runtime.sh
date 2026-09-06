@@ -185,3 +185,51 @@ pgen_release_validate_pi5_renderer() {
   die "Pi 5 PGeneratord and PGeneratord.dv differ; the Pi 5 deploy flow installs the same native build under both names"
  log "Validated the Pi 5 renderer: native Bookworm build (glibc $max_glibc)"
 }
+
+# Symlinks the runtime trees must carry as SYMLINKS. A checkout made with
+# core.symlinks=false (or a copy through a tool that drops links) turns them
+# into tiny text files holding the target path. Staging such a file is
+# destructive: a copy of "liblzma.so.0" that is really the text
+# "liblzma.so.5" landed on the bench Pi 5 through the existing
+# liblzma.so.0 -> liblzma.so.5 -> liblzma.so.5.4.1 chain and overwrote the
+# system xz library (2026-09-05: sshd and NetworkManager died, cold boot hung).
+PGEN_RELEASE_REQUIRED_SYMLINKS=(
+ "usr/lib/arm-linux-gnueabihf/liblzma.so.0"
+ "usr/lib/arm-linux-gnueabihf/libXss.so.1"
+)
+
+# Repair flattened symlinks in a staged root: a regular file of <= 200 bytes
+# whose whole content is a relative path becomes a symlink to that path.
+# Anything else at a required-symlink path is fatal.
+pgen_release_repair_flattened_symlinks() {
+ local root="$1"
+ local rel path content
+ for rel in "${PGEN_RELEASE_REQUIRED_SYMLINKS[@]}"; do
+  path="$root/$rel"
+  [[ -e "$path" || -L "$path" ]] || continue
+  if [[ -L "$path" ]]; then
+   continue
+  fi
+  if [[ -f "$path" ]] && [[ "$(stat -c %s "$path")" -le 200 ]]; then
+   content="$(tr -d '\n' < "$path")"
+   if [[ "$content" =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]]; then
+    rm -f "$path"
+    ln -s "$content" "$path"
+    log "Repaired flattened symlink /$rel -> $content"
+    continue
+   fi
+  fi
+  die "/$rel must be a symlink; found a regular file that is not a flattened link"
+ done
+}
+
+# Fail closed if a required symlink is still not a symlink after staging.
+pgen_release_validate_required_symlinks() {
+ local root="$1"
+ local rel
+ for rel in "${PGEN_RELEASE_REQUIRED_SYMLINKS[@]}"; do
+  [[ ! -e "$root/$rel" && ! -L "$root/$rel" ]] && continue
+  [[ -L "$root/$rel" ]] || die "/$rel is a regular file; it must be a symlink (never copy it onto a device: it would overwrite the link target)"
+ done
+ log "Validated required symlinks in the staged root"
+}

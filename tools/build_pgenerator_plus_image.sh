@@ -655,6 +655,7 @@ overlay_tree() {
  fi
 
  remove_external_icc_tools
+ pgen_release_repair_flattened_symlinks "$ROOT_MOUNT"
 
  if [[ "$TARGET" == "pi4-biasi" ]]; then
   # The legacy Pi 4 rootfs uses glibc 2.21. Always install binaries built for
@@ -1863,6 +1864,7 @@ main() {
  fi
  fix_permissions
  validate_pi5_usrmerge_root
+ pgen_release_validate_required_symlinks "$ROOT_MOUNT"
  validate_release_root
  finalize_image
 }
