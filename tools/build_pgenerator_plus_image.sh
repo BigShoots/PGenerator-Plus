@@ -68,6 +68,8 @@ PI5_RUNTIME_PACKAGES=(
  python3-dbus
  python3-gi
  python3-numpy
+ libio-socket-ssl-perl
+ libcap2-bin
  rfkill
  iw
  net-tools
@@ -104,6 +106,10 @@ PI5_RUNTIME_REQUIRED_PATHS=(
  usr/lib/python3/dist-packages/dbus
  usr/lib/python3/dist-packages/gi
  usr/lib/python3/dist-packages/numpy
+ # pgenerator-lg speaks wss:// to webOS (IO::Socket::SSL); the init script
+ # grants perl cap_net_bind_service with setcap so the WebUI can bind port 80.
+ usr/share/perl5/IO/Socket/SSL.pm
+ usr/sbin/setcap
  usr/sbin/rfkill
  usr/sbin/iw
  usr/sbin/ifconfig
@@ -572,7 +578,7 @@ shared_rsync_excludes_for_rel() {
  local owned
  local target_owned=("${TARGET_OWNED_RUNTIME_PATHS[@]}" "${PGEN_RELEASE_EXTERNAL_ICC_TOOL_PATHS[@]}")
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
-  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}")
+  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}" "${PGEN_RELEASE_PI4_ONLY_SYSTEM_PATHS[@]}")
  fi
  for owned in "${target_owned[@]}"; do
   case "$owned" in
@@ -1066,6 +1072,36 @@ exit 0'
 # config.txt through /boot/loader/boot_dir, which is a symlink to that mount.
 sync
 exit 0'
+
+ pgen_release_install_pi5_sudoers "$ROOT_MOUNT"
+}
+
+# Bookworm keeps the clock with systemd-timesyncd (and its own fake-hwclock
+# package); the Pi 4 ntp/fake-hwclock sysv scripts are excluded from this
+# target. Make sure the Bookworm service is present and enabled.
+configure_pi5_time_sync() {
+ local unit wants
+
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ unit=""
+ for unit in usr/lib/systemd/system/systemd-timesyncd.service lib/systemd/system/systemd-timesyncd.service; do
+  [[ -f "$ROOT_MOUNT/$unit" ]] && break
+  unit=""
+ done
+ [[ -n "$unit" ]] || die "Pi 5 base image has no systemd-timesyncd.service; time synchronization would be unavailable"
+ wants="$ROOT_MOUNT/etc/systemd/system/sysinit.target.wants"
+ mkdir -p "$wants"
+ ln -sfn "/$unit" "$wants/systemd-timesyncd.service"
+ for unit in ntp.service fake-hwclock.service; do
+  [[ -e "$ROOT_MOUNT/etc/init.d/${unit%.service}" ]] && [[ "$unit" == "ntp.service" ]] && \
+   die "Pi 5 root still carries /etc/init.d/ntp; the Pi 4 clock scripts must stay excluded"
+ done
+ log "Enabled systemd-timesyncd for the Pi 5 target"
+}
+
+validate_pi5_renderer_binary() {
+ [[ "$TARGET" == "pi5-bookworm-armhf" ]] || return 0
+ pgen_release_validate_pi5_renderer "$ROOT_MOUNT"
 }
 
 configure_pi5_display_defaults() {
@@ -1262,6 +1298,10 @@ configure_pi5_headless_first_boot() {
  ensure_config_line "$keyboard_file" "XKBLAYOUT" "\"${PI5_KEYBOARD_LAYOUT:-us}\""
  touch "$locale_file"
  ensure_config_line "$locale_file" "LANG" "${PI5_LOCALE:-C.UTF-8}"
+ # pam_env exports this to every session, so LC_* categories forwarded by an
+ # SSH client (AcceptEnv LC_*) for a locale the image has not generated can
+ # no longer make Perl helpers prefix their JSON with locale warnings.
+ ensure_config_line "$locale_file" "LC_ALL" "${PI5_LOCALE:-C.UTF-8}"
 
  rm -f "$userconfig_wants"
  ln -sfn /dev/null "$userconfig_mask"
@@ -1717,6 +1757,7 @@ fix_permissions() {
  set_root_mode "usr/share/doc/libxss1/changelog.gz" 0644
  set_root_mode "usr/share/doc/libxss1/copyright" 0644
 
+ if [[ "$TARGET" == "pi4-biasi" ]]; then
  for rel in \
   "etc/ntp.conf" \
   "etc/default/ntp"; do
@@ -1736,6 +1777,7 @@ fix_permissions() {
   "etc/rcS.d/S08fake-hwclock"; do
   set_root_symlink_owner "$rel"
  done
+ fi
 
  ensure_pgenerator_dir "var/lib/PGenerator" 0775
  ensure_pgenerator_dir "var/lib/PGenerator/running" 0770
@@ -1803,6 +1845,8 @@ main() {
  reset_runtime_state
  configure_pi5_bookworm_root
  configure_pi5_display_defaults
+ configure_pi5_time_sync
+ validate_pi5_renderer_binary
  install_pi5_runtime_packages
  stage_pi5_blas_alternatives
  validate_pi5_runtime_dependencies

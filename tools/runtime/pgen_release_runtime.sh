@@ -10,9 +10,10 @@ PGEN_RELEASE_DEVICE_STATE_DROPS=(
  "etc/BiasiLinux/BiasiLinux.FirstBoot"
 )
 
+# command.pm and conf.pm are NOT target-owned: the shared runtime tree carries
+# the unified Pi 4 / Pi 5 platform support (Colorspace vs Colorimetry, Broadcast
+# RGB mapping, atomic output format), so the shared copies flow to every target.
 PGEN_RELEASE_TARGET_OWNED_RUNTIME_PATHS=(
- "usr/share/PGenerator/command.pm"
- "usr/share/PGenerator/conf.pm"
  "usr/bin/PGeneratorDisplayMirror"
  "usr/bin/pgcec"
  "usr/bin/cec-ctl"
@@ -40,6 +41,29 @@ PGEN_RELEASE_TARGET_OWNED_RUNTIME_PATHS=(
  "usr/sbin/write_csc.c"
 )
 
+# BiasiLinux (Pi 4) system files that must never reach a Raspberry Pi OS
+# Bookworm root: sysv clock scripts and rc links (Bookworm runs
+# systemd-timesyncd and its own fake-hwclock package), the /etc/sudo layout
+# (Bookworm uses /etc/sudoers.d), and the Pi 4 kernel's wireless regulatory
+# database (Bookworm ships wireless-regdb; a foreign regulatory.db fails the
+# signature check and drops WiFi to the world regdom).
+PGEN_RELEASE_PI4_ONLY_SYSTEM_PATHS=(
+ "etc/init.d/ntp"
+ "etc/init.d/fake-hwclock"
+ "etc/cron.hourly/fake-hwclock"
+ "etc/ntp.conf"
+ "etc/default/ntp"
+ "etc/default/ntpdate"
+ "etc/rc0.d"
+ "etc/rc2.d"
+ "etc/rc3.d"
+ "etc/rc4.d"
+ "etc/rc5.d"
+ "etc/rc6.d"
+ "etc/rcS.d"
+ "etc/sudo"
+ "lib/firmware"
+)
 PGEN_RELEASE_EXTERNAL_ICC_TOOL_PATHS=(
  "usr/bin/icc_companion_package.py"
  "usr/share/PGenerator/icc-companion"
@@ -70,7 +94,7 @@ pgen_release_rsync_excludes_for_rel() {
   "${PGEN_RELEASE_EXTERNAL_ICC_TOOL_PATHS[@]}"
  )
  if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
-  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}")
+  target_owned+=("${PI4_NUMPY_RUNTIME_PATHS[@]}" "${PGEN_RELEASE_PI4_ONLY_SYSTEM_PATHS[@]}")
  fi
  for owned in "${target_owned[@]}"; do
   case "$owned" in
@@ -125,4 +149,39 @@ pgen_release_validate_colour_math_runtime() {
   fi
  fi
  log "Validated shared colour-math modules and native LUT helper"
+}
+
+# Bookworm reads /etc/sudoers.d; the shared tree carries the BiasiLinux
+# /etc/sudo/sudoers.d layout. Install the shared rule set at the Bookworm
+# path so there is exactly one copy to maintain.
+pgen_release_install_pi5_sudoers() {
+ local root="$1"
+ local src="$REPO_ROOT/etc/sudo/sudoers.d/PGenerator"
+ [[ -f "$src" ]] || die "Shared sudoers rule set is missing: $src"
+ install -d -m 0755 "$root/etc/sudoers.d"
+ install -m 0440 "$src" "$root/etc/sudoers.d/PGenerator"
+ rm -rf "$root/etc/sudo"
+ log "Installed the shared PGenerator sudoers rules at /etc/sudoers.d/PGenerator"
+}
+
+# The Pi 5 renderer is a native Bookworm build. Fail closed if the target
+# overlay carries the Pi 4 legacy binary (glibc 2.21) or a stale/foreign file.
+pgen_release_validate_pi5_renderer() {
+ local root="$1"
+ local bin max_glibc
+ for bin in usr/sbin/PGeneratord usr/sbin/PGeneratord.dv; do
+  [[ -f "$root/$bin" ]] || die "Pi 5 payload is missing /$bin"
+  # The builders run with pipefail: "grep -q" exits at the first match and
+  # the producer dies of SIGPIPE, which turns a successful check into a
+  # failure. Let grep consume the whole stream instead.
+  file "$root/$bin" | grep 'ELF 32-bit LSB.*ARM' >/dev/null || die "/$bin is not a 32-bit ARM executable"
+  strings "$root/$bin" | grep -F '/etc/PGenerator/PGenerator.conf' >/dev/null || die "/$bin does not read PGenerator.conf (not a PGenerator renderer build)"
+  max_glibc="$(strings "$root/$bin" | grep -E '^GLIBC_[0-9]+\.[0-9]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)"
+  [[ -n "$max_glibc" ]] || die "Could not determine the glibc requirement of /$bin"
+  [[ "$(printf '%s\n%s\n' "$max_glibc" '2.28' | sort -V | head -1)" == '2.28' ]] || \
+   die "/$bin needs only glibc $max_glibc: this is the Pi 4 legacy renderer, not the Bookworm build"
+ done
+ cmp -s "$root/usr/sbin/PGeneratord" "$root/usr/sbin/PGeneratord.dv" || \
+  die "Pi 5 PGeneratord and PGeneratord.dv differ; the Pi 5 deploy flow installs the same native build under both names"
+ log "Validated the Pi 5 renderer: native Bookworm build (glibc $max_glibc)"
 }

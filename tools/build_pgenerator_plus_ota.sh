@@ -301,9 +301,12 @@ stage_overlay() {
 
  remove_external_icc_tools
 
- if [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
- chmod 0440 "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator"
-fi
+ if [[ "$TARGET" == "pi5-bookworm-armhf" ]]; then
+  pgen_release_install_pi5_sudoers "$STAGING_DIR"
+  pgen_release_validate_pi5_renderer "$STAGING_DIR"
+ elif [[ -f "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator" ]]; then
+  chmod 0440 "$STAGING_DIR/etc/sudo/sudoers.d/PGenerator"
+ fi
 
  # Device-owned state must never be packaged: extraction over / would
  # overwrite operator settings / per-display calibration on every update.
