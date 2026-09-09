@@ -1895,7 +1895,8 @@ sub lg_readback_leniency_ok (@) {
 }
 
 sub lg_picture_reset_workflow (@) {
- my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state)=@_;
+ my ($ip,$client_key,$connect_timeout,$tv_input,$fallback_picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state,$last_written_picture_mode)=@_;
+ $last_written_picture_mode="" if(!defined($last_written_picture_mode));
  $tv_input="" if(!defined($tv_input));
  $fallback_picture_mode="" if(!defined($fallback_picture_mode));
  $signal_mode="" if(!defined($signal_mode));
@@ -1909,16 +1910,53 @@ sub lg_picture_reset_workflow (@) {
  my $session=$auth->{"session"};
  my $generation=&lg_generation_info($auth->{"system_info"},$auth->{"software_info"},$auth->{"hello_info"});
  my $profile=&lg_generation_profile($generation);
+ # Read the mode the panel is ACTUALLY in, independently of what the caller
+ # asked for. $fallback_picture_mode carries the caller's own selection, so a
+ # value derived from it proves nothing about the TV -- and Full Auto Cal runs
+ # this reset once, immediately before it spends an hour writing a calibration
+ # into a single picture mode. That is the moment to notice a disagreement.
+ #
+ # The picture_get path deliberately does NOT do this: the AutoCal panels poll
+ # it every ~30s on the daemon's single WebUI request thread, and it does not
+ # need the answer. Empty here means "unknown", never "no mode is set".
+ # Full Auto Cal runs this reset once, immediately before it spends an hour
+ # writing a calibration into a single picture mode. That is the moment to
+ # notice a disagreement, so report the mode the panel is ACTUALLY in --
+ # independently of $fallback_picture_mode, which carries the caller's own
+ # selection and therefore proves nothing about the TV.
+ #
+ # Keep the generation gate. It is not a guess: 2841812f measured a live
+ # OLED48C1 and found that ssap://settings/getSystemSettings returns no value
+ # for pictureMode, that a direct service-bus request is not routed at all,
+ # and that even the palm:// bridge which CAN switch the mode is
+ # fire-and-forget -- "this generation cannot report pictureMode back on any
+ # route". Probing anyway would spend a round trip per reset to be told
+ # nothing. 5c19823e is the standing warning against re-deriving these
+ # capability gates: eb255177 recomputed one from platform_year <= 2020,
+ # quietly made every 2021 set strict, and broke calibration resets for weeks.
+ #
+ # An empty answer from a set that was expected to reply is still "unknown",
+ # never "no mode is set".
+ my $picture_mode_readable=$generation->{"picture_mode_read_forbidden"} ? 0 : 1;
+ my $tv_picture_mode=$picture_mode_readable
+  ? &lg_current_picture_mode($session,$connect_timeout + 2,"get_picture_mode_for_reset")
+  : "";
+ $picture_mode_readable=0 if($tv_picture_mode eq "");
+ my $tv_picture_mode_matches=&lg_picture_mode_tokens_agree($fallback_picture_mode,$tv_picture_mode,$signal_mode);
+ # A set that cannot report its mode still leaves one trustworthy trace: the
+ # mode PGenerator itself last asked it to be in. On a 2021 C1 that is the
+ # only evidence available -- the panel answers no route, so without this a
+ # wrong-but-present selection is undetectable and calibrates for an hour.
+ my $last_written_picture_mode_matches=&lg_picture_mode_tokens_agree($fallback_picture_mode,$last_written_picture_mode,$signal_mode);
+ my %picture_mode_probe=(
+  tv_picture_mode => $tv_picture_mode,
+  picture_mode_readable => $picture_mode_readable ? &json_true() : &json_false(),
+  tv_picture_mode_matches => $tv_picture_mode_matches ? &json_true() : &json_false(),
+  last_written_picture_mode => $last_written_picture_mode,
+  last_written_picture_mode_matches => $last_written_picture_mode_matches ? &json_true() : &json_false(),
+ );
  my $active_picture_mode=$fallback_picture_mode;
- if($active_picture_mode eq "" && !$generation->{"picture_mode_read_forbidden"}) {
-  my $probe=&lg_request($session,"get_picture_mode_for_reset","settings/getSystemSettings",{
-   category => "picture",
-   keys => ["pictureMode"],
-  },$connect_timeout + 2);
-  if(ref($probe) eq "HASH" && ref($probe->{"payload"}) eq "HASH" && ref($probe->{"payload"}{"settings"}) eq "HASH") {
-	  $active_picture_mode=$probe->{"payload"}{"settings"}{"pictureMode"}||"";
-	 }
-	}
+ $active_picture_mode=$tv_picture_mode if($active_picture_mode eq "" && $tv_picture_mode ne "");
  # C9 / pre-2022 DDC-only sets: webOS will not report pictureMode. Prefer the
  # operator-selected mode, then the last saved DDC calibration mode, then the
  # signal-default (cinema / hdrCinema / ...). Without this the Display Card
@@ -1932,6 +1970,7 @@ sub lg_picture_reset_workflow (@) {
    ip => $ip,
    lg_generation => $generation,
    needs_picture_mode => &json_true(),
+   %picture_mode_probe,
   });
  }
  if($active_picture_mode eq "") {
@@ -1940,6 +1979,7 @@ sub lg_picture_reset_workflow (@) {
    ip => $ip,
    lg_generation => $generation,
    needs_picture_mode => &json_true(),
+   %picture_mode_probe,
   });
  }
 	my $keys=&lg_picture_reset_keys_from_tv($session,$active_picture_mode,$tv_input,$signal_mode,$connect_timeout + 2);
@@ -2454,6 +2494,7 @@ foreach my $attempt (@panel_payloads) {
   ip => $ip,
   client_key => $auth->{"client_key"},
 	  active_picture_mode => $active_picture_mode,
+	  %picture_mode_probe,
 		  picture_settings => $picture_settings_after,
 		  full_picture_reset_ok => &json_bool($ok),
 		  basic_picture_reset_ok => &json_bool($basic_picture_reset_ok),
@@ -7051,6 +7092,25 @@ sub lg_remote_control_workflow (@) {
  });
 }
 
+# Do two picture-mode tokens name the same mode? The token the WebUI selects
+# and the token the TV reports are not the same string on every generation: a
+# Dolby Vision "dolbyVisionCinema" selection reads back as "dolbyHdrCinema",
+# and DV Filmmaker is the dolbyHdrCinema selector. Compare through the label
+# map, never as raw strings.
+#
+# Returns 1 when they agree AND when there is nothing to compare -- an unknown
+# token or a failed probe is not evidence of a disagreement, and callers use
+# this to decide whether to stop a calibration.
+sub lg_picture_mode_tokens_agree (@) {
+ my ($a,$b,$signal_mode)=@_;
+ $a="" if(!defined($a));
+ $b="" if(!defined($b));
+ return 1 if($a eq "" || $b eq "");
+ my $want=&map_picture_mode_label_to_ddc_name($a,$signal_mode) || $a;
+ my $have=&map_picture_mode_label_to_ddc_name($b,$signal_mode) || $b;
+ return (lc($want) eq lc($have)) ? 1 : 0;
+}
+
 sub lg_current_picture_mode (@) {
  my ($session,$timeout,$id)=@_;
  $id="get_calibration_picture_mode" if(!defined($id) || $id eq "");
@@ -7724,6 +7784,7 @@ sub main (@) {
  my $write_probe=$request->{"write_probe"} ? 1 : 0;
  my $target_input=$request->{"target_input"}||"";
  my $include_current_input=$request->{"include_current_input"} ? 1 : 0;
+ my $last_written_picture_mode=$request->{"last_written_picture_mode"}||"";
  my $dpg_data=$request->{"dpg_data"};
  my $result;
 
@@ -7738,7 +7799,7 @@ sub main (@) {
 	 } elsif($action eq "picture_set") {
 		  $result=&lg_picture_set_workflow($ip,$client_key,$connect_timeout,$settings,$readback_keys,$tv_input,$keep_calibration_mode,$picture_mode,$calibration_mode_active,$reset_ddc_baseline,$verify_ddc_upload,$force_ddc_white_balance,$signal_mode);
  } elsif($action eq "picture_reset") {
-  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state);
+  $result=&lg_picture_reset_workflow($ip,$client_key,$connect_timeout,$tv_input,$picture_mode,$signal_mode,$require_white_balance_reset,$reset_ddc_state,$last_written_picture_mode);
  } elsif($action eq "picture_apply_all_inputs") {
   $result=&lg_picture_apply_all_inputs_workflow($ip,$client_key,$connect_timeout);
    } elsif($action eq "remote_enter") {

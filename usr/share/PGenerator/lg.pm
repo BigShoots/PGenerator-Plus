@@ -1838,7 +1838,7 @@ sub webui_lg_picture_settings (@) {
 # applied to the picture_set / calibration paths below. See lg_tv_off_gate.
 my $tv_off_gate=&lg_tv_off_gate("read picture settings");
 return &lg_encode_json($tv_off_gate) if(ref($tv_off_gate) eq "HASH");
-&lg_calmode_trace("picture_get: force_ddc=".($payload->{"force_ddc_white_balance"}?1:0)." pmode=$picture_mode"); # TEMP DEBUG CALMODE
+&lg_calmode_trace("picture_get: force_ddc=".($payload->{"force_ddc_white_balance"}?1:0)." pmode=$picture_mode req_pmode=".($payload->{"picture_mode"}||"")); # TEMP DEBUG CALMODE
 my $result=&lg_helper_run({
  action => "picture_get",
  ip => $ip,
@@ -1906,7 +1906,7 @@ sub webui_lg_picture_settings_set (@) {
 	  ? &lg_prepare_held_calibration_mode($clients,$keep_calibration_mode,$calibration_mode_active,$picture_mode)
 	  : undef;
 	 return &lg_encode_json($held_prepare) if(ref($held_prepare) eq "HASH");
- &lg_calmode_trace("picture_set: ddc_wb=$ddc_white_balance keep=$keep_calibration_mode active=$calibration_mode_active force=".($payload->{"force_ddc_white_balance"}?1:0)." method=".($settings->{"whiteBalanceMethod"}||"")." pmode=$picture_mode skip_readback=".($payload->{"skip_readback"}?1:0)); # TEMP DEBUG CALMODE
+ &lg_calmode_trace("picture_set: ddc_wb=$ddc_white_balance keep=$keep_calibration_mode active=$calibration_mode_active force=".($payload->{"force_ddc_white_balance"}?1:0)." method=".($settings->{"whiteBalanceMethod"}||"")." pmode=$picture_mode req_pmode=".($payload->{"picture_mode"}||"")." skip_readback=".($payload->{"skip_readback"}?1:0)); # TEMP DEBUG CALMODE
  my $result=&lg_helper_run({
   action => "picture_set",
   ip => $ip,
@@ -1953,6 +1953,25 @@ sub webui_lg_picture_settings_set (@) {
  }
  my $updated_clients=$clients;
  $updated_clients=&lg_update_connect_metadata($result,$clients->{"manual_ip"} || $ip) if(($result->{"status"}||"") eq "ok");
+ # Remember the mode PGenerator last asked the TV to be in, separately from
+ # calibration_picture_mode below. That field only moves on a DDC
+ # white-balance write, so it holds the last CALIBRATED mode and is stale the
+ # moment the operator switches modes by hand -- which is exactly when it gets
+ # consulted. On a generation that cannot report its active mode at all (a
+ # 2021 C1 cannot, on any route -- see 2841812f), this is the only record of
+ # what the panel was actually asked to show, and Full Auto Cal checks its
+ # target against it before spending an hour.
+ if(($result->{"status"}||"") eq "ok" && ($result->{"picture_mode_changed"} || $result->{"picture_mode_verified"})) {
+  my $written=$result->{"active_picture_mode"}
+   || ((ref($result->{"applied"}) eq "HASH") ? ($result->{"applied"}{"pictureMode"}||"") : "")
+   || $result->{"requested_picture_mode"}
+   || "";
+  if($written ne "") {
+   $updated_clients->{"last_written_picture_mode"}=$written;
+   $updated_clients->{"last_written_picture_mode_at"}=time();
+   &lg_save_clients($updated_clients);
+  }
+ }
 	 if(($result->{"status"}||"") eq "ok" && $ddc_white_balance && ($result->{"ddc_1d_lut"} || exists($result->{"calibration_mode"}))) {
 	  &lg_calmode_trace("picture_set APPLIED calibration_mode=".($keep_calibration_mode?"true":"false")." ddc_1d_lut=".($result->{"ddc_1d_lut"}?1:0)); # TEMP DEBUG CALMODE
 	  $updated_clients->{"calibration_mode"}=$keep_calibration_mode ? &lg_json_true() : &lg_json_false();
@@ -2002,6 +2021,7 @@ sub webui_lg_picture_reset (@) {
 	  client_key => $client_key,
 	  picture_mode => $picture_mode,
 	  signal_mode => $payload->{"signal_mode"}||"",
+	  last_written_picture_mode => $clients->{"last_written_picture_mode"}||"",
 	  require_white_balance_reset => $payload->{"require_white_balance_reset"} ? &lg_json_true() : &lg_json_false(),
 	  reset_ddc_state => $payload->{"require_white_balance_reset"} ? 1 : 0,
 	  tv_input => &lg_input_from_cec(),

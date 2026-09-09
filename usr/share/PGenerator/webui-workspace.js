@@ -5782,6 +5782,35 @@ async function meterAutoCalRunPreflightReset(){
  try{
   meterAutoCalResetSkipped='';
   const ddcReset=await meterAutoCalResetWithRecovery('LG picture-mode reset',meterAutoCalResetDdc,'Check the TV connection and picture mode.');
+  // Full Auto Cal writes its result into ONE picture mode and takes about an
+  // hour. This reset is the last point before that hour where the panel's own
+  // mode is known, so decide here rather than reading it out of the calmode
+  // trace afterwards. Reported by an operator who set HDR Filmmaker, ran HDR10
+  // and SDR back to back, and got Cinema both times.
+  //
+  // tv_picture_mode is absent on a helper older than the probe: treat that as
+  // "cannot tell" and leave the run alone.
+  if(ddcReset&&Object.prototype.hasOwnProperty.call(ddcReset,'picture_mode_readable')){
+   const wanted=meterLgPictureModeValue();
+   const onTv=String(ddcReset.tv_picture_mode||'');
+   if(ddcReset.picture_mode_readable){
+    if(wanted&&onTv&&!ddcReset.tv_picture_mode_matches){
+     throw new Error('Full Auto Cal is set to calibrate "'+lgPictureModeLabel(wanted)+'", but the TV is in "'+lgPictureModeLabel(onTv)+'". Select the mode you want calibrated, or change the TV, then start again');
+    }
+   } else {
+    // The panel will not say what it is in. A 2021 C1 cannot report its mode
+    // on any route, so the only remaining evidence is the mode PGenerator
+    // itself last switched the TV to.
+    if(!wanted){
+     // The old fallback guessed the signal default here and calibrated into it.
+     throw new Error('No picture mode is selected, and this TV did not report the mode it is in. Choose the picture mode in the LG Control menu, then start Full Auto Cal again');
+    }
+    const lastWritten=String(ddcReset.last_written_picture_mode||'');
+    if(lastWritten&&!ddcReset.last_written_picture_mode_matches){
+     throw new Error('Full Auto Cal is set to calibrate "'+lgPictureModeLabel(wanted)+'", but the last mode PGenerator switched this TV to was "'+lgPictureModeLabel(lastWritten)+'". This TV cannot report its own picture mode, so confirm which one it is in, then start again');
+    }
+   }
+  }
   meterAutoCalPreflightLgGeneration=(ddcReset&&ddcReset.lg_generation)||(ddcReset&&ddcReset.picture_mode_reset&&ddcReset.picture_mode_reset.lg_generation)||null;
   let lutReset=null;
   if(meterAutoCalPendingConfig&&meterAutoCalPendingConfig.fullWorkflow){
