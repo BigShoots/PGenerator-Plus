@@ -4,7 +4,7 @@ const state = {
   files: [],
   selected: new Set(),
   filter: "changes",
-  hideExpected: false,
+  hideExpected: true,
   scanning: false,
   busy: null,
   snapshot: null,
@@ -362,7 +362,6 @@ els.upload.addEventListener("click", async () => {
       paths: selected.map((file) => file.path),
     });
     toast(`${data.uploaded.length} file${data.uploaded.length === 1 ? "" : "s"} uploaded from ${data.commit.slice(0, 8)}.\nBackup: ${data.backup}`, "success", 9000);
-    els.form.requestSubmit();
   } catch (error) {
     toast(error.message, "error", 10000);
   } finally {
