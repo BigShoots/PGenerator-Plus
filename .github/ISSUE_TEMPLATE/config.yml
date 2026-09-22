@@ -1,1 +1,6 @@
 blank_issues_enabled: false
+contact_links:
+  - name: "Questions & general discussion"
+    url: "https://www.avsforum.com/threads/pgenerator-pi-os-qol-improvements-to-pgenerator.3342417/"
+    about: "For setup help and usage questions, ask in the PGenerator+ AVS Forum thread."
+

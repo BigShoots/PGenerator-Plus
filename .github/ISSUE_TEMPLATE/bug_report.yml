@@ -23,8 +23,8 @@ body:
     id: version
     attributes:
       label: "PGenerator version"
-      description: "Example: 2.2.2"
-      placeholder: "2.2.2"
+      description: "Example: v2.12.2"
+      placeholder: "v2.12.2"
     validations:
       required: true
 
@@ -50,11 +50,35 @@ body:
     validations:
       required: true
 
-  - type: input
+  - type: dropdown
+    id: os_version
+    attributes:
+      label: "Operating system"
+      description: "Raspberry Pi OS release running PGenerator"
+      options:
+        - "Raspberry Pi OS Bookworm"
+        - "Raspberry Pi OS Bullseye"
+        - "Raspberry Pi OS Buster or older"
+        - "Other Linux"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
     id: meter
     attributes:
       label: "Meter"
-      placeholder: "i1Display Pro Plus"
+      description: "Leave on \"None\" if no meter was involved"
+      options:
+        - "None"
+        - "i1Display Pro"
+        - "i1Display Pro Plus"
+        - "i1Pro / i1Pro 2"
+        - "ColorMunk"
+        - "ColourSensor (CS-1000 / CS-2000)"
+        - "Other"
+    validations:
+      required: true
 
   - type: dropdown
     id: area
