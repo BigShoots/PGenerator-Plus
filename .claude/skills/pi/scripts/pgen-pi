@@ -2,16 +2,22 @@
 """pgen-pi: every step on the PGenerator+ Pi from the Mac, with the house
 rules built in (CLAUDE.md "Working on the Pi"). Needs the sandbox off (LAN).
 
-  pgen-pi busy                      Calman/ColourSpace check; the result is
-                                    remembered for the guard hook (FREE for 10 min)
+  pgen-pi busy                      Calman/ColourSpace check, and another local
+                                    session (other checkout) on the Pi in the last
+                                    10 min; remembered for the guard hook (FREE
+                                    for 10 min)
   pgen-pi status                    daemon, ports, signal, vc4 module, kernel,
                                     locks; plus the busy result and open snapshot
   pgen-pi ssh 'CMD'                 run CMD as root (password from README.md)
   pgen-pi scp SRC... DEST           copy to the Pi
+  pgen-pi fetch REMOTE... LOCAL     copy from the Pi (LOCAL: file or directory)
   pgen-pi snapshot [LABEL]          save the user's conf + pattern before a test
   pgen-pi snapshot --close REASON   end the open snapshot without a restore
   pgen-pi diff                      what differs from the open snapshot now
   pgen-pi restore                   give the snapshot back (busy-checked)
+                                    (another checkout's snapshot: refused;
+                                    --force after --close, diff, restore only
+                                    when the user says that session is gone)
   pgen-pi deploy [--base REF] [--label L] [--force] [--check] PATH[:REMOTE]...
                                     Pi file against the branch, backup, install
                                     with md5 checks, daemon restart, restore.sh
@@ -33,6 +39,15 @@ REPO = os.path.realpath(os.path.join(HERE, "..", "..", "..", ".."))
 VERIFY = os.path.join(REPO, ".claude", "skills", "verify", "scripts")
 EXP = os.environ.get("PGEN_PI_EXP", os.path.join(HERE, "pi.exp"))
 HOST = os.environ.get("PI_HOST", "192.168.1.235")
+# Names of the same Pi (the guard hook knows both too).
+HOST_ALIASES = {"pgenerator.local": "192.168.1.235"}
+
+
+def norm_host(h):
+    h = (h or "").strip().lower()
+    return HOST_ALIASES.get(h, h)
+
+
 STATE_DIR = os.environ.get("PGEN_PI_STATE_DIR", os.path.expanduser("~/.local/state/pgen-pi"))
 STATE = os.path.join(STATE_DIR, "state.json")
 BUSY_FRESH = 600          # seconds a FREE counts (the guard hook reads the same)
@@ -69,9 +84,36 @@ def save_state(st):
     os.replace(tmp, STATE)
 
 
+class state_lock(object):
+    """Held around every read-modify-write of state.json: sessions in other
+    checkouts share it (two snapshots started at once both went through and
+    one record was lost, review 2026-11-01)."""
+    def __enter__(self):
+        import fcntl
+        os.makedirs(STATE_DIR, exist_ok=True)
+        self.f = open(os.path.join(STATE_DIR, "state.lock"), "a")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()
+        return False
+
+
+def update_state(fn):
+    """fn(state) under the lock, then saved; returns what fn returns."""
+    with state_lock():
+        st = load_state()
+        if not isinstance(st, dict):
+            st = {}
+        r = fn(st)
+        save_state(st)
+        return r
+
+
 def log_action(what, **kw):
     os.makedirs(STATE_DIR, exist_ok=True)
-    kw.update(time=int(time.time()), what=what, cwd=os.getcwd())
+    kw.update(time=int(time.time()), what=what, cwd=os.getcwd(), repo=REPO, host=HOST)
     with open(os.path.join(STATE_DIR, "log.jsonl"), "a") as f:
         f.write(json.dumps(kw, sort_keys=True) + "\n")
 
@@ -124,6 +166,20 @@ def scp(srcs, dest):
     return _run(["scp"] + list(srcs) + [dest], True)
 
 
+def fetch(srcs, dest):
+    """One pi.exp call per file: scp opens a connection per remote source and
+    asks for the password each time, and pi.exp answers only the first
+    prompt (a later one after output is the command's own; 2026-11-01 a
+    two-file fetch hung at the second prompt). Stops at the first failure."""
+    out = []
+    for s in srcs:
+        rc, o = _run(["fetch", s, dest], True)
+        out.append(o)
+        if rc != 0:
+            return rc, "".join(out)
+    return 0, "".join(out)
+
+
 def md5_file(path):
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -155,16 +211,84 @@ def sync_tool(local, remote):
 
 # --- busy -------------------------------------------------------------------
 
-def busy(quiet=False):
+def same_checkout(rec):
+    """A log or snapshot record of this checkout (records before the repo
+    field: by the directory they were made in)."""
+    if rec.get("repo"):
+        return rec["repo"] == REPO
+    c = rec.get("cwd", "")
+    return c == REPO or c.startswith(REPO + os.sep)
+
+
+def owner(rec):
+    return rec.get("repo") or rec.get("cwd", "?")
+
+
+def other_sessions(now, gone=None):
+    """Another local session on the Pi: a snapshot it holds open, or what it
+    did there within BUSY_FRESH s. The Pi's busy check cannot see these: it
+    leaves our own probes (127.0.0.1, the Mac) out, and both sessions run
+    from this Mac (2026-11-01: two sessions 5 min apart on the Pi). gone:
+    the checkout the user said is gone (restore --force of its snapshot)."""
+    reasons = []
+    s = load_state().get("snapshot")
+    if s and not same_checkout(s) and owner(s) != gone and norm_host(s.get("host", HOST)) == norm_host(HOST):
+        reasons.append("another local session holds snapshot %s open (from %s, %d min ago): the user's settings "
+                       "are out until that session restores them. Ask the user; do not close or restore it from "
+                       "here" % (s.get("label", "?"), s.get("repo") or s.get("cwd", "?"), (now - s.get("time", now)) / 60))
+    try:
+        with open(os.path.join(STATE_DIR, "log.jsonl")) as f:
+            tail = f.readlines()[-2000:]
+    except OSError:
+        tail = []
+    # Per other checkout its last action on this Pi; reading (busy, status,
+    # fetch, diff) does not count, and a session whose last action gave the
+    # Pi back (a restore that brought the settings back, a closed snapshot)
+    # is done with it.
+    seen = {}
+    for l in tail:
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("what") in ("busy", "status", "fetch", "diff") or same_checkout(r) \
+                or owner(r) == gone or norm_host(r.get("host", HOST)) != norm_host(HOST):
+            continue
+        t = r.get("time")
+        if isinstance(t, (int, float)) and now - BUSY_FRESH <= t <= now + 60:
+            seen[r.get("repo") or r.get("cwd", "?")] = r
+    for who, r in sorted(seen.items()):
+        if r.get("what") == "snapshot-close" or (r.get("what") == "restore" and r.get("rc") == 0):
+            continue
+        what = r.get("what", "?") + ((" " + r["cmd"][:80]) if r.get("cmd") else "")
+        reasons.append("another local session (%s) used the Pi %d s ago: %s" % (who, now - r["time"], what))
+    return reasons
+
+
+def busy(quiet=False, gone=None):
     """Runs the busy check on the Pi and records it. True only for FREE."""
     sync_tool(os.path.join(HERE, "pi_calman_busy.sh"), "/root/pi_calman_busy.sh")
     rc, outp = ssh("sh /root/pi_calman_busy.sh", capture=True)
     lines = [l for l in outp.splitlines() if l.strip()]
     last = lines[-1].strip() if lines else ""
     result = "FREE" if (rc == 0 and last == "FREE") else ("BUSY" if last == "BUSY" else "ERROR")
-    st = load_state()
-    st["busy"] = {"result": result, "time": int(time.time()), "reasons": lines[:-1][-20:], "host": HOST}
-    save_state(st)
+    local = other_sessions(int(time.time()), gone)
+    if local and result == "FREE":
+        result = "BUSY"
+        outp = "\n".join(lines[:-1] + local + ["BUSY"]) + "\n"
+        lines = lines[:-1] + local + ["BUSY"]
+    # Per checkout: what another session finds differs (its own snapshot and
+    # actions do not count for it), and the guard hook takes only this
+    # checkout's FREE.
+    rec = {"result": result, "time": int(time.time()), "reasons": lines[:-1][-20:], "host": HOST, "repo": REPO}
+
+    def put(st):
+        st["busy"] = rec
+        by = st.get("busy_by_repo")
+        by = by if isinstance(by, dict) else {}
+        by[REPO] = rec
+        st["busy_by_repo"] = by
+    update_state(put)
     log_action("busy", result=result)
     if not quiet or result != "FREE":
         sys.stdout.write(outp if outp.endswith("\n") or not outp else outp + "\n")
@@ -173,8 +297,8 @@ def busy(quiet=False):
     return result == "FREE"
 
 
-def require_free(what):
-    if not busy(quiet=True):
+def require_free(what, gone=None):
+    if not busy(quiet=True, gone=gone):
         die("STOP: not FREE, %s not done. Look at the lines above (CLAUDE.md: a real session -> do not touch the device, ask)." % what)
     sys.stdout.write("busy check: FREE\n")
 
@@ -230,9 +354,12 @@ def cmd_status(args):
     sync_tool(os.path.join(HERE, "pi_state.py"), TOOLS + "/pi_state.py")
     rc, _ = ssh(STATUS_SH)
     st = load_state()
-    b = st.get("busy")
+    by = st.get("busy_by_repo")
+    b = by.get(REPO) if isinstance(by, dict) else None
     if b:
-        sys.stdout.write("last busy check: %s, %d s ago\n" % (b["result"], time.time() - b["time"]))
+        sys.stdout.write("last busy check of this checkout (the one the guard takes): %s, %d s ago\n" % (b["result"], time.time() - b["time"]))
+    else:
+        sys.stdout.write("no busy check of this checkout yet\n")
     s = st.get("snapshot")
     if s:
         sys.stdout.write("OPEN snapshot: %s (%d min ago, from %s)\n" % (s["label"], (time.time() - s["time"]) / 60, s.get("cwd", "?")))
@@ -249,74 +376,238 @@ def cmd_ssh(args):
     return rc
 
 
+# "root@pi:/x", "192.168.1.235:/x", "pgenerator:/x": a remote spec, which
+# pi.exp would put behind root@HOST: again (scp then asks for another
+# password, read as refused: "password refused", 2026-10-30).
+REMOTE_SPEC = re.compile(r"^(?:[^@/:\s]+@)?[^/:\s]+:")
+
+
 def cmd_scp(args):
     if len(args) < 2:
         die("usage: pgen-pi scp SRC... DEST", 2)
+    remote = [a for a in args if REMOTE_SPEC.match(a)]
+    if remote:
+        die("STOP: pgen-pi scp copies local files to the Pi and takes a plain Pi path as DEST "
+            "(%s): to copy from the Pi use pgen-pi fetch REMOTE_PATH... LOCAL" % ", ".join(remote), 2)
     log_action("scp", args=args)
     rc, outp = scp(args[:-1], args[-1])
     sys.stdout.write(outp)
     return rc
 
 
+def cmd_fetch(args):
+    if len(args) < 2:
+        die("usage: pgen-pi fetch REMOTE_PATH... LOCAL", 2)
+    srcs = [re.sub(r"^(?:[^@/:\s]+@)?[^/:\s]+:", "", a) for a in args[:-1]]
+    dest = args[-1]
+    if REMOTE_SPEC.match(dest):
+        die("STOP: LOCAL (%s) is a remote spec; pgen-pi fetch copies to this Mac" % dest, 2)
+    # Plain absolute paths: scp would expand ~ and globs and split on blanks
+    # on the Pi, while the md5 check below reads the literal path.
+    odd = [s for s in srcs if not s.startswith("/") or re.search(r"[\s*?\[\]{}~$`'\"\\]", s)]
+    if odd:
+        die("STOP: REMOTE_PATH must be a plain absolute path on the Pi (no ~, globs, blanks or quotes): %s" % ", ".join(odd), 2)
+    if len(srcs) > 1 and not os.path.isdir(dest):
+        die("STOP: several files need an existing directory as LOCAL (%s)" % dest, 2)
+    if os.path.isdir(dest):
+        # APFS ignores case: README and readme are one file there
+        names = [os.path.basename(s).lower() for s in srcs]
+        dup = sorted(set(n for n in names if names.count(n) > 1))
+        if dup:
+            die("STOP: two files would land as %s in %s (case ignored); fetch them one by one" % (", ".join(dup), dest), 2)
+    quoted = " ".join(shlex.quote(s) for s in srcs)
+
+    def pi_md5():
+        """{path: md5} from the Pi, None when the ssh failed."""
+        rc, sums = ssh("md5sum " + quoted, capture=True)
+        got = dict((l.split()[1], l.split()[0]) for l in sums.splitlines()
+                   if len(l.split()) == 2 and re.match(r"^[0-9a-f]{32}$", l.split()[0]))
+        return got if (rc == 0 or got) else None
+    log_action("fetch", args=args)
+    before = pi_md5() or {}
+    missing = [s for s in srcs if s not in before]
+    if missing:
+        die("STOP: not readable on the Pi: %s" % ", ".join(missing))
+    # One pi.exp call per file (see fetch()), each into a temporary name next
+    # to its target: a file already there stays as it is until the copy is
+    # proven whole. Stops at the first failure; what came before it is
+    # checked like the rest.
+    local = dict((s, os.path.join(dest, os.path.basename(s)) if os.path.isdir(dest) else dest) for s in srcs)
+    part = dict((s, "%s.part-%d" % (local[s], os.getpid())) for s in srcs)
+    done, failed, rc = [], None, 0
+    for s in srcs:
+        rc, outp = fetch([s], part[s])
+        sys.stdout.write(outp)
+        if rc != 0:
+            failed = s
+            break
+        done.append(s)
+    # What arrived against the Pi's md5 before and after the copy: a cut
+    # connection can leave a short file behind with scp's status 0 lost in
+    # the pty, and a file still being written on the Pi changes under it.
+    after = pi_md5()
+    changed, bad, unchecked, kept = [], [], [], []
+    for s in srcs:
+        if s not in done:
+            if s != failed:
+                continue                      # not tried
+        elif after is None or s not in after:
+            unchecked.append(s)
+        elif after[s] != before[s]:
+            changed.append(s)
+        elif not os.path.isfile(part[s]) or md5_file(part[s]) != before[s]:
+            bad.append(s)
+        else:
+            os.replace(part[s], local[s])
+            continue
+        if os.path.isfile(part[s]):
+            os.replace(part[s], local[s] + ".incomplete")
+            kept.append(local[s] + ".incomplete")
+    if failed or changed or bad or unchecked:
+        msg = []
+        if failed:
+            msg.append("the copy of %s failed (status %d)%s" % (failed, rc, "; the files after it were not fetched" if failed != srcs[-1] else ""))
+        if changed:
+            msg.append("changed on the Pi during the copy: %s" % ", ".join(changed))
+        if bad:
+            msg.append("fetched but not whole (md5 differs from the Pi's): %s" % ", ".join(bad))
+        if unchecked:
+            msg.append("not verified, the Pi's md5 was not readable after the copy: %s" % ", ".join(unchecked))
+        die("STOP: %s%s" % ("; ".join(msg), " (what arrived is in %s; files already there are untouched)" % ", ".join(kept) if kept else ""))
+    sys.stdout.write("fetched %s (md5 = the Pi's)\n" % ", ".join(srcs))
+    return 0
+
+
 # --- snapshot / restore -----------------------------------------------------
 
+def save_running(s):
+    """A snapshot record whose Pi save is still under way: its pgen-pi
+    (sessions all run on this Mac) still lives."""
+    pid = s.get("pid") if s.get("saving") else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def foreign_snapshot_stop(s, what):
+    die("STOP: snapshot %s belongs to another checkout (%s): the user's settings come back with that session's "
+        "pgen-pi restore. Ask the user; %s only when they say that session is gone" % (s.get("label", "?"), owner(s), what))
+
+
 def cmd_snapshot(args):
-    st = load_state()
     if args[:1] == ["--close"]:
-        if len(args) < 2 or not " ".join(args[1:]).strip():
-            die("usage: pgen-pi snapshot --close REASON", 2)
-        s = st.pop("snapshot", None)
-        if not s:
-            die("no open snapshot")
-        save_state(st)
-        log_action("snapshot-close", label=s["label"], reason=" ".join(args[1:]))
-        sys.stdout.write("closed %s without a restore: %s\n" % (s["label"], " ".join(args[1:])))
+        force = args[1:2] == ["--force"]
+        reason = " ".join(args[2:] if force else args[1:]).strip()
+        if not reason:
+            die("usage: pgen-pi snapshot --close [--force] REASON", 2)
+
+        def close(st):
+            s = st.get("snapshot")
+            if not s:
+                die("no open snapshot")
+            if not same_checkout(s) and not force:
+                foreign_snapshot_stop(s, "--close --force REASON")
+            if save_running(s):
+                die("STOP: snapshot %s is still being saved on the Pi (pgen-pi pid %d runs); wait for it" % (s["label"], s["pid"]))
+            st.pop("snapshot", None)
+            return s
+        s = update_state(close)
+        log_action("snapshot-close", label=s["label"], reason=reason)
+        sys.stdout.write("closed %s without a restore: %s\n" % (s["label"], reason))
         return 0
     if len(args) > 1:
         die("usage: pgen-pi snapshot [LABEL] | --close REASON", 2)
-    if st.get("snapshot"):
-        s = st["snapshot"]
-        die("STOP: snapshot %s is open (from %s). pgen-pi restore, or pgen-pi snapshot --close REASON" % (s["label"], s.get("cwd", "?")))
     label = args[0] if args else time.strftime("snap-%Y%m%d-%H%M%S")
     if not LABEL_RX.match(label):
         die("STOP: label must be 1-64 of A-Z a-z 0-9 . _ -", 2)
-    sync_tool(os.path.join(HERE, "pi_state.py"), TOOLS + "/pi_state.py")
-    rc, outp = ssh("python3 %s/pi_state.py save %s" % (TOOLS, shlex.quote(label)), capture=True)
+    # The record is taken under the lock before the Pi saves (a second
+    # session starting at the same time finds it), and given up again when
+    # the save fails.
+    rec = {"label": label, "time": int(time.time()), "cwd": os.getcwd(), "repo": REPO, "host": HOST, "saving": 1,
+           "pid": os.getpid()}
+
+    def reserve(st):
+        s = st.get("snapshot")
+        if s:
+            if same_checkout(s):
+                die("STOP: snapshot %s is open (from %s). pgen-pi restore, or pgen-pi snapshot --close REASON" % (s["label"], s.get("cwd", "?")))
+            die("STOP: snapshot %s of another checkout (%s) is open: the Pi is in use by that session. Ask the user"
+                % (s.get("label", "?"), owner(s)))
+        st["snapshot"] = rec
+    update_state(reserve)
+
+    def ours(st):
+        s = st.get("snapshot")
+        return isinstance(s, dict) and s.get("label") == label and same_checkout(s)
+    try:
+        sync_tool(os.path.join(HERE, "pi_state.py"), TOOLS + "/pi_state.py")
+        rc, outp = ssh("python3 %s/pi_state.py save %s" % (TOOLS, shlex.quote(label)), capture=True)
+    except BaseException:
+        update_state(lambda st: st.pop("snapshot", None) if ours(st) else None)
+        raise
     sys.stdout.write(outp)
     if rc != 0:
+        update_state(lambda st: st.pop("snapshot", None) if ours(st) else None)
         return 1
-    st["snapshot"] = {"label": label, "time": int(time.time()), "cwd": os.getcwd(), "host": HOST}
-    save_state(st)
+    def finish(st):
+        if not ours(st):
+            return False
+        st["snapshot"].pop("saving", None)
+        st["snapshot"].pop("pid", None)
+        return True
+    if not update_state(finish):
+        log_action("snapshot", label=label, lost=1)
+        die("STOP: saved on the Pi as %s, but the snapshot record was closed meanwhile: nothing is open for "
+            "pgen-pi restore. Take a new snapshot, or give the settings back from that save by hand" % label)
     log_action("snapshot", label=label)
     return 0
 
 
-def open_snapshot():
+def open_snapshot(force=False):
     s = load_state().get("snapshot")
     if not s:
         die("no open snapshot (pgen-pi snapshot first)")
+    if not same_checkout(s) and not force:
+        foreign_snapshot_stop(s, "--force")
     return s
 
 
 def cmd_diff(args):
-    s = open_snapshot()
+    if args not in ([], ["--force"]):
+        die("usage: pgen-pi diff [--force]", 2)
+    s = open_snapshot(force=bool(args))
     sync_tool(os.path.join(HERE, "pi_state.py"), TOOLS + "/pi_state.py")
     rc, _ = ssh("python3 %s/pi_state.py diff %s" % (TOOLS, shlex.quote(s["label"])))
     return rc
 
 
 def cmd_restore(args):
-    if args:
-        die("usage: pgen-pi restore", 2)
-    s = open_snapshot()
-    require_free("restore")
+    if args not in ([], ["--force"]):
+        die("usage: pgen-pi restore [--force]", 2)
+    s = open_snapshot(force=bool(args))
+    if s.get("saving"):
+        if save_running(s):
+            die("STOP: snapshot %s is still being saved on the Pi (pgen-pi pid %d runs); try again in a moment" % (s["label"], s["pid"]))
+        die("STOP: the save of snapshot %s was cut off (its pgen-pi is gone): the Pi may hold a partial save. "
+            "pgen-pi snapshot --close REASON, then a new snapshot" % s["label"])
+    # A forced restore of a gone session's snapshot: that snapshot and that
+    # session's actions do not count as another session using the Pi.
+    require_free("restore", gone=None if same_checkout(s) else owner(s))
     sync_tool(os.path.join(HERE, "pi_state.py"), TOOLS + "/pi_state.py")
     rc, _ = ssh("python3 %s/pi_state.py restore %s" % (TOOLS, shlex.quote(s["label"])))
     log_action("restore", label=s["label"], rc=rc)
     if rc == 0:
-        st = load_state()
-        st.pop("snapshot", None)
-        save_state(st)
+        def close(st):
+            cur = st.get("snapshot")
+            if isinstance(cur, dict) and cur.get("label") == s["label"] and owner(cur) == owner(s):
+                st.pop("snapshot", None)
+        update_state(close)
         sys.stdout.write("snapshot %s closed\n" % s["label"])
         return 0
     if rc == 3:
@@ -588,7 +879,7 @@ def cmd_wait(args):
         time.sleep(every)
 
 
-COMMANDS = {"busy": cmd_busy, "status": cmd_status, "ssh": cmd_ssh, "scp": cmd_scp,
+COMMANDS = {"busy": cmd_busy, "status": cmd_status, "ssh": cmd_ssh, "scp": cmd_scp, "fetch": cmd_fetch,
             "snapshot": cmd_snapshot, "diff": cmd_diff, "restore": cmd_restore,
             "deploy": cmd_deploy, "restart": cmd_restart, "reboot": cmd_reboot,
             "probes": cmd_probes, "wait": cmd_wait}

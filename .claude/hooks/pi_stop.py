@@ -25,9 +25,16 @@ def main():
     if not snap:
         return
     project = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd") or os.getcwd())
-    where = os.path.realpath(snap.get("cwd") or "")
-    if where != project and not where.startswith(project + os.sep):
-        return
+    # The checkout pgen-pi names (repo), as pgen-pi and the guard judge it;
+    # the directory it ran in only for records without it (a session that
+    # cd'd elsewhere and ran pgen-pi by its full path is still this one).
+    if snap.get("repo"):
+        if os.path.realpath(str(snap["repo"])) != project:
+            return
+    else:
+        where = os.path.realpath(snap.get("cwd") or "")
+        if where != project and not where.startswith(project + os.sep):
+            return
     print(json.dumps({"decision": "block", "reason": (
         "pi_stop: snapshot %s on the Pi is open (%d min): the user's settings may not be back. "
         "Run `.claude/skills/pi/scripts/pgen-pi restore` (or `pgen-pi diff` to see what changed). "

@@ -41,7 +41,7 @@ HOSTS = ("192.168.1.235", "pgenerator.local")
 DEFAULT_HOST = "192.168.1.235"
 BUSY_FRESH = 600
 STATE = os.path.join(os.environ.get("PGEN_PI_STATE_DIR", os.path.expanduser("~/.local/state/pgen-pi")), "state.json")
-PGEN_SUBS = {"busy", "status", "ssh", "scp", "snapshot", "diff", "restore", "deploy", "restart", "reboot", "probes", "wait"}
+PGEN_SUBS = {"busy", "status", "ssh", "scp", "fetch", "snapshot", "diff", "restore", "deploy", "restart", "reboot", "probes", "wait"}
 # What the init script pkills (etc/init.d/PGenerator, stop).
 PKILLED = ("/usr/sbin/PGeneratord", "/usr/bin/PGenerator_cmd.pl", "/usr/bin/PGenerator_serial.pl")
 SYSTEM = re.compile(r"^/(?:(?:usr|etc|lib|boot|bin|sbin)(?:/|$)|$)")
@@ -142,19 +142,49 @@ def password(project):
         return None
 
 
-def busy_state():
-    """The busy result pgen-pi recorded; {} when missing or malformed."""
+def busy_state(project=None):
+    """The busy result pgen-pi recorded for this checkout; {} when missing or
+    malformed. Another checkout's result does not count here: what it found
+    leaves its own snapshot and actions out (2026-11-01 review: a FREE of
+    checkout A let B restart the daemon while A's snapshot was open)."""
     try:
         with open(STATE) as f:
-            b = json.load(f)
+            st = json.load(f)
     except (OSError, ValueError):
         return {}
-    b = b.get("busy") if isinstance(b, dict) else None
+    if not isinstance(st, dict):
+        return {}
+    here = os.path.realpath(project) if project else None
+    by = st.get("busy_by_repo")
+    b = by.get(here) if (here and isinstance(by, dict)) else None
+    if b is None:
+        b = st.get("busy")
+        # Only a record that names this checkout counts; one without the repo
+        # field comes from an older pgen-pi in some checkout (fails closed).
+        if isinstance(b, dict) and here and (not b.get("repo") or os.path.realpath(str(b["repo"])) != here):
+            return {"result": "OTHER", "time": 0.0, "repo": b.get("repo") or "a pgen-pi that does not record its checkout"}
     if not isinstance(b, dict):
         return {}
     t = b.get("time")
     b["time"] = float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) else 0.0
     return b
+
+
+def foreign_snapshot(project):
+    """The open snapshot of another checkout, or None."""
+    try:
+        with open(STATE) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return None
+    s = st.get("snapshot") if isinstance(st, dict) else None
+    if not isinstance(s, dict) or not project:
+        return None
+    here = os.path.realpath(project)
+    if s.get("repo"):
+        return None if os.path.realpath(str(s["repo"])) == here else s
+    c = os.path.realpath(str(s.get("cwd") or ""))
+    return None if (c == here or c.startswith(here + os.sep)) else s
 
 
 # --- reading the command like a shell --------------------------------------
@@ -763,12 +793,12 @@ def judge_one(a, redir, heredocs, loc, st, depth):
         if p in ("cd", "pushd"):
             loc.cwd = norm(a[1], loc) if len(a) > 1 and not a[1].startswith("-") else os.path.expanduser("~")
             return
-        judge_mac(a, heredocs, st, depth)
+        judge_mac(a, heredocs, st, depth, loc)
     else:
         judge_pi(a, loc, st)
 
 
-def judge_mac(a, heredocs, st, depth):
+def judge_mac(a, heredocs, st, depth, loc=None):
     p = prog(a)
     if p == "pgen-pi" or (a[0].startswith("$") and len(a) > 1 and a[1] in PGEN_SUBS):
         sub = a[1] if len(a) > 1 else ""
@@ -791,6 +821,13 @@ def judge_mac(a, heredocs, st, depth):
             elif SYSTEM.match(dest):
                 st.deny(P_SYS, "copy straight into %s on the Pi: use `pgen-pi deploy LOCAL:%s` (Pi file against "
                         "the branch, backup, md5, restore.sh)." % (dest, dest))
+        elif sub == "fetch" and len(a) > 3:
+            # LOCAL on the Mac: pgen-pi's state is written by pgen-pi only
+            dest = norm(expand(a[-1], st, "mac"), loc or Loc("mac"))
+            sdir = os.path.dirname(STATE)
+            if dest in (STATE, sdir) or dest.startswith(sdir + "/") or \
+                    re.search(r"/pgen-pi(?:/(?:state\.json|log\.jsonl))?$", dest):
+                st.deny(P_STATE, STATE_WRITE)
         elif sub == "reboot":
             st.power = st.mutating = True
         elif sub not in PGEN_SUBS and (sub.startswith("$") or st.xargs):
@@ -914,12 +951,19 @@ def check(cmd, project):
     if st.denials:
         return "deny", max(st.denials, key=lambda d: d[0])[1]
     if st.mutating:
-        b = busy_state()
+        fs = foreign_snapshot(project)
+        if fs:
+            return "deny", ("this command changes the picture, signal, daemon or device on the Pi, and another "
+                            "checkout holds snapshot %s open (%s): that session is testing on the Pi. Ask the user "
+                            "(CLAUDE.md)." % (fs.get("label", "?"), fs.get("repo") or fs.get("cwd", "?")))
+        b = busy_state(project)
         age = time.time() - b.get("time", 0)
         same_host = not b.get("host") or b.get("host") == host
-        if b.get("result") != "FREE" or age > BUSY_FRESH or not same_host:
-            last = "never run" if not b else "%s, %d s ago%s" % (
-                b.get("result"), age, "" if same_host else ", for %s" % b.get("host"))
+        # a time ahead of the clock (clock stepped back, a bad record) is no fresh check
+        if b.get("result") != "FREE" or age > BUSY_FRESH or age < -60 or not same_host:
+            last = "never run" if not b else \
+                "never run in this checkout (the last one was from %s)" % b["repo"] if b.get("result") == "OTHER" else \
+                "%s, %d s ago%s" % (b.get("result"), age, "" if same_host else ", for %s" % b.get("host"))
             return "deny", ("this command changes the picture, signal, daemon or device on the Pi, and the last "
                             "busy check is not a fresh FREE (%s). Run `pgen-pi busy` as its own step first; if it "
                             "says BUSY, read the reasons and do not touch the device (CLAUDE.md)." % last)

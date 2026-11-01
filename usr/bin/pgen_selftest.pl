@@ -348,6 +348,12 @@ sub infoframe_checks {
   $entry->{unverified}=1;
   return;
  }
+ # Slot off: nothing is sent, whatever the RAM still holds (a frame of an
+ # earlier mode, or random bytes after boot).
+ if($pkt->{enabled} ne "1") {
+  add_check($entry,"HDR metadata fields",$what,"not sent (slot 7 off)",0);
+  return;
+ }
  my @diff;
  push(@diff,sprintf("type %02x version %02x length %02x",$pkt->{type},$pkt->{version},$pkt->{length}))
   if($pkt->{type} != 0x87 || $pkt->{version} != 1 || $pkt->{length} != 26);

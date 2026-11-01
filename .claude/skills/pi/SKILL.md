@@ -27,6 +27,7 @@ ssh with exit 1, no output for `PI_TIMEOUT` s with exit 124.
 | Is a Calman/ColourSpace session on? | `$P busy` (its own step; FREE counts 10 min) |
 | Overview | `$P status` |
 | Run something | `$P ssh 'CMD'`, `$P scp SRC... /tmp/` |
+| Copy from the Pi | `$P fetch /root/x.json $TMPDIR/` (md5-checked; `scp` only uploads) |
 | Before a test | `$P snapshot [LABEL]` |
 | After the test | `$P restore` (or `$P diff` first) |
 | Ship files | `$P deploy [--check] PATH[:REMOTE]...` |
@@ -38,7 +39,16 @@ ssh with exit 1, no output for `PI_TIMEOUT` s with exit 124.
 ## Busy
 
 `$P busy` runs `pi_calman_busy.sh` on the Pi (uploads it when the copy there differs)
-and records FREE/BUSY with the time. BUSY: read the reason lines (each names the
+and records FREE/BUSY with the time. The Pi leaves our own probes out (127.0.0.1,
+the Mac), so `busy` also reads the shared `state.json`/`log.jsonl`: another
+checkout (another local Claude session) holding a snapshot open, or using the Pi
+in the last 10 minutes (reading, a restore that brought the settings back and a
+closed snapshot do not count), makes it BUSY with that session named. Ask the
+user before going on. Another checkout's snapshot is not closed, restored or
+diffed from here; `--force` (`snapshot --close --force REASON`, `restore --force`)
+only when the user says that session is gone. The guard takes only the FREE of
+its own checkout and refuses changing commands while another checkout's
+snapshot is open. BUSY: read the reason lines (each names the
 log line behind it) before telling the user the Pi is in use; a real session ->
 do not touch the device, ask. `restart`, `reboot`, `restore` and `deploy` run it
 themselves and stop unless FREE. For `$P ssh` commands that change the picture,

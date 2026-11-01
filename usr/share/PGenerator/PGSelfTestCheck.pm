@@ -373,12 +373,18 @@ sub drm_expect {
 
 # Packet RAM line of pgen_hdmi_packet: "slot=7 enabled=1 type=87 version=01
 # length=1a bytes=PB0:PB1:..". Returns {enabled, type, version, length,
-# pb=>[PB1..], checksum_ok} or undef.
+# pb=>[PB1..], checksum_ok} or undef. A slot that is off (its bit in
+# HDMI_RAM_PACKET_CONFIG clear) holds whatever is in the RAM, after boot
+# random bytes with any length: then {enabled=>0, ...} without pb and
+# checksum_ok when the bytes do not make a packet.
 sub packet_fields {
  my ($line,$slot)=@_;
  return undef if(!defined($line) || $line!~/^slot=\Q$slot\E enabled=(\d) type=([0-9a-f]{2}) version=([0-9a-f]{2}) length=([0-9a-f]{2}) bytes=([0-9a-f:]*)/m);
  my ($on,$type,$ver,$len,@b)=($1,hex($2),hex($3),hex($4),map { hex($_) } split(/:/,$5));
- return undef if(@b < $len+1);
+ if(@b < $len+1) {
+  return undef if($on ne "0");
+  return { enabled=>$on, type=>$type, version=>$ver, length=>$len, pb=>undef, checksum_ok=>undef };
+ }
  my $sum=$type+$ver+$len;
  $sum+=$b[$_] for(0..$len);
  return { enabled=>$on, type=>$type, version=>$ver, length=>$len, pb=>[@b[1..$len]], checksum_ok=>(($sum & 0xff) == 0 ? 1 : 0) };

@@ -3,6 +3,7 @@
 # pgen-pi, which puts the password into PGPASS; not for direct use.
 #   PGPASS=... pi.exp ssh 'command'
 #   PGPASS=... pi.exp scp LOCAL... REMOTE_PATH
+#   PGPASS=... pi.exp fetch REMOTE_PATH... LOCAL
 # Host: $PI_HOST (default 192.168.1.235). Needs the sandbox disabled for LAN
 # access. PI_TIMEOUT (default 600): seconds WITHOUT output before giving up
 # (exit 124); every output line starts the count again, so a sweep that
@@ -21,6 +22,12 @@ set kh "$env(TMPDIR)/pgen-known_hosts"
 set opts [list -F /dev/null -o UserKnownHostsFile=$kh -o StrictHostKeyChecking=accept-new -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive]
 if {$mode eq "ssh"} {
   eval spawn -noecho ssh $opts root@$host [list [lindex $argv 1]]
+} elseif {$mode eq "fetch"} {
+  # fetch REMOTE_PATH... LOCAL: copy from the Pi
+  set dst [lindex $argv end]
+  set srcs {}
+  foreach s [lrange $argv 1 end-1] { lappend srcs root@$host:$s }
+  eval spawn -noecho scp $opts $srcs [list $dst]
 } else {
   set dst [lindex $argv end]
   set srcs [lrange $argv 1 end-1]
