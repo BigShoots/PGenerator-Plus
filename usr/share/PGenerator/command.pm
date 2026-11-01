@@ -781,10 +781,18 @@ sub renderer_started_conf_record (@) {
   unlink($path);
   return 0;
  }
+ return &renderer_started_conf_write($pid,$conf);
+}
+
+# Write the record for renderer $pid (tmp + rename). Any failed step leaves
+# no record, so the next check restarts rather than trusting a stale one.
+sub renderer_started_conf_write (@) {
+ my ($pid,$conf)=@_;
+ my $path=&renderer_started_conf_path();
  if(open(my $fh,'>',"$path.tmp")) {
-  print $fh "$pid\n".&renderer_conf_text($conf);
-  close($fh);
-  return 1 if(rename("$path.tmp",$path));
+  my $ok=print $fh "$pid\n".&renderer_conf_text($conf);
+  $ok=close($fh) && $ok;
+  return 1 if($ok && rename("$path.tmp",$path));
   unlink("$path.tmp");
  }
  unlink($path);
@@ -829,9 +837,20 @@ sub renderer_running_conf (@) {
  return $rec ? $rec->{conf} : undef;
 }
 
+# Daemon bookkeeping the renderer does not read (main.cpp readPGeneratorConf,
+# drm_override.so parse_config) and no start step acts on: both follow from
+# is_hdr/eotf/dv_* (normalize_signal_mode_conf rewrites signal_mode on every
+# start), so a Calman "hdr" against the "hdr10" a start writes is one mode.
+sub renderer_conf_bookkeeping_keys () { return qw(signal_mode is_sdr); }
+
 # After an in-place reconfigure the renderer has re-read the keys it takes in
-# place ($in_place: {key=>1}). The record follows only when nothing else
-# differs; otherwise it is dropped and the next classic restart restarts.
+# place ($in_place: {key=>1}). The record follows what the renderer now
+# holds: those keys and the bookkeeping above from the file, every other key
+# as it read it at start. A key that still differs keeps the record unequal
+# to the file, so the next classic restart restarts, and a Calman apply
+# compares the renderer's real value. Dropping the record instead made the
+# next connection's first apply restart for any difference, even signal_mode
+# "hdr" vs "hdr10". Returns 1 when the file matches the record.
 sub renderer_started_conf_refresh (@) {
  my $in_place=shift || {};
  my $rec=&renderer_started_conf_load();
@@ -840,16 +859,18 @@ sub renderer_started_conf_refresh (@) {
   unlink(&renderer_started_conf_path());
   return 0;
  }
- my %keys=map { $_=>1 } (keys %{$rec->{conf}},keys %$now);
- for my $k (keys %keys) {
-  my ($a,$b)=($rec->{conf}{$k},$now->{$k});
-  next if(defined $a && defined $b && $a eq $b);
-  if(!$in_place->{$k}) {
-   unlink(&renderer_started_conf_path());
-   return 0;
-  }
+ my %bookkeeping=map { $_=>1 } &renderer_conf_bookkeeping_keys();
+ my %conf=%{$rec->{conf}};
+ for my $k (keys %$now) {
+  # readPGeneratorConf keeps the current value of a key missing from the
+  # file, so only keys present in it are taken over.
+  $conf{$k}=$now->{$k} if($in_place->{$k} || $bookkeeping{$k});
  }
- return &renderer_started_conf_record($now);
+ for my $k (keys %bookkeeping) {
+  delete $conf{$k} if(!defined $now->{$k});
+ }
+ return 0 if(!&renderer_started_conf_write($rec->{pid},\%conf));
+ return (&renderer_conf_text(\%conf) eq &renderer_conf_text($now)) ? 1 : 0;
 }
 
 # RESTARTPGENERATOR and SET_MODE from classic clients: restart the renderer

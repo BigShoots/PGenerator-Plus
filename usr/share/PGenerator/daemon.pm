@@ -2226,9 +2226,10 @@ sub pattern_daemon {
         # The renderer re-reads luminance, CLL and FALL on every frame, the
         # primaries only at start and on SIGHUP: in HDR10 (the DRM infoframe
         # carries them; HLG sends them as zero) a change it did not take in
-        # place needs a restart.
+        # place needs a restart. The mode comes from the same conf as the
+        # changed keys: the file a restart would read, when it decided them.
         my $primaries_changed=($changed_keys{"primaries"} &&
-                               &signal_mode_from_conf(\%pgenerator_conf) eq "hdr10") ? 1 : 0;
+                               &signal_mode_from_conf(($renderer_conf && $disk_conf) ? $disk_conf : \%pgenerator_conf) eq "hdr10") ? 1 : 0;
         my $applied_in_place=0;
         if($renderer_running && %changed_keys) {
          # Same-transport changes (format, range, colorimetry, bpc, HDR
