@@ -66,6 +66,16 @@ SSH_FAMILY = {"ssh", "scp", "sshpass", "rsync", "sftp", "ssh-copy-id", "autossh"
 NET = {"nc", "ncat", "netcat", "socat", "telnet"}
 NET_PORTS = ("80", "85", "2100", "2101")
 POWER = {"reboot", "shutdown", "poweroff", "halt"}
+# Permission modes in which Claude Code shows a hook's "ask" as a dialog
+# (hooks docs: '"ask" prompts the user to confirm'; auto mode: 'a PreToolUse
+# hook's "ask" normally sends the tool call to the permission prompt'). In
+# bypassPermissions the hook's ask ran unasked (2026-11-01, git push); the
+# docs only promise a prompt there for an explicit ask rule in settings
+# (permission-modes: "doesn't auto-approve ... in any mode, including
+# bypassPermissions: Tools matched by an explicit ask rule").
+ASK_PROMPTS = {"default", "acceptEdits", "plan", "auto"}
+ASK_FORMS = ("`git push fork main`", "`.claude/skills/pi/scripts/pgen-pi reboot`",
+             "`gh release create ...`", "`tools/release-ota.sh ...`")
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "case", "esac",
             "export", "local", "readonly", "declare", "typeset"}
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
@@ -975,6 +985,47 @@ def check(cmd, project):
     return None, None
 
 
+def ask_rules(project):
+    """Bash(...) patterns of permissions.ask in the project's settings."""
+    rules = []
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            with open(os.path.join(project, ".claude", name)) as f:
+                cfg = json.load(f)
+            ask = cfg.get("permissions", {}).get("ask", [])
+        except Exception:
+            # unreadable, not JSON, nested past the recursion limit: no rules
+            # from it, so nothing counts as covered (review 2026-11-01)
+            continue
+        if isinstance(ask, list):
+            rules += [r[5:-1] for r in ask if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
+    return rules
+
+
+def rule_rx(pat):
+    """A Bash rule as the permissions docs define it: "*" matches any text,
+    spaces included; a trailing " *" (or ":*") also matches the bare command."""
+    if pat.endswith(":*"):
+        pat = pat[:-2] + " *"
+    tail = ""
+    if pat.endswith(" *"):
+        pat, tail = pat[:-2], "(?: .*)?"
+    return re.compile(".*".join(re.escape(x) for x in pat.split("*")) + tail + r"\Z", re.S)
+
+
+def ask_rule_covers(cmd, project):
+    """True if cmd is one plain command (no operator, substitution,
+    redirection, comment or leading assignment) whose start an ask rule
+    matches: only then is Claude Code's prompt for it certain, whatever the
+    permission mode. A rule starting with "*" could match text in an
+    argument or a comment, not the command run (review 2026-11-01), so it
+    covers nothing here."""
+    c = cmd.strip()
+    if not c or re.search(r"[;&|<>`#\n\\]|\$\(", c) or ASSIGN.match(c.split()[0]):
+        return False
+    return any(rule_rx(r).match(c) for r in ask_rules(project) if r and not r.startswith("*"))
+
+
 def main():
     data = json.load(sys.stdin)
     if not isinstance(data, dict) or data.get("tool_name") != "Bash":
@@ -989,6 +1040,13 @@ def main():
         kind, reason = check(cmd, project)
     except RecursionError:
         kind, reason = "deny", "nested too deeply to check: write it plainly."
+    mode = data.get("permission_mode")
+    if kind == "ask" and mode not in ASK_PROMPTS and not ask_rule_covers(cmd, project):
+        kind, reason = "deny", reason + (
+            " The permission mode %s does not show this hook's ask as a dialog, so the command would run "
+            "unasked. Ask the user, then run it as its own plain command that an ask rule in "
+            ".claude/settings.json covers (%s): that rule shows the dialog in every mode."
+            % (mode if isinstance(mode, str) else "(not given)", ", ".join(ASK_FORMS)))
     if kind:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                                  "permissionDecision": kind,

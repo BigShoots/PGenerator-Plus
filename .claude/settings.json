@@ -1,4 +1,20 @@
 {
+  "permissions": {
+    "ask": [
+      "Bash(git push *)",
+      "Bash(gh release create *)",
+      "Bash(gh release upload *)",
+      "Bash(gh release edit *)",
+      "Bash(gh release delete *)",
+      "Bash(tools/release-ota.sh *)",
+      "Bash(./tools/release-ota.sh *)",
+      "Bash(bash tools/release-ota.sh *)",
+      "Bash(tools/release-action.sh *)",
+      "Bash(./tools/release-action.sh *)",
+      "Bash(bash tools/release-action.sh *)",
+      "Bash(.claude/skills/pi/scripts/pgen-pi reboot *)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
