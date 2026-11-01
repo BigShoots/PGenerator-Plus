@@ -35,6 +35,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pi_stop.py\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/verify_stop.py\" || exit 1",
+            "timeout": 120
           }
         ]
       }
