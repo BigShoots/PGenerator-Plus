@@ -10504,7 +10504,7 @@ sub webui_apply_config (@) {
    $effective_colorimetry="2";
   } elsif(exists $posted{"colorimetry"} || exists $posted{"color_format"}) {
    &log("WebUI: settings refused, colorimetry $effective_colorimetry with YCbCr");
-   my $result='{"status":"error","message":"'.&_webui_json_escape("$name: with YCbCr choose BT.709 (2) or BT.2020 (10), or use RGB.").'"}';
+   my $result='{"status":"error","refused":true,"message":"'.&_webui_json_escape("$name: with YCbCr choose BT.709 (2) or BT.2020 (10), or use RGB.").'"}';
    return wantarray ? ($result,0) : $result;
   }
  }
@@ -10581,6 +10581,11 @@ sub webui_apply_config (@) {
   # changes none of them and restarts nothing.
   my $written=1;
   push(@conf_writes,@conf_deletes);
+  # What the file holds after the helper: it pairs dv_metadata with
+  # dv_map_mode, so a POST naming both with values that are not each
+  # other's pair leaves the later one's pair. The read-back check and
+  # memory follow the file, not the posted values.
+  %conf_written=&conf_after_helper_writes(@conf_writes);
   $written=0 if(@conf_writes && (&sudo("SET_PGENERATOR_CONF_MULTI",@conf_writes) // "")!~/^OK/);
   if(!$written) {
    # No OK, yet the file can hold the write: the helper's timeout can end

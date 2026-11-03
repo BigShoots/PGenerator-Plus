@@ -2240,6 +2240,12 @@ sub pattern_daemon {
         }
         if($applied_in_place) {
          &log("Calman: applied ".join(",",sort keys %changed_keys)." in place (no renderer restart)");
+         # The reconfigure may have changed the conf itself (HDR pins
+         # colorimetry 9): the snapshot is what the renderer re-read, taken
+         # after it, from the same source as $now. One taken before made the
+         # next apply see the pinned key as changed and signal again.
+         my $after=($renderer_conf && $disk_conf) ? &renderer_conf_read() : \%pgenerator_conf;
+         $now=$calman_mode_key_snapshot->($after) if($after);
          %calman_applied_mode_keys=%$now;
         } elsif(!$mode_changed && (!$renderer_running || (!$range_changed && !$primaries_changed))) {
          # Mode unchanged — only metadata / luminance / range

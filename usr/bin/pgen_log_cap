@@ -1,0 +1,42 @@
+#!/usr/bin/perl
+#
+# pgen_log_cap FILE BYTES - copy standard input to FILE as it arrives, up to
+# BYTES, then keep reading and drop the rest.
+#
+# The renderer's output goes through this (command.pm pattern_generator_start).
+# `head -c` wrote it through stdio (GNU head: fwrite, BusyBox: putchar), so
+# into a file a single error line waited in the buffer until 4 KB had come
+# together or the renderer exited: the log of a running renderer read empty.
+# Here every read is written at once. Draining after the cap keeps the pipe
+# open, so the renderer never gets SIGPIPE.
+#
+use strict;
+use warnings;
+
+my ($file,$cap)=@ARGV;
+if(!defined $file || $file eq "" || !defined $cap || $cap!~/^\d+$/) {
+ print STDERR "usage: pgen_log_cap FILE BYTES\n";
+ exit 2;
+}
+$SIG{PIPE}='IGNORE';
+my $out;
+# Without the file the output is still drained: the renderer must not block.
+undef $out if(!open($out,">",$file));
+my $left=$cap;
+my $buf;
+while($left > 0) {
+ my $n=sysread(STDIN,$buf,$left < 65536 ? $left : 65536);
+ last if(!$n);
+ if($out) {
+  my $off=0;
+  while($off < $n) {
+   my $w=syswrite($out,$buf,$n-$off,$off);
+   if(!defined $w) { close($out); undef $out; last; }
+   $off+=$w;
+  }
+ }
+ $left-=$n;
+}
+close($out) if($out);
+1 while(sysread(STDIN,$buf,65536));
+exit 0;

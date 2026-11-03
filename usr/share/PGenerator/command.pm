@@ -250,6 +250,26 @@ sub dv_map_mode_for_metadata(@) {
  return "";
 }
 
+# The keys and values the root helper leaves for SET_PGENERATOR_CONF_MULTI
+# key value ... (PGenerator_cmd.pl pgenerator_conf_set_pair): it applies the
+# pairs in order and rewrites dv_metadata and dv_map_mode as each other's
+# pair, so a later one of the two decides both. An empty value deletes.
+sub conf_after_helper_writes(@) {
+ my @pairs=@_;
+ my %after=();
+ for(my $i=0; $i+1 <= $#pairs; $i+=2) {
+  my ($key,$value)=($pairs[$i],defined $pairs[$i+1] ? "$pairs[$i+1]" : "");
+  $after{$key}=$value;
+  if($key eq "dv_metadata") {
+   my $pair=&dv_map_mode_for_metadata($value);
+   $after{"dv_map_mode"}=$pair if($pair ne "");
+  } elsif($key eq "dv_map_mode" && $value ne "") {
+   $after{"dv_metadata"}=&dv_metadata_for_map_mode($value);
+  }
+ }
+ return %after;
+}
+
 sub normalize_dv_transport_conf(@) {
  return if(
   int($pgenerator_conf{"dv_status"} || 0) != 1 &&
@@ -284,7 +304,35 @@ sub normalize_dv_transport_conf(@) {
   next if((defined $pgenerator_conf{$key} ? $pgenerator_conf{$key} : "") eq $wanted{$key});
   push(@writes,$key,$wanted{$key});
  }
- &set_pgenerator_conf_runtime_multi(@writes) if(@writes);
+ &normalize_conf_write("DV",@writes);
+}
+
+# The renderer reads the conf file, not this memory: only a written value
+# counts. Without an OK from the root helper the file may still hold the
+# write (its timeout can end it after the rename) or another thread's write
+# of the same key: memory takes these keys from the file, so the daemon
+# reports what the renderer reads, and the next start writes what is still
+# missing. An unreadable file leaves memory as it was before the write.
+sub normalize_conf_write(@) {
+ my ($what,@writes)=@_;
+ return 1 if(!@writes);
+ my %keys=@writes;
+ my %before=map { ($_ => $pgenerator_conf{$_}) } keys %keys;
+ return 1 if((&set_pgenerator_conf_runtime_multi(@writes) || "")=~/^\Q$ok_response\E/);
+ my $file=&renderer_conf_read();
+ my @missing=();
+ for my $key (keys %keys) {
+  my $value=$file ? $file->{$key} : $before{$key};
+  if(defined $value) { $pgenerator_conf{$key}=$value; }
+  else { delete $pgenerator_conf{$key}; }
+  push(@missing,$key) if(!defined $value || "$value" ne "$keys{$key}");
+ }
+ if(!@missing) {
+  &log("Signal: $what conf helper gave no OK, but PGenerator.conf reads back as written");
+  return 1;
+ }
+ &log("Signal: $what conf could not be written (".join(",",sort @missing)."); the renderer starts with the stored values");
+ return 0;
 }
 
 # Reconcile the legacy, independently-written signal flags at the renderer
@@ -307,13 +355,15 @@ sub normalize_signal_mode_conf(@) {
  if(int($pgenerator_conf{"is_hdr"} || 0) == 1) {
   $signal_mode=(int($pgenerator_conf{"eotf"} || 0) == 3) ? "hlg" : "hdr10";
  }
- &set_pgenerator_conf_runtime("signal_mode",$signal_mode)
+ my @writes=();
+ push(@writes,"signal_mode",$signal_mode)
   if(($pgenerator_conf{"signal_mode"} || "") ne $signal_mode);
  # HDR10/HLG are BT.2020 signals. A BT.709 colorimetry left over from SDR
  # made the AVI infoframe contradict the HDR metadata, and sinks that trust
  # the AVI colorimetry then map the patches to the wrong gamut.
- &set_pgenerator_conf_runtime("colorimetry","9")
+ push(@writes,"colorimetry","9")
   if($signal_mode ne "sdr" && ($pgenerator_conf{"colorimetry"} || "") ne "9");
+ &normalize_conf_write(uc($signal_mode),@writes);
 }
 
 ###############################################
@@ -1743,12 +1793,17 @@ sub pattern_generator_start(@) {
   # 512 KB (more than enough for startup diagnostics) then drain the rest
   # to /dev/null. The `exec cat >/dev/null` keeps the pipe's read end open
   # so the renderer never gets SIGPIPE once the cap is reached.
+  # pgen_log_cap writes each line as it comes: `head -c` buffered it
+  # (stdio), so the log of a running renderer read empty until 4 KB had
+  # come together. head stays the fallback when the helper is missing.
   unlink(&renderer_started_conf_path());
   my $started_conf=&renderer_conf_read();
+  my $spawn_log=(-x "/usr/bin/pgen_log_cap") ? "/usr/bin/pgen_log_cap /tmp/renderer-spawn.log 524288"
+                                              : "( head -c 524288 > /tmp/renderer-spawn.log; exec cat >/dev/null )";
   if($use_drm_override) {
-   system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | ( head -c 524288 > /tmp/renderer-spawn.log; exec cat >/dev/null ) &");
+   system("MALLOC_CHECK_=0 LD_PRELOAD=/usr/lib/drm_override.so LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | $spawn_log &");
   } else {
-   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | ( head -c 524288 > /tmp/renderer-spawn.log; exec cat >/dev/null ) &");
+   system("MALLOC_CHECK_=0 LD_LIBRARY_PATH=/usr/lib $binary $w_s $h_s 2>&1 | $spawn_log &");
   }
  usleep(250000);
    # Some displays miss the first pre-launch RGB/colorspace programming and stay
