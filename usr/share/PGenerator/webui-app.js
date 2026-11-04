@@ -10709,6 +10709,33 @@ function meterGreyChartTargetXYZForReading(reading){
  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
 }
 
+// BT.1886's black term acts on each channel (ITU-R BT.1886 Annex 1), and HCFR
+// grades colour the same way (Measure.cpp GetRefSat, getL_EOTF on r, g, b;
+// GetRefCC24Sat too, except that it leaves a channel at 0 without the black).
+// A chromatic patch therefore cannot take the lift of a grey of its luminance: a
+// primary has black only in the channels it leaves dark, so that lift put its
+// target well above what its codes show. Steps other than the HCFR sweep stamp
+// the power-law signal^2.4 (meterGreyscaleTargetYFromYn), so each channel's
+// signal comes back from it.
+// Returns the light black adds on top of the patch's black-0 target, so the
+// target stays continuous at black 0 and keeps its authored xy and Y there. The
+// channels are taken relative to the Target White, where R=G=B lands: a patch on
+// it is lifted along it, as the neutrals are.
+// Null where black plays no part: SDR BT.1886 with a measured black below white.
+function meterBt1886ChromaticLiftXYZ(x,y,Yn,white,black){
+ if(meterChartIsHdr()||!(black>0)||!(white>black)) return null;
+ if(meterGreyChartTargetGammaSelection()!=='bt1886') return null;
+ const gamut=meterAnalysisGamut();
+ const wp=meterTargetWhitePoint();
+ const wpRgb=xyzToLinRgb(wp.X,1,wp.Z,gamut.xyzToRgb);
+ const unit=wpRgb.every(v=>v>0)?wpRgb:[1,1,1];
+ const lift=xyzToLinRgb(x/y*Yn,Yn,(1-x-y)/y*Yn,gamut.xyzToRgb).map((v,i)=>{
+  const lin=Math.max(0,Math.min(1,v/unit[i]));
+  return unit[i]*(bt1886Eotf(Math.pow(lin,1/2.4),white,black)-white*lin);
+ });
+ return linRgbToXyz(lift[0],lift[1],lift[2],gamut.rgbToXyz);
+}
+
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
 	 // SDR26 peak (Limited 109 legal / Full 100): NO luminance target --
@@ -10844,11 +10871,16 @@ function meterTargetXYZForReading(reading){
 	  }
   if(tYn<=0&&greyTargetY==null) return {X:0,Y:0,Z:0};
   let relativeTargetY=null;
+  let chromaticLift=null;
   if(greyTargetY==null&&_wrgbStimY==null&&typeof meterGreyscaleTargetYFromYn==='function'){
    let black=0;
    try{ black=(typeof meterBlackReadingY==='function')?meterBlackReadingY():0; }catch(e){}
-   relativeTargetY=meterGreyscaleTargetYFromYn(tYn,refY,black||0);
+   chromaticLift=meterBt1886ChromaticLiftXYZ(tx,ty,tYn,refY,black||0);
+   relativeTargetY=meterGreyscaleTargetYFromYn(tYn,refY,chromaticLift?0:(black||0));
   }
+  const lifted=t=>chromaticLift
+   ?{X:t.X+chromaticLift.X,Y:t.Y+chromaticLift.Y,Z:t.Z+chromaticLift.Z,chromaticLift:chromaticLift}
+   :t;
   // Gamut-clip: for analysis/charting, solve in the selected target gamut so
   // the CIE chart and ΔE targets respect the Target Colorspace dropdown.
   const gamut=meterAnalysisGamut();
@@ -10861,11 +10893,11 @@ function meterTargetXYZForReading(reading){
    if(cs>0&&clipped.Y>0){
     const cx=clipped.X/cs,cy=clipped.Y/cs;
     const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:(relativeTargetY!=null?relativeTargetY:tYn*refY));
-    return {X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y};
+    return lifted({X:(cx/cy)*Y,Y:Y,Z:((1-cx-cy)/cy)*Y});
    }
   }
 	  const Y=greyTargetY!=null?greyTargetY:(_wrgbStimY!=null?_wrgbStimY:(relativeTargetY!=null?relativeTargetY:tYn*refY));
-	  return {X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y};
+	  return lifted({X:(tx/ty)*Y,Y:Y,Z:((1-tx-ty)/ty)*Y});
 	 }
 	 if(meterActiveSeriesType==='colors' && reading.series_color && reading.sat_pct!=null){
 	  return meterColorCheckerFullSatTargetXYZ(String(reading.series_color));
@@ -12360,7 +12392,7 @@ function meterCieChartCoordFromXy(x,y,Y){
  if(!(x>=0&&y>0)) return null;
  return meterCieReferenceCoordFromXYZ({X:x*Y/y,Y:Y,Z:(1-x-y)*Y/y});
 }
-function meterCieDeclaredMbTargetCoord(reading){
+function meterCieStampedMbTargetCoord(reading){
  const mode=meterChromaticityChartMode();
  if(!meterCieIsConeChartMode(mode)||!reading) return null;
  let source=reading;
@@ -12374,6 +12406,22 @@ function meterCieDeclaredMbTargetCoord(reading){
  if(!Number.isFinite(l)||!Number.isFinite(s)) return null;
  const coord={x:l,y:s,Y:Number.isFinite(lm)?lm:null};
  return meterCieIsOpponentMode(mode)?meterCieOpponentFromMb(coord,/_10$/.test(mode)):coord;
+}
+// The declared point moves with the target when black lifts it, so the square on
+// the chart stays where Delta E grades. The stamped coordinate is the series'
+// own geometry and does not depend on the display.
+function meterCieDeclaredMbTargetCoord(reading){
+ const declared=meterCieStampedMbTargetCoord(reading);
+ if(!declared) return null;
+ const target=meterTargetXYZForReading(reading);
+ const lift=target&&target.chromaticLift;
+ if(!lift) return declared;
+ const moved=meterCieChartCoordFromXYZ(target);
+ const base=meterCieChartCoordFromXYZ({X:target.X-lift.X,Y:target.Y-lift.Y,Z:target.Z-lift.Z});
+ if(!moved||!base) return declared;
+ declared.x+=moved.x-base.x;
+ declared.y+=moved.y-base.y;
+ return declared;
 }
 function meterCieChartTargetCoord(reading,targetXYZ){
  // A zero-luminance target has no defined chromaticity. Keep the black target

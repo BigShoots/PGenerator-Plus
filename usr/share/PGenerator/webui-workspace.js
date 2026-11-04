@@ -15721,7 +15721,7 @@ function meterCieMbContentBounds(){
  try{
   if(typeof meterSeriesSteps!=='undefined'&&Array.isArray(meterSeriesSteps)){
    meterSeriesSteps.forEach(st=>{
-    const declared=meterCieDeclaredMbTargetCoord(st);
+    const declared=meterCieStampedMbTargetCoord(st);
     if(declared) addCoord(declared);
     else if(st&&Number(st.target_x)>0&&Number(st.target_y)>0) add(Number(st.target_x),Number(st.target_y));
    });
@@ -15757,7 +15757,7 @@ function meterCie2dWorld(){
   };
   try{
    (Array.isArray(meterSeriesSteps)?meterSeriesSteps:[]).forEach(st=>{
-    add(meterCieDeclaredMbTargetCoord(st));
+    add(meterCieStampedMbTargetCoord(st));
    });
    (Array.isArray(meterReadings)?meterReadings:[]).forEach(rd=>{
     if(rd&&Number(rd.x)>0&&Number(rd.y)>0) add(meterCieChartCoordFromXYZ(meterReadingXYZ(rd)));
@@ -15937,7 +15937,7 @@ function meterCieMbHueCirclePresentationRatio(){
  const steps=(typeof meterSeriesSteps!=='undefined'&&Array.isArray(meterSeriesSteps))?meterSeriesSteps:[];
  const coord=step=>{
   if(!step) return null;
-  const declared=meterCieDeclaredMbTargetCoord(step);
+  const declared=meterCieStampedMbTargetCoord(step);
   return declared&&Number.isFinite(declared.x)&&Number.isFinite(declared.y)?declared:null;
  };
  const neutral=steps.find(step=>/^MB Neutral$/i.test(String(step&&step.name||'')));
