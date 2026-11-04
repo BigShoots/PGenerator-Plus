@@ -14827,7 +14827,11 @@ function meterUpdateMeterCapabilityControls(){
     option.title='';
    }
   }
-  if(!spectralObserverAvailable&&!tristimulusViews.has(observerSelect.value)){
+  // Reset only against a connected meter that cannot measure the observer.
+  // Without a meter nothing is measured, and the status poll reports "no
+  // meter" on every page load and unplug: resetting then wiped the saved
+  // observer each time and raised this toast with no meter in sight.
+  if(selectedMeter&&!spectralObserverAvailable&&!tristimulusViews.has(observerSelect.value)){
    observerSelect.value='cie1931_2';
    if(typeof meterOnChromaticityChartChange==='function'&&!meterChromaticityReadActive()){
     meterOnChromaticityChartChange();
@@ -16553,6 +16557,17 @@ function meterCacheSeriesState(status,options){
    updated_at:Date.now()
   };
  }
+ // A restore under another Observer shows none of the stored readings
+ // (meterRestoreSeriesFromCache filters them by observer). Writing that empty
+ // live state back dropped them from the cache, and the series stopped
+ // restoring (restorability counts the top-level readings). Keep the stored
+ // readings and references then. Only a finished write qualifies: a run that
+ // is starting writes its own empty state, and a clear does not come here.
+ const prevObserver=(typeof meterObserverForReadings==='function')?meterObserverForReadings(previousReadings):null;
+ const keepStored=(meterActiveSeriesType==='colors'||meterActiveSeriesType==='saturations')
+  &&readings.length===0&&prev&&!meterSeriesSnapshotIsCleared(prev)
+  &&/^(?:complete|cancelled|error)$/.test(String(status||'').toLowerCase())
+  &&!!prevObserver&&prevObserver!==meterChromaticityObserver();
  // Never downgrade a COMPLETE snapshot to a partial in-progress one. The chart
  // is driven by live meterReadings while a series runs, so the cache only
  // matters on restore -- and letting a mid-run write land meant selecting that
@@ -16594,10 +16609,14 @@ function meterCacheSeriesState(status,options){
 	  executed_steps:meterServerSeriesIsSelection({steps:meterExecutedSeriesSteps})
 	   ?JSON.parse(JSON.stringify(meterExecutedSeriesSteps)):null,
 	  observer_readings:observerReadings,
-	  white_reading:meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null,
-	  black_reading:meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null,
+	  white_reading:keepStored
+	   ?(prev.white_reading?JSON.parse(JSON.stringify(prev.white_reading)):null)
+	   :(meterWhiteReading?JSON.parse(JSON.stringify(meterWhiteReading)):null),
+	  black_reading:keepStored
+	   ?(prev.black_reading?JSON.parse(JSON.stringify(prev.black_reading)):null)
+	   :(meterSeriesBaselineBlack?JSON.parse(JSON.stringify(meterSeriesBaselineBlack)):null),
   steps:JSON.parse(JSON.stringify(meterSeriesSteps||[])),
-  readings:readings,
+  readings:keepStored?JSON.parse(JSON.stringify(previousReadings)):readings,
   status:status||(meterSeriesRunning?'running':'complete'),
   series_id:meterSharedSeriesId||((prev&&prev.series_id)?prev.series_id:null),
   updated_at:Date.now()
