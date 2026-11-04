@@ -7659,7 +7659,7 @@ function meterReadingMatchesStepList(reading,type,steps){
 }
 
 function meterReadingIsBlackStep(reading){
- if(!reading) return false;
+ if(!reading||meterReadingIsSaturationStep(reading)) return false;
  const ire=Number(reading.ire);
  if(Number.isFinite(ire)) return Math.abs(ire)<=0.05;
  const name=String(reading.name||'').trim().toLowerCase();
@@ -9912,6 +9912,21 @@ function meterDisplayIsOled(){
 
 // Infer chart black level. On OLED, true black can time out and be missing;
 // use only true 0% greyscale reading (or 0 fallback) in every mode.
+// A saturation sweep's 0% steps are neutral and sit at IRE 0 by their saturation,
+// not by their level: HCFR's Red 0% is a mid grey, never a black. A patch of that
+// name on the black code (a custom series) is a real black.
+function meterReadingIsSaturationStep(reading){
+ if(!reading||!meterParseSaturationReading(reading)) return false;
+ const code=(reading.r_code!=null)?reading.r_code:reading.r;
+ return code==null||!(Number(code)<=meterColorTargetCodeRange().min);
+}
+
+// A snapshot of 2.13.37 and older can hold such a step as its black. Dropping it
+// here makes the next run read a real one instead of keeping the wrong value.
+function meterRestoredBlackBaseline(black){
+ return (black&&!meterReadingIsSaturationStep(black))?JSON.parse(JSON.stringify(black)):null;
+}
+
 function meterChartBlackLevel(readings){
  // Operator Target Black override forces the black-floor reference.
  const _tb=(typeof meterTargetBlackLevel==='function')?meterTargetBlackLevel():null;
@@ -9931,7 +9946,7 @@ function meterChartBlackLevel(readings){
  // lifted target against a measured 0.000 (Y error -100%, dE ITP ~18 at 0%).
  // The server stamp below now only covers the window before the 0% reading
  // lands, which is early -- the ladder measures 0% second, after 100%.
- const measuredBlack=gs.filter(r=>(r.ire||0)===0&&Number.isFinite(Number(r.luminance))&&Number(r.luminance)>=0)
+ const measuredBlack=gs.filter(r=>(r.ire||0)===0&&!meterReadingIsSaturationStep(r)&&Number.isFinite(Number(r.luminance))&&Number(r.luminance)>=0)
   .map(r=>Number(r.luminance));
  if(measuredBlack.length>0) return Math.min(...measuredBlack);
  // A new colour series normally does not contain a black patch. Retain the
@@ -9950,7 +9965,7 @@ function meterChartBlackLevel(readings){
  if(stamped.length>0) return Math.min(...stamped);
  if(meterDisplayIsOled()) return 0;
  if(!meterChartIsHdr()) return 0;
- const nearBlack=gs.filter(r=>(r.ire||0)<=5).map(r=>r.luminance||0);
+ const nearBlack=gs.filter(r=>(r.ire||0)<=5&&!meterReadingIsSaturationStep(r)).map(r=>r.luminance||0);
  return nearBlack.length>0?Math.min(...nearBlack):0;
 }
 
@@ -10677,6 +10692,7 @@ function meterGreyChartTargetXYZForReading(reading){
   if(Number.isFinite(mY) && mY>0) return {X:wp.X*mY,Y:mY,Z:wp.Z*mY};
   return {X:0,Y:0,Z:0};
  }
+ if(reading&&reading._hcfr_sdr_target) return reading._hcfr_sdr_target;
  let refWhite=null;
  try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
  const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
@@ -10709,6 +10725,45 @@ function meterGreyChartTargetXYZForReading(reading){
  return {X:wp.X*Y,Y:Y,Z:wp.Z*Y};
 }
 
+// HCFR's saturation patches are fixed gamma 2.22 signals in SDR, whatever target
+// gamma is selected, and HCFR moves the target instead (libHCFR/Color.cpp
+// GenerateSaturationColors: "Targets assume all generated RGB triplets @2.22
+// gamma"). The step's target_x/y/Yn hold on gamma 2.22 only. This is the first
+// half of CMeasure::GetRefSat (Measure.cpp): xyY to RGB, 1/2.22, 219 steps. It
+// starts from the authored target, not the codes, so a later change of range or
+// bit depth cannot change the result. The step wins over the reading: a target
+// gamma refresh may rewrite a neutral reading's target_Yn. Returns the three
+// signals, or null for other series, HDR10, HLG and DV.
+function meterHcfrSdrTargetSignals(reading){
+ if(!reading||meterActiveSeriesType!=='saturations'||meterChartIsHdr()) return null;
+ const step=(typeof meterCanonicalSeriesStep==='function')?meterCanonicalSeriesStep(reading):null;
+ if(String(reading.series_mode||(step&&step.series_mode)||'')!=='hcfr-constant-luminance') return null;
+ const source=step||reading;
+ const x=Number(source.target_x),y=Number(source.target_y),Yn=Number(source.target_Yn);
+ if(!(x>0&&y>0&&Yn>0)||!Number.isFinite(x+y+Yn)) return null;
+ const linear=xyzToLinRgb(x/y*Yn,Yn,(1-x-y)/y*Yn,meterSaturationSolveGamut().xyzToRgb);
+ return linear.map(v=>meterHcfrQuantizedSignal(Math.pow(Math.max(0,Math.min(1,v)),1/2.22)));
+}
+
+// The second half of GetRefSat: each channel through the selected curve, then
+// RGB to XYZ, so Y and xy both follow the gamma. Black enters per channel on
+// BT.1886 only, as in HCFR's getL_EOTF; its power curves take none, so a 100%
+// patch stays on the gamut corner. White and peak are those of a neutral patch.
+function meterHcfrSdrTargetXYZ(signals){
+ let refWhite=null;
+ try{ refWhite=meterGreyscaleChartWhiteReference(meterReadings); }catch(e){}
+ const refY=refWhite?meterReadingLuminanceNits(refWhite):null;
+ const peak=meterGreyTargetPeak((refY>0)?refY:meterColorReferenceNits());
+ const context=(typeof meterActiveCalibrationTargetContext!=='undefined')?meterActiveCalibrationTargetContext:null;
+ const bt1886=(context&&context.caller_policy==='browser_chart')
+  ?context.transfer_policy==='bt1886_chart_ab'
+  :meterGreyChartTargetGammaSelection()==='bt1886';
+ const black=bt1886?(meterBlackReadingY()||0):0;
+ const light=signals.map(signal=>meterGreyTargetLuminance(signal*100,peak,black,null));
+ if(!light.every(Number.isFinite)) return null;
+ return linRgbToXyz(light[0],light[1],light[2],meterSaturationSolveGamut().rgbToXyz);
+}
+
 function meterTargetXYZForReading(reading){
 	 if(!reading) return {X:0,Y:0,Z:0};
 	 // SDR26 peak (Limited 109 legal / Full 100): NO luminance target --
@@ -10736,6 +10791,9 @@ function meterTargetXYZForReading(reading){
 	    &&meterColorSeriesNeutralUsesGreyscaleAnalysis(reading)){
 	  return meterGreyChartTargetXYZForReading(meterNeutralColorGreyscaleReading(reading));
 	 }
+	 const hcfrSignals=meterHcfrSdrTargetSignals(reading);
+	 const hcfrTarget=hcfrSignals?meterHcfrSdrTargetXYZ(hcfrSignals):null;
+	 if(hcfrTarget) return hcfrTarget;
 	 const absX=Number(reading.target_X);
 	 const absY=Number(reading.target_Y);
 	 const absZ=Number(reading.target_Z);
@@ -11248,8 +11306,15 @@ function meterNeutralColorGreyscaleReading(reading){
  // by the selected measured/manual white, not the absolute PQ luminance of the
  // emitted code. Prefer the canonical step so a live target-gamma refresh
  // cannot replace ColorChecker reflectance Y with a slot/IRE-derived value.
+ // An HCFR SDR neutral has no fixed Y: it follows the selected curve, so it
+ // carries the target of meterHcfrSdrTargetXYZ instead of an authored Yn.
  const authoredYn=Number(source.target_Yn);
- if(Number.isFinite(authoredYn)&&authoredYn>=0) clone.target_Yn=authoredYn;
+ const hcfrSignals=meterHcfrSdrTargetSignals(reading);
+ const hcfrTarget=hcfrSignals?meterHcfrSdrTargetXYZ(hcfrSignals):null;
+ if(hcfrTarget){
+  clone._hcfr_sdr_target=hcfrTarget;
+  delete clone.target_Yn;
+ }else if(Number.isFinite(authoredYn)&&authoredYn>=0) clone.target_Yn=authoredYn;
  delete clone.target_X; delete clone.target_Y; delete clone.target_Z;
  delete clone.target_x; delete clone.target_y;
  return clone;
@@ -12188,7 +12253,7 @@ function meterRestoreActiveChromaticityReadings(observer){
  }
  meterReplaceReadings(readings?JSON.parse(JSON.stringify(readings)):[]);
  meterWhiteReading=white?JSON.parse(JSON.stringify(white)):null;
- meterSeriesBaselineBlack=black?JSON.parse(JSON.stringify(black)):null;
+ meterSeriesBaselineBlack=meterRestoredBlackBaseline(black);
  meterLastChartCount=0;
  meterLastChartSignature='';
  _selectedColorReadingName=null;
@@ -16089,7 +16154,7 @@ function meterRecoverSeries(s){
  // empty Sat Sweep can never leave the old Colors CIE plot on screen.
  meterReplaceReadings([]);
  meterWhiteReading=null;
- meterSeriesBaselineBlack=s.black_reading?JSON.parse(JSON.stringify(s.black_reading)):null;
+ meterSeriesBaselineBlack=meterRestoredBlackBaseline(s.black_reading);
 	 if(!meterSeriesBaselineBlack&&Array.isArray(s.readings)){
 	  const recoveredBlack=[...s.readings].reverse().find(rd=>{
 	   if(!rd||rd.error) return false;
@@ -16098,7 +16163,7 @@ function meterRecoverSeries(s){
 	   const r=Number(rd.r_code!=null?rd.r_code:rd.r);
 	   const g=Number(rd.g_code!=null?rd.g_code:rd.g);
 	   const b=Number(rd.b_code!=null?rd.b_code:rd.b);
-	   return Math.abs(Number(rd.ire||0))<0.05&&r===g&&g===b&&meterReadingHasLuminance(rd);
+	   return Math.abs(Number(rd.ire||0))<0.05&&r===g&&g===b&&!meterReadingIsSaturationStep(rd)&&meterReadingHasLuminance(rd);
 	  });
 	  if(recoveredBlack) meterSeriesBaselineBlack=JSON.parse(JSON.stringify(recoveredBlack));
 	 }
