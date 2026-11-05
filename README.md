@@ -233,6 +233,9 @@ Next to the settings, **On the cable** shows what is actually sent (format, rang
 <td colspan="2" valign="top"><img src="screenshots/webui-system.png" alt="System workspace: Device Info with CPU, memory and temperature meters and tiles for board, hostname, resolution, uptime, RAM and network, plus the GPU Memory and Scaling Type selects, and Software Update below"/><br/><p align="center"><sub>System: CPU, memory and temperature at a glance, the device facts, GPU memory and CPU Scaling Type set right in their tiles, and the OTA update</sub></p></td>
 </tr>
 <tr>
+<td colspan="2" valign="top"><img src="screenshots/webui-live-info.png" alt="Output workspace with the Live Information drawer open: decoded AVI, DRM and SPD infoframes, and HDMI-CEC with the TV remote and the devices found by a bus scan"/><br/><p align="center"><sub>Live Information on Desktop: the infoframes the Pi sends, decoded and updated as the signal changes, and HDMI-CEC with the TV remote</sub></p></td>
+</tr>
+<tr>
 <td colspan="2" valign="top"><img src="screenshots/webui-selftest.png" alt="Signal self-test in Output: all 12 modes bit-exact (SDR, HDR10, HLG, Dolby Vision), with link details and the drawn swatches per mode"/><br/><p align="center"><sub>Signal self-test, right below Display Settings: every mode read back from the scanout on a real Pi 4, bit-exact in 12 of 12</sub></p></td>
 </tr>
 <tr>
