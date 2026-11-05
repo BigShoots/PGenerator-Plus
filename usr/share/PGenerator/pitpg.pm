@@ -162,14 +162,31 @@ sub pitpg_text (@) {
  return ("unsupported","No text for $op.");
 }
 
+# The output's format and range from the conf that sets them (in Dolby
+# Vision normalize_dv_transport_conf keeps it true): get_state's word, the
+# hdmi_info word, the range.
+sub pitpg_output_format (@) {
+ my $cf=int($pgenerator_conf{"color_format"} || 0);
+ my %format=(1=>["ycc444","YCbCr444"],2=>["ycc422","YCbCr422"],3=>["ycc420","YCbCr420"]);
+ my ($state,$info)=@{$format{$cf} || ["rgb","RGB"]};
+ return ($state,$info,($cf == 0 && &effective_rgb_quant_range() == 2) ? "full" : "limited");
+}
+
 # "MODETEST (<mode index>) <fmt> <range> <aspect>, WxH @ hz Hz,
-# progressive|interlaced, up to N-bit" and pitpgd's clauses, from the
-# connector state get_hdmi_info reads back.
+# progressive|interlaced, up to N-bit" and pitpgd's clauses: mode, aspect
+# and scan from the connector state get_hdmi_info reads back (it says
+# "60.00HzHz" on KMS).
 sub pitpg_hdmi_info (@) {
  return "No display connected" if(!&hdmi_sink_connected());
  my $r=&get_hdmi_info() // "";
- return "No display connected" if($r!~/MODETEST \((\d+)\) (\S+) (\S+) (\S+)\], (\d+x\d+) \@ ([\d.]+)Hz, (\w+)/);
- my ($idx,$fmt,$range,$aspect,$size,$hz,$scan)=($1,$2,$3,$4,$5,$6,$7);
+ if($r!~/MODETEST \((\d+)\) (\S+) (\S+) (\S+)\], (\d+x\d+) \@ ([\d.]+)(?:Hz)+, (\w+)/) {
+  &log("PiTPG: hdmi_info could not read the mode from: $r");
+  return "No display connected";
+ }
+ my ($idx,undef,undef,$aspect,$size,$hz,$scan)=($1,$2,$3,$4,$5,$6,$7);
+ # Format and range as get_state: the connector's "active color format" can
+ # stay 0 with YCbCr on the wire (Pi: AVI 52, dmesg "color format 1").
+ my (undef,$fmt,$range)=&pitpg_output_format();
  my $bpc=&pitpg_wire_bpc();
  my $t=sprintf("MODETEST (%d) %s %s %s, %s @ %.2fHz, %s, up to %d-bit",$idx,$fmt,$range,$aspect,$size,$hz,$scan,$bpc);
  $t.=" ($bpc-bit link: 8/10-bit patch values sent exactly)" if($bpc > 10);
@@ -743,13 +760,13 @@ sub pitpg_state (@) {
  $settings{mode}=&pitpg_mode_describe($cur) if(!exists $settings{mode} && $cur);
  my $output;
  if($cur) {
-  my $cf=int($pgenerator_conf{"color_format"} || 0);
+  my ($format,undef,$range)=&pitpg_output_format();
   my $blocked=&signal_patches_refused();
   $output={mode=>&pitpg_mode_describe($cur),w=>PGPiTPG::num($cur->{w}),h=>PGPiTPG::num($cur->{h}),
            hz=>PGPiTPG::raw(sprintf("%.3f",$cur->{hz})),interlaced=>$cur->{interlaced} ? \1 : \0,
-           format=>$cf == 1 ? "ycc444" : ($cf == 2 ? "ycc422" : ($cf == 3 ? "ycc420" : "rgb")),
+           format=>$format,
            bits=>PGPiTPG::num(&pitpg_wire_bpc()),
-           range=>($cf == 0 && &effective_rgb_quant_range() == 2) ? "full" : "limited",
+           range=>$range,
            signal=>&pitpg_signal(),depth_note=>"",blocked=>$blocked ne "" ? $blocked : undef};
  }
  my ($port,$raw)=&pitpg_edid();
@@ -1135,6 +1152,27 @@ sub pitpg_granger_path (@) {
  return &calman_g1_cache_dir()."/pitpg_granger_${W}x${H}_${min}_${max}_${bits}_${fb}.png";
 }
 
+# Another process is building this file: <file>.building names a living
+# pid other than ours. A marker outlives a killed worker (the init script's
+# pkill -9 -f matches the fork too) and its pid can come back after a
+# reboot, so an old one no longer counts.
+sub pitpg_granger_building (@) {
+ my $file=shift;
+ my $pid=&read_from_file("$file.building") // "";
+ return 0 if($pid!~/^(\d+)/ || $1 == $$ || !kill(0,$1));
+ my $mtime=(stat("$file.building"))[9];
+ # abs: until NTP has run the clock can be behind the marker.
+ return (defined($mtime) && abs(time()-$mtime) < 600) ? 1 : 0;
+}
+
+# The worker's own marker stays until its build is done: it is what keeps a
+# second hello and a GRANGER request from building the same file.
+sub pitpg_granger_own_marker (@) {
+ my $file=shift;
+ my $pid=&read_from_file("$file.building") // "";
+ return ($pid=~/^(\d+)/ && $1 == $$) ? 1 : 0;
+}
+
 # Builds the file unless it is there; a build already running in a worker
 # (pitpg_granger_prepare) is waited for instead of done twice.
 sub pitpg_granger_file (@) {
@@ -1142,13 +1180,14 @@ sub pitpg_granger_file (@) {
  my $file=&pitpg_granger_path(@_);
  my $until=Time::HiRes::time()+60;
  while(!-s $file && Time::HiRes::time() < $until) {
-  my $pid=&read_from_file("$file.building") // "";
-  last if($pid!~/^(\d+)/ || !kill(0,$1));
+  last if(!&pitpg_granger_building($file));
   select(undef,undef,undef,0.05);
  }
  return $file if(-s $file);
- # Keep the cache small: one GRANGER at a time.
- unlink(grep { $_ ne $file && $_!~/\.building$/ } glob(&calman_g1_cache_dir()."/pitpg_granger_*.png"));
+ unlink("$file.building") if(!&pitpg_granger_own_marker($file) && !&pitpg_granger_building($file));
+ # Keep the cache small: one GRANGER at a time. A young .tmp.png is a
+ # worker's build in progress (calman_g1_save_image), an old one its remains.
+ unlink(grep { $_ ne $file && !($_=~/\.tmp\.png$/ && abs(time()-((stat($_))[9] // 0)) < 600) } glob(&calman_g1_cache_dir()."/pitpg_granger_*.png"));
  my $t0=Time::HiRes::time();
  my $img=&pitpg_granger_image($W,$H,$min,$max,$bits,$fb);
  if(!&calman_g1_save_image($img,$file,$W,$H)) {
@@ -1167,7 +1206,7 @@ sub pitpg_granger_prepare (@) {
  my ($W,$H)=&pitpg_screen();
  my @key=($W,$H,0,255,8,&pitpg_fb_bits());
  my $file=&pitpg_granger_path(@key);
- return if(-s $file || -e "$file.building");
+ return if(-s $file || &pitpg_granger_building($file));
  &webui_spawn_detached(sub {
   if(open(my $fh,">","$file.building")) { print $fh $$; close($fh); }
   &pitpg_granger_file(@key);
