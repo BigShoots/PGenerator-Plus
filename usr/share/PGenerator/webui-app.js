@@ -2369,7 +2369,7 @@ function pgSignalTipText(){
  const lines=[];
  const w=pgSignalWire;
  if(w&&w.port) lines.push('Port: '+w.port.label+' (up to '+w.port.max_mode+')'+(w.port.renderer_elsewhere?', output still on '+(w.port.renderer_label||w.port.renderer):''));
- if(w&&w.sending) lines.push('On the cable: '+w.sending);
+ if(w&&w.sending) lines.push('On the cable'+(w.wire_read===false?' (last read)':'')+': '+w.sending);
  else if(w&&w.connected) lines.push('On the cable: not readable here');
  if(w&&w.adjustments&&w.adjustments.length) lines.push('Adjusted: '+w.adjustments.join(' '));
  const r=pgSignalState&&pgSignalState.refused;
@@ -2380,7 +2380,11 @@ async function pgSignalSummaryRefresh(){
  pgSignalWireAt=Date.now();
  const r=await fetchJSON('/api/signal',{_quiet:true,_timeoutMs:10000});
  if(!r||r.status!=='ok') return;
- pgSignalWire=r;
+ // The log could not be read: nothing new about the cable, so what was last
+ // read stands, a warning dot included.
+ const last=r.wire_read===false?pgSignalWire:null;
+ pgSignalWire=last?Object.assign({},r,{sending:last.sending,wire:last.wire,
+  adjustments:[...new Set([...(r.adjustments||[]),...(last.adjustments||[])])]}):r;
  pgApplySignalState({refused:r.refused,link_event:r.link_event,test_edid:r.test_edid},true);
 }
 function pgSignalSummaryMaybeRefresh(){
@@ -2453,6 +2457,7 @@ function pgRenderSignalAlerts(){
 // "On the cable" as tiles from wire.parts (PGSignalCheck::signal_wire_parts);
 // without parts the sentence stands alone.
 function pgRenderSignalWireTiles(w){
+ document.getElementById('signalWireTitle').textContent='On the cable'+(w.wire_read===false?' (last read, not updated)':'');
  const wire=w.wire||{}, p=wire.parts;
  document.getElementById('signalWireTiles').hidden=!p;
  const text=document.getElementById('signalWireText');

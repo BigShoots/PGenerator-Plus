@@ -10984,17 +10984,17 @@ sub webui_create_logs_bundle (@) {
 
  # Infoframes
  push @out, "", "--- HDMI Infoframes (dmesg) ---";
- my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
+ my $dmesg=&webui_dmesg_log();
  my ($avi_hex,$drm_hex,$hvs_hex)=("","","");
- foreach my $line (split(/\n/,$dmesg)) {
-  if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; }
+ foreach my $line (split(/\n/,defined($dmesg) ? $dmesg : "")) {
+  if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; $drm_hex=""; }
   if($line=~/DRM IF:\s*(.+)/) { $drm_hex=$1; }
   if($line=~/HVS IF:\s*(.+)/) { $hvs_hex=$1; }
  }
  push @out, "AVI: $avi_hex" if($avi_hex);
  push @out, "DRM: $drm_hex" if($drm_hex);
  push @out, "HVS (vendor/DV): $hvs_hex" if($hvs_hex);
- push @out, "(none found)" if(!$avi_hex && !$drm_hex && !$hvs_hex);
+ push @out, defined($dmesg) ? "(none found)" : "(kernel log not readable)" if(!$avi_hex && !$drm_hex && !$hvs_hex);
 
  # DV / HDR wire state: the connector blob properties are past the head -80
  # cut of the HDMI Mode section above, so dump them explicitly. This is the
@@ -11555,7 +11555,7 @@ sub webui_signal_json (@) {
  my $req=&signal_request_from_conf(\%pgenerator_conf);
  $req->{rgb_quant_range}=&effective_rgb_quant_range() if(defined &effective_rgb_quant_range);
  my ($r)=eval { &signal_check_conf(\%pgenerator_conf) };
- my ($connected,$avi,$drm)=&webui_last_infoframes();
+ my ($connected,$avi,$drm,undef,$read_ok)=&webui_last_infoframes();
  my $link=$connected ? &webui_hdmi_link_info() : undef;
  $link=undef if($link && !$link->{renderer});
  my $vsif=($connected && $link) ? &webui_signal_vsif_line($avi,$drm) : undef;
@@ -11576,6 +11576,7 @@ sub webui_signal_json (@) {
   .",\"parts\":".($parts ? "{".join(",",map {"\"$_\":\"".&_webui_json_escape($parts->{$_})."\""} qw(format name depth range mode signal))."}" : "null")."}"
   .",\"check\":".($r ? "{\"ok\":".($r->{ok} ? "true" : "false").",\"reason\":\"".&_webui_json_escape($r->{reason})."\"}" : "null")
   .",\"adjustments\":[".join(",",map {"\"".&_webui_json_escape($_)."\""} @adj)."]"
+  .((defined($read_ok) && !$read_ok) ? ",\"wire_read\":false" : "")
   .",\"port\":".&webui_signal_port_json()
   .",".&webui_signal_state_json()."}";
 }
@@ -13127,7 +13128,15 @@ sub webui_selftest_cancel (@) {
  return '{"status":"ok","running":true}';
 }
 
-# The infoframes of the last modeset: ($connected,$avi,$drm,$spd) as hex.
+# The kernel log, or undef if it could not be read whole: a dmesg killed half
+# way leaves part of the log, whose last frame can be one of an older modeset.
+sub webui_dmesg_log (@) {
+ my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
+ return (defined($dmesg) && $dmesg ne "" && $? == 0) ? $dmesg : undef;
+}
+
+# The infoframes of the last modeset: ($connected,$avi,$drm,$spd) as hex, then
+# whether the log could be read: if not, the frames are empty though sent.
 # The kernel log keeps the infoframes of every earlier modeset. Without a
 # display nothing is sent, so none of them is current. With a display only
 # the last burst counts: vc4 logs AVI, SPD, DRM, HVS per modeset and logs no
@@ -13135,9 +13144,11 @@ sub webui_selftest_cancel (@) {
 sub webui_last_infoframes (@) {
  my $connected=&webui_hdmi_connected();
  my ($avi_hex,$drm_hex,$spd_hex)=("","","");
+ my $read_ok=1;
  if($connected) {
-  my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
-  foreach my $line (split(/\n/,$dmesg)) {
+  my $dmesg=&webui_dmesg_log();
+  $read_ok=defined($dmesg) ? 1 : 0;
+  foreach my $line (split(/\n/,$read_ok ? $dmesg : "")) {
    if($line=~/AVI IF:\s*(.+)/) { $avi_hex=$1; $drm_hex=""; $spd_hex=""; }
    if($line=~/DRM IF:\s*(.+)/) { $drm_hex=$1; }
    if($line=~/SPD IF:\s*(.+)/) { $spd_hex=$1; }
@@ -13146,11 +13157,12 @@ sub webui_last_infoframes (@) {
  foreach my $hex ($avi_hex,$drm_hex,$spd_hex) {
   $hex=~s/[^0-9a-fA-F:]//g;
  }
- return ($connected,$avi_hex,$drm_hex,$spd_hex);
+ return ($connected,$avi_hex,$drm_hex,$spd_hex,$read_ok);
 }
 
 sub webui_infoframes_json (@) {
- my ($connected,$avi_hex,$drm_hex,$spd_hex)=&webui_last_infoframes();
+ my ($connected,$avi_hex,$drm_hex,$spd_hex,$read_ok)=&webui_last_infoframes();
+ return "{\"status\":\"error\",\"message\":\"Kernel log not readable\"}" if(!$read_ok);
  # The PGenerator+ vc4 module never writes SPD, so "spd" stays empty there;
  # "spd_sent" in the link block reads the packet enable bit back.
  return "{\"status\":\"ok\",\"connected\":".($connected ? "true" : "false").",\"avi\":\"$avi_hex\",\"drm\":\"$drm_hex\",\"spd\":\"$spd_hex\"".&webui_hdmi_link_json()."}";
@@ -14376,8 +14388,10 @@ sub webui_range_expectation (@) {
  my $codes=shift;
  require PGSignalCheck;
  my ($caps)=eval { &signal_display_caps() };
- my ($connected,$avi)=&webui_last_infoframes();
- return PGSignalCheck::signal_range_expectation($caps,$connected ? $avi : "",$codes);
+ my ($connected,$avi,undef,undef,$read_ok)=&webui_last_infoframes();
+ my $e=PGSignalCheck::signal_range_expectation($caps,$connected ? $avi : "",$codes);
+ $e->{reason}="No AVI infoframe was read: the kernel log could not be read." if($e && defined($read_ok) && !$read_ok);
+ return $e;
 }
 
 sub webui_range_expectation_json (@) {
@@ -14395,10 +14409,12 @@ sub webui_range_expectation_json (@) {
 }
 
 # The last AVI infoframe line of the kernel log and how many there are:
-# changes when a modeset has logged a new one.
+# changes when a modeset has logged a new one. "unread" if the log could not
+# be read: that says nothing about a modeset.
 sub webui_avi_log_stamp (@) {
- my $dmesg=`timeout 3 /bin/dmesg 2>/dev/null`;
- my @avi=(defined $dmesg ? $dmesg : "")=~/^(.*AVI IF:.*)$/mg;
+ my $dmesg=&webui_dmesg_log();
+ return "unread" if(!defined $dmesg);
+ my @avi=$dmesg=~/^(.*AVI IF:.*)$/mg;
  return scalar(@avi).":".(@avi ? $avi[-1] : "");
 }
 
@@ -14441,7 +14457,9 @@ sub webui_range_check_follow_wire (@) {
  $wait=3 if(!defined $wait);
  require Time::HiRes;
  my $until=Time::HiRes::time()+$wait;
- while(&webui_avi_log_stamp() eq $before && Time::HiRes::time() < $until) {
+ while(Time::HiRes::time() < $until) {
+  my $now=&webui_avi_log_stamp();
+  last if($before ne "unread" && $now ne "unread" && $now ne $before);
   Time::HiRes::sleep(0.25);
  }
  return 0 if(!&webui_range_check_refresh());

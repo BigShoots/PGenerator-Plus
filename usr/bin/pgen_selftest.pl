@@ -244,16 +244,19 @@ sub quant_range_prop {
 }
 
 # Last infoframe burst in the kernel log: AVI bytes and whether a DRM (HDR)
-# frame followed it.
+# frame followed it. A dmesg killed half way leaves part of the log, whose
+# last frame is one of an earlier scenario: nothing is taken from it.
 sub infoframes {
  my $dmesg=`timeout 3 dmesg 2>/dev/null`;
+ my $unread=(!defined($dmesg) || $dmesg eq "" || $?) ? 1 : 0;
+ $dmesg="" if($unread);
  my ($avi,$drm)=("","");
  foreach my $line (split(/\n/,$dmesg)) {
   if($line=~/AVI IF:\s*(.+)/) { $avi=$1; $drm=""; }
   if($line=~/DRM IF:\s*(.+)/) { $drm=$1; }
  }
  my @b=map { hex($_) } ($avi=~/([0-9a-fA-F]{2})/g);
- return { bytes=>\@b, drm=>($drm ne "" ? 1 : 0), count=>scalar(() = $dmesg=~/AVI IF:/g) };
+ return { bytes=>\@b, drm=>($drm ne "" ? 1 : 0), count=>scalar(() = $dmesg=~/AVI IF:/g), unread=>$unread };
 }
 
 # The vendor infoframe on the wire (pgen_hdmi_packet reads the packet RAM,
@@ -305,11 +308,12 @@ sub dri_state {
 # $conf is the daemon's conf after the switch; $state_text the debugfs
 # state; $drm_line the packet RAM line of slot 7 (HDMI_PACKET).
 sub infoframe_checks {
- my ($entry,$sc,$format,$conf,$avi_bytes,$state_text,$drm_line)=@_;
+ my ($entry,$sc,$format,$conf,$avi_bytes,$state_text,$drm_line,$log_unread)=@_;
  my $mode=$sc->{config}{signal_mode} || "sdr";
  my $avi=PGSelfTestCheck::avi_fields($avi_bytes);
  if(!$avi) {
-  add_check($entry,"AVI infoframe","in the kernel log","not found",0);
+  # Unread: the caller has reported it as not verified.
+  add_check($entry,"AVI infoframe","in the kernel log","not found",0) if(!$log_unread);
  } else {
   add_check($entry,"AVI checksum","valid",$avi->{checksum_ok} ? "valid" : "invalid",$avi->{checksum_ok});
   if(!%$conf) {
@@ -584,11 +588,16 @@ for(my $n=0;$n<@scenarios;$n++) {
  $entry->{link}={ bpc=>$bpc, format=>$format, csc=>($csc_unity ? "unity" : "range"), prop=>$prop,
                   avi=>join(" ",map { sprintf("%02x",$_) } @avi[0..($#avi < 7 ? $#avi : 7)]), drm=>$if->{drm}, width=>$w, height=>$h };
 
- add_check($entry,"AVI colour format",$format,$avi_format || "none",$avi_format eq $format);
- if($format eq "RGB") {
+ if($if->{unread}) {
+  add_check($entry,"AVI infoframe",$format,"not verified (kernel log not readable)",0,1);
+  $entry->{unverified}=1;
+ } else {
+  add_check($entry,"AVI colour format",$format,$avi_format || "none",$avi_format eq $format);
+ }
+ if(!$if->{unread} && $format eq "RGB") {
   my $want_q=(($sc->{range} || "") eq "FULL") ? 2 : 1;
   add_check($entry,"AVI quantisation",$want_q == 2 ? "Full" : "Limited",$avi_q == 2 ? "Full" : $avi_q == 1 ? "Limited" : "Default",$avi_q == $want_q);
- } elsif($format=~/^YCbCr/ && @avi > 8) {
+ } elsif(!$if->{unread} && $format=~/^YCbCr/ && @avi > 8) {
   # YQ (PB5 bits 7..6): 0 Limited, 1 Full
   my $want_yq=(($sc->{range} || "") eq "FULL") ? 1 : 0;
   my $avi_yq=($avi[8]>>6)&3;
@@ -603,7 +612,10 @@ for(my $n=0;$n<@scenarios;$n++) {
  # unreadable.
  my $pkt=$reg{"HDMI_RAM_PACKET_CONFIG"};
  my $drm_on=defined($pkt) ? (($pkt & 0x80) ? 1 : 0) : $if->{drm};
- if($sc->{drm}) {
+ if(!defined($pkt) && $if->{unread}) {
+  add_check($entry,"HDR metadata",$sc->{drm} ? "DRM infoframe" : "none","not verified (packet gate and kernel log not readable)",0,1);
+  $entry->{unverified}=1;
+ } elsif($sc->{drm}) {
   add_check($entry,"HDR metadata","DRM infoframe",$drm_on ? "DRM infoframe" : "none",$drm_on);
  } else {
   add_check($entry,"HDR metadata","none",$drm_on ? "DRM infoframe" : "none",!$drm_on);
@@ -628,7 +640,7 @@ for(my $n=0;$n<@scenarios;$n++) {
  my ($ccode,$conf)=&http_json("GET","/api/config");
  $conf={} if($ccode != 200 || ref($conf) ne "HASH");
  $sc->{matrix}=%$conf ? PGSelfTestCheck::ycc_matrix_for(@{PGSelfTestCheck::avi_colorimetry_expect($sc->{config}{signal_mode},$format,$conf->{colorimetry})},$h) : "";
- &infoframe_checks($entry,$sc,$format,$conf,\@avi,&dri_state(),$sc->{drm} ? &sudo_cmd("HDMI_PACKET",7) : "");
+ &infoframe_checks($entry,$sc,$format,$conf,\@avi,&dri_state(),$sc->{drm} ? &sudo_cmd("HDMI_PACKET",7) : "",$if->{unread});
 
  # Scanout = wire only while the range CSC is unity (YCbCr, RGB Full, RGB
  # Limited on the patched vc4). Otherwise the codes are not provable here.

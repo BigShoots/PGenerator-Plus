@@ -153,8 +153,8 @@ sub pitpg_text (@) {
   # The kernel ring buffer as klogctl reads it (<N> priority prefixes),
   # its last 49152 bytes as pitpgd returns.
   my $t=`timeout 3 $dmesg -r 2>/dev/null`;
-  $t=`timeout 3 $dmesg 2>/dev/null` if(!defined($t) || $t eq "");
-  return ("failed","The kernel log could not be read.") if(!defined($t) || $t eq "");
+  $t=`timeout 3 $dmesg 2>/dev/null` if(!defined($t) || $t eq "" || $?);
+  return ("failed","The kernel log could not be read.") if(!defined($t) || $t eq "" || $?);
   $t=substr($t,-49152) if(length($t) > 49152);
   return ("",$t);
  }
