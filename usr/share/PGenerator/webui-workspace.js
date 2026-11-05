@@ -21370,6 +21370,8 @@ function pgInitialRetry(name,fn,delays){
  // What is on the cable (infoframes + link readback): heavier, so slower.
  pgVisiblePoll(pgSignalSummaryRefresh,20000);
  setTimeout(pgSignalSummaryRefresh,1200);
+ // The frames and the measured link follow mode changes; cheap at 10 s.
+ pgVisiblePoll(pgInfoframesPoll,10000);
  pgVisiblePoll(syncRemoteConfig,10000);
  pgVisiblePoll(()=>loadInfo(true),30000);
  pgVisiblePoll(()=>loadCecStatus(),5000);

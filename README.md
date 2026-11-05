@@ -376,9 +376,9 @@ Served on **port 80** at `http://pgenerator.local`. It has a **Desktop** layout 
 | **Calibration** | Meter detection, single and continuous reads, series runs (Greyscale 21/11, Colors 30, Saturation 24), charts, and session export |
 | **Meter Profiler** | Meter correction (CCSS) editor and preview |
 | **3D LUT · Display Profiler** | LUT handling, MHC2 / KDE HDR profile building |
-| **Connectivity** | Wi-Fi client, access point and Bluetooth in one Network card, LG TV control (pairing, AutoCal: greyscale, 3D LUT, HDR tone map, Shadow Fix) and the Resolve client |
+| **Connectivity** | Wi-Fi client, access point and Bluetooth in one Network card, LG TV control (pairing, AutoCal: greyscale, 3D LUT, HDR tone map, Shadow Fix) and the Resolve client; on Tablet and Phone also HDMI-CEC |
 | **System** | Device info: CPU, memory and temperature with meters, plus board, hostname, resolution, uptime, RAM and the network interfaces; GPU memory (asks before the required reboot) and CPU **Scaling Type** (Performance recommended, applies at once) are set in their tiles. Below the device info: Software Update (with notes, progress, rollback) and Download Logs |
-| **Live Information** (right-hand drawer) | Active signal, the infoframe decoder (AVI and DRM), the measured HDMI link depth and clock, and HDMI-CEC status |
+| **Live Information** (right-hand drawer on Desktop) | Active signal, the infoframe decoder (AVI, DRM and SPD), the measured HDMI link depth and clock, and HDMI-CEC with the TV remote. Updated while open; a failed read says how old the frames on screen are. On Tablet and Phone the infoframe decoder is a card in **System** |
 | **Settings** | Layout, zoom, **13 themes**, Show/Hide for the Measure workspaces, and settings backup and restore |
 
 **Don't need the meter tools?** Settings → UI Settings → **Measure Workspaces → Hide** removes Calibration, Meter Profiler, 3D LUT and Display Profiler from the navigation, along with the meter status in the header. Saved measurements, profiles and LUTs are kept, and **Show** brings everything back. The choice is stored per browser.

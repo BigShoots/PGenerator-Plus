@@ -2384,6 +2384,7 @@ async function pgSignalSummaryRefresh(){
  pgApplySignalState({refused:r.refused,link_event:r.link_event,test_edid:r.test_edid},true);
 }
 function pgSignalSummaryMaybeRefresh(){
+ pgInfoframesSignalChanged();
  if(Date.now()-pgSignalWireAt>3000) pgSignalSummaryRefresh();
 }
 function pgApplySignalState(sig,force){
@@ -4391,10 +4392,11 @@ async function cecCmd(cmd){
 async function cecScan(){
   const el=document.getElementById('cecDeviceList');
   el.innerHTML='Scanning... (may take 15-30s)';
+  pgSyncDrawerIfOpen();
   const r=await fetchJSON('/api/cec/scan',{_timeoutMs:30000});
  if(r&&r.status==='ok'&&r.data&&r.data.devices){
   const devs=r.data.devices;
-  if(devs.length===0){el.innerHTML='No devices found';return;}
+  if(devs.length===0){el.innerHTML='No devices found';pgSyncDrawerIfOpen();return;}
   const typeNames={0:'TV',1:'Recording',3:'Tuner',4:'Playback',5:'Audio System'};
   const pwrNames={0:'On',1:'Standby',2:'Powering On',3:'Powering Off'};
   const cecCleanName=(name)=>String(name||'').replace(/[\x00-\x1f\x7f]+/g,'').trim();
@@ -4423,9 +4425,11 @@ async function cecScan(){
   html+='</table>';
   html+='<div style="margin-top:4px;color:var(--text2)">PGenerator+: '+pgHtmlEsc(r.data.self.phys)+' (logical '+pgHtmlEsc(r.data.self.log)+')</div>';
   el.innerHTML=html;
+  pgSyncDrawerIfOpen();
   loadCecStatus();
  }else{
   el.textContent='Scan failed: '+(r&&r.message?r.message:'unknown error');
+  pgSyncDrawerIfOpen();
   loadCecStatus();
  }
 }
@@ -4444,7 +4448,7 @@ function renderCecStatus(tvPower,physAddr){
   let html='TV: <span style="color:'+c+';font-weight:600">'+lbl+'</span>';
  const shownPhys=physAddr||cecLastPhysAddr;
  if(shownPhys) html+=' &bull; HDMI '+shownPhys;
- if(el._pgHtml!==html){ el.innerHTML=html; el._pgHtml=html; }
+ if(el._pgHtml!==html){ el.innerHTML=html; el._pgHtml=html; pgSyncDrawerIfOpen(); }
  el.style.color='';
 }
 
@@ -4916,6 +4920,9 @@ async function pgSyncBootscreenTheme(force){
 }
 function pgPanelBelongsToActiveWorkspace(panel){
  if(!panel||!panel.getAttribute) return false;
+ // data-tablet-only: Desktop shows this content elsewhere (HDMI Infoframes
+ // and HDMI-CEC are in the Live Information drawer).
+ if(panel.hasAttribute('data-tablet-only')) return false;
  const workspace=panel.getAttribute('data-desktop-workspace');
  const globalPanel=panel.getAttribute('data-desktop-global');
  const available=panel.style.display!=='none';
@@ -5602,9 +5609,21 @@ function pgUtilitySetRows(id,rows){
 function pgUtilityInfoframeText(decodedId,rawId){
  const decoded=document.getElementById(decodedId);
  const raw=document.getElementById(rawId);
- const decodedText=decoded?String(decoded.innerText||decoded.textContent||'').trim():'';
+ // The card is display:none on Desktop, where innerText drops the <br>: take
+ // the lines from the nodes.
+ const decodedText=decoded?Array.from(decoded.childNodes).map(n=>String(n.textContent||'').trim()).filter(Boolean).join('\n'):'';
  const rawText=raw?String(raw.textContent||'').trim():'';
  return [decodedText,rawText&&rawText!=='-'?rawText:''].filter(Boolean).join('\n')||'No data';
+}
+// The CEC card is display:none on Desktop, where innerText runs the device
+// table together: one line per device, then the note below the table.
+function pgUtilityCecDevicesText(list){
+ if(!list) return 'Not scanned yet';
+ const cells=row=>Array.from(row.querySelectorAll('td')).map(td=>String(td.textContent||'').trim()).filter(Boolean).join(' · ');
+ const rows=Array.from(list.querySelectorAll('tr')).map(cells).filter(Boolean);
+ if(!rows.length) return String(list.textContent||'').trim()||'Not scanned yet';
+ const notes=Array.from(list.children).filter(n=>n.tagName!=='TABLE').map(n=>String(n.textContent||'').trim());
+ return rows.concat(notes).filter(Boolean).join('\n');
 }
 function pgUtilitySetText(el,value){
  if(!el) return;
@@ -5634,14 +5653,14 @@ function pgSyncDesktopUtilityDrawer(){
  pgUtilitySetRows('desktopUtilityMetadata',metadata);
  const avi=document.getElementById('desktopUtilityAvi');
  const drm=document.getElementById('desktopUtilityDrm');
+ const spd=document.getElementById('desktopUtilitySpd');
  pgUtilitySetText(avi,pgUtilityInfoframeText('aviDecoded','aviIF'));
  pgUtilitySetText(drm,pgUtilityInfoframeText('drmDecoded','drmIF'));
+ pgUtilitySetText(spd,pgUtilityInfoframeText('spdDecoded','spdIF'));
  const cec=document.getElementById('cecStatus');
  const cecOut=document.getElementById('desktopUtilityCecStatus');
  pgUtilitySetText(cecOut,cec?String(cec.innerText||cec.textContent||'Checking...').trim():'Checking...');
- const cecDevices=document.getElementById('cecDeviceList');
- const cecDevicesOut=document.getElementById('desktopUtilityCecDevices');
- pgUtilitySetText(cecDevicesOut,cecDevices?String(cecDevices.innerText||cecDevices.textContent||'Not scanned yet').trim():'Not scanned yet');
+ pgUtilitySetText(document.getElementById('desktopUtilityCecDevices'),pgUtilityCecDevicesText(document.getElementById('cecDeviceList')));
  const deviceRows=[['CPU Usage',String((document.getElementById('cpuUsageValue')||{}).textContent||'--%').trim()],['Memory Usage',String((document.getElementById('memUsageValue')||{}).textContent||'--%').trim()],['Temp',String((document.getElementById('deviceInfoTemperature')||{}).textContent||'--').trim()]];
  const info=document.getElementById('infoGrid');
  if(info){
@@ -5652,6 +5671,11 @@ function pgSyncDesktopUtilityDrawer(){
   });
  }
  pgUtilitySetRows('desktopUtilityDevice',deviceRows);
+}
+// The CEC card is not on screen on Desktop: what it shows reaches the drawer
+// through this, at once for an answer to a click.
+function pgSyncDrawerIfOpen(){
+ if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();
 }
 function pgSetDesktopUtilityDrawer(open){
  const next=!!open&&document.body.classList.contains('layout-desktop');
@@ -5689,7 +5713,8 @@ function pgFlushScrollIdle(){
 // Runs fn now, or once scrolling has settled; a later job with the same key
 // replaces the queued one (only the newest poll result is applied).
 function pgWhenScrollIdle(key,fn){
- if(!pgScrollBusy()){ fn(); return; }
+ // A queued job with this key is older: the flush must not run it after fn.
+ if(!pgScrollBusy()){ pgScrollIdleJobs.delete(key); fn(); return; }
  pgScrollIdleJobs.set(key,fn);
  if(!pgScrollIdleTimer) pgScrollIdleTimer=setTimeout(pgFlushScrollIdle,150);
 }
@@ -5712,13 +5737,82 @@ function pgDesktopUtilityInit(){
  document.addEventListener('change',()=>{if(document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();});
  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('desktop-utility-open')) pgSetDesktopUtilityDrawer(false);});
  setInterval(()=>{if(!document.hidden&&document.body.classList.contains('desktop-utility-open')) pgSyncDesktopUtilityDrawer();},3000);
- // The measured HDMI link follows mode changes; dmesg + debugfs are cheap at 10 s.
- setInterval(()=>{if(!document.hidden&&document.body.classList.contains('desktop-utility-open')) loadInfoframes();},10000);
+ // Arriving at the card (workspace, scrolling, expanding it) reads right away:
+ // away from it the polls read nothing, so it holds older frames.
+ const frames=document.getElementById('infoframesBody');
+ if(frames&&'IntersectionObserver' in window){
+  new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)) pgInfoframesArrived();}).observe(frames);
+ }
 }
 
+// The frames are shown in the Live Information drawer (Desktop, with the
+// measured link) and the HDMI Infoframes card (Tablet, Phone). With neither on
+// screen the polls read nothing: each read runs dmesg and debugfs on the Pi.
+function pgInfoframesOnScreen(){
+ if(document.hidden) return false;
+ if(document.body.classList.contains('desktop-utility-open')) return true;
+ const frames=document.getElementById('infoframesBody');
+ if(!frames) return false;
+ // In another workspace, on Desktop or in a collapsed card it is display:none,
+ // its box all zero.
+ const box=frames.getBoundingClientRect();
+ return box.bottom>0&&box.top<window.innerHeight;
+}
+let pgInfoframesReading=0;
+let pgInfoframesAgain=false;
+let pgInfoframesMissed=false;
+let pgInfoframesAskedAt=-Infinity;
+function pgInfoframesPoll(){
+ if(pgInfoframesOnScreen()&&!pgInfoframesReading) loadInfoframes();
+}
+// Scrolling past the card crosses its edge twice a second, and every read
+// waits for the one worker of the general lane.
+function pgInfoframesArrived(){
+ if(pgInfoframesMissed||performance.now()-pgInfoframesAskedAt>=3000) pgInfoframesPoll();
+}
+// Unlike the timer this call does not come again, and a read under way may
+// have started before the change: one more read follows it. With the frames
+// off screen the next arrival reads, however soon it comes.
+function pgInfoframesSignalChanged(){
+ if(pgInfoframesReading) pgInfoframesAgain=true;
+ else if(pgInfoframesOnScreen()) loadInfoframes();
+ else pgInfoframesMissed=true;
+}
+// A failed read leaves the last frames on screen, so say how old they are:
+// they are shown as live, and a calibrator acts on them.
+let pgInfoframesReadAt=0;
+function pgInfoframesMarkRead(ok){
+ if(ok) pgInfoframesReadAt=Date.now();
+ const since=pgInfoframesReadAt?'not updated since '+new Date(pgInfoframesReadAt).toLocaleTimeString():'not read yet';
+ [['infoframesStale','Infoframes'],['desktopUtilityInfoframesStale','Infoframes'],['desktopUtilityLinkStale','Link']].forEach(([id,what])=>{
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.hidden=ok;
+  pgUtilitySetText(el,ok?'':what+': '+since+'. The last read failed.');
+ });
+}
 async function loadInfoframes(){
- const r=await fetchJSON('/api/infoframes',{_quiet:true,_timeoutMs:10000});
- if(!r||r.status!=='ok') return;
+ pgInfoframesReading++;
+ pgInfoframesAskedAt=performance.now();
+ let r=null;
+ try{ r=await fetchJSON('/api/infoframes',{_quiet:true,_timeoutMs:10000}); }catch(e){}
+ pgInfoframesReading--;
+ const ok=!!r&&r.status==='ok';
+ if(ok) pgInfoframesMissed=false;
+ if(pgInfoframesAgain){ pgInfoframesAgain=false; pgInfoframesSignalChanged(); }
+ // The answer can land mid-scroll; apply it once the page is at rest.
+ pgWhenScrollIdle('infoframes',()=>{
+  pgInfoframesMarkRead(ok);
+  if(ok) pgApplyInfoframes(r);
+ });
+}
+let pgInfoframesLast='';
+function pgApplyInfoframes(r){
+ // The same answer changes nothing: rewriting it every 10 s would drop a
+ // selection in the hex and disturb a scroll on iOS.
+ const answer=JSON.stringify(r);
+ if(answer===pgInfoframesLast) return;
+ pgInfoframesLast=answer;
  window._hdmiLink=r.link||null;
  window._hdmiAviColor='';
  const ae=document.getElementById('aviIF');
@@ -5805,11 +5899,11 @@ function pgRenderSpdInfoframe(r){
  lines.forEach((line,i)=>{ if(i) dd.appendChild(document.createElement('br')); dd.appendChild(document.createTextNode(line)); });
 }
 
-// Device Info opens the page. Topic order: Signal (output, self-test, infoframes, patterns, playlists) · Measure
-// (calibration, session, 3D LUT, Display Profiler) · CEC · Device (network, LG TV control, Resolve, system, UI, update).
+// Device Info opens the page. Topic order: Signal (output, self-test, patterns, playlists) · Measure
+// (calibration, session, 3D LUT, Display Profiler) · Device (network, LG TV control, CEC, Resolve, system, UI, update).
 // The key carries a version so the new grouping replaces older saved drags once
 // (v6: Playlists below Diagnostic Patterns, as on Desktop; v5 put them above).
-const PG_DEFAULT_WIDGET_ORDER=['patterns','playlists','meter','cec','wifi','lg','resolve','settings'];
+const PG_DEFAULT_WIDGET_ORDER=['patterns','playlists','meter','wifi','lg','cec','resolve','settings'];
 const PG_WIDGET_ORDER_KEY='pg_widget_order_v6';
 // Widget reorder: POINTER drag on the .drag-handle grip only (no HTML5 DnD).
 // Drop target = card under the cursor; insert before/after by midpoint.
@@ -5850,11 +5944,8 @@ const PG_WIDGET_ORDER_KEY='pg_widget_order_v6';
    const settings=document.getElementById('settingsCard');
    if(!order||!Array.isArray(order)){
     // Default order follows the sidebar groups (Signal, Measure, Device)
-    // so the tablet scroll matches the jump bar. Infoframes pair with Dolby
-    // Vision in the Output row. A saved drag order still wins.
+    // so the tablet scroll matches the jump bar. A saved drag order still wins.
     const map={}; widgets().forEach(w=>{ map[w.dataset.widget]=w; });
-    const dv=document.getElementById('dvCard');
-    if(map.infoframes&&dv&&dv.parentNode===dash) dash.insertBefore(map.infoframes,dv.nextSibling);
     const end=dash.querySelector('.toast')||null;
     PG_DEFAULT_WIDGET_ORDER.forEach(id=>{ if(map[id]) dash.insertBefore(map[id],end); });
     if(map.info) dash.insertBefore(map.info,dash.firstElementChild);
@@ -23338,6 +23429,7 @@ function pgPaletteText(el){
 function pgPaletteAvailable(el){
  for(let n=el;n&&n!==document.body;n=n.parentElement){
   if(n.hidden||(n.style&&n.style.display==='none')) return false;
+  if(n.hasAttribute('data-tablet-only')&&document.body.classList.contains('layout-desktop')) return false;
  }
  return true;
 }

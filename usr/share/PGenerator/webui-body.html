@@ -1945,7 +1945,7 @@ __PG_LOGO_DARK__
  </div>
 
  <!-- HDMI-CEC TV Control -->
- <div class="card" data-widget="cec" data-desktop-workspace="integrations" data-desktop-order="10" draggable="true">
+ <div class="card" data-widget="cec" data-desktop-workspace="connectivity" data-tablet-only data-desktop-order="30" draggable="true">
   <h2><span class="drag-handle"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>HDMI-CEC</h2>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
    <span id="cecStatus" style="font-size:.85rem;color:var(--text2)">Checking...</span>
@@ -1962,7 +1962,7 @@ __PG_LOGO_DARK__
    <summary style="cursor:pointer;font-size:.85rem;color:var(--text2)">CEC Bus Devices</summary>
    <div id="cecDevices" style="font-size:.8rem;margin-top:6px;color:var(--text2)">
     <button class="btn btn-sm btn-secondary" onclick="cecScan()" style="margin-bottom:6px">Scan CEC Bus</button>
-    <div id="cecDeviceList">Not scanned yet</div>
+    <div id="cecDeviceList" style="overflow-x:auto">Not scanned yet</div>
    </div>
   </details>
  </div>
@@ -2008,13 +2008,14 @@ __PG_LOGO_DARK__
   </section>
  </div>
 
- <!-- HDMI Infoframes -->
- <div class="card" data-widget="infoframes" data-desktop-workspace="diagnostics" data-desktop-order="10" draggable="true">
+ <!-- HDMI Infoframes: System on Tablet and Phone; on Desktop the Live Information drawer shows them -->
+ <div class="card" data-widget="infoframes" data-desktop-workspace="system" data-tablet-only data-desktop-order="20" draggable="true">
   <h2><span class="drag-handle"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>HDMI Infoframes</h2>
   <div class="btn-row" style="margin-bottom:8px">
    <button class="btn btn-sm btn-secondary" onclick="loadInfoframes()">Refresh</button>
   </div>
-  <div>
+  <div id="infoframesBody">
+   <div class="desktop-utility-alert" id="infoframesStale" role="status" hidden></div>
    <div style="margin-bottom:10px">
     <div style="font-size:.7rem;color:var(--text2);margin-bottom:4px">AVI InfoFrame</div>
     <div id="aviIF" class="if-hex">-</div>
@@ -2119,16 +2120,20 @@ __PG_LOGO_DARK__
   <section class="desktop-utility-section">
    <h3>Display Output</h3>
    <div class="desktop-utility-alert" id="desktopUtilityNoHdmi" role="status" hidden><strong>No HDMI display connected.</strong> Nothing is being sent. The values below are the saved settings, not a live signal.</div>
+   <div class="desktop-utility-alert" id="desktopUtilityLinkStale" role="status" hidden></div>
    <div class="desktop-utility-grid" id="desktopUtilityOutput"></div>
    <div class="desktop-utility-subtitle" id="desktopUtilityMetadataTitle">Metadata</div>
    <div class="desktop-utility-grid" id="desktopUtilityMetadata"></div>
   </section>
   <section class="desktop-utility-section">
    <h3>HDMI Infoframes</h3>
+   <div class="desktop-utility-alert" id="desktopUtilityInfoframesStale" role="status" hidden></div>
    <div class="desktop-utility-subtitle">AVI</div>
    <div class="desktop-utility-data" id="desktopUtilityAvi">No data</div>
    <div class="desktop-utility-subtitle">DRM / HDR</div>
    <div class="desktop-utility-data" id="desktopUtilityDrm">No data</div>
+   <div class="desktop-utility-subtitle">SPD</div>
+   <div class="desktop-utility-data" id="desktopUtilitySpd">No data</div>
   </section>
   <section class="desktop-utility-section">
    <h3>HDMI-CEC</h3>
