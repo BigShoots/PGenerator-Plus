@@ -1271,7 +1271,7 @@ function meterHasSavedMeasuredBlack(){
    return true;
   }
   const list=Array.isArray(meterReadings)?meterReadings:[];
-  return list.some(r=>r&&Math.abs(Number(r.ire||0))<0.05
+  return list.some(r=>r&&Math.abs(Number(r.ire||0))<0.05&&!meterReadingIsSaturationStep(r)
    &&(r.luminance!=null||r.Y!=null)&&!r.error);
  }catch(e){}
  return false;
@@ -1285,7 +1285,7 @@ function meterSavedMeasuredBlackReading(){
    return meterSeriesBaselineBlack;
   }
   const list=Array.isArray(meterReadings)?meterReadings:[];
-  return list.find(r=>r&&Math.abs(Number(r.ire||0))<0.05
+  return list.find(r=>r&&Math.abs(Number(r.ire||0))<0.05&&!meterReadingIsSaturationStep(r)
    &&(r.luminance!=null||r.Y!=null)&&!r.error&&!r.synthetic_target)||null;
  }catch(e){}
  return null;
@@ -1427,7 +1427,7 @@ function meterColorSelectionRunStepsWithMeasuredEndpoints(steps,opts){
   if(!step) return false;
   const name=String(step.name||'').toLowerCase();
   if(name==='black'||name==='0% black'||name==='0%') return true;
-  return Math.abs(Number(step.ire||0))<0.05
+  return Math.abs(Number(step.ire||0))<0.05&&!meterReadingIsSaturationStep(step)
    &&Number(step.r)===Number(step.g)&&Number(step.g)===Number(step.b);
  };
  const pool=Array.isArray(meterSeriesSteps)?meterSeriesSteps:[];
