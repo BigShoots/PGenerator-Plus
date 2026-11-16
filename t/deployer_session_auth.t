@@ -20,19 +20,11 @@ my $deployer = File::Spec->catdir($FindBin::Bin, '..', 'github-deployer');
 my $server = File::Spec->catfile($deployer, 'server.py');
 plan skip_all => "github-deployer/server.py not present" unless -f $server;
 
-# --- static assertions -------------------------------------------------------
-my $py = do {
-    open my $fh, '<', $server or die "open $server: $!";
-    local $/; <$fh>;
-};
-unlike($py, qr/StrictHostKeyChecking=no/, 'ssh: StrictHostKeyChecking=no gone');
-like($py,   qr/StrictHostKeyChecking=yes/, 'ssh: StrictHostKeyChecking=yes set');
-unlike($py, qr/AutoAddPolicy\(\)/,         'paramiko: AutoAddPolicy gone');
-like($py,   qr/load_host_keys\(KNOWN_HOSTS\)/, 'paramiko: known_hosts loaded');
-like($py,   qr/ssh-keyscan/,               'host-key error names ssh-keyscan');
-like($py,   qr/check_local_request\(self\.headers/, 'POST gate runs in do_POST');
-
 # --- live server -------------------------------------------------------------
+# Started BEFORE any assertion so 'server did not start' can be a single
+# plan skip_all: a second plan() once TAP output exists only survives while
+# the planned count equals the number of tests already printed (the static
+# block used to run first, making that skip shape load-bearing on counts).
 my $port = do {
     my $sock = IO::Socket::INET->new(LocalAddr => '127.0.0.1', Listen => 1)
         or die "cannot allocate probe port: $!";
@@ -54,6 +46,41 @@ sub wait_ready {
     return 0;
 }
 plan skip_all => 'server did not start' unless wait_ready();
+
+# --- static assertions -------------------------------------------------------
+my $py = do {
+    open my $fh, '<', $server or die "open $server: $!";
+    local $/; <$fh>;
+};
+unlike($py, qr/StrictHostKeyChecking=no/, 'ssh: StrictHostKeyChecking=no gone');
+like($py,   qr/StrictHostKeyChecking=yes/, 'ssh: StrictHostKeyChecking=yes set');
+unlike($py, qr/AutoAddPolicy\(\)/,         'paramiko: AutoAddPolicy gone');
+like($py,   qr/load_host_keys\(KNOWN_HOSTS\)/, 'paramiko: known_hosts loaded');
+like($py,   qr/ssh-keyscan/,               'host-key error names ssh-keyscan');
+like($py,   qr/check_local_request\(self\.headers/, 'POST gate runs in do_POST');
+
+# host_name() must strip only a numeric port. urlsplit() reads a schemeless
+# "localhost:8766" as scheme:path and empties it, which 403'd every POST and
+# blocked /session.js when the console was opened as http://localhost:PORT;
+# a bare IPv6 Host ("::1") must likewise survive for the loopback check.
+{
+    my $probe = join "\n",
+        q{import importlib.util, sys},
+        q{spec = importlib.util.spec_from_file_location('s', sys.argv[1])},
+        q{m = importlib.util.module_from_spec(spec)},
+        q{spec.loader.exec_module(m)},
+        q{assert m.host_name('localhost:8766') == 'localhost'},
+        q{assert m.host_name('::1') == '::1'},
+        q{assert m.host_name('127.0.0.1:8766') == '127.0.0.1'},
+        q{assert m.host_name('[::1]:8766') == '::1'},
+        q{assert m.host_name('http://localhost:8766') == 'localhost'};
+    # Probe travels in the environment: no shell quoting layer to eat the
+    # single quotes (backtick-interpolated quotes get stripped and SyntaxError).
+    local $ENV{PGEN_PROBE} = $probe;
+    my $out = `python3 -c 'import os; exec(os.environ["PGEN_PROBE"])' '$server' 2>&1`;
+    is($? >> 8, 0, 'host_name strips ports (localhost:PORT, bare ::1 survive)')
+        or diag $out;
+}
 
 # raw_request(body, headers) -> (status, header_block, body)
 sub raw_request {
@@ -97,6 +124,19 @@ is($status, 403, 'DNS-rebinding Host rejected even with the token');
                         origin => 'http://evil.example', token => $token,
                         body => '{"repository":"owner/repo"}');
 is($status, 403, 'cross-origin request rejected even with the token');
+
+# A schemeless Host carrying a non-IP hostname with port (browsers send this
+# for http://localhost:PORT) must reach the token check, not the Host gate.
+($status) = raw_request('POST', '/api/restart', host => "localhost:$port",
+                        origin => "http://localhost:$port", token => $token,
+                        body => '{}');
+isnt($status, 403, 'Host localhost:PORT is not rejected as non-loopback');
+
+# Browsers send Origin on same-origin GET fetches and script loads, so the
+# /session.js gate sees http://localhost:PORT too — it must serve, not 403.
+($status) = raw_request('GET', '/session.js', host => "localhost:$port",
+                        origin => "http://localhost:$port");
+is($status, 200, 'session.js served for a localhost:PORT origin');
 
 # The token itself is valid auth: /api/refs with a bogus repo must fail later
 # in the pipeline (400 from validation), proving the gate passed it through.

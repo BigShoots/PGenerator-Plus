@@ -201,12 +201,23 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 def host_name(value: str) -> str:
     """Bare hostname of a Host or Origin value, port and brackets stripped."""
     value = value.strip()
-    scheme = urllib.parse.urlsplit(value)
-    if scheme.scheme:
-        value = scheme.netloc
+    # Only real URLs may go through the scheme parser: urlsplit() treats a
+    # schemeless "localhost:8766" as scheme:path (registered-scheme rule),
+    # which emptied the Host header for any non-IP host:port value and 403'd
+    # the console when opened as http://localhost:PORT. "://" separates URLs
+    # from bare host values; Host headers never carry a scheme, Origins always do.
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).netloc
     if value.startswith("["):  # IPv6 literal: [::1]:8766
         return value.split("]", 1)[0][1:]
-    return value.rsplit(":", 1)[0] if ":" in value else value
+    if ":" in value:
+        # Two or more colons can only be a bare (unbracketed) IPv6 address —
+        # "port" splitting would chew the address itself ("::1" -> ":").
+        if value.count(":") >= 2:
+            return value
+        head, _, port = value.rpartition(":")
+        return head if port.isdigit() else value
+    return value
 
 
 def check_local_request(request_headers, token: str) -> None:  # noqa: ANN001
@@ -1060,8 +1071,9 @@ class Handler(BaseHTTPRequestHandler):
             # Per-startup session token, delivered as a same-origin classic
             # script so it stays inside CSP 'self' and is readable only from
             # this origin. A rebinding attacker who can TCP-connect still
-            # cannot read it: it arrives cross-origin (no CORS headers) and as
-            # a nonce-guarded no-store document.
+            # cannot read it: the response is readable only same-origin (no
+            # CORS headers, cross-origin script fetches are opaque) and it is
+            # no-store, so the token never lands in a cache.
             origin = self.headers.get("Origin", "").strip()
             if origin and host_name(origin) not in LOOPBACK_HOSTS:
                 self.send_error(HTTPStatus.FORBIDDEN)
