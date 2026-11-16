@@ -82,6 +82,65 @@ like($py,   qr/check_local_request\(self\.headers/, 'POST gate runs in do_POST')
         or diag $out;
 }
 
+# paramiko_client() must survive a missing known_hosts file: packages ship
+# only known_hosts.example, so load_host_keys() raising IOError into the
+# generic handler would greet every fresh Windows install with an
+# "Unexpected server error" naming a raw [Errno 2]. And a changed key must
+# not fall into the transport catch-all: BadHostKeyException is a subclass of
+# SSHException, so its arm must sit first or the operator loses the
+# replace-the-line hint (appending a second key does not fix a mismatch).
+{
+    my ($pfn) = $py =~ /(def paramiko_client\b.*?)(?=\ndef )/s;
+    ok($pfn, 'paramiko_client extracted for static guards') or die;
+    my $try   = index($pfn, 'try:');
+    my $load  = index($pfn, 'client.load_host_keys(KNOWN_HOSTS)');
+    my $guard = index($pfn, 'except OSError');
+    ok($load >= 0 && $try >= 0 && $try < $load && $guard > $load,
+       'paramiko: missing known_hosts guarded around load_host_keys')
+        or diag "try=$try load=$load guard=$guard";
+    ok(index($pfn, 'known_hosts.example') >= 0 || index($py, 'host_key_hint') >= 0,
+       'paramiko: missing-file path raises the operator hint');
+    my $bad = index($pfn, 'except paramiko.BadHostKeyException');
+    my $gen = index($pfn, 'except (paramiko.SSHException');
+    ok($bad >= 0 && $gen > $bad, 'paramiko: changed-key arm precedes the generic SSH wrap')
+        or diag "bad=$bad gen=$gen";
+}
+
+# Bundle freshness (PR-63 review): the committed downloadable bundles each
+# carry their own copy of the console files. If they drift behind the repo,
+# installs from the download run the UN-GATED server.py, silently undoing
+# issue #51 for every zip user. Compare every non-runtime bundle member
+# against its repo file. (The DMG wraps the same folder but is not
+# content-readable here; its rebuild rides the same release choreography.)
+{
+    my $probe = join "\n",
+        q{import hashlib, os, sys, zipfile},
+        q{deployer = sys.argv[1]},
+        q{bad = []},
+        q{def zf_read(zp, name):},
+        q{    with zipfile.ZipFile(zp) as zf: return zf.read(name)},
+        q{for zn in ("PGenerator-GitHub-Deployer-Windows.zip", "PGenerator-GitHub-Deployer-macOS.zip"):},
+        q{    zp = os.path.join(deployer, zn)},
+        q{    if not os.path.isfile(zp): continue},
+        q{    with zipfile.ZipFile(zp) as zf: names = zf.namelist()},
+        q{    for name in names:},
+        q{        if not name.startswith("PGenerator-GitHub-Deployer/") or "/runtime/" in name: continue},
+        q{        if name.endswith("/"): continue},
+        q{        rel = name[len("PGenerator-GitHub-Deployer/"):].rstrip("/")},
+        q{        if not rel: continue},
+        q{        repo = os.path.join(deployer, rel)},
+        q{        data = zf_read(zp, name)},
+        q{        if not os.path.isfile(repo): bad.append(zn + ":" + rel + " not in repo"); continue},
+        q{        rb = open(repo, "rb").read()},
+        q{        if hashlib.sha256(data).digest() != hashlib.sha256(rb).digest():},
+        q{            bad.append(zn + ":" + rel + " differs from repo")},
+        q{print("\n".join(bad))};
+    local $ENV{PGEN_BUNDLE_PROBE} = $probe;
+    my $out = `python3 -c 'import os; exec(os.environ["PGEN_BUNDLE_PROBE"])' '$deployer' 2>&1`;
+    chomp $out;   # the probe's print() adds a trailing newline even with zero drift
+    is($out, '', 'committed deployer bundles match the repo console files');
+}
+
 # raw_request(body, headers) -> (status, header_block, body)
 sub raw_request {
     my ($method, $path, %opt) = @_;
@@ -124,6 +183,13 @@ is($status, 403, 'DNS-rebinding Host rejected even with the token');
                         origin => 'http://evil.example', token => $token,
                         body => '{"repository":"owner/repo"}');
 is($status, 403, 'cross-origin request rejected even with the token');
+
+# A non-ASCII session header must be a clean 401. compare_digest() raises
+# TypeError on non-ASCII str inputs, so str/str comparison turned this into
+# a 500; the gate must compare bytes.
+($status) = raw_request('POST', '/api/restart', host => "127.0.0.1:$port",
+                        token => "wrong\x{e9}-token-\x{fc}", body => '{}');
+is($status, 401, 'non-ASCII session header is a clean 401, not a 500');
 
 # A schemeless Host carrying a non-IP hostname with port (browsers send this
 # for http://localhost:PORT) must reach the token check, not the Host gate.

@@ -141,7 +141,8 @@ def run(
             # the file path is what the operator actually needs.
             detail = (
                 "The Pi's SSH host key is unknown or changed. Verify it out of band, then add it "
-                f"to {KNOWN_HOSTS}, e.g.:  ssh-keyscan <pi-address> >> {KNOWN_HOSTS}"
+                f"to {KNOWN_HOSTS} (replacing the old line if the Pi was re-imaged), "
+                f"e.g.:  ssh-keyscan <pi-address> >> {KNOWN_HOSTS}"
             )
         raise AppError(detail or f"{args[0]} exited with status {result.returncode}", HTTPStatus.BAD_GATEWAY)
     return result
@@ -195,6 +196,14 @@ def host_key_hint(host: str) -> str:
     )
 
 
+def host_key_changed_hint(host: str) -> str:
+    return (
+        f"The host key for {host} does not match its line in {KNOWN_HOSTS}. If the Pi was "
+        f"re-imaged, verify the new fingerprint and REPLACE the old line (ssh-keyscan {host}); "
+        "otherwise treat this as a possible man-in-the-middle."
+    )
+
+
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -238,8 +247,12 @@ def check_local_request(request_headers, token: str) -> None:  # noqa: ANN001
     origin = request_headers.get("Origin", "").strip()
     if origin and host_name(origin) != host:
         raise AppError("Cross-origin requests are not allowed.", HTTPStatus.FORBIDDEN)
+    # Header values arrive ISO-8859-1-decoded, so encode("latin-1") maps any
+    # byte a client sent back to its raw form. compare_digest refuses non-ASCII
+    # str inputs with TypeError, which would turn a hostile header into a 500
+    # instead of a clean 401; comparing bytes sidesteps that entirely.
     provided = request_headers.get(SESSION_HEADER, "")
-    if not hmac.compare_digest(provided, token):
+    if not hmac.compare_digest(provided.encode("latin-1", "ignore"), token.encode("utf-8", "surrogateescape")):
         raise AppError(
             "Missing or invalid session token. Reload the deploy console page in the browser.",
             HTTPStatus.UNAUTHORIZED,
@@ -321,7 +334,13 @@ def paramiko_client(connection: dict[str, str], timeout: int):
             "Windows SSH support is not installed. Close the server and run run-windows.bat again."
         )
     client = paramiko.SSHClient()
-    client.load_host_keys(KNOWN_HOSTS)
+    # load_host_keys raises IOError when the file is unreadable — the common
+    # fresh-Windows case, since only known_hosts.example ships. Surface the
+    # operator fix instead of an unexpected 500 naming a raw [Errno 2].
+    try:
+        client.load_host_keys(KNOWN_HOSTS)
+    except OSError:
+        raise AppError(host_key_hint(connection["host"]), HTTPStatus.BAD_GATEWAY)
     client.set_missing_host_key_policy(KnownHostsOrReject())
     try:
         client.connect(
@@ -337,6 +356,12 @@ def paramiko_client(connection: dict[str, str], timeout: int):
     except paramiko.AuthenticationException as exc:
         client.close()
         raise AppError("SSH authentication failed", HTTPStatus.BAD_GATEWAY) from exc
+    except paramiko.BadHostKeyException as exc:
+        # A key that is present but differs from the offered one: distinguish
+        # it from the transport catch-all below so the operator is told to
+        # REPLACE the line, not append a second key.
+        client.close()
+        raise AppError(host_key_changed_hint(exc.hostname), HTTPStatus.BAD_GATEWAY) from exc
     except AppError:
         # KnownHostsOrReject raises this mid-connect; it is already operator
         # wording, not a transport failure — do not re-wrap it as one.
@@ -1068,12 +1093,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "build": DEPLOYER_BUILD})
             return
         if self.path == "/session.js":
-            # Per-startup session token, delivered as a same-origin classic
-            # script so it stays inside CSP 'self' and is readable only from
-            # this origin. A rebinding attacker who can TCP-connect still
-            # cannot read it: the response is readable only same-origin (no
-            # CORS headers, cross-origin script fetches are opaque) and it is
-            # no-store, so the token never lands in a cache.
+            # Per-startup session token, delivered as a classic script so it
+            # stays inside CSP 'self' and loads before app.js. A page on
+            # another origin COULD include this file with <script src> — the
+            # assignment would then execute in the loader's context and leak
+            # the token — so the Origin header the browser attaches to
+            # cross-origin script loads is what actually blocks it, together
+            # with the Host gate every POST still requires from a rebinding
+            # attacker. no-store keeps the token out of any cache.
             origin = self.headers.get("Origin", "").strip()
             if origin and host_name(origin) not in LOOPBACK_HOSTS:
                 self.send_error(HTTPStatus.FORBIDDEN)
