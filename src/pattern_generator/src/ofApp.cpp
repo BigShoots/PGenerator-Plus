@@ -21,6 +21,7 @@
 #include "ofApp.h"
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
 /* Start Patch RPI P4 */
 #include "rgb2ycbcr.h"
@@ -65,11 +66,16 @@ static const size_t MAX_PATTERN_FIELD_LEN = 240;
 static std::string checked_field(const std::string& value, const char* field) {
  if(value.size() <= MAX_PATTERN_FIELD_LEN)
   return value;
+ // Cut on a UTF-8 boundary: byte 240 belongs to the dropped tail when it is
+ // a continuation byte (10xxxxxx), so back off to the next start byte.
+ size_t cut = MAX_PATTERN_FIELD_LEN;
+ while(cut > 0 && (static_cast<unsigned char>(value[cut]) & 0xC0) == 0x80)
+  --cut;
  std::string msg = std::string("Pattern file: ") + field +
   " field truncated from " + std::to_string(value.size()) +
-  " to " + std::to_string(MAX_PATTERN_FIELD_LEN) + " characters";
+  " to " + std::to_string(cut) + " characters";
  ofLogWarning("ofApp") << msg;
- return value.substr(0, MAX_PATTERN_FIELD_LEN);
+ return value.substr(0, cut);
 }
 
 /*

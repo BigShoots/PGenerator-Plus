@@ -33,9 +33,15 @@ unsigned long long ofGetSystemTimeMicros() { return now_us; }
 int ofGetWindowWidth() { return 100; }
 int ofGetWindowHeight() { return 100; }
 bool usesDolbyVisionTransport() { return false; }
-// ofLogWarning(tag) << msg sink used by checked_field; output is not asserted.
-struct NullLog { template<typename T> NullLog &operator<<(const T &) { return *this; } };
-NullLog ofLogWarning(const string &) { return NullLog(); }
+// ofLogWarning(tag) << msg sink used by checked_field; the last message is
+// captured so the truncation scenarios in main() can assert on it.
+string last_warning;
+struct CaptureLog {
+    template<typename T> CaptureLog &operator<<(const T &value) {
+        ostringstream s; s << value; last_warning = s.str(); return *this;
+    }
+};
+CaptureLog ofLogWarning(const string &) { return CaptureLog(); }
 // CHECKED_FIELD_HELPER
 
 struct ofxRPI4Window {
@@ -180,6 +186,56 @@ int main(int argc, char **argv) {
         app.update();
         render(app);
         expect(app, {100}, "rapid posts did not select the latest complete pattern");
+
+        // Over-long fields are capped at load time (#52): 300 chars reach
+        // arr_text as 240, the warning names the field and both sizes, and
+        // a cut landing inside a UTF-8 sequence backs off to the character
+        // boundary instead of emitting a split code point.
+        last_warning.clear();
+        const string text_head =
+            "DRAW=TEXT\nBITS=8\nDIM=10,10\nRGB=70,0,0\nBG=0,0,0\nPOSITION=0,0\n";
+        post(app, text_head + "TEXT=" + string(300, 'A') + "\nEND=1\nFRAME=100\n");
+        app.update();
+        if (app.text_to_write.size() != 240)
+            throw runtime_error("300-char TEXT field was not truncated to 240");
+        if (app.arr_text[0][0].size() != 240)
+            throw runtime_error("truncated TEXT did not reach arr_text");
+        if (last_warning.find("TEXT") == string::npos ||
+            last_warning.find("300") == string::npos ||
+            last_warning.find("240") == string::npos)
+            throw runtime_error("TEXT truncation was not logged");
+        render(app);
+        expect(app, {70}, "truncated TEXT pattern did not draw");
+
+        last_warning.clear();
+        post(app, text_head + "TEXT=" + string(239, 'A') + "\xE2\x82\xAC" +
+             string(60, 'B') + "\nEND=1\nFRAME=100\n");
+        app.update();
+        if (app.text_to_write != string(239, 'A'))
+            throw runtime_error("TEXT truncation split a UTF-8 character");
+        render(app);
+        expect(app, {70}, "UTF-8-truncated TEXT pattern did not draw");
+
+        last_warning.clear();
+        post(app, "DRAW=IMAGE\nBITS=8\nDIM=10,10\nRGB=80,0,0\nBG=0,0,0\nPOSITION=0,0\n"
+             "IMAGE=" + string(300, 'i') + "\nEND=1\nFRAME=100\n");
+        app.update();
+        if (app.img_file.size() != 240)
+            throw runtime_error("300-char IMAGE field was not truncated to 240");
+        if (app.arr_image[0][0].size() != 240)
+            throw runtime_error("truncated IMAGE did not reach arr_image");
+        if (last_warning.find("IMAGE") == string::npos)
+            throw runtime_error("IMAGE truncation was not logged");
+        render(app);
+        expect(app, {80}, "truncated IMAGE pattern did not draw");
+
+        // A field within the limit must not warn.
+        last_warning.clear();
+        post(app, text_head + "TEXT=short text\nEND=1\nFRAME=100\n");
+        app.update();
+        if (!last_warning.empty())
+            throw runtime_error("in-limit TEXT field produced a warning");
+
         return 0;
     } catch (const exception &error) {
         cerr << error.what() << endl;
