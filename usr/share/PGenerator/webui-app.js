@@ -4052,6 +4052,35 @@ function selectSystemSettingsImport(){
  const input=document.getElementById('systemSettingsImportFile');
  if(input)input.click();
 }
+async function usbExportSystemSettings(){
+ const btn=document.getElementById('usbExportSystemSettingsBtn');
+ if(btn){btn.disabled=true;btn.textContent='Writing USB...';}
+ systemBackupSetStatus('Writing backup to the empty USB drive...',false);
+ try{
+  // Mounting plus archiving ~100 MB can exceed fetchJSON's 8 s default;
+  // a client-side abort while the server keeps writing would show a
+  // false failure and leave the stick non-empty for the retry. The
+  // export path has no outer wall-clock bound of its own (`timeout
+  // 300` in pgenerator_usb_restore.sh wraps the first-boot RESCUE
+  // call only), so this is a generous empirical bound: 310 s clears
+  // the 300 s rescue-path bound — the only documented wall-clock
+  // bound on the helper surface — with margin, so ordinary sticks
+  // never see a false abort mid-write. A stick slower than this
+  // still aborts client-side while the server keeps writing. On that
+  // abort fetchJSON returns null, so the status/toast show the
+  // generic 'USB backup failed'; the stick may hold a completed or
+  // half-written archive, and re-pressing the button recovers either
+  // (blankness tolerates the canonical orphan, the sweep retires it).
+  const response=await fetchJSON('/api/system-backup/usb-export',{method:'POST',_quiet:true,_timeoutMs:310000});
+  if(!response||response.status!=='ok')throw new Error(response&&response.message?response.message:'USB backup failed');
+  systemBackupSetStatus('Backup written to USB ('+response.usb_archive+'). Keep this drive: a re-flashed device restores it automatically on first boot.',false);
+  toast('Backup written to USB drive');
+ }catch(error){
+  systemBackupSetStatus(error&&error.message?error.message:'USB backup failed',true);
+  toast(error&&error.message?error.message:'USB backup failed',true);
+ }
+ if(btn){btn.disabled=false;btn.textContent='Backup to USB';}
+}
 async function importSystemSettingsFile(file){
  const input=document.getElementById('systemSettingsImportFile');
  if(!file)return;

@@ -73,6 +73,15 @@ rc_PGenerator_start () {
     UUID="$CPU_HW-$CPU_REV-$CPU_SERIAL"
     perl -p -i -e "s/^ID=\"$ID_NEW_STRING\"/ID=\"$UUID\"/" $SYSTEM_INFO_FILE
    fi
+   # Settings rescue from USB: a re-flashed image with a .pgbackup
+   # stick plugged in restores its settings/profiles/history before
+   # the daemon ever starts. Reads and validates the archive first,
+   # so a missing/foreign stick simply falls through to factory boot.
+   # Must run BEFORE the first-boot file is deleted (that file is its
+   # trigger) and before the daemon start below.
+   if [ -x /usr/bin/pgenerator_usb_restore.sh ]; then
+    /usr/bin/pgenerator_usb_restore.sh
+   fi
    # delete first boot file
    /bin/rm $FIRST_BOOT_FILE
   fi

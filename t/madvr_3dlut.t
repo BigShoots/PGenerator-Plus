@@ -1,0 +1,12 @@
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Test::More;
+my $node=`sh -c 'command -v node || command -v nodejs' 2>/dev/null`;chomp $node;
+plan skip_all=>'Node is not installed' if !$node;
+my $output=`"$node" "$Bin/js/madvr_3dlut.js" 2>&1`;
+is($?,0,'madVR .3dlut writer regression checks pass') or diag $output;
+like($output,qr/^ok file size and header layout/m,'real H3D header layout exercised');
+like($output,qr/^ok LUT node order and values/m,'real node-order walk exercised');
+unlike($output,qr/^FAIL/m,'no converter checks failed');
+done_testing();

@@ -1902,6 +1902,7 @@ __PG_AUTOMATION_CARD__
     <button class="btn btn-sm btn-secondary" id="submitLogsBtn" onclick="submitLogs()" title="Download a diagnostic log bundle">&#128230; Submit Logs</button>
     <button class="btn btn-sm btn-secondary" id="exportSystemSettingsBtn" onclick="exportSystemSettings()" title="Download PGenerator+ settings, profiles, calibration history and custom diagnostic media">Export System Settings</button>
     <button class="btn btn-sm btn-secondary" id="importSystemSettingsBtn" onclick="selectSystemSettingsImport()" title="Restore PGenerator+ settings, profiles, calibration history and custom diagnostic media">Import System Settings</button>
+    <button class="btn btn-sm btn-secondary" id="usbExportSystemSettingsBtn" onclick="usbExportSystemSettings()" title="Write a backup to a blank USB drive, or refresh one this button wrote. A drive holding any other files is left untouched. A re-flashed device restores it automatically on first boot.">Backup to USB</button>
     <input type="file" id="systemSettingsImportFile" aria-label="Import system settings backup" accept=".pgbackup,application/gzip" style="display:none" onchange="importSystemSettingsFile(this.files&&this.files[0])">
    </div>
    <div id="updateStatus" style="margin-top:6px;font-size:.7rem;color:var(--text2)"></div>

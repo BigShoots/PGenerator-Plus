@@ -341,8 +341,18 @@ sub wifi_release_dhcp(@) {
  &pgen_system_quiet($ip,"addr","flush","dev",$interface,"scope","global") if(defined $ip && &pgen_cmd_exists($ip));
 }
 
+# wpa_cli status prints the SSID through printf_encode() (\\ \" and \xNN for
+# non-printable bytes), so compare against the encoded form of the raw name.
+sub wifi_ssid_wpa_txt(@) {
+ my $s=shift;
+ my %esc=("\\"=>"\\\\","\""=>"\\\"","\e"=>"\\e","\n"=>"\\n","\r"=>"\\r","\t"=>"\\t");
+ $s=~s/([\\"\e\n\r\t]|[^\x20-\x7e])/exists($esc{$1}) ? $esc{$1} : sprintf("\\x%02x",ord($1))/ge;
+ return $s;
+}
+
 sub wifi_wait_completed(@) {
  my ($interface,$ssid,$seconds)=@_;
+ my $ssid_txt=defined($ssid) ? &wifi_ssid_wpa_txt($ssid) : "";
  $seconds=15 if(!defined $seconds || $seconds <= 0);
  my $tries=$seconds*2;
  for(my $i=0;$i<$tries;$i++) {
@@ -351,7 +361,7 @@ sub wifi_wait_completed(@) {
   my $connected_ssid="";
   $state=$1 if($status=~/^wpa_state=(.*)$/m);
   $connected_ssid=$1 if($status=~/^ssid=(.*)$/m);
-  return 1 if($state eq "COMPLETED" && (!defined $ssid || $ssid eq "" || $connected_ssid eq $ssid));
+  return 1 if($state eq "COMPLETED" && (!defined $ssid || $ssid eq "" || $connected_ssid eq $ssid || $connected_ssid eq $ssid_txt));
   usleep(500000);
  }
  return 0;
