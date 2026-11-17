@@ -229,6 +229,37 @@ def host_name(value: str) -> str:
     return value
 
 
+def port_part(value: str) -> str:
+    """Port component of a Host header or Origin URL; '' when the port is
+    absent (a browser omits a scheme-default port from both headers)."""
+    value = value.strip()
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).netloc
+    value = value.split("/", 1)[0]
+    if value.startswith("["):  # [::1]:8766
+        tail = value.partition("]")[2]
+        return tail[1:] if tail.startswith(":") else ""
+    if value.count(":") == 1:
+        port = value.rpartition(":")[2]
+        return port if port.isdigit() else ""
+    return ""
+
+
+def same_authority(origin: str, host_header: str) -> bool:
+    """Same host AND same port — the full origin check.
+
+    host_name() alone compares two values port-blind, and the port carries
+    the entire origin separation on loopback: a page served from
+    localhost:9999 has host_name 'localhost', equal to this console's Host
+    at localhost:PORT. A port-blind check therefore lets ANY other local
+    service (a dev server, a tool with an XSS) read /session.js via a
+    <script src> and drive every gated POST once it holds the leaked token
+    — the same webpage-aims-at-127.0.0.1 class issue #51 is about. The
+    browser sends Host and Origin from the same request URL, so a genuine
+    console page always matches; the other service's port never can."""
+    return host_name(origin) == host_name(host_header) and port_part(origin) == port_part(host_header)
+
+
 def check_local_request(request_headers, token: str) -> None:  # noqa: ANN001
     """Gate every state-changing POST (issue #51).
 
@@ -236,16 +267,18 @@ def check_local_request(request_headers, token: str) -> None:  # noqa: ANN001
     1. Host must name a loopback interface — kills DNS-rebinding, where a
        hostile domain resolves to 127.0.0.1 and the browser would otherwise
        send same-origin requests to this server.
-    2. If Origin is present it must carry the same host — an embedding page
-       on another site may not drive the API or read /session.js.
+    2. If Origin is present it must name the same host:port as the Host
+       header — an embedding page on another site (or another local port,
+       see same_authority) may not drive the API or read /session.js.
     3. The per-startup token must echo the one handed to the served page.
        compare_digest so the value is not byte-by-byte oracleable.
     """
-    host = host_name(request_headers.get("Host", ""))
+    host_header = request_headers.get("Host", "")
+    host = host_name(host_header)
     if host not in LOOPBACK_HOSTS:
         raise AppError("Requests must target the loopback address.", HTTPStatus.FORBIDDEN)
     origin = request_headers.get("Origin", "").strip()
-    if origin and host_name(origin) != host:
+    if origin and not same_authority(origin, host_header):
         raise AppError("Cross-origin requests are not allowed.", HTTPStatus.FORBIDDEN)
     # Header values arrive ISO-8859-1-decoded, so encode("latin-1") maps any
     # byte a client sent back to its raw form. compare_digest refuses non-ASCII
@@ -1098,11 +1131,18 @@ class Handler(BaseHTTPRequestHandler):
             # another origin COULD include this file with <script src> — the
             # assignment would then execute in the loader's context and leak
             # the token — so the Origin header the browser attaches to
-            # cross-origin script loads is what actually blocks it, together
-            # with the Host gate every POST still requires from a rebinding
-            # attacker. no-store keeps the token out of any cache.
+            # cross-origin script loads is what actually blocks it. The
+            # check is loopback membership (a rebinding attacker's Host
+            # equals its own Origin, so name equality alone would pass) AND
+            # same authority INCLUDING PORT: the loopback port separates
+            # origins, and without it any page served from another local
+            # port reads the token here and wins every gated POST. no-store
+            # keeps the token out of any cache.
             origin = self.headers.get("Origin", "").strip()
-            if origin and host_name(origin) not in LOOPBACK_HOSTS:
+            if origin and (
+                host_name(origin) not in LOOPBACK_HOSTS
+                or not same_authority(origin, self.headers.get("Host", ""))
+            ):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             body = (

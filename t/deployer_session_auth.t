@@ -82,6 +82,30 @@ like($py,   qr/check_local_request\(self\.headers/, 'POST gate runs in do_POST')
         or diag $out;
 }
 
+# same_authority() is the full origin check: host AND port must match. On
+# loopback the port carries the entire origin separation — with a
+# host_name-only (port-blind) gate, a page served from localhost:9999 is
+# "same host" as this console at localhost:PORT, could read /session.js,
+# and drive every gated POST with the leaked token (found at db5b95ea).
+{
+    my $probe = join "\n",
+        q{import importlib.util, sys},
+        q{spec = importlib.util.spec_from_file_location('s', sys.argv[1])},
+        q{m = importlib.util.module_from_spec(spec)},
+        q{spec.loader.exec_module(m)},
+        q{assert m.same_authority('http://localhost:8766', 'localhost:8766')},
+        q{assert not m.same_authority('http://localhost:9999', 'localhost:8766')},
+        q{assert not m.same_authority('http://127.0.0.1:8766', 'localhost:8766')},
+        q{assert m.same_authority('http://[::1]:8766', '[::1]:8766')},
+        q{assert not m.same_authority('http://[::1]:9999', '[::1]:8766')},
+        q{assert m.same_authority('http://127.0.0.1', '127.0.0.1')},
+        q{assert not m.same_authority('http://127.0.0.1:80', '127.0.0.1')};
+    local $ENV{PGEN_PROBE} = $probe;
+    my $out = `python3 -c 'import os; exec(os.environ["PGEN_PROBE"])' '$server' 2>&1`;
+    is($? >> 8, 0, 'same_authority requires host and port to match')
+        or diag $out;
+}
+
 # paramiko_client() must survive a missing known_hosts file: packages ship
 # only known_hosts.example, so load_host_keys() raising IOError into the
 # generic handler would greet every fresh Windows install with an
@@ -184,6 +208,20 @@ is($status, 403, 'DNS-rebinding Host rejected even with the token');
                         body => '{"repository":"owner/repo"}');
 is($status, 403, 'cross-origin request rejected even with the token');
 
+# A page served from ANOTHER LOCAL PORT is a different origin. The
+# port-blind gate let exactly this read the token from /session.js and
+# then pass the POST gate with it (reproduced live against db5b95ea);
+# both halves must now reject it.
+my ($xs, $xhead, $xbody) = raw_request('GET', '/session.js', host => "localhost:$port",
+                                       origin => 'http://localhost:9999');
+is($xs, 403, 'session.js rejected for a different-port localhost origin');
+unlike($xbody, qr/\Q$token\E/, 'different-port session.js response carries no token');
+
+($status) = raw_request('POST', '/api/refs', host => "127.0.0.1:$port",
+                        origin => 'http://127.0.0.1:9999', token => $token,
+                        body => '{"repository":"not a repo"}');
+is($status, 403, 'different-port 127.0.0.1 origin rejected even with the token');
+
 # A non-ASCII session header must be a clean 401. compare_digest() raises
 # TypeError on non-ASCII str inputs, so str/str comparison turned this into
 # a 500; the gate must compare bytes.
@@ -209,6 +247,14 @@ is($status, 200, 'session.js served for a localhost:PORT origin');
 ($status) = raw_request('POST', '/api/refs', host => "127.0.0.1:$port",
                         token => $token, body => '{"repository":"not a repo"}');
 is($status, 400, 'correct token passes the gate (fails later on validation)');
+
+# Control for the port match: a browser always sends Origin and Host from
+# the same request URL, so a same-authority Origin must sail through —
+# otherwise the fix would break the console for its real users.
+($status) = raw_request('POST', '/api/refs', host => "127.0.0.1:$port",
+                        origin => "http://127.0.0.1:$port",
+                        token => $token, body => '{"repository":"not a repo"}');
+is($status, 400, 'same-authority Origin passes the gate (fails later on validation)');
 
 my ($s2, $head, $sess_body) = raw_request('GET', '/session.js', host => "127.0.0.1:$port");
 is($s2, 200, 'session.js served');
