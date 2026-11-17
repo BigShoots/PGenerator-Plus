@@ -73,7 +73,7 @@ static std::string checked_field(const std::string& value, const char* field) {
   --cut;
  std::string msg = std::string("Pattern file: ") + field +
   " field truncated from " + std::to_string(value.size()) +
-  " to " + std::to_string(cut) + " characters";
+  " to " + std::to_string(cut) + " bytes";
  ofLogWarning("ofApp") << msg;
  return value.substr(0, cut);
 }
