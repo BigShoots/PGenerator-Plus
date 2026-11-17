@@ -210,6 +210,10 @@
     </form>
   </dialog>
 
+  <!-- Order matters: session.js defines the per-startup token that app.js
+       attaches to every API call. Both are no-store, so a server restart
+       (new token) is picked up on the next page load. -->
+  <script src="/session.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

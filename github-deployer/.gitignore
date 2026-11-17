@@ -1,2 +1,5 @@
 __pycache__/
 .server.pid
+# Operator-populated SSH host keys (issue #51). Machine-specific, never commit;
+# see known_hosts.example for the format.
+known_hosts

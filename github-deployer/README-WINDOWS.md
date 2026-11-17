@@ -35,6 +35,19 @@ original console window is no longer open.
 
 - The Pi address has no default. It is remembered by the browser after entry.
 - The standard PGenerator root password is prefilled.
+- Before the first deploy, add the Pi's SSH host key so the console can verify
+  it. Verify the fingerprint on the Pi (`ssh-keygen -lf
+  /etc/ssh/ssh_host_ed25519_key.pub`), then in the app folder run:
+
+  ```bat
+  copy known_hosts.example known_hosts
+  ssh-keyscan <pi-address> >> known_hosts
+  ```
+
+  `ssh-keyscan` ships with the OpenSSH Client (Windows Settings > Optional
+  features). If it is not installed, run the command on any other machine and
+  paste its output into `known_hosts`. Unknown or changed host keys are
+  refused, never auto-accepted.
 - Public GitHub repositories do not need a token.
 - GitHub tokens are used only for the current request and are not saved.
 - Perl files are syntax-checked on the Pi before any existing file is replaced.

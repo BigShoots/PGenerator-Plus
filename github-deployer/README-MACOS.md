@@ -28,6 +28,15 @@ xattr -dr com.apple.quarantine "PGenerator-GitHub-Deployer"
 
 The dashboard opens at `http://127.0.0.1:8766`.
 
+Before the first deploy, add the Pi's SSH host key so the console can verify
+it. Open Terminal in the app folder and run, after checking the fingerprint on
+the Pi itself (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`):
+
+```sh
+cp known_hosts.example known_hosts
+ssh-keyscan <pi-address> >> known_hosts
+```
+
 To use another port from Terminal:
 
 ```sh

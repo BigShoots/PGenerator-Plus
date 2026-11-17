@@ -1,0 +1,6 @@
+# Copy to "known_hosts" (same folder) and add one verified key line per Pi:
+#   cp known_hosts.example known_hosts
+#   ssh-keyscan 192.168.1.4 >> known_hosts      # verify the fingerprint first!
+# The deploy console refuses SSH to any host whose key is not listed here
+# (issue #51: no trust-on-first-use). A changed key is usually a re-imaged
+# Pi; verify before replacing the old line.

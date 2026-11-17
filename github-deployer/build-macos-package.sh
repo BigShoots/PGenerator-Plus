@@ -98,6 +98,7 @@ cp \
   "$app_dir/kill-server-macos.command" \
   "$app_dir/README-MACOS.md" \
   "$app_dir/BUNDLED-RUNTIME.txt" \
+  "$app_dir/known_hosts.example" \
   "$package_dir/"
 cp \
   "$app_dir/static/index.html" \

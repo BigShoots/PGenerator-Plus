@@ -68,7 +68,14 @@ Scan again to fetch newer GitHub files.
   though the Pi has it.
 - Uploading does not restart services. Use Restart daemon for Perl modules and
   Restart renderer for renderer-only changes.
-- The server binds only to `127.0.0.1`.
+- The server binds only to `127.0.0.1`, and every API call must carry the
+  session token the page received at load time; requests from another origin,
+  a rebinding hostname, or a local process without the token are rejected.
+- SSH connections require the Pi's host key to be present in
+  `github-deployer/known_hosts`. Copy `known_hosts.example` and add the key
+  with `ssh-keyscan <pi-address> >> known_hosts` after verifying the
+  fingerprint (on the Pi: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`).
+  Unknown or changed host keys are refused, never auto-accepted.
 - The last Pi address is saved in browser local storage. The standard SSH
   password is built into this private tool. GitHub tokens are never saved.
 

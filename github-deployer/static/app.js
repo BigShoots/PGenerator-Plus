@@ -44,6 +44,14 @@ const els = {
   dialogConfirm: $("#dialogConfirm"),
 };
 
+const SESSION_HEADER = "X-Deployer-Session";
+
+function sessionHeaders(extra = {}) {
+  // Issue #51: every API POST must carry the per-startup token from
+  // /session.js; the server rejects anything without it with 401.
+  return { ...extra, [SESSION_HEADER]: window.__PGEN_SESSION__ || "" };
+}
+
 els.host.value = localStorage.getItem(STORAGE_KEY) || "";
 fetch("/api/health")
   .then((response) => response.json())
@@ -65,7 +73,7 @@ function loadRefs(force = false) {
   refsLoading = true;
   fetch("/api/refs", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: sessionHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ repository, githubToken: els.githubToken.value }),
   })
     .then((response) => response.json())
@@ -112,7 +120,7 @@ function source() {
 async function api(path, body = {}) {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: sessionHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ...credentials(), ...body }),
   });
   let data;
