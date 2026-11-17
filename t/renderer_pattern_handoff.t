@@ -56,7 +56,18 @@ SKIP: {
     my $header = read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.h");
     my ($predicate) = $header =~ /(static bool usesColourShader\(\) \{.*?^    \})/ms;
     die 'Missing shader-selection predicate' unless defined $predicate;
+    # Anchor the snapshot on the helper definition itself, not the constant:
+    # a constant-anchored lazy match could over-capture any block that later
+    # lands between the constant and the helper. Each piece is captured
+    # independently, so a missing or renamed piece fails loudly here rather
+    # than at compile inside the generated fixture.
+    my ($checked_const) = $source =~ /^(static const size_t MAX_PATTERN_FIELD_LEN[^\n]*\n)/m;
+    die 'Missing pattern-field length guard' unless defined $checked_const;
+    my ($checked_fn) = $source =~ /(^static std::string checked_field\(.*?^\}\n)/ms;
+    die 'Missing checked_field() helper definition' unless defined $checked_fn;
+    my $checked = $checked_const . "\n" . $checked_fn;
     $harness =~ s{// COLOUR_SHADER_PREDICATE}{$predicate};
+    $harness =~ s{// CHECKED_FIELD_HELPER}{$checked};
     $harness =~ s{// REAL_RENDERER_METHODS}{join("\n", @methods)}e;
     open my $cpp, '>', "$tmp/handoff.cpp" or die "$!";
     print {$cpp} $harness;

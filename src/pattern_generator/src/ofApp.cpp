@@ -20,6 +20,8 @@
 
 #include "ofApp.h"
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 /* Start Patch RPI P4 */
 #include "rgb2ycbcr.h"
@@ -55,6 +57,25 @@ inline bool usesDolbyVisionTransport() {
  return ofxRPI4Window::isDoVi || ofxRPI4Window::is_std_DoVi;
 }
 
+}
+
+// Pattern-file TEXT/IMAGE fields feed fixed-size buffers and the font/image
+// draw paths; a load-time cap keeps over-long values out of every consumer.
+// Over-long fields are truncated with a logged notice instead of crashing.
+static const size_t MAX_PATTERN_FIELD_LEN = 240;
+static std::string checked_field(const std::string& value, const char* field) {
+ if(value.size() <= MAX_PATTERN_FIELD_LEN)
+  return value;
+ // Cut on a UTF-8 boundary: byte 240 belongs to the dropped tail when it is
+ // a continuation byte (10xxxxxx), so back off to the next start byte.
+ size_t cut = MAX_PATTERN_FIELD_LEN;
+ while(cut > 0 && (static_cast<unsigned char>(value[cut]) & 0xC0) == 0x80)
+  --cut;
+ std::string msg = std::string("Pattern file: ") + field +
+  " field truncated from " + std::to_string(value.size()) +
+  " to " + std::to_string(cut) + " bytes";
+ ofLogWarning("ofApp") << msg;
+ return value.substr(0, cut);
 }
 
 /*
@@ -119,13 +140,13 @@ void ofApp::update(){
     draw_type=el[1];
    }
    if(el[0] == "TEXT")
-    text_to_write=el[1];
+    text_to_write=checked_field(el[1], "TEXT");
    if(el[0] == "PATTERN_NAME")
     p_name=el[1];
    if(el[0] == "MOVIE_NAME")
     m_name=el[1];
    if(el[0] == "IMAGE") {
-    img_file=el[1]; 
+    img_file=checked_field(el[1], "IMAGE");
    }
    if(el[0] == "ROTATE")
     img_rotate=boost::lexical_cast<int>(el[1]);
@@ -234,30 +255,30 @@ void ofApp::draw(){
  restoreBackground();
  for(to_draw=0;to_draw<n_draw[i];to_draw++) {
   char buffer[255];
-  sprintf(buffer,"Doing the frame %d and the Draw %d",i,to_draw);
+  snprintf(buffer, sizeof(buffer),"Doing the frame %d and the Draw %d",i,to_draw);
   ofApp::log(buffer);
-  sprintf(buffer,"RGB: %d %d %d",arr_red[i][to_draw],arr_green[i][to_draw],arr_blue[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"RGB: %d %d %d",arr_red[i][to_draw],arr_green[i][to_draw],arr_blue[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Background: %d %d %d",arr_redbg[i][to_draw],arr_greenbg[i][to_draw],arr_bluebg[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Background: %d %d %d",arr_redbg[i][to_draw],arr_greenbg[i][to_draw],arr_bluebg[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"DrawType: %d",arr_draw[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"DrawType: %d",arr_draw[i][to_draw]);
   ofApp::log(buffer);
   if(arr_draw[i][to_draw] == 4) {
-   sprintf(buffer,"DrawImage: %s",arr_text[i][to_draw].c_str());
+   snprintf(buffer, sizeof(buffer),"DrawImage: %s",arr_text[i][to_draw].c_str());
    ofApp::log(buffer);
   }
   if(arr_draw[i][to_draw] == 5) {
-   sprintf(buffer,"DrawImage: %s",arr_image[i][to_draw].c_str());
+   snprintf(buffer, sizeof(buffer),"DrawImage: %s",arr_image[i][to_draw].c_str());
    ofApp::log(buffer);
   }
-  sprintf(buffer,"Dim: %d %d",arr_dim1[i][to_draw],arr_dim2[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Dim: %d %d",arr_dim1[i][to_draw],arr_dim2[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Resolution: %d",arr_resolution[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Resolution: %d",arr_resolution[i][to_draw]);
   ofApp::log(buffer);
-  sprintf(buffer,"Position: %d %d",arr_posx[i][to_draw],arr_posy[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Position: %d %d",arr_posx[i][to_draw],arr_posy[i][to_draw]);
   ofApp::log(buffer);
 
-  sprintf(buffer,"Bits: %d",arr_bits[i][to_draw]);
+  snprintf(buffer, sizeof(buffer),"Bits: %d",arr_bits[i][to_draw]);
   ofApp::log(buffer);
 
   if(arr_draw[i][to_draw] == 0) 
