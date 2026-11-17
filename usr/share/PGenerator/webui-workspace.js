@@ -372,6 +372,255 @@ function meterCubeTo3dl(parsed){
  return lines.join('\n')+'\n';
 }
 
+// madVR .3dlut (H3D) constants — layout per DisplayCAL's madvr.py reference:
+// 96-byte little-endian header, text parameter block at 512, LUT data at
+// 16384. madVR requires exactly 256^3 nodes of BGR uint16 LE (blue fastest —
+// the reverse of .cube's red-fastest walk), uncompressed (method 0). An
+// appended "cal1" table (16-byte header + 3*256 uint16 full-range ramps)
+// tells madVR to leave the graphics-card ramps alone; the linear ramp below
+// is what DisplayCAL writes.
+const METER_MADVR_LUT_RES=256;
+const METER_MADVR_PARAM_OFFSET=512;
+const METER_MADVR_LUT_OFFSET=16384;
+const METER_MADVR_CAL1_SIZE=1552;
+const METER_MADVR_D65_WP=[0.31273,0.32902];
+// The header always declares video range (DisplayCAL's madvr.py emits
+// Input_Range/Output_Range 16 235 unconditionally), so the lattice CONTENT
+// must be video-encoded to match: madVR reads node code i as the signal
+// (i-16)/219, and results are written back as video codes scaled to 16-bit
+// the way Argyll's TV-encoded writer does (code << 8, i.e. *256).
+const METER_MADVR_RANGE_MIN=16;
+const METER_MADVR_RANGE_SPAN=219;
+
+// Input_Primaries for the madVR header (rx ry gx gy bx by wx wy). Whitepoint
+// is always D65 as written by madVR's own install API (0.31273 0.32902), the
+// same values DisplayCAL forces. Returns null for an unknown gamut name.
+function meterMadvrPrimaries(gamut){
+ const g=String(gamut||'').toLowerCase();
+ const rgb={
+  bt709:[0.64000,0.33000,0.30000,0.60000,0.15000,0.06000],
+  p3d65:[0.68000,0.32000,0.26500,0.69000,0.15000,0.06000],
+  p3dci:[0.68000,0.32000,0.26500,0.69000,0.15000,0.06000],
+  bt2020:[0.70800,0.29200,0.17000,0.79700,0.13100,0.04600]
+ }[g];
+ if(!rgb) return null;
+ return rgb.concat(METER_MADVR_D65_WP);
+}
+
+// ICC-converted cubes are named icc_<stem>_<mode>_<unixtime>.cube by
+// webui_icc_profile_to_cube (PGICCProfile.pm). The trailing mode token is
+// authoritative for the signal domain — the stem is a user-controlled
+// profile filename whose tokens the general heuristic would misread — but
+// only when the full icc_ + _<mode>_<digits> shape matches. Returns
+// 'sdr'/'hdr10'/null.
+function meterMadvrIccMode(name){
+ const s=String(name||'').toLowerCase().replace(/\.[a-z0-9]+$/,'');
+ if(!s.startsWith('icc_')) return null;
+ const m=s.match(/_(sdr|hdr10)_\d+$/);
+ return m?m[1]:null;
+}
+
+// Guess the madVR header options from a solved-LUT or imported filename.
+// Solved names carry the signal mode and target gamut (…_sdr_method_mode_gamut_gamma.cube).
+// Defaults: SDR + Rec. 709; HDR10/DV defaults to Rec. 2020 (per solve rules).
+function meterMadvrParamsFromName(name){
+ // Strip any extension FIRST: the hdr token anchors on underscore/end, and
+ // '.cube' after a trailing token (lut_hdr10.cube) would defeat both.
+ const s=String(name||'').toLowerCase().replace(/\.[a-z0-9]+$/,'');
+ // ICC names carry an authoritative trailing mode token; it outranks the
+ // general heuristic so an SDR profile stem containing dv/pq/hdr10 cannot
+ // masquerade as HDR.
+ const iccMode=meterMadvrIccMode(name);
+ const hdr=iccMode?(iccMode==='hdr10'):(/(?:^|_)(hdr10|dv|pq)(?:_|$)/.test(s));
+ let gamut='bt709';
+ if(iccMode){
+  // An ICC-converted cube is built by icc_companion_lut.py from a FIXED
+  // source space — hdr10 samples BT.2020/PQ, sdr samples sRGB/Rec.709
+  // (source_xyz). The user-controlled profile stem has no say over the
+  // input primaries, so its gamut tokens must not reach the header.
+  gamut=(iccMode==='hdr10')?'bt2020':'bt709';
+ } else {
+  // Gamut tokens anchor on underscore/boundaries like the hdr tokens, so a
+  // gamut name embedded inside a longer token cannot set the target.
+  if(/(?:^|_)bt2020(?:_|$)/.test(s)) gamut='bt2020';
+  else if(/(?:^|_)p3d65(?:_|$)/.test(s)) gamut='p3d65';
+  else if(/(?:^|_)p3dci(?:_|$)/.test(s)) gamut='p3dci';
+  else if(hdr) gamut='bt2020';
+ }
+ return {gamut:gamut,hdr:hdr};
+}
+
+// Allocate a madVR .3dlut buffer with header + parameter block written,
+// ready to fill. The source LUT is later resampled with trilinear
+// interpolation over its DOMAIN and written as video-range BGR nodes: node
+// code i presents signal (i-16)/219 to the source LUT and results are
+// encoded back as video codes scaled to 16-bit, matching the 16 235 range
+// the header always declares (see METER_MADVR_RANGE_MIN above). Signals
+// outside the domain clamp to its edges (fail-safe: madVR never sees
+// extrapolated lattice corners). Returns {buf,dv,lut16,res,lutBytes} or
+// null on bad input / unknown gamut.
+// opts.res is a test seam for the fill walk only — madVR accepts nothing
+// but the fixed 256 lattice, and no production caller sets it.
+function meterMadvrAlloc(parsed,opts){
+ if(!parsed||!parsed.ok||!Array.isArray(parsed.values)) return null;
+ const o=opts||{};
+ const primaries=meterMadvrPrimaries(o.gamut===undefined?'bt709':o.gamut);
+ if(!primaries) return null;
+ const hdr=!!o.hdr;
+ // Line order mirrors madvr.py's parameter OrderedDict insertion: for HDR
+ // the PQ transfer lines are inserted BEFORE Input_Primaries.
+ const plines=[];
+ if(hdr){ plines.push('Input_Transfer_Function PQ'); plines.push('Output_Transfer_Function PQ'); }
+ plines.push(
+  'Input_Primaries '+primaries.map(function(v){return v.toFixed(5);}).join(' '),
+  'Input_Range 16 235',
+  'Output_Range 16 235'
+ );
+ const paramsText=plines.join('\r\n')+'\0';
+ const paramsBytes=[];
+ for(let i=0;i<paramsText.length;i++) paramsBytes.push(paramsText.charCodeAt(i)&0xff);
+ // opts.res is a test seam (see header comment); production is always 256.
+ const res=(Number.isInteger(o.res)&&o.res>0)?o.res:METER_MADVR_LUT_RES;
+ const lutNodes=res*res*res;
+ const lutBytes=lutNodes*6;
+ const total=METER_MADVR_LUT_OFFSET+lutBytes+METER_MADVR_CAL1_SIZE;
+ const buf=new Uint8Array(total);
+ const dv=new DataView(buf.buffer);
+ dv.setUint32(0,0x544C4433,true); // '3DLT' little-endian word
+ dv.setInt32(4,1,true);           // file version
+ const prog='PGenerator';
+ for(let i=0;i<prog.length;i++) buf[8+i]=prog.charCodeAt(i);
+ dv.setUint32(40,1,true);         // program version (low word of int64)
+ dv.setInt32(48,8,true); dv.setInt32(52,8,true); dv.setInt32(56,8,true); // input bit depth 8/8/8
+ dv.setInt32(60,0,true);          // input color encoding
+ dv.setInt32(64,16,true);         // output bit depth
+ dv.setInt32(68,0,true);          // output color encoding
+ dv.setInt32(72,METER_MADVR_PARAM_OFFSET,true);
+ dv.setInt32(76,paramsBytes.length,true);
+ dv.setInt32(80,METER_MADVR_LUT_OFFSET,true);
+ dv.setInt32(84,0,true);          // compression method: none
+ dv.setInt32(88,lutBytes,true);   // compressed size
+ dv.setInt32(92,lutBytes,true);   // uncompressed size
+ for(let i=0;i<paramsBytes.length;i++) buf[METER_MADVR_PARAM_OFFSET+i]=paramsBytes[i];
+ // Resample: output code i presents signal (i-16)/219 to the source LUT
+ // (video-range convention of the header); the .cube lattice spans its
+ // DOMAIN_MIN..DOMAIN_MAX; results are encoded back as video codes and
+ // scaled to 16-bit (code << 8, as Argyll's TV-encoded writer emits).
+ // Walk red-slowest/blue-fastest, write B,G,R.
+ const lut16=new Uint16Array(buf.buffer,METER_MADVR_LUT_OFFSET,lutNodes*3);
+ return {buf:buf,dv:dv,lut16:lut16,res:res,lutBytes:lutBytes};
+}
+
+// Fill one (r,g) row-plane of the madVR lattice (all blue codes for a fixed
+// red/green index), starting at unit u of ctx.lut16; returns the new u.
+// Splitting the fill at row-plane granularity is what lets the async variant
+// yield to the browser between planes.
+function meterMadvrFillRowplane(ctx,parsed,r,g,u){
+ const S=parsed.size, vals=parsed.values;
+ const dmin=parsed.domainMin, dmax=parsed.domainMax, res=ctx.res;
+ const xr=meterMadvrLatticePos(dmin[0],dmax[0],(r-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+ const xg=meterMadvrLatticePos(dmin[1],dmax[1],(g-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+ for(let b=0;b<res;b++){
+  const xb=meterMadvrLatticePos(dmin[2],dmax[2],(b-METER_MADVR_RANGE_MIN)/METER_MADVR_RANGE_SPAN)*(S-1);
+  meterMadvrTrilinear(vals,S,xr,xg,xb,meterMadvrScratch);
+  ctx.lut16[u++]=meterMadvrScratch[2]; ctx.lut16[u++]=meterMadvrScratch[1]; ctx.lut16[u++]=meterMadvrScratch[0];
+ }
+ return u;
+}
+
+// Append the linear cal1 trailer (madVR leaves GPU ramps alone) and return
+// the finished file bytes.
+function meterMadvrFinish(ctx){
+ const buf=ctx.buf, dv=ctx.dv;
+ let c=METER_MADVR_LUT_OFFSET+ctx.lutBytes;
+ buf[c]=0x63; buf[c+1]=0x61; buf[c+2]=0x6c; buf[c+3]=0x31; // 'cal1'
+ dv.setInt32(c+4,1,true); dv.setInt32(c+8,256,true); dv.setInt32(c+12,2,true);
+ const cal16=new Uint16Array(buf.buffer,c+16,768);
+ for(let ch=0;ch<3;ch++) for(let j=0;j<256;j++) cal16[ch*256+j]=j*257;
+ return buf;
+}
+
+// Synchronous full conversion (tests, small lattices). Production callers
+// use meterCubeToMadvrAsync: at the fixed 256^3 lattice the fill blocks the
+// main thread for tens of seconds, which the browser treats as a hang.
+function meterCubeToMadvr(parsed,opts){
+ const ctx=meterMadvrAlloc(parsed,opts);
+ if(!ctx) return null;
+ let u=0;
+ for(let r=0;r<ctx.res;r++) for(let g=0;g<ctx.res;g++) u=meterMadvrFillRowplane(ctx,parsed,r,g,u);
+ return meterMadvrFinish(ctx);
+}
+
+// Async full conversion: fills the lattice in row-plane chunks, awaiting a
+// macrotask yield every METER_MADVR_YIELD_PLANES planes (~10 ms per chunk for
+// a 33^3 source) so the page stays responsive during the ~30 s build.
+// onProgress(fraction) is called before each yield; fraction hits 1 on the
+// final chunk. Returns the same bytes as the sync path.
+const METER_MADVR_YIELD_PLANES=24;
+// Yield via MessageChannel, NOT setTimeout(0): browsers clamp nested timers
+// (4 ms floor, and ~1/s in a background tab — 2731 yields would stretch a
+// ~54 s build past 45 minutes the moment the operator switches tabs).
+// postMessage callbacks are not timer-clamped, so the export keeps pace
+// hidden or visible.
+function meterMadvrYield(){
+ if(typeof MessageChannel==='function'){
+  // Close both ports once the tick lands: an export makes ~2731 channels,
+  // and leaving each pair open pins the channel until the page unloads
+  // (Node keeps the event loop alive on open ports; close defensively).
+  return new Promise(function(res){ const ch=new MessageChannel(); ch.port1.onmessage=function(){ ch.port1.close(); ch.port2.close(); res(); }; ch.port2.postMessage(0); });
+ }
+ if(typeof setTimeout==='function') return new Promise(function(res){ setTimeout(res,0); });
+ return Promise.resolve();
+}
+async function meterCubeToMadvrAsync(parsed,opts,onProgress){
+ const ctx=meterMadvrAlloc(parsed,opts);
+ if(!ctx) return null;
+ const total=ctx.res*ctx.res;
+ const yieldFn=meterMadvrYield;
+ let done=0,u=0;
+ for(let r=0;r<ctx.res;r++){
+  for(let g=0;g<ctx.res;g++){
+   u=meterMadvrFillRowplane(ctx,parsed,r,g,u);
+   done++;
+   if(done%METER_MADVR_YIELD_PLANES===0||done===total){
+    if(typeof onProgress==='function'){ try{ onProgress(done/total); }catch(e){} }
+    await yieldFn();
+   }
+  }
+ }
+ return meterMadvrFinish(ctx);
+}
+
+const meterMadvrScratch=[0,0,0];
+
+// Signal value v (normalized against the file's DOMAIN) -> lattice coordinate
+// 0..1 across the domain, clamped.
+function meterMadvrLatticePos(lo,hi,v){
+ const span=(hi-lo)||1;
+ return Math.min(Math.max((v-lo)/span,0),1);
+}
+
+// Trilinear interpolate the .cube lattice at lattice coords (xr,xg,xb)
+// (0..S-1 each, .cube red-fastest indexing). Writes [R,G,B] encoded as
+// video-range codes scaled to 16-bit (code << 8, so 0 -> 4096, 1 -> 60160;
+// the black and white the header's 16 235 range promises) into the out array.
+function meterMadvrTrilinear(vals,S,xr,xg,xb,out){
+ const r0=Math.min(Math.floor(xr),S-1),g0=Math.min(Math.floor(xg),S-1),b0=Math.min(Math.floor(xb),S-1);
+ const r1=Math.min(r0+1,S-1),g1=Math.min(g0+1,S-1),b1=Math.min(b0+1,S-1);
+ const fr=xr-r0,fg=xg-g0,fb=xb-b0;
+ for(let c=0;c<3;c++){
+  const c000=vals[(b0*S+g0)*S+r0][c], c100=vals[(b0*S+g0)*S+r1][c];
+  const c010=vals[(b0*S+g1)*S+r0][c], c110=vals[(b0*S+g1)*S+r1][c];
+  const c001=vals[(b1*S+g0)*S+r0][c], c101=vals[(b1*S+g0)*S+r1][c];
+  const c011=vals[(b1*S+g1)*S+r0][c], c111=vals[(b1*S+g1)*S+r1][c];
+  const a00=c000+(c100-c000)*fr, a10=c010+(c110-c010)*fr;
+  const a01=c001+(c101-c001)*fr, a11=c011+(c111-c011)*fr;
+  const a0=a00+(a10-a00)*fg, a1=a01+(a11-a01)*fg;
+  const v=a0+(a1-a0)*fb;
+  out[c]=Math.round((METER_MADVR_RANGE_MIN+METER_MADVR_RANGE_SPAN*Math.max(0,Math.min(1,v)))*256);
+ }
+}
+
 function meterRenderCubePreview(parsed,filename){
  const panel=document.getElementById('meterCubePreviewPanel');
  if(!panel) return;
@@ -388,7 +637,10 @@ function meterRenderCubePreview(parsed,filename){
    +'<div>Neutral axis: black '+fmt3(parsed.neutral[0])+' &middot; mid '+fmt3(mid)+' &middot; white '+fmt3(parsed.neutral[parsed.neutral.length-1])+'</div>'
    +'<div>Neutral monotonic: '+(parsed.monotonic?'<span style="color:var(--green)">yes</span>':'<span style="color:var(--red)">NO</span>')+'</div>'
    +'<div style="margin-top:6px;color:var(--text2)">Preview only &mdash; this LUT is not applied to the display.</div>'
-   +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm btn-secondary" onclick="meterViewImportedLutIn3d()" title="Render the previewed LUT as a 3D cube (input lattice vs LUT output positions)">View in 3D</button><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button></div>';
+   +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm btn-secondary" onclick="meterViewImportedLutIn3d()" title="Render the previewed LUT as a 3D cube (input lattice vs LUT output positions)">View in 3D</button><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dl()" title="Convert the previewed LUT and download as Autodesk/Kodak .3dl">Download as .3dl</button><button class="btn btn-sm btn-secondary" onclick="meterDownloadPreviewedCubeAs3dlut()" title="Convert and download as a madVR .3dlut (fixed 256\u00b3 lattice, ~96 MB)">Download as .3dlut (madVR)</button></div>'
+   +'<div style="margin-top:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:.7rem;color:var(--text2)"><span>.3dlut header target:</span>'
+   +'<label style="cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px">Gamut <select id="meterMadvrGamut" aria-label="madVR 3dlut target gamut" style="background:#0d0d15;color:var(--text);border:1px solid #2a3140;border-radius:4px;padding:2px 4px"><option value="bt709" selected>Rec. 709</option><option value="p3d65">P3-D65</option><option value="p3dci">DCI-P3</option><option value="bt2020">Rec. 2020</option></select></label>'
+   +'<label style="cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="meterMadvrHdr" style="vertical-align:middle"> HDR10 (PQ transfer)</label></div>';
  }
  panel.innerHTML=html;
  panel.style.display='';
@@ -411,6 +663,38 @@ function meterDownloadPreviewedCubeAs3dl(){
  meterDownloadBlob(new Blob([text],{type:'text/plain'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dl');
 }
 
+// madVR .3dlut from the previewed import. A raw .cube carries no gamut or
+// transfer metadata, so the preview panel exposes the header target choice
+// (defaults Rec. 709 SDR; names hint the right value and pre-fill it).
+async function meterDownloadPreviewedCubeAs3dlut(){
+ const preview=meterLastCubePreview;
+ if(!preview||!preview.parsed||!preview.parsed.ok){ toast('Import a valid .cube first',true); return; }
+ const gamutSel=document.getElementById('meterMadvrGamut');
+ const hdrBox=document.getElementById('meterMadvrHdr');
+ const gamut=gamutSel?gamutSel.value:'bt709';
+ const hdr=!!(hdrBox&&hdrBox.checked);
+ const warn=hdr?'\n\n\u26a0 PQ transfer declared, but there is no guarantee the imported cube is PQ-domain. If it came from this unit\u0027s HDR auto-cal it solved in the DPG gamma-2.2 domain and is NOT PQ-correct (madVR would apply it to PQ-coded pixels; worst error near black).':'';
+ const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(preview.filename||'imported .cube')+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel({gamut:gamut,hdr:hdr})+'.'+warn,acceptLabel:'Convert & download',cancelLabel:'Cancel'});
+ if(!ok) return;
+ try{
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)','Writing madVR .3dlut');
+  const bytes=await meterCubeToMadvrAsync(preview.parsed,{gamut:gamut,hdr:hdr},function(frac){
+   meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
+  });
+  meterLutSolveProgressHide();
+  if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
+  // Keep the download outside the conversion catch: a blob/save failure
+  // must not be reported as a conversion failure.
+  try{ meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(preview.filename||'lut').replace(/\.cube$/i,'')+'.3dlut'); }
+  catch(e2){ toast('.3dlut download failed',true); }
+ }catch(e){
+  // The ~96 MB lattice allocation can throw (RangeError) on a squeezed
+  // browser; without this the async failure would be a silent rejection.
+  try{ meterLutSolveProgressHide(); }catch(e2){}
+  toast('.3dlut conversion failed',true);
+ }
+}
+
 function meterImportCubeFile(evt){
  const file=evt&&evt.target&&evt.target.files?evt.target.files[0]:null;
  if(!file) return;
@@ -421,6 +705,13 @@ function meterImportCubeFile(evt){
   // on the generator verbatim (no client-side re-serialisation).
   meterLastCubePreview={parsed:parsed,filename:file.name,text:String(reader.result||'')};
   meterRenderCubePreview(parsed,file.name);
+  // Pre-fill the .3dlut header target from the filename when it carries the
+  // solve metadata (…_hdr10_…_bt2020_…); a plain .cube keeps Rec. 709 SDR.
+  const madvrHint=meterMadvrParamsFromName(file.name);
+  const gamutSel=document.getElementById('meterMadvrGamut');
+  const hdrBox=document.getElementById('meterMadvrHdr');
+  if(gamutSel) gamutSel.value=madvrHint.gamut;
+  if(hdrBox) hdrBox.checked=madvrHint.hdr;
   if(parsed.ok) toast('.cube parsed: '+parsed.size+'³, '+(parsed.monotonic?'neutral OK':'neutral NOT monotonic'),!parsed.monotonic);
   else toast('.cube file is invalid — see preview panel',true);
  };
@@ -446,11 +737,17 @@ async function meterLoadSolvedLutList(){
    const name=String(l.name||'');
    const when=l.mtime?new Date(l.mtime*1000).toLocaleString():'';
    const selected=!!(meterLutCubeState&&meterLutCubeState.name===name);
+   // Mirror the meterDownloadSolvedLutAs3dlut refuse gate so the button
+   // states the refusal up front instead of toasting only after the click.
+   const madvrBlocked=meterMadvrParamsFromName(name).hdr&&!meterMadvrIccMode(name);
    return '<div class="meter-solved-lut-row">'
     +'<button type="button" class="meter-solved-lut-name'+(selected?' is-selected':'')+'" data-lut-name="'+esc(name)+'" aria-current="'+(selected?'true':'false')+'" title="Load '+esc(name)+' in the 3D cube viewer" onclick="meterViewSolvedLutIn3d(\''+escJs(name)+'\')">'
     +'<span class="meter-solved-lut-name-main">'+esc(name)+'</span><span class="meter-solved-lut-name-date">'+esc(when)+'</span></button>'
     +'<button class="btn btn-sm btn-secondary" title="Download the .cube file" onclick="meterDownloadSolvedLut(\''+escJs(name)+'\')">.cube</button>'
     +'<button class="btn btn-sm btn-secondary" title="Convert and download as Autodesk/Kodak .3dl (Lustre, Flame)" onclick="meterDownloadSolvedLutAs3dl(\''+escJs(name)+'\')">.3dl</button>'
+    +(madvrBlocked
+      ?'<button class="btn btn-sm btn-secondary" disabled title="Not available: HDR auto-cal LUTs solve in the gamma-2.2 domain and are not PQ-correct" aria-disabled="true">.3dlut</button>'
+      :'<button class="btn btn-sm btn-secondary" title="Convert and download as a madVR .3dlut (~96 MB, generated in your browser)" onclick="meterDownloadSolvedLutAs3dlut(\''+escJs(name)+'\')">.3dlut</button>')
     +'<button class="btn btn-sm btn-danger" title="Delete this LUT (and its .bin/.json companions) from the history" onclick="meterDeleteSolvedLut(\''+escJs(name)+'\')">&#10005;</button>'
    +'</div>';
   }).join('');
@@ -511,6 +808,53 @@ async function meterDownloadSolvedLutAs3dl(name){
  }catch(e){
   toast('.3dl conversion failed',true);
  }
+}
+
+// Convert a solved .cube to madVR .3dlut in the browser and download it.
+// Header gamut/PQ options are inferred from the solved name (it carries the
+// signal mode and target gamut); the file is ~96 MB — madVR's fixed 256^3
+// lattice is uncompressed — so the button warns before starting.
+async function meterDownloadSolvedLutAs3dlut(name){
+ const params=meterMadvrParamsFromName(name);
+ // HDR guard: the LG auto-cal HDR solve lives in the DPG's gamma-2.2 domain
+ // ON PURPOSE (usr/bin/meter_lg_3d_autocal.pl, dpg_calibration_gamma: PQ
+ // encoding of the per-channel correction inflates the cross-channel drive
+ // ~25x near black). A gamma-domain correction must not be declared under a
+ // PQ-in/PQ-out header — madVR would apply it to PQ-coded pixels. Until a
+ // real gamma-2.2 -> PQ re-encode exists, refuse rather than ship a file
+ // whose header lies about its domain. ICC-converted cubes (icc_* names)
+ // are exempt: icc_companion_lut.py feeds their input through pq_linear()
+ // for hdr10, so they genuinely ARE PQ-domain and the header is correct.
+ if(params.hdr&&!meterMadvrIccMode(name)){
+  toast('HDR solved LUTs solve in the DPG gamma-2.2 domain and are not PQ-correct — .3dlut export disabled for them',true);
+  return;
+ }
+ const ok=await meterShowChoiceModal({title:'Download madVR .3dlut?',body:'Convert \"'+String(name)+'\" to a madVR .3dlut (fixed 256\u00b3 lattice, about 96 MB, generated in your browser). Header target: '+meterMadvrTargetLabel(params)+'.',acceptLabel:'Convert & download',cancelLabel:'Cancel'});
+ if(!ok) return;
+ try{
+  const resp=await fetch('/api/3d-lut/cube?file='+encodeURIComponent(name));
+  if(!resp.ok){ toast('LUT download failed',true); return; }
+  const parsed=meterCubeLutParse(await resp.text());
+  if(!parsed.ok){ toast('.cube could not be parsed for conversion',true); return; }
+  meterLutSolveProgressShow('Writing madVR .3dlut\u2026','256\u00b3 lattice (about 96 MB)','Writing madVR .3dlut');
+  const bytes=await meterCubeToMadvrAsync(parsed,params,function(frac){
+   meterLutSolveProgressUpdate({message:'Writing madVR .3dlut\u2026',solve_progress_pct:Math.round(frac*100)});
+  });
+  meterLutSolveProgressHide();
+  if(!bytes){ toast('.3dlut conversion failed (unknown target gamut)',true); return; }
+  // Keep the download outside the conversion catch: a blob/save failure
+  // must not be reported as a conversion failure.
+  try{ meterDownloadBlob(new Blob([bytes],{type:'application/octet-stream'}),String(name).replace(/\.cube$/i,'')+'.3dlut'); }
+  catch(e2){ toast('.3dlut download failed',true); }
+ }catch(e){
+  try{ meterLutSolveProgressHide(); }catch(e2){}
+  toast('.3dlut conversion failed',true);
+ }
+}
+
+function meterMadvrTargetLabel(params){
+ const gamut={bt709:'Rec. 709',p3d65:'P3-D65',p3dci:'DCI-P3',bt2020:'Rec. 2020'}[params.gamut]||params.gamut;
+ return gamut+(params.hdr?' (HDR10 / PQ)':' (SDR)');
 }
 
 async function meterDeleteSolvedLut(name){
@@ -934,14 +1278,17 @@ async function meterLutSolveStart(series,readings,opts){
  return true;
 }
 
-function meterLutSolveProgressShow(msg,detail){
+function meterLutSolveProgressShow(msg,detail,title){
  const modal=meterEnsureModalOnBody(document.getElementById('lutSolveProgressModal'));
  if(!modal) return;
- const title=document.getElementById('lutSolveProgressTitle');
+ const titleEl=document.getElementById('lutSolveProgressTitle');
  const m=document.getElementById('lutSolveProgressMsg');
  const d=document.getElementById('lutSolveProgressDetail');
  const fill=document.getElementById('lutSolveProgressFill');
- if(title) title.textContent='Building 3D LUT';
+ // Title is caller-overridable: the madVR .3dlut export reuses this modal
+ // but is not a solve — the default must stay 'Building 3D LUT' for the
+ // solve worker's polling calls.
+ if(titleEl) titleEl.textContent=String(title||'Building 3D LUT');
  if(m) m.textContent=String(msg||'Starting solve…');
  if(d) d.textContent=String(detail||'');
  if(fill){ fill.style.width='12%'; fill.classList.add('active'); }

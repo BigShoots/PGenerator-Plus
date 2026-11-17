@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -37,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 # Shown in the dashboard and reported by /api/health so a support thread can
 # establish which console someone is running. Bump when behaviour changes.
-DEPLOYER_BUILD = "1.4"
+DEPLOYER_BUILD = "1.5"
 # The console's own files as they appear in the repository snapshot. They are
 # not deployable, but they are extracted alongside the snapshot so the running
 # console can notice that the repository carries a different version of itself:
@@ -70,7 +71,19 @@ ID_RE = re.compile(r"^[0-9a-f]{24}$")
 RENDERER_PATTERN = r"[P]Generatord(\.dv)?([[:space:]]|$)"
 DAEMON_PATTERN = r"[P]Generatord\.pl"
 PS_COMMAND = "ps -e w"
-KNOWN_HOSTS = str(Path(tempfile.gettempdir()) / "pgen-github-deployer-known-hosts")
+# Operator-populated host-key file, deliberately persistent (issue #51: a
+# temp-dir file plus permissive policies meant every session was trust-on-first-
+# use with no warning). Populate it with:
+#   ssh-keyscan -f known_hosts.example 192.168.1.4 >> known_hosts
+KNOWN_HOSTS = str(APP_DIR / "known_hosts")
+# Shared-session guard for the HTTP API. The console binds to loopback, but any
+# local process — or any webpage aimed at 127.0.0.1 via a rebinding DNS name —
+# could previously trigger uploads and restarts with zero validation. A fresh
+# token is generated at each server start and injected into the served page;
+# every state-changing POST must echo it, and its Origin must match the Host.
+# PGEN_DEPLOYER_TOKEN overrides the random token (tests and automation only).
+DEPLOYER_TOKEN = os.environ.get("PGEN_DEPLOYER_TOKEN") or secrets.token_urlsafe(32)
+SESSION_HEADER = "X-Deployer-Session"
 CACHE_ROOT = Path(tempfile.gettempdir()) / "pgenerator-github-deployer"
 MAX_BODY = 2 * 1024 * 1024
 MAX_ARCHIVE = 1024 * 1024 * 1024
@@ -121,6 +134,16 @@ def run(
         detail = (result.stderr or result.stdout).strip()
         if "Permission denied" in detail:
             detail = "SSH authentication failed"
+        elif "Host key verification failed" in detail:
+            # StrictHostKeyChecking=yes refusal (issue #51): show the operator
+            # the fix instead of raw OpenSSH stderr. run() has no connection
+            # context, so the host placeholder keeps the sentence grammatical;
+            # the file path is what the operator actually needs.
+            detail = (
+                "The Pi's SSH host key is unknown or changed. Verify it out of band, then add it "
+                f"to {KNOWN_HOSTS} (replacing the old line if the Pi was re-imaged), "
+                f"e.g.:  ssh-keyscan <pi-address> >> {KNOWN_HOSTS}"
+            )
         raise AppError(detail or f"{args[0]} exited with status {result.returncode}", HTTPStatus.BAD_GATEWAY)
     return result
 
@@ -166,6 +189,109 @@ def github_source_from(payload: dict[str, Any]) -> dict[str, str]:
     return {"owner": parts[0], "repo": parts[1], "repository": "/".join(parts), "ref": ref, "token": token}
 
 
+def host_key_hint(host: str) -> str:
+    return (
+        f"The host key for {host} is unknown or changed. Verify the key out of band, then add it "
+        f"to {KNOWN_HOSTS}, e.g.:  ssh-keyscan {host} >> {KNOWN_HOSTS}"
+    )
+
+
+def host_key_changed_hint(host: str) -> str:
+    return (
+        f"The host key for {host} does not match its line in {KNOWN_HOSTS}. If the Pi was "
+        f"re-imaged, verify the new fingerprint and REPLACE the old line (ssh-keyscan {host}); "
+        "otherwise treat this as a possible man-in-the-middle."
+    )
+
+
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def host_name(value: str) -> str:
+    """Bare hostname of a Host or Origin value, port and brackets stripped."""
+    value = value.strip()
+    # Only real URLs may go through the scheme parser: urlsplit() treats a
+    # schemeless "localhost:8766" as scheme:path (registered-scheme rule),
+    # which emptied the Host header for any non-IP host:port value and 403'd
+    # the console when opened as http://localhost:PORT. "://" separates URLs
+    # from bare host values; Host headers never carry a scheme, Origins always do.
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).netloc
+    if value.startswith("["):  # IPv6 literal: [::1]:8766
+        return value.split("]", 1)[0][1:]
+    if ":" in value:
+        # Two or more colons can only be a bare (unbracketed) IPv6 address —
+        # "port" splitting would chew the address itself ("::1" -> ":").
+        if value.count(":") >= 2:
+            return value
+        head, _, port = value.rpartition(":")
+        return head if port.isdigit() else value
+    return value
+
+
+def port_part(value: str) -> str:
+    """Port component of a Host header or Origin URL; '' when the port is
+    absent (a browser omits a scheme-default port from both headers)."""
+    value = value.strip()
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).netloc
+    value = value.split("/", 1)[0]
+    if value.startswith("["):  # [::1]:8766
+        tail = value.partition("]")[2]
+        return tail[1:] if tail.startswith(":") else ""
+    if value.count(":") == 1:
+        port = value.rpartition(":")[2]
+        return port if port.isdigit() else ""
+    return ""
+
+
+def same_authority(origin: str, host_header: str) -> bool:
+    """Same host AND same port — the full origin check.
+
+    host_name() alone compares two values port-blind, and the port carries
+    the entire origin separation on loopback: a page served from
+    localhost:9999 has host_name 'localhost', equal to this console's Host
+    at localhost:PORT. A port-blind check therefore lets ANY other local
+    service (a dev server, a tool with an XSS) read /session.js via a
+    <script src> and drive every gated POST once it holds the leaked token
+    — the same webpage-aims-at-127.0.0.1 class issue #51 is about. The
+    browser sends Host and Origin from the same request URL, so a genuine
+    console page always matches; the other service's port never can."""
+    return host_name(origin) == host_name(host_header) and port_part(origin) == port_part(host_header)
+
+
+def check_local_request(request_headers, token: str) -> None:  # noqa: ANN001
+    """Gate every state-changing POST (issue #51).
+
+    Three checks, each closing a distinct hole:
+    1. Host must name a loopback interface — kills DNS-rebinding, where a
+       hostile domain resolves to 127.0.0.1 and the browser would otherwise
+       send same-origin requests to this server.
+    2. If Origin is present it must name the same host:port as the Host
+       header — an embedding page on another site (or another local port,
+       see same_authority) may not drive the API or read /session.js.
+    3. The per-startup token must echo the one handed to the served page.
+       compare_digest so the value is not byte-by-byte oracleable.
+    """
+    host_header = request_headers.get("Host", "")
+    host = host_name(host_header)
+    if host not in LOOPBACK_HOSTS:
+        raise AppError("Requests must target the loopback address.", HTTPStatus.FORBIDDEN)
+    origin = request_headers.get("Origin", "").strip()
+    if origin and not same_authority(origin, host_header):
+        raise AppError("Cross-origin requests are not allowed.", HTTPStatus.FORBIDDEN)
+    # Header values arrive ISO-8859-1-decoded, so encode("latin-1") maps any
+    # byte a client sent back to its raw form. compare_digest refuses non-ASCII
+    # str inputs with TypeError, which would turn a hostile header into a 500
+    # instead of a clean 401; comparing bytes sidesteps that entirely.
+    provided = request_headers.get(SESSION_HEADER, "")
+    if not hmac.compare_digest(provided.encode("latin-1", "ignore"), token.encode("utf-8", "surrogateescape")):
+        raise AppError(
+            "Missing or invalid session token. Reload the deploy console page in the browser.",
+            HTTPStatus.UNAUTHORIZED,
+        )
+
+
 def ssh_base(connection: dict[str, str], command: str = "ssh") -> tuple[list[str], dict[str, str]]:
     env = os.environ.copy()
     # Never let ssh reach for a graphical passphrase prompt. Without this it
@@ -188,7 +314,7 @@ def ssh_base(connection: dict[str, str], command: str = "ssh") -> tuple[list[str
             "-o",
             "ConnectTimeout=7",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={KNOWN_HOSTS}",
         ]
@@ -216,13 +342,39 @@ def use_paramiko(connection: dict[str, str]) -> bool:
     return bool(connection["password"] and shutil.which("sshpass") is None and paramiko is not None)
 
 
+_HOST_KEY_POLICY_BASE = paramiko.MissingHostKeyPolicy if paramiko is not None else object
+
+
+class KnownHostsOrReject(_HOST_KEY_POLICY_BASE):  # type: ignore[misc]
+    """Reject unknown hosts with an actionable hint instead of auto-adding.
+
+    Duck-types paramiko.MissingHostKeyPolicy (only missing_host_key is called)
+    so the module still imports when paramiko is absent. AutoAddPolicy silently
+    trusted the first key it saw (issue #51), which put the Pi password and
+    repo pushes at MITM risk. Keys come from the same persistent known_hosts
+    file the OpenSSH path uses, so one `ssh-keyscan` populates both. Windows
+    builds ship paramiko without a usable ssh-keyscan, so the message names the
+    exact file and the key line to append.
+    """
+
+    def missing_host_key(self, client, hostname, key):  # noqa: ANN001
+        raise AppError(host_key_hint(hostname), HTTPStatus.BAD_GATEWAY)
+
+
 def paramiko_client(connection: dict[str, str], timeout: int):
     if paramiko is None:
         raise AppError(
             "Windows SSH support is not installed. Close the server and run run-windows.bat again."
         )
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # load_host_keys raises IOError when the file is unreadable — the common
+    # fresh-Windows case, since only known_hosts.example ships. Surface the
+    # operator fix instead of an unexpected 500 naming a raw [Errno 2].
+    try:
+        client.load_host_keys(KNOWN_HOSTS)
+    except OSError:
+        raise AppError(host_key_hint(connection["host"]), HTTPStatus.BAD_GATEWAY)
+    client.set_missing_host_key_policy(KnownHostsOrReject())
     try:
         client.connect(
             hostname=connection["host"],
@@ -237,6 +389,17 @@ def paramiko_client(connection: dict[str, str], timeout: int):
     except paramiko.AuthenticationException as exc:
         client.close()
         raise AppError("SSH authentication failed", HTTPStatus.BAD_GATEWAY) from exc
+    except paramiko.BadHostKeyException as exc:
+        # A key that is present but differs from the offered one: distinguish
+        # it from the transport catch-all below so the operator is told to
+        # REPLACE the line, not append a second key.
+        client.close()
+        raise AppError(host_key_changed_hint(exc.hostname), HTTPStatus.BAD_GATEWAY) from exc
+    except AppError:
+        # KnownHostsOrReject raises this mid-connect; it is already operator
+        # wording, not a transport failure — do not re-wrap it as one.
+        client.close()
+        raise
     except (paramiko.SSHException, OSError, socket.timeout) as exc:
         client.close()
         raise AppError(f"Could not connect to the Pi over SSH: {exc}", HTTPStatus.BAD_GATEWAY) from exc
@@ -962,6 +1125,39 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/health":
             self.send_json({"ok": True, "build": DEPLOYER_BUILD})
             return
+        if self.path == "/session.js":
+            # Per-startup session token, delivered as a classic script so it
+            # stays inside CSP 'self' and loads before app.js. A page on
+            # another origin COULD include this file with <script src> — the
+            # assignment would then execute in the loader's context and leak
+            # the token — so the Origin header the browser attaches to
+            # cross-origin script loads is what actually blocks it. The
+            # check is loopback membership (a rebinding attacker's Host
+            # equals its own Origin, so name equality alone would pass) AND
+            # same authority INCLUDING PORT: the loopback port separates
+            # origins, and without it any page served from another local
+            # port reads the token here and wins every gated POST. no-store
+            # keeps the token out of any cache.
+            origin = self.headers.get("Origin", "").strip()
+            if origin and (
+                host_name(origin) not in LOOPBACK_HOSTS
+                or not same_authority(origin, self.headers.get("Host", ""))
+            ):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            body = (
+                "/* PGenerator deploy console session bootstrap — do not cache. */\n"
+                f"window.__PGEN_SESSION__ = {json.dumps(DEPLOYER_TOKEN)};\n"
+            ).encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         path = "index.html" if self.path in {"/", ""} else self.path.lstrip("/")
         file_path = (STATIC_DIR / path).resolve()
         if STATIC_DIR not in file_path.parents or not file_path.is_file():
@@ -980,6 +1176,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            # Issue #51: uploads, restarts and ref lookups are state-changing
+            # or credential-adjacent. Nothing runs before this gate.
+            check_local_request(self.headers, DEPLOYER_TOKEN)
             payload = self.read_json()
             # The ref picker queries GitHub only — no Pi credentials required,
             # so it must resolve before connection_from() validates the host.
