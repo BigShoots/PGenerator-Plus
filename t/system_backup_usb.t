@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use Test::More tests => 87;
+use Test::More tests => 88;
 
 my $script = "$Bin/../usr/bin/pgenerator_system_backup.py";
 ok(-f $script, 'backup helper is present');
@@ -760,10 +760,21 @@ build_built_arch();
  # buys nothing and it would fail rescue validation anyway).
  corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.15.0_20270101-000000.pgbackup");
  corrupt_copy("$tmp/stick/sdb1/PGenerator_plus_system_backup_v2.9.0_20240101-000000.pgbackup");
+ # The valid remnants of the sub-case above (the kept 20260101 fallback
+ # and export #1's fresh write) must be retired FIRST, or "every archive
+ # corrupt" is not literally true: export #2 would correctly keep
+ # export #1 as the corrupt-write fallback, and the survivor count then
+ # depends on whether the two exports' UTC-second stamps collide — the
+ # same-second overwrite made this pass or flake run to run (CI, Nov 2026).
+ for my $f (glob("$tmp/stick/sdb1/*.pgbackup")) {
+  unlink $f unless $f =~ /_20270101-000000|_20240101-000000/;
+ }
  $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
  like($r, qr/"status": "ok"/, 'refresh succeeds when every existing archive is corrupt') or diag $r;
  my @arch = grep { /\.pgbackup$/i } `ls $tmp/stick/sdb1`;
  is(scalar(@arch), 1, 'no valid archive exists: no corrupt fallback is kept, only the fresh write remains') or diag join " ", @arch;
+ like($arch[0] // '', qr/^PGenerator_plus_system_backup_v[\d.]+_\d{8}-\d{6}\.pgbackup$/,
+  'the single survivor is the fresh canonical write, not a stale remnant');
 }
 
 # Case 16: dead-code guard — validate_candidate replaced
