@@ -770,12 +770,12 @@ build_built_arch();
   unlink($f) or die "unlink $f: $!"
    unless $f =~ /_20270101-000000|_20240101-000000/;
  }
- # Forced second-boundary straddle: export #2 is guaranteed a different
- # UTC second than export #1's remnant, so the two names can never
- # coincide by overwrite luck. With that coincidence removed, the
- # survivor-is-fresh assertion below is load-bearing EVERY run: any
- # regression that lets a valid remnant outlive the prune would hold
- # both distinct names and fail it.
+ # Defense in depth (the retire loop above is the primary fix): the
+ # sleep guarantees export #2 a different UTC second than anything
+ # export #1 wrote, so if a regression ever let a valid remnant
+ # outlive the prune, the two names would be DISTINCT and the
+ # survivor-is-fresh assertion below must catch it instead of losing
+ # it to same-second overwrite luck.
  sleep 1.1;
  $r = `PG_USB_SCAN_ROOT=$root/block $env_common WRITEBACK=1 python3 "$edriver" 2>&1`;
  like($r, qr/"status": "ok"/, 'refresh succeeds when every existing archive is corrupt') or diag $r;
