@@ -14,7 +14,9 @@ my $src=do { local $/; <$fh> };
 close($fh);
 my $code='';
 for my $sub (qw(calman_dv_source_max calman_target_max calman_scale_value)) {
- my $extracted=($src =~ m{^(sub \Q$sub\E \(\@\) \{.*?^\})}ms);
+ # Anchor on the name and take everything up to the opening brace so a
+ # signature or whitespace change does not silently drop the sub.
+ my $extracted=($src =~ m{^(sub \Q$sub\E\b.*?\{.*?^\})}ms);
  BAIL_OUT("missing sub $sub in daemon.pm") unless $extracted;
  $code.="$1\n";
 }
