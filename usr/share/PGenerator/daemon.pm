@@ -87,7 +87,12 @@ sub calman_scale_value (@) {
   my $dst_bits=$bit_depth_for_max{$target_max};
   return $target_max if($value >= $input_max);
   return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
-  return $value >> ($src_bits - $dst_bits) if($dst_bits < $src_bits);
+  # A downshift here would truncate: 283 >> 2 = 70, not 71. Fall through
+  # to the round-half-up endpoint mapping below so 10->8 and 12->8 match
+  # the generic branch's convention (issue 73). Note the endpoint map is
+  # NOT the shift rounded to nearest: 255/1023 < 1/4, so codes above 683
+  # land one step below the old shift's result (see the divergence-band
+  # pins in t/calman_scale_value_rounding.t).
  }
  return int($value/$input_max*$target_max + 0.5);
 }

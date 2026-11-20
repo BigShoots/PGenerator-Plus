@@ -18,7 +18,7 @@ Build & release
 - The deploy console runs separately on the Mac; it is not part of the Raspberry Pi calibration runtime.
 
 Conventions
-- Keep comment density in the 12–19% range (repo norm).
+- Keep comment density in the 12–19% range (repo norm). Analysis-heavy test files (t/*.t extract-and-eval harnesses) are exempt: their inline formula/derivation comments are the pin rationale and run denser by design.
 - Python lives in usr/bin/ (meter/result helpers); Bash scripts drive the image pipeline.
 - Python targets two runtimes, neither being a modern laptop. The unit ships Python 3.5.3 (plus 2.7 for a few legacy helpers), so device usr/bin/*.py must stay 3.5-clean — no f-strings, walrus, match, or PEP 585 list[str]/dict[str,…] generics. CI does not syntax-check these under 3.5, so a modern construct passes CI and fails only on the appliance.
 - The GitHub deploy console (github-deployer/server.py) is NOT shipped to the unit; it runs on the Mac and is driven by t/deployer_*.t under Python 3.12, pinned in .github/workflows/tests.yml. Hold it to 3.12. Do not verify a Python change only on a newer local interpreter: Python 3.14 defers annotation evaluation (PEP 649/749) and once let a bug (an evaluated dict[str, Any] on a sliced function) pass locally while failing on CI's 3.12.
