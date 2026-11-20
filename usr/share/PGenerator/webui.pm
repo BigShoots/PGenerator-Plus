@@ -12372,7 +12372,6 @@ sub webui_pattern_scale_triplet (@) {
  my $b=shift;
  my $input_max=int(shift);
  my $target_bits=int(shift);
- return 10 if(($signal_mode eq "hdr10" || $signal_mode eq "hlg") && $link_bits >= 10);
  return &webui_pattern_scale_value($r,$input_max,$target_bits).",".&webui_pattern_scale_value($g,$input_max,$target_bits).",".&webui_pattern_scale_value($b,$input_max,$target_bits);
 }
 
