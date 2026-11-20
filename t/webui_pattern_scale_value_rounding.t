@@ -66,6 +66,8 @@ sub classify { my($hi,$in,$bits,$sh)=@_; my($up,$down)=(0,0);
  return ($up,$down); }
 is_deeply([classify(1022,1023,8,2)],[85,85],'10->8: 85 codes a step up, 85 a step down vs the old shift');
 is(webui_pattern_scale_value(684,1023,8),(684>>2)-1,'upper band starts at 684: one step below the old shift');
+is_deeply([map {webui_pattern_scale_value($_,1023,8)} (1012,1016,1020)],[252,253,254],'last three descending codes still below the shift result');
 is_deeply([classify(4094,4095,8,4)],[476,476],'12->8: 476 up, 476 down');
+is_deeply([classify(4094,4095,10,2)],[341,341],'12->10: 341 up, 341 down');
 
 done_testing();
