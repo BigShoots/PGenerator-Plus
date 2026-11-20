@@ -20,9 +20,12 @@ my $code='';
 for my $sub (qw(webui_pattern_target_max webui_pattern_scale_value webui_pattern_effective_bits webui_pattern_scale_triplet)) {
  # Anchor on the name and take everything up to the opening brace so a
  # signature or whitespace change does not silently drop the sub.
- my $extracted=($src =~ m{^(sub \Q$sub\E\b.*?\{.*?^\})}ms);
+ # List assignment binds $1 into $extracted directly, so the captured text
+ # survives as a value instead of relying on scalar-context propagation and
+ # a later $1 read.
+ my ($extracted)=$src =~ m{^(sub \Q$sub\E\b.*?\{.*?^\})}ms;
  BAIL_OUT("missing sub $sub in webui.pm") unless $extracted;
- $code.="$1\n";
+ $code.="$extracted\n";
 }
 our %pgenerator_conf=();
 our $bits_default=8;
