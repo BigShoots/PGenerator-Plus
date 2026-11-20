@@ -58,4 +58,14 @@ my $over=0;
 for my $v (4080..4095) { $over++ if webui_pattern_scale_value($v,4095,8) > 255; }
 is($over,0,'codes near 12-bit white never overflow the 8-bit target');
 
+# Divergence band vs the removed truncating shift, pinned explicitly
+# (same analysis as the daemon-side test: 255/1023 < 1/4, so codes above
+# 683 land a step BELOW the truncated shift).
+sub classify { my($hi,$in,$bits,$sh)=@_; my($up,$down)=(0,0);
+ for my $v (0..$hi) { my $d=webui_pattern_scale_value($v,$in,$bits)-($v>>$sh); $up++ if $d>0; $down++ if $d<0; }
+ return ($up,$down); }
+is_deeply([classify(1022,1023,8,2)],[85,85],'10->8: 85 codes a step up, 85 a step down vs the old shift');
+is(webui_pattern_scale_value(684,1023,8),(684>>2)-1,'upper band starts at 684: one step below the old shift');
+is_deeply([classify(4094,4095,8,4)],[476,476],'12->8: 476 up, 476 down');
+
 done_testing();

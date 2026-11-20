@@ -67,4 +67,21 @@ my $over=0;
 for my $v (4080..4095) { $over++ if calman_scale_value($v,4095) > 255; }
 is($over,0,'codes near 12-bit white never overflow the 8-bit target');
 
+# Divergence band vs the removed truncating shift, pinned explicitly.
+# Endpoint rounding is NOT the shift rounded to nearest: 255/1023 < 1/4,
+# so codes above 683 land a step BELOW the truncated shift (255v/1023 <
+# v/4 for v > 683.25). The change is up for the lower codes and down for
+# the upper band; a sweep re-measured across a release boundary will see
+# both directions.
+sub classify { my($hi,$in,$out,$sh)=@_; my($up,$down)=(0,0);
+ for my $v (0..$hi) { my $d=calman_scale_value($v,$in)-($v>>$sh); $up++ if $d>0; $down++ if $d<0; }
+ return ($up,$down); }
+is_deeply([classify(1022,1023,255,2)],[85,85],'10->8: 85 codes a step up, 85 a step down vs the old shift');
+is(calman_scale_value(283,1023),(283>>2)+1,'lower band: 283 steps up from the truncated shift');
+is(calman_scale_value(684,1023),(684>>2)-1,'upper band starts at 684: one step below the old shift');
+is_deeply([map {calman_scale_value($_,1023)} (1012,1016,1020)],[252,253,254],'last three descending codes still below the shift result');
+is_deeply([classify(4094,4095,255,4)],[476,476],'12->8: 476 up, 476 down');
+$bits_default=10;
+is_deeply([classify(4094,4095,1023,2)],[341,341],'12->10: 341 up, 341 down');
+
 done_testing();

@@ -12363,7 +12363,8 @@ sub webui_pattern_scale_value (@) {
   return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
   # A downshift here would truncate: 283 >> 2 = 70, not 71 (same defect
   # as calman_scale_value, issue 73). Fall through to the round-half-up
-  # endpoint mapping below.
+  # endpoint mapping below. Not the shift rounded to nearest: codes above
+  # 683 land one step below the old shift (t/webui_pattern_scale_value_rounding.t).
  }
  return int($value/$input_max*$target_max + 0.5);
 }
