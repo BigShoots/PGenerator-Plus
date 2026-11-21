@@ -2,213 +2,101 @@ use strict;
 use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
+use File::Copy qw(copy);
 use FindBin qw($Bin);
+use Digest::SHA qw(sha256_hex);
 
 # Issue 74: the RQ3V1 kernel add-on (src/ofxRPI4Window/vc4_rgb_limited_unity.patch)
-# must apply cleanly to the known post-image of drm_vc4.patch (the base requirement
-# in its header) and must produce exactly the intended result.  The PRE fixtures
-# below are lifted from the '+' side of drm_vc4.patch; if that patch ever changes
-# these regions, this test failing is a prompt to re-audit the add-on, not just to
-# refresh the fixtures.
+# must apply with fuzz 0 to the TRUE preimage of the BiasiLinux shipping kernel
+# (linux-5.10.89+-7l) and must produce exactly the intended result.
+#
+# The fixtures under t/fixtures/vc4-7l/ were lifted verbatim from
+# /usr/src/linux-5.10.89+-7l.tar.gz on the bench Pi (uname -r: 5.10.89+-7l).
+# Earlier revisions of this test pinned a drm_vc4.patch-era post-image that does
+# NOT exist in any shipped -7/-7l tree (it used broadcast_rgb plumbing); that
+# false base is exactly what this test now guards against.
 
-sub read_file {
- open my $fh, '<', $_[0] or die "$!";
- local $/;
- return <$fh>;
+my $patch    = "$Bin/../src/ofxRPI4Window/vc4_rgb_limited_unity.patch";
+my $fx_hdmi  = "$Bin/fixtures/vc4-7l/vc4_hdmi.c";
+my $fx_modp  = "$Bin/fixtures/vc4-7l/modpost.c";
+my $renderer = "$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.cpp";
+plan skip_all => "missing $patch" unless -f $patch && -f $fx_hdmi && -f $fx_modp;
+
+sub slurp { open my $fh, '<', $_[0] or die "$! $_[0]"; local $/; return <$fh>; }
+
+# --- fixtures must still be byte-exact members of the shipping tree ---
+is(sha256_hex(slurp($fx_hdmi)),
+   '88eba04aebe81bf017522ea0a5289892d2dbd0701eb89b9e7865999e7578ef8e',
+   'vc4_hdmi.c fixture unmodified vs linux-5.10.89+-7l.tar.gz');
+is(sha256_hex(slurp($fx_modp)),
+   'c2650376ba78d6d1d37f8ec64fdc4e5bf3b54101bc375b012e08eb8fd76dfd4f',
+   'modpost.c fixture unmodified vs linux-5.10.89+-7l.tar.gz');
+
+# --- preimage sanity: the -7l property plumbing really is what we target ---
+my $pre = slurp($fx_hdmi);
+like($pre, qr/rgb_quant_range == HDMI_QUANTIZATION_RANGE_FULL/,
+     'preimage gates on rgb_quant_range (the -7l field), not broadcast_rgb');
+unlike($pre, qr/broadcast_rgb/, 'preimage has no broadcast_rgb (would be the wrong base)');
+
+# --- patch applies fuzz 0 ---
+my $hunks = () = slurp($patch) =~ /^@@/mg;
+is($hunks, 3, 'patch carries exactly 3 hunks (2 x vc4_hdmi.c, 1 x modpost.c)');
+
+my $tmp = tempdir(CLEANUP => 1);
+system("mkdir -p '$tmp/drivers/gpu/drm/vc4' '$tmp/scripts/mod'") == 0 or die;
+copy($fx_hdmi, "$tmp/drivers/gpu/drm/vc4/vc4_hdmi.c") or die;
+copy($fx_modp, "$tmp/scripts/mod/modpost.c") or die;
+my $out = `cd '$tmp' && patch -p1 -s --fuzz=0 < '$patch' 2>&1`;
+is($?, 0, 'add-on applies with fuzz 0') or diag $out;
+my @rej = glob("$tmp/**/*.rej");
+is(scalar(@rej), 0, 'no .rej files');
+
+# --- post-image invariants ---
+my $post = slurp("$tmp/drivers/gpu/drm/vc4/vc4_hdmi.c");
+
+# 1) value 3 (Reserved) reports not-full => AVI signals Limited
+like($post,
+     qr/if \(conn_state->rgb_quant_range == HDMI_QUANTIZATION_RANGE_RESERVED\)\s*\n\s*return false;/,
+     'is_full_range_rgb: Reserved(3) returns false (Limited AVI signalling)');
+# the Reserved branch must precede the stock FULL check
+ok(index($post, 'HDMI_QUANTIZATION_RANGE_RESERVED)') <
+   index($post, 'rgb_quant_range == HDMI_QUANTIZATION_RANGE_FULL'),
+   'Reserved branch placed before the stock FULL check');
+# stock 0/1/2 logic untouched
+like($post,
+     qr/return !vc4_encoder->hdmi_monitor \|\|\s*\n\s*drm_default_rgb_quant_range\(mode\) == HDMI_QUANTIZATION_RANGE_FULL;/,
+     'stock default branch (values 0/1/2) unchanged');
+
+# 2) Reserved skips the compress matrix; the unconditional trailing
+#    HDMI_CSC_CTL write then leaves CSC disabled (unity passthrough).
+like($post,
+     qr/if \(!vc4_hdmi_is_full_range_rgb\(vc4_hdmi, mode, state\) &&\s*\n\s*state->rgb_quant_range != HDMI_QUANTIZATION_RANGE_RESERVED\) \{/,
+     'csc_setup: compress branch guarded off for Reserved(3)');
+like($post, qr{/\* The RGB order applies even when CSC is disabled\. \*/\s*\n\s*HDMI_WRITE\(HDMI_CSC_CTL, csc_ctl\);},
+     'trailing CSC_CTL write (without ENABLE for value 3) still present');
+
+# 3) modpost stamps only vc4
+my $postm = slurp("$tmp/scripts/mod/modpost.c");
+like($postm, qr/strcmp\(modname, "vc4"\) == 0/, 'modpost marker gated to modname vc4');
+like($postm, qr/"RQ3V1-%\.\*s"/, 'modpost writes the RQ3V1 prefix');
+is(() = $postm =~ /RQ3V1/g, 2, 'RQ3V1 literal appears exactly twice (comment + format)');
+
+# --- patch touches only the two expected files ---
+my @files = slurp($patch) =~ /^\+\+\+ b\/(\S+)/mg;
+is_deeply([sort @files],
+          ['drivers/gpu/drm/vc4/vc4_hdmi.c', 'scripts/mod/modpost.c'],
+          'patch touches only vc4_hdmi.c and modpost.c (no DRM core changes needed: value 3 is already a valid enum member)');
+
+# --- renderer-side contract (committed separately) stays consistent ---
+SKIP: {
+    skip 'renderer source not present', 3 unless -f $renderer;
+    my $r = slurp($renderer);
+    like($r, qr/strstr\(version, "RQ3V1"\)/,
+         'renderer gates on the RQ3V1 srcversion marker');
+    like($r, qr/rgb_quant_range == 1 && output_format == 0[^\n]*\n[^\n]*\n?\s*return 3;/s,
+         'renderer maps conf Limited (1) onto wire value 3 behind the marker');
+    like($r, qr/return \(uint64_t\)rgb_quant_range;/,
+         'renderer passes stock values through unchanged when not gated in');
 }
-
-my $patch="$Bin/../src/ofxRPI4Window/vc4_rgb_limited_unity.patch";
-plan skip_all=>'missing '.$patch unless -f $patch;
-
-my $tmp=tempdir(CLEANUP=>1);
-mkdir "$tmp/drivers"; mkdir "$tmp/drivers/gpu"; mkdir "$tmp/drivers/gpu/drm"; mkdir "$tmp/drivers/gpu/drm/vc4";
-mkdir "$tmp/scripts"; mkdir "$tmp/scripts/mod";
-
-my $pre_hdmi=<<'FIXTURE_END_HDMI';
-#define HDMI_14_MAX_TMDS_CLK   (340 * 1000 * 1000)
-
-static bool vc4_hdmi_mode_needs_scrambling(const struct drm_display_mode *mode)
-{
-	return (mode->clock * 1000) > HDMI_14_MAX_TMDS_CLK;
-}
-
-static bool vc4_hdmi_is_full_range_rgb(struct vc4_hdmi *vc4_hdmi,
-				       const struct drm_connector_state *conn_state,
-				       const struct drm_display_mode *mode)
-{
-	struct vc4_hdmi_encoder *vc4_encoder = &vc4_hdmi->encoder;
-	enum drm_hdmi_broadcast_rgb broadcast_rgb =
-		conn_state ? conn_state->broadcast_rgb : DRM_HDMI_BROADCAST_RGB_AUTO;
-
-	if (broadcast_rgb == DRM_HDMI_BROADCAST_RGB_FULL)
-		return true;
-
-	if (broadcast_rgb == DRM_HDMI_BROADCAST_RGB_LIMITED)
-		return false;
-
-	return !vc4_encoder->hdmi_monitor ||
-		drm_default_rgb_quant_range(mode) == HDMI_QUANTIZATION_RANGE_FULL;
-}
-
-static int vc4_hdmi_debugfs_regs(struct seq_file *m, void *unused)
-{
-	return 0;
-}
-
-static void vc4_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
-			       const struct drm_connector_state *conn_state,
-			       const struct drm_display_mode *mode)
-{
-	u32 if_cfg = 0;
-	u32 if_xbar = 0x203010;
-
-	switch (vc4_hdmi->output_format) {
-	case DRM_COLOR_FORMAT_YCRCB422:
-		break;
-
-	case DRM_COLOR_FORMAT_RGB444:
-		if_xbar = 0x354021;
-
-		if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, conn_state, mode))
-			vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_to_limited_rgb);
-		else
-			vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_unity);
-		break;
-
-	default:
-		break;
-	}
-
-	HDMI_WRITE(HDMI_VEC_INTERFACE_CFG, if_cfg);
-	HDMI_WRITE(HDMI_VEC_INTERFACE_XBAR, if_xbar);
-}
-FIXTURE_END_HDMI
-my $post_hdmi=<<'FIXTURE_END_HDMI2';
-#define HDMI_14_MAX_TMDS_CLK   (340 * 1000 * 1000)
-
-static bool vc4_hdmi_mode_needs_scrambling(const struct drm_display_mode *mode)
-{
-	return (mode->clock * 1000) > HDMI_14_MAX_TMDS_CLK;
-}
-
-/*
- * PGenerator issue 74: extended "rgb quant range" value 3.
- *
- * The renderer needs Limited signalling (AVI infoframe and CEA wire
- * levels) without the 0x1b80/0x0400 compress matrix: squashing 256
- * full-range codes through that fixed-point matrix is lossy, so for
- * its own patterns the generator draws the Limited wire codes itself
- * and asks the CSC to stay at unity.  Value 3 behaves exactly like
- * LIMITED everywhere except the CSC coefficient selection.
- *
- * LIMITED and FULL occupy two of {1,2} in this tree's
- * enum drm_hdmi_broadcast_rgb, so 3 is free; see the commit message
- * for the build-time checks.
- */
-#define DRM_HDMI_BROADCAST_RGB_LIMITED_UNITY	3
-
-static bool vc4_hdmi_rgb_limited_unity(const struct drm_connector_state *conn_state)
-{
-	return conn_state &&
-	       conn_state->broadcast_rgb == DRM_HDMI_BROADCAST_RGB_LIMITED_UNITY;
-}
-
-static bool vc4_hdmi_is_full_range_rgb(struct vc4_hdmi *vc4_hdmi,
-				       const struct drm_connector_state *conn_state,
-				       const struct drm_display_mode *mode)
-{
-	struct vc4_hdmi_encoder *vc4_encoder = &vc4_hdmi->encoder;
-	enum drm_hdmi_broadcast_rgb broadcast_rgb =
-		conn_state ? conn_state->broadcast_rgb : DRM_HDMI_BROADCAST_RGB_AUTO;
-
-	if (broadcast_rgb == DRM_HDMI_BROADCAST_RGB_FULL)
-		return true;
-
-	if (broadcast_rgb == DRM_HDMI_BROADCAST_RGB_LIMITED ||
-	    broadcast_rgb == DRM_HDMI_BROADCAST_RGB_LIMITED_UNITY)
-		return false;
-
-	return !vc4_encoder->hdmi_monitor ||
-		drm_default_rgb_quant_range(mode) == HDMI_QUANTIZATION_RANGE_FULL;
-}
-
-static int vc4_hdmi_debugfs_regs(struct seq_file *m, void *unused)
-{
-	return 0;
-}
-
-static void vc4_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
-			       const struct drm_connector_state *conn_state,
-			       const struct drm_display_mode *mode)
-{
-	u32 if_cfg = 0;
-	u32 if_xbar = 0x203010;
-
-	switch (vc4_hdmi->output_format) {
-	case DRM_COLOR_FORMAT_YCRCB422:
-		break;
-
-	case DRM_COLOR_FORMAT_RGB444:
-		if_xbar = 0x354021;
-
-		if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, conn_state, mode) &&
-		    !vc4_hdmi_rgb_limited_unity(conn_state))
-			vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_to_limited_rgb);
-		else
-			vc5_hdmi_set_csc_coeffs(vc4_hdmi, vc5_hdmi_csc_full_rgb_unity);
-		break;
-
-	default:
-		break;
-	}
-
-	HDMI_WRITE(HDMI_VEC_INTERFACE_CFG, if_cfg);
-	HDMI_WRITE(HDMI_VEC_INTERFACE_XBAR, if_xbar);
-}
-FIXTURE_END_HDMI2
-my $pre_mod=<<'FIXTURE_END_MOD';
-static void add_srcversion(struct buffer *b, struct module *mod)
-{
-	if (mod->srcversion[0]) {
-		buf_printf(b, "\n");
-		buf_printf(b, "MODULE_INFO(srcversion, \"%s\");\n",
-			   mod->srcversion);
-	}
-}
-FIXTURE_END_MOD
-my $post_mod=<<'FIXTURE_END_MOD2';
-static void add_srcversion(struct buffer *b, struct module *mod)
-{
-	if (mod->srcversion[0]) {
-		/* PGenerator: stamp builds of vc4.ko that carry the RGB
-		 * Limited unity-CSC hunk; the renderer greps the module's
-		 * srcversion for RQ3V1 before switching to that path.
-		 */
-		const char *marker = strcmp(mod->name, "vc4") ? "" : "RQ3V1-";
-
-		buf_printf(b, "\n");
-		buf_printf(b, "MODULE_INFO(srcversion, \"%s%s\");\n",
-			   marker, mod->srcversion);
-	}
-}
-FIXTURE_END_MOD2
-
-open my $fh,'>',"$tmp/drivers/gpu/drm/vc4/vc4_hdmi.c" or die $!; print $fh $pre_hdmi; close $fh;
-open $fh,'>',"$tmp/scripts/mod/modpost.c" or die $!; print $fh $pre_mod; close $fh;
-
-my $rc=system("cd $tmp && patch -p1 --forward --fuzz=0 -s < ".$patch." 2>/dev/null");
-is($rc,0,'add-on applies to the drm_vc4.patch post-image with zero fuzz');
-
-is(read_file("$tmp/drivers/gpu/drm/vc4/vc4_hdmi.c"),$post_hdmi,'vc4_hdmi.c post-image exact');
-is(read_file("$tmp/scripts/mod/modpost.c"),$post_mod,'modpost.c post-image exact');
-
-my $rt=read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.cpp");
-like($rt,qr/RQ3V1/,'renderer greps for the RQ3V1 srcversion marker');
-like($rt,qr/wireRgbQuantRange/,'renderer maps conf Limited onto wire value 3 only behind the marker');
-
-my $body=read_file($patch);
-my $hunks=()=$body=~/^@@ /mg;
-cmp_ok($hunks,'>=',4,'add-on carries all four hunks');
-like($body,qr/DRM_HDMI_BROADCAST_RGB_LIMITED_UNITY/,'unity enum extension present');
 
 done_testing();
