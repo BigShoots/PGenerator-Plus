@@ -297,6 +297,41 @@ sub map_broadcast_rgb(@) {
  return 0;
 }
 
+# RQ3V1 (issue 74): a patched vc4.ko (its srcversion carries the "RQ3V1-"
+# prefix stamped by the add-on's modpost hunk) treats "rgb quant range" 3 as
+# Limited signalling with a unity CSC. Behind that kernel the renderer's WIRE
+# value is 3 while the conf value stays 1, so every conf-driven writer here
+# must mirror the renderer's mapping: a raw conf write of 1 landing on a live
+# unity renderer re-arms the compress CSC while the renderer keeps drawing
+# wire codes, lifting blacks — exactly the drift #74 removes. The writable
+# paths make both the marker probe and the mapping testable.
+our $vc4_srcversion_path="/sys/module/vc4/srcversion";
+our $vc4_unity_marker=-1;   # -1 unknown (probe once), 0 stock, 1 RQ3V1-patched
+sub vc4_rgb_limited_unity_kernel(@) {
+ if($vc4_unity_marker < 0) {
+  my $srcversion="";
+  if(open(my $fh,"<",$vc4_srcversion_path)) {
+   $srcversion=<$fh>;
+   close($fh);
+  }
+  # Stock srcversions are hex digests, so "RQ3V1" can only come from a
+  # tagged build — the same marker ofxRPI4Window::rgbLimitedPassthroughSupported
+  # gates on.
+  $vc4_unity_marker=($srcversion=~/RQ3V1/)?1:0;
+ }
+ return $vc4_unity_marker==1;
+}
+
+# Mirror of ofxRPI4Window::wireRgbQuantRange(): conf Limited (1) maps onto
+# wire 3 only with the patched kernel present, the output RGB, and DV off.
+# Any other conf value passes through untouched.
+sub unity_wire_rgb_quant_range(@) {
+ my($conf_range,$color_fmt,$is_dv)=@_;
+ return $conf_range unless(defined($conf_range) && $conf_range eq "1");
+ return $conf_range if($is_dv || (($color_fmt||0) != 0));
+ return &vc4_rgb_limited_unity_kernel()?3:$conf_range;
+}
+
 ###############################################
 #  Apply DRM Connector Properties (KMS only)  #
 ###############################################
@@ -331,10 +366,13 @@ sub apply_drm_properties (@) {
  my $quant_range=$pgenerator_conf{"rgb_quant_range"};
  $quant_range=2 if($is_dv);
  if($quant_range ne "") {
-  &modetest_connector_write($connector_id,"rgb quant range",$quant_range);
+  # Wire and conf diverge on the unity-CSC kernel (3 vs 1): write what the
+  # renderer writes, or this write re-arms the compress CSC under it.
+  my $wire_range=&unity_wire_rgb_quant_range($quant_range,$color_fmt,$is_dv);
+  &modetest_connector_write($connector_id,"rgb quant range",$wire_range);
   my $broadcast_rgb=&map_broadcast_rgb($quant_range);
   &modetest_connector_write($connector_id,"Broadcast RGB",$broadcast_rgb);
-  &log("DRM: Set rgb quant range=$quant_range / Broadcast RGB=$broadcast_rgb on connector $connector_id");
+  &log("DRM: Set rgb quant range=$wire_range (conf=$quant_range) / Broadcast RGB=$broadcast_rgb on connector $connector_id");
  }
  # Set colorimetry / colorspace.
  # Older vc4 exposes "Colorimetry" while Bookworm exposes "Colorspace".
