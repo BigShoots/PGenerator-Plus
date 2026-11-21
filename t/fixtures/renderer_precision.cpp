@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -33,12 +34,20 @@ struct ofxRPI4Window {
     struct AVI { int output_format=1,rgb_quant_range=1,colorimetry=2,max_bpc=10; };
     static AVI avi_info;
     static Shader shader;
+    // The real rgbLimitedPassthroughSupported reads /sys/module/vc4; the
+    // fixture drives it with this marker (0 stock kernel, 1 patched RQ3V1).
+    static int pgen_rq_marker;
+    static bool rgbLimitedPassthroughSupported() { return pgen_rq_marker!=0; }
+    // Real predicate and wire mapping are injected below from ofxRPI4Window.cpp.
+    static bool rgbLimitedPassthrough();
+    static uint64_t wireRgbQuantRange(int rgb_quant_range, int output_format);
     // COLOUR_SHADER_PREDICATE
 };
 int ofxRPI4Window::bit_depth=10,ofxRPI4Window::isHDR=0,ofxRPI4Window::isDoVi=0;
 int ofxRPI4Window::is_std_DoVi=0,ofxRPI4Window::colorspace_on=1,ofxRPI4Window::shader_init=0,ofxRPI4Window::dv_profile=2;
 ofxRPI4Window::AVI ofxRPI4Window::avi_info;
 Shader ofxRPI4Window::shader;
+int ofxRPI4Window::pgen_rq_marker=0;
 class ofApp {
 public:
     int i=0,to_draw=0,solid_red=0,solid_green=0,solid_blue=0;
@@ -58,6 +67,7 @@ public:
     void shader_end(int);
 };
 // REAL_PRECISION_METHODS
+// REAL_UNITY_METHODS
 
 void require(bool ok,const char *message) { if(!ok) throw std::runtime_error(message); }
 int packed(double value,int maximum) { return int(std::floor(value*maximum+0.5)); }
@@ -66,24 +76,40 @@ int main() {
         ofApp app;
         auto &window=ofxRPI4Window::avi_info;
         auto &shader=ofxRPI4Window::shader;
-        for(int hdr : {0,1}) for(int bits : {8,10,12}) for(int format : {0,1,2}) for(int range : {0,1,2}) {
+        for(int hdr : {0,1}) for(int bits : {8,10,12}) for(int format : {0,1,2}) for(int range : {0,1,2}) for(int marker : {0,1}) {
             ofxRPI4Window::isHDR=hdr;
             ofxRPI4Window::bit_depth=bits;
+            ofxRPI4Window::pgen_rq_marker=marker;
             window.output_format=format; window.rgb_quant_range=range;
             int maximum=(1<<bits)-1;
+            int black=16<<(bits-8),span=219<<(bits-8);
+            // The real predicate, not a reimplementation: this is what the
+            // production normalizeSourceValue consults.
+            bool unity=ofxRPI4Window::rgbLimitedPassthrough();
+            auto clampv=[&](int v){return std::max(0,std::min(maximum,v));};
+            // Mirror of normalizeSourceValue for all three kernels:
+            // legacy expansion, unity Limited pass-through, unity
+            // full-range compression (exact 219/255, no hardware CSC).
+            auto model_norm=[&](int v,int sr)->int{
+                if(format!=0||range!=1||ofxRPI4Window::isDoVi||ofxRPI4Window::is_std_DoVi) return v;
+                if(unity) return sr==1 ? v : clampv(black+int(std::floor(v*double(span)/maximum+0.5)));
+                return sr==1 ? clampv(int(std::floor((v-black)*double(maximum)/span+0.5))) : v;
+            };
             for(int code=0;code<=maximum;++code) {
                 app.arr_source_range[0][0]=0;
                 app.setColor(code,maximum-code,code/2);
                 app.shader_begin(0);
                 require(shader.active==(format!=0 || bits!=8),"wrong shader selection");
                 if(shader.active) {
-                    require(shader.values["source_codes"]==std::vector<double>({double(code),double(maximum-code),double(code/2)}),"solid code was quantized");
+                    std::vector<double> want{(double)model_norm(code,0),(double)model_norm(maximum-code,0),(double)model_norm(code/2,0)};
+                    require(shader.values["source_codes"]==want,"solid code was quantized");
                     require(shader.values["source_normalizer"][0]==maximum,"wrong source domain");
                 }
                 app.shader_end(0);
                 app.setBackground(code,code,code);
-                std::vector<int> expected=format==1 ? std::vector<int>{128<<(bits-8),128<<(bits-8),code}
-                    : format==2 ? std::vector<int>{code,128<<(bits-8),128<<(bits-8)} : std::vector<int>{code,code,code};
+                int bg=unity ? model_norm(code,0) : code; // YCbCr: format!=0 keeps code
+                std::vector<int> expected=format==1 ? std::vector<int>{128<<(bits-8),128<<(bits-8),bg}
+                    : format==2 ? std::vector<int>{bg,128<<(bits-8),128<<(bits-8)} : std::vector<int>{bg,bg,bg};
                 for(int channel=0;channel<3;++channel)
                     require(packed(clear_color[channel],maximum)==expected[channel],"background lost precision");
                 auto previous=clear_color;
@@ -94,10 +120,12 @@ int main() {
                 require(clear_color==previous,"BG=-1 lost previous surround");
                 app.arr_redbg[0][0]=0;
                 app.arr_source_range[0][0]=1;
-                int black=16<<(bits-8),span=219<<(bits-8);
-                int expanded=std::max(0,std::min(maximum,int(std::floor((code-black)*double(maximum)/span+0.5))));
-                int expected_code=(format==0 && range==1) ? expanded : code;
+                int expected_code=model_norm(code,1);
                 require(app.normalizeSourceValue(code,1)==expected_code,"range conversion disagrees with wire domain");
+                // Full-range source: unity compresses here, legacy defers to the kernel CSC.
+                app.arr_source_range[0][0]=0;
+                require(app.normalizeSourceValue(code,0)==model_norm(code,0),"full-range compression wrong");
+                app.arr_source_range[0][0]=1;
                 app.setColor(code,code,code);
                 app.shader_begin(0);
                 if(shader.active) require(shader.values["source_codes"][0]==expected_code,"range normalized twice");
@@ -116,6 +144,41 @@ int main() {
                     require(packed(clear_color[channel],maximum)==std::max(0,std::min(maximum,expected[channel])),"coloured surround matrix or default range changed");
             }
         }
+        // Issue 74: with the patched (unity) vc4 every RGB Limited wire code
+        // must reach the HDMI block bit-exact, and the marker must gate all
+        // of it: a stock kernel keeps the legacy expand/round-trip path.
+        ofxRPI4Window::isHDR=0; ofxRPI4Window::isDoVi=0; ofxRPI4Window::is_std_DoVi=0;
+        window.output_format=0; window.rgb_quant_range=1;
+        for(int marker : {0,1}) {
+            ofxRPI4Window::pgen_rq_marker=marker;
+            bool unity=marker!=0;
+            require(ofxRPI4Window::rgbLimitedPassthrough()==unity,"unity predicate must track the kernel marker");
+            require((ofxRPI4Window::wireRgbQuantRange(1,0)==3)==unity,"only the patched kernel may signal range 3");
+            require(ofxRPI4Window::wireRgbQuantRange(0,0)==0 && ofxRPI4Window::wireRgbQuantRange(2,0)==2,"auto/full signalling changed");
+            require(ofxRPI4Window::wireRgbQuantRange(1,1)==1,"YCbCr must not get unity signalling");
+            ofxRPI4Window::isDoVi=1;
+            require(!ofxRPI4Window::rgbLimitedPassthrough() && ofxRPI4Window::wireRgbQuantRange(1,0)==1,"DV must keep the kernel CSC");
+            ofxRPI4Window::isDoVi=0;
+            if(!unity) continue;
+            // Full Limited sweep at the sweep depths: framebuffer == wire.
+            for(int bits : {8,10}) {
+                ofxRPI4Window::bit_depth=bits;
+                int maximum=(1<<bits)-1,black=16<<(bits-8),white=235<<(bits-8);
+                for(int wire=0;wire<=maximum;++wire) {
+                    app.arr_source_range[0][0]=1;
+                    require(app.normalizeSourceValue(wire,1)==wire,"unity dropped a Limited wire code");
+                    if(bits==8 && wire==153) require(app.normalizeSourceValue(153,1)==153,
+                        "unity must not repeat the 153->154 drift of the 0x1b80 gain");
+                }
+                app.arr_source_range[0][0]=1;
+                app.setBackground(black,black,black);
+                require(packed(clear_color[0],maximum)==black && packed(clear_color[1],maximum)==black
+                    && packed(clear_color[2],maximum)==black,"unity lost the Limited black surround");
+                app.setBackground(white,white,white);
+                require(packed(clear_color[0],maximum)==white,"unity lost the Limited white surround");
+            }
+        }
+        ofxRPI4Window::pgen_rq_marker=0;
         window.output_format=1;
         ofxRPI4Window::bit_depth=10;
         app.shader_begin(1);

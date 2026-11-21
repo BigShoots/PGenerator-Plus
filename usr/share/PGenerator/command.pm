@@ -1406,7 +1406,8 @@ sub get_hdmi_info() {
   $hdmi_output="YCbCr422" if($output == 2);
   $hdmi_output="YCbCr420" if($output == 3);
   my $hdmi_range="default";
-  $hdmi_range="limited"   if($range == 1);
+  # 3: Limited without the vc4 CSC (patched vc4, renderer RGB Limited passthrough)
+  $hdmi_range="limited"   if($range == 1 || $range == 3);
   $hdmi_range="full"      if($range == 2);
   my @field=$preferred_mode=~/(\d+)\[(\d+x\w+) (.*Hz) (.*MHz) (.*)\]/;
   my $type="progressive";

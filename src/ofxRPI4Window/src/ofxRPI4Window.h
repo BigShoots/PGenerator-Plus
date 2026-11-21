@@ -417,6 +417,14 @@ public:
 	static int colorspace_on;
 	int colorspace_status = 0;
 	static int shader_init;
+	/* RGB Limited without the vc4 compression CSC (issue 74). The patched
+	   vc4.ko (its srcversion carries the RQ3V1 marker) treats "rgb quant
+	   range" 3 as Limited signalling with a unity CSC, so the renderer
+	   draws the wire codes itself. Stock kernels keep the legacy
+	   expand/round-trip path unchanged. */
+	static bool rgbLimitedPassthroughSupported();
+	static bool rgbLimitedPassthrough();
+	static uint64_t wireRgbQuantRange(int rgb_quant_range, int output_format);
 
 	void EGL_create_surface(EGLint attribs[], EGLConfig config);
 	

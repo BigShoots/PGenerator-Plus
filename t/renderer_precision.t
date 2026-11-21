@@ -39,9 +39,17 @@ for my $name (qw(setColor normalizeSourceValue setBackground clearBackground res
 my $header=read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.h");
 my ($required)=$header=~/(static bool usesColourShader\(\) \{.*?^    \})/ms;
 ok(defined($required),'extract the real shader-selection predicate');
+my $rpi=read_file("$Bin/../src/ofxRPI4Window/src/ofxRPI4Window.cpp");
+my @unity_methods;
+for my $name (qw(rgbLimitedPassthrough wireRgbQuantRange)) {
+ my ($m)= $rpi=~m{(^(?:bool|uint64_t) ofxRPI4Window::\Q$name\E\([^)]*\)\s*\n\{.*?^\})}ms;
+ die "Missing ofxRPI4Window::$name" unless $m;
+ push @unity_methods,$m;
+}
 my $fixture=read_file("$Bin/fixtures/renderer_precision.cpp");
 $fixture=~s{// COLOUR_SHADER_PREDICATE}{$required};
 $fixture=~s{// REAL_PRECISION_METHODS}{join("\n",@methods)}e;
+$fixture=~s{// REAL_UNITY_METHODS}{join("\n",@unity_methods)}e;
 open my $cpp,'>',"$tmp/precision.cpp" or die $!;
 print $cpp $fixture;
 close $cpp;

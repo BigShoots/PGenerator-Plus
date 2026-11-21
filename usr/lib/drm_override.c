@@ -407,6 +407,10 @@ static void override_colorimetry(uint64_t *value, const char *source) {
 }
 
 static void override_rgb_qr(uint64_t *value, const char *source) {
+    /* 3 is Limited without the vc4 CSC (patched vc4, renderer RGB
+     * Limited passthrough); it satisfies a Limited conf. */
+    if (*value == 3 && rgb_qr_override == 1)
+        return;
     if (rgb_qr_prop_id && rgb_qr_found && *value != rgb_qr_override) {
         char old_val[24], new_val[24];
         itoa_simple(*value, old_val);
