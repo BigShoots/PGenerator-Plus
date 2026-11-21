@@ -75,9 +75,10 @@ like($post,
 like($post, qr{/\* The RGB order applies even when CSC is disabled\. \*/\s*\n\s*HDMI_WRITE\(HDMI_CSC_CTL, csc_ctl\);},
      'trailing CSC_CTL write (without ENABLE for value 3) still present');
 
-# 3) modpost stamps only vc4
+# 3) modpost stamps only vc4 (modname is the linked .o path in modpost)
 my $postm = slurp("$tmp/scripts/mod/modpost.c");
-like($postm, qr/strcmp\(modname, "vc4"\) == 0/, 'modpost marker gated to modname vc4');
+like($postm, qr/!strcmp\(modname \+ strlen\(modname\) - 17,\s*\n\s*"gpu\/drm\/vc4\/vc4\.o"\)/,
+     'modpost marker gated to the vc4 linked-object path');
 like($postm, qr/"RQ3V1-%\.\*s"/, 'modpost writes the RQ3V1 prefix');
 is(() = $postm =~ /RQ3V1/g, 2, 'RQ3V1 literal appears exactly twice (comment + format)');
 

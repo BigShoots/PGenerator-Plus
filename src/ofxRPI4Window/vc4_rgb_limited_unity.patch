@@ -88,7 +88,7 @@ depmod -a, reboot, and confirm the renderer logs
  		 * Apply a colorspace conversion to squash 0-255 down
 --- a/scripts/mod/modpost.c
 +++ b/scripts/mod/modpost.c
-@@ -2072,9 +2072,27 @@ static void read_symbols(const char *mod
+@@ -2072,9 +2072,31 @@ static void read_symbols(const char *mod
  
  	if (!mod->is_vmlinux) {
  		version = get_modinfo(&info, "version");
@@ -99,10 +99,14 @@ depmod -a, reboot, and confirm the renderer logs
 +
 +			/* PGenerator RQ3V1: tag vc4's srcversion so the
 +			 * renderer detects the RGB Limited unity-CSC build
-+			 * via /sys/module/vc4/srcversion. All other modules
++			 * via /sys/module/vc4/srcversion. modname is the
++			 * linked .o path here (drivers/gpu/drm/vc4/vc4.o),
++			 * so match that exact suffix. All other modules
 +			 * keep the bare md4 digest.
 +			 */
-+			if (strcmp(modname, "vc4") == 0 &&
++			if (strlen(modname) >= 17 &&
++			    !strcmp(modname + strlen(modname) - 17,
++				    "gpu/drm/vc4/vc4.o") &&
 +			    strlen(mod->srcversion) >= 6) {
 +				char tagged[sizeof(mod->srcversion)];
 +
