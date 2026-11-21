@@ -88,7 +88,7 @@ depmod -a, reboot, and confirm the renderer logs
  		 * Apply a colorspace conversion to squash 0-255 down
 --- a/scripts/mod/modpost.c
 +++ b/scripts/mod/modpost.c
-@@ -2072,9 +2072,31 @@ static void read_symbols(const char *mod
+@@ -2072,9 +2072,34 @@ static void read_symbols(const char *mod
  
  	if (!mod->is_vmlinux) {
  		version = get_modinfo(&info, "version");
@@ -102,7 +102,10 @@ depmod -a, reboot, and confirm the renderer logs
 +			 * via /sys/module/vc4/srcversion. modname is the
 +			 * linked .o path here (drivers/gpu/drm/vc4/vc4.o),
 +			 * so match that exact suffix. All other modules
-+			 * keep the bare md4 digest.
++			 * keep the bare md4 digest. The tag truncates
++			 * the digest to fit the prefix, so a tagged
++			 * vc4 srcversion is no longer a pure md4 of
++			 * the module sources.
 +			 */
 +			if (strlen(modname) >= 17 &&
 +			    !strcmp(modname + strlen(modname) - 17,

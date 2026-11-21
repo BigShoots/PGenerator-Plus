@@ -3,6 +3,7 @@ use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
 use File::Copy qw(copy);
+use File::Find qw(find);
 use FindBin qw($Bin);
 use Digest::SHA qw(sha256_hex);
 
@@ -48,7 +49,10 @@ copy($fx_hdmi, "$tmp/drivers/gpu/drm/vc4/vc4_hdmi.c") or die;
 copy($fx_modp, "$tmp/scripts/mod/modpost.c") or die;
 my $out = `cd '$tmp' && patch -p1 -s --fuzz=0 < '$patch' 2>&1`;
 is($?, 0, 'add-on applies with fuzz 0') or diag $out;
-my @rej = glob("$tmp/**/*.rej");
+# Core glob treats ** as a single *, so it would never see .rej files under
+# the depth-4 drivers/gpu/drm/vc4 tree; walk the tree for them instead.
+my @rej;
+find({ wanted => sub { push @rej, $File::Find::name if /\.rej$/ }, no_chdir => 1 }, $tmp);
 is(scalar(@rej), 0, 'no .rej files');
 
 # --- post-image invariants ---
