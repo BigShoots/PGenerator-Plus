@@ -648,6 +648,9 @@ int ofApp::normalizeSourceValue(int value, int source_range_mode) {
  if(ofxRPI4Window::rgbLimitedPassthrough()) {
   if(source_range_mode == 1)
    return value;
+  /* Out-of-range full-range input clamps to framebuffer black/white here;
+   * the legacy Limited expansion path below historically leaves them
+   * untouched for the kernel CSC to fold. */
   if(value < 0)
    value=0;
   if(value > max_value)

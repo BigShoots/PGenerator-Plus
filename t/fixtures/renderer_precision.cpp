@@ -17,7 +17,29 @@ void ofClear(float r, float g, float b, float a) { clear_color={r/255.,g/255.,b/
 int ofGetWindowWidth() { return 1920; }
 int ofGetWindowHeight() { return 1080; }
 struct Texture { void bind() {} void unbind() {} };
-struct Image { Texture texture; Texture &getTexture() { return texture; } };
+// Pixel containers shaped like ofPixels/ofFloatPixels (only the members
+// normalizeImageSourcePixels touches: getNumChannels/getData/width/height).
+template <typename T>
+struct Pixels {
+    std::vector<T> data; int w=0,h=0,nch=0; int updates=0;
+    int getNumChannels() const { return nch; }
+    int getWidth() const { return w; }
+    int getHeight() const { return h; }
+    T *getData() { return data.data(); }
+    void update() { ++updates; }
+};
+using ofPixels = Pixels<unsigned char>;
+using ofFloatPixels = Pixels<float>;
+struct Image {
+    Texture texture; Texture &getTexture() { return texture; }
+    ofPixels px; ofPixels &getPixels() { return px; }
+    void update() { ++px.updates; }
+};
+struct FloatImage {
+    Texture texture; Texture &getTexture() { return texture; }
+    ofFloatPixels px; ofFloatPixels &getPixels() { return px; }
+    void update() { ++px.updates; }
+};
 struct Fbo { void begin() {} void end() {} };
 struct Shader {
     std::map<std::string,std::vector<double>> values;
@@ -55,10 +77,12 @@ public:
     int arr_source_range[1][1]={{0}},arr_source_max[1][1]={{1023}},arr_redbg[1][1]={{0}};
     float background_color[4]={0,0,0,1};
     std::vector<int> dv_background;
-    Image img,float_img;
+    Image img;
+    FloatImage float_img;
     Fbo fbo8,fbo10;
     void setColor(int,int,int);
     int normalizeSourceValue(int,int);
+    void normalizeImageSourcePixels(int);
     void setBackground(int,int,int);
     void clearBackground(int,int,int,int);
     void restoreBackground();
@@ -177,6 +201,64 @@ int main() {
                 app.setBackground(white,white,white);
                 require(packed(clear_color[0],maximum)==white,"unity lost the Limited white surround");
             }
+        }
+        // Issue 74: IMAGE textures bypass setColor(); under unity the kernel
+        // no longer compresses, so normalizeImageSourcePixels must do it:
+        // studio-range texels stay untouched, full-range texels compress
+        // exactly (8-bit integer path and the 10-bit HDR float path).
+        ofxRPI4Window::is_std_DoVi=0;
+        auto set_img=[&](std::vector<unsigned char> d,int nch){
+            app.img.px.data=std::move(d); app.img.px.w=1; app.img.px.h=(int)app.img.px.data.size()/nch; app.img.px.nch=nch; };
+        auto set_fimg=[&](std::vector<float> d,int nch){
+            app.float_img.px.data=std::move(d); app.float_img.px.w=1; app.float_img.px.h=(int)app.float_img.px.data.size()/nch; app.float_img.px.nch=nch; };
+        window.output_format=0; window.rgb_quant_range=1;
+        for(int marker : {0,1}) {
+            ofxRPI4Window::pgen_rq_marker=marker;
+            bool unity=marker!=0;
+            // 8-bit path: RGBA, alpha must never move; grey channel mirrors R/G/B.
+            // isHDR must be re-established per iteration: the float-path block
+            // below flips it, and the production branch keys on max_bpc==10&&isHDR.
+            ofxRPI4Window::isHDR=0;
+            for(int sr : {0,1}) {
+                set_img({0,64,127,235,255,0,2,128},4); // 2 RGBA pixels: grey triplets + untouched alpha
+                app.normalizeImageSourcePixels(sr);
+                unsigned char a0=app.img.px.data[0],a1=app.img.px.data[1],a2=app.img.px.data[2];
+                if(unity && sr==0) {
+                    require(a0==16 && a1==(unsigned char)(16+(64*219+127)/255) && a2==(unsigned char)(16+(127*219+127)/255),
+                            "unity lost exact full-range image compression (8-bit)");
+                    require(app.img.px.data[3]==235 && app.img.px.data[7]==128,"image alpha channel was rewritten");
+                    require(app.img.px.data[4]==235 && app.img.px.data[5]==16 && app.img.px.data[6]==18,
+                            "8-bit image compression wrong at endpoints (255/0/2)");
+                } else if(unity && sr==1) {
+                    require(a0==0 && a1==64 && a2==127,"unity expanded or folded studio-range image texels");
+                } else if(!unity && sr==1) {
+                    require(a0==0 && a1==(unsigned char)std::min(255,std::max(0,((64-16)*255+219/2)/219))
+                            && a2==(unsigned char)std::min(255,std::max(0,((127-16)*255+219/2)/219)),
+                            "stock image expansion changed");
+                } else {
+                    require(a0==0 && a1==64 && a2==127,"stock full-range image path touched texels");
+                }
+            }
+            // 10-bit HDR float path (max_bpc==10 && isHDR).
+            ofxRPI4Window::isHDR=1; window.max_bpc=10;
+            for(int sr : {0,1}) {
+                set_fimg({0.0f,64.0f/255.0f,1.0f,0.5f},4); // one RGBA pixel
+                app.normalizeImageSourcePixels(sr);
+                float v0=app.float_img.px.data[0],v1=app.float_img.px.data[1],v2=app.float_img.px.data[2];
+                auto nearp=[](float a,float b){ return std::fabs(a-b)<1e-5f; };
+                if(unity && sr==0) {
+                    require(nearp(v0,16.0f/255.0f) && nearp(v1,(16.0f+64.0f*219.0f/255.0f)/255.0f) && nearp(v2,235.0f/255.0f),
+                            "unity lost exact full-range image compression (10-bit float)");
+                } else if(unity && sr==1) {
+                    require(nearp(v0,0.0f) && nearp(v1,64.0f/255.0f),"unity touched studio-range float texels");
+                } else if(!unity && sr==1) {
+                    float exp=(64.0f/255.0f-16.0f/255.0f)*(255.0f/219.0f);
+                    require(nearp(v0,0.0f) && nearp(v1,exp),"stock float image expansion changed");
+                } else {
+                    require(nearp(v0,0.0f) && nearp(v1,64.0f/255.0f),"stock full-range float path touched texels");
+                }
+            }
+            ofxRPI4Window::isHDR=0; window.max_bpc=10;
         }
         ofxRPI4Window::pgen_rq_marker=0;
         window.output_format=1;

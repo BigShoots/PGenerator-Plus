@@ -31,7 +31,7 @@ plan skip_all=>'No working C++ compiler' unless compile("$tmp/probe.cpp","$tmp/p
 
 my $source=read_file("$Bin/../src/pattern_generator/src/ofApp.cpp");
 my @methods;
-for my $name (qw(setColor normalizeSourceValue setBackground clearBackground restoreBackground shader_begin shader_end)) {
+for my $name (qw(setColor normalizeSourceValue normalizeImageSourcePixels setBackground clearBackground restoreBackground shader_begin shader_end)) {
  my @found=$source=~/(^(?:void|int) ofApp::\Q$name\E\([^)]*\)\s*\{.*?^\})/msg;
  die "Missing method $name" unless @found;
  push @methods,$found[-1]; # shader_begin also has an inactive historical copy
