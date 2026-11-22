@@ -323,9 +323,11 @@ sub sent_signal {
  $out{colorimetry}=$COLORIMETRY{$colorimetry}||"Other" if(defined($colorimetry));
  my ($range)=$enum->("rgb quant range");
  # YCbCr is always sent at limited (video) range whatever the RGB property says.
+ # 3 (HDMI_QUANTIZATION_RANGE_RESERVED) is the RQ3V1 unity-CSC kernel's Limited
+ # signalling (issue 74) — same label, like get_hdmi_info().
  $out{range}=(defined($format) && $format != 0) ? "Limited"
   : defined($range) && $range==2 ? "Full"
-  : defined($range) && $range==1 ? "Limited" : undef;
+  : defined($range) && ($range==1 || $range==3) ? "Limited" : undef;
  # Deep colour shows up as a faster pixel rate than the mode's own clock.
  my ($rate)=$enum->("active pixel rate");
  if(defined($rate) && ref($mode) eq "HASH" && $mode->{clock_khz}) {
