@@ -64,11 +64,16 @@ my $xcc = `command -v arm-linux-gnueabihf-gcc 2>/dev/null`;
 chomp $xcc;
 SKIP: {
     skip 'arm-linux-gnueabihf-gcc not installed', 1 unless $xcc;
-    my $out = "$so.crosscheck.$Config{pid}.tmp";
-    my $rc = system("$xcc -shared -fPIC -O2 -o '$out' '$c' 2>/dev/null");
+    my $out = "$so.crosscheck.$Config{PID}.tmp";
+    my $errlog = "$out.err";
+    my $rc = system("$xcc -shared -fPIC -O2 -o '$out' '$c' > '$errlog' 2>&1");
     my $okc = ($rc == 0 && -s $out);
-    unlink $out;
-    ok($okc, 'blob source recompiles with the cross toolchain');
+    my $err = do { local $/; open my $fh, '<', $errlog or next; <$fh> };
+    unlink $out, $errlog;
+    ok($okc, 'blob source recompiles with the cross toolchain')
+        or diag(sprintf('rc=%d exists=%s size=%s tool=%s stderr=%s',
+                        $rc, -f $out ? 'y' : 'n', -s $out // 0, $xcc,
+                        substr($err // '(no stderr captured)', 0, 2000)));
 }
 
 done_testing();
