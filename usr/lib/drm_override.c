@@ -44,8 +44,12 @@
  * PGeneratord handles RGB-to-YCbCr conversion in its OpenGL fragment
  * shader, producing bit-perfect limited-range YCbCr output.
  *
- * Cross-compile:
- *   arm-linux-gnueabihf-gcc -shared -fPIC -o drm_override.so drm_override.c
+ * Cross-compile (arm-linux-gnueabihf-gcc, or on-device with the Pi's gcc):
+ *   arm-linux-gnueabihf-gcc -shared -fPIC -O2 -o drm_override.so drm_override.c
+ * Any rebuild MUST be followed by committing the regenerated .so — release
+ * packaging ships the blob verbatim (see t/drm_override_blob_pin.t, which
+ * fails when the blob falls behind the source's literal surface). The blob
+ * must keep a GLIBC_2.4 symbol ceiling for the Pi 4's glibc 2.21.
  */
 #include <stdarg.h>
 #include <stdint.h>
