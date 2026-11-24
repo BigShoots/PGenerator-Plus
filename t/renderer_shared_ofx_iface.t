@@ -37,6 +37,26 @@ for my $header (['Pi 4',"src/ofxRPI4Window/src/ofxRPI4Window.h"],
     is_deeply(\@missing, [], "every ofxRPI4Window:: symbol used by the shared app is declared in the $label addon header");
 }
 
+# Header side of the drift class (round-6 nit 3): the app->header pin above
+# only covers symbols the shared app CALLS. A member DEFINED in an addon .cpp
+# whose declaration is dropped from that addon's header compiles green under
+# every pin above (nothing in the shared app references it) yet breaks that
+# addon's own build — exactly the gap around rgbLimitedPassthroughSupported,
+# which the app never calls. Every ofxRPI4Window::<member> definition in an
+# addon .cpp must have a matching name in that addon's header.
+for my $addon (['Pi 4', "src/ofxRPI4Window"], ['Pi 5', "src/ofxRPI4Window-pi5"]) {
+    my ($label,$dir)=@$addon;
+    my $cpp = strip_comments(slurp("$root/$dir/src/ofxRPI4Window.cpp"));
+    my $hdr = strip_comments(slurp("$root/$dir/src/ofxRPI4Window.h"));
+    my %defs;
+    while ($cpp =~ /^(?:[A-Za-z_][^\n;{=]*)?\bofxRPI4Window::(~?[A-Za-z_]\w*)\s*\(/gm) {
+        $defs{$1} = 1;
+    }
+    ok(scalar(keys %defs) >= 20, "$label addon .cpp defines a substantial member surface (".scalar(keys %defs).")");
+    my @undef = grep { my $p = $_ =~ /^~/ ? qr/\Q$_\E/ : qr/\b\Q$_\E\b/; $hdr !~ $p } sort keys %defs;
+    is_deeply(\@undef, [], "every $label addon .cpp member definition is declared in its header");
+}
+
 # The issue-74 RQ3V1 symbols specifically: declared on both addons, and the
 # Pi 5 definitions must be inert (false passthrough, identity wire mapping),
 # never a second copy of the Pi 4 gate — there is no unity kernel on Pi 5.
