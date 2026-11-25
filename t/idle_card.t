@@ -142,6 +142,15 @@ my $unread_hdr=sent_signal(connector=>{props=>{}},packets=>{vendor=>0,hdr=>1});
 ok(!defined($unread_hdr->{mode_label}),"an active HDR packet with unreadable EOTF does not become SDR");
 my $default_range=sent_signal(connector=>{props=>{'active color format'=>{value=>0},'rgb quant range'=>{value=>0}}});
 ok(!defined($default_range->{range}),"driver-default RGB range is not guessed as limited");
+# Issue 74: on the RQ3V1 unity-CSC kernel the renderer drives wire value 3
+# (RESERVED = Limited signalling, CSC disabled). It must label Limited like
+# value 1, or the idle card's measured range goes blank under a live renderer.
+my $unity_range=sent_signal(connector=>{props=>{'active color format'=>{value=>0},'rgb quant range'=>{value=>3}}});
+is($unity_range->{range},'Limited',"unity wire value 3 reads as Limited on the idle card");
+my $unity_ycbcr=sent_signal(connector=>{props=>{'active color format'=>{value=>1},'rgb quant range'=>{value=>3}}});
+is($unity_ycbcr->{range},'Limited',"YCbCr with wire 3 stays Limited whatever the RGB property says");
+my $full_range=sent_signal(connector=>{props=>{'active color format'=>{value=>0},'rgb quant range'=>{value=>2}}});
+is($full_range->{range},'Full',"full range still reads Full next to the unity branch");
 my $pi5_listing=$listing;
 $pi5_listing=~s/Colorimetry:/Colorspace:/;
 $pi5_listing=~s/active color format:/output format:/;

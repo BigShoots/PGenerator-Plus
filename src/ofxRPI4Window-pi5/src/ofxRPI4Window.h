@@ -418,6 +418,15 @@ public:
 	static int colorspace_on;
 	int colorspace_status = 0;
 	static int shader_init;
+	/* RQ3V1 RGB Limited unity CSC (issue 74) is Pi 4 only: the add-on is
+	   based on the -7l vc4 tree, and Pi 5's vc4_hdmi gives value 3 no unity
+	   semantics. The shared pattern app (src/pattern_generator) references
+	   this interface, so the Pi 5 window must compile it and never claim
+	   passthrough: the predicates are constant-false and value 3 is never
+	   produced. */
+	static bool rgbLimitedPassthroughSupported();
+	static bool rgbLimitedPassthrough();
+	static uint64_t wireRgbQuantRange(int rgb_quant_range, int output_format);
 
 	void EGL_create_surface(EGLint attribs[], EGLConfig config);
 	

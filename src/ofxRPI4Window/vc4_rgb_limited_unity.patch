@@ -1,0 +1,126 @@
+RQ3V1 -- RGB Limited unity-CSC add-on for the BiasiLinux shipping kernel
+=========================================================================
+
+Base: the "5.10.89+-7l" tree shipped in the BiasiLinux / PGenerator Pi4
+image. Its source tarball lives on every such Pi at
+/usr/src/linux-5.10.89+-7l.tar.gz and the kernel build symlink
+/lib/modules/5.10.89+-7l/build points at it. This base carries its own
+"rgb quant range" connector property (enum: 0 Default, 1 Limited,
+2 Full, 3 Reserved, backed by u8 drm_connector_state.rgb_quant_range),
+so value 3 is already accepted by stock code -- it just does nothing
+useful there.
+
+  Do NOT apply this to a stock raspberrypi/linux tree or to the
+  drm_vc4.patch lineage: those bases use broadcast_rgb plumbing and the
+  context below does not exist there. Apply it only to the -7l tree.
+
+Effect -- gated entirely on property value 3; values 0/1/2 produce
+bit-identical register programming to the unpatched kernel:
+
+  1) vc4_hdmi_is_full_range_rgb(): Reserved(3) reports not-full, so the
+     AVI infoframe signals Limited.
+  2) vc4_hdmi_csc_setup(): Reserved(3) skips the Full->Limited compress
+     matrix; the unconditional trailing HDMI_CSC_CTL write then leaves
+     the CSC disabled, i.e. unity passthrough of wire codes.
+  3) scripts/mod/modpost.c: vc4's srcversion is prefixed "RQ3V1-" so
+     userspace can detect this build via /sys/module/vc4/srcversion.
+
+Why: issue #74. The stock compress path uses a fixed-point gain of
+0x1b80/8192 = 0.859375 instead of the exact 219/255 = 0.858824, so the
+renderer-expand + kernel-compress round trip drifts some wire codes by
+one (~7/220 at 8-bit, far worse modeled at 10-bit). With the CSC in
+unity and the renderer drawing wire codes directly there is no
+round trip and no drift. Reference design (same value-3 + marker
+scheme): BlackJoker90/GPLv3 2e479684.
+
+Companion renderer side: src/ofxRPI4Window/src/ofxRPI4Window.cpp
+maps conf RGB Limited (1) onto wire value 3 ONLY when the RQ3V1 marker
+is present (rgbLimitedPassthroughSupported()); stock kernels keep the
+legacy round-trip. The Pi 5 path never sends 3. The Pi 5-style
+vc5_hdmi_csc_setup() variants in vc4_hdmi.c are deliberately not
+touched; the Pi 4 uses the vc4 variant.
+
+Build (on the Pi4 itself; the tarball already contains .config,
+Module.symvers and prebuilt host scripts, so this is incremental):
+
+  cd /usr/src && tar -xzf linux-5.10.89+-7l.tar.gz
+  cd linux-5.10.89+-7l
+  patch -p1 --fuzz=0 < /path/to/vc4_rgb_limited_unity.patch
+  make prepare && make scripts
+  make M=drivers/gpu/drm/vc4 modules
+
+Verify the build carries the marker:
+
+  modinfo -F srcversion drivers/gpu/drm/vc4/vc4.ko    # -> RQ3V1-<hex>
+
+Deploy only after optical acceptance: back up the stock
+/lib/modules/$(uname -r)/kernel/drivers/gpu/drm/vc4/vc4.ko, replace it,
+depmod -a, reboot, and confirm the renderer logs
+"PGEN: vc4 RGB Limited passthrough available".
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -136,6 +136,15 @@ static bool vc4_hdmi_is_full_range_rgb(s
+ {
+ 	struct vc4_hdmi_encoder *vc4_encoder = &vc4_hdmi->encoder;
+ 	
++	/* PGenerator RQ3V1: "rgb quant range" value 3
++	 * (HDMI_QUANTIZATION_RANGE_RESERVED) means Limited AVI signalling
++	 * with a unity CSC. Report not-full so the AVI infoframe picks
++	 * LIMITED; vc4_hdmi_csc_setup() leaves the CSC disabled so wire
++	 * codes pass through unchanged. Values 0/1/2 are unaffected.
++	 */
++	if (conn_state->rgb_quant_range == HDMI_QUANTIZATION_RANGE_RESERVED)
++		return false;
++
+ 	if (conn_state->rgb_quant_range == HDMI_QUANTIZATION_RANGE_FULL)
+ 		return true;
+ 	else
+@@ -975,7 +984,8 @@ static void vc4_hdmi_csc_setup(struct vc
+ 	csc_ctl = VC4_SET_FIELD(VC4_HD_CSC_CTL_ORDER_BGR,
+ 				VC4_HD_CSC_CTL_ORDER);
+ 
+-	if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode, state)) {
++	if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode, state) &&
++	    state->rgb_quant_range != HDMI_QUANTIZATION_RANGE_RESERVED) {
+ 		/* CEA VICs other than #1 requre limited range RGB
+ 		 * output unless overridden by an AVI infoframe.
+ 		 * Apply a colorspace conversion to squash 0-255 down
+--- a/scripts/mod/modpost.c
++++ b/scripts/mod/modpost.c
+@@ -2072,9 +2072,34 @@ static void read_symbols(const char *mod
+ 
+ 	if (!mod->is_vmlinux) {
+ 		version = get_modinfo(&info, "version");
+-		if (version || all_versions)
++		if (version || all_versions) {
+ 			get_src_version(modname, mod->srcversion,
+ 					sizeof(mod->srcversion) - 1);
++
++			/* PGenerator RQ3V1: tag vc4's srcversion so the
++			 * renderer detects the RGB Limited unity-CSC build
++			 * via /sys/module/vc4/srcversion. modname is the
++			 * linked .o path here (drivers/gpu/drm/vc4/vc4.o),
++			 * so match that exact suffix. All other modules
++			 * keep the bare md4 digest. The tag truncates
++			 * the digest to fit the prefix, so a tagged
++			 * vc4 srcversion is no longer a pure md4 of
++			 * the module sources.
++			 */
++			if (strlen(modname) >= 17 &&
++			    !strcmp(modname + strlen(modname) - 17,
++				    "gpu/drm/vc4/vc4.o") &&
++			    strlen(mod->srcversion) >= 6) {
++				char tagged[sizeof(mod->srcversion)];
++
++				snprintf(tagged, sizeof(tagged),
++					 "RQ3V1-%.*s",
++					 (int)sizeof(tagged) - 7,
++					 mod->srcversion);
++				memcpy(mod->srcversion, tagged,
++				       sizeof(tagged));
++			}
++		}
+ 	}
+ 
+ 	parse_elf_finish(&info);

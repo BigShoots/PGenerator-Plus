@@ -25,7 +25,7 @@ jobs:
         # loads the helper both need it. Everything else it uses is core.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libio-socket-ssl-perl libegl1 libgles2 libgl1-mesa-dri g++
+          sudo apt-get install -y --no-install-recommends libio-socket-ssl-perl libegl1 libgles2 libgl1-mesa-dri g++ gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
       - name: Syntax-check the AutoCal workers
         run: |
           perl -c usr/bin/meter_lg_autocal.pl

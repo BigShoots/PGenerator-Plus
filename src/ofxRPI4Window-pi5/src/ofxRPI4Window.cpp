@@ -1645,6 +1645,22 @@ avi_infoframe ofxRPI4Window::avi_info;
 drm_hdr_output_metadata ofxRPI4Window::hdr_metadata;
 int ofxRPI4Window::colorspace_on = 0;
 int ofxRPI4Window::shader_init = 0;
+/* Issue 74 RQ3V1 interface, inert on Pi 5 (see header): no patched -7l
+   kernel exists here, so passthrough is never claimed and the conf
+   quantisation range is always the wire value. */
+bool ofxRPI4Window::rgbLimitedPassthroughSupported()
+{
+	return false;
+}
+bool ofxRPI4Window::rgbLimitedPassthrough()
+{
+	return false;
+}
+uint64_t ofxRPI4Window::wireRgbQuantRange(int rgb_quant_range, int output_format)
+{
+	(void)output_format;
+	return (uint64_t)rgb_quant_range;
+}
 ofShader ofxRPI4Window::shader;
 
 void ofxRPI4Window::setup(const ofGLESWindowSettings & settings)
