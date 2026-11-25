@@ -87,12 +87,15 @@ sub calman_scale_value (@) {
   my $dst_bits=$bit_depth_for_max{$target_max};
   return $target_max if($value >= $input_max);
   return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
-  # A downshift here would truncate: 283 >> 2 = 70, not 71. Fall through
-  # to the round-half-up endpoint mapping below so 10->8 and 12->8 match
-  # the generic branch's convention (issue 73). Note the endpoint map is
-  # NOT the shift rounded to nearest: 255/1023 < 1/4, so codes above 683
-  # land one step below the old shift's result (see the divergence-band
-  # pins in t/calman_scale_value_rounding.t).
+  # Video code depths scale by powers of two (BT.709/BT.2100: 10-bit 940
+  # is 8-bit 235), so downscale is a shift rounded half-up: 283 -> 71
+  # (issue 73) while every grid-aligned code stays exact (940 -> 235,
+  # 12-bit 3760 -> 940). round(v*target_max/input_max) is not this: it
+  # moved aligned codes above 683 one step low. Clamp the near-white
+  # carry (1022 -> 256).
+  my $shift=$src_bits - $dst_bits;
+  my $rounded=($value + (1 << ($shift - 1))) >> $shift;
+  return $rounded > $target_max ? $target_max : $rounded;
  }
  return int($value/$input_max*$target_max + 0.5);
 }

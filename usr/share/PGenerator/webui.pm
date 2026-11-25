@@ -12361,10 +12361,13 @@ sub webui_pattern_scale_value (@) {
   my $dst_bits=$bit_depth_for_max{$target_max};
   return $target_max if($value >= $input_max);
   return $value << ($dst_bits - $src_bits) if($dst_bits > $src_bits);
-  # A downshift here would truncate: 283 >> 2 = 70, not 71 (same defect
-  # as calman_scale_value, issue 73). Fall through to the round-half-up
-  # endpoint mapping below. Not the shift rounded to nearest: codes above
-  # 683 land one step below the old shift (t/webui_pattern_scale_value_rounding.t).
+  # Same convention as calman_scale_value: a power-of-two shift rounded
+  # half-up (283 -> 71, 940 -> 235, 3760 -> 940), clamped at the
+  # near-white carry. The endpoint map put aligned codes above 683 one
+  # step low.
+  my $shift=$src_bits - $dst_bits;
+  my $rounded=($value + (1 << ($shift - 1))) >> $shift;
+  return $rounded > $target_max ? $target_max : $rounded;
  }
  return int($value/$input_max*$target_max + 0.5);
 }
