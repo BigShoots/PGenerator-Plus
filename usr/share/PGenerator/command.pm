@@ -311,7 +311,7 @@ sub vc4_rgb_limited_unity_kernel(@) {
  if($vc4_unity_marker < 0) {
   my $srcversion="";
   if(open(my $fh,"<",$vc4_srcversion_path)) {
-   $srcversion=<$fh>;
+   $srcversion=<$fh>//"";
    close($fh);
   }
   # Stock srcversions are hex digests, so "RQ3V1" can only come from a

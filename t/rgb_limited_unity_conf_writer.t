@@ -58,6 +58,28 @@ is(main::unity_wire_rgb_quant_range(2,0,0),2,'patched: Full unchanged');
 unlink $marker;
 is(main::unity_wire_rgb_quant_range(1,0,0),3,'marker cached: deleted sysfs file does not downgrade');
 
+# --- empty srcversion file (present but zero bytes) must not warn ---
+# <$fh> on an empty file yields undef, not ""; without the //"" coercion the
+# marker regex trips 'Use of uninitialized value' (observed when the file is
+# compiled with warnings on, as a plain perl -c/-w harness does). command.pm
+# itself carries no 'use warnings', so pin the pattern via eval in a
+# warnings-on context rather than through the do-loaded copy.
+{
+ my $src = do { local $/; open(my $f,'<',"$dir/command.pm") or die $!; <$f> };
+ my ($probe_sub) = $src =~ /(sub vc4_rgb_limited_unity_kernel\(\@\) \{.*?\n\})/s;
+ ok(defined $probe_sub, 'marker probe sub extracted from command.pm');
+ my $tmp2 = tempdir(CLEANUP=>1);
+ my $empty = "$tmp2/srcversion"; open(my $e,'>',$empty) or die $!; close $e;
+ my @warnings;
+ {
+  local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+  my $pkg = "PR86WarnProbe::".abs($$);
+  eval "package $pkg; use warnings; our \$vc4_srcversion_path='$empty'; our \$vc4_unity_marker=-1; $probe_sub; vc4_rgb_limited_unity_kernel(); 1"
+   or die "probe eval failed: $@";
+ }
+ is(scalar(@warnings),0,'empty srcversion: marker regex is warning-clean (undef coerced via //"")');
+}
+
 # --- call site: apply_drm_properties writes the mapped value ---
 {
  local $/; open(my $fh,'<',"$dir/command.pm") or die $!; my $src=<$fh>; close $fh;
