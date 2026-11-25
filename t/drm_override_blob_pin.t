@@ -81,12 +81,15 @@ SKIP: {
 # "DRM_OVERRIDE: ..." strings must be EXACTLY the set of shim literals in the
 # source it claims to be compiled from (C escapes resolved). Source-side
 # additions that skip the blob rebuild trip the forward check; a blob built
-# from different source trips the reverse check.
+# from different source trips the reverse check. The forward check demands a
+# NUL-terminated occurrence: strings in .rodata are NUL-separated, so a
+# source literal that is only a strict prefix of what the blob carries (the
+# forged-suffix shape) must NOT pass by substring.
 my $c_src = slurp_raw($c);
-my @lits = do { my @m = ($c_src =~ /"(DRM_OVERRIDE:[^"]*)"/g); my %u; grep { !$u{$_}++ }
+my @lits = do { my @m = grep { /^DRM_OVERRIDE:/ } ($c_src =~ /"([^"]*)"/g); my %u; grep { !$u{$_}++ }
     map { my $s = $_; $s =~ s/\\n/\n/g; $s =~ s/\\t/\t/g; $s =~ s/\\\\/\\/g; $s } @m };
 ok(@lits >= 5, 'extracted '.scalar(@lits).' shim literals from source');
-my @missing = grep { index($b, $_) < 0 } @lits;
+my @missing = grep { index($b, $_ . "\0") < 0 } @lits;
 is_deeply(\@missing, [], 'every shim source literal present in blob (stale-blob check)');
 
 my %src_lit = map { $_ => 1 } @lits;

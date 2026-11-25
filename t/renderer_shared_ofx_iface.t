@@ -44,12 +44,20 @@ for my $header (['Pi 4',"src/ofxRPI4Window/src/ofxRPI4Window.h"],
 # addon's own build — exactly the gap around rgbLimitedPassthroughSupported,
 # which the app never calls. Every ofxRPI4Window::<member> definition in an
 # addon .cpp must have a matching name in that addon's header.
+# Definition shapes covered: functions (whitespace-normalized so a
+# return-type/signature split across lines still matches) AND out-of-line
+# static data-member definitions (`int ofxRPI4Window::isHDR = 0;`) — both
+# forms break the addon build if the header declaration is dropped. The
+# (?<![=!<>]) guard before '=' keeps comparisons (!=, ==, <=, >=) out of the
+# definition set; comparisons to a member name still pin nothing here.
 for my $addon (['Pi 4', "src/ofxRPI4Window"], ['Pi 5', "src/ofxRPI4Window-pi5"]) {
     my ($label,$dir)=@$addon;
     my $cpp = strip_comments(slurp("$root/$dir/src/ofxRPI4Window.cpp"));
     my $hdr = strip_comments(slurp("$root/$dir/src/ofxRPI4Window.h"));
+    my $flat = $cpp;
+    $flat =~ s/\s+/ /g;
     my %defs;
-    while ($cpp =~ /^(?:[A-Za-z_][^\n;{=]*)?\bofxRPI4Window::(~?[A-Za-z_]\w*)\s*\(/gm) {
+    while ($flat =~ /\bofxRPI4Window::(~?[A-Za-z_]\w*)\s*(?:\(|(?<![=!<>])=|\[)/g) {
         $defs{$1} = 1;
     }
     ok(scalar(keys %defs) >= 20, "$label addon .cpp defines a substantial member surface (".scalar(keys %defs).")");
