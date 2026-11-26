@@ -88,14 +88,39 @@ is(main::webui_route_device_lane('POST','/api/lg/dv-profile/stop'),'meter','DV w
  local *main::webui_meter_lg_autocal_clear_full_workflow_state=sub {push @calls,'workflow'};
  local *main::lg_load_clients=sub {{calibration_mode=>0}};
  local *main::lg_primary_client=sub {{client_key=>'fake'}};
+ local *main::lg_autocal_worker_running=sub {push @calls,'probe';1};
  local *main::lg_close_calibration_mode_at_run_end=sub {push @calls,'exit';ok($_[1]{force_stop},'explicit stop forces fresh exit');{status=>'error',message=>'CAL_END rejected',client_key=>'secret-pairing'}};
  local *main::log=sub {};
  local *PGAutomation::write_json_atomic=sub {1};
  my $result=PGAutomation::decode_json(main::webui_meter_stop_complete('{}'));
- is_deeply(\@calls,['workers','workflow','exit'],'workers are shut down before TV exit');
+ is_deeply(\@calls,['probe','workers','workflow','exit'],'LG workers are sampled, then shut down before TV exit');
  is($result->{status},'error','explicit stop propagates cleanup failure');
  is($result->{message},'CAL_END rejected','explicit stop exposes actual cause');
  unlike(PGAutomation::encode_json($result),qr/secret-pairing|client_key/,'stop response never exposes helper pairing credentials');
+}
+{
+ # A manual or Continuous read never opens calibration mode. A C2 answers a
+ # CAL_END with no open session with 401, so Stop must not send one.
+ my @calls;
+ my $flag=0;
+ local *main::webui_automation_read_execution=sub {undef};
+ local *main::webui_meter_stop=sub {push @calls,'workers'};
+ local *main::webui_meter_lg_autocal_clear_full_workflow_state=sub {};
+ local *main::lg_load_clients=sub {{calibration_mode=>$flag}};
+ local *main::lg_primary_client=sub {{client_key=>'fake'}};
+ local *main::lg_autocal_worker_running=sub {0};
+ local *main::lg_close_calibration_mode_at_run_end=sub {push @calls,'exit';{status=>'error',message=>'401 insufficient permissions'}};
+ local *main::log=sub {};
+ local *PGAutomation::write_json_atomic=sub {1};
+ my $result=PGAutomation::decode_json(main::webui_meter_stop_complete('{}'));
+ is_deeply(\@calls,['workers'],'Stop after a manual read sends no CAL_END');
+ is($result->{status},'ok','Stop after a manual read succeeds');
+ like($result->{message},qr/no TV calibration session was open/,'Stop says no calibration session was open');
+ @calls=();
+ $flag=1;
+ $result=PGAutomation::decode_json(main::webui_meter_stop_complete('{}'));
+ is_deeply(\@calls,['workers','exit'],'a recorded calibration session is still closed without a worker');
+ is($result->{status},'error','a recorded session that will not close is still reported');
 }
 {
  local @ARGV=('stop-test','test-token');

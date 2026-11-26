@@ -7758,19 +7758,25 @@ sub webui_meter_stop_complete (@) {
   return &webui_automation_control($execution->{run_id},"stop");
  }
  &log("Stop: cancelling all calibration workers and meter operations");
+ # Only an LG worker can open CAL_START without it being recorded yet, so
+ # sample that before the workers are killed. A manual or Continuous read
+ # never opens calibration mode, and a C2 answers a CAL_END with no open
+ # session with 401 insufficient permissions, which reads as a stuck session.
+ my $lg_worker_was_running=&lg_autocal_worker_running(1);
  &webui_meter_stop();
  &webui_meter_lg_autocal_clear_full_workflow_state();
  my $clients=&lg_load_clients();
  my $client=&lg_primary_client($clients);
  my $paired=ref($client) eq "HASH" && ($client->{client_key}||$client->{'client-key'});
- my $cleanup=($paired || $clients->{calibration_mode})
+ my $close_tv=(($paired && $lg_worker_was_running) || $clients->{calibration_mode}) ? 1 : 0;
+ my $cleanup=$close_tv
   ? &lg_close_calibration_mode_at_run_end($clients,{force_stop=>1})
   : {status=>"ok",calibration_cleanup_needed=>JSON::PP::false};
  my $ok=ref($cleanup) eq "HASH" && ($cleanup->{status}||"") eq "ok";
  # Helper responses contain pairing credentials; publish only stop evidence.
  my $public_cleanup={map {exists($cleanup->{$_})?($_=>$cleanup->{$_}):()} qw(status error_code message calibration_mode calibration_cleanup_needed)};
  my $result={status=>$ok?"ok":"error",message=>$ok?"Stop requested; TV calibration exit acknowledged":($cleanup->{message}||"TV calibration exit could not be confirmed"),calibration_cleanup=>$public_cleanup};
- $result->{message}="Measurement stopped; no paired TV calibration session" if($ok && !$paired && !$clients->{calibration_mode});
+ $result->{message}=($paired ? "Measurement stopped; no TV calibration session was open" : "Measurement stopped; no paired TV calibration session") if($ok && !$close_tv);
  $result->{error_code}="stop-cleanup-unverified" if(!$ok);
  PGAutomation::write_json_atomic('/tmp/meter_stop_cleanup.json',{%$result,updated_at=>PGAutomation::now()},0666);
  &log("Stop: ".$result->{message});
