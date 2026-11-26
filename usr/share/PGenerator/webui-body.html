@@ -102,6 +102,13 @@ __PG_LOGO_DARK__
      <button type="button" class="layout-switch-btn theme-switch-btn" data-theme-mode="light" aria-pressed="false" onclick="pgSetThemeMode('light')">Light</button>
     </div>
    </div>
+   <div class="ui-settings-group">
+    <h3>Chart Focus <span class="meter-help-tip" tabindex="0" title="Highlights the selected patch on the greyscale charts: its values stay full colour with a dot on each line, and the other values dim slightly so the selected one is easy to find. This preference is stored in this browser." aria-label="Chart focus help">?</span></h3>
+    <div class="layout-switch ui-settings-switch" role="group" aria-label="Chart focus">
+     <button type="button" class="layout-switch-btn chart-focus-btn" data-chart-focus="on" aria-pressed="true" onclick="pgSetChartFocus(true)">On</button>
+     <button type="button" class="layout-switch-btn chart-focus-btn" data-chart-focus="off" aria-pressed="false" onclick="pgSetChartFocus(false)">Off</button>
+    </div>
+   </div>
    <div class="ui-settings-group ui-settings-zoom">
     <h3>Desktop Zoom <span class="meter-help-tip" tabindex="0" title="Scales the complete Desktop interface like browser zoom. This browser-local preference is restored after reloads and device reboots and does not affect Tablet mode." aria-label="Desktop zoom help">?</span></h3>
     <select id="pgDesktopZoom" class="ui-zoom-select" aria-label="Desktop interface zoom" onchange="pgSetDesktopZoom(this.value)">

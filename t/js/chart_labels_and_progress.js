@@ -51,7 +51,8 @@ const ws=read('webui-workspace.js'),app=read('webui-app.js'),auto=read('webui-au
  ctx.meterReadings=[];ctx.meterChartSignalMode=()=>hdr?'hdr10':'sdr';
  vm.runInContext(['meterGammaSignalFraction','effectiveGamma','meterGreyscaleGammaValue'].map(n=>grab(app,n)).join('\n')+'\n'
   +ws.match(/const METER_HDR_GAMMA_CLIP_FRACTION=[^;]+;/)[0]+'\n'
-  +['meterGammaReadingAtPanelClip','meterGammaClipAwareView','meterGammaClipOnsetIre','meterGammaExcludedAtClip','drawGammaValueChart','meterBuildGreyscaleReportTable'].map(n=>grab(ws,n)).join('\n')
+  +ws.match(/const PG_CHART_FOCUS_DIM=[^;]+;/)[0]+'\n'
+  +['meterChartFocusEnabled','meterChartFocusIndex','meterChartFocusApply','meterGammaReadingAtPanelClip','meterGammaClipAwareView','meterGammaClipOnsetIre','meterGammaExcludedAtClip','drawGammaValueChart','meterBuildGreyscaleReportTable'].map(n=>grab(ws,n)).join('\n')
   +';this.onset=meterGammaClipOnsetIre;this.excluded=meterGammaExcludedAtClip;this.aware=meterGammaClipAwareView;this.draw=drawGammaValueChart;this.table=meterBuildGreyscaleReportTable;',ctx);
  assert.equal(ctx.onset(readings,white,true),80,'the clip onset is the lowest step at the clip');
  assert.equal(ctx.onset(readings,white,false),null,'there is no onset outside a clip-aware view');

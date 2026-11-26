@@ -14654,6 +14654,7 @@ function drawGammaValueChart(gs,allSteps,readingMap){
  if(mPts.length) drawDots(ctx,chart,mPts,'#7ecbff',2.5);
  // Optional per-channel gamma overlay (R/G/B from the cached
  // meterPerChannelGamma computed in drawAllCharts).
+ const focusSeries=[{pts:mPts,color:'#7ecbff'}];
  const pcToggle=document.getElementById('meterPerChannelGamma');
  if(pcToggle && pcToggle.checked){
   const rPts=[],gPts=[],bPts=[];
@@ -14671,7 +14672,9 @@ function drawGammaValueChart(gs,allSteps,readingMap){
   if(rPts.length>1) drawLine(ctx,chart,rPts,'#ff5555',1.5);
   if(gPts.length>1) drawLine(ctx,chart,gPts,'#55dd55',1.5);
   if(bPts.length>1) drawLine(ctx,chart,bPts,'#5588ff',1.5);
+  focusSeries.push({pts:rPts,color:'#ff5555'},{pts:gPts,color:'#55dd55'},{pts:bPts,color:'#5588ff'});
  }
+ meterChartFocusApply(ctx,chart,xSteps,focusSeries,(s,i)=>meterGammaChartX(s,xSteps,i));
  let avgText='';
  if(mPts.length>0){
   const avg=measuredVals.reduce((s,v)=>s+v,0)/measuredVals.length;
@@ -15387,6 +15390,7 @@ function meterDrawStickyYAxis(ctx,opts,pad,h){
 // touching any of the seven renderers.
 const PG_LIVE_CYCLE_MS=2400;
 const PG_LIVE_CHART_IDS=['chartRGB','chartDeltaE','chartGammaValue','chartEOTF','chartGamma','chartCIE'];
+const PG_LIVE_OVERLAY_ENABLED=false;
 let pgLiveMark=null;
 let pgLiveFrame=0;
 let pgLiveSurfaces=[];
@@ -15705,6 +15709,11 @@ function meterLiveImagePlot(img){
 }
 
 function meterLiveHosts(){
+ // The overlay ring and bar box are retired: they were positioned from a copy
+ // of each curve and drifted off the plotted data. Target focus
+ // (meterChartFocusApply) marks the selected patch inside each chart's own
+ // draw instead. The mark bookkeeping above stays for its other consumers.
+ if(typeof PG_LIVE_OVERLAY_ENABLED==='undefined'||!PG_LIVE_OVERLAY_ENABLED) return [];
  const hosts=[];
  PG_LIVE_CHART_IDS.forEach(id=>{
   const c=document.getElementById(id);
@@ -15857,6 +15866,106 @@ function meterLivePaintSlot(g,spot,mark,cyclePhase){
  if(cyclePhase!=null) g.globalAlpha=g.globalAlpha*(0.5+0.4*Math.pow(1-cyclePhase,1.6));
  meterLiveStroke(g,()=>{g.beginPath();g.rect(x,top,w,h);},1.1);
  g.restore();
+}
+
+// --- Target focus ------------------------------------------------------------
+// Picks the selected patch out of the greyscale charts from each chart's own
+// plotted coordinates (the overlay ring guessed positions from a copy of the
+// curve and drifted off the data). The selected column keeps full colour, the
+// rest of the plot recedes behind a light veil that leaves it readable, every
+// data series gets a dot at the selected step, and a short accent tab under
+// the axis names the column. UI Settings > Chart Focus turns it off.
+const PG_CHART_FOCUS_DIM=0.42;
+
+function meterChartFocusEnabled(){
+ return typeof pgChartFocus==='undefined'?true:!!pgChartFocus;
+}
+
+// Index of the selected patch in a chart's x steps, or -1. Matches on the
+// stimulus first and the name second so a merged Dark Detail ladder that
+// repeats an IRE still lands on the right column.
+function meterChartFocusIndex(steps){
+ if(!meterChartFocusEnabled()||!Array.isArray(steps)||!steps.length) return -1;
+ const st=(typeof meterCurrentPatchStep!=='undefined')?meterCurrentPatchStep:null;
+ if(!st||st.ire==null||!isFinite(Number(st.ire))) return -1;
+ const ire=Number(st.ire);
+ const sameIre=s=>s&&s.ire!=null&&Math.abs(Number(s.ire)-ire)<1e-9;
+ let idx=steps.findIndex(s=>sameIre(s)&&st.name!=null&&s.name!=null&&String(s.name)===String(st.name));
+ if(idx<0) idx=steps.findIndex(sameIre);
+ return idx;
+}
+
+// series: [{pts:[[xN,yN],...], color}] in the chart's normalized coordinates.
+// xOf(step,idx) is the chart's own x mapping (category axis by default).
+// Returns true when the chart was focused.
+function meterChartFocusApply(ctx,chart,steps,series,xOf){
+ const idx=meterChartFocusIndex(steps);
+ if(idx<0||!ctx||!chart||typeof chart.toX!=='function') return false;
+ const xAt=j=>typeof xOf==='function'?xOf(steps[j],j):meterGreyCategoryChartX(steps,j);
+ const xN=xAt(idx);
+ if(xN==null||!isFinite(xN)) return false;
+ const px=chart.toX(xN);
+ const L=chart.pad.l,T=chart.pad.t,R=chart.pad.l+chart.w,B=chart.pad.t+chart.h;
+ // Half the distance to the nearest neighbour, so adjacent columns never
+ // share the band; clamped for very sparse or very dense ladders.
+ const gaps=[idx-1,idx+1].filter(j=>j>=0&&j<steps.length)
+  .map(j=>Math.abs(chart.toX(xAt(j))-px)).filter(g=>g>0.5);
+ const half=Math.max(4,Math.min(gaps.length?Math.min(...gaps)/2:24,40));
+ if(px+half<L||px-half>R) return false; // zoomed away from the selection
+ ctx.save();
+ ctx.beginPath();ctx.rect(L,T,chart.w,chart.h);ctx.clip();
+ ctx.globalAlpha=PG_CHART_FOCUS_DIM;
+ ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');
+ if(px-half>L) ctx.fillRect(L,T,px-half-L,chart.h);
+ if(px+half<R) ctx.fillRect(px+half,T,R-px-half,chart.h);
+ ctx.globalAlpha=1;
+ (series||[]).forEach(s=>{
+  const pt=(s&&s.pts||[]).find(p=>p&&Math.abs(p[0]-xN)<1e-9&&p[1]!=null&&isFinite(p[1]));
+  if(!pt) return;
+  const x=chart.toX(pt[0]),y=chart.toY(pt[1]);
+  ctx.beginPath();ctx.arc(x,y,5.5,0,Math.PI*2);
+  ctx.fillStyle=pgThemeColor('--chart-bg','#0d0d15');ctx.fill();
+  ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);
+  ctx.fillStyle=s.color;ctx.fill();
+ });
+ ctx.restore();
+ // Accent tab just under the x axis, outside the clip, marks the column.
+ ctx.save();
+ ctx.fillStyle=pgThemeColor('--accent','#5b7fff');
+ const tab=Math.max(6,Math.min(half*1.2,28));
+ ctx.fillRect(px-tab/2,B+1,tab,2.5);
+ ctx.restore();
+ return true;
+}
+
+// Charts redraw on data changes; a new selection alone does not reach them, so
+// watch it and redraw once per change while focus is on (or was just turned
+// off, to clear it).
+let pgChartFocusLastKey='';
+function meterChartFocusKey(){
+ const st=(typeof meterCurrentPatchStep!=='undefined')?meterCurrentPatchStep:null;
+ return (meterChartFocusEnabled()?'on|':'off|')+(st?(String(st.name)+'|'+String(st.ire)):'');
+}
+function meterChartFocusRedraw(){
+ meterLastChartSignature='';
+ meterLastChartCount=0;
+ try{
+  if(typeof meterReadings!=='undefined'&&meterReadings&&meterReadings.length&&typeof drawAllCharts==='function') drawAllCharts(meterReadings);
+  else if(typeof meterSeriesSteps!=='undefined'&&meterSeriesSteps&&meterSeriesSteps.length&&typeof drawAllChartsPreset==='function') drawAllChartsPreset(meterSeriesSteps);
+ }catch(e){}
+}
+function meterChartFocusWatch(){
+ const key=meterChartFocusKey();
+ if(key===pgChartFocusLastKey) return;
+ const wasOn=pgChartFocusLastKey.indexOf('on|')===0;
+ pgChartFocusLastKey=key;
+ if(meterChartFocusEnabled()||wasOn) meterChartFocusRedraw();
+}
+if(typeof window!=='undefined'&&!window._pgChartFocusTimer){
+ window._pgChartFocusTimer=setInterval(()=>{
+  if(document.hidden) return;
+  try{meterChartFocusWatch();}catch(e){}
+ },200);
 }
 
 function drawChartGrid(ctx,opts){
@@ -16263,6 +16372,7 @@ function drawRGBChart(gs,allSteps,readingMap){
   });
   ctx.restore();
  }
+ meterChartFocusApply(ctx,chart,xSteps,[{pts:rPts,color:'#f44'},{pts:gPts,color:'#4caf50'},{pts:bPts,color:'#42a5f5'}]);
  // R/G/B label at right
  if(rPts.length>0){
   const last=rPts.length-1;
@@ -16362,6 +16472,7 @@ function drawEOTFChart(gs,allSteps,readingMap){
  // the white reference's same channel, rescaled to the chart reference, then
  // run through the active EOTF transfer (bowed when Absolute is off, diagonal
  // when on) so it shares the same Y axis as the luminance curve.
+ const eotfFocus=[{pts:eotfDotPts,color:'#ffeb3b'}];
  const eotfPcToggle=document.getElementById('meterEotfPerChannel');
  if(eotfPcToggle && eotfPcToggle.checked && white){
   const pcGamut=meterAnalysisGamut();
@@ -16387,9 +16498,11 @@ function drawEOTFChart(gs,allSteps,readingMap){
     });
     const apts=meterAnchorOriginPoint(pts);
     if(apts.length>1) drawLine(ctx,chart,apts,ch.c,1.25);
+    eotfFocus.push({pts:pts,color:ch.c});
    });
   }
  }
+ meterChartFocusApply(ctx,chart,measureSteps,eotfFocus,(s,i)=>meterGreyEotfLuminanceChartX(s,measureSteps,i,axisMax));
  ctx.fillStyle=pgThemeColor('--chart-eotf-measured','#ffeb3b');
  const measuredMax=(white&&!white.synthetic_target&&refWhite>0)
   ?refWhite
@@ -16468,6 +16581,7 @@ function drawGammaChart(gs,allSteps,readingMap){
  // neighbour exists to draw a line to.
  const lumDotPts=meterMeasuredEotfLuminanceDotPoints(measureSteps,readingMap,axisMax,scaleMeasuredLuminance,'luminance');
  drawDots(ctx,chart,lumDotPts,'#ffeb3b',2.2);
+ meterChartFocusApply(ctx,chart,measureSteps,[{pts:lumDotPts,color:'#ffeb3b'}],(s,i)=>meterGreyEotfLuminanceChartX(s,measureSteps,i,axisMax));
  meterLivePlotPublish(ctx,chart,{steps:plotSteps,target:tgtPts,measured:lumDotPts});
  // Annotate the 0% IRE point with the actual measured Lb (cd/m^2) so a
  // lifted black is visible even though the Y axis spans 0 to peak and
@@ -16614,6 +16728,7 @@ function drawDeltaEChart(gs,allSteps,readingMap,rawGs){
   }
  });
  ctx.restore();
+ meterChartFocusApply(ctx,chart,xSteps,[]);
  // Average dE line
  meterDrawDeltaSummary(ctx,chart,deValues);
  // White point info (CCT, Δxy from D65)
@@ -16702,6 +16817,7 @@ function drawDeltaE2000Chart(gs,allSteps,readingMap){
    ctx.fillRect(cx-1,chart.pad.t+chart.h-2,2,2);
   }
  });
+ meterChartFocusApply(ctx,chart,xSteps,[]);
  meterDrawDeltaSummary(ctx,chart,deValues);
 }
 

@@ -52,7 +52,8 @@ for(const name of [
  'meterCalibrationTargetContextFromSource','meterGreySignalFractionFromCode',
  'meterPreviewSignalCodePolicy','meterActiveSeriesCodesAre8Bit'
 ])load(app,name);
-for(const name of ['meterGreyCategoryChartX','drawDeltaEChart','meterGreyEotfLuminancePlotIre','meterEotfLuminanceAxisMax'])load(workspace,name);
+c.PG_CHART_FOCUS_DIM=Number(workspace.match(/const PG_CHART_FOCUS_DIM=([\d.]+)/)[1]);
+for(const name of ['meterChartFocusEnabled','meterChartFocusIndex','meterChartFocusApply','meterGreyCategoryChartX','drawDeltaEChart','meterGreyEotfLuminancePlotIre','meterEotfLuminanceAxisMax'])load(workspace,name);
 load(automation,'pgAutomationGraphSnapshot');
 
 for(const test of cases){

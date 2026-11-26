@@ -3201,6 +3201,24 @@ function pgSetThemeMode(mode){
  pgApplyThemeMode(mode);
  try{ localStorage.setItem(PG_THEME_STORAGE_KEY,pgThemeMode); }catch(e){}
 }
+// Chart focus: the selected patch stays full colour on the greyscale charts,
+// with a dot on each series, while the other values dim slightly. Browser-local
+// like the theme; on unless the operator turned it off.
+const PG_CHART_FOCUS_STORAGE_KEY='pgen.ui.chartFocus';
+let pgChartFocus=(()=>{
+ try{ return localStorage.getItem(PG_CHART_FOCUS_STORAGE_KEY)!=='off'; }catch(e){ return true; }
+})();
+function pgUpdateChartFocusControls(){
+ document.querySelectorAll('.chart-focus-btn[data-chart-focus]').forEach(btn=>{
+  btn.setAttribute('aria-pressed',(btn.getAttribute('data-chart-focus')==='on')===pgChartFocus?'true':'false');
+ });
+}
+function pgSetChartFocus(on){
+ pgChartFocus=!!on;
+ try{ localStorage.setItem(PG_CHART_FOCUS_STORAGE_KEY,pgChartFocus?'on':'off'); }catch(e){}
+ pgUpdateChartFocusControls();
+ pgRedrawChartsForTheme();
+}
 function pgPanelBelongsToActiveWorkspace(panel){
  if(!panel||!panel.getAttribute) return false;
  const workspace=panel.getAttribute('data-desktop-workspace');
@@ -3461,6 +3479,7 @@ function pgUpdateHeaderOffset(){
 }
 function pgLayoutInit(){
  pgApplyThemeMode(pgReadThemeMode(),{initial:true});
+ pgUpdateChartFocusControls();
  pgLayoutPreference=pgReadLayoutPreference();
  pgDesktopZoom=pgReadDesktopZoom();
  pgDesktopSidebarCollapsed=pgReadDesktopSidebarCollapsed();
