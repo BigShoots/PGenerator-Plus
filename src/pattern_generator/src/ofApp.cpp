@@ -483,7 +483,14 @@ void ofApp::text() {
   arr_posx[i][to_draw]=(ofGetWindowWidth()-width)/2;
   arr_posy[i][to_draw]=ofGetWindowHeight()/2;
  }
+ // The colour shader emits the solid code for every fragment it shades, so
+ // without the glyph mask each character becomes a filled box (YCbCr, and
+ // 10-bit RGB since usesColourShader() covers it). Standard DV uses its own
+ // pattern shader and is unchanged.
+ bool glyph_mask=!ofxRPI4Window::shader_init && ofxRPI4Window::usesColourShader();
+ if(glyph_mask) ofxRPI4Window::shader.setUniform1i("is_text",1);
  myfont.drawString(arr_text[i][to_draw],arr_posx[i][to_draw],arr_posy[i][to_draw]);
+ if(glyph_mask) ofxRPI4Window::shader.setUniform1i("is_text",0);
 }
 
 /*
@@ -864,6 +871,7 @@ void ofApp::shader_begin(int is_image) {
     ofxRPI4Window::shader.setUniform1i("is_image", is_image);
     ofxRPI4Window::shader.setUniform3i("source_codes",solid_red,solid_green,solid_blue);
     ofxRPI4Window::shader.setUniform1i("source_normalizer",normalizer);
+    ofxRPI4Window::shader.setUniform1i("is_text",0);
 
   }
  }

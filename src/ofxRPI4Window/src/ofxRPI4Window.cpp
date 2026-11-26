@@ -1729,6 +1729,7 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 		uniform int color_format;
 
 		uniform int is_image;
+		uniform int is_text;
 		uniform int scalar1;
 		uniform int scalar2;
 		uniform int offset;
@@ -1777,6 +1778,9 @@ void ofxRPI4Window::rgb2ycbcr_shader()
 				vec4 color = texture(tex0, texCoordVarying);
 				outputColor = RGBtoYCbCr(color.rgba, false);
 			} else {
+				// Text quads carry the glyph atlas; keep only covered texels so a
+				// glyph is drawn in the exact solid code instead of a filled box.
+				if (is_text == 1 && texture(tex0, texCoordVarying).a < 0.5) discard;
 				outputColor = RGBtoYCbCr(vec4(1.0), true);
 			}
 		}
