@@ -493,6 +493,10 @@ my $_meter_lg_3d_autocal_start_lock :shared = 0;
 my $_meter_wrapper="/usr/bin/spotread_wrapper.sh";
 my $_meter_session="/usr/bin/meter_session.sh";
 our $_meter_read_file="/tmp/meter_read.json";
+# Set when the last READ sent to the meter session came from Continuous mode.
+# The pattern guard lets the operator switch patches during those reads:
+# Continuous follows the selected patch and drops a sample whose patch changed.
+our $_meter_continuous_read :shared = 0;
 my $_meter_session_pid_file="/tmp/meter_session.pid";
 my $_meter_session_fifo="/tmp/meter_session.cmd";
 my $_meter_session_config_file="/tmp/meter_session.config";
@@ -3938,6 +3942,9 @@ sub webui_meter_read (@) {
   }
  }
 
+ # Record the read type before the measuring state below makes it visible to
+ # the pattern guard.
+ $_meter_continuous_read=($is_continuous && !$calibrate_only) ? 1 : 0;
  # Mark measuring so the polling endpoint sees a fresh in-flight state and
  # can't return the previous reading by mistake.
  my $state_before_send=&webui_meter_read_state_read();
@@ -13646,6 +13653,9 @@ sub webui_pattern_request_guard (@) {
  return "" if(!$automatic && &webui_route_is_loopback_pattern("POST","/api/pattern",$peer));
  my $owner=&webui_display_owner();
  return "" if(!$owner);
+ # Continuous reads follow whatever patch the operator selects, so a manual
+ # selection may replace the patch. Automatic requests still wait.
+ return "" if(!$automatic && $owner eq "meter reading" && $_meter_continuous_read);
  my ($name)=($body||"")=~/"name"\s*:\s*"([A-Za-z0-9_ -]+)"/;
  &log("WebUI: blocked external pattern ".($name||"unknown")." while $owner owns the display");
  return &webui_automation_json({status=>"error",error_code=>"pattern-owned",retryable=>JSON::PP::false,

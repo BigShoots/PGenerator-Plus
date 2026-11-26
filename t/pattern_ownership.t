@@ -35,4 +35,24 @@ for my $owner (qw(batch grey lut dv series read)) {
 ($execution,$grey,$lut,$dv,$series,$session)=(undef,0,0,0,0,0);
 is(main::webui_pattern_request_guard('{"name":"stop"}','192.0.2.5'),'','idle Stop can clear the last patch');
 is(main::webui_pattern_request_guard('{"name":"patch"}','192.0.2.5'),'','idle manual patch selection still works');
+# Continuous reads follow the operator's patch selection.
+($execution,$grey,$lut,$dv,$series,$session)=(undef,0,0,0,0,1);
+PGAutomation::write_json_atomic($main::_meter_read_file,{status=>'measuring'});
+{
+ local $main::_meter_continuous_read=1;
+ for my $name (qw(patch stop stabilization)) {
+  my $body=PGAutomation::encode_json({name=>$name});
+  is(main::webui_pattern_request_guard($body,'192.0.2.5'),'',"continuous read lets the operator select $name");
+ }
+ like(main::webui_pattern_request_guard('{"name":"stop","only_if_unowned":true}','127.0.0.1'),qr/pattern-owned/,'continuous read still rejects automatic completion');
+ like(main::webui_pattern_request_guard('{"name":"screensaver","only_if_unowned":true}','127.0.0.1'),qr/pattern-owned/,'continuous read still holds off the idle card');
+ is(main::webui_display_owner(),'meter reading','continuous read still owns the display');
+ $series=1;
+ like(main::webui_pattern_request_guard('{"name":"patch"}','192.0.2.5'),qr/pattern-owned/,'a series is protected even after a continuous read');
+ $series=0;
+}
+{
+ local $main::_meter_continuous_read=0;
+ like(main::webui_pattern_request_guard('{"name":"patch"}','192.0.2.5'),qr/pattern-owned/,'a single read keeps its patch');
+}
 done_testing();
