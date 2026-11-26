@@ -3567,15 +3567,18 @@ sub _apply_all {
         settings_verified => $check};
 }
 
-# Panel protection (TPC/GSR) is the OLED's static-brightness limiter; it dims
-# a pattern that stays on screen for about a minute, so calibrators switch it
-# off for the session. The TV offers no readback: a sent request is evidence
-# of a dispatch only, and the run re-enables both controls when it ends
-# because the factory state is the only state this runner can know.
+# Panel protection (TPC/GSR) is the OLED's static-brightness limiter. LG's
+# calibration mode already suspends it while the 1D/3D data is measured, and
+# the grey-field insertion breaks up static patches for the readings taken
+# outside it, so switching it off is an explicit opt-in per job. The TV
+# offers no readback: a sent request is evidence of a dispatch only, and an
+# opted-in run re-enables both controls when it ends (boot recovery retries
+# the restore after a crash) because the factory state is the only state
+# this runner can know.
 sub _panel_protection_wanted {
     my ($item) = @_;
     my $config = ref($item->{panel_protection}) eq 'HASH' ? $item->{panel_protection} : {};
-    return 0 if exists($config->{disable}) && !$config->{disable};
+    return 0 if !$config->{disable};
     # Readiness stamps the matrix verdict; without that review nothing is sent.
     return 0 if !defined($item->{panel_protection_supported}) || "$item->{panel_protection_supported}" ne '1';
     return 1;

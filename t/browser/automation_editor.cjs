@@ -44,7 +44,7 @@ const root=path.resolve(__dirname,'../..');
     check(edited.target_gamma===item.target_gamma&&edited.calibration.target_gamma===item.calibration.target_gamma&&edited.settings.gamma===item.settings.gamma&&edited.tv_gamma_follows_target===item.tv_gamma_follows_target,item.name+' keeps both gamma targets and the TV Gamma pin through the Configure popup');
     check(edited.target_delta_e===.5&&edited.calibration.target_delta_e===.5&&!edited.stages.pre_readings&&!edited.stages.post_readings,item.name+' keeps delta E 0.5 and optional sweeps disabled through the Configure popup');
     check(edited.calibration.dark_detail&&edited.stages.apply_all,item.name+' keeps Dark Detail and Apply to All Inputs enabled through the Configure popup');
-    check(edited.panel_protection&&edited.panel_protection.disable===true,item.name+' keeps panel protection (TPC/GSR) switched off for measurement through the Configure popup');
+    check(edited.panel_protection&&edited.panel_protection.disable===false,item.name+' leaves panel protection (TPC/GSR) on through the Configure popup (switching it off is opt-in)');
     const settingsEqual=Object.keys(edited.settings).length===Object.keys(item.settings).length&&Object.entries(item.settings).every(([key,value])=>edited.settings[key]===value);
     check(settingsEqual&&edited.calibration.method===item.calibration.method&&edited.panel_light.fixed_value===item.panel_light.fixed_value,item.name+' preserves all pinned picture controls, profiling method and panel brightness');
     pgAutomationCancelEditor();

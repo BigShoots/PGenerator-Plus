@@ -206,7 +206,8 @@ function pgAutomationReferenceItems(ids,context){
    // Keep calibration's own measurement/results, without three extra sweeps
    // on either side. Users may opt into those stages on a saved/custom copy.
    settings,stages:{pre_readings:false,calibration:true,post_readings:false,apply_all:true},
-   panel_protection:{disable:true},
+   // Calibration mode suspends TPC/GSR itself; switching it off is opt-in.
+   panel_protection:{disable:false},
    pre_series:PG_AUTOMATION_SERIES.map(x=>x[1]),post_series:PG_AUTOMATION_SERIES.map(x=>x[1]),
    target_gamma:gamma,target_gamut:gamut,target_white:{x:.3127,y:.3290},target_luminance:100,
    target_delta_e:.5,delta_e_formula:'deitp',
@@ -832,7 +833,7 @@ function pgAutomationFillRecipe(recipe){
  if(Array.isArray(recipe.supported_picture_keys)&&recipe.supported_picture_keys.length){pgAutomation.supportedKeys=recipe.supported_picture_keys.filter(key=>pgAutomationSettingCandidates().includes(key));pgAutomation.supportedSignal=recipe.signal_format;pgAutomation.supportedPictureMode=mode;}
  pgAutomationRenderSettingsEditor();
  ['Pre','Cal','Post','ApplyAll'].forEach((id,index)=>{const key=['pre_readings','calibration','post_readings','apply_all'][index];check(id,pgAutomationStageEnabled(stages,key));});
- check('PanelProtection',recipe.panel_protection?.disable!==false);
+ check('PanelProtection',recipe.panel_protection?.disable===true);
  PG_AUTOMATION_SERIES.forEach(([suffix,key])=>{
   check('Series'+suffix,(recipe.pre_series||PG_AUTOMATION_SERIES.map(x=>x[1])).includes(key));
   check('PostSeries'+suffix,(recipe.post_series||recipe.pre_series||PG_AUTOMATION_SERIES.map(x=>x[1])).includes(key));
@@ -935,7 +936,7 @@ function pgAutomationItemSummary(item,part){
  if(enabled('pre_readings'))pills.push('Before: '+(item.pre_series||PG_AUTOMATION_SERIES).length+' sweeps');
  if(enabled('calibration'))pills.push(signal==='dv'?'1D LUT + DV profile':'1D LUT + '+(signal==='hdr10'?'matrix':cal.profile_source||cal.method||'hybrid')+' 3D LUT');
  if(enabled('calibration')&&enabled('apply_all'))pills.push('All inputs');
- if(item.panel_protection?.disable!==false)pills.push('TPC/GSR off');
+ if(item.panel_protection?.disable===true)pills.push('TPC/GSR off');
  if(enabled('post_readings'))pills.push('After: '+(item.post_series||PG_AUTOMATION_SERIES).length+' sweeps');
  const settings=pgAutomationItemSettingsList(item);
  const targets=[];

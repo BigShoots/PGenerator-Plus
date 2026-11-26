@@ -101,6 +101,16 @@ like($cmd,qr{-X POST .*'/api/automation/runs/mid-job/control/stop'|-X POST .*'ht
 like($cmd,qr{restart-cleanup\.log},'and logs under the run directory, not /tmp');
 is(main::webui_automation_shell_quote("it's"),q{'it'"'"'s'},'shell quoting survives an apostrophe');
 
+# A crash or power cut while an opted-in job had TPC/GSR switched off: the
+# manifest still says running, and boot recovery must hand it to the
+# restart cleanup so the Stop path re-enables panel protection.
+@spawned=();
+write_run('crashed-tpc-off',status=>'running',active_item=>0,active_stage=>'greyscale',panel_protection=>{restore_pending=>1});
+main::webui_automation_boot_recover();
+is_deeply(\@spawned,['crashed-tpc-off'],'a crashed run with TPC/GSR off is cleaned at boot');
+ok(main::webui_automation_cleanup_required($read->('crashed-tpc-off')),'the pending TPC/GSR restore is cleanup debt after recovery');
+PGAutomation::write_json_atomic(PGAutomation::base_dir().'/execution.json',{});
+
 @spawned=();
 write_run('legacy-unsafe-pause',status=>'paused',active_item=>0,active_stage=>'greyscale-done',panel_protection=>{restore_pending=>1});
 main::webui_automation_boot_recover();

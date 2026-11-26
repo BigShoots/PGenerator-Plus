@@ -32,7 +32,8 @@ is_deeply($item->{warnings},[],'an expected unverifiable dispatch is not a job w
 like(join("\n",@actions),qr/disable sent.*no readback/,'activity log explains the limitation');
 
 # Opt-out and unsupported TVs send nothing
-for my $case ({%$item,panel_protection=>{disable=>0}},{%$item,panel_protection_supported=>0},{%$item,panel_protection_supported=>-1},{%$item,panel_protection_supported=>undef}) {
+# Opt-in: a job that never asked (no key, empty hash) is left alone too.
+for my $case ({%$item,panel_protection=>undef},{%$item,panel_protection=>{}},{%$item,panel_protection=>{disable=>0}},{%$item,panel_protection_supported=>0},{%$item,panel_protection_supported=>-1},{%$item,panel_protection_supported=>undef}) {
  reset_state();
  my $skipped=main::_panel_protection_disable(0,$case);
  ok($skipped->{skipped},'skipped without a request');

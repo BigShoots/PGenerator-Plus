@@ -28,9 +28,10 @@ my $item = main::webui_automation_normalize_item({
  stages=>{calibration=>undef, post_readings=>0}, pre_series=>[], post_series=>['bogus'],
 });
 is($item->{calibration}{target_gamma}, 'bt1886', 'calibration gamma wins over the top-level copy');
-is($item->{panel_protection}{disable}, 1, 'panel protection is switched off for measurement by default');
-is(main::webui_automation_normalize_item({signal_format=>'sdr',panel_protection=>{disable=>0}})->{panel_protection}{disable}, 0, 'a deliberate opt-out is kept');
-is(main::webui_automation_normalize_item({signal_format=>'sdr',panel_protection=>'yes'})->{panel_protection}{disable}, 1, 'malformed panel-protection config falls back to the default');
+is($item->{panel_protection}{disable}, 0, 'panel protection is left on unless the job opts in');
+is(main::webui_automation_normalize_item({signal_format=>'sdr',panel_protection=>{disable=>1}})->{panel_protection}{disable}, 1, 'a deliberate opt-in is kept');
+is(main::webui_automation_normalize_item({signal_format=>'sdr',panel_protection=>{disable=>0}})->{panel_protection}{disable}, 0, 'an explicit opt-out is kept');
+is(main::webui_automation_normalize_item({signal_format=>'sdr',panel_protection=>'yes'})->{panel_protection}{disable}, 0, 'malformed panel-protection config falls back to the default (left on)');
 is($item->{target_gamma}, 'bt1886', 'top-level gamma is projected from calibration');
 is($item->{target_gamut}, 'bt709', 'unknown gamut falls back to the signal default');
 is($item->{calibration}{target_gamut}, 'bt709', 'calibration gamut projected too');

@@ -15222,7 +15222,8 @@ sub webui_automation_normalize_item (@) {
   apply_all => defined($stages->{apply_all}) ? ($stages->{apply_all}?1:0) : 1,
  };
  my $protection=ref($item->{panel_protection}) eq "HASH" ? $item->{panel_protection} : {};
- $item->{panel_protection}={ disable => defined($protection->{disable}) ? ($protection->{disable}?1:0) : 1 };
+ # Opt-in: a job that does not ask leaves the TV's TPC/GSR untouched.
+ $item->{panel_protection}={ disable => $protection->{disable} ? 1 : 0 };
  foreach my $phase (qw(pre_series post_series)) {
   my $list=$item->{$phase};
   $list=$item->{series} if(ref($list) ne "ARRAY");
