@@ -96,6 +96,13 @@ D-07 Windows/macOS bundles carry COPIES of frontend/Perl files: any such change 
      rebuild via build-*-package.sh and smoke Suite A + touched screen in the bundle.
 D-08 Image/OTA gates: WiFi credentials stripped (fresh image verified), usrmerge
      symlinks intact after staging (tar --keep-directory-symlink).
+D-09 Renderer in the payload is the committed one: sha256 of usr/sbin/PGeneratord and
+     PGeneratord.dv inside the Pi 4 OTA tarball and image equals binary_sha256 in
+     usr/sbin/PGeneratord.provenance (t/renderer_binary_provenance.t pins the repo
+     side). Local image tooling that overlays a prebuilt rootfs renderer (e.g.
+     tools/image-targets/pi4-biasi/rootfs/usr/sbin) must be refreshed first; 2.13.0-
+     2.14.3 shipped the 2.12.1 renderer this way. Pi 5: same check against the Pi 5
+     renderer the payload carries.
 
 
 5. SUITE E - ICC PROFILE FLOW (icc_profile.js / PGICCProfile.pm / measurement changes;

@@ -1,0 +1,19 @@
+# Provenance of usr/sbin/PGeneratord and usr/sbin/PGeneratord.dv (Pi 4 renderer).
+# t/renderer_binary_provenance.t fails when a listed source no longer matches
+# its hash below, i.e. the committed binary was not rebuilt after a renderer
+# change. After rebuilding, update binary_sha256 and the source lines (hash of
+# the file with CR bytes removed, so CRLF checkouts agree with CI).
+target=pi4-biasi
+built_on=Raspberry Pi 400 Rev 1.0 (Pi 4 family) running the BiasiLinux PGenerator+ 2.14.3 image
+toolchain=gcc 7.3.0 (on device), GNU binutils 2.25 and GNU make 4.0 from /opt/pgbuild/usr/bin, kernel headers from /opt/pgbuild/usr/include
+openframeworks=0.11 linuxarmv6l; app linked against the device's libopenFrameworks.a, which was rebuilt on the device with -D_GLIBCXX_USE_CXX11_ABI=0
+make_flags=ReleaseABI PLATFORM_OS=Linux PLATFORM_ARCH=armv6l PLATFORM_LIB_SUBPATH=linuxarmv6l PLATFORM_VARIANT=default CROSS_COMPILING=0 GST_VERSION=1.0 TARGET_NO_SOUND=1 PROJECT_CFLAGS=-D_GLIBCXX_USE_CXX11_ABI=0 -isystem /opt/pgbuild/usr/include -isystem /opt/pgbuild/usr/include/arm-linux-gnueabihf PLATFORM_CXXFLAGS=-Wall -Werror=return-type -std=c++17 -DGCC_HAS_REGEX
+binary_sha256=f2b2a22d9da08abe545c30b19e443251d6623e98b231c70c618b8eb9c94434b9
+source=8da81d6b56bd3d511737c5441ba3e1117c446860c0e6e8a42013bb3a57dbd162 src/pattern_generator/src/main.cpp
+source=9249adeeec80013760eb12f93cee853a3ffd78522fb07356e40769e2fbe946cf src/pattern_generator/src/ofApp.cpp
+source=67daeee4b58c42d66a4bd5373a5e761ec559b0dae58ea0a00ee79367852fe88f src/pattern_generator/src/ofApp.h
+source=55e6c5a9ee92b6ad8e4fadee9277c75110afded7431973d6884db54ca8575ff1 src/pattern_generator/src/rgb2ycbcr.h
+source=553df3911a78c22aa095c7e6ab91c3b8d3965df3186b8b78bb2b5acd85598e7b src/ofxRPI4Window/src/ofxRPI4Window.cpp
+source=aae20cd437c9ab85893e1eb2fd0260f560a6f507132c6ba1c6917ac11f391ceb src/ofxRPI4Window/src/ofxRPI4Window.h
+source=34e4677080c763a1194b53e1827901fde6c991925ec794603bf1a52246f50637 src/ofxRPI4Window/src/igt_edid.h
+source=5db8602dfd781dbf00fb8749fb9fb29daaddc60fa293724f4e029cbec39248d0 src/ofxRPI4Window/addon_config.mk
