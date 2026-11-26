@@ -1,12 +1,12 @@
 #!/usr/bin/perl
 # Exploratory QA (dogfood pass, Sep 2026) found the Web UI's visible field
 # captions were plain sibling text: no <label for=...> and no aria-label, so
-# screen readers announced ~80 controls as unlabeled combos, the AP passphrase
-# rendered as visible text while the Wi-Fi PSK was masked, unknown page routes
+# screen readers announced ~80 controls as unlabeled combos, unknown page routes
 # answered with a bare "404 Not Found" body, and out-of-range HDR metadata
 # numbers only surfaced through the native validationMessage. These assertions
 # pin the fixes in the shipped fragments: every visible input/select in the
-# page fragments must have a programmatic label, apPass must stay masked, the
+# page fragments must have a programmatic label, apPass must stay a visible
+# autofill-free text field (see the AP section for why), the
 # page 404 must be an HTML page with a link home, and the calibration chip must
 # read unambiguously. A companion sweep covers controls the JS files render at
 # runtime (innerHTML string-built tags), where the static fragment scan cannot
@@ -129,13 +129,19 @@ for my $js (sort grep { /\.js$/ } readdir($dh)) {
 is_deeply(\@dyn_unlabeled, [], 'runtime-rendered controls carry labels too')
  or diag explain \@dyn_unlabeled;
 
-# --- AP passphrase masking ----------------------------------------------
-like($frag{'webui-body.html'}, qr/<input[^>]*\btype="password"[^>]*\bid="apPass"/,
- 'the AP passphrase field is masked like the Wi-Fi PSK');
-# Chrome ignores autocomplete="off" on password fields; new-password is the
-# token that actually suppresses the save-prompt on this credentials page.
-like($frag{'webui-body.html'}, qr/\bid="apPass"[^>]*autocomplete="new-password"/,
- 'apPass asks password managers not to save it');
+# --- AP passphrase field ------------------------------------------------
+# The AP passphrase is shown, not masked: it is the appliance's own hotspot
+# key (the owner has to read it to join, and the default is not printed
+# anywhere else), and loadAP() pre-fills it. A pre-filled type="password"
+# under the SSID text field reads as a login form, so browsers offered to
+# save a username and password on every visit. Keep it a plain text field
+# with autocomplete off and password-manager ignore hints.
+unlike($frag{'webui-body.html'}, qr/<input[^>]*\btype="password"[^>]*\bid="apPass"/,
+ 'the AP passphrase is a visible text field, not a password field');
+like($frag{'webui-body.html'}, qr/\bid="apPass"[^>]*autocomplete="off"/,
+ 'apPass opts out of autofill');
+like($frag{'webui-body.html'}, qr/\bid="apSsid"[^>]*autocomplete="off"/,
+ 'apSsid is not offered as a saved username');
 
 # --- CCMX matrix cell direction -----------------------------------------
 # ArgyllCMS applies out = M x in (see pgen-icc-companion.c: out[row] =
